@@ -1,0 +1,66 @@
+export const SYSTEM_ROLES = [
+  'super_admin',
+  'admin',
+  'doctor',
+  'patient',
+  'nurse',
+  'front_desk',
+  'lab_technician',
+  'lab_supervisor',
+  'radiologist',
+  'pharmacist',
+  'pharmacy_technician',
+  'pharmacy_admin',
+  'inventory_manager',
+  'billing_admin',
+  'cashier',
+  'insurance_staff',
+  'blood_bank_staff',
+  'hr_staff',
+] as const;
+
+export type SystemRole = (typeof SYSTEM_ROLES)[number];
+
+export const MODULES = [
+  'auth',
+  'tenants',
+  'users',
+  'roles',
+  'departments',
+  'wards',
+  'rooms',
+  'beds',
+  'patients',
+  'appointments',
+  'visits',
+  'admissions',
+  'vitals',
+  'diagnoses',
+  'progress_notes',
+  'nursing_notes',
+  'prescriptions',
+  'lab_orders',
+  'lab_reports',
+  'imaging',
+  'pharmacy',
+  'inventory',
+  'billing',
+  'payments',
+  'insurance',
+  'blood_bank',
+  'hr',
+  'notifications',
+  'tickets',
+  'reports',
+  'audit_logs',
+  'compliance',
+] as const;
+
+export const ACTIONS = ['create', 'read', 'update', 'delete', 'export', 'approve'] as const;
+
+export const REDIS_PREFIXES = {
+  REFRESH_TOKEN: 'rt:',
+  RATE_LIMIT: 'rl:',
+  SESSION: 'session:',
+  CACHE: 'cache:',
+} as const;

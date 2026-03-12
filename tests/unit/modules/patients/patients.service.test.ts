@@ -1,0 +1,372 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import * as patientsService from '../../../../src/modules/patients/patients.service';
+import { prisma } from '../../../../src/config/database';
+import { AppError } from '../../../../src/shared/appError';
+
+vi.mock('../../../../src/config/database');
+vi.mock('../../../../src/config/logger');
+
+describe('PatientsService', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  describe('create', () => {
+    it('should create a patient with generated MRN', async () => {
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue(null);
+      vi.mocked(prisma.patient.create).mockResolvedValue({
+        id: 'p1', mrn: 'MRN-20260309-0001', firstName: 'John', lastName: 'Doe',
+        tenantId: 'tenant-1', gender: 'male', dateOfBirth: new Date(),
+      } as any);
+      const result = await patientsService.create('tenant-1', {
+        firstName: 'John', lastName: 'Doe', gender: 'male',
+        dateOfBirth: '1990-01-01', phone: '1234567890',
+      });
+      expect(result).toBeDefined();
+      expect(prisma.patient.create).toHaveBeenCalled();
+    });
+
+    it('should map gender values correctly', async () => {
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue(null);
+      vi.mocked(prisma.patient.create).mockResolvedValue({ id: 'p1', gender: 'male' } as any);
+      await patientsService.create('tenant-1', {
+        firstName: 'Jane', lastName: 'Doe', gender: 'female',
+        dateOfBirth: '1990-01-01', phone: '1234567890',
+      });
+      expect(prisma.patient.create).toHaveBeenCalled();
+    });
+
+    it('should throw conflict if phone already exists', async () => {
+      vi.mocked(prisma.patient.findFirst).mockResolvedValueOnce(null); // MRN findFirst
+      vi.mocked(prisma.patient.findFirst).mockResolvedValueOnce(null); // MRN uniqueness check
+      vi.mocked(prisma.patient.findFirst).mockResolvedValueOnce({ id: 'existing' } as any); // phone duplicate
+      await expect(
+        patientsService.create('tenant-1', {
+          firstName: 'John', lastName: 'Doe', gender: 'male',
+          dateOfBirth: '1990-01-01', phone: '1234567890',
+        }),
+      ).rejects.toThrow(AppError);
+    });
+
+    it('should throw conflict if email already exists', async () => {
+      vi.mocked(prisma.patient.findFirst)
+        .mockResolvedValueOnce(null) // MRN findFirst
+        .mockResolvedValueOnce(null) // MRN uniqueness check
+        .mockResolvedValueOnce(null) // phone duplicate check (no dup)
+        .mockResolvedValueOnce({ id: 'existing' } as any); // email duplicate
+      await expect(
+        patientsService.create('tenant-1', {
+          firstName: 'John', lastName: 'Doe', gender: 'male',
+          dateOfBirth: '1990-01-01', phone: '9999999999', email: 'dup@test.com',
+        }),
+      ).rejects.toThrow(AppError);
+    });
+
+    it('should map prefer_not_to_say gender to other', async () => {
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue(null);
+      vi.mocked(prisma.patient.create).mockResolvedValue({ id: 'p1', gender: 'other' } as any);
+      await patientsService.create('tenant-1', {
+        firstName: 'Alex', lastName: 'Smith', gender: 'prefer_not_to_say',
+        dateOfBirth: '1990-01-01', phone: '5551234567',
+      });
+      const createCall = vi.mocked(prisma.patient.create).mock.calls[0][0];
+      expect((createCall as any).data.gender).toBe('other');
+    });
+  });
+
+  describe('findAll', () => {
+    it('should return paginated patients', async () => {
+      vi.mocked(prisma.patient.findMany).mockResolvedValue([{ id: 'p1' }] as any);
+      vi.mocked(prisma.patient.count).mockResolvedValue(1);
+      const result = await patientsService.findAll('tenant-1', {});
+      expect(result.patients).toHaveLength(1);
+      expect(result.total).toBe(1);
+    });
+
+    it('should use default pagination values', async () => {
+      vi.mocked(prisma.patient.findMany).mockResolvedValue([]);
+      vi.mocked(prisma.patient.count).mockResolvedValue(0);
+      const result = await patientsService.findAll('tenant-1', {});
+      expect(result.page).toBe(1);
+      expect(result.limit).toBe(20);
+    });
+
+    it('should filter by search term', async () => {
+      vi.mocked(prisma.patient.findMany).mockResolvedValue([]);
+      vi.mocked(prisma.patient.count).mockResolvedValue(0);
+      await patientsService.findAll('tenant-1', { search: 'John' });
+      expect(prisma.patient.findMany).toHaveBeenCalled();
+    });
+
+    it('should filter by gender', async () => {
+      vi.mocked(prisma.patient.findMany).mockResolvedValue([]);
+      vi.mocked(prisma.patient.count).mockResolvedValue(0);
+      await patientsService.findAll('tenant-1', { gender: 'male' } as any);
+      expect(prisma.patient.findMany).toHaveBeenCalled();
+    });
+
+    it('should filter by blood group', async () => {
+      vi.mocked(prisma.patient.findMany).mockResolvedValue([]);
+      vi.mocked(prisma.patient.count).mockResolvedValue(0);
+      await patientsService.findAll('tenant-1', { bloodGroup: 'O+' } as any);
+      expect(prisma.patient.findMany).toHaveBeenCalled();
+    });
+
+    it('should apply custom sort', async () => {
+      vi.mocked(prisma.patient.findMany).mockResolvedValue([]);
+      vi.mocked(prisma.patient.count).mockResolvedValue(0);
+      await patientsService.findAll('tenant-1', { sortBy: 'firstName', sortOrder: 'asc' } as any);
+      expect(prisma.patient.findMany).toHaveBeenCalled();
+    });
+  });
+
+  describe('findById', () => {
+    it('should return patient with related records', async () => {
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue({
+        id: 'p1', firstName: 'John', emergencyContacts: [], allergies: [],
+        familyHistory: [], documents: [],
+      } as any);
+      const result = await patientsService.findById('tenant-1', 'p1');
+      expect(result).toBeDefined();
+      expect(result.id).toBe('p1');
+    });
+
+    it('should throw notFound if patient does not exist', async () => {
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue(null);
+      await expect(patientsService.findById('tenant-1', 'nonexistent'))
+        .rejects.toThrow(AppError);
+    });
+
+    it('should include emergency contacts, allergies, family history, and documents', async () => {
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue({
+        id: 'p1', emergencyContacts: [{ id: 'ec1' }],
+        allergies: [{ id: 'a1' }], familyHistory: [{ id: 'fh1' }],
+        documents: [{ id: 'd1' }],
+      } as any);
+      const result = await patientsService.findById('tenant-1', 'p1');
+      expect(result.emergencyContacts).toHaveLength(1);
+      expect(result.allergies).toHaveLength(1);
+      expect(result.familyHistory).toHaveLength(1);
+      expect(result.documents).toHaveLength(1);
+    });
+  });
+
+  describe('update', () => {
+    it('should update patient fields', async () => {
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue({ id: 'p1', phone: '111' } as any);
+      vi.mocked(prisma.patient.update).mockResolvedValue({ id: 'p1', firstName: 'Updated' } as any);
+      const result = await patientsService.update('tenant-1', 'p1', { firstName: 'Updated' });
+      expect(result.firstName).toBe('Updated');
+    });
+
+    it('should throw notFound if patient does not exist', async () => {
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue(null);
+      await expect(patientsService.update('tenant-1', 'nonexistent', {}))
+        .rejects.toThrow(AppError);
+    });
+
+    it('should throw conflict if updated phone already belongs to another patient', async () => {
+      vi.mocked(prisma.patient.findFirst)
+        .mockResolvedValueOnce({ id: 'p1', phone: '111', email: null } as any) // existing patient
+        .mockResolvedValueOnce({ id: 'p2', phone: '222' } as any); // phone duplicate
+      await expect(
+        patientsService.update('tenant-1', 'p1', { phone: '222' }),
+      ).rejects.toThrow(AppError);
+    });
+
+    it('should throw conflict if updated email already belongs to another patient', async () => {
+      vi.mocked(prisma.patient.findFirst)
+        .mockResolvedValueOnce({ id: 'p1', phone: '111', email: 'old@test.com' } as any)
+        .mockResolvedValueOnce({ id: 'p2', email: 'taken@test.com' } as any); // email duplicate
+      await expect(
+        patientsService.update('tenant-1', 'p1', { email: 'taken@test.com' }),
+      ).rejects.toThrow(AppError);
+    });
+  });
+
+  describe('search', () => {
+    it('should return matching patients', async () => {
+      vi.mocked(prisma.patient.findMany).mockResolvedValue([
+        { id: 'p1', firstName: 'John' },
+      ] as any);
+      const result = await patientsService.search('tenant-1', { search: 'John' });
+      expect(result).toHaveLength(1);
+    });
+
+    it('should return empty array if search term is empty', async () => {
+      const result = await patientsService.search('tenant-1', { search: '' });
+      expect(result).toEqual([]);
+    });
+
+    it('should return empty array if no search term provided', async () => {
+      const result = await patientsService.search('tenant-1', {});
+      expect(result).toEqual([]);
+    });
+  });
+
+  describe('addEmergencyContact', () => {
+    it('should create emergency contact', async () => {
+      vi.mocked(prisma.patient.findUnique).mockResolvedValue({ id: 'p1' } as any);
+      vi.mocked(prisma.patientEmergencyContact.create).mockResolvedValue({
+        id: 'ec1', patientId: 'p1', name: 'Jane', relationship: 'spouse',
+      } as any);
+      const result = await patientsService.addEmergencyContact('p1', {
+        name: 'Jane', relationship: 'spouse', phone: '5555555555', isPrimary: false,
+      });
+      expect(result).toBeDefined();
+      expect(result.name).toBe('Jane');
+    });
+
+    it('should throw notFound if patient does not exist', async () => {
+      vi.mocked(prisma.patient.findUnique).mockResolvedValue(null);
+      await expect(
+        patientsService.addEmergencyContact('nonexistent', {
+          name: 'Jane', relationship: 'spouse', phone: '5555555555', isPrimary: false,
+        }),
+      ).rejects.toThrow(AppError);
+    });
+
+    it('should unset existing primary contacts when adding a new primary', async () => {
+      vi.mocked(prisma.patient.findUnique).mockResolvedValue({ id: 'p1' } as any);
+      vi.mocked(prisma.patientEmergencyContact.updateMany).mockResolvedValue({ count: 1 } as any);
+      vi.mocked(prisma.patientEmergencyContact.create).mockResolvedValue({
+        id: 'ec2', patientId: 'p1', name: 'Bob', isPrimary: true,
+      } as any);
+      await patientsService.addEmergencyContact('p1', {
+        name: 'Bob', relationship: 'brother', phone: '5555555556', isPrimary: true,
+      });
+      expect(prisma.patientEmergencyContact.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { patientId: 'p1', isPrimary: true },
+          data: { isPrimary: false },
+        }),
+      );
+    });
+  });
+
+  describe('addAllergy', () => {
+    beforeEach(() => {
+      // Ensure findFirst is available on patientAllergy (may not be in global setup mock)
+      if (!(prisma.patientAllergy as any).findFirst) {
+        (prisma.patientAllergy as any).findFirst = vi.fn();
+      }
+    });
+
+    it('should create allergy record', async () => {
+      vi.mocked(prisma.patient.findUnique).mockResolvedValue({ id: 'p1' } as any);
+      vi.mocked((prisma.patientAllergy as any).findFirst).mockResolvedValue(null);
+      vi.mocked(prisma.patientAllergy.create).mockResolvedValue({
+        id: 'a1', patientId: 'p1', allergen: 'Peanuts',
+      } as any);
+      const result = await patientsService.addAllergy('p1', {
+        allergen: 'Peanuts', severity: 'severe', type: 'food',
+      });
+      expect(result).toBeDefined();
+      expect(result.allergen).toBe('Peanuts');
+    });
+
+    it('should throw notFound if patient does not exist', async () => {
+      vi.mocked(prisma.patient.findUnique).mockResolvedValue(null);
+      await expect(
+        patientsService.addAllergy('nonexistent', {
+          allergen: 'Peanuts', severity: 'severe', type: 'food',
+        }),
+      ).rejects.toThrow(AppError);
+    });
+
+    it('should throw conflict if allergy already recorded', async () => {
+      vi.mocked(prisma.patient.findUnique).mockResolvedValue({ id: 'p1' } as any);
+      vi.mocked((prisma.patientAllergy as any).findFirst).mockResolvedValue({
+        id: 'a1', allergen: 'Peanuts',
+      });
+      await expect(
+        patientsService.addAllergy('p1', {
+          allergen: 'Peanuts', severity: 'severe', type: 'food',
+        }),
+      ).rejects.toThrow(AppError);
+    });
+  });
+
+  describe('addFamilyHistory', () => {
+    it('should create family history', async () => {
+      vi.mocked(prisma.patient.findUnique).mockResolvedValue({ id: 'p1' } as any);
+      vi.mocked(prisma.patientFamilyHistory.create).mockResolvedValue({
+        id: 'fh1', patientId: 'p1', conditionName: 'Diabetes',
+      } as any);
+      const result = await patientsService.addFamilyHistory('p1', {
+        condition: 'Diabetes', relationship: 'father', isDeceased: false,
+      });
+      expect(result).toBeDefined();
+    });
+
+    it('should throw notFound if patient does not exist', async () => {
+      vi.mocked(prisma.patient.findUnique).mockResolvedValue(null);
+      await expect(
+        patientsService.addFamilyHistory('nonexistent', {
+          condition: 'Diabetes', relationship: 'father', isDeceased: false,
+        }),
+      ).rejects.toThrow(AppError);
+    });
+  });
+
+  describe('addDocument', () => {
+    it('should create patient document', async () => {
+      vi.mocked(prisma.patient.findUnique).mockResolvedValue({ id: 'p1' } as any);
+      vi.mocked(prisma.patientDocument.create).mockResolvedValue({
+        id: 'd1', patientId: 'p1', title: 'X-Ray Report',
+      } as any);
+      const result = await patientsService.addDocument('p1', {
+        title: 'X-Ray Report', type: 'imaging', fileUrl: 'https://cdn.example.com/xray.pdf',
+        fileName: 'xray.pdf',
+      });
+      expect(result).toBeDefined();
+      expect(result.title).toBe('X-Ray Report');
+    });
+
+    it('should throw notFound if patient does not exist', async () => {
+      vi.mocked(prisma.patient.findUnique).mockResolvedValue(null);
+      await expect(
+        patientsService.addDocument('nonexistent', {
+          title: 'X-Ray', type: 'imaging', fileUrl: 'https://cdn.example.com/xray.pdf',
+          fileName: 'xray.pdf',
+        }),
+      ).rejects.toThrow(AppError);
+    });
+
+    it('should map document type correctly', async () => {
+      vi.mocked(prisma.patient.findUnique).mockResolvedValue({ id: 'p1' } as any);
+      vi.mocked(prisma.patientDocument.create).mockResolvedValue({
+        id: 'd1', patientId: 'p1', documentType: 'insurance_card',
+      } as any);
+      await patientsService.addDocument('p1', {
+        title: 'Insurance Card', type: 'insurance', fileUrl: 'https://cdn.example.com/ins.pdf',
+        fileName: 'ins.pdf',
+      });
+      const createCall = vi.mocked(prisma.patientDocument.create).mock.calls[0][0];
+      expect((createCall as any).data.documentType).toBe('insurance_card');
+    });
+  });
+
+  describe('getVisitHistory', () => {
+    it('should return patient visit history', async () => {
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue({ id: 'p1' } as any);
+      vi.mocked(prisma.visit.findMany).mockResolvedValue([
+        { id: 'v1', patientId: 'p1', type: 'op' },
+      ] as any);
+      const result = await patientsService.getVisitHistory('tenant-1', 'p1');
+      expect(result).toHaveLength(1);
+    });
+
+    it('should throw notFound if patient does not exist', async () => {
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue(null);
+      await expect(
+        patientsService.getVisitHistory('tenant-1', 'nonexistent'),
+      ).rejects.toThrow(AppError);
+    });
+
+    it('should return empty array if no visits exist', async () => {
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue({ id: 'p1' } as any);
+      vi.mocked(prisma.visit.findMany).mockResolvedValue([]);
+      const result = await patientsService.getVisitHistory('tenant-1', 'p1');
+      expect(result).toHaveLength(0);
+    });
+  });
+});

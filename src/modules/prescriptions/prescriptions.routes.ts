@@ -1,0 +1,37 @@
+import { Router } from 'express';
+import { authenticate } from '../../middleware/authenticate';
+import { requirePermission } from '../../middleware/authorize';
+import { validate } from '../../middleware/validate';
+import * as controller from './prescriptions.controller';
+import {
+  createPrescriptionSchema,
+  getPrescriptionsQuerySchema,
+  prescriptionIdParamSchema,
+  updatePrescriptionSchema,
+  cancelPrescriptionSchema,
+  addPrescriptionItemSchema,
+  updatePrescriptionItemSchema,
+  removePrescriptionItemSchema,
+  recordAdministrationSchema,
+  getAdministrationRecordsQuerySchema,
+  getAdministrationScheduleQuerySchema,
+} from './prescriptions.validation';
+
+export const prescriptionRoutes = Router();
+
+// --- Prescriptions ---
+prescriptionRoutes.post('/', authenticate, requirePermission('prescriptions', 'create'), validate(createPrescriptionSchema), controller.createPrescription);
+prescriptionRoutes.get('/', authenticate, requirePermission('prescriptions', 'read'), validate(getPrescriptionsQuerySchema), controller.getPrescriptions);
+prescriptionRoutes.get('/:id', authenticate, requirePermission('prescriptions', 'read'), validate(prescriptionIdParamSchema), controller.getPrescriptionById);
+prescriptionRoutes.put('/:id', authenticate, requirePermission('prescriptions', 'update'), validate(updatePrescriptionSchema), controller.updatePrescription);
+prescriptionRoutes.patch('/:id/cancel', authenticate, requirePermission('prescriptions', 'update'), validate(cancelPrescriptionSchema), controller.cancelPrescription);
+
+// --- Prescription Items ---
+prescriptionRoutes.post('/:id/items', authenticate, requirePermission('prescriptions', 'create'), validate(addPrescriptionItemSchema), controller.addPrescriptionItem);
+prescriptionRoutes.put('/:id/items/:itemId', authenticate, requirePermission('prescriptions', 'update'), validate(updatePrescriptionItemSchema), controller.updatePrescriptionItem);
+prescriptionRoutes.delete('/:id/items/:itemId', authenticate, requirePermission('prescriptions', 'delete'), validate(removePrescriptionItemSchema), controller.removePrescriptionItem);
+
+// --- Medication Administration ---
+prescriptionRoutes.post('/administration', authenticate, requirePermission('prescriptions', 'update'), validate(recordAdministrationSchema), controller.recordAdministration);
+prescriptionRoutes.get('/administration', authenticate, requirePermission('prescriptions', 'read'), validate(getAdministrationRecordsQuerySchema), controller.getAdministrationRecords);
+prescriptionRoutes.get('/administration/schedule', authenticate, requirePermission('prescriptions', 'read'), validate(getAdministrationScheduleQuerySchema), controller.getAdministrationSchedule);

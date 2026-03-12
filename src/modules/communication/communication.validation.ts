@@ -1,0 +1,149 @@
+import { z } from 'zod';
+import { paginationSchema } from '../../shared/pagination';
+
+// ============================================================
+// Notifications
+// ============================================================
+
+export const createNotificationSchema = z.object({
+  body: z.object({
+    userId: z.string().uuid('Invalid user ID'),
+    title: z.string().min(1, 'Title is required').max(255),
+    message: z.string().min(1, 'Message is required'),
+    notificationType: z.enum([
+      'appointment',
+      'lab_result',
+      'prescription',
+      'billing',
+      'system',
+      'ticket',
+      'alert',
+      'general',
+    ]),
+    channel: z.enum(['in_app', 'sms', 'email', 'push']).default('in_app'),
+    referenceType: z.string().max(50).optional(),
+    referenceId: z.string().optional(),
+  }),
+});
+
+export const getNotificationsQuerySchema = z.object({
+  query: paginationSchema.extend({
+    isRead: z
+      .string()
+      .transform((val) => val === 'true')
+      .optional(),
+    notificationType: z
+      .enum([
+        'appointment',
+        'lab_result',
+        'prescription',
+        'billing',
+        'system',
+        'ticket',
+        'alert',
+        'general',
+      ])
+      .optional(),
+  }),
+});
+
+export const notificationIdParamSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid notification ID'),
+  }),
+});
+
+// ============================================================
+// Messages
+// ============================================================
+
+export const sendMessageSchema = z.object({
+  body: z.object({
+    receiverId: z.string().uuid('Invalid receiver ID'),
+    subject: z.string().max(255).optional(),
+    content: z.string().min(1, 'Message content is required'),
+    parentMessageId: z.string().uuid('Invalid parent message ID').optional(),
+  }),
+});
+
+export const getMessagesQuerySchema = z.object({
+  query: paginationSchema.extend({
+    isRead: z
+      .string()
+      .transform((val) => val === 'true')
+      .optional(),
+  }),
+});
+
+export const messageIdParamSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid message ID'),
+  }),
+});
+
+export const conversationUserParamSchema = z.object({
+  params: z.object({
+    userId: z.string().uuid('Invalid user ID'),
+  }),
+  query: paginationSchema,
+});
+
+// ============================================================
+// Shift Handover Notes
+// ============================================================
+
+export const createHandoverSchema = z.object({
+  body: z.object({
+    toNurseId: z.string().uuid('Invalid target nurse ID').optional(),
+    wardId: z.string().uuid('Invalid ward ID'),
+    shiftDate: z.string().refine((val) => !isNaN(Date.parse(val)), {
+      message: 'Invalid shift date',
+    }),
+    shiftType: z.enum(['morning', 'afternoon', 'night']),
+    content: z.string().min(1, 'Content is required'),
+    patientStatuses: z.any().optional(),
+    outstandingTasks: z.any().optional(),
+  }),
+});
+
+export const getHandoversQuerySchema = z.object({
+  query: paginationSchema.extend({
+    wardId: z.string().uuid().optional(),
+    shiftType: z.enum(['morning', 'afternoon', 'night']).optional(),
+    shiftDate: z.string().optional(),
+    isAcknowledged: z
+      .string()
+      .transform((val) => val === 'true')
+      .optional(),
+  }),
+});
+
+export const handoverIdParamSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid handover ID'),
+  }),
+});
+
+export const addHandoverNoteSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid handover ID'),
+  }),
+  body: z.object({
+    content: z.string().min(1, 'Note content is required'),
+    patientStatuses: z.any().optional(),
+    outstandingTasks: z.any().optional(),
+  }),
+});
+
+// ============================================================
+// Inferred types
+// ============================================================
+
+export type CreateNotificationInput = z.infer<typeof createNotificationSchema>['body'];
+export type GetNotificationsQuery = z.infer<typeof getNotificationsQuerySchema>['query'];
+export type SendMessageInput = z.infer<typeof sendMessageSchema>['body'];
+export type GetMessagesQuery = z.infer<typeof getMessagesQuerySchema>['query'];
+export type ConversationQuery = z.infer<typeof conversationUserParamSchema>['query'];
+export type CreateHandoverInput = z.infer<typeof createHandoverSchema>['body'];
+export type GetHandoversQuery = z.infer<typeof getHandoversQuerySchema>['query'];
+export type AddHandoverNoteInput = z.infer<typeof addHandoverNoteSchema>['body'];

@@ -1,0 +1,182 @@
+import { Response, NextFunction } from 'express';
+import { AuthenticatedRequest } from '../../shared/types';
+import { sendResponse, sendPaginatedResponse } from '../../shared/apiResponse';
+import * as service from './insurance.service';
+
+// Insurers
+export async function createInsurer(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.createInsurer(req.user!.tenantId, req.body);
+    sendResponse({ res, statusCode: 201, message: 'Insurer created', data });
+  } catch (err) { next(err); }
+}
+export async function getInsurers(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const result = await service.getInsurers(req.user!.tenantId, req.query as any);
+    sendPaginatedResponse(res, result.insurers, result.total, result.page, result.limit, 'Insurers retrieved');
+  } catch (err) { next(err); }
+}
+export async function getInsurerById(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.getInsurerById(req.user!.tenantId, req.params.id as string);
+    sendResponse({ res, message: 'Insurer retrieved', data });
+  } catch (err) { next(err); }
+}
+export async function updateInsurer(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.updateInsurer(req.user!.tenantId, req.params.id as string, req.body);
+    sendResponse({ res, message: 'Insurer updated', data });
+  } catch (err) { next(err); }
+}
+export async function deleteInsurer(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    await service.deleteInsurer(req.user!.tenantId, req.params.id as string);
+    sendResponse({ res, message: 'Insurer deleted' });
+  } catch (err) { next(err); }
+}
+
+// TPA
+export async function createTPA(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.createTPA(req.user!.tenantId, req.body);
+    sendResponse({ res, statusCode: 201, message: 'TPA provider created', data });
+  } catch (err) { next(err); }
+}
+export async function getTPAs(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const result = await service.getTPAs(req.user!.tenantId, req.query as any);
+    sendPaginatedResponse(res, result.tpas, result.total, result.page, result.limit, 'TPA providers retrieved');
+  } catch (err) { next(err); }
+}
+export async function getTPAById(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.getTPAById(req.user!.tenantId, req.params.id as string);
+    sendResponse({ res, message: 'TPA provider retrieved', data });
+  } catch (err) { next(err); }
+}
+export async function updateTPA(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.updateTPA(req.user!.tenantId, req.params.id as string, req.body);
+    sendResponse({ res, message: 'TPA provider updated', data });
+  } catch (err) { next(err); }
+}
+export async function deleteTPA(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    await service.deleteTPA(req.user!.tenantId, req.params.id as string);
+    sendResponse({ res, message: 'TPA provider deleted' });
+  } catch (err) { next(err); }
+}
+
+// Policies
+export async function createPolicy(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.createPolicy(req.user!.tenantId, req.body);
+    sendResponse({ res, statusCode: 201, message: 'Policy created', data });
+  } catch (err) { next(err); }
+}
+export async function getPolicies(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const result = await service.getPolicies(req.user!.tenantId, req.query as any);
+    sendPaginatedResponse(res, result.policies, result.total, result.page, result.limit, 'Policies retrieved');
+  } catch (err) { next(err); }
+}
+export async function getPolicyById(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.getPolicyById(req.user!.tenantId, req.params.id as string);
+    sendResponse({ res, message: 'Policy retrieved', data });
+  } catch (err) { next(err); }
+}
+export async function updatePolicy(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.updatePolicy(req.user!.tenantId, req.params.id as string, req.body);
+    sendResponse({ res, message: 'Policy updated', data });
+  } catch (err) { next(err); }
+}
+export async function verifyPolicy(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.verifyPolicy(req.user!.tenantId, req.params.id as string);
+    sendResponse({ res, message: 'Policy verified', data });
+  } catch (err) { next(err); }
+}
+
+// Claims
+export async function createClaim(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.createClaim(req.user!.tenantId, req.user!.userId, req.body);
+    sendResponse({ res, statusCode: 201, message: 'Claim created', data });
+  } catch (err) { next(err); }
+}
+export async function getClaims(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const result = await service.getClaims(req.user!.tenantId, req.query as any);
+    sendPaginatedResponse(res, result.claims, result.total, result.page, result.limit, 'Claims retrieved');
+  } catch (err) { next(err); }
+}
+export async function getClaimById(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.getClaimById(req.user!.tenantId, req.params.id as string);
+    sendResponse({ res, message: 'Claim retrieved', data });
+  } catch (err) { next(err); }
+}
+export async function updateClaim(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.updateClaim(req.user!.tenantId, req.params.id as string, req.body);
+    sendResponse({ res, message: 'Claim updated', data });
+  } catch (err) { next(err); }
+}
+export async function submitClaim(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.submitClaim(req.user!.tenantId, req.params.id as string);
+    sendResponse({ res, message: 'Claim submitted', data });
+  } catch (err) { next(err); }
+}
+export async function approveClaim(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.approveClaim(req.user!.tenantId, req.params.id as string, req.user!.userId, req.body);
+    sendResponse({ res, message: 'Claim approved', data });
+  } catch (err) { next(err); }
+}
+export async function rejectClaim(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.rejectClaim(req.user!.tenantId, req.params.id as string, req.user!.userId, req.body);
+    sendResponse({ res, message: 'Claim rejected', data });
+  } catch (err) { next(err); }
+}
+
+// Pre-Auth
+export async function createPreAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.createPreAuth(req.user!.tenantId, req.user!.userId, req.body);
+    sendResponse({ res, statusCode: 201, message: 'Pre-auth request created', data });
+  } catch (err) { next(err); }
+}
+export async function getPreAuths(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const result = await service.getPreAuths(req.user!.tenantId, req.query as any);
+    sendPaginatedResponse(res, result.preAuths, result.total, result.page, result.limit, 'Pre-auth requests retrieved');
+  } catch (err) { next(err); }
+}
+export async function getPreAuthById(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.getPreAuthById(req.user!.tenantId, req.params.id as string);
+    sendResponse({ res, message: 'Pre-auth request retrieved', data });
+  } catch (err) { next(err); }
+}
+export async function updatePreAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.updatePreAuth(req.user!.tenantId, req.params.id as string, req.body);
+    sendResponse({ res, message: 'Pre-auth request updated', data });
+  } catch (err) { next(err); }
+}
+export async function approvePreAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.approvePreAuth(req.user!.tenantId, req.params.id as string, req.body);
+    sendResponse({ res, message: 'Pre-auth approved', data });
+  } catch (err) { next(err); }
+}
+export async function rejectPreAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.rejectPreAuth(req.user!.tenantId, req.params.id as string, req.body);
+    sendResponse({ res, message: 'Pre-auth rejected', data });
+  } catch (err) { next(err); }
+}
