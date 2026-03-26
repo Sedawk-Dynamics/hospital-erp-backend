@@ -4,10 +4,20 @@ import { logger } from './config/logger';
 import { prisma } from './config/database';
 import { redis } from './config/redis';
 import { app } from './app';
+import { runSubscriptionJobs } from './jobs/subscription-reminders';
 
 const server = app.listen(env.PORT, () => {
   logger.info(`Server running on port ${env.PORT} in ${env.NODE_ENV} mode`);
 });
+
+// Subscription maintenance: expiry checks + renewal reminders (every 6 hours)
+const SIX_HOURS = 6 * 60 * 60 * 1000;
+setTimeout(() => {
+  runSubscriptionJobs().catch((err) => logger.error({ err }, 'Subscription jobs failed on startup'));
+}, 30_000);
+setInterval(() => {
+  runSubscriptionJobs().catch((err) => logger.error({ err }, 'Subscription jobs failed'));
+}, SIX_HOURS);
 
 // Graceful shutdown
 const shutdown = async (signal: string) => {

@@ -81,6 +81,14 @@ appointmentRoutes.get(
   controller.getQueueByDoctor,
 );
 
+// --- Appointment Stats ---
+
+appointmentRoutes.get(
+  '/stats',
+  authenticate,
+  controller.getAppointmentStats,
+);
+
 // --- Appointments ---
 
 // Book appointment

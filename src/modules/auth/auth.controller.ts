@@ -117,6 +117,36 @@ export const authController = {
     }
   },
 
+  async registerAdmin(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const result = await authService.registerAdmin(req.body);
+      sendResponse({
+        res,
+        statusCode: 201,
+        message: 'Account created successfully',
+        data: result,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async getOnboardingStatus(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) {
+        throw AppError.unauthorized();
+      }
+      const result = await authService.getOnboardingStatus(req.user.userId, req.user.tenantId);
+      sendResponse({
+        res,
+        message: 'Onboarding status retrieved',
+        data: result,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+
   async getMe(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
       if (!req.user) {
@@ -127,6 +157,35 @@ export const authController = {
         res,
         message: 'User profile retrieved',
         data: user,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async getMyDoctorProfile(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) {
+        throw AppError.unauthorized();
+      }
+      const { prisma } = await import('../../config/database');
+      const profile = await prisma.doctorProfile.findFirst({
+        where: { userId: req.user.userId, tenantId: req.user.tenantId },
+        include: {
+          user: {
+            select: { id: true, firstName: true, lastName: true, email: true, phone: true, avatarUrl: true },
+          },
+          department: { select: { id: true, name: true } },
+          schedules: true,
+        },
+      });
+      if (!profile) {
+        throw AppError.notFound('Doctor profile not found for this user');
+      }
+      sendResponse({
+        res,
+        message: 'Doctor profile retrieved',
+        data: profile,
       });
     } catch (err) {
       next(err);

@@ -113,6 +113,27 @@ export async function getAvailableSlots(
   }
 }
 
+// --- Appointment Stats ---
+
+export async function getAppointmentStats(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const date = req.query.date as string | undefined;
+    const stats = await appointmentsService.getAppointmentStats(tenantId, date);
+    sendResponse({
+      res,
+      message: 'Appointment stats retrieved successfully',
+      data: stats,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // --- Appointments ---
 
 export async function bookAppointment(

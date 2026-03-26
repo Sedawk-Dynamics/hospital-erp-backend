@@ -68,6 +68,31 @@ export const tenantsController = {
     }
   },
 
+  async activate(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const tenant = await tenantsService.activate(req.params.id as string);
+      sendResponse({
+        res,
+        message: 'Tenant activated successfully',
+        data: tenant,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async hardDelete(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const result = await tenantsService.hardDelete(req.params.id as string);
+      sendResponse({
+        res,
+        message: result.message,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+
   async createSubscription(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
       const subscription = await tenantsService.createSubscription(req.params.id as string, req.body);
@@ -89,6 +114,19 @@ export const tenantsController = {
         res,
         message: 'System roles and permissions bootstrapped successfully',
         data: null,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async getComprehensiveStats(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const stats = await tenantsService.getComprehensiveStats(req.params.id as string);
+      sendResponse({
+        res,
+        message: 'Hospital statistics retrieved successfully',
+        data: stats,
       });
     } catch (err) {
       next(err);

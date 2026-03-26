@@ -13,7 +13,7 @@ export const registerSchema = z.object({
       ),
     firstName: z.string().min(1, 'First name is required').max(100),
     lastName: z.string().min(1, 'Last name is required').max(100),
-    tenantSlug: z.string().min(1, 'Tenant slug is required'),
+    tenantSlug: z.string().optional(),
     phone: z.string().optional(),
   }),
 });
@@ -60,7 +60,18 @@ export const verify2FASchema = z.object({
   }),
 });
 
+export const registerAdminSchema = z.object({
+  body: z.object({
+    email: z.string().email('Invalid email address'),
+    password: z.string().min(8, 'Password must be at least 8 characters').max(128),
+    firstName: z.string().min(1, 'First name is required').max(100),
+    lastName: z.string().min(1, 'Last name is required').max(100),
+    phone: z.string().optional(),
+  }),
+});
+
 export type RegisterInput = z.infer<typeof registerSchema>['body'];
+export type RegisterAdminInput = z.infer<typeof registerAdminSchema>['body'];
 export type LoginInput = z.infer<typeof loginSchema>['body'];
 export type RefreshTokenInput = z.infer<typeof refreshTokenSchema>['body'];
 export type ForgotPasswordInput = z.infer<typeof forgotPasswordSchema>['body'];

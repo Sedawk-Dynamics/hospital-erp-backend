@@ -11,6 +11,9 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   FRONTEND_URL: z.string().default('http://localhost:3000'),
   BCRYPT_SALT_ROUNDS: z.coerce.number().default(12),
+  RAZORPAY_KEY_ID: z.string().min(1),
+  RAZORPAY_KEY_SECRET: z.string().min(1),
+  RAZORPAY_WEBHOOK_SECRET: z.string().default(''),
 });
 
 const parsed = envSchema.safeParse(process.env);

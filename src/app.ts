@@ -8,12 +8,17 @@ import { corsOptions } from './config/cors';
 import { logger } from './config/logger';
 import { errorHandler } from './middleware/errorHandler';
 import { apiRouter } from './modules/router';
+import { formatDateTimeIST } from './shared/date.utils';
 
 const app = express();
 
 // Security
 app.use(helmet());
 app.use(cors(corsOptions));
+
+// Razorpay webhooks need raw body for signature verification — must come BEFORE json parser
+app.use('/api/v1/online-payments/webhook', express.raw({ type: 'application/json' }));
+app.use('/api/v1/subscription-plans/webhook', express.raw({ type: 'application/json' }));
 
 // Body parsing
 app.use(express.json({ limit: '10mb' }));
@@ -27,7 +32,7 @@ app.use(pinoHttp({ logger, autoLogging: { ignore: (req) => req.url === '/health'
 
 // Health check
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({ status: 'ok', timestamp: formatDateTimeIST(new Date()) });
 });
 
 // Serve uploaded files statically

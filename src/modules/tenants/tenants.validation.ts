@@ -46,7 +46,7 @@ export const createSubscriptionSchema = z.object({
     startDate: z.coerce.date(),
     endDate: z.coerce.date(),
     maxUsers: z.number().int().positive().optional(),
-    maxStorage: z.number().int().positive().optional(),
+    maxHospitals: z.number().int().positive().optional(),
     billingCycle: z.enum(['monthly', 'quarterly', 'yearly']).default('monthly'),
     amount: z.number().nonnegative().optional(),
     currency: z.string().length(3).default('USD'),

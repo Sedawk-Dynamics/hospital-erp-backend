@@ -17,11 +17,9 @@ export const usersService = {
   // ─── USER CRUD ───────────────────────────────────────────────────────
 
   async create(tenantId: string, data: CreateUserInput) {
-    // Check subscription maxUsers limit
-    const subscription = await prisma.tenantSubscription.findFirst({
-      where: { tenantId, status: 'active' },
-      include: { plan: { select: { maxUsers: true } } },
-    });
+    // Check subscription maxUsers limit (subscription may live on platform tenant)
+    const { getEffectiveSubscription } = await import('../../shared/subscription-utils');
+    const subscription = await getEffectiveSubscription(tenantId);
 
     if (subscription?.plan?.maxUsers) {
       const activeUserCount = await prisma.user.count({
@@ -152,6 +150,102 @@ export const usersService = {
     return { users, total, page, limit };
   },
 
+  /** List all users across all tenants (super_admin only) — excludes __platform__ tenant */
+  async findAllGlobal(
+    query: PaginationQuery & { roleId?: string; isActive?: string },
+  ) {
+    const { skip, take, page, limit } = getPaginationParams(query);
+    const search = query.search;
+
+    const where = {
+      ...(search && {
+        OR: [
+          { firstName: { contains: search, mode: 'insensitive' as const } },
+          { lastName: { contains: search, mode: 'insensitive' as const } },
+          { email: { contains: search, mode: 'insensitive' as const } },
+        ],
+      }),
+      ...(query.roleId && {
+        userRoles: { some: { roleId: query.roleId } },
+      }),
+      ...(query.isActive !== undefined && {
+        isActive: query.isActive === 'true',
+      }),
+    };
+
+    const [users, total] = await Promise.all([
+      prisma.user.findMany({
+        where,
+        skip,
+        take,
+        orderBy: { createdAt: query.sortOrder ?? 'desc' },
+        select: {
+          id: true,
+          email: true,
+          firstName: true,
+          lastName: true,
+          phone: true,
+          tenantId: true,
+          isActive: true,
+          is2faEnabled: true,
+          createdAt: true,
+          updatedAt: true,
+          tenant: {
+            select: { id: true, name: true, slug: true },
+          },
+          userRoles: {
+            select: {
+              role: {
+                select: { id: true, name: true },
+              },
+            },
+          },
+          tenantOwners: {
+            select: {
+              tenant: {
+                select: { id: true, name: true, slug: true },
+              },
+            },
+            where: { tenant: { slug: { not: '__platform__' } } },
+          },
+        },
+      }),
+      prisma.user.count({ where }),
+    ]);
+
+    // For platform users, resolve their owned hospitals via email
+    const enrichedUsers = await Promise.all(
+      users.map(async (user) => {
+        let ownedHospitals = user.tenantOwners.map((to) => to.tenant);
+
+        // If user is on platform and has no direct ownership, check by email
+        if (user.tenant.slug === '__platform__' && ownedHospitals.length === 0) {
+          const otherUsers = await prisma.user.findMany({
+            where: { email: user.email, id: { not: user.id } },
+            select: { id: true },
+          });
+          if (otherUsers.length > 0) {
+            const ownerRecords = await prisma.tenantOwner.findMany({
+              where: {
+                userId: { in: [user.id, ...otherUsers.map((u) => u.id)] },
+                tenant: { slug: { not: '__platform__' } },
+              },
+              select: { tenant: { select: { id: true, name: true, slug: true } } },
+            });
+            ownedHospitals = ownerRecords.map((o) => o.tenant);
+          }
+        }
+
+        return {
+          ...user,
+          ownedHospitals,
+        };
+      }),
+    );
+
+    return { users: enrichedUsers, total, page, limit };
+  },
+
   async findById(tenantId: string, userId: string) {
     const user = await prisma.user.findFirst({
       where: {
@@ -270,6 +364,71 @@ export const usersService = {
     });
 
     logger.info({ userId, tenantId }, 'User updated');
+
+    return user;
+  },
+
+  /** Hard-delete a user across any tenant (super_admin only) */
+  async hardDeleteGlobal(userId: string, requestUserId: string) {
+    if (userId === requestUserId) {
+      throw AppError.badRequest('Cannot delete yourself');
+    }
+
+    const existing = await prisma.user.findUnique({
+      where: { id: userId },
+      include: { tenant: { select: { slug: true } } },
+    });
+
+    if (!existing) {
+      throw AppError.notFound('User not found');
+    }
+
+    if (existing.tenant.slug === '__platform__') {
+      throw AppError.forbidden('Cannot delete platform tenant users through this endpoint');
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.userRole.deleteMany({ where: { userId } });
+      await tx.loginAuditLog.deleteMany({ where: { userId } });
+      await tx.subscriptionPayment.deleteMany({ where: { userId } });
+      await tx.auditLog.deleteMany({ where: { userId } });
+      await tx.tenantOwner.deleteMany({ where: { userId } });
+      // Nullable user references — set null instead of deleting
+      await tx.doctorProfile.deleteMany({ where: { userId } });
+      await tx.staffProfile.deleteMany({ where: { userId } });
+      await tx.patient.updateMany({ where: { userId }, data: { userId: null } });
+      await tx.user.delete({ where: { id: userId } });
+    });
+
+    logger.info({ userId, email: existing.email }, 'User hard-deleted (global)');
+
+    return { message: `User "${existing.firstName} ${existing.lastName}" has been permanently deleted` };
+  },
+
+  /** Toggle active status for a user across any tenant (super_admin only) */
+  async toggleActiveGlobal(userId: string, isActive: boolean) {
+    const existing = await prisma.user.findUnique({
+      where: { id: userId },
+      include: { tenant: { select: { slug: true } } },
+    });
+
+    if (!existing) {
+      throw AppError.notFound('User not found');
+    }
+
+    const user = await prisma.user.update({
+      where: { id: userId },
+      data: { isActive },
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        isActive: true,
+      },
+    });
+
+    logger.info({ userId, isActive }, `User ${isActive ? 'activated' : 'deactivated'} (global)`);
 
     return user;
   },
@@ -461,13 +620,11 @@ export const usersService = {
   },
 
   async getStats(tenantId: string) {
+    const { getEffectiveSubscription } = await import('../../shared/subscription-utils');
     const [activeCount, totalCount, subscription] = await Promise.all([
       prisma.user.count({ where: { tenantId, isActive: true } }),
       prisma.user.count({ where: { tenantId } }),
-      prisma.tenantSubscription.findFirst({
-        where: { tenantId, status: 'active' },
-        include: { plan: { select: { maxUsers: true } } },
-      }),
+      getEffectiveSubscription(tenantId),
     ]);
 
     return {

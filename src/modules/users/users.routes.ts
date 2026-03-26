@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { usersController } from './users.controller';
 import { authenticate } from '../../middleware/authenticate';
-import { requirePermission } from '../../middleware/authorize';
+import { requirePermission, requireRoles } from '../../middleware/authorize';
 import { validate } from '../../middleware/validate';
 import {
   createUserSchema,
@@ -24,6 +24,30 @@ userRouter.get(
   authenticate,
   requirePermission('users', 'read'),
   usersController.getStats,
+);
+
+// Super admin: list all users across all hospital tenants
+userRouter.get(
+  '/all',
+  authenticate,
+  requireRoles('super_admin'),
+  usersController.findAllGlobal,
+);
+
+// Super admin: hard-delete a user (any tenant)
+userRouter.delete(
+  '/all/:id',
+  authenticate,
+  requireRoles('super_admin'),
+  usersController.hardDeleteGlobal,
+);
+
+// Super admin: toggle active status (any tenant)
+userRouter.patch(
+  '/all/:id',
+  authenticate,
+  requireRoles('super_admin'),
+  usersController.toggleActiveGlobal,
 );
 
 userRouter.post(

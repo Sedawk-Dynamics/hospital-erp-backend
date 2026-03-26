@@ -47,6 +47,31 @@ billingRoutes.put(
   controller.updateServiceTariff,
 );
 
+// --- Collection Summary ---
+
+billingRoutes.get(
+  '/collection-summary',
+  authenticate,
+  requirePermission('billing', 'read'),
+  controller.getCollectionSummary,
+);
+
+// --- Credit Settlements ---
+
+billingRoutes.get(
+  '/credit-settlements',
+  authenticate,
+  requirePermission('billing', 'read'),
+  controller.getCreditSettlements,
+);
+
+billingRoutes.post(
+  '/credit-settlements/:id/settle',
+  authenticate,
+  requirePermission('billing', 'create'),
+  controller.settleCredit,
+);
+
 // --- Patient Bills (must be before /:id) ---
 
 billingRoutes.get(

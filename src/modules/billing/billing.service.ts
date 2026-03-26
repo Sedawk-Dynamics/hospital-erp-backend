@@ -3,6 +3,7 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
+import { getISTDateStr } from '../../shared/date.utils';
 import type {
   CreateServiceTariffInput,
   UpdateServiceTariffInput,
@@ -68,11 +69,7 @@ function toNumber(val: Decimal | number | null | undefined): number {
  * Format: BILL-YYYYMMDD-XXXX
  */
 async function generateBillNumber(tenantId: string): Promise<string> {
-  const today = new Date();
-  const dateStr =
-    today.getFullYear().toString() +
-    (today.getMonth() + 1).toString().padStart(2, '0') +
-    today.getDate().toString().padStart(2, '0');
+  const dateStr = getISTDateStr();
 
   const prefix = `BILL-${dateStr}-`;
 
@@ -109,11 +106,7 @@ async function generateBillNumber(tenantId: string): Promise<string> {
  * Format: RCP-YYYYMMDD-XXXX
  */
 async function generateReceiptNumber(tenantId: string): Promise<string> {
-  const today = new Date();
-  const dateStr =
-    today.getFullYear().toString() +
-    (today.getMonth() + 1).toString().padStart(2, '0') +
-    today.getDate().toString().padStart(2, '0');
+  const dateStr = getISTDateStr();
 
   const prefix = `RCP-${dateStr}-`;
 
@@ -203,6 +196,224 @@ async function recalculateBillTotals(billId: string) {
     where: { id: billId },
     data: updateData,
   });
+}
+
+// --- Collection Summary ---
+
+export async function getCollectionSummary(
+  tenantId: string,
+  query: { startDate?: string; endDate?: string },
+) {
+  const where: any = { tenantId, status: 'completed' };
+
+  if (query.startDate) {
+    where.paymentDate = { ...where.paymentDate, gte: new Date(query.startDate) };
+  }
+  if (query.endDate) {
+    where.paymentDate = { ...where.paymentDate, lte: new Date(query.endDate) };
+  }
+
+  const payments = await prisma.payment.findMany({ where });
+
+  let totalCollection = 0;
+  let cash = 0;
+  let card = 0;
+  let upi = 0;
+  let bankTransfer = 0;
+  let cheque = 0;
+
+  for (const p of payments) {
+    const amt = toNumber(p.amount);
+    totalCollection += amt;
+    switch (p.paymentMethod) {
+      case 'cash': cash += amt; break;
+      case 'credit_card':
+      case 'debit_card': card += amt; break;
+      case 'upi': upi += amt; break;
+      case 'net_banking': bankTransfer += amt; break;
+      case 'cheque': cheque += amt; break;
+    }
+  }
+
+  // Bill-level aggregation
+  const billWhere: any = { tenantId };
+  if (query.startDate) {
+    billWhere.createdAt = { ...billWhere.createdAt, gte: new Date(query.startDate) };
+  }
+  if (query.endDate) {
+    billWhere.createdAt = { ...billWhere.createdAt, lte: new Date(query.endDate) };
+  }
+
+  const bills = await prisma.bill.findMany({
+    where: { ...billWhere, status: { not: 'draft' } },
+    select: { totalAmount: true, amountPaid: true, balanceDue: true },
+  });
+
+  const totalBill = bills.reduce((s, b) => s + toNumber(b.totalAmount), 0);
+  const totalPaid = bills.reduce((s, b) => s + toNumber(b.amountPaid), 0);
+  const totalCredit = bills.reduce((s, b) => s + toNumber(b.balanceDue), 0);
+
+  return {
+    totalCollection,
+    cash,
+    card,
+    upi,
+    bankTransfer,
+    cheque,
+    totalBill,
+    totalPaid,
+    totalCredit,
+    netAdvanceAdjusted: 0,
+  };
+}
+
+// --- Credit Settlements ---
+
+export async function getCreditSettlements(
+  tenantId: string,
+  query: { type?: string; status?: string; page?: number; limit?: number },
+) {
+  const { skip, take, page, limit } = getPaginationParams(query as any);
+
+  // Aggregate unpaid bills grouped by insurance claims or self-pay
+  const unpaidBills = await prisma.bill.findMany({
+    where: {
+      tenantId,
+      balanceDue: { gt: 0 },
+      status: { in: ['pending', 'partially_paid'] },
+    },
+    include: {
+      insuranceClaims: {
+        include: {
+          policy: {
+            include: {
+              insurer: { select: { id: true, name: true } },
+            },
+          },
+        },
+        take: 1,
+      },
+    },
+  });
+
+  // Group by provider
+  const grouped: Record<string, {
+    providerType: string;
+    providerName: string;
+    totalAdmissions: number;
+    claimAmount: number;
+    receivedAmount: number;
+    outstandingAmount: number;
+  }> = {};
+
+  for (const bill of unpaidBills) {
+    const claim = bill.insuranceClaims?.[0];
+    const provider = claim?.policy?.insurer?.name || 'Self-Pay Patient';
+    const providerType = claim ? 'insurance' : 'patient';
+
+    if (!grouped[provider]) {
+      grouped[provider] = {
+        providerType,
+        providerName: provider,
+        totalAdmissions: 0,
+        claimAmount: 0,
+        receivedAmount: 0,
+        outstandingAmount: 0,
+      };
+    }
+
+    grouped[provider].totalAdmissions += 1;
+    grouped[provider].claimAmount += toNumber(bill.totalAmount);
+    grouped[provider].receivedAmount += toNumber(bill.amountPaid);
+    grouped[provider].outstandingAmount += toNumber(bill.balanceDue);
+  }
+
+  let settlements = Object.entries(grouped).map(([key, val]) => ({
+    id: key,
+    ...val,
+    tenantId,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  }));
+
+  if (query.type) {
+    settlements = settlements.filter((s) => s.providerType === query.type);
+  }
+
+  const total = settlements.length;
+  const paginated = settlements.slice(skip, skip + take);
+
+  return { settlements: paginated, total, page, limit };
+}
+
+export async function settleCredit(
+  tenantId: string,
+  providerId: string,
+  data: { amount: number; method?: string; notes?: string },
+) {
+  // Find all unpaid bills
+  const bills = await prisma.bill.findMany({
+    where: {
+      tenantId,
+      balanceDue: { gt: 0 },
+      status: { in: ['pending', 'partially_paid'] },
+    },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  let remaining = data.amount;
+
+  for (const bill of bills) {
+    if (remaining <= 0) break;
+    const balance = toNumber(bill.balanceDue);
+    const payAmount = Math.min(remaining, balance);
+
+    const receiptNumber = await generateReceiptNumber(tenantId);
+
+    await prisma.$transaction(async (tx) => {
+      const payment = await tx.payment.create({
+        data: {
+          tenantId,
+          billId: bill.id,
+          patientId: bill.patientId,
+          amount: payAmount,
+          paymentMethod: mapPaymentMethod(data.method || 'bank_transfer') as any,
+          notes: data.notes || `Credit settlement for ${providerId}`,
+          status: 'completed',
+          paymentDate: new Date(),
+        },
+      });
+
+      await tx.receipt.create({
+        data: {
+          tenantId,
+          receiptNumber,
+          paymentId: payment.id,
+          receiptDate: new Date(),
+          amount: payAmount,
+        },
+      });
+
+      const newPaid = toNumber(bill.amountPaid) + payAmount;
+      const newBalance = toNumber(bill.totalAmount) - newPaid;
+
+      await tx.bill.update({
+        where: { id: bill.id },
+        data: {
+          amountPaid: newPaid,
+          balanceDue: Math.max(0, newBalance),
+          status: newBalance <= 0 ? 'paid' : 'partially_paid',
+        },
+      });
+    });
+
+    remaining -= payAmount;
+  }
+
+  return {
+    settledAmount: data.amount - remaining,
+    provider: providerId,
+  };
 }
 
 // --- Service Tariffs ---

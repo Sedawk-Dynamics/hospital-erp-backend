@@ -22,6 +22,11 @@ enum BillingCycle {
   yearly  @map("yearly")
 }
 
+enum SubscriptionPaymentMethod {
+  manual  @map("manual")
+  autopay @map("autopay")
+}
+
 enum LoginStatus {
   success @map("success")
   failed  @map("failed")
@@ -171,6 +176,12 @@ enum RegistrationSource {
   self_signup @map("self_signup")
   front_desk @map("front_desk")
   admin      @map("admin")
+}
+
+enum ConnectionStatus {
+  pending  @map("pending")
+  approved @map("approved")
+  rejected @map("rejected")
 }
 
 enum AppointmentType {
@@ -561,6 +572,13 @@ enum PaymentStatus {
   reversed  @map("reversed")
 }
 
+enum PaymentTransferStatus {
+  pending   @map("pending")
+  processed @map("processed")
+  failed    @map("failed")
+  reversed  @map("reversed")
+}
+
 enum RefundStatus {
   requested @map("requested")
   approved  @map("approved")
@@ -723,6 +741,7 @@ enum NotificationType {
   ticket       @map("ticket")
   alert        @map("alert")
   general      @map("general")
+  subscription @map("subscription")
 }
 
 enum NotificationChannel {
@@ -885,13 +904,16 @@ model Tenant {
   website           String?   @db.VarChar(255)
   licenseNumber     String?   @map("license_number") @db.VarChar(100)
   accreditationInfo String?   @map("accreditation_info")
+  hospitalCode      String?   @unique @map("hospital_code") @db.VarChar(6)
+  allowDirectPatientConnection Boolean @default(false) @map("allow_direct_patient_connection")
+  linkedAccountId   String?   @map("linked_account_id") @db.VarChar(255)
+  bankVerified      Boolean   @default(false) @map("bank_verified")
   isActive          Boolean   @default(true) @map("is_active")
   onboardedAt       DateTime? @map("onboarded_at")
   offboardedAt      DateTime? @map("offboarded_at")
   createdAt         DateTime  @default(now()) @map("created_at")
   updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at")
 
-  tenantSubscriptions    TenantSubscription[]
   featureToggles         FeatureToggle[]
   users                  User[]
   roles                  Role[]
@@ -959,41 +981,83 @@ model Tenant {
   savedReports           SavedReport[]
   scheduledReports       ScheduledReport[]
   supportTickets         SupportTicket[]
+  tenantOwners           TenantOwner[]
+  patientConnections     PatientHospitalConnection[]
+  mrdRequests            MrdRequest[]
+  paymentTransfers       PaymentTransfer[]
+  hospitalCommission     HospitalCommission?
+  demoRequests           DemoRequest[]
 
   @@map("tenants")
 }
 
 model SubscriptionPlan {
-  id             String   @id @default(uuid())
-  name           String   @db.VarChar(100)
-  description    String?
-  priceMonthly   Decimal? @map("price_monthly") @db.Decimal(12, 2)
-  priceYearly    Decimal? @map("price_yearly") @db.Decimal(12, 2)
-  maxUsers       Int?     @map("max_users")
-  maxStorageGb   Int?     @map("max_storage_gb")
-  features       Json?
-  isActive       Boolean  @default(true) @map("is_active")
-  createdAt      DateTime @default(now()) @map("created_at")
+  id                     String   @id @default(uuid())
+  name                   String   @db.VarChar(100)
+  description            String?
+  priceMonthly           Decimal? @map("price_monthly") @db.Decimal(12, 2)
+  priceYearly            Decimal? @map("price_yearly") @db.Decimal(12, 2)
+  maxUsers               Int?     @map("max_users")
+  maxHospitals           Int?     @map("max_hospitals")
+  features               Json?
+  isActive               Boolean  @default(false) @map("is_active")
+  razorpayMonthlyPlanId  String?  @unique @map("razorpay_monthly_plan_id")
+  razorpayYearlyPlanId   String?  @unique @map("razorpay_yearly_plan_id")
+  allowAutopay           Boolean  @default(true) @map("allow_autopay")
+  allowManual            Boolean  @default(true) @map("allow_manual")
+  trialDays              Int?     @map("trial_days")
+  createdAt              DateTime @default(now()) @map("created_at")
 
-  tenantSubscriptions TenantSubscription[]
+  userSubscriptions    UserSubscription[]
+  subscriptionPayments SubscriptionPayment[]
+  demoRequests         DemoRequest[]
 
+  @@unique([name])
   @@map("subscription_plans")
 }
 
-model TenantSubscription {
-  id           String             @id @default(uuid())
-  tenantId     String             @map("tenant_id")
-  planId       String             @map("plan_id")
-  startDate    DateTime           @map("start_date") @db.Date
-  endDate      DateTime?          @map("end_date") @db.Date
-  status       SubscriptionStatus @default(active)
-  billingCycle BillingCycle?      @map("billing_cycle")
-  createdAt    DateTime           @default(now()) @map("created_at")
+model UserSubscription {
+  id                          String                      @id @default(uuid())
+  userId                      String                      @map("user_id")
+  planId                      String                      @map("plan_id")
+  startDate                   DateTime                    @map("start_date") @db.Date
+  endDate                     DateTime?                   @map("end_date") @db.Date
+  status                      SubscriptionStatus          @default(active)
+  billingCycle                BillingCycle?               @map("billing_cycle")
+  razorpaySubscriptionId      String?                     @unique @map("razorpay_subscription_id")
+  subscriptionPaymentMethod   SubscriptionPaymentMethod   @default(manual) @map("subscription_payment_method")
+  autoRenew                   Boolean                     @default(false) @map("auto_renew")
+  cancelledAt                 DateTime?                   @map("cancelled_at")
+  lastReminderDays            Int?                        @map("last_reminder_days")
+  createdAt                   DateTime                    @default(now()) @map("created_at")
 
-  tenant Tenant           @relation(fields: [tenantId], references: [id])
-  plan   SubscriptionPlan @relation(fields: [planId], references: [id])
+  user                  User                 @relation("SubscriptionOwner", fields: [userId], references: [id])
+  plan                  SubscriptionPlan     @relation(fields: [planId], references: [id])
+  subscriptionPayments  SubscriptionPayment[]
 
-  @@map("tenant_subscriptions")
+  @@map("user_subscriptions")
+}
+
+model SubscriptionPayment {
+  id                    String   @id @default(uuid())
+  userSubscriptionId    String?  @map("user_subscription_id")
+  userId                String   @map("user_id")
+  razorpayOrderId       String   @unique @map("razorpay_order_id")
+  razorpayPaymentId     String?  @map("razorpay_payment_id")
+  razorpaySignature     String?  @map("razorpay_signature")
+  amount                Decimal  @db.Decimal(12, 2)
+  currency              String   @default("INR") @db.VarChar(3)
+  status                String   @default("created") @db.VarChar(20)
+  planId                String   @map("plan_id")
+  billingCycle          String   @map("billing_cycle") @db.VarChar(20)
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  userSubscription   UserSubscription?   @relation(fields: [userSubscriptionId], references: [id])
+  user               User                @relation(fields: [userId], references: [id])
+  plan               SubscriptionPlan    @relation(fields: [planId], references: [id])
+
+  @@map("subscription_payments")
 }
 
 model FeatureToggle {
@@ -1110,6 +1174,16 @@ model User {
   savedReports              SavedReport[]
   scheduledReports          ScheduledReport[]
   supportTickets            SupportTicket[]
+  tenantOwners              TenantOwner[]
+  subscriptionPayments      SubscriptionPayment[]
+  connectionRequests        PatientHospitalConnection[] @relation("ConnectionUser")
+  connectionReviews         PatientHospitalConnection[] @relation("ConnectionReviewer")
+  mrdRequestsMade           MrdRequest[]                @relation("MrdRequestedBy")
+  commissionSettingsUpdated CommissionSetting[]          @relation("CommissionSettingUpdater")
+  hospitalCommissionsUpdated HospitalCommission[]        @relation("HospitalCommissionUpdater")
+  demoRequestsApproved       DemoRequest[]               @relation("DemoApprover")
+  demoRequestsCreatedUser    DemoRequest[]               @relation("DemoCreatedUser")
+  ownedSubscriptions         UserSubscription[]          @relation("SubscriptionOwner")
 
   @@unique([tenantId, email])
   @@map("users")
@@ -1128,6 +1202,19 @@ model Role {
   userRoles       UserRole[]
 
   @@map("roles")
+}
+
+model TenantOwner {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  tenantId  String   @map("tenant_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user   User   @relation(fields: [userId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@unique([userId, tenantId])
+  @@map("tenant_owners")
 }
 
 model Permission {
@@ -1183,6 +1270,43 @@ model LoginAuditLog {
   tenant Tenant @relation(fields: [tenantId], references: [id])
 
   @@map("login_audit_logs")
+}
+
+model DemoRequest {
+  id             String            @id @default(uuid())
+  name           String            @db.VarChar(120)
+  email          String            @db.VarChar(255)
+  phone          String            @db.VarChar(20)
+  hospitalName   String            @map("hospital_name") @db.VarChar(255)
+  designation    String            @db.VarChar(100)
+  city           String            @db.VarChar(100)
+  message        String?           @db.Text
+  status         DemoRequestStatus @default(pending)
+  trialDays      Int?              @map("trial_days")
+  trialEndsAt    DateTime?         @map("trial_ends_at")
+  trialPlanId    String?           @map("trial_plan_id")
+  approvedById   String?           @map("approved_by_id")
+  createdTenantId String?          @map("created_tenant_id")
+  createdUserId  String?           @map("created_user_id")
+  rejectionNote  String?           @map("rejection_note") @db.Text
+  createdAt      DateTime          @default(now()) @map("created_at")
+  updatedAt      DateTime          @updatedAt @map("updated_at")
+
+  approvedBy     User?             @relation("DemoApprover", fields: [approvedById], references: [id])
+  trialPlan      SubscriptionPlan? @relation(fields: [trialPlanId], references: [id])
+  createdTenant  Tenant?           @relation(fields: [createdTenantId], references: [id])
+  createdUser    User?             @relation("DemoCreatedUser", fields: [createdUserId], references: [id])
+
+  @@map("demo_requests")
+}
+
+enum DemoRequestStatus {
+  pending
+  approved
+  rejected
+  trial_active
+  trial_ended
+  converted
 }
 
 // ============================================================
@@ -1393,6 +1517,8 @@ model Patient {
   feedback                Feedback[]
   incidentReports         IncidentReport[]
   otRequests              OtRequest[]
+  hospitalConnection      PatientHospitalConnection?
+  mrdRequests             MrdRequest[]
 
   @@unique([tenantId, mrn])
   @@map("patients")
@@ -2606,8 +2732,9 @@ model Payment {
   bill      Bill     @relation(fields: [billId], references: [id])
   patient   Patient  @relation(fields: [patientId], references: [id])
   processor User?    @relation(fields: [processedBy], references: [id])
-  receipt   Receipt?
-  refunds   Refund[]
+  receipt    Receipt?
+  refunds    Refund[]
+  transfers  PaymentTransfer[]
 
   @@map("payments")
 }
@@ -3360,5 +3487,120 @@ model SupportTicket {
   raiser User   @relation(fields: [raisedBy], references: [id])
 
   @@map("support_tickets")
+}
+
+// ============================================================
+// PATIENT-HOSPITAL CONNECTIONS
+// ============================================================
+
+model PatientHospitalConnection {
+  id              String           @id @default(uuid())
+  userId          String           @map("user_id")
+  tenantId        String           @map("tenant_id")
+  status          ConnectionStatus @default(pending)
+  patientId       String?          @unique @map("patient_id")
+  requestMessage  String?          @map("request_message") @db.VarChar(500)
+  rejectionReason String?          @map("rejection_reason") @db.VarChar(500)
+  reviewedBy      String?          @map("reviewed_by")
+  reviewedAt      DateTime?        @map("reviewed_at")
+  createdAt       DateTime         @default(now()) @map("created_at")
+  updatedAt       DateTime         @default(now()) @updatedAt @map("updated_at")
+
+  user     User     @relation("ConnectionUser", fields: [userId], references: [id])
+  tenant   Tenant   @relation(fields: [tenantId], references: [id])
+  patient  Patient? @relation(fields: [patientId], references: [id])
+  reviewer User?    @relation("ConnectionReviewer", fields: [reviewedBy], references: [id])
+
+  @@unique([userId, tenantId])
+  @@map("patient_hospital_connections")
+}
+
+// ─── Medical Records Department (MRD) ─────────────────────
+
+enum MrdRequestStatus {
+  initiated
+  in_progress
+  completed
+  rejected
+}
+
+enum MrdDirection {
+  inbound
+  outbound
+}
+
+model MrdRequest {
+  id            String           @id @default(uuid())
+  tenantId      String           @map("tenant_id")
+  patientId     String           @map("patient_id")
+  requestedTo   String           @map("requested_to") @db.VarChar(255)
+  requestedBy   String?          @map("requested_by")
+  locationFrom  String?          @map("location_from") @db.VarChar(255)
+  wardRoom      String?          @map("ward_room") @db.VarChar(100)
+  status        MrdRequestStatus @default(initiated)
+  direction     MrdDirection     @default(outbound)
+  notes         String?
+  createdAt     DateTime         @default(now()) @map("created_at")
+  updatedAt     DateTime         @default(now()) @updatedAt @map("updated_at")
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id])
+  patient Patient @relation(fields: [patientId], references: [id])
+  user    User?   @relation("MrdRequestedBy", fields: [requestedBy], references: [id])
+
+  @@map("mrd_requests")
+}
+
+// ─── Razorpay Route: Split Payments ─────────────────────────────
+
+model PaymentTransfer {
+  id                  String         @id @default(uuid())
+  tenantId            String         @map("tenant_id")
+  paymentId           String         @map("payment_id")
+  razorpayOrderId     String         @unique @map("razorpay_order_id") @db.VarChar(100)
+  razorpayPaymentId   String?        @map("razorpay_payment_id") @db.VarChar(100)
+  razorpayTransferId  String?        @map("razorpay_transfer_id") @db.VarChar(100)
+  totalAmount         Decimal        @map("total_amount") @db.Decimal(12, 2)
+  commissionAmount    Decimal        @map("commission_amount") @db.Decimal(12, 2)
+  hospitalAmount      Decimal        @map("hospital_amount") @db.Decimal(12, 2)
+  commissionPercent   Decimal        @map("commission_percent") @db.Decimal(5, 2)
+  transferStatus      PaymentTransferStatus @default(pending) @map("transfer_status")
+  webhookPayload      Json?          @map("webhook_payload")
+  failureReason       String?        @map("failure_reason")
+  createdAt           DateTime       @default(now()) @map("created_at")
+  updatedAt           DateTime       @default(now()) @updatedAt @map("updated_at")
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id])
+  payment Payment @relation(fields: [paymentId], references: [id])
+
+  @@map("payment_transfers")
+}
+
+model CommissionSetting {
+  id             String   @id @default(uuid())
+  defaultPercent Decimal  @map("default_percent") @db.Decimal(5, 2)
+  minPercent     Decimal  @default(0) @map("min_percent") @db.Decimal(5, 2)
+  maxPercent     Decimal  @default(50) @map("max_percent") @db.Decimal(5, 2)
+  updatedBy      String?  @map("updated_by")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at")
+
+  updater User? @relation("CommissionSettingUpdater", fields: [updatedBy], references: [id])
+
+  @@map("commission_settings")
+}
+
+model HospitalCommission {
+  id                String   @id @default(uuid())
+  tenantId          String   @unique @map("tenant_id")
+  commissionPercent Decimal  @map("commission_percent") @db.Decimal(5, 2)
+  notes             String?
+  updatedBy         String?  @map("updated_by")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant  Tenant @relation(fields: [tenantId], references: [id])
+  updater User?  @relation("HospitalCommissionUpdater", fields: [updatedBy], references: [id])
+
+  @@map("hospital_commissions")
 }
 

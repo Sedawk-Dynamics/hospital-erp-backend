@@ -434,6 +434,37 @@ export async function bookAppointment(tenantId: string, data: BookAppointmentInp
 }
 
 /**
+ * Get appointment statistics for a given date (or today).
+ */
+export async function getAppointmentStats(tenantId: string, date?: string) {
+  const targetDate = date ? new Date(date) : new Date();
+  const dayStart = new Date(targetDate);
+  dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(targetDate);
+  dayEnd.setHours(23, 59, 59, 999);
+
+  const where: any = {
+    tenantId,
+    appointmentDate: { gte: dayStart, lte: dayEnd },
+  };
+
+  const appointments = await prisma.appointment.findMany({
+    where,
+    select: { status: true },
+  });
+
+  return {
+    all: appointments.length,
+    booked: appointments.filter((a) => a.status === 'booked' || a.status === 'confirmed').length,
+    ipAppointments: 0,
+    arrived: appointments.filter((a) => a.status === 'checked_in').length,
+    withDoctor: appointments.filter((a) => a.status === 'in_consultation').length,
+    completed: appointments.filter((a) => a.status === 'completed').length,
+    cancelled: appointments.filter((a) => a.status === 'cancelled').length,
+  };
+}
+
+/**
  * Get paginated list of appointments with filters.
  */
 export async function getAppointments(tenantId: string, query: GetAppointmentsQuery) {
@@ -458,8 +489,32 @@ export async function getAppointments(tenantId: string, query: GetAppointmentsQu
   }
 
   if (query.doctorId) where.doctorId = query.doctorId;
+  if ((query as any).doctorUserId) {
+    // Resolve DoctorProfile from User ID so the frontend can pass the logged-in user ID
+    const dp = await prisma.doctorProfile.findFirst({
+      where: { userId: (query as any).doctorUserId, tenantId },
+      select: { id: true },
+    });
+    if (dp) {
+      where.doctorId = dp.id;
+    } else {
+      return { appointments: [], total: 0, page, limit };
+    }
+  }
   if (query.patientId) where.patientId = query.patientId;
   if (query.status) where.status = query.status;
+
+  if ((query as any).search) {
+    const s = (query as any).search;
+    where.patient = {
+      OR: [
+        { firstName: { contains: s, mode: 'insensitive' } },
+        { lastName: { contains: s, mode: 'insensitive' } },
+        { mrn: { contains: s, mode: 'insensitive' } },
+        { phone: { contains: s, mode: 'insensitive' } },
+      ],
+    };
+  }
 
   const [appointments, total] = await Promise.all([
     prisma.appointment.findMany({
@@ -468,7 +523,7 @@ export async function getAppointments(tenantId: string, query: GetAppointmentsQu
       take,
       include: {
         patient: {
-          select: { id: true, mrn: true, firstName: true, lastName: true, phone: true },
+          select: { id: true, mrn: true, firstName: true, lastName: true, phone: true, gender: true, dateOfBirth: true },
         },
         doctor: {
           include: {

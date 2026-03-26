@@ -38,6 +38,52 @@ export const usersController = {
     }
   },
 
+  /** List all users across all hospital tenants (super_admin only) */
+  async findAllGlobal(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) throw AppError.unauthorized();
+      const query = paginationSchema.parse(req.query);
+      const { users, total, page, limit } = await usersService.findAllGlobal({
+        ...query,
+        roleId: req.query.roleId as string | undefined,
+        isActive: req.query.isActive as string | undefined,
+      });
+      sendPaginatedResponse(res, users, total, page, limit, 'All users retrieved successfully');
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  /** Hard-delete a user (super_admin, any tenant) */
+  async hardDeleteGlobal(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) throw AppError.unauthorized();
+      const result = await usersService.hardDeleteGlobal(req.params.id as string, req.user.userId);
+      sendResponse({
+        res,
+        message: result.message,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  /** Toggle active status for a user (super_admin, any tenant) */
+  async toggleActiveGlobal(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) throw AppError.unauthorized();
+      const { isActive } = req.body;
+      const user = await usersService.toggleActiveGlobal(req.params.id as string, isActive);
+      sendResponse({
+        res,
+        message: `User ${isActive ? 'activated' : 'deactivated'} successfully`,
+        data: user,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+
   async findById(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
       if (!req.user) throw AppError.unauthorized();

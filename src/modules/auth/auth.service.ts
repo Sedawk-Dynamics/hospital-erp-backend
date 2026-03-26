@@ -51,16 +51,30 @@ function getRefreshTokenTTL(): number {
 
 export const authService = {
   async register(data: RegisterInput) {
-    const tenant = await prisma.tenant.findUnique({
-      where: { slug: data.tenantSlug },
-    });
+    let tenant;
 
-    if (!tenant) {
-      throw AppError.notFound('Tenant not found');
-    }
+    if (data.tenantSlug) {
+      // Register under a specific hospital tenant
+      tenant = await prisma.tenant.findUnique({
+        where: { slug: data.tenantSlug },
+      });
 
-    if (!tenant.isActive) {
-      throw AppError.badRequest('Tenant is not active');
+      if (!tenant) {
+        throw AppError.notFound('Tenant not found');
+      }
+
+      if (!tenant.isActive) {
+        throw AppError.badRequest('Tenant is not active');
+      }
+    } else {
+      // Patient self-signup: use platform tenant
+      tenant = await prisma.tenant.findFirst({
+        where: { slug: '__platform__' },
+      });
+
+      if (!tenant) {
+        throw AppError.internal('Platform tenant not found');
+      }
     }
 
     const existingUser = await prisma.user.findFirst({
@@ -76,13 +90,25 @@ export const authService = {
 
     const hashedPassword = await bcrypt.hash(data.password, env.BCRYPT_SALT_ROUNDS);
 
-    // Find the default role (patient) for this tenant
-    const defaultRole = await prisma.role.findFirst({
+    // Find or create the default role (patient) for this tenant
+    let defaultRole = await prisma.role.findFirst({
       where: {
         tenantId: tenant.id,
         name: 'patient',
       },
     });
+
+    if (!defaultRole && !data.tenantSlug) {
+      // Self-signup patient on platform — create patient role if missing
+      defaultRole = await prisma.role.create({
+        data: {
+          name: 'patient',
+          description: 'Patient user with access to patient portal',
+          tenantId: tenant.id,
+          isSystemRole: true,
+        },
+      });
+    }
 
     const user = await prisma.user.create({
       data: {
@@ -129,8 +155,8 @@ export const authService = {
   },
 
   async login(data: LoginInput) {
-    // Find user by email directly (no tenant slug needed)
-    const user = await prisma.user.findFirst({
+    // Find all users with this email (could exist in multiple tenants after hospital creation)
+    const users = await prisma.user.findMany({
       where: {
         email: data.email,
       },
@@ -145,6 +171,15 @@ export const authService = {
         },
       },
     });
+
+    if (users.length === 0) {
+      throw AppError.unauthorized('Invalid credentials');
+    }
+
+    // Prefer the platform tenant user (the one who registered with their real password)
+    // Hospital tenant copies have random password hashes and should not be used for login
+    const platformUser = users.find((u) => u.tenant.slug === '__platform__');
+    const user = platformUser || users[0];
 
     if (!user) {
       throw AppError.unauthorized('Invalid credentials');
@@ -213,10 +248,22 @@ export const authService = {
 
     // Build a single role object the frontend expects (role.slug)
     const primaryRole = user.userRoles[0]?.role;
+    const isPlatformTenant = user.tenant.slug === '__platform__';
+
+    // Determine actual onboarding status for platform users
+    // Skip onboarding flow for patients and super_admins — they don't need plans/hospitals
+    const isSuperAdmin = roles.includes('super_admin');
+    const isPatient = primaryRole?.name === 'patient';
+    let onboardingStatus: string = 'active';
+    if (isPlatformTenant && !isPatient && !isSuperAdmin) {
+      const statusResult = await this.getOnboardingStatus(user.id, user.tenantId);
+      onboardingStatus = statusResult.status;
+    }
 
     return {
       accessToken,
       refreshToken,
+      onboardingStatus,
       user: {
         id: user.id,
         email: user.email,
@@ -275,9 +322,13 @@ export const authService = {
 
     const roles = user.userRoles.map((ur: { role: { name: string } }) => ur.role.name);
 
+    // Preserve the tenantId from the original token (not the DB user record).
+    // After switchHospital the JWT carries the hospital tenantId, but the user
+    // record in the DB still points to the platform tenant.  Using payload.tenantId
+    // keeps the admin's hospital context alive across refreshes.
     const newPayload: TokenPayload = {
       userId: user.id,
-      tenantId: user.tenantId,
+      tenantId: payload.tenantId,
       email: user.email,
       roles,
     };
@@ -436,6 +487,113 @@ export const authService = {
     logger.info({ userId }, '2FA enabled successfully');
 
     return { message: 'Two-factor authentication has been enabled' };
+  },
+
+  async registerAdmin(data: { email: string; password: string; firstName: string; lastName: string; phone?: string }) {
+    // 1. Find platform tenant by slug '__platform__'
+    const platformTenant = await prisma.tenant.findUnique({ where: { slug: '__platform__' } });
+    if (!platformTenant) {
+      throw AppError.internal('Platform tenant not found. Run seed first.');
+    }
+
+    // 2. Check email uniqueness within platform tenant
+    const existingUser = await prisma.user.findUnique({
+      where: { tenantId_email: { tenantId: platformTenant.id, email: data.email } },
+    });
+    if (existingUser) {
+      throw AppError.conflict('Email already registered');
+    }
+
+    // 3. Hash password
+    const passwordHash = await bcrypt.hash(data.password, env.BCRYPT_SALT_ROUNDS);
+
+    // 4. Find admin role (hospital admin — self-registered)
+    const adminRole = await prisma.role.findFirst({
+      where: { tenantId: platformTenant.id, name: 'admin' },
+    });
+    if (!adminRole) {
+      throw AppError.internal('Admin role not found. Run seed first.');
+    }
+
+    // 5. Create user
+    const user = await prisma.user.create({
+      data: {
+        tenantId: platformTenant.id,
+        email: data.email,
+        passwordHash,
+        firstName: data.firstName,
+        lastName: data.lastName,
+        phone: data.phone || null,
+        isActive: true,
+        userRoles: {
+          create: { roleId: adminRole.id },
+        },
+      },
+    });
+
+    logger.info({ userId: user.id, tenantId: platformTenant.id }, 'Admin registered via self-signup');
+
+    return { id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName };
+  },
+
+  async getOnboardingStatus(userId: string, tenantId: string) {
+    // Check if user is on platform tenant
+    const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } });
+    if (!tenant || tenant.slug !== '__platform__') {
+      return { status: 'has_hospitals' as const };
+    }
+
+    // Super admins are always fully onboarded — they don't need plans or hospitals
+    const isSuperAdmin = await prisma.userRole.findFirst({
+      where: { userId, role: { name: 'super_admin' } },
+    });
+    if (isSuperAdmin) {
+      return { status: 'active' as const };
+    }
+
+    // Check if user has any paid subscription payments
+    const paidPayment = await prisma.subscriptionPayment.findFirst({
+      where: {
+        userId,
+        status: 'paid',
+      },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        plan: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
+    });
+
+    if (!paidPayment) {
+      return { status: 'needs_plan' as const };
+    }
+
+    const plan = {
+      id: paidPayment.plan.id,
+      name: paidPayment.plan.name,
+    };
+
+    // User has paid — check if they own any real tenants (hospitals)
+    const ownedTenants = await prisma.tenantOwner.findMany({
+      where: { userId },
+      include: { tenant: true },
+    });
+
+    const realTenants = ownedTenants.filter((to) => to.tenant.slug !== '__platform__' && to.tenant.isActive);
+
+    if (realTenants.length === 0) {
+      return { status: 'needs_hospital' as const, plan };
+    }
+
+    return {
+      status: 'has_hospitals' as const,
+      plan,
+      tenants: realTenants.map((t) => ({ id: t.tenant.id, name: t.tenant.name, slug: t.tenant.slug })),
+    };
   },
 
   async getMe(userId: string) {

@@ -7,7 +7,6 @@ import { validate } from '../../middleware/validate';
 import {
   createTenantSchema,
   updateTenantSchema,
-  createSubscriptionSchema,
   updateFeatureToggleSchema,
   tenantIdParamSchema,
 } from './tenants.validation';
@@ -54,13 +53,23 @@ router.delete(
   tenantsController.deactivate,
 );
 
-router.post(
-  '/:id/subscriptions',
+router.patch(
+  '/:id/activate',
   authenticate,
   requireRoles('super_admin'),
-  validate(createSubscriptionSchema),
-  tenantsController.createSubscription,
+  validate(tenantIdParamSchema),
+  tenantsController.activate,
 );
+
+router.delete(
+  '/:id/destroy',
+  authenticate,
+  requireRoles('super_admin'),
+  validate(tenantIdParamSchema),
+  tenantsController.hardDelete,
+);
+
+// Tenant-level subscription creation removed — subscriptions are user-owned via /subscription-plans
 
 router.post(
   '/:id/bootstrap-roles',
@@ -68,6 +77,14 @@ router.post(
   requireRoles('super_admin'),
   validate(tenantIdParamSchema),
   tenantsController.bootstrapRoles,
+);
+
+router.get(
+  '/:id/stats',
+  authenticate,
+  requireRoles('super_admin'),
+  validate(tenantIdParamSchema),
+  tenantsController.getComprehensiveStats,
 );
 
 router.put(

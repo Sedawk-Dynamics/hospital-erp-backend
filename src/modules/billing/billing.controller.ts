@@ -59,6 +59,63 @@ export async function updateServiceTariff(
   }
 }
 
+// --- Collection Summary ---
+
+export async function getCollectionSummary(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const summary = await billingService.getCollectionSummary(tenantId, req.query as any);
+    sendResponse({
+      res,
+      message: 'Collection summary retrieved successfully',
+      data: summary,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// --- Credit Settlements ---
+
+export async function getCreditSettlements(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const { settlements, total, page, limit } = await billingService.getCreditSettlements(
+      tenantId,
+      req.query as any,
+    );
+    sendPaginatedResponse(res, settlements, total, page, limit, 'Credit settlements retrieved');
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function settleCredit(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const settlement = await billingService.settleCredit(tenantId, req.params.id as string, req.body);
+    sendResponse({
+      res,
+      message: 'Credit settled successfully',
+      data: settlement,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // --- Bills ---
 
 export async function createBill(req: AuthenticatedRequest, res: Response, next: NextFunction) {

@@ -98,8 +98,10 @@ export const getAppointmentsQuerySchema = z.object({
     fromDate: z.string().optional(),
     toDate: z.string().optional(),
     doctorId: z.string().uuid().optional(),
+    doctorUserId: z.string().uuid().optional(),
     patientId: z.string().uuid().optional(),
     departmentId: z.string().uuid().optional(),
+    search: z.string().optional(),
     status: z
       .enum([
         'booked',
