@@ -1459,6 +1459,13 @@ model Patient {
   idProofType         String?             @map("id_proof_type") @db.VarChar(50)
   idProofNumber       String?             @map("id_proof_number") @db.VarChar(100)
   idProofDocumentUrl  String?             @map("id_proof_document_url")
+  maritalStatus       String?             @map("marital_status") @db.VarChar(20)
+  nationality         String?             @db.VarChar(100)
+  occupation          String?             @db.VarChar(100)
+  religion            String?             @db.VarChar(50)
+  preferredLanguage   String?             @map("preferred_language") @db.VarChar(50)
+  referredBy          String?             @map("referred_by") @db.VarChar(200)
+  notes               String?
   abhaNumber          String?             @unique @map("abha_number") @db.VarChar(20)
   abhaAddress         String?             @map("abha_address") @db.VarChar(100)
   abhaLinked          Boolean             @default(false) @map("abha_linked")
@@ -1747,6 +1754,8 @@ model Appointment {
   startTime          DateTime          @map("start_time") @db.Time()
   endTime            DateTime?         @map("end_time") @db.Time()
   appointmentType    AppointmentType   @default(scheduled) @map("appointment_type")
+  consultationType   String?           @map("consultation_type") @db.VarChar(30)
+  priority           String?           @db.VarChar(20)
   visitType          VisitTypeAppt     @default(new) @map("visit_type")
   status             AppointmentStatus @default(booked)
   reason             String?

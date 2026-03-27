@@ -31,6 +31,7 @@ export const createPatientSchema = z.object({
     insurancePolicyNumber: z.string().max(100).optional(),
     referredBy: z.string().max(200).optional(),
     notes: z.string().max(2000).optional(),
+    abhaNumber: z.string().max(20).optional(),
   }),
 });
 
@@ -69,6 +70,7 @@ export const updatePatientSchema = z.object({
     insurancePolicyNumber: z.string().max(100).optional().nullable(),
     referredBy: z.string().max(200).optional().nullable(),
     notes: z.string().max(2000).optional().nullable(),
+    abhaNumber: z.string().max(20).optional().nullable(),
     isActive: z.boolean().optional(),
   }),
   params: z.object({

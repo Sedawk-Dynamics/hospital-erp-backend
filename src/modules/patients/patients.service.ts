@@ -120,10 +120,20 @@ export async function create(tenantId: string, data: CreatePatientInput) {
       bloodGroup: data.bloodGroup,
       phone: data.phone,
       email: data.email || undefined,
+      addressLine1: data.address,
       city: data.city,
       state: data.state,
       country: data.country,
       postalCode: data.zipCode,
+      maritalStatus: data.maritalStatus,
+      nationality: data.nationality,
+      occupation: data.occupation,
+      religion: data.religion,
+      preferredLanguage: data.preferredLanguage,
+      referredBy: data.referredBy,
+      notes: data.notes,
+      abhaNumber: data.abhaNumber || undefined,
+      idProofNumber: data.nationalId,
       isActive: true,
     },
   });
@@ -275,10 +285,20 @@ export async function update(tenantId: string, id: string, data: UpdatePatientIn
   if (data.bloodGroup !== undefined) updateData.bloodGroup = data.bloodGroup;
   if (data.phone !== undefined) updateData.phone = data.phone;
   if (data.email !== undefined) updateData.email = data.email || null;
+  if (data.address !== undefined) updateData.addressLine1 = data.address;
   if (data.city !== undefined) updateData.city = data.city;
   if (data.state !== undefined) updateData.state = data.state;
   if (data.country !== undefined) updateData.country = data.country;
   if (data.zipCode !== undefined) updateData.postalCode = data.zipCode;
+  if (data.maritalStatus !== undefined) updateData.maritalStatus = data.maritalStatus;
+  if (data.nationality !== undefined) updateData.nationality = data.nationality;
+  if (data.occupation !== undefined) updateData.occupation = data.occupation;
+  if (data.religion !== undefined) updateData.religion = data.religion;
+  if (data.preferredLanguage !== undefined) updateData.preferredLanguage = data.preferredLanguage;
+  if (data.referredBy !== undefined) updateData.referredBy = data.referredBy;
+  if (data.notes !== undefined) updateData.notes = data.notes;
+  if (data.abhaNumber !== undefined) updateData.abhaNumber = data.abhaNumber || null;
+  if (data.nationalId !== undefined) updateData.idProofNumber = data.nationalId;
   if (data.isActive !== undefined) updateData.isActive = data.isActive;
 
   const patient = await prisma.patient.update({

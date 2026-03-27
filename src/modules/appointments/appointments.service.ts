@@ -408,6 +408,8 @@ export async function bookAppointment(tenantId: string, data: BookAppointmentInp
       startTime: data.startTime as any,
       endTime: data.endTime as any,
       appointmentType: 'scheduled',
+      consultationType: data.type || 'consultation',
+      priority: data.priority || 'normal',
       visitType: 'new',
       reason: data.reason,
       notes: data.notes,
