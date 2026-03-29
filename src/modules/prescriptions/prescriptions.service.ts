@@ -11,6 +11,8 @@ import type {
   RecordAdministrationInput,
   GetAdministrationRecordsQuery,
   GetAdministrationScheduleQuery,
+  AllergyCheckQuery,
+  FormularySearchQuery,
 } from './prescriptions.validation';
 
 // ============================================================
@@ -623,4 +625,113 @@ export async function getAdministrationSchedule(
     date: date || new Date().toISOString().split('T')[0],
     prescriptions,
   };
+}
+
+// ============================================================
+// Allergy Check
+// ============================================================
+
+/**
+ * Check if a patient has allergies that match the given drug name or its generic name.
+ */
+export async function checkAllergy(tenantId: string, query: AllergyCheckQuery) {
+  const { patientId, drugName } = query;
+
+  // Verify patient belongs to tenant
+  const patient = await prisma.patient.findFirst({
+    where: { id: patientId, tenantId },
+  });
+
+  if (!patient) {
+    throw AppError.notFound('Patient not found');
+  }
+
+  // Find the drug in formulary to get generic name and contraindications
+  const drug = await prisma.drugFormulary.findFirst({
+    where: {
+      tenantId,
+      drugName: { equals: drugName, mode: 'insensitive' },
+      isActive: true,
+    },
+    select: {
+      drugName: true,
+      genericName: true,
+      contraindications: true,
+    },
+  });
+
+  // Get all allergies for the patient
+  const allergies = await prisma.patientAllergy.findMany({
+    where: {
+      patientId,
+    },
+  });
+
+  const drugNameLower = drugName.toLowerCase();
+  const genericNameLower = drug?.genericName?.toLowerCase() || '';
+
+  // Match: allergen contains drugName/genericName OR drugName/genericName contains allergen
+  const matchedAllergies = allergies.filter((allergy) => {
+    const allergenLower = allergy.allergen.toLowerCase();
+    return (
+      allergenLower.includes(drugNameLower) ||
+      drugNameLower.includes(allergenLower) ||
+      (genericNameLower &&
+        (allergenLower.includes(genericNameLower) ||
+          genericNameLower.includes(allergenLower)))
+    );
+  });
+
+  logger.info(
+    { tenantId, patientId, drugName, matchCount: matchedAllergies.length },
+    'Allergy check performed',
+  );
+
+  return {
+    hasAllergy: matchedAllergies.length > 0,
+    matchedAllergies,
+    drug: drug
+      ? {
+          drugName: drug.drugName,
+          genericName: drug.genericName,
+          contraindications: drug.contraindications,
+        }
+      : null,
+  };
+}
+
+// ============================================================
+// Formulary Search (for prescription autocomplete)
+// ============================================================
+
+/**
+ * Lightweight formulary search returning only fields needed for prescriptions.
+ */
+export async function searchFormulary(tenantId: string, query: FormularySearchQuery) {
+  const { search } = query;
+
+  const drugs = await prisma.drugFormulary.findMany({
+    where: {
+      tenantId,
+      isActive: true,
+      isRecalled: false,
+      OR: [
+        { drugName: { contains: search, mode: 'insensitive' } },
+        { genericName: { contains: search, mode: 'insensitive' } },
+      ],
+    },
+    select: {
+      id: true,
+      drugName: true,
+      genericName: true,
+      dosageForm: true,
+      strength: true,
+      manufacturer: true,
+      price: true,
+    },
+    take: 20,
+    orderBy: { drugName: 'asc' },
+  });
+
+  return drugs;
 }

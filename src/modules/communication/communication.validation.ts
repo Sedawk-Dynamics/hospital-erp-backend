@@ -136,6 +136,51 @@ export const addHandoverNoteSchema = z.object({
 });
 
 // ============================================================
+// Tickets
+// ============================================================
+
+export const createTicketSchema = z.object({
+  body: z.object({
+    ticketType: z.enum([
+      'appointment_request',
+      'op_to_ip',
+      'complaint',
+      'service_request',
+      'equipment_fault',
+      'general',
+    ]),
+    subject: z.string().min(1, 'Subject is required').max(255),
+    description: z.string().max(5000).optional(),
+    priority: z.enum(['low', 'medium', 'high', 'critical']).default('medium'),
+    patientId: z.string().uuid('Invalid patient ID').optional(),
+    departmentId: z.string().uuid('Invalid department ID').optional(),
+    assignedTo: z.string().uuid('Invalid assignee ID').optional(),
+  }),
+});
+
+export const getTicketsQuerySchema = z.object({
+  query: paginationSchema.extend({
+    status: z.enum(['open', 'in_progress', 'pending', 'resolved', 'closed', 'escalated']).optional(),
+    ticketType: z.enum([
+      'appointment_request',
+      'op_to_ip',
+      'complaint',
+      'service_request',
+      'equipment_fault',
+      'general',
+    ]).optional(),
+    raisedBy: z.string().uuid().optional(),
+    assignedTo: z.string().uuid().optional(),
+  }),
+});
+
+export const ticketIdParamSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid ticket ID'),
+  }),
+});
+
+// ============================================================
 // Inferred types
 // ============================================================
 
@@ -147,3 +192,6 @@ export type ConversationQuery = z.infer<typeof conversationUserParamSchema>['que
 export type CreateHandoverInput = z.infer<typeof createHandoverSchema>['body'];
 export type GetHandoversQuery = z.infer<typeof getHandoversQuerySchema>['query'];
 export type AddHandoverNoteInput = z.infer<typeof addHandoverNoteSchema>['body'];
+
+export type CreateTicketInput = z.infer<typeof createTicketSchema>['body'];
+export type GetTicketsQuery = z.infer<typeof getTicketsQuerySchema>['query'];

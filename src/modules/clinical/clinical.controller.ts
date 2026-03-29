@@ -431,3 +431,59 @@ export async function deleteDiagnosis(
     next(err);
   }
 }
+
+// ==================== OT Requests ====================
+
+export async function createOtRequest(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const otRequest = await clinicalService.createOtRequest(tenantId, req.body);
+    sendResponse({
+      res,
+      statusCode: 201,
+      message: 'OT request created successfully',
+      data: otRequest,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getOtRequests(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const { otRequests, total, page, limit } = await clinicalService.getOtRequests(
+      tenantId,
+      req.query as any,
+    );
+    sendPaginatedResponse(res, otRequests, total, page, limit, 'OT requests retrieved successfully');
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getOtRequestById(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const otRequest = await clinicalService.getOtRequestById(tenantId, req.params.id as string);
+    sendResponse({
+      res,
+      message: 'OT request retrieved successfully',
+      data: otRequest,
+    });
+  } catch (err) {
+    next(err);
+  }
+}

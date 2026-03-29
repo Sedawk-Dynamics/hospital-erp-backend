@@ -15,6 +15,9 @@ import {
   getHandoversQuerySchema,
   handoverIdParamSchema,
   addHandoverNoteSchema,
+  createTicketSchema,
+  getTicketsQuerySchema,
+  ticketIdParamSchema,
 } from './communication.validation';
 
 export const communicationRoutes = Router();
@@ -41,3 +44,8 @@ communicationRoutes.get('/handovers', authenticate, requirePermission('notificat
 communicationRoutes.get('/handovers/:id', authenticate, requirePermission('notifications', 'read'), validate(handoverIdParamSchema), controller.getHandoverById);
 communicationRoutes.patch('/handovers/:id/acknowledge', authenticate, requirePermission('notifications', 'update'), validate(handoverIdParamSchema), controller.acknowledgeHandover);
 communicationRoutes.post('/handovers/:id/notes', authenticate, requirePermission('notifications', 'create'), validate(addHandoverNoteSchema), controller.addHandoverNote);
+
+// --- Tickets ---
+communicationRoutes.post('/tickets', authenticate, requirePermission('tickets', 'create'), validate(createTicketSchema), controller.createTicket);
+communicationRoutes.get('/tickets', authenticate, requirePermission('tickets', 'read'), validate(getTicketsQuerySchema), controller.getTickets);
+communicationRoutes.get('/tickets/:id', authenticate, requirePermission('tickets', 'read'), validate(ticketIdParamSchema), controller.getTicketById);

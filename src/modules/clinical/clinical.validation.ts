@@ -249,6 +249,42 @@ export const updateDiagnosisSchema = z.object({
   }),
 });
 
+// ==================== OT Requests ====================
+
+export const createOtRequestSchema = z.object({
+  body: z.object({
+    patientId: z.string().uuid('Invalid patient ID'),
+    visitId: z.string().uuid('Invalid visit ID'),
+    doctorId: z.string().uuid('Invalid doctor ID'),
+    procedureName: z.string().min(1, 'Procedure name is required').max(255),
+    procedureDetails: z.string().max(5000).optional(),
+    urgency: z.enum(['elective', 'urgent', 'emergency']).default('elective'),
+    preferredDate: z
+      .string()
+      .refine((val) => !isNaN(Date.parse(val)), { message: 'Invalid preferred date' })
+      .optional(),
+    preferredTime: z.string().optional(),
+    durationMinutes: z.number().int().min(1).max(1440).optional(),
+    requiredEquipment: z.any().optional(),
+  }),
+});
+
+export const getOtRequestsQuerySchema = z.object({
+  query: paginationSchema.extend({
+    status: z.enum(['requested', 'scheduled', 'in_progress', 'completed', 'cancelled']).optional(),
+    doctorId: z.string().uuid().optional(),
+    patientId: z.string().uuid().optional(),
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
+  }),
+});
+
+export const otRequestIdParamSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid OT request ID'),
+  }),
+});
+
 // ==================== Exported Types ====================
 
 export type CreateVisitInput = z.infer<typeof createVisitSchema>['body'];
@@ -270,3 +306,6 @@ export type AddDiagnosisInput = z.infer<typeof addDiagnosisSchema>['body'];
 export type GetDiagnosesQuery = z.infer<typeof getDiagnosesQuerySchema>['query'];
 export type GetAllDiagnosesQuery = z.infer<typeof getAllDiagnosesQuerySchema>['query'];
 export type UpdateDiagnosisInput = z.infer<typeof updateDiagnosisSchema>['body'];
+
+export type CreateOtRequestInput = z.infer<typeof createOtRequestSchema>['body'];
+export type GetOtRequestsQuery = z.infer<typeof getOtRequestsQuerySchema>['query'];

@@ -110,3 +110,23 @@ export async function addHandoverNote(req: AuthenticatedRequest, res: Response, 
     sendResponse({ res, message: 'Handover note added', data });
   } catch (err) { next(err); }
 }
+
+// Tickets
+export async function createTicket(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.createTicket(req.user!.tenantId, req.user!.userId, req.body);
+    sendResponse({ res, statusCode: 201, message: 'Ticket created successfully', data });
+  } catch (err) { next(err); }
+}
+export async function getTickets(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const result = await service.getTickets(req.user!.tenantId, req.query as any);
+    sendPaginatedResponse(res, result.tickets, result.total, result.page, result.limit, 'Tickets retrieved successfully');
+  } catch (err) { next(err); }
+}
+export async function getTicketById(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.getTicketById(req.user!.tenantId, req.params.id as string);
+    sendResponse({ res, message: 'Ticket retrieved successfully', data });
+  } catch (err) { next(err); }
+}

@@ -242,3 +242,43 @@ export async function getAdministrationSchedule(
     next(err);
   }
 }
+
+// ============================================================
+// Allergy Check & Formulary Search
+// ============================================================
+
+export async function checkAllergy(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const result = await prescriptionsService.checkAllergy(tenantId, req.query as any);
+    sendResponse({
+      res,
+      message: 'Allergy check completed',
+      data: result,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function searchFormulary(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const drugs = await prescriptionsService.searchFormulary(tenantId, req.query as any);
+    sendResponse({
+      res,
+      message: 'Formulary search results',
+      data: drugs,
+    });
+  } catch (err) {
+    next(err);
+  }
+}

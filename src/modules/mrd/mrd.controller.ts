@@ -39,3 +39,126 @@ export async function createMrdRequest(
     next(err);
   }
 }
+
+// ==================== Discharge Summary ====================
+
+export async function generateDischargeSummary(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const { admissionId } = req.query as { admissionId: string };
+    const result = await mrdService.generateDischargeSummary(tenantId, admissionId);
+    sendResponse({
+      res,
+      statusCode: 200,
+      message: 'Discharge summary generated successfully',
+      data: result,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getDischargeSummaryById(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const id = req.params.id as string;
+    const result = await mrdService.getDischargeSummaryById(tenantId, id);
+    sendResponse({
+      res,
+      statusCode: 200,
+      message: 'Discharge summary retrieved successfully',
+      data: result,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getDischargeSummaryByAdmission(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const admissionId = req.params.admissionId as string;
+    const result = await mrdService.getDischargeSummaryByAdmission(tenantId, admissionId);
+    sendResponse({
+      res,
+      statusCode: 200,
+      message: 'Discharge summary retrieved successfully',
+      data: result,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function updateDischargeSummary(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const id = req.params.id as string;
+    const result = await mrdService.updateDischargeSummary(tenantId, id, req.body);
+    sendResponse({
+      res,
+      statusCode: 200,
+      message: 'Discharge summary updated successfully',
+      data: result,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function signDischargeSummary(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const id = req.params.id as string;
+    const result = await mrdService.signDischargeSummary(tenantId, id, userId);
+    sendResponse({
+      res,
+      statusCode: 200,
+      message: 'Discharge summary signed successfully',
+      data: result,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function publishDischargeSummary(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const id = req.params.id as string;
+    const result = await mrdService.publishDischargeSummary(tenantId, id);
+    sendResponse({
+      res,
+      statusCode: 200,
+      message: 'Discharge summary published successfully',
+      data: result,
+    });
+  } catch (err) {
+    next(err);
+  }
+}

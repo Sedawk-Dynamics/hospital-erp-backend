@@ -18,6 +18,8 @@ import type {
   GetDiagnosesQuery,
   GetAllDiagnosesQuery,
   UpdateDiagnosisInput,
+  CreateOtRequestInput,
+  GetOtRequestsQuery,
 } from './clinical.validation';
 
 // ==================== Visits ====================
@@ -1082,4 +1084,166 @@ export async function deleteDiagnosis(tenantId: string, id: string) {
   await prisma.diagnosis.delete({ where: { id } });
 
   logger.info({ diagnosisId: id }, 'Diagnosis deleted');
+}
+
+// ==================== OT Requests ====================
+
+/**
+ * Create an OT (Operating Theater) request.
+ */
+export async function createOtRequest(tenantId: string, data: CreateOtRequestInput) {
+  // Verify patient belongs to tenant
+  const patient = await prisma.patient.findFirst({
+    where: { id: data.patientId, tenantId },
+  });
+  if (!patient) {
+    throw AppError.notFound('Patient not found');
+  }
+
+  // Verify visit belongs to tenant
+  const visit = await prisma.visit.findFirst({
+    where: { id: data.visitId, tenantId },
+  });
+  if (!visit) {
+    throw AppError.notFound('Visit not found');
+  }
+
+  // Verify doctor belongs to tenant
+  const doctor = await prisma.doctorProfile.findFirst({
+    where: { id: data.doctorId, tenantId },
+  });
+  if (!doctor) {
+    throw AppError.notFound('Doctor not found');
+  }
+
+  const otRequest = await prisma.otRequest.create({
+    data: {
+      tenantId,
+      patientId: data.patientId,
+      visitId: data.visitId,
+      doctorId: data.doctorId,
+      procedureName: data.procedureName,
+      procedureDetails: data.procedureDetails,
+      urgency: data.urgency ?? 'elective',
+      preferredDate: data.preferredDate ? new Date(data.preferredDate) : undefined,
+      preferredTime: data.preferredTime ? new Date(`1970-01-01T${data.preferredTime}`) : undefined,
+      durationMinutes: data.durationMinutes,
+      requiredEquipment: data.requiredEquipment ?? undefined,
+      status: 'requested',
+    },
+    include: {
+      patient: {
+        select: { id: true, mrn: true, firstName: true, lastName: true },
+      },
+      doctor: {
+        include: {
+          user: { select: { firstName: true, lastName: true } },
+          department: { select: { id: true, name: true } },
+        },
+      },
+      visit: {
+        select: { id: true, visitType: true, visitDate: true },
+      },
+      ot: true,
+    },
+  });
+
+  logger.info({ tenantId, otRequestId: otRequest.id }, 'OT request created');
+  return otRequest;
+}
+
+/**
+ * Get paginated list of OT requests with filters.
+ */
+export async function getOtRequests(tenantId: string, query: GetOtRequestsQuery) {
+  const { skip, take, page, limit } = getPaginationParams(query);
+
+  const where: any = { tenantId };
+
+  if (query.status) where.status = query.status;
+  if (query.doctorId) where.doctorId = query.doctorId;
+  if (query.patientId) where.patientId = query.patientId;
+
+  if (query.fromDate) {
+    where.preferredDate = { ...where.preferredDate, gte: new Date(query.fromDate) };
+  }
+  if (query.toDate) {
+    where.preferredDate = { ...where.preferredDate, lte: new Date(query.toDate) };
+  }
+
+  if (query.search) {
+    where.OR = [
+      { procedureName: { contains: query.search, mode: 'insensitive' } },
+      { patient: { firstName: { contains: query.search, mode: 'insensitive' } } },
+      { patient: { lastName: { contains: query.search, mode: 'insensitive' } } },
+      { patient: { mrn: { contains: query.search, mode: 'insensitive' } } },
+    ];
+  }
+
+  const [otRequests, total] = await Promise.all([
+    prisma.otRequest.findMany({
+      where,
+      skip,
+      take,
+      include: {
+        patient: {
+          select: { id: true, mrn: true, firstName: true, lastName: true, phone: true },
+        },
+        doctor: {
+          include: {
+            user: { select: { firstName: true, lastName: true } },
+            department: { select: { id: true, name: true } },
+          },
+        },
+        visit: {
+          select: { id: true, visitType: true, visitDate: true },
+        },
+        ot: true,
+      },
+      orderBy: { createdAt: query.sortOrder ?? 'desc' },
+    }),
+    prisma.otRequest.count({ where }),
+  ]);
+
+  return { otRequests, total, page, limit };
+}
+
+/**
+ * Get a single OT request by ID.
+ */
+export async function getOtRequestById(tenantId: string, id: string) {
+  const otRequest = await prisma.otRequest.findFirst({
+    where: { id, tenantId },
+    include: {
+      patient: {
+        select: {
+          id: true,
+          mrn: true,
+          firstName: true,
+          lastName: true,
+          phone: true,
+          email: true,
+          dateOfBirth: true,
+          gender: true,
+          bloodGroup: true,
+        },
+      },
+      doctor: {
+        include: {
+          user: { select: { firstName: true, lastName: true, email: true } },
+          department: { select: { id: true, name: true } },
+        },
+      },
+      visit: {
+        select: { id: true, visitType: true, visitDate: true, chiefComplaint: true, status: true },
+      },
+      ot: true,
+    },
+  });
+
+  if (!otRequest) {
+    throw AppError.notFound('OT request not found');
+  }
+
+  return otRequest;
 }

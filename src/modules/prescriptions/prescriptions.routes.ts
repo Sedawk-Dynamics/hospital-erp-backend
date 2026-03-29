@@ -15,9 +15,15 @@ import {
   recordAdministrationSchema,
   getAdministrationRecordsQuerySchema,
   getAdministrationScheduleQuerySchema,
+  allergyCheckQuerySchema,
+  formularySearchQuerySchema,
 } from './prescriptions.validation';
 
 export const prescriptionRoutes = Router();
+
+// --- Allergy Check & Formulary Search (must be before /:id) ---
+prescriptionRoutes.get('/allergy-check', authenticate, requirePermission('prescriptions', 'read'), validate(allergyCheckQuerySchema), controller.checkAllergy);
+prescriptionRoutes.get('/formulary-search', authenticate, requirePermission('prescriptions', 'read'), validate(formularySearchQuerySchema), controller.searchFormulary);
 
 // --- Prescriptions ---
 prescriptionRoutes.post('/', authenticate, requirePermission('prescriptions', 'create'), validate(createPrescriptionSchema), controller.createPrescription);

@@ -11,6 +11,8 @@ import type {
   CreateHandoverInput,
   GetHandoversQuery,
   AddHandoverNoteInput,
+  CreateTicketInput,
+  GetTicketsQuery,
 } from './communication.validation';
 
 // ============================================================
@@ -618,4 +620,169 @@ export async function addHandoverNote(
     'Handover note updated with addendum',
   );
   return updated;
+}
+
+// ============================================================
+// Tickets
+// ============================================================
+
+/**
+ * Generate a unique ticket number.
+ */
+function generateTicketNumber(): string {
+  const timestamp = Date.now().toString(36).toUpperCase();
+  const random = Math.random().toString(36).substring(2, 6).toUpperCase();
+  return `TKT-${timestamp}${random}`;
+}
+
+/**
+ * Create a new ticket.
+ */
+export async function createTicket(tenantId: string, raisedBy: string, data: CreateTicketInput) {
+  // Verify patient if provided
+  if (data.patientId) {
+    const patient = await prisma.patient.findFirst({
+      where: { id: data.patientId, tenantId },
+    });
+    if (!patient) {
+      throw AppError.notFound('Patient not found');
+    }
+  }
+
+  // Verify department if provided
+  if (data.departmentId) {
+    const department = await prisma.department.findFirst({
+      where: { id: data.departmentId, tenantId },
+    });
+    if (!department) {
+      throw AppError.notFound('Department not found');
+    }
+  }
+
+  // Verify assignee if provided
+  if (data.assignedTo) {
+    const assignee = await prisma.user.findFirst({
+      where: { id: data.assignedTo, tenantId },
+    });
+    if (!assignee) {
+      throw AppError.notFound('Assigned user not found');
+    }
+  }
+
+  const ticket = await prisma.ticket.create({
+    data: {
+      tenantId,
+      ticketNumber: generateTicketNumber(),
+      raisedBy,
+      ticketType: data.ticketType,
+      subject: data.subject,
+      description: data.description,
+      priority: data.priority ?? 'medium',
+      patientId: data.patientId,
+      departmentId: data.departmentId,
+      assignedTo: data.assignedTo,
+      status: 'open',
+    },
+    include: {
+      raiser: {
+        select: { id: true, firstName: true, lastName: true, email: true },
+      },
+      assignee: {
+        select: { id: true, firstName: true, lastName: true, email: true },
+      },
+      patient: {
+        select: { id: true, mrn: true, firstName: true, lastName: true },
+      },
+      department: {
+        select: { id: true, name: true },
+      },
+    },
+  });
+
+  logger.info({ tenantId, ticketId: ticket.id, ticketNumber: ticket.ticketNumber }, 'Ticket created');
+  return ticket;
+}
+
+/**
+ * Get paginated list of tickets with filters.
+ */
+export async function getTickets(tenantId: string, query: GetTicketsQuery) {
+  const { skip, take, page, limit } = getPaginationParams(query);
+
+  const where: any = { tenantId };
+
+  if (query.status) where.status = query.status;
+  if (query.ticketType) where.ticketType = query.ticketType;
+  if (query.raisedBy) where.raisedBy = query.raisedBy;
+  if (query.assignedTo) where.assignedTo = query.assignedTo;
+
+  if (query.search) {
+    where.OR = [
+      { subject: { contains: query.search, mode: 'insensitive' } },
+      { description: { contains: query.search, mode: 'insensitive' } },
+      { ticketNumber: { contains: query.search, mode: 'insensitive' } },
+    ];
+  }
+
+  const [tickets, total] = await Promise.all([
+    prisma.ticket.findMany({
+      where,
+      skip,
+      take,
+      include: {
+        raiser: {
+          select: { id: true, firstName: true, lastName: true, email: true },
+        },
+        assignee: {
+          select: { id: true, firstName: true, lastName: true, email: true },
+        },
+        patient: {
+          select: { id: true, mrn: true, firstName: true, lastName: true },
+        },
+        department: {
+          select: { id: true, name: true },
+        },
+      },
+      orderBy: { createdAt: query.sortOrder ?? 'desc' },
+    }),
+    prisma.ticket.count({ where }),
+  ]);
+
+  return { tickets, total, page, limit };
+}
+
+/**
+ * Get a single ticket by ID.
+ */
+export async function getTicketById(tenantId: string, id: string) {
+  const ticket = await prisma.ticket.findFirst({
+    where: { id, tenantId },
+    include: {
+      raiser: {
+        select: { id: true, firstName: true, lastName: true, email: true },
+      },
+      assignee: {
+        select: { id: true, firstName: true, lastName: true, email: true },
+      },
+      patient: {
+        select: {
+          id: true,
+          mrn: true,
+          firstName: true,
+          lastName: true,
+          phone: true,
+          email: true,
+        },
+      },
+      department: {
+        select: { id: true, name: true },
+      },
+    },
+  });
+
+  if (!ticket) {
+    throw AppError.notFound('Ticket not found');
+  }
+
+  return ticket;
 }

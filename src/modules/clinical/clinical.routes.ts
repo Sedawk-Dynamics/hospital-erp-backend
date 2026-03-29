@@ -26,6 +26,9 @@ import {
   getAllDiagnosesQuerySchema,
   diagnosisIdParamSchema,
   updateDiagnosisSchema,
+  createOtRequestSchema,
+  getOtRequestsQuerySchema,
+  otRequestIdParamSchema,
 } from './clinical.validation';
 import * as controller from './clinical.controller';
 
@@ -63,3 +66,8 @@ clinicalRoutes.get('/diagnoses', authenticate, requirePermission('diagnoses', 'r
 clinicalRoutes.get('/diagnoses/:patientId', authenticate, requirePermission('diagnoses', 'read'), validate(getDiagnosesQuerySchema), controller.getDiagnoses);
 clinicalRoutes.put('/diagnoses/:id', authenticate, requirePermission('diagnoses', 'update'), validate(updateDiagnosisSchema), controller.updateDiagnosis);
 clinicalRoutes.delete('/diagnoses/:id', authenticate, requirePermission('diagnoses', 'delete'), validate(diagnosisIdParamSchema), controller.deleteDiagnosis);
+
+// --- OT Requests ---
+clinicalRoutes.post('/ot-requests', authenticate, requirePermission('ot_requests', 'create'), validate(createOtRequestSchema), controller.createOtRequest);
+clinicalRoutes.get('/ot-requests', authenticate, requirePermission('ot_requests', 'read'), validate(getOtRequestsQuerySchema), controller.getOtRequests);
+clinicalRoutes.get('/ot-requests/:id', authenticate, requirePermission('ot_requests', 'read'), validate(otRequestIdParamSchema), controller.getOtRequestById);

@@ -149,6 +149,21 @@ export const getAdministrationScheduleQuerySchema = z.object({
   }),
 });
 
+// --- Allergy Check & Formulary Search ---
+
+export const allergyCheckQuerySchema = z.object({
+  query: z.object({
+    patientId: z.string().uuid('Invalid patient ID'),
+    drugName: z.string().min(1, 'Drug name is required').max(255),
+  }),
+});
+
+export const formularySearchQuerySchema = z.object({
+  query: z.object({
+    search: z.string().min(1, 'Search term is required').max(255),
+  }),
+});
+
 // --- Inferred Types ---
 
 export type CreatePrescriptionInput = z.infer<typeof createPrescriptionSchema>['body'];
@@ -159,3 +174,5 @@ export type UpdatePrescriptionItemInput = z.infer<typeof updatePrescriptionItemS
 export type RecordAdministrationInput = z.infer<typeof recordAdministrationSchema>['body'];
 export type GetAdministrationRecordsQuery = z.infer<typeof getAdministrationRecordsQuerySchema>['query'];
 export type GetAdministrationScheduleQuery = z.infer<typeof getAdministrationScheduleQuerySchema>['query'];
+export type AllergyCheckQuery = z.infer<typeof allergyCheckQuerySchema>['query'];
+export type FormularySearchQuery = z.infer<typeof formularySearchQuerySchema>['query'];
