@@ -267,9 +267,11 @@ enum ProgressNoteStatus {
 }
 
 enum NursingNoteType {
-  observation @map("observation")
-  wound_care  @map("wound_care")
-  general     @map("general")
+  observation    @map("observation")
+  wound_care     @map("wound_care")
+  iv_line        @map("iv_line")
+  intake_output  @map("intake_output")
+  general        @map("general")
 }
 
 enum IVLineType {
@@ -1869,6 +1871,7 @@ model Admission {
   discharger         User?             @relation("Discharger", fields: [dischargedBy], references: [id])
   dischargeSummary   DischargeSummary?
   ivLineRecords      IVLineRecord[]
+  nursingNotes       NursingNote[]
   bills              Bill[]
 
   @@map("admissions")
@@ -1975,17 +1978,21 @@ model ProgressNote {
 }
 
 model NursingNote {
-  id        String          @id @default(uuid())
-  visitId   String          @map("visit_id")
-  patientId String          @map("patient_id")
-  nurseId   String          @map("nurse_id")
-  noteType  NursingNoteType? @map("note_type")
-  content   String
-  createdAt DateTime        @default(now()) @map("created_at")
+  id          String           @id @default(uuid())
+  visitId     String?          @map("visit_id")
+  patientId   String           @map("patient_id")
+  nurseId     String           @map("nurse_id")
+  admissionId String?          @map("admission_id")
+  noteType    NursingNoteType? @map("note_type")
+  content     String
+  metadata    Json?
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @default(now()) @updatedAt @map("updated_at")
 
-  visit   Visit   @relation(fields: [visitId], references: [id])
-  patient Patient @relation(fields: [patientId], references: [id])
-  nurse   User    @relation(fields: [nurseId], references: [id])
+  visit     Visit?    @relation(fields: [visitId], references: [id])
+  patient   Patient   @relation(fields: [patientId], references: [id])
+  nurse     User      @relation(fields: [nurseId], references: [id])
+  admission Admission? @relation(fields: [admissionId], references: [id])
 
   @@map("nursing_notes")
 }

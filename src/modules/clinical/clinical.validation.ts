@@ -75,8 +75,11 @@ export const getAdmissionsQuerySchema = z.object({
   query: paginationSchema.extend({
     patientId: z.string().uuid().optional(),
     doctorId: z.string().uuid().optional(),
+    nurseId: z.string().uuid().optional(),
     wardId: z.string().uuid().optional(),
     status: z.enum(['admitted', 'discharged', 'transferred', 'absconded']).optional(),
+    search: z.string().max(255).optional(),
+    date: z.string().optional(),
   }),
 });
 

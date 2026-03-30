@@ -990,6 +990,7 @@ export async function getSupplyRequests(tenantId: string, query: GetSupplyReques
 
   if (query.status) where.status = query.status;
   if (query.departmentId) where.departmentId = query.departmentId;
+  if ((query as any).wardId) where.wardId = (query as any).wardId;
   if (query.urgency) where.urgency = query.urgency;
 
   if (query.search) {

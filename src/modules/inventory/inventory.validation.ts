@@ -99,6 +99,8 @@ export const getItemsQuerySchema = z.object({
       .string()
       .transform((val) => val === 'true')
       .optional(),
+    wardId: z.string().uuid().optional(),
+    search: z.string().max(255).optional(),
   }),
 });
 
@@ -226,6 +228,7 @@ export const getSupplyRequestsQuerySchema = z.object({
   query: paginationSchema.extend({
     status: z.enum(['pending', 'approved', 'fulfilled', 'rejected']).optional(),
     departmentId: z.string().uuid().optional(),
+    wardId: z.string().uuid().optional(),
     urgency: z.enum(['routine', 'urgent']).optional(),
   }),
 });

@@ -352,8 +352,20 @@ export async function getAdmissions(tenantId: string, query: GetAdmissionsQuery)
 
   if (query.patientId) where.patientId = query.patientId;
   if (query.doctorId) where.doctorId = query.doctorId;
+  if ((query as any).nurseId) where.nurseId = (query as any).nurseId;
   if (query.wardId) where.wardId = query.wardId;
   if (query.status) where.status = query.status;
+
+  if ((query as any).date) {
+    const d = new Date((query as any).date);
+    if (!isNaN(d.getTime())) {
+      const start = new Date(d);
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(d);
+      end.setHours(23, 59, 59, 999);
+      where.admissionDate = { gte: start, lte: end };
+    }
+  }
 
   if (query.search) {
     where.OR = [

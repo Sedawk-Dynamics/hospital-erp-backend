@@ -79,17 +79,20 @@ export const signProgressNoteSchema = z.object({
 
 export const createNursingNoteSchema = z.object({
   body: z.object({
-    visitId: z.string().uuid('Invalid visit ID'),
+    visitId: z.string().uuid('Invalid visit ID').optional(),
     patientId: z.string().uuid('Invalid patient ID'),
-    noteType: z.enum(['observation', 'wound_care', 'general']).optional(),
+    admissionId: z.string().uuid('Invalid admission ID').optional(),
+    noteType: z.enum(['observation', 'wound_care', 'iv_line', 'intake_output', 'general']).optional(),
     content: z.string().min(1, 'Content is required').max(10000),
+    metadata: z.any().optional(),
   }),
 });
 
 export const updateNursingNoteSchema = z.object({
   body: z.object({
-    noteType: z.enum(['observation', 'wound_care', 'general']).optional(),
+    noteType: z.enum(['observation', 'wound_care', 'iv_line', 'intake_output', 'general']).optional(),
     content: z.string().min(1).max(10000).optional(),
+    metadata: z.any().optional(),
   }),
   params: z.object({
     id: z.string().uuid('Invalid nursing note ID'),
@@ -100,7 +103,8 @@ export const listNursingNotesSchema = z.object({
   query: paginationSchema.extend({
     visitId: z.string().uuid('Invalid visit ID').optional(),
     patientId: z.string().uuid('Invalid patient ID').optional(),
-    noteType: z.enum(['observation', 'wound_care', 'general']).optional(),
+    admissionId: z.string().uuid('Invalid admission ID').optional(),
+    noteType: z.enum(['observation', 'wound_care', 'iv_line', 'intake_output', 'general']).optional(),
   }),
 });
 

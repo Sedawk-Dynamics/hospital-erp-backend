@@ -275,16 +275,22 @@ export async function createNursingNote(
   userId: string,
   data: CreateNursingNoteInput,
 ) {
-  await verifyVisitTenant(data.visitId, tenantId);
+  if (data.visitId) {
+    await verifyVisitTenant(data.visitId, tenantId);
+  }
+
+  const noteData: any = {
+    patientId: data.patientId,
+    nurseId: userId,
+    noteType: data.noteType as any,
+    content: data.content,
+  };
+  if (data.visitId) noteData.visitId = data.visitId;
+  if ((data as any).admissionId) noteData.admissionId = (data as any).admissionId;
+  if ((data as any).metadata) noteData.metadata = (data as any).metadata;
 
   const note = await prisma.nursingNote.create({
-    data: {
-      visitId: data.visitId,
-      patientId: data.patientId,
-      nurseId: userId,
-      noteType: data.noteType as any,
-      content: data.content,
-    },
+    data: noteData,
     include: {
       nurse: { select: { id: true, firstName: true, lastName: true } },
       patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
@@ -301,16 +307,22 @@ export async function createNursingNote(
 export async function getNursingNotes(tenantId: string, query: ListNursingNotesQuery) {
   const { skip, take, page, limit } = getPaginationParams(query);
 
-  const where: any = {
-    visit: { tenantId },
-  };
+  const where: any = {};
 
+  // Filter by tenant — support notes with or without a visit
   if (query.visitId) {
     where.visitId = query.visitId;
+    where.visit = { tenantId };
+  } else {
+    where.patient = { tenantId };
   }
 
   if (query.patientId) {
     where.patientId = query.patientId;
+  }
+
+  if ((query as any).admissionId) {
+    where.admissionId = (query as any).admissionId;
   }
 
   if (query.noteType) {
