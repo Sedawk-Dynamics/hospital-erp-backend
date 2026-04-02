@@ -20,6 +20,12 @@ import type {
   UpdateDiagnosisInput,
   CreateOtRequestInput,
   GetOtRequestsQuery,
+  CreateReservationInput,
+  GetReservationsQuery,
+  UpdateReservationInput,
+  CreateEstimationInput,
+  GetEstimationsQuery,
+  UpdateEstimationInput,
 } from './clinical.validation';
 
 // ==================== Visits ====================
@@ -1258,4 +1264,228 @@ export async function getOtRequestById(tenantId: string, id: string) {
   }
 
   return otRequest;
+}
+
+// ==================== Reservations ====================
+
+export async function createReservation(tenantId: string, userId: string, data: CreateReservationInput) {
+  const reservation = await prisma.reservation.create({
+    data: {
+      tenantId,
+      patientId: data.patientId,
+      doctorId: data.doctorId,
+      wardId: data.wardId,
+      bedId: data.bedId,
+      reservedDate: new Date(data.reservedDate),
+      expectedAdmission: data.expectedAdmission ? new Date(data.expectedAdmission) : undefined,
+      diagnosis: data.diagnosis,
+      speciality: data.speciality,
+      advanceAmount: data.advanceAmount ?? 0,
+      notes: data.notes,
+      createdBy: userId,
+    },
+    include: {
+      patient: { select: { id: true, mrn: true, firstName: true, lastName: true, phone: true } },
+      doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
+      ward: { select: { id: true, name: true } },
+      bed: { select: { id: true, bedNumber: true } },
+    },
+  });
+
+  logger.info({ tenantId, reservationId: reservation.id }, 'Reservation created');
+  return reservation;
+}
+
+export async function getReservations(tenantId: string, query: GetReservationsQuery) {
+  const { skip, take, page, limit } = getPaginationParams(query);
+  const where: any = { tenantId };
+
+  if (query.patientId) where.patientId = query.patientId;
+  if (query.doctorId) where.doctorId = query.doctorId;
+  if (query.wardId) where.wardId = query.wardId;
+  if (query.status) where.status = query.status;
+
+  if (query.search) {
+    where.OR = [
+      { patient: { firstName: { contains: query.search, mode: 'insensitive' } } },
+      { patient: { lastName: { contains: query.search, mode: 'insensitive' } } },
+      { patient: { mrn: { contains: query.search, mode: 'insensitive' } } },
+      { diagnosis: { contains: query.search, mode: 'insensitive' } },
+    ];
+  }
+
+  if (query.fromDate || query.toDate) {
+    where.reservedDate = {};
+    if (query.fromDate) where.reservedDate.gte = new Date(query.fromDate);
+    if (query.toDate) {
+      const end = new Date(query.toDate);
+      end.setHours(23, 59, 59, 999);
+      where.reservedDate.lte = end;
+    }
+  }
+
+  const [reservations, total] = await Promise.all([
+    prisma.reservation.findMany({
+      where,
+      skip,
+      take,
+      include: {
+        patient: { select: { id: true, mrn: true, firstName: true, lastName: true, phone: true } },
+        doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
+        ward: { select: { id: true, name: true } },
+        bed: { select: { id: true, bedNumber: true } },
+      },
+      orderBy: { reservedDate: 'desc' },
+    }),
+    prisma.reservation.count({ where }),
+  ]);
+
+  return { reservations, total, page, limit };
+}
+
+export async function getReservationById(tenantId: string, id: string) {
+  const reservation = await prisma.reservation.findFirst({
+    where: { id, tenantId },
+    include: {
+      patient: { select: { id: true, mrn: true, firstName: true, lastName: true, phone: true } },
+      doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
+      ward: { select: { id: true, name: true } },
+      bed: { select: { id: true, bedNumber: true } },
+    },
+  });
+  if (!reservation) throw AppError.notFound('Reservation not found');
+  return reservation;
+}
+
+export async function updateReservation(tenantId: string, id: string, data: UpdateReservationInput) {
+  const existing = await prisma.reservation.findFirst({ where: { id, tenantId } });
+  if (!existing) throw AppError.notFound('Reservation not found');
+
+  const reservation = await prisma.reservation.update({
+    where: { id },
+    data: {
+      ...(data.wardId && { wardId: data.wardId }),
+      ...(data.bedId !== undefined && { bedId: data.bedId }),
+      ...(data.expectedAdmission && { expectedAdmission: new Date(data.expectedAdmission) }),
+      ...(data.diagnosis !== undefined && { diagnosis: data.diagnosis }),
+      ...(data.advanceAmount !== undefined && { advanceAmount: data.advanceAmount }),
+      ...(data.notes !== undefined && { notes: data.notes }),
+      ...(data.status && { status: data.status as any }),
+    },
+    include: {
+      patient: { select: { id: true, mrn: true, firstName: true, lastName: true, phone: true } },
+      doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
+      ward: { select: { id: true, name: true } },
+      bed: { select: { id: true, bedNumber: true } },
+    },
+  });
+
+  logger.info({ tenantId, reservationId: id }, 'Reservation updated');
+  return reservation;
+}
+
+// ==================== Estimations ====================
+
+export async function createEstimation(tenantId: string, userId: string, data: CreateEstimationInput) {
+  const estimation = await prisma.estimation.create({
+    data: {
+      tenantId,
+      patientId: data.patientId,
+      doctorId: data.doctorId,
+      complaints: data.complaints,
+      estimationPeriodDays: data.estimationPeriodDays ?? 1,
+      totalEstimateAmount: data.totalEstimateAmount,
+      items: data.items ?? [],
+      notes: data.notes,
+      admissionId: data.admissionId,
+      createdBy: userId,
+    },
+    include: {
+      patient: { select: { id: true, mrn: true, firstName: true, lastName: true, phone: true } },
+      doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
+    },
+  });
+
+  logger.info({ tenantId, estimationId: estimation.id }, 'Estimation created');
+  return estimation;
+}
+
+export async function getEstimations(tenantId: string, query: GetEstimationsQuery) {
+  const { skip, take, page, limit } = getPaginationParams(query);
+  const where: any = { tenantId };
+
+  if (query.patientId) where.patientId = query.patientId;
+  if (query.doctorId) where.doctorId = query.doctorId;
+  if (query.status) where.status = query.status;
+
+  if (query.search) {
+    where.OR = [
+      { patient: { firstName: { contains: query.search, mode: 'insensitive' } } },
+      { patient: { lastName: { contains: query.search, mode: 'insensitive' } } },
+      { patient: { mrn: { contains: query.search, mode: 'insensitive' } } },
+      { complaints: { contains: query.search, mode: 'insensitive' } },
+    ];
+  }
+
+  if (query.fromDate || query.toDate) {
+    where.createdAt = {};
+    if (query.fromDate) where.createdAt.gte = new Date(query.fromDate);
+    if (query.toDate) {
+      const end = new Date(query.toDate);
+      end.setHours(23, 59, 59, 999);
+      where.createdAt.lte = end;
+    }
+  }
+
+  const [estimations, total] = await Promise.all([
+    prisma.estimation.findMany({
+      where,
+      skip,
+      take,
+      include: {
+        patient: { select: { id: true, mrn: true, firstName: true, lastName: true, phone: true } },
+        doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
+      },
+      orderBy: { createdAt: 'desc' },
+    }),
+    prisma.estimation.count({ where }),
+  ]);
+
+  return { estimations, total, page, limit };
+}
+
+export async function getEstimationById(tenantId: string, id: string) {
+  const estimation = await prisma.estimation.findFirst({
+    where: { id, tenantId },
+    include: {
+      patient: { select: { id: true, mrn: true, firstName: true, lastName: true, phone: true } },
+      doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
+    },
+  });
+  if (!estimation) throw AppError.notFound('Estimation not found');
+  return estimation;
+}
+
+export async function updateEstimation(tenantId: string, id: string, data: UpdateEstimationInput) {
+  const existing = await prisma.estimation.findFirst({ where: { id, tenantId } });
+  if (!existing) throw AppError.notFound('Estimation not found');
+
+  const estimation = await prisma.estimation.update({
+    where: { id },
+    data: {
+      ...(data.complaints !== undefined && { complaints: data.complaints }),
+      ...(data.estimationPeriodDays && { estimationPeriodDays: data.estimationPeriodDays }),
+      ...(data.totalEstimateAmount !== undefined && { totalEstimateAmount: data.totalEstimateAmount }),
+      ...(data.items && { items: data.items }),
+      ...(data.notes !== undefined && { notes: data.notes }),
+      ...(data.status && { status: data.status as any }),
+    },
+    include: {
+      patient: { select: { id: true, mrn: true, firstName: true, lastName: true, phone: true } },
+      doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
+    },
+  });
+
+  logger.info({ tenantId, estimationId: id }, 'Estimation updated');
+  return estimation;
 }

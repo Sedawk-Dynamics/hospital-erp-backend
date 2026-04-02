@@ -232,6 +232,21 @@ enum AdmissionStatus {
   absconded   @map("absconded")
 }
 
+enum ReservationStatus {
+  reserved   @map("reserved")
+  confirmed  @map("confirmed")
+  admitted   @map("admitted")
+  completed  @map("completed")
+  cancelled  @map("cancelled")
+}
+
+enum EstimationStatus {
+  draft     @map("draft")
+  finalized @map("finalized")
+  approved  @map("approved")
+  cancelled @map("cancelled")
+}
+
 enum TransferType {
   doctor_to_doctor @map("doctor_to_doctor")
   ward_to_ward     @map("ward_to_ward")
@@ -989,6 +1004,8 @@ model Tenant {
   paymentTransfers       PaymentTransfer[]
   hospitalCommission     HospitalCommission?
   demoRequests           DemoRequest[]
+  reservations           Reservation[]
+  estimations            Estimation[]
 
   @@map("tenants")
 }
@@ -1186,6 +1203,8 @@ model User {
   demoRequestsApproved       DemoRequest[]               @relation("DemoApprover")
   demoRequestsCreatedUser    DemoRequest[]               @relation("DemoCreatedUser")
   ownedSubscriptions         UserSubscription[]          @relation("SubscriptionOwner")
+  reservationsCreated        Reservation[]               @relation("ReservationCreator")
+  estimationsCreated         Estimation[]                @relation("EstimationCreator")
 
   @@unique([tenantId, email])
   @@map("users")
@@ -1359,6 +1378,7 @@ model Ward {
   patientTransfersTo   PatientTransfer[] @relation("TransferToWard")
   supplyRequests     SupplyRequest[]
   shiftHandoverNotes ShiftHandoverNote[]
+  reservations       Reservation[]
 
   @@map("wards")
 }
@@ -1397,6 +1417,7 @@ model Bed {
   admissions          Admission[]
   patientTransfersFrom PatientTransfer[] @relation("TransferFromBed")
   patientTransfersTo   PatientTransfer[] @relation("TransferToBed")
+  reservations        Reservation[]
 
   @@map("beds")
 }
@@ -1528,6 +1549,8 @@ model Patient {
   otRequests              OtRequest[]
   hospitalConnection      PatientHospitalConnection?
   mrdRequests             MrdRequest[]
+  reservations            Reservation[]
+  estimations             Estimation[]
 
   @@unique([tenantId, mrn])
   @@map("patients")
@@ -1713,6 +1736,8 @@ model DoctorProfile {
   prescriptions      Prescription[]
   otRequests         OtRequest[]
   feedback           Feedback[]
+  reservations       Reservation[]
+  estimations        Estimation[]
 
   @@map("doctor_profiles")
 }
@@ -1908,6 +1933,63 @@ model PatientTransfer {
   approver   User?          @relation("TransferApprover", fields: [approvedBy], references: [id])
 
   @@map("patient_transfers")
+}
+
+// ============================================================
+// 6b. RESERVATIONS & ESTIMATIONS
+// ============================================================
+
+model Reservation {
+  id              String            @id @default(uuid())
+  tenantId        String            @map("tenant_id")
+  patientId       String            @map("patient_id")
+  doctorId        String            @map("doctor_id")
+  wardId          String            @map("ward_id")
+  bedId           String?           @map("bed_id")
+  reservedDate    DateTime          @map("reserved_date")
+  expectedAdmission DateTime?       @map("expected_admission")
+  diagnosis       String?
+  speciality      String?           @db.VarChar(100)
+  advanceAmount   Decimal           @default(0) @map("advance_amount") @db.Decimal(12, 2)
+  notes           String?
+  status          ReservationStatus @default(reserved)
+  admissionId     String?           @unique @map("admission_id")
+  createdBy       String?           @map("created_by")
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @default(now()) @updatedAt @map("updated_at")
+
+  tenant    Tenant         @relation(fields: [tenantId], references: [id])
+  patient   Patient        @relation(fields: [patientId], references: [id])
+  doctor    DoctorProfile  @relation(fields: [doctorId], references: [id])
+  ward      Ward           @relation(fields: [wardId], references: [id])
+  bed       Bed?           @relation(fields: [bedId], references: [id])
+  creator   User?          @relation("ReservationCreator", fields: [createdBy], references: [id])
+
+  @@map("reservations")
+}
+
+model Estimation {
+  id                    String           @id @default(uuid())
+  tenantId              String           @map("tenant_id")
+  patientId             String           @map("patient_id")
+  doctorId              String           @map("doctor_id")
+  complaints            String?
+  estimationPeriodDays  Int              @default(1) @map("estimation_period_days")
+  totalEstimateAmount   Decimal          @default(0) @map("total_estimate_amount") @db.Decimal(12, 2)
+  items                 Json?            @default("[]")
+  notes                 String?
+  status                EstimationStatus @default(draft)
+  admissionId           String?          @map("admission_id")
+  createdBy             String?          @map("created_by")
+  createdAt             DateTime         @default(now()) @map("created_at")
+  updatedAt             DateTime         @default(now()) @updatedAt @map("updated_at")
+
+  tenant    Tenant         @relation(fields: [tenantId], references: [id])
+  patient   Patient        @relation(fields: [patientId], references: [id])
+  doctor    DoctorProfile  @relation(fields: [doctorId], references: [id])
+  creator   User?          @relation("EstimationCreator", fields: [createdBy], references: [id])
+
+  @@map("estimations")
 }
 
 model Vital {

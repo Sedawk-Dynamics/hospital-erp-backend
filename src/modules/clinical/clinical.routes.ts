@@ -29,6 +29,14 @@ import {
   createOtRequestSchema,
   getOtRequestsQuerySchema,
   otRequestIdParamSchema,
+  createReservationSchema,
+  getReservationsQuerySchema,
+  reservationIdParamSchema,
+  updateReservationSchema,
+  createEstimationSchema,
+  getEstimationsQuerySchema,
+  estimationIdParamSchema,
+  updateEstimationSchema,
 } from './clinical.validation';
 import * as controller from './clinical.controller';
 
@@ -71,3 +79,15 @@ clinicalRoutes.delete('/diagnoses/:id', authenticate, requirePermission('diagnos
 clinicalRoutes.post('/ot-requests', authenticate, requirePermission('ot_requests', 'create'), validate(createOtRequestSchema), controller.createOtRequest);
 clinicalRoutes.get('/ot-requests', authenticate, requirePermission('ot_requests', 'read'), validate(getOtRequestsQuerySchema), controller.getOtRequests);
 clinicalRoutes.get('/ot-requests/:id', authenticate, requirePermission('ot_requests', 'read'), validate(otRequestIdParamSchema), controller.getOtRequestById);
+
+// --- Reservations ---
+clinicalRoutes.post('/reservations', authenticate, requirePermission('admissions', 'create'), validate(createReservationSchema), controller.createReservation);
+clinicalRoutes.get('/reservations', authenticate, requirePermission('admissions', 'read'), validate(getReservationsQuerySchema), controller.getReservations);
+clinicalRoutes.get('/reservations/:id', authenticate, requirePermission('admissions', 'read'), validate(reservationIdParamSchema), controller.getReservationById);
+clinicalRoutes.put('/reservations/:id', authenticate, requirePermission('admissions', 'update'), validate(updateReservationSchema), controller.updateReservation);
+
+// --- Estimations ---
+clinicalRoutes.post('/estimations', authenticate, requirePermission('admissions', 'create'), validate(createEstimationSchema), controller.createEstimation);
+clinicalRoutes.get('/estimations', authenticate, requirePermission('admissions', 'read'), validate(getEstimationsQuerySchema), controller.getEstimations);
+clinicalRoutes.get('/estimations/:id', authenticate, requirePermission('admissions', 'read'), validate(estimationIdParamSchema), controller.getEstimationById);
+clinicalRoutes.put('/estimations/:id', authenticate, requirePermission('admissions', 'update'), validate(updateEstimationSchema), controller.updateEstimation);

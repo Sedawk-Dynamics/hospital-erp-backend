@@ -837,3 +837,49 @@ export async function getBedAvailability(tenantId: string, query: BedAvailabilit
     wards: wardSummaries,
   };
 }
+
+export async function getOccupancy(tenantId: string, query: { wardId?: string; departmentId?: string }) {
+  const where: any = { tenantId, isActive: true };
+  if (query.wardId) where.id = query.wardId;
+  if (query.departmentId) where.departmentId = query.departmentId;
+
+  const wards = await prisma.ward.findMany({
+    where,
+    include: {
+      rooms: {
+        include: {
+          beds: {
+            select: {
+              id: true,
+              status: true,
+              currentPatientId: true,
+            },
+          },
+        },
+      },
+      department: { select: { id: true, name: true } },
+    },
+    orderBy: { name: 'asc' },
+  });
+
+  return wards.map((ward) => {
+    const allBeds = ward.rooms.flatMap((r) => r.beds);
+    const total = allBeds.length;
+    const occupied = allBeds.filter((b) => b.status === 'occupied').length;
+    const available = allBeds.filter((b) => b.status === 'available').length;
+    const maintenance = allBeds.filter((b) => b.status === 'under_maintenance' || b.status === 'under_cleaning').length;
+
+    return {
+      wardId: ward.id,
+      wardName: ward.name,
+      wardType: ward.wardType,
+      department: ward.department?.name ?? null,
+      floor: ward.floor,
+      totalBeds: total,
+      occupied,
+      available,
+      maintenance,
+      occupancyPercent: total > 0 ? Math.round((occupied / total) * 100) : 0,
+    };
+  });
+}

@@ -136,3 +136,13 @@ export async function getBedAvailability(req: AuthenticatedRequest, res: Respons
     sendResponse({ res, message: 'Bed availability retrieved', data });
   } catch (err) { next(err); }
 }
+
+// Occupancy
+export async function getOccupancy(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const { wardId, departmentId } = req.query as { wardId?: string; departmentId?: string };
+    const data = await service.getOccupancy(tenantId, { wardId, departmentId });
+    sendResponse({ res, message: 'Occupancy data retrieved', data });
+  } catch (err) { next(err); }
+}

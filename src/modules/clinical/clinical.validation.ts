@@ -288,6 +288,108 @@ export const otRequestIdParamSchema = z.object({
   }),
 });
 
+// ==================== Reservations ====================
+
+export const createReservationSchema = z.object({
+  body: z.object({
+    patientId: z.string().uuid('Invalid patient ID'),
+    doctorId: z.string().uuid('Invalid doctor ID'),
+    wardId: z.string().uuid('Invalid ward ID'),
+    bedId: z.string().uuid('Invalid bed ID').optional(),
+    reservedDate: z.string().refine((val) => !isNaN(Date.parse(val)), { message: 'Invalid reserved date' }),
+    expectedAdmission: z.string().refine((val) => !isNaN(Date.parse(val)), { message: 'Invalid date' }).optional(),
+    diagnosis: z.string().max(2000).optional(),
+    speciality: z.string().max(100).optional(),
+    advanceAmount: z.number().min(0).optional(),
+    notes: z.string().max(2000).optional(),
+  }),
+});
+
+export const getReservationsQuerySchema = z.object({
+  query: paginationSchema.extend({
+    patientId: z.string().uuid().optional(),
+    doctorId: z.string().uuid().optional(),
+    wardId: z.string().uuid().optional(),
+    status: z.enum(['reserved', 'confirmed', 'admitted', 'completed', 'cancelled']).optional(),
+    search: z.string().max(255).optional(),
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
+  }),
+});
+
+export const reservationIdParamSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid reservation ID'),
+  }),
+});
+
+export const updateReservationSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid reservation ID'),
+  }),
+  body: z.object({
+    wardId: z.string().uuid().optional(),
+    bedId: z.string().uuid().optional().nullable(),
+    expectedAdmission: z.string().refine((val) => !isNaN(Date.parse(val)), { message: 'Invalid date' }).optional(),
+    diagnosis: z.string().max(2000).optional(),
+    advanceAmount: z.number().min(0).optional(),
+    notes: z.string().max(2000).optional(),
+    status: z.enum(['reserved', 'confirmed', 'admitted', 'completed', 'cancelled']).optional(),
+  }),
+});
+
+// ==================== Estimations ====================
+
+export const createEstimationSchema = z.object({
+  body: z.object({
+    patientId: z.string().uuid('Invalid patient ID'),
+    doctorId: z.string().uuid('Invalid doctor ID'),
+    complaints: z.string().max(2000).optional(),
+    estimationPeriodDays: z.number().int().min(1).default(1),
+    totalEstimateAmount: z.number().min(0),
+    items: z.array(z.object({
+      description: z.string().min(1),
+      amount: z.number().min(0),
+    })).optional(),
+    notes: z.string().max(2000).optional(),
+    admissionId: z.string().uuid().optional(),
+  }),
+});
+
+export const getEstimationsQuerySchema = z.object({
+  query: paginationSchema.extend({
+    patientId: z.string().uuid().optional(),
+    doctorId: z.string().uuid().optional(),
+    status: z.enum(['draft', 'finalized', 'approved', 'cancelled']).optional(),
+    search: z.string().max(255).optional(),
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
+  }),
+});
+
+export const estimationIdParamSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid estimation ID'),
+  }),
+});
+
+export const updateEstimationSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid estimation ID'),
+  }),
+  body: z.object({
+    complaints: z.string().max(2000).optional(),
+    estimationPeriodDays: z.number().int().min(1).optional(),
+    totalEstimateAmount: z.number().min(0).optional(),
+    items: z.array(z.object({
+      description: z.string().min(1),
+      amount: z.number().min(0),
+    })).optional(),
+    notes: z.string().max(2000).optional(),
+    status: z.enum(['draft', 'finalized', 'approved', 'cancelled']).optional(),
+  }),
+});
+
 // ==================== Exported Types ====================
 
 export type CreateVisitInput = z.infer<typeof createVisitSchema>['body'];
@@ -312,3 +414,11 @@ export type UpdateDiagnosisInput = z.infer<typeof updateDiagnosisSchema>['body']
 
 export type CreateOtRequestInput = z.infer<typeof createOtRequestSchema>['body'];
 export type GetOtRequestsQuery = z.infer<typeof getOtRequestsQuerySchema>['query'];
+
+export type CreateReservationInput = z.infer<typeof createReservationSchema>['body'];
+export type GetReservationsQuery = z.infer<typeof getReservationsQuerySchema>['query'];
+export type UpdateReservationInput = z.infer<typeof updateReservationSchema>['body'];
+
+export type CreateEstimationInput = z.infer<typeof createEstimationSchema>['body'];
+export type GetEstimationsQuery = z.infer<typeof getEstimationsQuerySchema>['query'];
+export type UpdateEstimationInput = z.infer<typeof updateEstimationSchema>['body'];

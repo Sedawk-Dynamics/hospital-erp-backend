@@ -487,3 +487,153 @@ export async function getOtRequestById(
     next(err);
   }
 }
+
+// ==================== Reservations ====================
+
+export async function createReservation(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const data = await clinicalService.createReservation(tenantId, userId, req.body);
+    sendResponse({
+      res,
+      statusCode: 201,
+      message: 'Reservation created',
+      data,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getReservations(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const { reservations, total, page, limit } = await clinicalService.getReservations(
+      tenantId,
+      req.query as any,
+    );
+    sendPaginatedResponse(res, reservations, total, page, limit, 'Reservations retrieved');
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getReservationById(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await clinicalService.getReservationById(tenantId, req.params.id as string);
+    sendResponse({
+      res,
+      message: 'Reservation retrieved',
+      data,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function updateReservation(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await clinicalService.updateReservation(tenantId, req.params.id as string, req.body);
+    sendResponse({
+      res,
+      message: 'Reservation updated',
+      data,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ==================== Estimations ====================
+
+export async function createEstimation(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const data = await clinicalService.createEstimation(tenantId, userId, req.body);
+    sendResponse({
+      res,
+      statusCode: 201,
+      message: 'Estimation created',
+      data,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getEstimations(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const { estimations, total, page, limit } = await clinicalService.getEstimations(
+      tenantId,
+      req.query as any,
+    );
+    sendPaginatedResponse(res, estimations, total, page, limit, 'Estimations retrieved');
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getEstimationById(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await clinicalService.getEstimationById(tenantId, req.params.id as string);
+    sendResponse({
+      res,
+      message: 'Estimation retrieved',
+      data,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function updateEstimation(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await clinicalService.updateEstimation(tenantId, req.params.id as string, req.body);
+    sendResponse({
+      res,
+      message: 'Estimation updated',
+      data,
+    });
+  } catch (err) {
+    next(err);
+  }
+}

@@ -50,6 +50,7 @@ infrastructureRoutes.delete('/rooms/:id', authenticate, requirePermission('rooms
 infrastructureRoutes.post('/beds', authenticate, requirePermission('beds', 'create'), validate(createBedSchema), controller.createBed);
 infrastructureRoutes.get('/beds', authenticate, requirePermission('beds', 'read'), validate(listBedsSchema), controller.getBeds);
 infrastructureRoutes.get('/beds/availability', authenticate, requirePermission('beds', 'read'), validate(bedAvailabilitySchema), controller.getBedAvailability);
+infrastructureRoutes.get('/occupancy', authenticate, requirePermission('beds', 'read'), controller.getOccupancy);
 infrastructureRoutes.get('/beds/:id', authenticate, requirePermission('beds', 'read'), validate(bedIdParamSchema), controller.getBedById);
 infrastructureRoutes.put('/beds/:id', authenticate, requirePermission('beds', 'update'), validate(updateBedSchema), controller.updateBed);
 infrastructureRoutes.delete('/beds/:id', authenticate, requirePermission('beds', 'delete'), validate(bedIdParamSchema), controller.deleteBed);
