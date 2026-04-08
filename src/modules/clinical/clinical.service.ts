@@ -366,9 +366,9 @@ export async function getAdmissions(tenantId: string, query: GetAdmissionsQuery)
     const d = new Date((query as any).date);
     if (!isNaN(d.getTime())) {
       const start = new Date(d);
-      start.setHours(0, 0, 0, 0);
+      start.setUTCHours(0, 0, 0, 0);
       const end = new Date(d);
-      end.setHours(23, 59, 59, 999);
+      end.setUTCHours(23, 59, 59, 999);
       where.admissionDate = { gte: start, lte: end };
     }
   }
@@ -1319,7 +1319,7 @@ export async function getReservations(tenantId: string, query: GetReservationsQu
     if (query.fromDate) where.reservedDate.gte = new Date(query.fromDate);
     if (query.toDate) {
       const end = new Date(query.toDate);
-      end.setHours(23, 59, 59, 999);
+      end.setUTCHours(23, 59, 59, 999);
       where.reservedDate.lte = end;
     }
   }
@@ -1432,7 +1432,7 @@ export async function getEstimations(tenantId: string, query: GetEstimationsQuer
     if (query.fromDate) where.createdAt.gte = new Date(query.fromDate);
     if (query.toDate) {
       const end = new Date(query.toDate);
-      end.setHours(23, 59, 59, 999);
+      end.setUTCHours(23, 59, 59, 999);
       where.createdAt.lte = end;
     }
   }

@@ -546,7 +546,7 @@ export const tenantsService = {
     if (!tenant) throw AppError.notFound('Tenant not found');
 
     const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    today.setUTCHours(0, 0, 0, 0);
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
 

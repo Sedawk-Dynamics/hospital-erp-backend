@@ -48,7 +48,7 @@ export async function getDashboardStats(tenantId: string): Promise<DashboardStat
   logger.info({ tenantId }, 'Fetching dashboard stats');
 
   const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  today.setUTCHours(0, 0, 0, 0);
   const tomorrow = new Date(today);
   tomorrow.setDate(tomorrow.getDate() + 1);
 

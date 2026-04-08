@@ -365,15 +365,15 @@ export async function getAvailableSlots(tenantId: string, doctorId: string, date
 
   // Get existing appointments for this doctor on this date
   const dayStart = new Date(targetDate);
-  dayStart.setHours(0, 0, 0, 0);
+  dayStart.setUTCHours(0, 0, 0, 0);
   const dayEnd = new Date(targetDate);
-  dayEnd.setHours(23, 59, 59, 999);
+  dayEnd.setUTCHours(23, 59, 59, 999);
 
   const existingAppointments = await prisma.appointment.findMany({
     where: {
       doctorId,
       appointmentDate: { gte: dayStart, lte: dayEnd },
-      status: { notIn: ['cancelled', 'no_show'] },
+      status: { notIn: ['cancelled', 'no_show', 'pending_payment'] },
     },
     select: { startTime: true, endTime: true },
   });
@@ -439,11 +439,11 @@ export async function bookAppointment(tenantId: string, data: BookAppointmentInp
   }
 
   const appointmentDate = new Date(data.appointmentDate);
-  appointmentDate.setHours(0, 0, 0, 0);
+  appointmentDate.setUTCHours(0, 0, 0, 0);
 
   // Prevent booking in the past
   const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  today.setUTCHours(0, 0, 0, 0);
   if (appointmentDate < today) {
     throw AppError.badRequest('Cannot book an appointment in the past');
   }
@@ -466,15 +466,15 @@ export async function bookAppointment(tenantId: string, data: BookAppointmentInp
 
   // Check for slot conflicts
   const dayStart = new Date(appointmentDate);
-  dayStart.setHours(0, 0, 0, 0);
+  dayStart.setUTCHours(0, 0, 0, 0);
   const dayEnd = new Date(appointmentDate);
-  dayEnd.setHours(23, 59, 59, 999);
+  dayEnd.setUTCHours(23, 59, 59, 999);
 
   const conflicting = await prisma.appointment.findFirst({
     where: {
       doctorId: data.doctorId,
       appointmentDate: { gte: dayStart, lte: dayEnd },
-      status: { notIn: ['cancelled', 'no_show'] },
+      status: { notIn: ['cancelled', 'no_show', 'pending_payment'] },
       OR: [
         { startTime: { lt: endTimeDate }, endTime: { gt: startTimeDate } },
       ],
@@ -527,9 +527,9 @@ export async function bookAppointment(tenantId: string, data: BookAppointmentInp
 export async function getAppointmentStats(tenantId: string, date?: string) {
   const targetDate = date ? new Date(date) : new Date();
   const dayStart = new Date(targetDate);
-  dayStart.setHours(0, 0, 0, 0);
+  dayStart.setUTCHours(0, 0, 0, 0);
   const dayEnd = new Date(targetDate);
-  dayEnd.setHours(23, 59, 59, 999);
+  dayEnd.setUTCHours(23, 59, 59, 999);
 
   const where: any = {
     tenantId,
@@ -563,9 +563,9 @@ export async function getAppointments(tenantId: string, query: GetAppointmentsQu
   if (query.date) {
     const targetDate = new Date(query.date);
     const dayStart = new Date(targetDate);
-    dayStart.setHours(0, 0, 0, 0);
+    dayStart.setUTCHours(0, 0, 0, 0);
     const dayEnd = new Date(targetDate);
-    dayEnd.setHours(23, 59, 59, 999);
+    dayEnd.setUTCHours(23, 59, 59, 999);
     where.appointmentDate = { gte: dayStart, lte: dayEnd };
   } else {
     if (query.fromDate) {
@@ -839,9 +839,9 @@ export async function generateQueueToken(tenantId: string, appointmentId: string
 
   // Get the last token number for the doctor on this date
   const dayStart = new Date(appointment.appointmentDate);
-  dayStart.setHours(0, 0, 0, 0);
+  dayStart.setUTCHours(0, 0, 0, 0);
   const dayEnd = new Date(appointment.appointmentDate);
-  dayEnd.setHours(23, 59, 59, 999);
+  dayEnd.setUTCHours(23, 59, 59, 999);
 
   const lastToken = await prisma.queueToken.findFirst({
     where: {
@@ -886,9 +886,9 @@ export async function generateQueueToken(tenantId: string, appointmentId: string
 export async function getQueueByDoctor(tenantId: string, doctorId: string, date?: string) {
   const targetDate = date ? new Date(date) : new Date();
   const dayStart = new Date(targetDate);
-  dayStart.setHours(0, 0, 0, 0);
+  dayStart.setUTCHours(0, 0, 0, 0);
   const dayEnd = new Date(targetDate);
-  dayEnd.setHours(23, 59, 59, 999);
+  dayEnd.setUTCHours(23, 59, 59, 999);
 
   const queue = await prisma.queueToken.findMany({
     where: {
@@ -922,9 +922,9 @@ export async function getQueueByDoctor(tenantId: string, doctorId: string, date?
 export async function getTodayAppointments(tenantId: string, doctorId: string) {
   const today = new Date();
   const dayStart = new Date(today);
-  dayStart.setHours(0, 0, 0, 0);
+  dayStart.setUTCHours(0, 0, 0, 0);
   const dayEnd = new Date(today);
-  dayEnd.setHours(23, 59, 59, 999);
+  dayEnd.setUTCHours(23, 59, 59, 999);
 
   const appointments = await prisma.appointment.findMany({
     where: {

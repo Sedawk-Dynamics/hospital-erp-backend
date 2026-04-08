@@ -651,12 +651,12 @@ export async function getDoctorSlotsForPatient(
 
   const targetDate = new Date(date);
   const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  targetDate.setHours(0, 0, 0, 0);
+  today.setUTCHours(0, 0, 0, 0);
+  targetDate.setUTCHours(0, 0, 0, 0);
   if (targetDate < today) {
     return { date, doctorId, slots: [], message: 'Cannot view slots for past dates' };
   }
-  targetDate.setHours(0, 0, 0, 0);
+  targetDate.setUTCHours(0, 0, 0, 0);
   const dayOfWeek = targetDate.getDay();
 
   const schedule = await prisma.doctorSchedule.findFirst({
@@ -683,9 +683,9 @@ export async function getDoctorSlotsForPatient(
 
   // Get booked appointments
   const dayStart = new Date(targetDate);
-  dayStart.setHours(0, 0, 0, 0);
+  dayStart.setUTCHours(0, 0, 0, 0);
   const dayEnd = new Date(targetDate);
-  dayEnd.setHours(23, 59, 59, 999);
+  dayEnd.setUTCHours(23, 59, 59, 999);
 
   const existingAppointments = await prisma.appointment.findMany({
     where: {
@@ -773,11 +773,11 @@ export async function bookAppointmentAsPatient(
   if (!doctor) throw AppError.notFound('Doctor not found or unavailable');
 
   const appointmentDate = new Date(data.appointmentDate);
-  appointmentDate.setHours(0, 0, 0, 0);
+  appointmentDate.setUTCHours(0, 0, 0, 0);
 
   // Prevent booking in the past
   const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  today.setUTCHours(0, 0, 0, 0);
   if (appointmentDate < today) {
     throw AppError.badRequest('Cannot book an appointment in the past');
   }
@@ -792,9 +792,9 @@ export async function bookAppointmentAsPatient(
 
   // Check slot conflict
   const dayStart = new Date(appointmentDate);
-  dayStart.setHours(0, 0, 0, 0);
+  dayStart.setUTCHours(0, 0, 0, 0);
   const dayEnd = new Date(appointmentDate);
-  dayEnd.setHours(23, 59, 59, 999);
+  dayEnd.setUTCHours(23, 59, 59, 999);
 
   const startTimeDate = timeToDate(data.startTime);
   const endTimeDate = timeToDate(data.endTime);
@@ -803,7 +803,7 @@ export async function bookAppointmentAsPatient(
     where: {
       doctorId: data.doctorId,
       appointmentDate: { gte: dayStart, lte: dayEnd },
-      status: { notIn: ['cancelled', 'no_show'] },
+      status: { notIn: ['cancelled', 'no_show', 'pending_payment'] },
       OR: [
         { startTime: { lt: endTimeDate }, endTime: { gt: startTimeDate } },
       ],
@@ -822,7 +822,7 @@ export async function bookAppointmentAsPatient(
       appointmentType: 'scheduled',
       visitType: 'new',
       reason: data.reason,
-      status: 'booked',
+      status: 'pending_payment',
       bookedBy: userId,
     },
     include: {
@@ -837,6 +837,40 @@ export async function bookAppointmentAsPatient(
   });
 
   return appointment;
+}
+
+/**
+ * Confirm appointment payment — moves status from pending_payment to booked.
+ */
+export async function confirmAppointmentPayment(
+  appointmentId: string,
+  paymentMethod: 'online' | 'frontdesk',
+) {
+  const appointment = await prisma.appointment.findUnique({
+    where: { id: appointmentId },
+  });
+
+  if (!appointment) throw AppError.notFound('Appointment not found');
+
+  // Only transition from pending_payment
+  if (appointment.status !== 'pending_payment') {
+    return appointment;
+  }
+
+  const updated = await prisma.appointment.update({
+    where: { id: appointmentId },
+    data: { status: 'booked' },
+    include: {
+      patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+      doctor: {
+        include: {
+          user: { select: { firstName: true, lastName: true } },
+        },
+      },
+    },
+  });
+
+  return updated;
 }
 
 /**
@@ -1124,6 +1158,18 @@ export async function verifyPatientPayment(data: {
     data: { razorpayPaymentId: data.razorpay_payment_id },
   });
 
+  // Confirm appointment (pending_payment → booked) via the payment record
+  const payment = await prisma.payment.findUnique({
+    where: { id: transfer.paymentId },
+    include: { bill: { include: { billItems: true } } },
+  });
+  if (payment?.bill?.billItems) {
+    const aptItem = payment.bill.billItems.find((i) => i.referenceType === 'appointment');
+    if (aptItem?.referenceId) {
+      await confirmAppointmentPayment(aptItem.referenceId, 'online');
+    }
+  }
+
   return { verified: true, transferId: transfer.id };
 }
 
@@ -1206,6 +1252,9 @@ export async function confirmFrontdeskPayment(
   });
 
   logger.info({ appointmentId: data.appointmentId, billId: bill.id }, 'Frontdesk payment bill created');
+
+  // Confirm appointment (pending_payment → booked)
+  await confirmAppointmentPayment(data.appointmentId, 'frontdesk');
 
   return { billId: bill.id, status: 'pending' };
 }

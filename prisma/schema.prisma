@@ -195,6 +195,7 @@ enum VisitTypeAppt {
 }
 
 enum AppointmentStatus {
+  pending_payment @map("pending_payment")
   booked          @map("booked")
   confirmed       @map("confirmed")
   checked_in      @map("checked_in")

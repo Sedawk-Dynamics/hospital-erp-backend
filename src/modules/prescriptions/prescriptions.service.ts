@@ -603,8 +603,8 @@ export async function getAdministrationSchedule(
             where: date
               ? {
                   administeredAt: {
-                    gte: new Date(new Date(date).setHours(0, 0, 0, 0)),
-                    lte: new Date(new Date(date).setHours(23, 59, 59, 999)),
+                    gte: new Date(new Date(date).setUTCHours(0, 0, 0, 0)),
+                    lte: new Date(new Date(date).setUTCHours(23, 59, 59, 999)),
                   },
                 }
               : undefined,
