@@ -23,8 +23,8 @@ export const updateDoctorScheduleSchema = z.object({
         dayOfWeek: z.number().int().min(0).max(6), // 0=Sunday, 6=Saturday
         startTime: z.string().regex(/^\d{2}:\d{2}$/, 'Time must be in HH:MM format'),
         endTime: z.string().regex(/^\d{2}:\d{2}$/, 'Time must be in HH:MM format'),
-        slotDurationMinutes: z.number().int().min(5).max(120).default(15),
-        maxPatients: z.number().int().positive().max(200).optional(),
+        slotDurationMinutes: z.coerce.number().int().min(5).max(120).default(15),
+        maxPatients: z.coerce.number().int().positive().max(200).optional().nullable().transform((v) => v ?? undefined),
         isActive: z.boolean().default(true),
       }),
     ).min(1, 'At least one schedule slot is required'),

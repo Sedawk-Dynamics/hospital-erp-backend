@@ -59,6 +59,24 @@ export async function getDoctorProfile(
   }
 }
 
+export async function updateDoctorProfile(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const doctor = await appointmentsService.updateDoctorProfile(tenantId, req.params.id as string, req.body);
+    sendResponse({
+      res,
+      message: 'Doctor profile updated successfully',
+      data: doctor,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function updateDoctorSchedule(
   req: AuthenticatedRequest,
   res: Response,

@@ -125,7 +125,13 @@ export function requirePermission(module: string, action: string) {
 
 /**
  * Check if the user has an active subscription.
- * Subscriptions are owned by users, not tenants/hospitals.
+ *
+ * Subscriptions are owned by admins (hospital owners), not by staff.
+ * Resolution order:
+ *   1. Check if the current user owns a subscription (admin flow).
+ *   2. If not, resolve via the tenant owner (staff flow — doctors,
+ *      nurses, etc. work under the admin's subscription).
+ *
  * Super admins and platform-tenant users bypass this check.
  * Returns 403 with code SUBSCRIPTION_EXPIRED if no valid subscription.
  */
@@ -141,7 +147,13 @@ export function requireActiveSubscription() {
     if (platformTenant && req.user.tenantId === platformTenant.id) return next();
 
     try {
-      const sub = await getEffectiveSubscription(req.user.userId);
+      // 1. Try user-level subscription (admin who purchased)
+      let sub = await getEffectiveSubscription(req.user.userId);
+
+      // 2. Fall back to tenant owner's subscription (staff users)
+      if (!sub) {
+        sub = await getEffectiveSubscriptionByTenantId(req.user.tenantId);
+      }
 
       if (!sub) {
         return next(AppError.forbidden('SUBSCRIPTION_EXPIRED'));

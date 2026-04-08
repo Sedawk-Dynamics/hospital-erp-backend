@@ -7,7 +7,7 @@ export const createPatientSchema = z.object({
     lastName: z.string().min(1, 'Last name is required').max(100),
     dateOfBirth: z.string().refine((val) => !isNaN(Date.parse(val)), {
       message: 'Invalid date of birth',
-    }),
+    }).optional(),
     gender: z.enum(['male', 'female', 'other', 'prefer_not_to_say']),
     bloodGroup: z
       .enum(['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'])

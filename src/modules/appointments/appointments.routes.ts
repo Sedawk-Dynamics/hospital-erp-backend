@@ -46,6 +46,14 @@ appointmentRoutes.get(
   controller.getDoctorProfile,
 );
 
+// Update doctor profile (fee, specialization, etc.)
+appointmentRoutes.patch(
+  '/doctors/:id',
+  authenticate,
+  requirePermission('appointments', 'update'),
+  controller.updateDoctorProfile,
+);
+
 // Update doctor schedule
 appointmentRoutes.put(
   '/doctors/:id/schedules',

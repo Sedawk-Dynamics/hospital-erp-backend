@@ -72,9 +72,80 @@ export async function createDoctorProfile(tenantId: string, data: CreateDoctorPr
 }
 
 /**
+ * Update a doctor profile (fee, specialization, etc.).
+ */
+export async function updateDoctorProfile(
+  tenantId: string,
+  id: string,
+  data: {
+    specialization?: string;
+    qualifications?: string;
+    consultationFee?: number;
+    experienceYears?: number;
+    bio?: string;
+    isAvailable?: boolean;
+    departmentId?: string;
+  },
+) {
+  const doctor = await prisma.doctorProfile.findFirst({
+    where: { id, tenantId },
+  });
+  if (!doctor) throw AppError.notFound('Doctor profile not found');
+
+  const updated = await prisma.doctorProfile.update({
+    where: { id },
+    data,
+    include: {
+      user: { select: { firstName: true, lastName: true, email: true, phone: true } },
+      department: { select: { id: true, name: true } },
+    },
+  });
+
+  logger.info({ tenantId, doctorId: id }, 'Doctor profile updated');
+  return updated;
+}
+
+/**
  * Get paginated list of doctor profiles.
+ * Auto-creates DoctorProfile for users with the "doctor" role who lack one.
  */
 export async function getDoctorProfiles(tenantId: string, query: GetDoctorProfilesQuery) {
+  // ── Auto-create missing DoctorProfile rows ──────────────────
+  const doctorUsersWithoutProfile = await prisma.user.findMany({
+    where: {
+      tenantId,
+      isActive: true,
+      userRoles: { some: { role: { name: 'doctor' } } },
+      doctorProfile: null,
+    },
+    select: { id: true },
+  });
+
+  if (doctorUsersWithoutProfile.length > 0) {
+    let defaultDept = await prisma.department.findFirst({
+      where: { tenantId, isActive: true },
+      select: { id: true },
+    });
+    if (!defaultDept) {
+      defaultDept = await prisma.department.create({
+        data: { tenantId, name: 'General', isActive: true },
+        select: { id: true },
+      });
+    }
+
+    for (const u of doctorUsersWithoutProfile) {
+      await prisma.doctorProfile.create({
+        data: {
+          userId: u.id,
+          tenantId,
+          departmentId: defaultDept.id,
+          isAvailable: true,
+        },
+      });
+    }
+  }
+
+  // ── Query DoctorProfile as before ───────────────────────────
   const { skip, take, page, limit } = getPaginationParams(query);
 
   const where: any = { tenantId };
@@ -134,7 +205,6 @@ export async function getDoctorProfile(tenantId: string, id: string) {
         select: { id: true, name: true },
       },
       schedules: {
-        where: { isActive: true },
         orderBy: { dayOfWeek: 'asc' },
       },
     },
@@ -174,7 +244,12 @@ export async function updateDoctorSchedule(doctorId: string, data: UpdateDoctorS
     await tx.doctorSchedule.createMany({
       data: data.schedules.map((schedule) => ({
         doctorId,
-        ...schedule,
+        dayOfWeek: schedule.dayOfWeek,
+        startTime: new Date(`1970-01-01T${schedule.startTime}:00.000Z`),
+        endTime: new Date(`1970-01-01T${schedule.endTime}:00.000Z`),
+        slotDurationMinutes: schedule.slotDurationMinutes ?? 15,
+        maxPatients: schedule.maxPatients,
+        isActive: schedule.isActive ?? true,
       })),
     });
   });
@@ -366,6 +441,13 @@ export async function bookAppointment(tenantId: string, data: BookAppointmentInp
   const appointmentDate = new Date(data.appointmentDate);
   appointmentDate.setHours(0, 0, 0, 0);
 
+  // Prevent booking in the past
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  if (appointmentDate < today) {
+    throw AppError.badRequest('Cannot book an appointment in the past');
+  }
+
   // Check for doctor leave on this date
   const leave = await prisma.doctorLeave.findFirst({
     where: {
@@ -377,6 +459,10 @@ export async function bookAppointment(tenantId: string, data: BookAppointmentInp
   if (leave && !leave.startTime && !leave.endTime) {
     throw AppError.badRequest('Doctor is on leave on the selected date');
   }
+
+  // Convert HH:MM strings to Date objects for @db.Time() fields
+  const startTimeDate = new Date(`1970-01-01T${data.startTime}:00.000Z`);
+  const endTimeDate = new Date(`1970-01-01T${data.endTime}:00.000Z`);
 
   // Check for slot conflicts
   const dayStart = new Date(appointmentDate);
@@ -390,7 +476,7 @@ export async function bookAppointment(tenantId: string, data: BookAppointmentInp
       appointmentDate: { gte: dayStart, lte: dayEnd },
       status: { notIn: ['cancelled', 'no_show'] },
       OR: [
-        { startTime: { lt: data.endTime as any }, endTime: { gt: data.startTime as any } },
+        { startTime: { lt: endTimeDate }, endTime: { gt: startTimeDate } },
       ],
     },
   });
@@ -405,8 +491,8 @@ export async function bookAppointment(tenantId: string, data: BookAppointmentInp
       patientId: data.patientId,
       doctorId: data.doctorId,
       appointmentDate,
-      startTime: data.startTime as any,
-      endTime: data.endTime as any,
+      startTime: startTimeDate,
+      endTime: endTimeDate,
       appointmentType: 'scheduled',
       consultationType: data.type || 'consultation',
       priority: data.priority || 'normal',
@@ -518,7 +604,7 @@ export async function getAppointments(tenantId: string, query: GetAppointmentsQu
     };
   }
 
-  const [appointments, total] = await Promise.all([
+  const [rawAppointments, total] = await Promise.all([
     prisma.appointment.findMany({
       where,
       skip,
@@ -539,6 +625,72 @@ export async function getAppointments(tenantId: string, query: GetAppointmentsQu
     }),
     prisma.appointment.count({ where }),
   ]);
+
+  // Enrich with payment info via BillItem.referenceType='appointment'
+  const appointmentIds = rawAppointments.map((a) => a.id);
+  const billItems = appointmentIds.length > 0
+    ? await prisma.billItem.findMany({
+        where: { referenceType: 'appointment', referenceId: { in: appointmentIds } },
+        select: {
+          referenceId: true,
+          bill: {
+            select: {
+              id: true,
+              status: true,
+              totalAmount: true,
+              amountPaid: true,
+              balanceDue: true,
+              billNumber: true,
+              payments: {
+                take: 1,
+                orderBy: { createdAt: 'desc' },
+                select: { status: true, paymentMethod: true },
+              },
+            },
+          },
+        },
+      })
+    : [];
+
+  const billMap = new Map<string, typeof billItems[number]['bill']>();
+  for (const bi of billItems) {
+    if (bi.referenceId && !billMap.has(bi.referenceId)) {
+      billMap.set(bi.referenceId, bi.bill);
+    }
+  }
+
+  const appointments = rawAppointments.map((a) => {
+    const bill = billMap.get(a.id);
+    const latestPayment = bill?.payments?.[0];
+    let paymentStatus: 'paid_online' | 'pay_at_frontdesk' | 'pending' | 'no_billing' = 'no_billing';
+
+    if (bill) {
+      if (bill.status === 'paid') {
+        paymentStatus = latestPayment?.paymentMethod === 'cash' ? 'paid_online' : 'paid_online';
+      } else if (latestPayment?.status === 'completed') {
+        paymentStatus = 'paid_online';
+      } else if (latestPayment?.status === 'pending') {
+        paymentStatus = 'pending'; // online payment initiated but not completed
+      } else {
+        paymentStatus = 'pay_at_frontdesk';
+      }
+    }
+
+    return {
+      ...a,
+      paymentInfo: bill
+        ? {
+            billId: bill.id,
+            billNumber: bill.billNumber,
+            billStatus: bill.status,
+            totalAmount: Number(bill.totalAmount),
+            amountPaid: Number(bill.amountPaid),
+            balanceDue: Number(bill.balanceDue),
+            paymentStatus,
+          }
+        : null,
+    };
+  });
 
   return { appointments, total, page, limit };
 }

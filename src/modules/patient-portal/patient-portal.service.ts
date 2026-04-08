@@ -1,5 +1,10 @@
+import crypto from 'crypto';
 import { prisma } from '../../config/database';
+import { razorpay } from '../../config/razorpay';
+import { env } from '../../config/env';
+import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
+import { commissionService } from '../commission/commission.service';
 
 // ────────────────────────────────────────────────────────────
 // MRN Generation (mirrors patients.service.ts)
@@ -546,12 +551,53 @@ export async function getAllHospitalsForBooking(
 /**
  * List doctors available in a hospital for the patient to book with.
  * No connection required — open booking.
+ *
+ * If users with the "doctor" role exist but lack a DoctorProfile row,
+ * a profile is auto-created so they appear in booking and downstream
+ * slot / appointment flows work (Appointment.doctorId → DoctorProfile).
  */
 export async function getDoctorsForBooking(
   userId: string,
   tenantId: string,
   query: { departmentId?: string; search?: string },
 ) {
+  // ── Auto-create missing DoctorProfile rows ──────────────────
+  const doctorUsersWithoutProfile = await prisma.user.findMany({
+    where: {
+      tenantId,
+      isActive: true,
+      userRoles: { some: { role: { name: 'doctor' } } },
+      doctorProfile: null,
+    },
+    select: { id: true },
+  });
+
+  if (doctorUsersWithoutProfile.length > 0) {
+    // Ensure at least one department exists for the tenant
+    let defaultDept = await prisma.department.findFirst({
+      where: { tenantId, isActive: true },
+      select: { id: true },
+    });
+    if (!defaultDept) {
+      defaultDept = await prisma.department.create({
+        data: { tenantId, name: 'General', isActive: true },
+        select: { id: true },
+      });
+    }
+
+    for (const u of doctorUsersWithoutProfile) {
+      await prisma.doctorProfile.create({
+        data: {
+          userId: u.id,
+          tenantId,
+          departmentId: defaultDept.id,
+          isAvailable: true,
+        },
+      });
+    }
+  }
+
+  // ── Query DoctorProfile as before ───────────────────────────
   const where: Record<string, unknown> = { tenantId, isAvailable: true };
   if (query.departmentId) where.departmentId = query.departmentId;
   if (query.search) {
@@ -604,6 +650,13 @@ export async function getDoctorSlotsForPatient(
   if (!doctor) throw AppError.notFound('Doctor not found');
 
   const targetDate = new Date(date);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  targetDate.setHours(0, 0, 0, 0);
+  if (targetDate < today) {
+    return { date, doctorId, slots: [], message: 'Cannot view slots for past dates' };
+  }
+  targetDate.setHours(0, 0, 0, 0);
   const dayOfWeek = targetDate.getDay();
 
   const schedule = await prisma.doctorSchedule.findFirst({
@@ -722,6 +775,13 @@ export async function bookAppointmentAsPatient(
   const appointmentDate = new Date(data.appointmentDate);
   appointmentDate.setHours(0, 0, 0, 0);
 
+  // Prevent booking in the past
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  if (appointmentDate < today) {
+    throw AppError.badRequest('Cannot book an appointment in the past');
+  }
+
   // Check leave
   const leave = await prisma.doctorLeave.findFirst({
     where: { doctorId: data.doctorId, leaveDate: appointmentDate },
@@ -838,4 +898,314 @@ export async function getDepartmentsForBooking(userId: string, tenantId: string)
   });
 
   return { data: departments };
+}
+
+// ────────────────────────────────────────────────────────────
+// Payment Info & Online Payment
+// ────────────────────────────────────────────────────────────
+
+/**
+ * Check if a hospital supports online payments.
+ */
+export async function getPaymentInfo(tenantId: string) {
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: tenantId },
+    select: { linkedAccountId: true, bankVerified: true },
+  });
+  if (!tenant) throw AppError.notFound('Hospital not found');
+
+  return {
+    onlinePaymentAvailable: !!tenant.linkedAccountId && tenant.bankVerified,
+  };
+}
+
+/**
+ * Generate a bill number in IST timezone (BILL-YYYYMMDD-XXXX).
+ */
+async function generateBillNumber(tenantId: string): Promise<string> {
+  const now = new Date();
+  const ist = new Date(now.getTime() + 5.5 * 60 * 60 * 1000);
+  const y = ist.getUTCFullYear();
+  const m = (ist.getUTCMonth() + 1).toString().padStart(2, '0');
+  const d = ist.getUTCDate().toString().padStart(2, '0');
+  const prefix = `BILL-${y}${m}${d}-`;
+
+  const latest = await prisma.bill.findFirst({
+    where: { tenantId, billNumber: { startsWith: prefix } },
+    orderBy: { billNumber: 'desc' },
+    select: { billNumber: true },
+  });
+
+  let next = 1;
+  if (latest?.billNumber) {
+    next = parseInt(latest.billNumber.split('-').pop() || '0', 10) + 1;
+  }
+
+  const billNumber = `${prefix}${next.toString().padStart(4, '0')}`;
+
+  const dup = await prisma.bill.findFirst({ where: { tenantId, billNumber } });
+  if (dup) return generateBillNumber(tenantId);
+
+  return billNumber;
+}
+
+/**
+ * Create a Razorpay order so the patient can pay online for a booked appointment.
+ * Creates a Bill + BillItem + Payment + PaymentTransfer in one go.
+ */
+export async function createPatientPaymentOrder(
+  userId: string,
+  email: string,
+  data: { appointmentId: string },
+) {
+  // Resolve patient
+  const patientLinks = await findConnectedPatients(userId);
+  const patientIds = patientLinks.map((p) => p.id);
+  if (patientIds.length === 0) {
+    const byEmail = await findPatientsByEmail(email);
+    patientIds.push(...byEmail.map((p) => p.id));
+  }
+
+  const appointment = await prisma.appointment.findFirst({
+    where: { id: data.appointmentId, patientId: { in: patientIds } },
+    include: { doctor: true },
+  });
+  if (!appointment) throw AppError.notFound('Appointment not found');
+
+  const consultationFee = appointment.doctor.consultationFee
+    ? Number(appointment.doctor.consultationFee)
+    : 0;
+  if (consultationFee <= 0) {
+    throw AppError.badRequest('No consultation fee for this doctor');
+  }
+
+  const tenantId = appointment.tenantId;
+
+  // Verify hospital has bank linked
+  const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } });
+  if (!tenant?.linkedAccountId || !tenant.bankVerified) {
+    throw AppError.badRequest('Hospital bank account not linked. Online payment unavailable.');
+  }
+
+  // Check if a bill already exists for this appointment (avoid duplicates)
+  const existingBill = await prisma.bill.findFirst({
+    where: {
+      tenantId,
+      patientId: appointment.patientId,
+      billItems: { some: { referenceType: 'appointment', referenceId: appointment.id } },
+      status: { in: ['pending', 'partially_paid'] },
+    },
+  });
+
+  let billId: string;
+
+  if (existingBill) {
+    billId = existingBill.id;
+  } else {
+    // Create a bill + bill item for the consultation fee
+    const billNumber = await generateBillNumber(tenantId);
+    const bill = await prisma.bill.create({
+      data: {
+        tenantId,
+        patientId: appointment.patientId,
+        billNumber,
+        billDate: new Date(),
+        subtotal: consultationFee,
+        discountAmount: 0,
+        taxAmount: 0,
+        totalAmount: consultationFee,
+        insuranceCoveredAmount: 0,
+        patientPayableAmount: consultationFee,
+        amountPaid: 0,
+        balanceDue: consultationFee,
+        status: 'pending',
+        generatedBy: userId,
+        billItems: {
+          create: {
+            description: 'Consultation Fee',
+            category: 'consultation',
+            quantity: 1,
+            unitPrice: consultationFee,
+            discountPercent: 0,
+            discountAmount: 0,
+            taxPercent: 0,
+            taxAmount: 0,
+            totalAmount: consultationFee,
+            referenceType: 'appointment',
+            referenceId: appointment.id,
+          },
+        },
+      },
+    });
+    billId = bill.id;
+  }
+
+  // Commission calculation
+  const commissionPercent = await commissionService.getCommissionForTenant(tenantId);
+  const commissionAmount = Math.round((consultationFee * commissionPercent / 100) * 100) / 100;
+  const hospitalAmount = Math.round((consultationFee - commissionAmount) * 100) / 100;
+  const amountInPaise = Math.round(consultationFee * 100);
+
+  // Create Razorpay order
+  const order = await razorpay.orders.create({
+    amount: amountInPaise,
+    currency: 'INR',
+    receipt: `appt_${data.appointmentId.slice(0, 8)}_${Date.now()}`,
+    notes: { tenantId, billId, appointmentId: data.appointmentId },
+  });
+
+  // Create payment + transfer records
+  const payment = await prisma.payment.create({
+    data: {
+      tenantId,
+      billId,
+      patientId: appointment.patientId,
+      paymentDate: new Date(),
+      amount: consultationFee,
+      paymentMethod: 'upi',
+      paymentType: 'regular',
+      status: 'pending',
+      processedBy: userId,
+      gatewayReference: order.id,
+      notes: 'Online consultation fee payment',
+    },
+  });
+
+  await prisma.paymentTransfer.create({
+    data: {
+      tenantId,
+      paymentId: payment.id,
+      razorpayOrderId: order.id,
+      totalAmount: consultationFee,
+      commissionAmount,
+      hospitalAmount,
+      commissionPercent,
+      transferStatus: 'pending',
+    },
+  });
+
+  logger.info({ appointmentId: data.appointmentId, billId, orderId: order.id }, 'Patient payment order created');
+
+  return {
+    orderId: order.id,
+    amount: amountInPaise,
+    currency: 'INR',
+    keyId: env.RAZORPAY_KEY_ID,
+    paymentId: payment.id,
+    billId,
+  };
+}
+
+/**
+ * Verify a Razorpay payment signature (patient portal).
+ */
+export async function verifyPatientPayment(data: {
+  razorpay_order_id: string;
+  razorpay_payment_id: string;
+  razorpay_signature: string;
+}) {
+  const body = data.razorpay_order_id + '|' + data.razorpay_payment_id;
+  const expectedSignature = crypto
+    .createHmac('sha256', env.RAZORPAY_KEY_SECRET)
+    .update(body)
+    .digest('hex');
+
+  if (expectedSignature !== data.razorpay_signature) {
+    throw AppError.badRequest('Payment verification failed: Invalid signature');
+  }
+
+  const transfer = await prisma.paymentTransfer.findUnique({
+    where: { razorpayOrderId: data.razorpay_order_id },
+  });
+  if (!transfer) throw AppError.notFound('Payment transfer not found');
+
+  await prisma.paymentTransfer.update({
+    where: { id: transfer.id },
+    data: { razorpayPaymentId: data.razorpay_payment_id },
+  });
+
+  return { verified: true, transferId: transfer.id };
+}
+
+/**
+ * Mark an appointment for front-desk payment.
+ * Creates a pending Bill so the front desk knows to collect.
+ */
+export async function confirmFrontdeskPayment(
+  userId: string,
+  email: string,
+  data: { appointmentId: string },
+) {
+  const patientLinks = await findConnectedPatients(userId);
+  const patientIds = patientLinks.map((p) => p.id);
+  if (patientIds.length === 0) {
+    const byEmail = await findPatientsByEmail(email);
+    patientIds.push(...byEmail.map((p) => p.id));
+  }
+
+  const appointment = await prisma.appointment.findFirst({
+    where: { id: data.appointmentId, patientId: { in: patientIds } },
+    include: { doctor: true },
+  });
+  if (!appointment) throw AppError.notFound('Appointment not found');
+
+  const tenantId = appointment.tenantId;
+  const consultationFee = appointment.doctor.consultationFee
+    ? Number(appointment.doctor.consultationFee)
+    : 0;
+
+  // Check if a bill already exists for this appointment
+  const existingBill = await prisma.bill.findFirst({
+    where: {
+      tenantId,
+      patientId: appointment.patientId,
+      billItems: { some: { referenceType: 'appointment', referenceId: appointment.id } },
+    },
+  });
+
+  if (existingBill) {
+    return { billId: existingBill.id, status: existingBill.status };
+  }
+
+  // Create a pending bill for front desk collection
+  const billNumber = await generateBillNumber(tenantId);
+  const amount = consultationFee > 0 ? consultationFee : 0;
+
+  const bill = await prisma.bill.create({
+    data: {
+      tenantId,
+      patientId: appointment.patientId,
+      billNumber,
+      billDate: new Date(),
+      subtotal: amount,
+      discountAmount: 0,
+      taxAmount: 0,
+      totalAmount: amount,
+      insuranceCoveredAmount: 0,
+      patientPayableAmount: amount,
+      amountPaid: 0,
+      balanceDue: amount,
+      status: 'pending',
+      generatedBy: userId,
+      billItems: {
+        create: {
+          description: 'Consultation Fee (Pay at Front Desk)',
+          category: 'consultation',
+          quantity: 1,
+          unitPrice: amount,
+          discountPercent: 0,
+          discountAmount: 0,
+          taxPercent: 0,
+          taxAmount: 0,
+          totalAmount: amount,
+          referenceType: 'appointment',
+          referenceId: appointment.id,
+        },
+      },
+    },
+  });
+
+  logger.info({ appointmentId: data.appointmentId, billId: bill.id }, 'Frontdesk payment bill created');
+
+  return { billId: bill.id, status: 'pending' };
 }

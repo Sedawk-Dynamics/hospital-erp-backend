@@ -212,4 +212,63 @@ router.get('/billing', async (req: AuthenticatedRequest, res: Response, next: Ne
   }
 });
 
+// ────────────────────────────────────────────────────────────
+// Payment
+// ────────────────────────────────────────────────────────────
+
+// GET /patient-portal/payment-info?tenantId=xxx
+router.get('/payment-info', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = req.query.tenantId as string;
+    if (!tenantId) { sendResponse({ res, statusCode: 400, message: 'tenantId is required' }); return; }
+    const result = await patientPortalService.getPaymentInfo(tenantId);
+    sendResponse({ res, statusCode: 200, message: 'Payment info', data: result });
+  } catch (err) { next(err); }
+});
+
+// POST /patient-portal/create-payment-order
+router.post('/create-payment-order', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const { appointmentId } = req.body;
+    if (!appointmentId) {
+      sendResponse({ res, statusCode: 400, message: 'appointmentId is required' });
+      return;
+    }
+    const result = await patientPortalService.createPatientPaymentOrder(
+      req.user!.userId, req.user!.email, { appointmentId },
+    );
+    sendResponse({ res, statusCode: 201, message: 'Payment order created', data: result });
+  } catch (err) { next(err); }
+});
+
+// POST /patient-portal/verify-payment
+router.post('/verify-payment', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      sendResponse({ res, statusCode: 400, message: 'razorpay_order_id, razorpay_payment_id, razorpay_signature are required' });
+      return;
+    }
+    const result = await patientPortalService.verifyPatientPayment({
+      razorpay_order_id, razorpay_payment_id, razorpay_signature,
+    });
+    sendResponse({ res, statusCode: 200, message: 'Payment verified', data: result });
+  } catch (err) { next(err); }
+});
+
+// POST /patient-portal/confirm-frontdesk-payment
+router.post('/confirm-frontdesk-payment', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const { appointmentId } = req.body;
+    if (!appointmentId) {
+      sendResponse({ res, statusCode: 400, message: 'appointmentId is required' });
+      return;
+    }
+    const result = await patientPortalService.confirmFrontdeskPayment(
+      req.user!.userId, req.user!.email, { appointmentId },
+    );
+    sendResponse({ res, statusCode: 201, message: 'Front desk payment confirmed', data: result });
+  } catch (err) { next(err); }
+});
+
 export { router as patientPortalRoutes };
