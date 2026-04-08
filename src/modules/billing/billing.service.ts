@@ -3,7 +3,7 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
-import { getISTDateStr } from '../../shared/date.utils';
+import { getISTDateStr, formatDateTimeIST } from '../../shared/date.utils';
 import type {
   CreateServiceTariffInput,
   UpdateServiceTariffInput,
@@ -332,8 +332,8 @@ export async function getCreditSettlements(
     id: key,
     ...val,
     tenantId,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+    createdAt: formatDateTimeIST(new Date()),
+    updatedAt: formatDateTimeIST(new Date()),
   }));
 
   if (query.type) {

@@ -47,6 +47,17 @@ export function getISTDateStr(): string {
   );
 }
 
+/** Format a Date as HH:mm in IST (24-hour) */
+export function formatTimeIST(date: Date | string): string {
+  const d = typeof date === 'string' ? new Date(date) : date;
+  const ist = new Date(
+    d.toLocaleString('en-US', { timeZone: IST_TIMEZONE }),
+  );
+  const hours = ist.getHours().toString().padStart(2, '0');
+  const minutes = ist.getMinutes().toString().padStart(2, '0');
+  return `${hours}:${minutes}`;
+}
+
 /** Get IST ISO string for API responses */
 export function toISTISOString(date?: Date): string {
   const d = date ?? new Date();

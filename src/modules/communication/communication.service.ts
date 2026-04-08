@@ -1,6 +1,7 @@
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
+import { formatDateTimeIST } from '../../shared/date.utils';
 import { getPaginationParams } from '../../shared/pagination';
 import type {
   CreateNotificationInput,
@@ -585,7 +586,7 @@ export async function addHandoverNote(
   }
 
   // Append additional content to the existing handover
-  const updatedContent = `${handover.content}\n\n--- Addendum by user ${userId} at ${new Date().toISOString()} ---\n${data.content}`;
+  const updatedContent = `${handover.content}\n\n--- Addendum by user ${userId} at ${formatDateTimeIST(new Date())} ---\n${data.content}`;
 
   const updateData: any = {
     content: updatedContent,

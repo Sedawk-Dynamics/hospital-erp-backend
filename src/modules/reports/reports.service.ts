@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
+import { formatDateTimeIST } from '../../shared/date.utils';
 import { getPaginationParams } from '../../shared/pagination';
 import type {
   CreateSavedReportInput,
@@ -563,7 +564,7 @@ export async function addSupportTicketComment(
   }
 
   // Append comment to description since the model doesn't have a separate comments table
-  const commentEntry = `\n\n--- Comment by ${userId} at ${new Date().toISOString()} ---\n${data.content}`;
+  const commentEntry = `\n\n--- Comment by ${userId} at ${formatDateTimeIST(new Date())} ---\n${data.content}`;
   const updatedDescription = (ticket.description || '') + commentEntry;
 
   const updated = await prisma.supportTicket.update({

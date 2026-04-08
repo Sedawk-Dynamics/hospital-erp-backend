@@ -1,6 +1,7 @@
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
+import { formatDateIST } from '../../shared/date.utils';
 import { getPaginationParams } from '../../shared/pagination';
 import type {
   CreatePrescriptionInput,
@@ -622,7 +623,7 @@ export async function getAdministrationSchedule(
 
   return {
     patientId,
-    date: date || new Date().toISOString().split('T')[0],
+    date: date || formatDateIST(new Date()),
     prescriptions,
   };
 }
