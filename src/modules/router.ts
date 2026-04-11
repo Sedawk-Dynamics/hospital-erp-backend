@@ -38,6 +38,7 @@ import { commissionRoutes } from './commission/commission.routes';
 import { bankLinkingRoutes } from './bank-linking/bank-linking.routes';
 import { onlinePaymentsRoutes } from './online-payments/online-payments.routes';
 import { demoRequestRoutes } from './demo-requests/demo-requests.routes';
+import { formsRoutes } from './forms/forms.routes';
 
 const apiRouter = Router();
 
@@ -92,5 +93,8 @@ apiRouter.use('/hospitals', hospitalsRoutes);
 
 // --- Demo Requests (public submit + super_admin management) ---
 apiRouter.use('/demo-requests', demoRequestRoutes);
+
+// --- Form Template System (super_admin authoring + hospital usage) ---
+apiRouter.use('/forms', formsRoutes);
 
 export { apiRouter };

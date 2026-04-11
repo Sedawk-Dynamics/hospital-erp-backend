@@ -722,6 +722,13 @@ export async function getAppointmentById(tenantId: string, id: string) {
         },
       },
       queueTokens: true,
+      formSubmissions: {
+        orderBy: { submittedAt: 'desc' },
+        include: {
+          instance: { select: { id: true, name: true, category: true } },
+          submitter: { select: { id: true, firstName: true, lastName: true } },
+        },
+      },
     },
   });
 

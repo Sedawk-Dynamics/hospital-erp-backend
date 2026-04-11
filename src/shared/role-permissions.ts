@@ -17,6 +17,7 @@ export const PERMISSION_MODULES = [
   'progress_notes', 'nursing_notes', 'prescriptions', 'lab_orders', 'lab_reports',
   'imaging', 'pharmacy', 'inventory', 'billing', 'payments', 'insurance',
   'blood_bank', 'hr', 'notifications', 'tickets', 'reports', 'audit_logs', 'compliance',
+  'forms',
 ] as const;
 
 export const PERMISSION_ACTIONS = ['create', 'read', 'update', 'delete', 'export', 'approve'] as const;
@@ -58,6 +59,7 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'imaging', action: 'read' }, { module: 'imaging', action: 'approve' },
       { module: 'pharmacy', action: 'read' }, { module: 'pharmacy', action: 'update' }, { module: 'pharmacy', action: 'approve' },
       { module: 'inventory', action: 'create' }, { module: 'inventory', action: 'read' }, { module: 'inventory', action: 'update' }, { module: 'inventory', action: 'delete' }, { module: 'inventory', action: 'approve' }, { module: 'inventory', action: 'export' },
+      { module: 'forms', action: 'create' }, { module: 'forms', action: 'read' }, { module: 'forms', action: 'update' }, { module: 'forms', action: 'approve' }, { module: 'forms', action: 'export' },
       { module: 'billing', action: 'create' }, { module: 'billing', action: 'read' }, { module: 'billing', action: 'update' }, { module: 'billing', action: 'delete' }, { module: 'billing', action: 'approve' }, { module: 'billing', action: 'export' },
       { module: 'payments', action: 'create' }, { module: 'payments', action: 'read' }, { module: 'payments', action: 'update' }, { module: 'payments', action: 'approve' },
       { module: 'insurance', action: 'create' }, { module: 'insurance', action: 'read' }, { module: 'insurance', action: 'update' }, { module: 'insurance', action: 'approve' }, { module: 'insurance', action: 'export' },
@@ -82,12 +84,14 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'lab_orders', action: 'read' }, { module: 'lab_orders', action: 'create' }, { module: 'lab_reports', action: 'read' },
       { module: 'imaging', action: 'read' }, { module: 'imaging', action: 'create' },
       { module: 'billing', action: 'read' }, { module: 'payments', action: 'read' },
+      { module: 'forms', action: 'read' }, { module: 'forms', action: 'create' }, { module: 'forms', action: 'approve' },
     ],
 
     patient: [
       { module: 'patients', action: 'read' }, { module: 'appointments', action: 'read' }, { module: 'appointments', action: 'create' },
       { module: 'billing', action: 'read' }, { module: 'payments', action: 'read' },
       { module: 'lab_reports', action: 'read' }, { module: 'imaging', action: 'read' }, { module: 'prescriptions', action: 'read' },
+      { module: 'forms', action: 'read' }, { module: 'forms', action: 'create' },
     ],
 
     nurse: [
@@ -101,6 +105,7 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'progress_notes', action: 'read' },
       { module: 'prescriptions', action: 'read' }, { module: 'prescriptions', action: 'update' },
       { module: 'lab_orders', action: 'read' }, { module: 'lab_reports', action: 'read' },
+      { module: 'forms', action: 'read' }, { module: 'forms', action: 'create' }, { module: 'forms', action: 'approve' },
     ],
 
     front_desk: [
@@ -109,6 +114,7 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'billing', action: 'read' }, { module: 'billing', action: 'create' },
       { module: 'payments', action: 'read' }, { module: 'payments', action: 'create' },
       { module: 'departments', action: 'read' },
+      { module: 'forms', action: 'read' }, { module: 'forms', action: 'create' }, { module: 'forms', action: 'approve' },
     ],
 
     lab_technician: [

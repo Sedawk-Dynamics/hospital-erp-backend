@@ -16,6 +16,8 @@ const DEFAULT_FEATURE_TOGGLES = [
   { featureKey: 'pharmacy', isEnabled: true, config: {} },
   { featureKey: 'billing', isEnabled: true, config: {} },
   { featureKey: 'inventory', isEnabled: true, config: {} },
+  { featureKey: 'ip_management', isEnabled: true, config: {} },
+  { featureKey: 'ot_management', isEnabled: false, config: {} },
   { featureKey: 'blood_bank', isEnabled: false, config: {} },
   { featureKey: 'imaging', isEnabled: false, config: {} },
   { featureKey: 'insurance', isEnabled: false, config: {} },
