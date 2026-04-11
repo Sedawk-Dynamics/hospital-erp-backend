@@ -485,6 +485,26 @@ export async function bookAppointment(tenantId: string, data: BookAppointmentInp
     throw AppError.conflict('This time slot is already booked');
   }
 
+  // ── Auto-detect visitType based on patient history ──
+  let visitType: 'new' | 'revisit' = 'new';
+  const lastCompletedAppt = await prisma.appointment.findFirst({
+    where: {
+      patientId: data.patientId,
+      tenantId,
+      status: 'completed',
+    },
+    orderBy: { appointmentDate: 'desc' },
+    select: { appointmentDate: true },
+  });
+
+  if (lastCompletedAppt) {
+    const daysSinceLast = Math.floor(
+      (Date.now() - new Date(lastCompletedAppt.appointmentDate).getTime()) / (1000 * 60 * 60 * 24),
+    );
+    // Within 30 days → review/revisit; otherwise → new cycle (old returning)
+    visitType = daysSinceLast <= 30 ? 'revisit' : 'new';
+  }
+
   const appointment = await prisma.appointment.create({
     data: {
       tenantId,
@@ -496,7 +516,7 @@ export async function bookAppointment(tenantId: string, data: BookAppointmentInp
       appointmentType: 'scheduled',
       consultationType: data.type || 'consultation',
       priority: data.priority || 'normal',
-      visitType: 'new',
+      visitType,
       reason: data.reason,
       notes: data.notes,
       status: 'booked',
@@ -611,7 +631,7 @@ export async function getAppointments(tenantId: string, query: GetAppointmentsQu
       take,
       include: {
         patient: {
-          select: { id: true, mrn: true, firstName: true, lastName: true, phone: true, gender: true, dateOfBirth: true },
+          select: { id: true, mrn: true, firstName: true, lastName: true, phone: true, gender: true, dateOfBirth: true, isNew: true },
         },
         doctor: {
           include: {
@@ -780,6 +800,14 @@ export async function updateAppointmentStatus(
       updateData.cancellationReason = data.cancellationReason;
     }
     updateData.cancelledBy = userId;
+  }
+
+  // When completed, mark patient as no longer new
+  if (newStatus === 'completed' && appointment.patientId) {
+    await prisma.patient.updateMany({
+      where: { id: appointment.patientId, tenantId, isNew: true },
+      data: { isNew: false },
+    });
   }
 
   const updated = await prisma.appointment.update({
