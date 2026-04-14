@@ -264,6 +264,23 @@ export async function cancelAppointment(
   }
 }
 
+export async function getConsultationFormData(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await appointmentsService.getConsultationFormData(
+      tenantId,
+      req.params.id as string,
+    );
+    sendResponse({ res, message: 'Consultation form data', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // --- Queue ---
 
 export async function generateQueueToken(

@@ -7,9 +7,7 @@ import {
   updatePatientSchema,
   searchPatientsSchema,
   addEmergencyContactSchema,
-  addAllergySchema,
   addDocumentSchema,
-  addFamilyHistorySchema,
   patientIdParamSchema,
 } from './patients.validation';
 import * as controller from './patients.controller';
@@ -69,21 +67,8 @@ patientRoutes.post(
   controller.addEmergencyContact,
 );
 
-// Add allergy
-patientRoutes.post(
-  '/:id/allergies',
-  authenticate,
-  validate(addAllergySchema),
-  controller.addAllergy,
-);
-
-// Add family history
-patientRoutes.post(
-  '/:id/family-history',
-  authenticate,
-  validate(addFamilyHistorySchema),
-  controller.addFamilyHistory,
-);
+// Allergies & family history: canonical endpoints live in /medical-history module.
+// Legacy /:id/allergies and /:id/family-history removed to avoid divergence.
 
 // Add document
 patientRoutes.post(

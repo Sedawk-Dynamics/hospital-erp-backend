@@ -3,6 +3,7 @@ import { authenticate } from '../../middleware/authenticate';
 import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse } from '../../shared/apiResponse';
 import * as patientPortalService from './patient-portal.service';
+import { uploadSingle } from '../../services/upload.service';
 
 const router = Router();
 
@@ -210,6 +211,171 @@ router.get('/prescriptions', async (req: AuthenticatedRequest, res: Response, ne
       tenantId: req.query.tenantId as string | undefined,
     });
     sendResponse({ res, statusCode: 200, message: 'Patient prescriptions', data: result.data });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── Miscellaneous Records (patient-uploaded documents) ──────
+router.get('/documents', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const data = await patientPortalService.listMyDocuments(req.user!.userId, req.user!.email, req.query.tenantId as string | undefined);
+    sendResponse({ res, message: 'Documents', data });
+  } catch (err) { next(err); }
+});
+
+router.post(
+  '/documents',
+  (req: any, res: any, next: any) => uploadSingle('file')(req, res, next),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const file = (req as any).file;
+      if (!file) return next(new Error('No file uploaded'));
+      const { title, documentType, notes } = req.body || {};
+      const data = await patientPortalService.createMyDocument(
+        req.user!.userId,
+        req.user!.email,
+        file,
+        { title, documentType, notes },
+        req.query.tenantId as string | undefined,
+      );
+      sendResponse({ res, statusCode: 201, message: 'Document uploaded', data });
+    } catch (err) { next(err); }
+  },
+);
+
+router.delete('/documents/:id', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    await patientPortalService.deleteMyDocument(req.user!.userId, req.user!.email, req.params.id as string);
+    sendResponse({ res, message: 'Document deleted' });
+  } catch (err) { next(err); }
+});
+
+// ── Current Medications (patient read-only, combined) ───────
+router.get('/current-medications', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const data = await patientPortalService.listMyCurrentMedications(req.user!.userId, req.user!.email, req.query.tenantId as string | undefined);
+    sendResponse({ res, message: 'Current medications', data });
+  } catch (err) { next(err); }
+});
+
+// ── Medical History (patient self-service) ──────────────────
+router.get('/medical-history/personal', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const data = await patientPortalService.getMyPersonalHistory(req.user!.userId, req.user!.email, req.query.tenantId as string | undefined);
+    sendResponse({ res, message: 'Personal history', data });
+  } catch (err) { next(err); }
+});
+
+router.put('/medical-history/personal', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const data = await patientPortalService.upsertMyPersonalHistory(req.user!.userId, req.user!.email, req.body, req.query.tenantId as string | undefined);
+    sendResponse({ res, message: 'Personal history saved', data });
+  } catch (err) { next(err); }
+});
+
+router.get('/medical-history/family', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const data = await patientPortalService.listMyFamilyHistory(req.user!.userId, req.user!.email, req.query.tenantId as string | undefined);
+    sendResponse({ res, message: 'Family history', data });
+  } catch (err) { next(err); }
+});
+
+router.post('/medical-history/family', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const data = await patientPortalService.createMyFamilyHistory(req.user!.userId, req.user!.email, req.body, req.query.tenantId as string | undefined);
+    sendResponse({ res, statusCode: 201, message: 'Family history added', data });
+  } catch (err) { next(err); }
+});
+
+router.put('/medical-history/family/:id', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const data = await patientPortalService.updateMyFamilyHistory(req.user!.userId, req.user!.email, req.params.id as string, req.body);
+    sendResponse({ res, message: 'Family history updated', data });
+  } catch (err) { next(err); }
+});
+
+router.delete('/medical-history/family/:id', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    await patientPortalService.deleteMyFamilyHistory(req.user!.userId, req.user!.email, req.params.id as string);
+    sendResponse({ res, message: 'Family history deleted' });
+  } catch (err) { next(err); }
+});
+
+router.get('/medical-history/allergies', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const data = await patientPortalService.listMyAllergies(req.user!.userId, req.user!.email, req.query.tenantId as string | undefined);
+    sendResponse({ res, message: 'Allergies', data });
+  } catch (err) { next(err); }
+});
+
+router.post('/medical-history/allergies', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const data = await patientPortalService.createMyAllergy(req.user!.userId, req.user!.email, req.body, req.query.tenantId as string | undefined);
+    sendResponse({ res, statusCode: 201, message: 'Allergy added', data });
+  } catch (err) { next(err); }
+});
+
+router.put('/medical-history/allergies/:id', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const data = await patientPortalService.updateMyAllergy(req.user!.userId, req.user!.email, req.params.id as string, req.body);
+    sendResponse({ res, message: 'Allergy updated', data });
+  } catch (err) { next(err); }
+});
+
+router.delete('/medical-history/allergies/:id', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    await patientPortalService.deleteMyAllergy(req.user!.userId, req.user!.email, req.params.id as string);
+    sendResponse({ res, message: 'Allergy deleted' });
+  } catch (err) { next(err); }
+});
+
+// GET /patient-portal/discharge-summaries
+router.get('/discharge-summaries', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const data = await patientPortalService.getPatientDischargeSummaries(req.user!.userId, req.user!.email);
+    sendResponse({ res, statusCode: 200, message: 'Discharge summaries', data });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /patient-portal/discharge-summaries/:id
+router.get('/discharge-summaries/:id', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const data = await patientPortalService.getPatientDischargeSummaryById(
+      req.user!.userId,
+      req.user!.email,
+      req.params.id as string,
+    );
+    sendResponse({ res, statusCode: 200, message: 'Discharge summary', data });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /patient-portal/discharge-summaries/:id/pdf
+router.get('/discharge-summaries/:id/pdf', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const summary = await patientPortalService.getPatientDischargeSummaryById(
+      req.user!.userId,
+      req.user!.email,
+      req.params.id as string,
+    );
+    const { streamDischargeSummaryPdf } = await import('../mrd/discharge-summary-pdf');
+    streamDischargeSummaryPdf(res, summary as any);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /patient-portal/drug-history
+router.get('/drug-history', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const data = await patientPortalService.getPatientDrugHistory(req.user!.userId, req.user!.email, {
+      tenantId: req.query.tenantId as string | undefined,
+    });
+    sendResponse({ res, statusCode: 200, message: 'Drug history', data });
   } catch (err) {
     next(err);
   }

@@ -1066,3 +1066,70 @@ export async function getLabReportById(tenantId: string, id: string) {
 
   return report;
 }
+
+// ============================================================
+// Investigation History (aggregated per patient)
+// ============================================================
+// Returns every lab order for the patient within the tenant, with:
+//   - per-item test info + status
+//   - all results grouped under the item that produced them
+//   - linked report status (if any)
+// Also returns a flat "abnormal" roll-up for quick display.
+
+export async function getInvestigationHistory(tenantId: string, patientId: string) {
+  const patient = await prisma.patient.findFirst({
+    where: { id: patientId, tenantId },
+    select: { id: true },
+  });
+  if (!patient) throw AppError.notFound('Patient not found');
+
+  const orders = await prisma.labOrder.findMany({
+    where: { tenantId, patientId },
+    orderBy: { createdAt: 'desc' },
+    include: {
+      orderer: { select: { id: true, firstName: true, lastName: true } },
+      visit: { select: { id: true, visitType: true, visitDate: true } },
+      labOrderItems: {
+        include: {
+          test: { select: { id: true, testName: true, testCode: true, labDepartment: { select: { name: true } } } },
+          labResults: {
+            orderBy: { enteredAt: 'desc' },
+          },
+        },
+      },
+      labReport: {
+        select: { id: true, status: true, publishedAt: true, signedAt: true },
+      },
+    },
+  });
+
+  const abnormalFlat: Array<{
+    orderId: string;
+    testName: string;
+    parameterName: string;
+    value: string | null;
+    unit: string | null;
+    normalRange: string | null;
+    enteredAt: Date;
+  }> = [];
+
+  for (const o of orders) {
+    for (const it of o.labOrderItems) {
+      for (const r of it.labResults) {
+        if (r.isAbnormal) {
+          abnormalFlat.push({
+            orderId: o.id,
+            testName: (it as any).test?.testName || 'Test',
+            parameterName: r.parameterName,
+            value: r.value,
+            unit: r.unit,
+            normalRange: r.normalRange,
+            enteredAt: r.enteredAt,
+          });
+        }
+      }
+    }
+  }
+
+  return { orders, abnormalFlat };
+}

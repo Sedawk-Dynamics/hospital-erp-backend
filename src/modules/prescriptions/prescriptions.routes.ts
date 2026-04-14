@@ -25,6 +25,9 @@ export const prescriptionRoutes = Router();
 prescriptionRoutes.get('/allergy-check', authenticate, requirePermission('prescriptions', 'read'), validate(allergyCheckQuerySchema), controller.checkAllergy);
 prescriptionRoutes.get('/formulary-search', authenticate, requirePermission('prescriptions', 'read'), validate(formularySearchQuerySchema), controller.searchFormulary);
 
+// --- Drug History (auto-aggregated past + current meds per patient) ---
+prescriptionRoutes.get('/drug-history/:patientId', authenticate, requirePermission('prescriptions', 'read'), controller.getDrugHistory);
+
 // --- Prescriptions ---
 prescriptionRoutes.post('/', authenticate, requirePermission('prescriptions', 'create'), validate(createPrescriptionSchema), controller.createPrescription);
 prescriptionRoutes.get('/', authenticate, requirePermission('prescriptions', 'read'), validate(getPrescriptionsQuerySchema), controller.getPrescriptions);

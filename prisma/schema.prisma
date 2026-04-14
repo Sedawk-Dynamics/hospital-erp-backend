@@ -280,6 +280,7 @@ enum ProgressNoteType {
 enum ProgressNoteStatus {
   active    @map("active")
   finalized @map("finalized")
+  archived  @map("archived")
 }
 
 enum NursingNoteType {
@@ -945,6 +946,7 @@ model Tenant {
   patients               Patient[]
   abhaSyncLogs           AbhaSyncLog[]
   doctorProfiles         DoctorProfile[]
+  progressNoteTemplates  ProgressNoteTemplate[]
   appointments           Appointment[]
   queueTokens            QueueToken[]
   visits                 Visit[]
@@ -1132,6 +1134,7 @@ model User {
   patientPersonalHistoryUpdates PatientPersonalHistory[] @relation("PersonalHistoryUpdater")
   patientFamilyHistoryUpdates   PatientFamilyHistory[]   @relation("FamilyHistoryUpdater")
   patientAllergyNotes       PatientAllergy[]        @relation("AllergyNoter")
+  patientCurrentMedAdds     PatientCurrentMedication[] @relation("CurrentMedAdder")
   patientDocUploads         PatientDocument[]       @relation("DocUploader")
   patientDocVerifications   PatientDocument[]       @relation("DocVerifier")
   appointmentsBooked        Appointment[]           @relation("AppointmentBooker")
@@ -1519,6 +1522,7 @@ model Patient {
   personalHistory         PatientPersonalHistory?
   familyHistory           PatientFamilyHistory[]
   allergies               PatientAllergy[]
+  currentMedications      PatientCurrentMedication[]
   documents               PatientDocument[]
   consents                PatientConsent[]
   privacySettings         PatientPrivacySetting?
@@ -1637,6 +1641,31 @@ model PatientAllergy {
   @@map("patient_allergies")
 }
 
+/// Manually-entered medications that the patient is currently taking but which
+/// are NOT generated from our Prescription system (e.g. OTC, prior prescriptions
+/// from other hospitals, home remedies). Editable by doctor, viewable by both.
+model PatientCurrentMedication {
+  id          String    @id @default(uuid())
+  patientId   String    @map("patient_id")
+  drugName    String    @map("drug_name") @db.VarChar(255)
+  dosage      String?   @db.VarChar(100)
+  frequency   String?   @db.VarChar(100)
+  route       String?   @db.VarChar(50)
+  startedOn   DateTime? @map("started_on") @db.Date
+  source      String?   @db.VarChar(50)
+  notes       String?
+  addedBy     String?   @map("added_by")
+  isActive    Boolean   @default(true) @map("is_active")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  patient Patient @relation(fields: [patientId], references: [id])
+  adder   User?   @relation("CurrentMedAdder", fields: [addedBy], references: [id])
+
+  @@index([patientId, isActive])
+  @@map("patient_current_medications")
+}
+
 model PatientDocument {
   id            String       @id @default(uuid())
   patientId     String       @map("patient_id")
@@ -1743,6 +1772,7 @@ model DoctorProfile {
   patientTransfersFrom PatientTransfer[] @relation("TransferFromDoctor")
   patientTransfersTo   PatientTransfer[] @relation("TransferToDoctor")
   progressNotes      ProgressNote[]
+  progressNoteTemplates ProgressNoteTemplate[]
   dischargeSummaries DischargeSummary[]
   prescriptions      Prescription[]
   otRequests         OtRequest[]
@@ -2060,9 +2090,16 @@ model ProgressNote {
   doctorId               String             @map("doctor_id")
   noteType               ProgressNoteType?  @map("note_type")
   content                String
+  impressions            String?
+  discussions            String?
+  conclusions            String?
+  customFields           Json?              @map("custom_fields")
+  weightKgAtEntry        Decimal?           @map("weight_kg_at_entry") @db.Decimal(5, 2)
   pinToDischargeSummary  Boolean            @default(false) @map("pin_to_discharge_summary")
   isAutoFilled           Boolean            @default(false) @map("is_auto_filled")
   status                 ProgressNoteStatus @default(active)
+  archivedAt             DateTime?          @map("archived_at")
+  archiveReason          String?            @map("archive_reason") @db.VarChar(50)
   createdAt              DateTime           @default(now()) @map("created_at")
   updatedAt              DateTime           @default(now()) @updatedAt @map("updated_at")
 
@@ -2070,7 +2107,25 @@ model ProgressNote {
   patient Patient       @relation(fields: [patientId], references: [id])
   doctor  DoctorProfile @relation(fields: [doctorId], references: [id])
 
+  @@index([status, createdAt])
   @@map("progress_notes")
+}
+
+model ProgressNoteTemplate {
+  id         String        @id @default(uuid())
+  tenantId   String        @map("tenant_id")
+  doctorId   String        @map("doctor_id")
+  name       String        @db.VarChar(120)
+  fields     Json
+  isDefault  Boolean       @default(false) @map("is_default")
+  createdAt  DateTime      @default(now()) @map("created_at")
+  updatedAt  DateTime      @default(now()) @updatedAt @map("updated_at")
+
+  tenant Tenant        @relation(fields: [tenantId], references: [id])
+  doctor DoctorProfile @relation(fields: [doctorId], references: [id])
+
+  @@index([doctorId, isDefault])
+  @@map("progress_note_templates")
 }
 
 model NursingNote {
@@ -2185,9 +2240,11 @@ model DischargeSummary {
   doctorId                 String                 @map("doctor_id")
   admissionDate            DateTime?              @map("admission_date")
   dischargeDate            DateTime?              @map("discharge_date")
+  headerSummary            String?                @map("header_summary")
   diagnosesSummary         String?                @map("diagnoses_summary")
   proceduresSummary        String?                @map("procedures_summary")
   labResultsSummary        String?                @map("lab_results_summary")
+  keyLabsSummary           String?                @map("key_labs_summary")
   medicationReconciliation String?                @map("medication_reconciliation")
   dischargeInstructions    String?                @map("discharge_instructions")
   followUpDate             DateTime?              @map("follow_up_date") @db.Date

@@ -34,6 +34,7 @@ import { hospitalsRoutes } from './hospitals/hospitals.routes';
 import { patientPortalRoutes } from './patient-portal/patient-portal.routes';
 import { connectionAdminRoutes } from './patient-portal/connection-admin.routes';
 import { mrdRoutes } from './mrd/mrd.routes';
+import { medicalHistoryRoutes } from './medical-history/medical-history.routes';
 import { commissionRoutes } from './commission/commission.routes';
 import { bankLinkingRoutes } from './bank-linking/bank-linking.routes';
 import { onlinePaymentsRoutes } from './online-payments/online-payments.routes';
@@ -73,6 +74,7 @@ apiRouter.use('/hr', authenticate, subCheck, requireFeature('hr'), hrRoutes);
 apiRouter.use('/compliance', authenticate, subCheck, requireFeature('compliance'), complianceRoutes);
 apiRouter.use('/reports', authenticate, subCheck, requireFeature('reports'), reportsRoutes);
 apiRouter.use('/mrd', authenticate, subCheck, requireFeature('ip_management'), mrdRoutes);
+apiRouter.use('/medical-history', authenticate, subCheck, medicalHistoryRoutes);
 
 // --- Subscription Plans (public + super_admin) ---
 apiRouter.use('/subscription-plans', subscriptionPlanRoutes);

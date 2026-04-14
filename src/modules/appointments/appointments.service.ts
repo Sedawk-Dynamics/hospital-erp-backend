@@ -24,6 +24,128 @@ const STATUS_TRANSITIONS: Record<string, string[]> = {
 };
 
 /**
+ * Edit window for a completed OP consultation. Beyond this, the record is locked.
+ * IP records remain editable until the admission is discharged.
+ */
+const EDIT_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Compute whether the consultation form (vitals + diagnoses + meds + narrative)
+ * is still editable for a given appointment, and return a fully-assembled
+ * prefill payload for the consultation form so the UI can hydrate it.
+ *
+ * The appointment's status is NOT changed. Edits are applied in-place by
+ * individual update endpoints, each of which re-checks this window server-side.
+ */
+export async function getConsultationFormData(tenantId: string, id: string) {
+  const appointment = await prisma.appointment.findFirst({
+    where: { id, tenantId },
+    include: {
+      visits: {
+        orderBy: { updatedAt: 'desc' },
+        take: 1,
+        include: {
+          vitals: { orderBy: { recordedAt: 'desc' }, take: 1 },
+          diagnoses: { orderBy: { diagnosedAt: 'asc' } },
+          prescriptions: {
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+            include: { prescriptionItems: true },
+          },
+          progressNotes: {
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+          },
+        },
+      },
+    },
+  });
+
+  if (!appointment) throw AppError.notFound('Appointment not found');
+
+  const visit = appointment.visits[0];
+  let canEdit = false;
+  let reason: string | null = null;
+
+  if (appointment.status === 'in_consultation') {
+    canEdit = true;
+  } else if (appointment.status === 'completed' && visit) {
+    if (visit.visitType === 'ip') {
+      const admission = await prisma.admission.findFirst({
+        where: { visitId: visit.id, tenantId },
+        select: { status: true },
+      });
+      if (admission?.status === 'discharged') {
+        reason = 'Patient has been discharged';
+      } else {
+        canEdit = true;
+      }
+    } else {
+      const age = Date.now() - new Date(visit.updatedAt).getTime();
+      if (age <= EDIT_WINDOW_MS) canEdit = true;
+      else reason = 'Edit window has closed (24 hours after completion)';
+    }
+  } else {
+    reason = `Appointment status '${appointment.status}' is not editable`;
+  }
+
+  // Assemble prefill data shaped like the frontend ConsultationFormData
+  const prefill = visit
+    ? {
+        visitId: visit.id,
+        chiefComplaint: visit.chiefComplaint || '',
+        vitals: visit.vitals[0]
+          ? {
+              temperature: toNum(visit.vitals[0].temperature),
+              bloodPressureSystolic: visit.vitals[0].bloodPressureSystolic ?? undefined,
+              bloodPressureDiastolic: visit.vitals[0].bloodPressureDiastolic ?? undefined,
+              pulseRate: visit.vitals[0].pulseRate ?? undefined,
+              respiratoryRate: visit.vitals[0].respiratoryRate ?? undefined,
+              oxygenSaturation: toNum(visit.vitals[0].oxygenSaturation),
+              weightKg: toNum(visit.vitals[0].weightKg),
+              heightCm: toNum(visit.vitals[0].heightCm),
+              bloodSugar: toNum(visit.vitals[0].bloodSugar),
+            }
+          : {},
+        diagnoses: visit.diagnoses.map((d) => ({
+          icdCode: d.icdCode || '',
+          diagnosisName: d.diagnosisName,
+          diagnosisType: d.diagnosisType,
+        })),
+        medicines: (visit.prescriptions[0]?.prescriptionItems ?? []).map((it) => ({
+          drugId: it.drugId || undefined,
+          drugName: it.drugName,
+          dosage: it.dosage || '',
+          frequency: it.frequency || '',
+          duration: it.duration || '',
+          route: it.route,
+          instructions: it.instructions || '',
+          isPrn: it.isPrn,
+          quantity: it.quantity ?? undefined,
+        })),
+        prescriptionId: visit.prescriptions[0]?.id,
+        progressNoteId: visit.progressNotes[0]?.id,
+        impressions: (visit.progressNotes[0] as any)?.impressions ?? '',
+        discussions: (visit.progressNotes[0] as any)?.discussions ?? '',
+        conclusions: (visit.progressNotes[0] as any)?.conclusions ?? '',
+        customFields: (visit.progressNotes[0] as any)?.customFields ?? [],
+        pinToDischargeSummary: visit.progressNotes[0]?.pinToDischargeSummary ?? false,
+        followUpDate: visit.prescriptions[0]?.followUpDate
+          ? new Date(visit.prescriptions[0].followUpDate).toISOString().split('T')[0]
+          : '',
+      }
+    : null;
+
+  return { canEdit, reason, prefill, appointmentStatus: appointment.status };
+}
+
+function toNum(v: any): number | undefined {
+  if (v === null || v === undefined) return undefined;
+  const n = Number(v);
+  return isNaN(n) ? undefined : n;
+}
+
+/**
  * Create a doctor profile linked to a user.
  */
 export async function createDoctorProfile(tenantId: string, data: CreateDoctorProfileInput) {

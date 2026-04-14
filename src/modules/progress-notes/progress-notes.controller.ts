@@ -117,6 +117,75 @@ export async function signProgressNote(
 }
 
 // ============================================================
+// Progress Note Templates
+// ============================================================
+
+export async function listProgressNoteTemplates(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const templates = await progressNotesService.listProgressNoteTemplates(tenantId, userId);
+    sendResponse({ res, message: 'Templates retrieved successfully', data: templates });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function createProgressNoteTemplate(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const template = await progressNotesService.createProgressNoteTemplate(tenantId, userId, req.body);
+    sendResponse({ res, statusCode: 201, message: 'Template created successfully', data: template });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function updateProgressNoteTemplate(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const template = await progressNotesService.updateProgressNoteTemplate(
+      tenantId,
+      userId,
+      req.params.id as string,
+      req.body,
+    );
+    sendResponse({ res, message: 'Template updated successfully', data: template });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function deleteProgressNoteTemplate(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    await progressNotesService.deleteProgressNoteTemplate(tenantId, userId, req.params.id as string);
+    sendResponse({ res, message: 'Template deleted successfully' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ============================================================
 // Nursing Notes
 // ============================================================
 

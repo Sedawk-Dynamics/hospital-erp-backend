@@ -466,3 +466,18 @@ export async function getLabReportById(
     next(err);
   }
 }
+
+export async function getInvestigationHistory(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const patientId = req.params.patientId as string;
+    const data = await labService.getInvestigationHistory(tenantId, patientId);
+    sendResponse({ res, message: 'Investigation history', data });
+  } catch (err) {
+    next(err);
+  }
+}

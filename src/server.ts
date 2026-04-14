@@ -5,6 +5,7 @@ import { prisma } from './config/database';
 import { redis } from './config/redis';
 import { app } from './app';
 import { runSubscriptionJobs } from './jobs/subscription-reminders';
+import { archiveStaleOpProgressNotes } from './modules/progress-notes/progress-notes.service';
 
 const server = app.listen(env.PORT, () => {
   logger.info(`Server running on port ${env.PORT} in ${env.NODE_ENV} mode`);
@@ -18,6 +19,19 @@ setTimeout(() => {
 setInterval(() => {
   runSubscriptionJobs().catch((err) => logger.error({ err }, 'Subscription jobs failed'));
 }, SIX_HOURS);
+
+// OP progress-note auto-archive: flip active → archived after 24h (hourly sweep)
+const ONE_HOUR = 60 * 60 * 1000;
+setTimeout(() => {
+  archiveStaleOpProgressNotes().catch((err) =>
+    logger.error({ err }, 'Progress-note auto-archive failed on startup'),
+  );
+}, 60_000);
+setInterval(() => {
+  archiveStaleOpProgressNotes().catch((err) =>
+    logger.error({ err }, 'Progress-note auto-archive failed'),
+  );
+}, ONE_HOUR);
 
 // Graceful shutdown
 const shutdown = async (signal: string) => {

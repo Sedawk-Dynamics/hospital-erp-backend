@@ -2,6 +2,22 @@ import { Response, NextFunction } from 'express';
 import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse, sendPaginatedResponse } from '../../shared/apiResponse';
 import * as prescriptionsService from './prescriptions.service';
+import { getDrugHistoryForDoctor } from './drug-history.service';
+
+export async function getDrugHistory(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const patientId = req.params.patientId as string;
+    const data = await getDrugHistoryForDoctor(tenantId, patientId);
+    sendResponse({ res, message: 'Drug history retrieved', data });
+  } catch (err) {
+    next(err);
+  }
+}
 
 // ============================================================
 // Prescriptions

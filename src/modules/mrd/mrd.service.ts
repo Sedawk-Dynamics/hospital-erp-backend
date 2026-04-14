@@ -135,18 +135,12 @@ const dischargeSummaryInclude = {
   },
 };
 
-export async function generateDischargeSummary(tenantId: string, admissionId: string) {
-  // Check if a discharge summary already exists for this admission
-  const existing = await prisma.dischargeSummary.findUnique({
-    where: { admissionId },
-    include: dischargeSummaryInclude,
-  });
+interface GenerateOptions {
+  /** If true, regenerates summary fields from source data even if draft already exists. */
+  refresh?: boolean;
+}
 
-  if (existing) {
-    return existing;
-  }
-
-  // Get admission with related data
+async function buildSummaryFields(tenantId: string, admissionId: string) {
   const admission = await prisma.admission.findFirst({
     where: { id: admissionId, tenantId },
     include: {
@@ -180,34 +174,26 @@ export async function generateDischargeSummary(tenantId: string, admissionId: st
   const visitId = admission.visitId;
   const patientId = admission.patientId;
 
-  // Fetch related clinical data in parallel
   const [diagnoses, pinnedNotes, labResults, prescriptions] = await Promise.all([
-    // Diagnoses for this visit
     prisma.diagnosis.findMany({
       where: { visitId },
       orderBy: { diagnosedAt: 'asc' },
     }),
-
-    // Progress notes pinned to discharge summary
     prisma.progressNote.findMany({
-      where: { visitId, pinToDischargeSummary: true, status: 'active' },
+      where: {
+        visitId,
+        pinToDischargeSummary: true,
+        status: { in: ['active', 'finalized'] },
+      },
       orderBy: { createdAt: 'asc' },
     }),
-
-    // Lab results for this visit (via lab orders)
     prisma.labResult.findMany({
-      where: {
-        labOrder: { visitId, tenantId },
-      },
+      where: { labOrder: { visitId, tenantId } },
       include: {
-        labOrderItem: {
-          select: { test: { select: { testName: true } } },
-        },
+        labOrderItem: { select: { test: { select: { testName: true } } } },
       },
       orderBy: { enteredAt: 'desc' },
     }),
-
-    // Active prescriptions for this visit
     prisma.prescription.findMany({
       where: { visitId, tenantId, status: 'active' },
       include: {
@@ -226,24 +212,53 @@ export async function generateDischargeSummary(tenantId: string, admissionId: st
     }),
   ]);
 
-  // Build diagnoses summary text
+  // ── Header ──
+  const p = admission.patient;
+  const age = p.dateOfBirth
+    ? Math.floor((Date.now() - new Date(p.dateOfBirth).getTime()) / (365.25 * 24 * 60 * 60 * 1000))
+    : null;
+  const doctorFullName = admission.doctor?.user
+    ? `Dr. ${admission.doctor.user.firstName} ${admission.doctor.user.lastName}`
+    : 'Attending Physician';
+  const headerLines = [
+    `Patient: ${p.firstName} ${p.lastName} (MRN: ${p.mrn})`,
+    `${age !== null ? `Age: ${age}` : ''}${p.gender ? ` | Gender: ${p.gender}` : ''}${p.bloodGroup ? ` | Blood Group: ${p.bloodGroup}` : ''}`.trim(),
+    p.phone ? `Phone: ${p.phone}` : '',
+    `Admitted: ${admission.admissionDate ? new Date(admission.admissionDate).toLocaleDateString('en-IN') : '—'}`,
+    `Discharged: ${admission.dischargeDate ? new Date(admission.dischargeDate).toLocaleDateString('en-IN') : '—'}`,
+    `Attending: ${doctorFullName}${admission.doctor?.specialization ? ` (${admission.doctor.specialization})` : ''}`,
+  ].filter(Boolean);
+  const headerSummary = headerLines.join('\n');
+
+  // ── Diagnoses ──
   const diagnosesSummary = diagnoses.length > 0
     ? diagnoses
-        .map((d) => {
-          const code = d.icdCode ? ` (${d.icdCode})` : '';
-          return `- [${d.diagnosisType}] ${d.diagnosisName}${code}`;
+        .map((d) => `- [${d.diagnosisType}] ${d.diagnosisName}${d.icdCode ? ` (${d.icdCode})` : ''}`)
+        .join('\n')
+    : null;
+
+  // ── Procedures / pinned notes: extract impressions, discussions, conclusions, customFields ──
+  const proceduresSummary = pinnedNotes.length > 0
+    ? pinnedNotes
+        .map((n) => {
+          const parts: string[] = [];
+          const label = n.noteType || 'note';
+          parts.push(`- [${label}] ${n.content}`);
+          if ((n as any).impressions) parts.push(`  Impression: ${(n as any).impressions}`);
+          if ((n as any).discussions) parts.push(`  Discussion: ${(n as any).discussions}`);
+          if ((n as any).conclusions) parts.push(`  Conclusion: ${(n as any).conclusions}`);
+          const cf = (n as any).customFields as Array<{ label: string; value?: string }> | null;
+          if (Array.isArray(cf)) {
+            for (const f of cf) {
+              if (f?.label && f?.value) parts.push(`  ${f.label}: ${f.value}`);
+            }
+          }
+          return parts.join('\n');
         })
         .join('\n')
     : null;
 
-  // Build procedures summary from pinned notes
-  const proceduresSummary = pinnedNotes.length > 0
-    ? pinnedNotes
-        .map((n) => `- [${n.noteType || 'note'}] ${n.content}`)
-        .join('\n')
-    : null;
-
-  // Build lab results summary
+  // ── All lab results (full) ──
   const labResultsSummary = labResults.length > 0
     ? labResults
         .map((r) => {
@@ -254,7 +269,18 @@ export async function generateDischargeSummary(tenantId: string, admissionId: st
         .join('\n')
     : null;
 
-  // Build medication reconciliation
+  // ── Key labs: flagged abnormal only ──
+  const abnormal = labResults.filter((r) => r.isAbnormal);
+  const keyLabsSummary = abnormal.length > 0
+    ? abnormal
+        .map((r) => {
+          const testName = r.labOrderItem?.test?.testName || 'Unknown Test';
+          return `- ${testName}: ${r.parameterName} = ${r.value ?? 'N/A'} ${r.unit ?? ''} (Ref: ${r.normalRange ?? 'N/A'})`;
+        })
+        .join('\n')
+    : null;
+
+  // ── Meds ──
   const medicationReconciliation = prescriptions.length > 0
     ? prescriptions
         .flatMap((p) =>
@@ -266,19 +292,71 @@ export async function generateDischargeSummary(tenantId: string, admissionId: st
         .join('\n')
     : null;
 
-  // Create the discharge summary record
+  return {
+    admission,
+    visitId,
+    patientId,
+    headerSummary,
+    diagnosesSummary,
+    proceduresSummary,
+    labResultsSummary,
+    keyLabsSummary,
+    medicationReconciliation,
+  };
+}
+
+export async function generateDischargeSummary(
+  tenantId: string,
+  admissionId: string,
+  options: GenerateOptions = {},
+) {
+  const existing = await prisma.dischargeSummary.findUnique({
+    where: { admissionId },
+    include: dischargeSummaryInclude,
+  });
+
+  if (existing && !options.refresh) {
+    return existing;
+  }
+  if (existing && options.refresh && existing.status !== 'draft') {
+    throw AppError.badRequest('Only draft discharge summaries can be refreshed');
+  }
+
+  const built = await buildSummaryFields(tenantId, admissionId);
+
+  if (existing) {
+    const updated = await prisma.dischargeSummary.update({
+      where: { id: existing.id },
+      data: {
+        admissionDate: built.admission.admissionDate,
+        dischargeDate: built.admission.dischargeDate,
+        headerSummary: built.headerSummary,
+        diagnosesSummary: built.diagnosesSummary,
+        proceduresSummary: built.proceduresSummary,
+        labResultsSummary: built.labResultsSummary,
+        keyLabsSummary: built.keyLabsSummary,
+        medicationReconciliation: built.medicationReconciliation,
+      },
+      include: dischargeSummaryInclude,
+    });
+    logger.info({ tenantId, dischargeSummaryId: updated.id, admissionId }, 'Discharge summary refreshed');
+    return updated;
+  }
+
   const dischargeSummary = await prisma.dischargeSummary.create({
     data: {
       admissionId,
-      visitId,
-      patientId,
-      doctorId: admission.doctorId,
-      admissionDate: admission.admissionDate,
-      dischargeDate: admission.dischargeDate,
-      diagnosesSummary,
-      proceduresSummary,
-      labResultsSummary,
-      medicationReconciliation,
+      visitId: built.visitId,
+      patientId: built.patientId,
+      doctorId: built.admission.doctorId,
+      admissionDate: built.admission.admissionDate,
+      dischargeDate: built.admission.dischargeDate,
+      headerSummary: built.headerSummary,
+      diagnosesSummary: built.diagnosesSummary,
+      proceduresSummary: built.proceduresSummary,
+      labResultsSummary: built.labResultsSummary,
+      keyLabsSummary: built.keyLabsSummary,
+      medicationReconciliation: built.medicationReconciliation,
       status: 'draft',
     },
     include: dischargeSummaryInclude,
@@ -290,6 +368,14 @@ export async function generateDischargeSummary(tenantId: string, admissionId: st
   );
 
   return dischargeSummary;
+}
+
+export async function refreshDischargeSummary(tenantId: string, id: string) {
+  const summary = await getDischargeSummaryById(tenantId, id);
+  if (summary.status !== 'draft') {
+    throw AppError.badRequest('Only draft discharge summaries can be refreshed');
+  }
+  return generateDischargeSummary(tenantId, summary.admissionId, { refresh: true });
 }
 
 export async function getDischargeSummaryById(tenantId: string, id: string) {
@@ -407,12 +493,52 @@ export async function publishDischargeSummary(tenantId: string, id: string) {
     where: { id },
     data: {
       status: 'published',
-      // In a real implementation, PDF generation would happen here
-      // pdfUrl: await generatePdf(existing),
     },
     include: dischargeSummaryInclude,
   });
 
   logger.info({ tenantId, dischargeSummaryId: id }, 'Discharge summary published');
   return published;
+}
+
+/**
+ * Get a discharge summary for PDF streaming. Accessible for finalized or published summaries.
+ */
+export async function getDischargeSummaryForPdf(tenantId: string, id: string) {
+  const summary = await getDischargeSummaryById(tenantId, id);
+  if (summary.status === 'draft') {
+    throw AppError.badRequest('Cannot export a draft discharge summary');
+  }
+  return summary;
+}
+
+/**
+ * Patient-portal accessor: only published summaries for patients whose patient records match.
+ */
+export async function getPublishedDischargeSummariesForPatients(patientIds: string[]) {
+  if (patientIds.length === 0) return [];
+  return prisma.dischargeSummary.findMany({
+    where: {
+      patientId: { in: patientIds },
+      status: 'published',
+    },
+    orderBy: { dischargeDate: 'desc' },
+    include: {
+      doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
+      patient: { select: { id: true, mrn: true, tenant: { select: { id: true, name: true } } } },
+    },
+  });
+}
+
+export async function getPublishedDischargeSummaryForPatient(patientIds: string[], id: string) {
+  if (patientIds.length === 0) throw AppError.notFound('Discharge summary not found');
+  const summary = await prisma.dischargeSummary.findFirst({
+    where: { id, patientId: { in: patientIds }, status: 'published' },
+    include: {
+      doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
+      patient: { select: { id: true, mrn: true, firstName: true, lastName: true, tenant: { select: { id: true, name: true } } } },
+    },
+  });
+  if (!summary) throw AppError.notFound('Discharge summary not found');
+  return summary;
 }

@@ -76,3 +76,19 @@ mrdRoutes.post(
   validate(dischargeSummaryIdParamSchema),
   controller.publishDischargeSummary,
 );
+
+mrdRoutes.post(
+  '/discharge-summary/:id/refresh',
+  authenticate,
+  requirePermission('admissions', 'update'),
+  validate(dischargeSummaryIdParamSchema),
+  controller.refreshDischargeSummary,
+);
+
+mrdRoutes.get(
+  '/discharge-summary/:id/pdf',
+  authenticate,
+  requirePermission('admissions', 'read'),
+  validate(dischargeSummaryIdParamSchema),
+  controller.downloadDischargeSummaryPdf,
+);

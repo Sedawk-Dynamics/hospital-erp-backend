@@ -141,6 +141,15 @@ appointmentRoutes.patch(
   controller.cancelAppointment,
 );
 
+// Fetch assembled consultation form data for prefill + editability check
+// (OP: 24h window, IP: until discharge). Does NOT change appointment status.
+appointmentRoutes.get(
+  '/:id/consultation-form-data',
+  authenticate,
+  validate(appointmentIdParamSchema),
+  controller.getConsultationFormData,
+);
+
 // Generate queue token for an appointment
 appointmentRoutes.post(
   '/:id/queue',

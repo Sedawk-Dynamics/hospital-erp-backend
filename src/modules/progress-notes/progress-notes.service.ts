@@ -9,6 +9,8 @@ import type {
   CreateNursingNoteInput,
   UpdateNursingNoteInput,
   ListNursingNotesQuery,
+  CreateProgressNoteTemplateInput,
+  UpdateProgressNoteTemplateInput,
 } from './progress-notes.validation';
 
 // ============================================================
@@ -56,6 +58,11 @@ export async function createProgressNote(
       doctorId: doctorProfile.id,
       noteType: data.noteType as any,
       content: data.content,
+      impressions: data.impressions ?? null,
+      discussions: data.discussions ?? null,
+      conclusions: data.conclusions ?? null,
+      customFields: (data.customFields as any) ?? undefined,
+      weightKgAtEntry: data.weightKgAtEntry ?? null,
       pinToDischargeSummary: data.pinToDischargeSummary ?? false,
     },
     include: {
@@ -96,6 +103,9 @@ export async function getProgressNotes(tenantId: string, query: ListProgressNote
 
   if (query.status) {
     where.status = query.status;
+  } else if (!query.includeArchived) {
+    // By default hide archived (auto-moved) notes unless explicitly requested
+    where.status = { in: ['active', 'finalized'] };
   }
 
   if (query.search) {
@@ -179,10 +189,18 @@ export async function updateProgressNote(
   if (existing.status === 'finalized') {
     throw AppError.badRequest('Cannot update a finalized progress note');
   }
+  if (existing.status === 'archived') {
+    throw AppError.badRequest('Cannot update an archived progress note');
+  }
 
   const updateData: any = {};
   if (data.noteType !== undefined) updateData.noteType = data.noteType;
   if (data.content !== undefined) updateData.content = data.content;
+  if (data.impressions !== undefined) updateData.impressions = data.impressions;
+  if (data.discussions !== undefined) updateData.discussions = data.discussions;
+  if (data.conclusions !== undefined) updateData.conclusions = data.conclusions;
+  if (data.customFields !== undefined) updateData.customFields = data.customFields as any;
+  if (data.weightKgAtEntry !== undefined) updateData.weightKgAtEntry = data.weightKgAtEntry;
   if (data.pinToDischargeSummary !== undefined)
     updateData.pinToDischargeSummary = data.pinToDischargeSummary;
 
@@ -436,4 +454,120 @@ export async function deleteNursingNote(tenantId: string, id: string) {
   });
 
   logger.info({ tenantId, noteId: id }, 'Nursing note deleted');
+}
+
+// ============================================================
+// Progress Note Templates (per-doctor custom field templates)
+// ============================================================
+
+async function resolveDoctorProfile(tenantId: string, userId: string) {
+  const doctor = await prisma.doctorProfile.findFirst({
+    where: { userId, tenantId },
+    select: { id: true },
+  });
+  if (!doctor) throw AppError.badRequest('No doctor profile found for the current user');
+  return doctor;
+}
+
+export async function listProgressNoteTemplates(tenantId: string, userId: string) {
+  const doctor = await resolveDoctorProfile(tenantId, userId);
+  return prisma.progressNoteTemplate.findMany({
+    where: { tenantId, doctorId: doctor.id },
+    orderBy: [{ isDefault: 'desc' }, { updatedAt: 'desc' }],
+  });
+}
+
+export async function createProgressNoteTemplate(
+  tenantId: string,
+  userId: string,
+  data: CreateProgressNoteTemplateInput,
+) {
+  const doctor = await resolveDoctorProfile(tenantId, userId);
+  if (data.isDefault) {
+    await prisma.progressNoteTemplate.updateMany({
+      where: { tenantId, doctorId: doctor.id, isDefault: true },
+      data: { isDefault: false },
+    });
+  }
+  const template = await prisma.progressNoteTemplate.create({
+    data: {
+      tenantId,
+      doctorId: doctor.id,
+      name: data.name,
+      fields: data.fields as any,
+      isDefault: data.isDefault ?? false,
+    },
+  });
+  logger.info({ tenantId, templateId: template.id }, 'Progress note template created');
+  return template;
+}
+
+export async function updateProgressNoteTemplate(
+  tenantId: string,
+  userId: string,
+  id: string,
+  data: UpdateProgressNoteTemplateInput,
+) {
+  const doctor = await resolveDoctorProfile(tenantId, userId);
+  const existing = await prisma.progressNoteTemplate.findFirst({
+    where: { id, tenantId, doctorId: doctor.id },
+  });
+  if (!existing) throw AppError.notFound('Template not found');
+
+  if (data.isDefault) {
+    await prisma.progressNoteTemplate.updateMany({
+      where: { tenantId, doctorId: doctor.id, isDefault: true, NOT: { id } },
+      data: { isDefault: false },
+    });
+  }
+
+  const updateData: any = {};
+  if (data.name !== undefined) updateData.name = data.name;
+  if (data.fields !== undefined) updateData.fields = data.fields as any;
+  if (data.isDefault !== undefined) updateData.isDefault = data.isDefault;
+
+  const template = await prisma.progressNoteTemplate.update({
+    where: { id },
+    data: updateData,
+  });
+  return template;
+}
+
+export async function deleteProgressNoteTemplate(tenantId: string, userId: string, id: string) {
+  const doctor = await resolveDoctorProfile(tenantId, userId);
+  const existing = await prisma.progressNoteTemplate.findFirst({
+    where: { id, tenantId, doctorId: doctor.id },
+  });
+  if (!existing) throw AppError.notFound('Template not found');
+  await prisma.progressNoteTemplate.delete({ where: { id } });
+}
+
+// ============================================================
+// OP 24-hour auto-archive job
+// ============================================================
+// Any active progress note attached to an OP visit older than 24 hours
+// is flipped to 'archived'. IP notes remain editable until discharge.
+
+export async function archiveStaleOpProgressNotes() {
+  const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const stale = await prisma.progressNote.findMany({
+    where: {
+      status: 'active',
+      createdAt: { lt: cutoff },
+      visit: { visitType: 'op' },
+    },
+    select: { id: true },
+  });
+  if (stale.length === 0) return { archived: 0 };
+
+  const result = await prisma.progressNote.updateMany({
+    where: { id: { in: stale.map((s) => s.id) } },
+    data: {
+      status: 'archived',
+      archivedAt: new Date(),
+      archiveReason: 'op_auto_24h',
+    },
+  });
+  logger.info({ count: result.count }, 'Archived stale OP progress notes');
+  return { archived: result.count };
 }

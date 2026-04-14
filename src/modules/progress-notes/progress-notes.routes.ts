@@ -13,6 +13,9 @@ import {
   listNursingNotesSchema,
   nursingNoteIdParamSchema,
   updateNursingNoteSchema,
+  createProgressNoteTemplateSchema,
+  updateProgressNoteTemplateSchema,
+  templateIdParamSchema,
 } from './progress-notes.validation';
 
 export const progressNotesRoutes = Router();
@@ -23,6 +26,12 @@ progressNotesRoutes.get('/nursing', authenticate, requirePermission('nursing_not
 progressNotesRoutes.get('/nursing/:id', authenticate, requirePermission('nursing_notes', 'read'), validate(nursingNoteIdParamSchema), controller.getNursingNoteById);
 progressNotesRoutes.put('/nursing/:id', authenticate, requirePermission('nursing_notes', 'update'), validate(updateNursingNoteSchema), controller.updateNursingNote);
 progressNotesRoutes.delete('/nursing/:id', authenticate, requirePermission('nursing_notes', 'delete'), validate(nursingNoteIdParamSchema), controller.deleteNursingNote);
+
+// --- Progress Note Templates (must be before /:id to avoid conflict) ---
+progressNotesRoutes.get('/templates', authenticate, requirePermission('progress_notes', 'read'), controller.listProgressNoteTemplates);
+progressNotesRoutes.post('/templates', authenticate, requirePermission('progress_notes', 'create'), validate(createProgressNoteTemplateSchema), controller.createProgressNoteTemplate);
+progressNotesRoutes.put('/templates/:id', authenticate, requirePermission('progress_notes', 'update'), validate(updateProgressNoteTemplateSchema), controller.updateProgressNoteTemplate);
+progressNotesRoutes.delete('/templates/:id', authenticate, requirePermission('progress_notes', 'delete'), validate(templateIdParamSchema), controller.deleteProgressNoteTemplate);
 
 // --- Progress Notes ---
 progressNotesRoutes.post('/', authenticate, requirePermission('progress_notes', 'create'), validate(createProgressNoteSchema), controller.createProgressNote);

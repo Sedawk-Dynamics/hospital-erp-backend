@@ -1,7 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npx prisma:*)"
+      "Bash(npx prisma:*)",
+      "Bash(find:*)",
+      "Bash(awk '{print $2}')",
+      "Bash(xargs grep:*)",
+      "Bash(grep -n \"rx\\\\.notes\\\\|match\\\\|\\\\\\\\breg\\\\\\\\w\" \"E:/hospital erp/backend/src/modules/patient-portal/patient-portal.service.ts\")",
+      "Bash(grep -n \"status\\\\|router\\\\\\\\.patch\\\\|router\\\\\\\\.post\\\\|updateAppointmentStatus\" \"E:/hospital erp/backend/src/modules/appointments/appointments.routes.ts\")"
     ]
   }
 }

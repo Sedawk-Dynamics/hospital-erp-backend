@@ -2,6 +2,7 @@ import { Response, NextFunction } from 'express';
 import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse, sendPaginatedResponse } from '../../shared/apiResponse';
 import * as mrdService from './mrd.service';
+import { streamDischargeSummaryPdf } from './discharge-summary-pdf';
 
 export async function getMrdDocuments(
   req: AuthenticatedRequest,
@@ -158,6 +159,36 @@ export async function publishDischargeSummary(
       message: 'Discharge summary published successfully',
       data: result,
     });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function refreshDischargeSummary(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const id = req.params.id as string;
+    const result = await mrdService.refreshDischargeSummary(tenantId, id);
+    sendResponse({ res, message: 'Discharge summary refreshed', data: result });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function downloadDischargeSummaryPdf(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const id = req.params.id as string;
+    const summary = await mrdService.getDischargeSummaryForPdf(tenantId, id);
+    streamDischargeSummaryPdf(res, summary as any);
   } catch (err) {
     next(err);
   }
