@@ -10,6 +10,11 @@ export const createPrescriptionSchema = z.object({
     visitId: z.string().uuid('Invalid visit ID'),
     prescriptionType: z.enum(['op', 'ip']).default('op'),
     notes: z.string().max(2000).optional(),
+    followUpDate: z
+      .string()
+      .refine((val) => !isNaN(Date.parse(val)), { message: 'Invalid follow-up date' })
+      .optional()
+      .nullable(),
     items: z
       .array(
         z.object({
@@ -34,6 +39,11 @@ export const updatePrescriptionSchema = z.object({
   body: z.object({
     status: z.enum(['active', 'dispensed', 'partially_dispensed', 'cancelled']).optional(),
     notes: z.string().max(2000).optional(),
+    followUpDate: z
+      .string()
+      .refine((val) => !isNaN(Date.parse(val)), { message: 'Invalid follow-up date' })
+      .optional()
+      .nullable(),
   }),
   params: z.object({
     id: z.string().uuid('Invalid prescription ID'),

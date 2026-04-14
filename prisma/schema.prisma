@@ -2222,6 +2222,7 @@ model Prescription {
   prescriptionType PrescriptionType   @map("prescription_type")
   status           PrescriptionStatus @default(active)
   notes            String?
+  followUpDate     DateTime?          @map("follow_up_date") @db.Date
   createdAt        DateTime           @default(now()) @map("created_at")
   updatedAt        DateTime           @default(now()) @updatedAt @map("updated_at")
 

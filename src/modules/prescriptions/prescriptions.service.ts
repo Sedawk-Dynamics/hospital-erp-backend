@@ -60,6 +60,7 @@ export async function createPrescription(
       visitId: data.visitId,
       prescriptionType: data.prescriptionType,
       notes: data.notes,
+      followUpDate: data.followUpDate ? new Date(data.followUpDate) : null,
       status: 'active',
       prescriptionItems: data.items
         ? {
@@ -224,9 +225,18 @@ export async function updatePrescription(
     throw AppError.badRequest('Cannot update a cancelled prescription');
   }
 
+  // 24-hour edit window — prescriptions lock automatically after 24h
+  const hoursElapsed = (Date.now() - new Date(prescription.createdAt).getTime()) / (1000 * 60 * 60);
+  if (hoursElapsed > 24) {
+    throw AppError.badRequest('Prescription edit window has expired (24 hours). This prescription is now locked.');
+  }
+
   const updateData: any = {};
   if (data.status !== undefined) updateData.status = data.status;
   if (data.notes !== undefined) updateData.notes = data.notes;
+  if (data.followUpDate !== undefined) {
+    updateData.followUpDate = data.followUpDate ? new Date(data.followUpDate) : null;
+  }
 
   const updated = await prisma.prescription.update({
     where: { id },
@@ -315,7 +325,13 @@ export async function addPrescriptionItem(
   prescriptionId: string,
   data: AddPrescriptionItemInput,
 ) {
-  await getActivePrescription(tenantId, prescriptionId);
+  const prescription = await getActivePrescription(tenantId, prescriptionId);
+
+  // 24-hour edit window
+  const hoursElapsed = (Date.now() - new Date(prescription.createdAt).getTime()) / (1000 * 60 * 60);
+  if (hoursElapsed > 24) {
+    throw AppError.badRequest('Prescription edit window has expired (24 hours). This prescription is now locked.');
+  }
 
   const item = await prisma.prescriptionItem.create({
     data: {
@@ -349,7 +365,13 @@ export async function updatePrescriptionItem(
   itemId: string,
   data: UpdatePrescriptionItemInput,
 ) {
-  await getActivePrescription(tenantId, prescriptionId);
+  const prescription = await getActivePrescription(tenantId, prescriptionId);
+
+  // 24-hour edit window
+  const hoursElapsed = (Date.now() - new Date(prescription.createdAt).getTime()) / (1000 * 60 * 60);
+  if (hoursElapsed > 24) {
+    throw AppError.badRequest('Prescription edit window has expired (24 hours). This prescription is now locked.');
+  }
 
   const item = await prisma.prescriptionItem.findFirst({
     where: { id: itemId, prescriptionId },
@@ -391,7 +413,13 @@ export async function removePrescriptionItem(
   prescriptionId: string,
   itemId: string,
 ) {
-  await getActivePrescription(tenantId, prescriptionId);
+  const prescription = await getActivePrescription(tenantId, prescriptionId);
+
+  // 24-hour edit window
+  const hoursElapsed = (Date.now() - new Date(prescription.createdAt).getTime()) / (1000 * 60 * 60);
+  if (hoursElapsed > 24) {
+    throw AppError.badRequest('Prescription edit window has expired (24 hours). This prescription is now locked.');
+  }
 
   const item = await prisma.prescriptionItem.findFirst({
     where: { id: itemId, prescriptionId },

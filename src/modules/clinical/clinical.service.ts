@@ -780,10 +780,16 @@ export async function recordVitals(tenantId: string, userId: string, data: Recor
 
   // Calculate BMI if weight and height provided
   let bmi: number | undefined;
-  if (data.weightKg && data.heightCm) {
+  if (data.weightKg && data.heightCm && data.heightCm >= 30) {
     const heightM = data.heightCm / 100;
-    bmi = parseFloat((data.weightKg / (heightM * heightM)).toFixed(1));
+    const rawBmi = parseFloat((data.weightKg / (heightM * heightM)).toFixed(1));
+    // Clamp to Decimal(4,1) range (max 999.9) — reject obviously wrong values
+    bmi = rawBmi > 0 && rawBmi < 999.9 ? rawBmi : undefined;
   }
+
+  // Clamp decimal values to their column precision to prevent overflow
+  const clamp = (val: number | undefined | null, max: number): number | undefined =>
+    val != null && val > 0 && val <= max ? val : undefined;
 
   const vital = await prisma.vital.create({
     data: {
@@ -792,13 +798,13 @@ export async function recordVitals(tenantId: string, userId: string, data: Recor
       bloodPressureSystolic: data.bloodPressureSystolic,
       bloodPressureDiastolic: data.bloodPressureDiastolic,
       pulseRate: data.pulseRate,
-      temperature: data.temperature,
+      temperature: clamp(data.temperature, 999.9),         // Decimal(4,1)
       respiratoryRate: data.respiratoryRate,
-      oxygenSaturation: data.oxygenSaturation,
-      weightKg: data.weightKg,
-      heightCm: data.heightCm,
+      oxygenSaturation: clamp(data.oxygenSaturation, 100), // Decimal(4,1), max 100%
+      weightKg: clamp(data.weightKg, 999.99),              // Decimal(5,2)
+      heightCm: clamp(data.heightCm, 9999.9),              // Decimal(5,1)
       bmi,
-      bloodSugar: data.bloodSugar,
+      bloodSugar: clamp(data.bloodSugar, 9999.99),         // Decimal(6,2)
       notes: data.notes,
       recordedBy: userId,
     },

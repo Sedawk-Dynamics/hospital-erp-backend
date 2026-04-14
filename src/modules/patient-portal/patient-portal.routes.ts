@@ -215,6 +215,19 @@ router.get('/prescriptions', async (req: AuthenticatedRequest, res: Response, ne
   }
 });
 
+// GET /patient-portal/follow-ups
+router.get('/follow-ups', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const result = await patientPortalService.getPatientFollowUps(req.user!.userId, req.user!.email, {
+      limit: req.query.limit ? parseInt(req.query.limit as string, 10) : undefined,
+      tenantId: req.query.tenantId as string | undefined,
+    });
+    sendResponse({ res, statusCode: 200, message: 'Patient follow-ups', data: result.data });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /patient-portal/billing
 router.get('/billing', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {

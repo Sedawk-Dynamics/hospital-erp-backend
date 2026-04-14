@@ -593,11 +593,102 @@ export async function getPatientPrescriptions(
       patient: { select: { id: true, mrn: true, firstName: true, lastName: true, tenant: { select: { id: true, name: true } } } },
       doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
       prescriptionItems: true,
+      visit: {
+        include: {
+          progressNotes: {
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+            select: { id: true, content: true, createdAt: true },
+          },
+          diagnoses: {
+            select: { id: true, diagnosisName: true, icdCode: true, diagnosisType: true },
+          },
+          vitals: {
+            orderBy: { recordedAt: 'desc' },
+            take: 1,
+          },
+        },
+      },
     },
     orderBy: { createdAt: 'desc' },
   });
 
   return { data: prescriptions };
+}
+
+export async function getPatientFollowUps(
+  userId: string,
+  email: string,
+  query: { limit?: number; tenantId?: string },
+) {
+  const patientIds = await resolvePatientIds(userId, email, query.tenantId);
+  if (patientIds.length === 0) return { data: [] };
+
+  const prescriptions = await prisma.prescription.findMany({
+    where: {
+      patientId: { in: patientIds },
+      OR: [
+        { followUpDate: { not: null } },
+        { notes: { contains: 'follow-up', mode: 'insensitive' } },
+      ],
+    },
+    take: query.limit || 50,
+    include: {
+      patient: { select: { id: true, mrn: true, firstName: true, lastName: true, tenant: { select: { id: true, name: true } } } },
+      doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  const followUps = prescriptions
+    .map((rx) => {
+      let followUpDate: string | null = null;
+      let durationText = '';
+      let followUpNotes = '';
+
+      // Prefer structured field over notes parsing
+      if (rx.followUpDate) {
+        followUpDate = new Date(rx.followUpDate).toISOString().split('T')[0];
+        followUpNotes = rx.notes || '';
+      } else if (rx.notes && /follow-up:/i.test(rx.notes)) {
+        const match = rx.notes.match(/Follow-up:\s*(.+)/i);
+        if (match) {
+          const parts = match[1].split('—').map((s: string) => s.trim());
+          for (const part of parts) {
+            const dateMatch = part.match(/(\d{1,2}\s+\w+\s+\d{4}|\d{4}-\d{2}-\d{2})/);
+            if (dateMatch) {
+              const parsed = new Date(dateMatch[1]);
+              if (!isNaN(parsed.getTime())) {
+                followUpDate = parsed.toISOString().split('T')[0];
+              }
+            } else if (/^after\s/i.test(part)) {
+              durationText = part;
+            } else if (part) {
+              followUpNotes = part;
+            }
+          }
+        }
+      }
+
+      if (!followUpDate) return null;
+
+      return {
+        id: rx.id,
+        prescriptionId: rx.id,
+        followUpDate,
+        durationText,
+        notes: followUpNotes,
+        prescriptionDate: rx.createdAt,
+        // Fields required by /patient-portal/book-appointment for direct booking
+        tenantId: rx.patient?.tenant?.id ?? null,
+        doctorId: rx.doctorId,
+        doctor: rx.doctor,
+        patient: rx.patient,
+      };
+    })
+    .filter(Boolean);
+
+  return { data: followUps };
 }
 
 export async function getPatientBills(
