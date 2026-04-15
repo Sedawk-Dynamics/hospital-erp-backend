@@ -867,7 +867,7 @@ export async function getOccupancy(tenantId: string, query: { wardId?: string; d
     const total = allBeds.length;
     const occupied = allBeds.filter((b) => b.status === 'occupied').length;
     const available = allBeds.filter((b) => b.status === 'available').length;
-    const maintenance = allBeds.filter((b) => b.status === 'under_maintenance' || b.status === 'under_cleaning').length;
+    const maintenance = allBeds.filter((b) => b.status === 'maintenance' || b.status === 'reserved').length;
 
     return {
       wardId: ward.id,
