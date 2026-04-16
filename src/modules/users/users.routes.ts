@@ -26,6 +26,16 @@ userRouter.get(
   usersController.getStats,
 );
 
+// Lookup user by phone/email — front-desk uses this to find an existing account-holder
+// when registering a new family-member patient profile. Gated by patients:create since
+// that's the capability the lookup feeds into.
+userRouter.get(
+  '/by-contact',
+  authenticate,
+  requirePermission('patients', 'create'),
+  usersController.findByContact,
+);
+
 // Super admin: list all users across all hospital tenants
 userRouter.get(
   '/all',

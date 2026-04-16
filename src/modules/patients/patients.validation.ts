@@ -1,6 +1,16 @@
 import { z } from 'zod';
 import { paginationSchema } from '../../shared/pagination';
 
+export const RELATIONSHIPS = [
+  'self',
+  'spouse',
+  'child',
+  'parent',
+  'sibling',
+  'guardian',
+  'other',
+] as const;
+
 export const createPatientSchema = z.object({
   body: z.object({
     firstName: z.string().min(1, 'First name is required').max(100),
@@ -32,6 +42,12 @@ export const createPatientSchema = z.object({
     referredBy: z.string().max(200).optional(),
     notes: z.string().max(2000).optional(),
     abhaNumber: z.string().max(20).optional(),
+    // Link this profile to an account-holder User. If omitted the patient is standalone.
+    userId: z.string().uuid('Invalid user ID').optional(),
+    // Relationship of this patient profile to the account-holder user.
+    // Defaults to 'self' when a user link is provided for the first time.
+    relationship: z.enum(RELATIONSHIPS).optional(),
+    isSelf: z.boolean().optional(),
   }),
 });
 

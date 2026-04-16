@@ -159,3 +159,28 @@ export async function getVisitHistory(
     next(err);
   }
 }
+
+/**
+ * List all patient profiles linked to a given user, scoped to current tenant.
+ * Used by front-desk to show the family profiles already registered under a user.
+ */
+export async function findByUser(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const profiles = await patientsService.findByUser(
+      req.params.userId as string,
+      tenantId,
+    );
+    sendResponse({
+      res,
+      message: 'User patient profiles',
+      data: profiles,
+    });
+  } catch (err) {
+    next(err);
+  }
+}

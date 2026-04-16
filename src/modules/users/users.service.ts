@@ -95,6 +95,33 @@ export const usersService = {
     return user;
   },
 
+  /**
+   * Find users by exact phone or email, across ALL tenants. Used by front-desk to
+   * link a new patient profile to an existing account-holder.
+   */
+  async findByContact(params: { phone?: string; email?: string }) {
+    if (!params.phone && !params.email) return [];
+    const or: any[] = [];
+    if (params.phone) or.push({ phone: params.phone });
+    if (params.email) or.push({ email: { equals: params.email, mode: 'insensitive' as const } });
+
+    return prisma.user.findMany({
+      where: { OR: or, isActive: true },
+      select: {
+        id: true,
+        email: true,
+        phone: true,
+        firstName: true,
+        lastName: true,
+        tenantId: true,
+        tenant: { select: { id: true, name: true, slug: true } },
+        _count: { select: { patients: true } },
+      },
+      take: 10,
+      orderBy: { createdAt: 'desc' },
+    });
+  },
+
   async findAll(
     tenantId: string,
     query: PaginationQuery & { roleId?: string; isActive?: string },

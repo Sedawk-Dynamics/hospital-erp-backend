@@ -85,24 +85,56 @@ function mapDocumentType(type: string): string {
 
 /**
  * Create a new patient record.
+ *
+ * A patient profile can be:
+ *   - standalone (no userId) — a walk-in registered by front-desk with no account
+ *   - linked to a User via userId — one of multiple profiles owned by that account-holder
+ *     (e.g. spouse/child family member)
+ *
+ * When linked, phone/email duplicate checks are scoped to OTHER account-holders' patients
+ * only — a user's own family members may legitimately share a phone or email.
  */
 export async function create(tenantId: string, data: CreatePatientInput) {
   const mrn = await generateMRN(tenantId);
 
-  // Check for duplicate based on phone within the same tenant
+  // If linking to a user, verify the user exists
+  if (data.userId) {
+    const user = await prisma.user.findUnique({ where: { id: data.userId } });
+    if (!user) throw AppError.notFound('User not found');
+  }
+
+  // Decide relationship + isSelf. First profile linked to a user defaults to 'self'.
+  let relationship = data.relationship;
+  let isSelf = data.isSelf;
+  if (data.userId) {
+    if (!relationship) {
+      const existingForUser = await prisma.patient.count({ where: { userId: data.userId } });
+      relationship = existingForUser === 0 ? 'self' : 'other';
+    }
+    if (isSelf === undefined) isSelf = relationship === 'self';
+  } else {
+    relationship = relationship ?? 'self';
+    isSelf = isSelf ?? false;
+  }
+
+  // Duplicate check: same phone/email within the tenant, but exclude the account-holder's
+  // own family profiles (they may legitimately share a phone/email).
+  const exclusionFilter = data.userId
+    ? { NOT: { userId: data.userId } }
+    : {};
+
   if (data.phone) {
     const existingByPhone = await prisma.patient.findFirst({
-      where: { tenantId, phone: data.phone },
+      where: { tenantId, phone: data.phone, ...exclusionFilter },
     });
     if (existingByPhone) {
       throw AppError.conflict('A patient with this phone number already exists');
     }
   }
 
-  // Check for duplicate email within the same tenant
   if (data.email) {
     const existingByEmail = await prisma.patient.findFirst({
-      where: { tenantId, email: data.email },
+      where: { tenantId, email: data.email, ...exclusionFilter },
     });
     if (existingByEmail) {
       throw AppError.conflict('A patient with this email already exists');
@@ -113,6 +145,9 @@ export async function create(tenantId: string, data: CreatePatientInput) {
     data: {
       mrn,
       tenantId,
+      userId: data.userId,
+      relationship: relationship as any,
+      isSelf,
       firstName: data.firstName,
       lastName: data.lastName,
       dateOfBirth: data.dateOfBirth ? new Date(data.dateOfBirth) : undefined,
@@ -138,8 +173,37 @@ export async function create(tenantId: string, data: CreatePatientInput) {
     },
   });
 
-  logger.info({ tenantId, patientId: patient.id, mrn }, 'Patient created');
+  logger.info(
+    { tenantId, patientId: patient.id, mrn, userId: data.userId, relationship },
+    'Patient created',
+  );
   return patient;
+}
+
+/**
+ * List all patient profiles linked to a given user account.
+ * Optionally scope to a single tenant.
+ */
+export async function findByUser(userId: string, tenantId?: string) {
+  return prisma.patient.findMany({
+    where: { userId, ...(tenantId ? { tenantId } : {}) },
+    select: {
+      id: true,
+      mrn: true,
+      firstName: true,
+      lastName: true,
+      dateOfBirth: true,
+      gender: true,
+      phone: true,
+      email: true,
+      relationship: true,
+      isSelf: true,
+      tenantId: true,
+      tenant: { select: { id: true, name: true, slug: true } },
+      createdAt: true,
+    },
+    orderBy: [{ isSelf: 'desc' }, { createdAt: 'asc' }],
+  });
 }
 
 /**

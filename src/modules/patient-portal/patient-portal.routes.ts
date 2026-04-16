@@ -81,6 +81,33 @@ router.get('/profile', async (req: AuthenticatedRequest, res: Response, next: Ne
   }
 });
 
+// GET /patient-portal/profiles — list every family-member patient profile under this user
+router.get('/profiles', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const data = await patientPortalService.listMyProfiles(req.user!.userId, req.user!.email);
+    sendResponse({ res, statusCode: 200, message: 'My patient profiles', data });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /patient-portal/profiles — add a new family-member patient profile under this user
+router.post('/profiles', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const { firstName, lastName, dateOfBirth, gender, phone, email, relationship, bloodGroup, tenantId } = req.body;
+    if (!firstName || !relationship) {
+      sendResponse({ res, statusCode: 400, message: 'firstName and relationship are required' });
+      return;
+    }
+    const data = await patientPortalService.createMyProfile(req.user!.userId, {
+      firstName, lastName, dateOfBirth, gender, phone, email, relationship, bloodGroup, tenantId,
+    });
+    sendResponse({ res, statusCode: 201, message: 'Profile added', data });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ────────────────────────────────────────────────────────────
 // Appointment Booking
 // ────────────────────────────────────────────────────────────
@@ -167,6 +194,7 @@ router.get('/appointments', async (req: AuthenticatedRequest, res: Response, nex
       limit: req.query.limit ? parseInt(req.query.limit as string, 10) : undefined,
       sortOrder: (req.query.sortOrder as 'asc' | 'desc') || undefined,
       tenantId: req.query.tenantId as string | undefined,
+      profileId: req.query.profileId as string | undefined,
     });
     sendResponse({ res, statusCode: 200, message: 'Patient appointments', data: result.data });
   } catch (err) {
@@ -196,6 +224,7 @@ router.get('/lab-reports', async (req: AuthenticatedRequest, res: Response, next
     const result = await patientPortalService.getPatientLabReports(req.user!.userId, req.user!.email, {
       limit: req.query.limit ? parseInt(req.query.limit as string, 10) : undefined,
       tenantId: req.query.tenantId as string | undefined,
+      profileId: req.query.profileId as string | undefined,
     });
     sendResponse({ res, statusCode: 200, message: 'Patient lab reports', data: result.data });
   } catch (err) {
@@ -209,6 +238,7 @@ router.get('/prescriptions', async (req: AuthenticatedRequest, res: Response, ne
     const result = await patientPortalService.getPatientPrescriptions(req.user!.userId, req.user!.email, {
       limit: req.query.limit ? parseInt(req.query.limit as string, 10) : undefined,
       tenantId: req.query.tenantId as string | undefined,
+      profileId: req.query.profileId as string | undefined,
     });
     sendResponse({ res, statusCode: 200, message: 'Patient prescriptions', data: result.data });
   } catch (err) {
@@ -387,6 +417,7 @@ router.get('/follow-ups', async (req: AuthenticatedRequest, res: Response, next:
     const result = await patientPortalService.getPatientFollowUps(req.user!.userId, req.user!.email, {
       limit: req.query.limit ? parseInt(req.query.limit as string, 10) : undefined,
       tenantId: req.query.tenantId as string | undefined,
+      profileId: req.query.profileId as string | undefined,
     });
     sendResponse({ res, statusCode: 200, message: 'Patient follow-ups', data: result.data });
   } catch (err) {
@@ -400,6 +431,7 @@ router.get('/billing', async (req: AuthenticatedRequest, res: Response, next: Ne
     const result = await patientPortalService.getPatientBills(req.user!.userId, req.user!.email, {
       limit: req.query.limit ? parseInt(req.query.limit as string, 10) : undefined,
       tenantId: req.query.tenantId as string | undefined,
+      profileId: req.query.profileId as string | undefined,
     });
     sendResponse({ res, statusCode: 200, message: 'Patient bills', data: result.data });
   } catch (err) {

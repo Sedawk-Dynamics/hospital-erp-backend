@@ -45,6 +45,106 @@ async function generateMRN(tenantId: string): Promise<string> {
 // Connection-based patient lookup
 // ────────────────────────────────────────────────────────────
 
+/**
+ * List every patient profile this user owns (family members) across all hospitals.
+ * Includes Patient records directly linked via userId AND records reachable through
+ * an approved PatientHospitalConnection. Results are de-duplicated by patientId.
+ *
+ * Used by the Patient Portal's profile selector.
+ */
+export async function listMyProfiles(userId: string, email: string) {
+  // 1. Direct Patient records owned by this user.
+  const owned = await prisma.patient.findMany({
+    where: { userId },
+    include: { tenant: { select: { id: true, name: true, slug: true, logoUrl: true } } },
+    orderBy: [{ isSelf: 'desc' }, { createdAt: 'asc' }],
+  });
+
+  // 2. Patient records reachable through approved connections (legacy link path).
+  const connectionPatients = await prisma.patientHospitalConnection.findMany({
+    where: { userId, status: 'approved', patientId: { not: null } },
+    include: {
+      patient: {
+        include: { tenant: { select: { id: true, name: true, slug: true, logoUrl: true } } },
+      },
+    },
+  });
+
+  // 3. Fallback email-match for pre-connection patient records.
+  const byEmail = email
+    ? await prisma.patient.findMany({
+        where: { email: { equals: email, mode: 'insensitive' }, userId: null },
+        include: { tenant: { select: { id: true, name: true, slug: true, logoUrl: true } } },
+      })
+    : [];
+
+  const seen = new Set<string>();
+  const combined: Array<(typeof owned)[number]> = [];
+  for (const p of owned) {
+    if (!seen.has(p.id)) { seen.add(p.id); combined.push(p); }
+  }
+  for (const c of connectionPatients) {
+    if (c.patient && !seen.has(c.patient.id)) {
+      seen.add(c.patient.id);
+      combined.push(c.patient as any);
+    }
+  }
+  for (const p of byEmail) {
+    if (!seen.has(p.id)) { seen.add(p.id); combined.push(p); }
+  }
+
+  return combined;
+}
+
+/**
+ * Create a new family-member patient profile under the current user.
+ * The new profile is registered to the user's own platform tenant by default
+ * (behavior mirrors self-signup) unless a specific tenantId is provided.
+ */
+export async function createMyProfile(
+  userId: string,
+  data: {
+    firstName: string;
+    lastName?: string;
+    dateOfBirth?: string;
+    gender?: 'male' | 'female' | 'other';
+    phone?: string;
+    email?: string;
+    relationship: 'self' | 'spouse' | 'child' | 'parent' | 'sibling' | 'guardian' | 'other';
+    bloodGroup?: string;
+    tenantId?: string;
+  },
+) {
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) throw AppError.notFound('User not found');
+
+  const tenantId = data.tenantId || user.tenantId;
+  const mrn = await generateMRN(tenantId);
+
+  // If this is the user's first profile AND relationship is self, mark isSelf
+  const existingCount = await prisma.patient.count({ where: { userId } });
+  const isSelf = data.relationship === 'self' && existingCount === 0;
+
+  return prisma.patient.create({
+    data: {
+      tenantId,
+      userId,
+      mrn,
+      relationship: data.relationship as any,
+      isSelf,
+      firstName: data.firstName,
+      lastName: data.lastName,
+      dateOfBirth: data.dateOfBirth ? new Date(data.dateOfBirth) : undefined,
+      gender: data.gender as any,
+      phone: data.phone,
+      email: data.email || undefined,
+      bloodGroup: data.bloodGroup,
+      registrationSource: 'self_signup',
+      patientType: 'outpatient',
+    },
+  });
+}
+
 async function findConnectedPatients(userId: string, tenantId?: string) {
   const where: Record<string, unknown> = {
     userId,
@@ -74,16 +174,39 @@ async function findPatientsByEmail(email: string) {
 }
 
 /**
- * Resolve patient IDs: use connections if any exist, else fall back to email match.
+ * Resolve patient IDs for the current user, considering every source a patient could
+ * be linked through: direct userId link (family profiles), approved connections, and
+ * email-match fallback for legacy records. If `profileId` is provided the list is
+ * narrowed to that single profile after authorization checks.
  */
-async function resolvePatientIds(userId: string, email: string, tenantId?: string) {
-  const connected = await findConnectedPatients(userId, tenantId);
-  if (connected.length > 0) return connected.map((p) => p.id);
+async function resolvePatientIds(
+  userId: string,
+  email: string,
+  tenantId?: string,
+  profileId?: string,
+) {
+  // Direct owned profiles (family members).
+  const owned = await prisma.patient.findMany({
+    where: { userId, ...(tenantId ? { tenantId } : {}) },
+    select: { id: true, tenantId: true },
+  });
 
-  // Fallback for patients who existed before connections were introduced
-  const byEmail = await findPatientsByEmail(email);
-  if (tenantId) return byEmail.filter((p) => p.tenantId === tenantId).map((p) => p.id);
-  return byEmail.map((p) => p.id);
+  // Legacy connection-based linkage.
+  const connected = await findConnectedPatients(userId, tenantId);
+
+  // Legacy email fallback.
+  const byEmail = email ? await findPatientsByEmail(email) : [];
+  const emailFiltered = tenantId ? byEmail.filter((p) => p.tenantId === tenantId) : byEmail;
+
+  const ids = new Set<string>();
+  for (const p of owned) ids.add(p.id);
+  for (const p of connected) ids.add(p.id);
+  for (const p of emailFiltered) ids.add(p.id);
+
+  if (profileId) {
+    return ids.has(profileId) ? [profileId] : [];
+  }
+  return Array.from(ids);
 }
 
 // ────────────────────────────────────────────────────────────
@@ -385,9 +508,9 @@ export async function getPatientProfile(userId: string, email: string) {
 export async function getPatientAppointments(
   userId: string,
   email: string,
-  query: { status?: string; limit?: number; sortOrder?: 'asc' | 'desc'; tenantId?: string },
+  query: { status?: string; limit?: number; sortOrder?: 'asc' | 'desc'; tenantId?: string; profileId?: string },
 ) {
-  const patientIds = await resolvePatientIds(userId, email, query.tenantId);
+  const patientIds = await resolvePatientIds(userId, email, query.tenantId, query.profileId);
   if (patientIds.length === 0) return { data: [] };
 
   const limit = query.limit || 50;
@@ -552,9 +675,9 @@ export async function getPatientAvailableForms(userId: string, email: string) {
 export async function getPatientLabReports(
   userId: string,
   email: string,
-  query: { limit?: number; tenantId?: string },
+  query: { limit?: number; tenantId?: string; profileId?: string },
 ) {
-  const patientIds = await resolvePatientIds(userId, email, query.tenantId);
+  const patientIds = await resolvePatientIds(userId, email, query.tenantId, query.profileId);
   if (patientIds.length === 0) return { data: [] };
 
   const reports = await prisma.labReport.findMany({
@@ -581,9 +704,9 @@ export async function getPatientLabReports(
 export async function getPatientPrescriptions(
   userId: string,
   email: string,
-  query: { limit?: number; tenantId?: string },
+  query: { limit?: number; tenantId?: string; profileId?: string },
 ) {
-  const patientIds = await resolvePatientIds(userId, email, query.tenantId);
+  const patientIds = await resolvePatientIds(userId, email, query.tenantId, query.profileId);
   if (patientIds.length === 0) return { data: [] };
 
   const prescriptions = await prisma.prescription.findMany({
@@ -772,9 +895,9 @@ export async function getPatientDischargeSummaryById(userId: string, email: stri
 export async function getPatientDrugHistory(
   userId: string,
   email: string,
-  query: { tenantId?: string },
+  query: { tenantId?: string; profileId?: string },
 ) {
-  const patientIds = await resolvePatientIds(userId, email, query.tenantId);
+  const patientIds = await resolvePatientIds(userId, email, query.tenantId, query.profileId);
   const { buildDrugHistory } = await import('../prescriptions/drug-history.service');
   return buildDrugHistory({ patientIds, tenantId: query.tenantId, limit: 200 });
 }
@@ -782,9 +905,9 @@ export async function getPatientDrugHistory(
 export async function getPatientFollowUps(
   userId: string,
   email: string,
-  query: { limit?: number; tenantId?: string },
+  query: { limit?: number; tenantId?: string; profileId?: string },
 ) {
-  const patientIds = await resolvePatientIds(userId, email, query.tenantId);
+  const patientIds = await resolvePatientIds(userId, email, query.tenantId, query.profileId);
   if (patientIds.length === 0) return { data: [] };
 
   const prescriptions = await prisma.prescription.findMany({
@@ -857,9 +980,9 @@ export async function getPatientFollowUps(
 export async function getPatientBills(
   userId: string,
   email: string,
-  query: { limit?: number; tenantId?: string },
+  query: { limit?: number; tenantId?: string; profileId?: string },
 ) {
-  const patientIds = await resolvePatientIds(userId, email, query.tenantId);
+  const patientIds = await resolvePatientIds(userId, email, query.tenantId, query.profileId);
   if (patientIds.length === 0) return { data: [] };
 
   const bills = await prisma.bill.findMany({

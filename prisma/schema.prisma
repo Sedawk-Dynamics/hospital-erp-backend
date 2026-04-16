@@ -92,6 +92,16 @@ enum Gender {
   other  @map("other")
 }
 
+enum PatientRelationship {
+  self     @map("self")
+  spouse   @map("spouse")
+  child    @map("child")
+  parent   @map("parent")
+  sibling  @map("sibling")
+  guardian @map("guardian")
+  other    @map("other")
+}
+
 enum SmokingStatus {
   never   @map("never")
   former  @map("former")
@@ -1124,7 +1134,7 @@ model User {
   deactivatedAt        DateTime? @map("deactivated_at")
 
   tenant                        Tenant                      @relation(fields: [tenantId], references: [id])
-  patient                       Patient?
+  patients                      Patient[]
   doctorProfile                 DoctorProfile?
   staffProfile                  StaffProfile?
   userRoles                     UserRole[]                  @relation("UserRoleUser")
@@ -1477,7 +1487,9 @@ model HospitalResource {
 model Patient {
   id                 String              @id @default(uuid())
   tenantId           String              @map("tenant_id")
-  userId             String?             @unique @map("user_id")
+  userId             String?             @map("user_id")
+  relationship       PatientRelationship @default(self)
+  isSelf             Boolean             @default(false) @map("is_self")
   mrn                String              @db.VarChar(50)
   firstName          String              @map("first_name") @db.VarChar(100)
   lastName           String?             @map("last_name") @db.VarChar(100)

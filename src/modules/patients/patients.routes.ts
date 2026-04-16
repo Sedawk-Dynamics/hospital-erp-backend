@@ -41,6 +41,14 @@ patientRoutes.get(
   controller.searchPatients,
 );
 
+// List patient profiles linked to a user (front-desk family-profile flow)
+patientRoutes.get(
+  '/by-user/:userId',
+  authenticate,
+  requirePermission('patients', 'read'),
+  controller.findByUser,
+);
+
 // Get patient by ID
 patientRoutes.get(
   '/:id',

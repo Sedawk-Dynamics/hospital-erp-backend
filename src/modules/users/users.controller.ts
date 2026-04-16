@@ -38,6 +38,28 @@ export const usersController = {
     }
   },
 
+  /**
+   * Look up users by phone or email — used by the front-desk to find an existing
+   * account-holder before registering a new family-member patient profile under them.
+   * Searches across ALL tenants because patients typically sign up on the platform
+   * tenant while front-desk operates in a hospital tenant.
+   */
+  async findByContact(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) throw AppError.unauthorized();
+      const phone = (req.query.phone as string | undefined)?.trim();
+      const email = (req.query.email as string | undefined)?.trim();
+      if (!phone && !email) {
+        sendResponse({ res, statusCode: 400, message: 'phone or email query param is required' });
+        return;
+      }
+      const users = await usersService.findByContact({ phone, email });
+      sendResponse({ res, message: 'Users matching contact', data: users });
+    } catch (err) {
+      next(err);
+    }
+  },
+
   /** List all users across all hospital tenants (super_admin only) */
   async findAllGlobal(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
