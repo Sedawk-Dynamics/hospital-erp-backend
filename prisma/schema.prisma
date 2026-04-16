@@ -174,8 +174,8 @@ enum PatientType {
 
 enum RegistrationSource {
   self_signup @map("self_signup")
-  front_desk @map("front_desk")
-  admin      @map("admin")
+  front_desk  @map("front_desk")
+  admin       @map("admin")
 }
 
 enum ConnectionStatus {
@@ -234,11 +234,11 @@ enum AdmissionStatus {
 }
 
 enum ReservationStatus {
-  reserved   @map("reserved")
-  confirmed  @map("confirmed")
-  admitted   @map("admitted")
-  completed  @map("completed")
-  cancelled  @map("cancelled")
+  reserved  @map("reserved")
+  confirmed @map("confirmed")
+  admitted  @map("admitted")
+  completed @map("completed")
+  cancelled @map("cancelled")
 }
 
 enum EstimationStatus {
@@ -284,11 +284,11 @@ enum ProgressNoteStatus {
 }
 
 enum NursingNoteType {
-  observation    @map("observation")
-  wound_care     @map("wound_care")
-  iv_line        @map("iv_line")
-  intake_output  @map("intake_output")
-  general        @map("general")
+  observation   @map("observation")
+  wound_care    @map("wound_care")
+  iv_line       @map("iv_line")
+  intake_output @map("intake_output")
+  general       @map("general")
 }
 
 enum IVLineType {
@@ -909,130 +909,130 @@ enum SupportTicketStatus {
 // ============================================================
 
 model Tenant {
-  id                String    @id @default(uuid())
-  name              String    @db.VarChar(255)
-  slug              String    @unique @db.VarChar(100)
-  logoUrl           String?   @map("logo_url")
-  themeConfig       Json?     @map("theme_config")
-  address           String?
-  city              String?   @db.VarChar(100)
-  state             String?   @db.VarChar(100)
-  country           String?   @db.VarChar(100)
-  phone             String?   @db.VarChar(20)
-  email             String?   @db.VarChar(255)
-  website           String?   @db.VarChar(255)
-  licenseNumber     String?   @map("license_number") @db.VarChar(100)
-  accreditationInfo String?   @map("accreditation_info")
-  hospitalCode      String?   @unique @map("hospital_code") @db.VarChar(6)
-  allowDirectPatientConnection Boolean @default(false) @map("allow_direct_patient_connection")
-  linkedAccountId   String?   @map("linked_account_id") @db.VarChar(255)
-  bankVerified      Boolean   @default(false) @map("bank_verified")
-  isActive          Boolean   @default(true) @map("is_active")
-  onboardedAt       DateTime? @map("onboarded_at")
-  offboardedAt      DateTime? @map("offboarded_at")
-  createdAt         DateTime  @default(now()) @map("created_at")
-  updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at")
+  id                           String    @id @default(uuid())
+  name                         String    @db.VarChar(255)
+  slug                         String    @unique @db.VarChar(100)
+  logoUrl                      String?   @map("logo_url")
+  themeConfig                  Json?     @map("theme_config")
+  address                      String?
+  city                         String?   @db.VarChar(100)
+  state                        String?   @db.VarChar(100)
+  country                      String?   @db.VarChar(100)
+  phone                        String?   @db.VarChar(20)
+  email                        String?   @db.VarChar(255)
+  website                      String?   @db.VarChar(255)
+  licenseNumber                String?   @map("license_number") @db.VarChar(100)
+  accreditationInfo            String?   @map("accreditation_info")
+  hospitalCode                 String?   @unique @map("hospital_code") @db.VarChar(6)
+  allowDirectPatientConnection Boolean   @default(false) @map("allow_direct_patient_connection")
+  linkedAccountId              String?   @map("linked_account_id") @db.VarChar(255)
+  bankVerified                 Boolean   @default(false) @map("bank_verified")
+  isActive                     Boolean   @default(true) @map("is_active")
+  onboardedAt                  DateTime? @map("onboarded_at")
+  offboardedAt                 DateTime? @map("offboarded_at")
+  createdAt                    DateTime  @default(now()) @map("created_at")
+  updatedAt                    DateTime  @default(now()) @updatedAt @map("updated_at")
 
-  featureToggles         FeatureToggle[]
-  users                  User[]
-  roles                  Role[]
-  loginAuditLogs         LoginAuditLog[]
-  departments            Department[]
-  wards                  Ward[]
-  rooms                  Room[]
-  beds                   Bed[]
-  operatingTheaters      OperatingTheater[]
-  hospitalResources      HospitalResource[]
-  patients               Patient[]
-  abhaSyncLogs           AbhaSyncLog[]
-  doctorProfiles         DoctorProfile[]
-  progressNoteTemplates  ProgressNoteTemplate[]
-  appointments           Appointment[]
-  queueTokens            QueueToken[]
-  visits                 Visit[]
-  admissions             Admission[]
-  patientTransfers       PatientTransfer[]
-  prescriptions          Prescription[]
-  labDepartments         LabDepartment[]
-  labTestCatalog         LabTestCatalog[]
-  labOrders              LabOrder[]
-  imagingRequests        ImagingRequest[]
-  drugCategories         DrugCategory[]
-  drugFormulary          DrugFormulary[]
-  drugBatches            DrugBatch[]
-  dispensingRecords      DispensingRecord[]
-  drugReturns            DrugReturn[]
-  suppliers              Supplier[]
-  inventoryItems         InventoryItem[]
-  stockTransactions      StockTransaction[]
-  purchaseOrders         PurchaseOrder[]
-  supplyRequests         SupplyRequest[]
-  serviceTariffs         ServiceTariff[]
-  bills                  Bill[]
-  payments               Payment[]
-  receipts               Receipt[]
-  refunds                Refund[]
-  discounts              Discount[]
-  insurers               Insurer[]
-  tpaProviders           TpaProvider[]
-  insurancePolicies      InsurancePolicy[]
-  insuranceClaims        InsuranceClaim[]
-  preAuthRequests        PreAuthorizationRequest[]
-  tpaCommunicationLogs   TpaCommunicationLog[]
-  bloodDonors            BloodDonor[]
-  bloodDonations         BloodDonation[]
-  bloodInventory         BloodInventory[]
-  crossMatchTests        CrossMatchTest[]
-  transfusions           Transfusion[]
-  staffProfiles          StaffProfile[]
-  dutyRosters            DutyRoster[]
-  attendance             Attendance[]
-  leaveRequests          LeaveRequest[]
-  payroll                Payroll[]
-  notifications          Notification[]
-  messages               Message[]
-  shiftHandoverNotes     ShiftHandoverNote[]
-  tickets                Ticket[]
-  feedback               Feedback[]
-  auditLogs              AuditLog[]
-  complianceDocuments    ComplianceDocument[]
-  otRequests             OtRequest[]
-  incidentReports        IncidentReport[]
-  savedReports           SavedReport[]
-  scheduledReports       ScheduledReport[]
-  supportTickets         SupportTicket[]
-  tenantOwners           TenantOwner[]
-  patientConnections     PatientHospitalConnection[]
-  mrdRequests            MrdRequest[]
-  paymentTransfers       PaymentTransfer[]
-  hospitalCommission     HospitalCommission?
-  demoRequests           DemoRequest[]
-  reservations           Reservation[]
-  estimations            Estimation[]
-  formInstances          FormInstance[]
-  formAssignments        FormAssignment[]
-  formSubmissions        FormSubmission[]
-  hospitalFormConfigs    HospitalFormConfig[]
+  featureToggles        FeatureToggle[]
+  users                 User[]
+  roles                 Role[]
+  loginAuditLogs        LoginAuditLog[]
+  departments           Department[]
+  wards                 Ward[]
+  rooms                 Room[]
+  beds                  Bed[]
+  operatingTheaters     OperatingTheater[]
+  hospitalResources     HospitalResource[]
+  patients              Patient[]
+  abhaSyncLogs          AbhaSyncLog[]
+  doctorProfiles        DoctorProfile[]
+  progressNoteTemplates ProgressNoteTemplate[]
+  appointments          Appointment[]
+  queueTokens           QueueToken[]
+  visits                Visit[]
+  admissions            Admission[]
+  patientTransfers      PatientTransfer[]
+  prescriptions         Prescription[]
+  labDepartments        LabDepartment[]
+  labTestCatalog        LabTestCatalog[]
+  labOrders             LabOrder[]
+  imagingRequests       ImagingRequest[]
+  drugCategories        DrugCategory[]
+  drugFormulary         DrugFormulary[]
+  drugBatches           DrugBatch[]
+  dispensingRecords     DispensingRecord[]
+  drugReturns           DrugReturn[]
+  suppliers             Supplier[]
+  inventoryItems        InventoryItem[]
+  stockTransactions     StockTransaction[]
+  purchaseOrders        PurchaseOrder[]
+  supplyRequests        SupplyRequest[]
+  serviceTariffs        ServiceTariff[]
+  bills                 Bill[]
+  payments              Payment[]
+  receipts              Receipt[]
+  refunds               Refund[]
+  discounts             Discount[]
+  insurers              Insurer[]
+  tpaProviders          TpaProvider[]
+  insurancePolicies     InsurancePolicy[]
+  insuranceClaims       InsuranceClaim[]
+  preAuthRequests       PreAuthorizationRequest[]
+  tpaCommunicationLogs  TpaCommunicationLog[]
+  bloodDonors           BloodDonor[]
+  bloodDonations        BloodDonation[]
+  bloodInventory        BloodInventory[]
+  crossMatchTests       CrossMatchTest[]
+  transfusions          Transfusion[]
+  staffProfiles         StaffProfile[]
+  dutyRosters           DutyRoster[]
+  attendance            Attendance[]
+  leaveRequests         LeaveRequest[]
+  payroll               Payroll[]
+  notifications         Notification[]
+  messages              Message[]
+  shiftHandoverNotes    ShiftHandoverNote[]
+  tickets               Ticket[]
+  feedback              Feedback[]
+  auditLogs             AuditLog[]
+  complianceDocuments   ComplianceDocument[]
+  otRequests            OtRequest[]
+  incidentReports       IncidentReport[]
+  savedReports          SavedReport[]
+  scheduledReports      ScheduledReport[]
+  supportTickets        SupportTicket[]
+  tenantOwners          TenantOwner[]
+  patientConnections    PatientHospitalConnection[]
+  mrdRequests           MrdRequest[]
+  paymentTransfers      PaymentTransfer[]
+  hospitalCommission    HospitalCommission?
+  demoRequests          DemoRequest[]
+  reservations          Reservation[]
+  estimations           Estimation[]
+  formInstances         FormInstance[]
+  formAssignments       FormAssignment[]
+  formSubmissions       FormSubmission[]
+  hospitalFormConfigs   HospitalFormConfig[]
 
   @@map("tenants")
 }
 
 model SubscriptionPlan {
-  id                     String   @id @default(uuid())
-  name                   String   @db.VarChar(100)
-  description            String?
-  priceMonthly           Decimal? @map("price_monthly") @db.Decimal(12, 2)
-  priceYearly            Decimal? @map("price_yearly") @db.Decimal(12, 2)
-  maxUsers               Int?     @map("max_users")
-  maxHospitals           Int?     @map("max_hospitals")
-  features               Json?
-  isActive               Boolean  @default(false) @map("is_active")
-  razorpayMonthlyPlanId  String?  @unique @map("razorpay_monthly_plan_id")
-  razorpayYearlyPlanId   String?  @unique @map("razorpay_yearly_plan_id")
-  allowAutopay           Boolean  @default(true) @map("allow_autopay")
-  allowManual            Boolean  @default(true) @map("allow_manual")
-  trialDays              Int?     @map("trial_days")
-  createdAt              DateTime @default(now()) @map("created_at")
+  id                    String   @id @default(uuid())
+  name                  String   @db.VarChar(100)
+  description           String?
+  priceMonthly          Decimal? @map("price_monthly") @db.Decimal(12, 2)
+  priceYearly           Decimal? @map("price_yearly") @db.Decimal(12, 2)
+  maxUsers              Int?     @map("max_users")
+  maxHospitals          Int?     @map("max_hospitals")
+  features              Json?
+  isActive              Boolean  @default(false) @map("is_active")
+  razorpayMonthlyPlanId String?  @unique @map("razorpay_monthly_plan_id")
+  razorpayYearlyPlanId  String?  @unique @map("razorpay_yearly_plan_id")
+  allowAutopay          Boolean  @default(true) @map("allow_autopay")
+  allowManual           Boolean  @default(true) @map("allow_manual")
+  trialDays             Int?     @map("trial_days")
+  createdAt             DateTime @default(now()) @map("created_at")
 
   userSubscriptions    UserSubscription[]
   subscriptionPayments SubscriptionPayment[]
@@ -1043,45 +1043,45 @@ model SubscriptionPlan {
 }
 
 model UserSubscription {
-  id                          String                      @id @default(uuid())
-  userId                      String                      @map("user_id")
-  planId                      String                      @map("plan_id")
-  startDate                   DateTime                    @map("start_date") @db.Date
-  endDate                     DateTime?                   @map("end_date") @db.Date
-  status                      SubscriptionStatus          @default(active)
-  billingCycle                BillingCycle?               @map("billing_cycle")
-  razorpaySubscriptionId      String?                     @unique @map("razorpay_subscription_id")
-  subscriptionPaymentMethod   SubscriptionPaymentMethod   @default(manual) @map("subscription_payment_method")
-  autoRenew                   Boolean                     @default(false) @map("auto_renew")
-  cancelledAt                 DateTime?                   @map("cancelled_at")
-  lastReminderDays            Int?                        @map("last_reminder_days")
-  createdAt                   DateTime                    @default(now()) @map("created_at")
+  id                        String                    @id @default(uuid())
+  userId                    String                    @map("user_id")
+  planId                    String                    @map("plan_id")
+  startDate                 DateTime                  @map("start_date") @db.Date
+  endDate                   DateTime?                 @map("end_date") @db.Date
+  status                    SubscriptionStatus        @default(active)
+  billingCycle              BillingCycle?             @map("billing_cycle")
+  razorpaySubscriptionId    String?                   @unique @map("razorpay_subscription_id")
+  subscriptionPaymentMethod SubscriptionPaymentMethod @default(manual) @map("subscription_payment_method")
+  autoRenew                 Boolean                   @default(false) @map("auto_renew")
+  cancelledAt               DateTime?                 @map("cancelled_at")
+  lastReminderDays          Int?                      @map("last_reminder_days")
+  createdAt                 DateTime                  @default(now()) @map("created_at")
 
-  user                  User                 @relation("SubscriptionOwner", fields: [userId], references: [id])
-  plan                  SubscriptionPlan     @relation(fields: [planId], references: [id])
-  subscriptionPayments  SubscriptionPayment[]
+  user                 User                  @relation("SubscriptionOwner", fields: [userId], references: [id])
+  plan                 SubscriptionPlan      @relation(fields: [planId], references: [id])
+  subscriptionPayments SubscriptionPayment[]
 
   @@map("user_subscriptions")
 }
 
 model SubscriptionPayment {
-  id                    String   @id @default(uuid())
-  userSubscriptionId    String?  @map("user_subscription_id")
-  userId                String   @map("user_id")
-  razorpayOrderId       String   @unique @map("razorpay_order_id")
-  razorpayPaymentId     String?  @map("razorpay_payment_id")
-  razorpaySignature     String?  @map("razorpay_signature")
-  amount                Decimal  @db.Decimal(12, 2)
-  currency              String   @default("INR") @db.VarChar(3)
-  status                String   @default("created") @db.VarChar(20)
-  planId                String   @map("plan_id")
-  billingCycle          String   @map("billing_cycle") @db.VarChar(20)
-  createdAt             DateTime @default(now()) @map("created_at")
-  updatedAt             DateTime @updatedAt @map("updated_at")
+  id                 String   @id @default(uuid())
+  userSubscriptionId String?  @map("user_subscription_id")
+  userId             String   @map("user_id")
+  razorpayOrderId    String   @unique @map("razorpay_order_id")
+  razorpayPaymentId  String?  @map("razorpay_payment_id")
+  razorpaySignature  String?  @map("razorpay_signature")
+  amount             Decimal  @db.Decimal(12, 2)
+  currency           String   @default("INR") @db.VarChar(3)
+  status             String   @default("created") @db.VarChar(20)
+  planId             String   @map("plan_id")
+  billingCycle       String   @map("billing_cycle") @db.VarChar(20)
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
 
-  userSubscription   UserSubscription?   @relation(fields: [userSubscriptionId], references: [id])
-  user               User                @relation(fields: [userId], references: [id])
-  plan               SubscriptionPlan    @relation(fields: [planId], references: [id])
+  userSubscription UserSubscription? @relation(fields: [userSubscriptionId], references: [id])
+  user             User              @relation(fields: [userId], references: [id])
+  plan             SubscriptionPlan  @relation(fields: [planId], references: [id])
 
   @@map("subscription_payments")
 }
@@ -1123,101 +1123,102 @@ model User {
   updatedAt            DateTime  @default(now()) @updatedAt @map("updated_at")
   deactivatedAt        DateTime? @map("deactivated_at")
 
-  tenant                    Tenant                  @relation(fields: [tenantId], references: [id])
-  patient                   Patient?
-  doctorProfile             DoctorProfile?
-  staffProfile              StaffProfile?
-  userRoles                 UserRole[]              @relation("UserRoleUser")
-  assignedUserRoles         UserRole[]              @relation("UserRoleAssigner")
-  loginAuditLogs            LoginAuditLog[]
-  departmentsHeaded         Department[]
-  patientPersonalHistoryUpdates PatientPersonalHistory[] @relation("PersonalHistoryUpdater")
-  patientFamilyHistoryUpdates   PatientFamilyHistory[]   @relation("FamilyHistoryUpdater")
-  patientAllergyNotes       PatientAllergy[]        @relation("AllergyNoter")
-  patientCurrentMedAdds     PatientCurrentMedication[] @relation("CurrentMedAdder")
-  patientDocUploads         PatientDocument[]       @relation("DocUploader")
-  patientDocVerifications   PatientDocument[]       @relation("DocVerifier")
-  appointmentsBooked        Appointment[]           @relation("AppointmentBooker")
-  appointmentsCancelled     Appointment[]           @relation("AppointmentCanceller")
-  admissionsAdmitted        Admission[]             @relation("Admitter")
-  admissionsDischarged      Admission[]             @relation("Discharger")
-  transfersRequested        PatientTransfer[]       @relation("TransferRequester")
-  transfersApproved         PatientTransfer[]       @relation("TransferApprover")
-  vitalsRecorded            Vital[]
-  diagnosesRecorded         Diagnosis[]
-  nursingNotes              NursingNote[]
-  ivLinesInserted           IVLineRecord[]          @relation("IVInserter")
-  ivLinesRemoved            IVLineRecord[]          @relation("IVRemover")
-  intakeOutputRecords       IntakeOutputRecord[]
-  woundCareRecords          WoundCareRecord[]
-  dischargeSummariesSigned  DischargeSummary[]
-  medicationAdministrations MedicationAdministration[]
-  labOrdersOrdered          LabOrder[]
-  labSamplesCollected       LabSample[]
-  labResultsEntered         LabResult[]
-  labReportsReviewed        LabReport[]             @relation("LabReportReviewer")
-  labReportsApproved        LabReport[]             @relation("LabReportApprover")
-  labReportsSigned          LabReport[]             @relation("LabReportSigner")
-  imagingOrdersOrdered      ImagingRequest[]
-  imagingResultsRadiologist ImagingResult[]         @relation("ImagingRadiologist")
-  imagingResultsSigned      ImagingResult[]         @relation("ImagingResultSigner")
-  dispensingRecords         DispensingRecord[]      @relation("Dispenser")
-  dispensingVerifications   DispensingRecord[]      @relation("DispensingVerifier")
-  drugReturnsProcessed      DrugReturn[]
-  stockTransactions         StockTransaction[]
-  purchaseOrdersApproved    PurchaseOrder[]
-  supplyRequestsRequested   SupplyRequest[]         @relation("SupplyRequester")
-  supplyRequestsApproved    SupplyRequest[]         @relation("SupplyApprover")
-  billsGenerated            Bill[]                  @relation("BillGenerator")
-  billsApproved             Bill[]                  @relation("BillApprover")
-  billsCancelled            Bill[]                  @relation("BillCanceller")
-  paymentsProcessed         Payment[]
-  refundsRequested          Refund[]                @relation("RefundRequester")
-  refundsApproved           Refund[]                @relation("RefundApprover")
-  discountsApproved         Discount[]
-  insuranceClaimsSubmitted  InsuranceClaim[]        @relation("ClaimSubmitter")
-  insuranceClaimsReviewed   InsuranceClaim[]        @relation("ClaimReviewer")
-  preAuthSubmitted          PreAuthorizationRequest[]
-  tpaCommunications         TpaCommunicationLog[]
-  bloodDonationsCollected   BloodDonation[]
-  crossMatchTests           CrossMatchTest[]
-  transfusionsAdministered  Transfusion[]           @relation("TransfusionAdministerer")
-  transfusionsOrdered       Transfusion[]           @relation("TransfusionOrderer")
-  leaveRequestsApproved     LeaveRequest[]
-  payrollProcessed          Payroll[]
-  notifications             Notification[]
-  messagesSent              Message[]               @relation("MessageSender")
-  messagesReceived          Message[]               @relation("MessageReceiver")
-  shiftHandoverFrom         ShiftHandoverNote[]     @relation("HandoverFrom")
-  shiftHandoverTo           ShiftHandoverNote[]     @relation("HandoverTo")
-  ticketsRaised             Ticket[]                @relation("TicketRaiser")
-  ticketsAssigned           Ticket[]                @relation("TicketAssignee")
-  ticketsEscalated          Ticket[]                @relation("TicketEscalator")
-  feedbackSubmitted         Feedback[]
-  auditLogs                 AuditLog[]
-  complianceDocUploads      ComplianceDocument[]
-  incidentReportsReported   IncidentReport[]        @relation("IncidentReporter")
-  incidentReportsEscalated  IncidentReport[]        @relation("IncidentEscalator")
-  savedReports              SavedReport[]
-  scheduledReports          ScheduledReport[]
-  supportTickets            SupportTicket[]
-  tenantOwners              TenantOwner[]
-  subscriptionPayments      SubscriptionPayment[]
-  connectionRequests        PatientHospitalConnection[] @relation("ConnectionUser")
-  connectionReviews         PatientHospitalConnection[] @relation("ConnectionReviewer")
-  mrdRequestsMade           MrdRequest[]                @relation("MrdRequestedBy")
-  commissionSettingsUpdated CommissionSetting[]          @relation("CommissionSettingUpdater")
-  hospitalCommissionsUpdated HospitalCommission[]        @relation("HospitalCommissionUpdater")
-  demoRequestsApproved       DemoRequest[]               @relation("DemoApprover")
-  demoRequestsCreatedUser    DemoRequest[]               @relation("DemoCreatedUser")
-  ownedSubscriptions         UserSubscription[]          @relation("SubscriptionOwner")
-  reservationsCreated        Reservation[]               @relation("ReservationCreator")
-  estimationsCreated         Estimation[]                @relation("EstimationCreator")
-  formTemplatesCreated       FormTemplate[]              @relation("FormTemplateCreator")
-  formInstancesCreated       FormInstance[]              @relation("FormInstanceCreator")
-  formAssignmentsCreated     FormAssignment[]            @relation("FormAssignmentCreator")
-  formSubmissionsSubmitted   FormSubmission[]            @relation("FormSubmissionSubmitter")
-  formSubmissionsVerified    FormSubmission[]            @relation("FormSubmissionVerifier")
+  tenant                        Tenant                      @relation(fields: [tenantId], references: [id])
+  patient                       Patient?
+  doctorProfile                 DoctorProfile?
+  staffProfile                  StaffProfile?
+  userRoles                     UserRole[]                  @relation("UserRoleUser")
+  assignedUserRoles             UserRole[]                  @relation("UserRoleAssigner")
+  loginAuditLogs                LoginAuditLog[]
+  departmentsHeaded             Department[]
+  patientPersonalHistoryUpdates PatientPersonalHistory[]    @relation("PersonalHistoryUpdater")
+  patientFamilyHistoryUpdates   PatientFamilyHistory[]      @relation("FamilyHistoryUpdater")
+  patientAllergyNotes           PatientAllergy[]            @relation("AllergyNoter")
+  patientCurrentMedAdds         PatientCurrentMedication[]  @relation("CurrentMedAdder")
+  patientDocUploads             PatientDocument[]           @relation("DocUploader")
+  patientDocVerifications       PatientDocument[]           @relation("DocVerifier")
+  appointmentsBooked            Appointment[]               @relation("AppointmentBooker")
+  appointmentsCancelled         Appointment[]               @relation("AppointmentCanceller")
+  admissionsAdmitted            Admission[]                 @relation("Admitter")
+  admissionsDischarged          Admission[]                 @relation("Discharger")
+  transfersRequested            PatientTransfer[]           @relation("TransferRequester")
+  transfersApproved             PatientTransfer[]           @relation("TransferApprover")
+  vitalsRecorded                Vital[]
+  diagnosesRecorded             Diagnosis[]
+  nursingNotes                  NursingNote[]
+  ivLinesInserted               IVLineRecord[]              @relation("IVInserter")
+  ivLinesRemoved                IVLineRecord[]              @relation("IVRemover")
+  intakeOutputRecords           IntakeOutputRecord[]
+  woundCareRecords              WoundCareRecord[]
+  dischargeSummariesSigned      DischargeSummary[]
+  medicationAdministrations     MedicationAdministration[]
+  labOrdersOrdered              LabOrder[]
+  labSamplesCollected           LabSample[]
+  labResultsEntered             LabResult[]
+  labReportsReviewed            LabReport[]                 @relation("LabReportReviewer")
+  labReportsApproved            LabReport[]                 @relation("LabReportApprover")
+  labReportsSigned              LabReport[]                 @relation("LabReportSigner")
+  imagingOrdersOrdered          ImagingRequest[]
+  imagingResultsRadiologist     ImagingResult[]             @relation("ImagingRadiologist")
+  imagingResultsSigned          ImagingResult[]             @relation("ImagingResultSigner")
+  dispensingRecords             DispensingRecord[]          @relation("Dispenser")
+  dispensingVerifications       DispensingRecord[]          @relation("DispensingVerifier")
+  drugReturnsProcessed          DrugReturn[]
+  stockTransactions             StockTransaction[]
+  purchaseOrdersApproved        PurchaseOrder[]
+  supplyRequestsRequested       SupplyRequest[]             @relation("SupplyRequester")
+  supplyRequestsApproved        SupplyRequest[]             @relation("SupplyApprover")
+  billsGenerated                Bill[]                      @relation("BillGenerator")
+  billsApproved                 Bill[]                      @relation("BillApprover")
+  billsCancelled                Bill[]                      @relation("BillCanceller")
+  paymentsProcessed             Payment[]
+  refundsRequested              Refund[]                    @relation("RefundRequester")
+  refundsApproved               Refund[]                    @relation("RefundApprover")
+  discountsApproved             Discount[]
+  insuranceClaimsSubmitted      InsuranceClaim[]            @relation("ClaimSubmitter")
+  insuranceClaimsReviewed       InsuranceClaim[]            @relation("ClaimReviewer")
+  preAuthSubmitted              PreAuthorizationRequest[]
+  tpaCommunications             TpaCommunicationLog[]
+  bloodDonationsCollected       BloodDonation[]
+  crossMatchTests               CrossMatchTest[]
+  transfusionsAdministered      Transfusion[]               @relation("TransfusionAdministerer")
+  transfusionsOrdered           Transfusion[]               @relation("TransfusionOrderer")
+  leaveRequestsApproved         LeaveRequest[]
+  doctorLeavesApproved          DoctorLeave[]               @relation("DoctorLeaveApprover")
+  payrollProcessed              Payroll[]
+  notifications                 Notification[]
+  messagesSent                  Message[]                   @relation("MessageSender")
+  messagesReceived              Message[]                   @relation("MessageReceiver")
+  shiftHandoverFrom             ShiftHandoverNote[]         @relation("HandoverFrom")
+  shiftHandoverTo               ShiftHandoverNote[]         @relation("HandoverTo")
+  ticketsRaised                 Ticket[]                    @relation("TicketRaiser")
+  ticketsAssigned               Ticket[]                    @relation("TicketAssignee")
+  ticketsEscalated              Ticket[]                    @relation("TicketEscalator")
+  feedbackSubmitted             Feedback[]
+  auditLogs                     AuditLog[]
+  complianceDocUploads          ComplianceDocument[]
+  incidentReportsReported       IncidentReport[]            @relation("IncidentReporter")
+  incidentReportsEscalated      IncidentReport[]            @relation("IncidentEscalator")
+  savedReports                  SavedReport[]
+  scheduledReports              ScheduledReport[]
+  supportTickets                SupportTicket[]
+  tenantOwners                  TenantOwner[]
+  subscriptionPayments          SubscriptionPayment[]
+  connectionRequests            PatientHospitalConnection[] @relation("ConnectionUser")
+  connectionReviews             PatientHospitalConnection[] @relation("ConnectionReviewer")
+  mrdRequestsMade               MrdRequest[]                @relation("MrdRequestedBy")
+  commissionSettingsUpdated     CommissionSetting[]         @relation("CommissionSettingUpdater")
+  hospitalCommissionsUpdated    HospitalCommission[]        @relation("HospitalCommissionUpdater")
+  demoRequestsApproved          DemoRequest[]               @relation("DemoApprover")
+  demoRequestsCreatedUser       DemoRequest[]               @relation("DemoCreatedUser")
+  ownedSubscriptions            UserSubscription[]          @relation("SubscriptionOwner")
+  reservationsCreated           Reservation[]               @relation("ReservationCreator")
+  estimationsCreated            Estimation[]                @relation("EstimationCreator")
+  formTemplatesCreated          FormTemplate[]              @relation("FormTemplateCreator")
+  formInstancesCreated          FormInstance[]              @relation("FormInstanceCreator")
+  formAssignmentsCreated        FormAssignment[]            @relation("FormAssignmentCreator")
+  formSubmissionsSubmitted      FormSubmission[]            @relation("FormSubmissionSubmitter")
+  formSubmissionsVerified       FormSubmission[]            @relation("FormSubmissionVerifier")
 
   @@unique([tenantId, email])
   @@map("users")
@@ -1307,29 +1308,29 @@ model LoginAuditLog {
 }
 
 model DemoRequest {
-  id             String            @id @default(uuid())
-  name           String            @db.VarChar(120)
-  email          String            @db.VarChar(255)
-  phone          String            @db.VarChar(20)
-  hospitalName   String            @map("hospital_name") @db.VarChar(255)
-  designation    String            @db.VarChar(100)
-  city           String            @db.VarChar(100)
-  message        String?           @db.Text
-  status         DemoRequestStatus @default(pending)
-  trialDays      Int?              @map("trial_days")
-  trialEndsAt    DateTime?         @map("trial_ends_at")
-  trialPlanId    String?           @map("trial_plan_id")
-  approvedById   String?           @map("approved_by_id")
-  createdTenantId String?          @map("created_tenant_id")
-  createdUserId  String?           @map("created_user_id")
-  rejectionNote  String?           @map("rejection_note") @db.Text
-  createdAt      DateTime          @default(now()) @map("created_at")
-  updatedAt      DateTime          @updatedAt @map("updated_at")
+  id              String            @id @default(uuid())
+  name            String            @db.VarChar(120)
+  email           String            @db.VarChar(255)
+  phone           String            @db.VarChar(20)
+  hospitalName    String            @map("hospital_name") @db.VarChar(255)
+  designation     String            @db.VarChar(100)
+  city            String            @db.VarChar(100)
+  message         String?           @db.Text
+  status          DemoRequestStatus @default(pending)
+  trialDays       Int?              @map("trial_days")
+  trialEndsAt     DateTime?         @map("trial_ends_at")
+  trialPlanId     String?           @map("trial_plan_id")
+  approvedById    String?           @map("approved_by_id")
+  createdTenantId String?           @map("created_tenant_id")
+  createdUserId   String?           @map("created_user_id")
+  rejectionNote   String?           @map("rejection_note") @db.Text
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
 
-  approvedBy     User?             @relation("DemoApprover", fields: [approvedById], references: [id])
-  trialPlan      SubscriptionPlan? @relation(fields: [trialPlanId], references: [id])
-  createdTenant  Tenant?           @relation(fields: [createdTenantId], references: [id])
-  createdUser    User?             @relation("DemoCreatedUser", fields: [createdUserId], references: [id])
+  approvedBy    User?             @relation("DemoApprover", fields: [approvedById], references: [id])
+  trialPlan     SubscriptionPlan? @relation(fields: [trialPlanId], references: [id])
+  createdTenant Tenant?           @relation(fields: [createdTenantId], references: [id])
+  createdUser   User?             @relation("DemoCreatedUser", fields: [createdUserId], references: [id])
 
   @@map("demo_requests")
 }
@@ -1348,14 +1349,14 @@ enum DemoRequestStatus {
 // ============================================================
 
 model Department {
-  id         String   @id @default(uuid())
-  tenantId   String   @map("tenant_id")
-  name       String   @db.VarChar(100)
-  code       String?  @db.VarChar(20)
+  id          String   @id @default(uuid())
+  tenantId    String   @map("tenant_id")
+  name        String   @db.VarChar(100)
+  code        String?  @db.VarChar(20)
   description String?
-  headUserId String?  @map("head_user_id")
-  isActive   Boolean  @default(true) @map("is_active")
-  createdAt  DateTime @default(now()) @map("created_at")
+  headUserId  String?  @map("head_user_id")
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
 
   tenant            Tenant             @relation(fields: [tenantId], references: [id])
   headUser          User?              @relation(fields: [headUserId], references: [id])
@@ -1373,38 +1374,38 @@ model Department {
 }
 
 model Ward {
-  id           String   @id @default(uuid())
-  tenantId     String   @map("tenant_id")
-  departmentId String?  @map("department_id")
-  name         String   @db.VarChar(100)
+  id           String    @id @default(uuid())
+  tenantId     String    @map("tenant_id")
+  departmentId String?   @map("department_id")
+  name         String    @db.VarChar(100)
   wardType     WardType? @map("ward_type")
-  floor        String?  @db.VarChar(20)
-  totalBeds    Int      @default(0) @map("total_beds")
-  isActive     Boolean  @default(true) @map("is_active")
-  createdAt    DateTime @default(now()) @map("created_at")
+  floor        String?   @db.VarChar(20)
+  totalBeds    Int       @default(0) @map("total_beds")
+  isActive     Boolean   @default(true) @map("is_active")
+  createdAt    DateTime  @default(now()) @map("created_at")
 
-  tenant             Tenant              @relation(fields: [tenantId], references: [id])
-  department         Department?         @relation(fields: [departmentId], references: [id])
-  rooms              Room[]
-  admissions         Admission[]
-  patientTransfersFrom PatientTransfer[] @relation("TransferFromWard")
-  patientTransfersTo   PatientTransfer[] @relation("TransferToWard")
-  supplyRequests     SupplyRequest[]
-  shiftHandoverNotes ShiftHandoverNote[]
-  reservations       Reservation[]
+  tenant               Tenant              @relation(fields: [tenantId], references: [id])
+  department           Department?         @relation(fields: [departmentId], references: [id])
+  rooms                Room[]
+  admissions           Admission[]
+  patientTransfersFrom PatientTransfer[]   @relation("TransferFromWard")
+  patientTransfersTo   PatientTransfer[]   @relation("TransferToWard")
+  supplyRequests       SupplyRequest[]
+  shiftHandoverNotes   ShiftHandoverNote[]
+  reservations         Reservation[]
 
   @@map("wards")
 }
 
 model Room {
-  id         String   @id @default(uuid())
-  tenantId   String   @map("tenant_id")
-  wardId     String   @map("ward_id")
-  roomNumber String   @map("room_number") @db.VarChar(20)
+  id         String    @id @default(uuid())
+  tenantId   String    @map("tenant_id")
+  wardId     String    @map("ward_id")
+  roomNumber String    @map("room_number") @db.VarChar(20)
   roomType   RoomType? @map("room_type")
-  floor      String?  @db.VarChar(20)
-  isActive   Boolean  @default(true) @map("is_active")
-  createdAt  DateTime @default(now()) @map("created_at")
+  floor      String?   @db.VarChar(20)
+  isActive   Boolean   @default(true) @map("is_active")
+  createdAt  DateTime  @default(now()) @map("created_at")
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
   ward   Ward   @relation(fields: [wardId], references: [id])
@@ -1424,13 +1425,13 @@ model Bed {
   createdAt        DateTime  @default(now()) @map("created_at")
   updatedAt        DateTime  @default(now()) @updatedAt @map("updated_at")
 
-  tenant              Tenant            @relation(fields: [tenantId], references: [id])
-  room                Room              @relation(fields: [roomId], references: [id])
-  currentPatient      Patient?          @relation(fields: [currentPatientId], references: [id])
-  admissions          Admission[]
+  tenant               Tenant            @relation(fields: [tenantId], references: [id])
+  room                 Room              @relation(fields: [roomId], references: [id])
+  currentPatient       Patient?          @relation(fields: [currentPatientId], references: [id])
+  admissions           Admission[]
   patientTransfersFrom PatientTransfer[] @relation("TransferFromBed")
   patientTransfersTo   PatientTransfer[] @relation("TransferToBed")
-  reservations        Reservation[]
+  reservations         Reservation[]
 
   @@map("beds")
 }
@@ -1474,98 +1475,98 @@ model HospitalResource {
 // ============================================================
 
 model Patient {
-  id                  String              @id @default(uuid())
-  tenantId            String              @map("tenant_id")
-  userId              String?             @unique @map("user_id")
-  mrn                 String              @db.VarChar(50)
-  firstName           String              @map("first_name") @db.VarChar(100)
-  lastName            String?             @map("last_name") @db.VarChar(100)
-  dateOfBirth         DateTime?           @map("date_of_birth") @db.Date
-  gender              Gender?
-  bloodGroup          String?             @map("blood_group") @db.VarChar(5)
-  phone               String?             @db.VarChar(20)
-  email               String?             @db.VarChar(255)
-  addressLine1        String?             @map("address_line1") @db.VarChar(255)
-  addressLine2        String?             @map("address_line2") @db.VarChar(255)
-  city                String?             @db.VarChar(100)
-  state               String?             @db.VarChar(100)
-  postalCode          String?             @map("postal_code") @db.VarChar(20)
-  country             String?             @db.VarChar(100)
-  photoUrl            String?             @map("photo_url")
-  idProofType         String?             @map("id_proof_type") @db.VarChar(50)
-  idProofNumber       String?             @map("id_proof_number") @db.VarChar(100)
-  idProofDocumentUrl  String?             @map("id_proof_document_url")
-  maritalStatus       String?             @map("marital_status") @db.VarChar(20)
-  nationality         String?             @db.VarChar(100)
-  occupation          String?             @db.VarChar(100)
-  religion            String?             @db.VarChar(50)
-  preferredLanguage   String?             @map("preferred_language") @db.VarChar(50)
-  referredBy          String?             @map("referred_by") @db.VarChar(200)
-  notes               String?
-  abhaNumber          String?             @unique @map("abha_number") @db.VarChar(20)
-  abhaAddress         String?             @map("abha_address") @db.VarChar(100)
-  abhaLinked          Boolean             @default(false) @map("abha_linked")
-  abhaLinkedAt        DateTime?           @map("abha_linked_at")
-  kycVerified         Boolean             @default(false) @map("kyc_verified")
-  kycVerifiedAt       DateTime?           @map("kyc_verified_at")
-  patientType         PatientType?        @map("patient_type")
-  isNew               Boolean             @default(true) @map("is_new")
-  registrationSource  RegistrationSource? @map("registration_source")
-  isActive            Boolean             @default(true) @map("is_active")
-  createdAt           DateTime            @default(now()) @map("created_at")
-  updatedAt           DateTime            @default(now()) @updatedAt @map("updated_at")
+  id                 String              @id @default(uuid())
+  tenantId           String              @map("tenant_id")
+  userId             String?             @unique @map("user_id")
+  mrn                String              @db.VarChar(50)
+  firstName          String              @map("first_name") @db.VarChar(100)
+  lastName           String?             @map("last_name") @db.VarChar(100)
+  dateOfBirth        DateTime?           @map("date_of_birth") @db.Date
+  gender             Gender?
+  bloodGroup         String?             @map("blood_group") @db.VarChar(5)
+  phone              String?             @db.VarChar(20)
+  email              String?             @db.VarChar(255)
+  addressLine1       String?             @map("address_line1") @db.VarChar(255)
+  addressLine2       String?             @map("address_line2") @db.VarChar(255)
+  city               String?             @db.VarChar(100)
+  state              String?             @db.VarChar(100)
+  postalCode         String?             @map("postal_code") @db.VarChar(20)
+  country            String?             @db.VarChar(100)
+  photoUrl           String?             @map("photo_url")
+  idProofType        String?             @map("id_proof_type") @db.VarChar(50)
+  idProofNumber      String?             @map("id_proof_number") @db.VarChar(100)
+  idProofDocumentUrl String?             @map("id_proof_document_url")
+  maritalStatus      String?             @map("marital_status") @db.VarChar(20)
+  nationality        String?             @db.VarChar(100)
+  occupation         String?             @db.VarChar(100)
+  religion           String?             @db.VarChar(50)
+  preferredLanguage  String?             @map("preferred_language") @db.VarChar(50)
+  referredBy         String?             @map("referred_by") @db.VarChar(200)
+  notes              String?
+  abhaNumber         String?             @unique @map("abha_number") @db.VarChar(20)
+  abhaAddress        String?             @map("abha_address") @db.VarChar(100)
+  abhaLinked         Boolean             @default(false) @map("abha_linked")
+  abhaLinkedAt       DateTime?           @map("abha_linked_at")
+  kycVerified        Boolean             @default(false) @map("kyc_verified")
+  kycVerifiedAt      DateTime?           @map("kyc_verified_at")
+  patientType        PatientType?        @map("patient_type")
+  isNew              Boolean             @default(true) @map("is_new")
+  registrationSource RegistrationSource? @map("registration_source")
+  isActive           Boolean             @default(true) @map("is_active")
+  createdAt          DateTime            @default(now()) @map("created_at")
+  updatedAt          DateTime            @default(now()) @updatedAt @map("updated_at")
 
-  tenant                  Tenant                   @relation(fields: [tenantId], references: [id])
-  user                    User?                    @relation(fields: [userId], references: [id])
-  beds                    Bed[]
-  emergencyContacts       PatientEmergencyContact[]
-  personalHistory         PatientPersonalHistory?
-  familyHistory           PatientFamilyHistory[]
-  allergies               PatientAllergy[]
-  currentMedications      PatientCurrentMedication[]
-  documents               PatientDocument[]
-  consents                PatientConsent[]
-  privacySettings         PatientPrivacySetting?
-  abhaSyncLogs            AbhaSyncLog[]
-  appointments            Appointment[]
-  queueTokens             QueueToken[]
-  visits                  Visit[]
-  admissions              Admission[]
-  patientTransfers        PatientTransfer[]
-  vitals                  Vital[]
-  diagnoses               Diagnosis[]
-  progressNotes           ProgressNote[]
-  nursingNotes            NursingNote[]
-  ivLineRecords           IVLineRecord[]
-  intakeOutputRecords     IntakeOutputRecord[]
-  woundCareRecords        WoundCareRecord[]
-  dischargeSummaries      DischargeSummary[]
-  prescriptions           Prescription[]
+  tenant                    Tenant                     @relation(fields: [tenantId], references: [id])
+  user                      User?                      @relation(fields: [userId], references: [id])
+  beds                      Bed[]
+  emergencyContacts         PatientEmergencyContact[]
+  personalHistory           PatientPersonalHistory?
+  familyHistory             PatientFamilyHistory[]
+  allergies                 PatientAllergy[]
+  currentMedications        PatientCurrentMedication[]
+  documents                 PatientDocument[]
+  consents                  PatientConsent[]
+  privacySettings           PatientPrivacySetting?
+  abhaSyncLogs              AbhaSyncLog[]
+  appointments              Appointment[]
+  queueTokens               QueueToken[]
+  visits                    Visit[]
+  admissions                Admission[]
+  patientTransfers          PatientTransfer[]
+  vitals                    Vital[]
+  diagnoses                 Diagnosis[]
+  progressNotes             ProgressNote[]
+  nursingNotes              NursingNote[]
+  ivLineRecords             IVLineRecord[]
+  intakeOutputRecords       IntakeOutputRecord[]
+  woundCareRecords          WoundCareRecord[]
+  dischargeSummaries        DischargeSummary[]
+  prescriptions             Prescription[]
   medicationAdministrations MedicationAdministration[]
-  labOrders               LabOrder[]
-  labResults              LabResult[]
-  labReports              LabReport[]
-  imagingRequests         ImagingRequest[]
-  imagingResults          ImagingResult[]
-  dispensingRecords       DispensingRecord[]
-  drugReturns             DrugReturn[]
-  bills                   Bill[]
-  payments                Payment[]
-  refunds                 Refund[]
-  insurancePolicies       InsurancePolicy[]
-  insuranceClaims         InsuranceClaim[]
-  preAuthRequests         PreAuthorizationRequest[]
-  crossMatchTests         CrossMatchTest[]
-  transfusions            Transfusion[]
-  tickets                 Ticket[]
-  feedback                Feedback[]
-  incidentReports         IncidentReport[]
-  otRequests              OtRequest[]
-  hospitalConnection      PatientHospitalConnection?
-  mrdRequests             MrdRequest[]
-  reservations            Reservation[]
-  estimations             Estimation[]
-  formSubmissions         FormSubmission[]          @relation("FormSubmissionPatient")
+  labOrders                 LabOrder[]
+  labResults                LabResult[]
+  labReports                LabReport[]
+  imagingRequests           ImagingRequest[]
+  imagingResults            ImagingResult[]
+  dispensingRecords         DispensingRecord[]
+  drugReturns               DrugReturn[]
+  bills                     Bill[]
+  payments                  Payment[]
+  refunds                   Refund[]
+  insurancePolicies         InsurancePolicy[]
+  insuranceClaims           InsuranceClaim[]
+  preAuthRequests           PreAuthorizationRequest[]
+  crossMatchTests           CrossMatchTest[]
+  transfusions              Transfusion[]
+  tickets                   Ticket[]
+  feedback                  Feedback[]
+  incidentReports           IncidentReport[]
+  otRequests                OtRequest[]
+  hospitalConnection        PatientHospitalConnection?
+  mrdRequests               MrdRequest[]
+  reservations              Reservation[]
+  estimations               Estimation[]
+  formSubmissions           FormSubmission[]           @relation("FormSubmissionPatient")
 
   @@unique([tenantId, mrn])
   @@map("patients")
@@ -1587,19 +1588,19 @@ model PatientEmergencyContact {
 }
 
 model PatientPersonalHistory {
-  id                 String             @id @default(uuid())
-  patientId          String             @unique @map("patient_id")
+  id                 String              @id @default(uuid())
+  patientId          String              @unique @map("patient_id")
   appetite           String?
   diet               String?
-  sleepPattern       String?            @map("sleep_pattern")
+  sleepPattern       String?             @map("sleep_pattern")
   disorders          String?
-  exerciseHabits     String?            @map("exercise_habits")
-  smokingStatus      SmokingStatus?     @map("smoking_status")
+  exerciseHabits     String?             @map("exercise_habits")
+  smokingStatus      SmokingStatus?      @map("smoking_status")
   alcoholConsumption AlcoholConsumption? @map("alcohol_consumption")
   notes              String?
-  updatedBy          String?            @map("updated_by")
-  createdAt          DateTime           @default(now()) @map("created_at")
-  updatedAt          DateTime           @default(now()) @updatedAt @map("updated_at")
+  updatedBy          String?             @map("updated_by")
+  createdAt          DateTime            @default(now()) @map("created_at")
+  updatedAt          DateTime            @default(now()) @updatedAt @map("updated_at")
 
   patient Patient @relation(fields: [patientId], references: [id])
   updater User?   @relation("PersonalHistoryUpdater", fields: [updatedBy], references: [id])
@@ -1608,15 +1609,15 @@ model PatientPersonalHistory {
 }
 
 model PatientFamilyHistory {
-  id            String     @id @default(uuid())
-  patientId     String     @map("patient_id")
-  conditionName String     @map("condition_name") @db.VarChar(255)
+  id            String       @id @default(uuid())
+  patientId     String       @map("patient_id")
+  conditionName String       @map("condition_name") @db.VarChar(255)
   relationSide  RelationSide @map("relation_side")
-  relationship  String?    @db.VarChar(50)
+  relationship  String?      @db.VarChar(50)
   notes         String?
-  updatedBy     String?    @map("updated_by")
-  createdAt     DateTime   @default(now()) @map("created_at")
-  updatedAt     DateTime   @default(now()) @updatedAt @map("updated_at")
+  updatedBy     String?      @map("updated_by")
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @default(now()) @updatedAt @map("updated_at")
 
   patient Patient @relation(fields: [patientId], references: [id])
   updater User?   @relation("FamilyHistoryUpdater", fields: [updatedBy], references: [id])
@@ -1625,15 +1626,15 @@ model PatientFamilyHistory {
 }
 
 model PatientAllergy {
-  id          String          @id @default(uuid())
-  patientId   String          @map("patient_id")
-  allergyType AllergyType     @map("allergy_type")
-  allergen    String          @db.VarChar(255)
+  id          String           @id @default(uuid())
+  patientId   String           @map("patient_id")
+  allergyType AllergyType      @map("allergy_type")
+  allergen    String           @db.VarChar(255)
   severity    AllergySeverity?
   reaction    String?
-  notedBy     String?         @map("noted_by")
-  createdAt   DateTime        @default(now()) @map("created_at")
-  updatedAt   DateTime        @default(now()) @updatedAt @map("updated_at")
+  notedBy     String?          @map("noted_by")
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @default(now()) @updatedAt @map("updated_at")
 
   patient Patient @relation(fields: [patientId], references: [id])
   noter   User?   @relation("AllergyNoter", fields: [notedBy], references: [id])
@@ -1645,19 +1646,19 @@ model PatientAllergy {
 /// are NOT generated from our Prescription system (e.g. OTC, prior prescriptions
 /// from other hospitals, home remedies). Editable by doctor, viewable by both.
 model PatientCurrentMedication {
-  id          String    @id @default(uuid())
-  patientId   String    @map("patient_id")
-  drugName    String    @map("drug_name") @db.VarChar(255)
-  dosage      String?   @db.VarChar(100)
-  frequency   String?   @db.VarChar(100)
-  route       String?   @db.VarChar(50)
-  startedOn   DateTime? @map("started_on") @db.Date
-  source      String?   @db.VarChar(50)
-  notes       String?
-  addedBy     String?   @map("added_by")
-  isActive    Boolean   @default(true) @map("is_active")
-  createdAt   DateTime  @default(now()) @map("created_at")
-  updatedAt   DateTime  @default(now()) @updatedAt @map("updated_at")
+  id        String    @id @default(uuid())
+  patientId String    @map("patient_id")
+  drugName  String    @map("drug_name") @db.VarChar(255)
+  dosage    String?   @db.VarChar(100)
+  frequency String?   @db.VarChar(100)
+  route     String?   @db.VarChar(50)
+  startedOn DateTime? @map("started_on") @db.Date
+  source    String?   @db.VarChar(50)
+  notes     String?
+  addedBy   String?   @map("added_by")
+  isActive  Boolean   @default(true) @map("is_active")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @default(now()) @updatedAt @map("updated_at")
 
   patient Patient @relation(fields: [patientId], references: [id])
   adder   User?   @relation("CurrentMedAdder", fields: [addedBy], references: [id])
@@ -1719,21 +1720,21 @@ model PatientPrivacySetting {
 }
 
 model AbhaSyncLog {
-  id                 String             @id @default(uuid())
-  tenantId           String             @map("tenant_id")
-  patientId          String             @map("patient_id")
-  syncDirection      SyncDirection      @map("sync_direction")
-  recordType         AbhaSyncRecordType @map("record_type")
-  recordId           String             @map("record_id")
-  hipId              String?            @map("hip_id") @db.VarChar(100)
-  hiuId              String?            @map("hiu_id") @db.VarChar(100)
-  transactionId      String?            @map("transaction_id") @db.VarChar(255)
-  consentArtifactId  String?            @map("consent_artifact_id") @db.VarChar(255)
-  fhirBundleUrl      String?            @map("fhir_bundle_url")
-  status             AbhaSyncStatus     @default(pending)
-  errorMessage       String?            @map("error_message")
-  syncedAt           DateTime?          @map("synced_at")
-  createdAt          DateTime           @default(now()) @map("created_at")
+  id                String             @id @default(uuid())
+  tenantId          String             @map("tenant_id")
+  patientId         String             @map("patient_id")
+  syncDirection     SyncDirection      @map("sync_direction")
+  recordType        AbhaSyncRecordType @map("record_type")
+  recordId          String             @map("record_id")
+  hipId             String?            @map("hip_id") @db.VarChar(100)
+  hiuId             String?            @map("hiu_id") @db.VarChar(100)
+  transactionId     String?            @map("transaction_id") @db.VarChar(255)
+  consentArtifactId String?            @map("consent_artifact_id") @db.VarChar(255)
+  fhirBundleUrl     String?            @map("fhir_bundle_url")
+  status            AbhaSyncStatus     @default(pending)
+  errorMessage      String?            @map("error_message")
+  syncedAt          DateTime?          @map("synced_at")
+  createdAt         DateTime           @default(now()) @map("created_at")
 
   tenant  Tenant  @relation(fields: [tenantId], references: [id])
   patient Patient @relation(fields: [patientId], references: [id])
@@ -1760,25 +1761,26 @@ model DoctorProfile {
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
 
-  user               User               @relation(fields: [userId], references: [id])
-  tenant             Tenant             @relation(fields: [tenantId], references: [id])
-  department         Department         @relation(fields: [departmentId], references: [id])
-  schedules          DoctorSchedule[]
-  leaves             DoctorLeave[]
-  appointments       Appointment[]
-  queueTokens        QueueToken[]
-  visits             Visit[]
-  admissions         Admission[]
-  patientTransfersFrom PatientTransfer[] @relation("TransferFromDoctor")
-  patientTransfersTo   PatientTransfer[] @relation("TransferToDoctor")
-  progressNotes      ProgressNote[]
+  user                  User                     @relation(fields: [userId], references: [id])
+  tenant                Tenant                   @relation(fields: [tenantId], references: [id])
+  department            Department               @relation(fields: [departmentId], references: [id])
+  schedules             DoctorSchedule[]
+  scheduleOverrides     DoctorScheduleOverride[]
+  leaves                DoctorLeave[]
+  appointments          Appointment[]
+  queueTokens           QueueToken[]
+  visits                Visit[]
+  admissions            Admission[]
+  patientTransfersFrom  PatientTransfer[]        @relation("TransferFromDoctor")
+  patientTransfersTo    PatientTransfer[]        @relation("TransferToDoctor")
+  progressNotes         ProgressNote[]
   progressNoteTemplates ProgressNoteTemplate[]
-  dischargeSummaries DischargeSummary[]
-  prescriptions      Prescription[]
-  otRequests         OtRequest[]
-  feedback           Feedback[]
-  reservations       Reservation[]
-  estimations        Estimation[]
+  dischargeSummaries    DischargeSummary[]
+  prescriptions         Prescription[]
+  otRequests            OtRequest[]
+  feedback              Feedback[]
+  reservations          Reservation[]
+  estimations           Estimation[]
 
   @@map("doctor_profiles")
 }
@@ -1799,16 +1801,51 @@ model DoctorSchedule {
   @@map("doctor_schedules")
 }
 
-model DoctorLeave {
-  id        String    @id @default(uuid())
-  doctorId  String    @map("doctor_id")
-  leaveDate DateTime  @map("leave_date") @db.Date
-  startTime DateTime? @map("start_time") @db.Time()
-  endTime   DateTime? @map("end_time") @db.Time()
-  reason    String?
-  createdAt DateTime  @default(now()) @map("created_at")
+model DoctorScheduleOverride {
+  id        String   @id @default(uuid())
+  doctorId  String   @map("doctor_id")
+  date      DateTime @db.Date
+  isDayOff  Boolean  @default(false) @map("is_day_off")
+  note      String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
-  doctor DoctorProfile @relation(fields: [doctorId], references: [id])
+  doctor DoctorProfile         @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  shifts DoctorOverrideShift[]
+
+  @@unique([doctorId, date])
+  @@map("doctor_schedule_overrides")
+}
+
+model DoctorOverrideShift {
+  id                  String   @id @default(uuid())
+  overrideId          String   @map("override_id")
+  startTime           DateTime @map("start_time") @db.Time()
+  endTime             DateTime @map("end_time") @db.Time()
+  slotDurationMinutes Int      @default(15) @map("slot_duration_minutes")
+  maxPatients         Int?     @map("max_patients")
+
+  override DoctorScheduleOverride @relation(fields: [overrideId], references: [id], onDelete: Cascade)
+
+  @@map("doctor_override_shifts")
+}
+
+model DoctorLeave {
+  id         String             @id @default(uuid())
+  doctorId   String             @map("doctor_id")
+  leaveDate  DateTime           @map("leave_date") @db.Date
+  endDate    DateTime?          @map("end_date") @db.Date
+  startTime  DateTime?          @map("start_time") @db.Time()
+  endTime    DateTime?          @map("end_time") @db.Time()
+  leaveType  LeaveType          @default(casual) @map("leave_type")
+  status     LeaveRequestStatus @default(pending)
+  reason     String?
+  approvedBy String?            @map("approved_by")
+  approvedAt DateTime?          @map("approved_at")
+  createdAt  DateTime           @default(now()) @map("created_at")
+
+  doctor   DoctorProfile @relation(fields: [doctorId], references: [id])
+  approver User?         @relation("DoctorLeaveApprover", fields: [approvedBy], references: [id])
 
   @@map("doctor_leaves")
 }
@@ -1834,13 +1871,13 @@ model Appointment {
   createdAt          DateTime          @default(now()) @map("created_at")
   updatedAt          DateTime          @default(now()) @updatedAt @map("updated_at")
 
-  tenant    Tenant        @relation(fields: [tenantId], references: [id])
-  patient   Patient       @relation(fields: [patientId], references: [id])
-  doctor    DoctorProfile @relation(fields: [doctorId], references: [id])
-  booker    User?         @relation("AppointmentBooker", fields: [bookedBy], references: [id])
-  canceller User?         @relation("AppointmentCanceller", fields: [cancelledBy], references: [id])
-  queueTokens QueueToken[]
-  visits      Visit[]
+  tenant          Tenant           @relation(fields: [tenantId], references: [id])
+  patient         Patient          @relation(fields: [patientId], references: [id])
+  doctor          DoctorProfile    @relation(fields: [doctorId], references: [id])
+  booker          User?            @relation("AppointmentBooker", fields: [bookedBy], references: [id])
+  canceller       User?            @relation("AppointmentCanceller", fields: [cancelledBy], references: [id])
+  queueTokens     QueueToken[]
+  visits          Visit[]
   formSubmissions FormSubmission[] @relation("FormSubmissionAppointment")
 
   @@map("appointments")
@@ -1873,39 +1910,39 @@ model QueueToken {
 // ============================================================
 
 model Visit {
-  id              String      @id @default(uuid())
-  tenantId        String      @map("tenant_id")
-  patientId       String      @map("patient_id")
-  doctorId        String      @map("doctor_id")
-  appointmentId   String?     @map("appointment_id")
-  visitType       VisitType   @map("visit_type")
-  visitDate       DateTime    @map("visit_date")
-  chiefComplaint  String?     @map("chief_complaint")
-  status          VisitStatus @default(active)
-  createdAt       DateTime    @default(now()) @map("created_at")
-  updatedAt       DateTime    @default(now()) @updatedAt @map("updated_at")
+  id             String      @id @default(uuid())
+  tenantId       String      @map("tenant_id")
+  patientId      String      @map("patient_id")
+  doctorId       String      @map("doctor_id")
+  appointmentId  String?     @map("appointment_id")
+  visitType      VisitType   @map("visit_type")
+  visitDate      DateTime    @map("visit_date")
+  chiefComplaint String?     @map("chief_complaint")
+  status         VisitStatus @default(active)
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @default(now()) @updatedAt @map("updated_at")
 
-  tenant             Tenant              @relation(fields: [tenantId], references: [id])
-  patient            Patient             @relation(fields: [patientId], references: [id])
-  doctor             DoctorProfile       @relation(fields: [doctorId], references: [id])
-  appointment        Appointment?        @relation(fields: [appointmentId], references: [id])
-  admission          Admission?
-  patientTransfers   PatientTransfer[]
-  vitals             Vital[]
-  diagnoses          Diagnosis[]
-  progressNotes      ProgressNote[]
-  nursingNotes       NursingNote[]
-  ivLineRecords      IVLineRecord[]
+  tenant              Tenant               @relation(fields: [tenantId], references: [id])
+  patient             Patient              @relation(fields: [patientId], references: [id])
+  doctor              DoctorProfile        @relation(fields: [doctorId], references: [id])
+  appointment         Appointment?         @relation(fields: [appointmentId], references: [id])
+  admission           Admission?
+  patientTransfers    PatientTransfer[]
+  vitals              Vital[]
+  diagnoses           Diagnosis[]
+  progressNotes       ProgressNote[]
+  nursingNotes        NursingNote[]
+  ivLineRecords       IVLineRecord[]
   intakeOutputRecords IntakeOutputRecord[]
-  woundCareRecords   WoundCareRecord[]
-  dischargeSummaries DischargeSummary[]
-  prescriptions      Prescription[]
-  labOrders          LabOrder[]
-  imagingRequests    ImagingRequest[]
-  bills              Bill[]
-  transfusions       Transfusion[]
-  otRequests         OtRequest[]
-  formSubmissions    FormSubmission[]  @relation("FormSubmissionVisit")
+  woundCareRecords    WoundCareRecord[]
+  dischargeSummaries  DischargeSummary[]
+  prescriptions       Prescription[]
+  labOrders           LabOrder[]
+  imagingRequests     ImagingRequest[]
+  bills               Bill[]
+  transfusions        Transfusion[]
+  otRequests          OtRequest[]
+  formSubmissions     FormSubmission[]     @relation("FormSubmissionVisit")
 
   @@map("visits")
 }
@@ -1929,19 +1966,19 @@ model Admission {
   createdAt             DateTime        @default(now()) @map("created_at")
   updatedAt             DateTime        @default(now()) @updatedAt @map("updated_at")
 
-  tenant             Tenant            @relation(fields: [tenantId], references: [id])
-  visit              Visit             @relation(fields: [visitId], references: [id])
-  patient            Patient           @relation(fields: [patientId], references: [id])
-  doctor             DoctorProfile     @relation(fields: [doctorId], references: [id])
-  bed                Bed               @relation(fields: [bedId], references: [id])
-  ward               Ward              @relation(fields: [wardId], references: [id])
-  admitter           User?             @relation("Admitter", fields: [admittedBy], references: [id])
-  discharger         User?             @relation("Discharger", fields: [dischargedBy], references: [id])
-  dischargeSummary   DischargeSummary?
-  ivLineRecords      IVLineRecord[]
-  nursingNotes       NursingNote[]
-  bills              Bill[]
-  formSubmissions    FormSubmission[]  @relation("FormSubmissionAdmission")
+  tenant           Tenant            @relation(fields: [tenantId], references: [id])
+  visit            Visit             @relation(fields: [visitId], references: [id])
+  patient          Patient           @relation(fields: [patientId], references: [id])
+  doctor           DoctorProfile     @relation(fields: [doctorId], references: [id])
+  bed              Bed               @relation(fields: [bedId], references: [id])
+  ward             Ward              @relation(fields: [wardId], references: [id])
+  admitter         User?             @relation("Admitter", fields: [admittedBy], references: [id])
+  discharger       User?             @relation("Discharger", fields: [dischargedBy], references: [id])
+  dischargeSummary DischargeSummary?
+  ivLineRecords    IVLineRecord[]
+  nursingNotes     NursingNote[]
+  bills            Bill[]
+  formSubmissions  FormSubmission[]  @relation("FormSubmissionAdmission")
 
   @@map("admissions")
 }
@@ -1984,54 +2021,54 @@ model PatientTransfer {
 // ============================================================
 
 model Reservation {
-  id              String            @id @default(uuid())
-  tenantId        String            @map("tenant_id")
-  patientId       String            @map("patient_id")
-  doctorId        String            @map("doctor_id")
-  wardId          String            @map("ward_id")
-  bedId           String?           @map("bed_id")
-  reservedDate    DateTime          @map("reserved_date")
-  expectedAdmission DateTime?       @map("expected_admission")
-  diagnosis       String?
-  speciality      String?           @db.VarChar(100)
-  advanceAmount   Decimal           @default(0) @map("advance_amount") @db.Decimal(12, 2)
-  notes           String?
-  status          ReservationStatus @default(reserved)
-  admissionId     String?           @unique @map("admission_id")
-  createdBy       String?           @map("created_by")
-  createdAt       DateTime          @default(now()) @map("created_at")
-  updatedAt       DateTime          @default(now()) @updatedAt @map("updated_at")
+  id                String            @id @default(uuid())
+  tenantId          String            @map("tenant_id")
+  patientId         String            @map("patient_id")
+  doctorId          String            @map("doctor_id")
+  wardId            String            @map("ward_id")
+  bedId             String?           @map("bed_id")
+  reservedDate      DateTime          @map("reserved_date")
+  expectedAdmission DateTime?         @map("expected_admission")
+  diagnosis         String?
+  speciality        String?           @db.VarChar(100)
+  advanceAmount     Decimal           @default(0) @map("advance_amount") @db.Decimal(12, 2)
+  notes             String?
+  status            ReservationStatus @default(reserved)
+  admissionId       String?           @unique @map("admission_id")
+  createdBy         String?           @map("created_by")
+  createdAt         DateTime          @default(now()) @map("created_at")
+  updatedAt         DateTime          @default(now()) @updatedAt @map("updated_at")
 
-  tenant    Tenant         @relation(fields: [tenantId], references: [id])
-  patient   Patient        @relation(fields: [patientId], references: [id])
-  doctor    DoctorProfile  @relation(fields: [doctorId], references: [id])
-  ward      Ward           @relation(fields: [wardId], references: [id])
-  bed       Bed?           @relation(fields: [bedId], references: [id])
-  creator   User?          @relation("ReservationCreator", fields: [createdBy], references: [id])
+  tenant  Tenant        @relation(fields: [tenantId], references: [id])
+  patient Patient       @relation(fields: [patientId], references: [id])
+  doctor  DoctorProfile @relation(fields: [doctorId], references: [id])
+  ward    Ward          @relation(fields: [wardId], references: [id])
+  bed     Bed?          @relation(fields: [bedId], references: [id])
+  creator User?         @relation("ReservationCreator", fields: [createdBy], references: [id])
 
   @@map("reservations")
 }
 
 model Estimation {
-  id                    String           @id @default(uuid())
-  tenantId              String           @map("tenant_id")
-  patientId             String           @map("patient_id")
-  doctorId              String           @map("doctor_id")
-  complaints            String?
-  estimationPeriodDays  Int              @default(1) @map("estimation_period_days")
-  totalEstimateAmount   Decimal          @default(0) @map("total_estimate_amount") @db.Decimal(12, 2)
-  items                 Json?            @default("[]")
-  notes                 String?
-  status                EstimationStatus @default(draft)
-  admissionId           String?          @map("admission_id")
-  createdBy             String?          @map("created_by")
-  createdAt             DateTime         @default(now()) @map("created_at")
-  updatedAt             DateTime         @default(now()) @updatedAt @map("updated_at")
+  id                   String           @id @default(uuid())
+  tenantId             String           @map("tenant_id")
+  patientId            String           @map("patient_id")
+  doctorId             String           @map("doctor_id")
+  complaints           String?
+  estimationPeriodDays Int              @default(1) @map("estimation_period_days")
+  totalEstimateAmount  Decimal          @default(0) @map("total_estimate_amount") @db.Decimal(12, 2)
+  items                Json?            @default("[]")
+  notes                String?
+  status               EstimationStatus @default(draft)
+  admissionId          String?          @map("admission_id")
+  createdBy            String?          @map("created_by")
+  createdAt            DateTime         @default(now()) @map("created_at")
+  updatedAt            DateTime         @default(now()) @updatedAt @map("updated_at")
 
-  tenant    Tenant         @relation(fields: [tenantId], references: [id])
-  patient   Patient        @relation(fields: [patientId], references: [id])
-  doctor    DoctorProfile  @relation(fields: [doctorId], references: [id])
-  creator   User?          @relation("EstimationCreator", fields: [createdBy], references: [id])
+  tenant  Tenant        @relation(fields: [tenantId], references: [id])
+  patient Patient       @relation(fields: [patientId], references: [id])
+  doctor  DoctorProfile @relation(fields: [doctorId], references: [id])
+  creator User?         @relation("EstimationCreator", fields: [createdBy], references: [id])
 
   @@map("estimations")
 }
@@ -2084,24 +2121,24 @@ model Diagnosis {
 // ============================================================
 
 model ProgressNote {
-  id                     String             @id @default(uuid())
-  visitId                String             @map("visit_id")
-  patientId              String             @map("patient_id")
-  doctorId               String             @map("doctor_id")
-  noteType               ProgressNoteType?  @map("note_type")
-  content                String
-  impressions            String?
-  discussions            String?
-  conclusions            String?
-  customFields           Json?              @map("custom_fields")
-  weightKgAtEntry        Decimal?           @map("weight_kg_at_entry") @db.Decimal(5, 2)
-  pinToDischargeSummary  Boolean            @default(false) @map("pin_to_discharge_summary")
-  isAutoFilled           Boolean            @default(false) @map("is_auto_filled")
-  status                 ProgressNoteStatus @default(active)
-  archivedAt             DateTime?          @map("archived_at")
-  archiveReason          String?            @map("archive_reason") @db.VarChar(50)
-  createdAt              DateTime           @default(now()) @map("created_at")
-  updatedAt              DateTime           @default(now()) @updatedAt @map("updated_at")
+  id                    String             @id @default(uuid())
+  visitId               String             @map("visit_id")
+  patientId             String             @map("patient_id")
+  doctorId              String             @map("doctor_id")
+  noteType              ProgressNoteType?  @map("note_type")
+  content               String
+  impressions           String?
+  discussions           String?
+  conclusions           String?
+  customFields          Json?              @map("custom_fields")
+  weightKgAtEntry       Decimal?           @map("weight_kg_at_entry") @db.Decimal(5, 2)
+  pinToDischargeSummary Boolean            @default(false) @map("pin_to_discharge_summary")
+  isAutoFilled          Boolean            @default(false) @map("is_auto_filled")
+  status                ProgressNoteStatus @default(active)
+  archivedAt            DateTime?          @map("archived_at")
+  archiveReason         String?            @map("archive_reason") @db.VarChar(50)
+  createdAt             DateTime           @default(now()) @map("created_at")
+  updatedAt             DateTime           @default(now()) @updatedAt @map("updated_at")
 
   visit   Visit         @relation(fields: [visitId], references: [id])
   patient Patient       @relation(fields: [patientId], references: [id])
@@ -2112,14 +2149,14 @@ model ProgressNote {
 }
 
 model ProgressNoteTemplate {
-  id         String        @id @default(uuid())
-  tenantId   String        @map("tenant_id")
-  doctorId   String        @map("doctor_id")
-  name       String        @db.VarChar(120)
-  fields     Json
-  isDefault  Boolean       @default(false) @map("is_default")
-  createdAt  DateTime      @default(now()) @map("created_at")
-  updatedAt  DateTime      @default(now()) @updatedAt @map("updated_at")
+  id        String   @id @default(uuid())
+  tenantId  String   @map("tenant_id")
+  doctorId  String   @map("doctor_id")
+  name      String   @db.VarChar(120)
+  fields    Json
+  isDefault Boolean  @default(false) @map("is_default")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
   tenant Tenant        @relation(fields: [tenantId], references: [id])
   doctor DoctorProfile @relation(fields: [doctorId], references: [id])
@@ -2140,61 +2177,61 @@ model NursingNote {
   createdAt   DateTime         @default(now()) @map("created_at")
   updatedAt   DateTime         @default(now()) @updatedAt @map("updated_at")
 
-  visit     Visit?    @relation(fields: [visitId], references: [id])
-  patient   Patient   @relation(fields: [patientId], references: [id])
-  nurse     User      @relation(fields: [nurseId], references: [id])
+  visit     Visit?     @relation(fields: [visitId], references: [id])
+  patient   Patient    @relation(fields: [patientId], references: [id])
+  nurse     User       @relation(fields: [nurseId], references: [id])
   admission Admission? @relation(fields: [admissionId], references: [id])
 
   @@map("nursing_notes")
 }
 
 model IVLineRecord {
-  id                          String          @id @default(uuid())
-  visitId                     String          @map("visit_id")
-  patientId                   String          @map("patient_id")
-  admissionId                 String?         @map("admission_id")
-  lineType                    IVLineType      @map("line_type")
-  catheterGauge               String?         @map("catheter_gauge") @db.VarChar(10)
-  insertionSite               String          @map("insertion_site") @db.VarChar(100)
-  insertedAt                  DateTime        @map("inserted_at")
-  insertedBy                  String          @map("inserted_by")
-  removedAt                   DateTime?       @map("removed_at")
-  removedBy                   String?         @map("removed_by")
-  removalReason               IVRemovalReason? @map("removal_reason")
-  dressingChangeFrequencyHours Int            @default(72) @map("dressing_change_frequency_hours")
-  lastDressingChangeAt        DateTime?       @map("last_dressing_change_at")
-  lastFlushedAt               DateTime?       @map("last_flushed_at")
-  fluidType                   String?         @map("fluid_type") @db.VarChar(100)
-  flowRateMlPerHr             Int?            @map("flow_rate_ml_per_hr")
-  status                      IVLineStatus    @default(active)
-  complications               String?
-  notes                       String?
-  createdAt                   DateTime        @default(now()) @map("created_at")
-  updatedAt                   DateTime        @default(now()) @updatedAt @map("updated_at")
+  id                           String           @id @default(uuid())
+  visitId                      String           @map("visit_id")
+  patientId                    String           @map("patient_id")
+  admissionId                  String?          @map("admission_id")
+  lineType                     IVLineType       @map("line_type")
+  catheterGauge                String?          @map("catheter_gauge") @db.VarChar(10)
+  insertionSite                String           @map("insertion_site") @db.VarChar(100)
+  insertedAt                   DateTime         @map("inserted_at")
+  insertedBy                   String           @map("inserted_by")
+  removedAt                    DateTime?        @map("removed_at")
+  removedBy                    String?          @map("removed_by")
+  removalReason                IVRemovalReason? @map("removal_reason")
+  dressingChangeFrequencyHours Int              @default(72) @map("dressing_change_frequency_hours")
+  lastDressingChangeAt         DateTime?        @map("last_dressing_change_at")
+  lastFlushedAt                DateTime?        @map("last_flushed_at")
+  fluidType                    String?          @map("fluid_type") @db.VarChar(100)
+  flowRateMlPerHr              Int?             @map("flow_rate_ml_per_hr")
+  status                       IVLineStatus     @default(active)
+  complications                String?
+  notes                        String?
+  createdAt                    DateTime         @default(now()) @map("created_at")
+  updatedAt                    DateTime         @default(now()) @updatedAt @map("updated_at")
 
-  visit              Visit              @relation(fields: [visitId], references: [id])
-  patient            Patient            @relation(fields: [patientId], references: [id])
-  admission          Admission?         @relation(fields: [admissionId], references: [id])
-  inserter           User               @relation("IVInserter", fields: [insertedBy], references: [id])
-  remover            User?              @relation("IVRemover", fields: [removedBy], references: [id])
+  visit               Visit                @relation(fields: [visitId], references: [id])
+  patient             Patient              @relation(fields: [patientId], references: [id])
+  admission           Admission?           @relation(fields: [admissionId], references: [id])
+  inserter            User                 @relation("IVInserter", fields: [insertedBy], references: [id])
+  remover             User?                @relation("IVRemover", fields: [removedBy], references: [id])
   intakeOutputRecords IntakeOutputRecord[]
 
   @@map("iv_line_records")
 }
 
 model IntakeOutputRecord {
-  id               String     @id @default(uuid())
-  visitId          String     @map("visit_id")
-  patientId        String     @map("patient_id")
-  nurseId          String     @map("nurse_id")
-  recordDatetime   DateTime   @map("record_datetime")
+  id               String      @id @default(uuid())
+  visitId          String      @map("visit_id")
+  patientId        String      @map("patient_id")
+  nurseId          String      @map("nurse_id")
+  recordDatetime   DateTime    @map("record_datetime")
   entryType        IOEntryType @map("entry_type")
   category         IOCategory
-  volumeMl         Int        @map("volume_ml")
-  fluidDescription String?    @map("fluid_description") @db.VarChar(255)
-  ivLineId         String?    @map("iv_line_id")
+  volumeMl         Int         @map("volume_ml")
+  fluidDescription String?     @map("fluid_description") @db.VarChar(255)
+  ivLineId         String?     @map("iv_line_id")
   notes            String?
-  createdAt        DateTime   @default(now()) @map("created_at")
+  createdAt        DateTime    @default(now()) @map("created_at")
 
   visit   Visit         @relation(fields: [visitId], references: [id])
   patient Patient       @relation(fields: [patientId], references: [id])
@@ -2205,25 +2242,25 @@ model IntakeOutputRecord {
 }
 
 model WoundCareRecord {
-  id                String       @id @default(uuid())
-  visitId           String       @map("visit_id")
-  patientId         String       @map("patient_id")
-  nurseId           String       @map("nurse_id")
-  woundLocation     String       @map("wound_location") @db.VarChar(100)
-  woundType         WoundType?   @map("wound_type")
-  woundStage        WoundStage?  @map("wound_stage")
-  lengthCm          Decimal?     @map("length_cm") @db.Decimal(5, 2)
-  widthCm           Decimal?     @map("width_cm") @db.Decimal(5, 2)
-  depthCm           Decimal?     @map("depth_cm") @db.Decimal(5, 2)
-  exudateType       ExudateType? @map("exudate_type")
+  id                String         @id @default(uuid())
+  visitId           String         @map("visit_id")
+  patientId         String         @map("patient_id")
+  nurseId           String         @map("nurse_id")
+  woundLocation     String         @map("wound_location") @db.VarChar(100)
+  woundType         WoundType?     @map("wound_type")
+  woundStage        WoundStage?    @map("wound_stage")
+  lengthCm          Decimal?       @map("length_cm") @db.Decimal(5, 2)
+  widthCm           Decimal?       @map("width_cm") @db.Decimal(5, 2)
+  depthCm           Decimal?       @map("depth_cm") @db.Decimal(5, 2)
+  exudateType       ExudateType?   @map("exudate_type")
   exudateAmount     ExudateAmount? @map("exudate_amount")
-  dressingApplied   String?      @map("dressing_applied") @db.VarChar(255)
-  treatmentNotes    String?      @map("treatment_notes")
-  photoUrl          String?      @map("photo_url")
-  assessedAt        DateTime     @map("assessed_at")
-  nextAssessmentDue DateTime?    @map("next_assessment_due")
-  status            WoundStatus  @default(active)
-  createdAt         DateTime     @default(now()) @map("created_at")
+  dressingApplied   String?        @map("dressing_applied") @db.VarChar(255)
+  treatmentNotes    String?        @map("treatment_notes")
+  photoUrl          String?        @map("photo_url")
+  assessedAt        DateTime       @map("assessed_at")
+  nextAssessmentDue DateTime?      @map("next_assessment_due")
+  status            WoundStatus    @default(active)
+  createdAt         DateTime       @default(now()) @map("created_at")
 
   visit   Visit   @relation(fields: [visitId], references: [id])
   patient Patient @relation(fields: [patientId], references: [id])
@@ -2365,26 +2402,26 @@ model LabTestCatalog {
   isActive        Boolean  @default(true) @map("is_active")
   createdAt       DateTime @default(now()) @map("created_at")
 
-  tenant        Tenant        @relation(fields: [tenantId], references: [id])
-  labDepartment LabDepartment @relation(fields: [labDepartmentId], references: [id])
+  tenant        Tenant         @relation(fields: [tenantId], references: [id])
+  labDepartment LabDepartment  @relation(fields: [labDepartmentId], references: [id])
   labOrderItems LabOrderItem[]
 
   @@map("lab_test_catalog")
 }
 
 model LabOrder {
-  id               String        @id @default(uuid())
-  tenantId         String        @map("tenant_id")
-  patientId        String        @map("patient_id")
-  visitId          String        @map("visit_id")
-  orderedBy        String        @map("ordered_by")
-  urgency          Urgency       @default(routine)
-  status           LabOrderStatus @default(ordered)
-  isThirdParty     Boolean       @default(false) @map("is_third_party")
-  thirdPartyLabName String?      @map("third_party_lab_name") @db.VarChar(255)
-  notes            String?
-  createdAt        DateTime      @default(now()) @map("created_at")
-  updatedAt        DateTime      @default(now()) @updatedAt @map("updated_at")
+  id                String         @id @default(uuid())
+  tenantId          String         @map("tenant_id")
+  patientId         String         @map("patient_id")
+  visitId           String         @map("visit_id")
+  orderedBy         String         @map("ordered_by")
+  urgency           Urgency        @default(routine)
+  status            LabOrderStatus @default(ordered)
+  isThirdParty      Boolean        @default(false) @map("is_third_party")
+  thirdPartyLabName String?        @map("third_party_lab_name") @db.VarChar(255)
+  notes             String?
+  createdAt         DateTime       @default(now()) @map("created_at")
+  updatedAt         DateTime       @default(now()) @updatedAt @map("updated_at")
 
   tenant        Tenant         @relation(fields: [tenantId], references: [id])
   patient       Patient        @relation(fields: [patientId], references: [id])
@@ -2555,22 +2592,22 @@ model DrugCategory {
 }
 
 model DrugFormulary {
-  id                String     @id @default(uuid())
-  tenantId          String     @map("tenant_id")
-  drugName          String     @map("drug_name") @db.VarChar(255)
-  genericName       String?    @map("generic_name") @db.VarChar(255)
-  categoryId        String?    @map("category_id")
-  manufacturer      String?    @db.VarChar(255)
+  id                String      @id @default(uuid())
+  tenantId          String      @map("tenant_id")
+  drugName          String      @map("drug_name") @db.VarChar(255)
+  genericName       String?     @map("generic_name") @db.VarChar(255)
+  categoryId        String?     @map("category_id")
+  manufacturer      String?     @db.VarChar(255)
   dosageForm        DosageForm? @map("dosage_form")
-  strength          String?    @db.VarChar(100)
-  unitOfMeasurement String?    @map("unit_of_measurement") @db.VarChar(20)
-  price             Decimal?   @db.Decimal(10, 2)
+  strength          String?     @db.VarChar(100)
+  unitOfMeasurement String?     @map("unit_of_measurement") @db.VarChar(20)
+  price             Decimal?    @db.Decimal(10, 2)
   indications       String?
   contraindications String?
-  isActive          Boolean    @default(true) @map("is_active")
-  isRecalled        Boolean    @default(false) @map("is_recalled")
-  createdAt         DateTime   @default(now()) @map("created_at")
-  updatedAt         DateTime   @default(now()) @updatedAt @map("updated_at")
+  isActive          Boolean     @default(true) @map("is_active")
+  isRecalled        Boolean     @default(false) @map("is_recalled")
+  createdAt         DateTime    @default(now()) @map("created_at")
+  updatedAt         DateTime    @default(now()) @updatedAt @map("updated_at")
 
   tenant            Tenant             @relation(fields: [tenantId], references: [id])
   category          DrugCategory?      @relation(fields: [categoryId], references: [id])
@@ -2632,17 +2669,17 @@ model DispensingRecord {
 }
 
 model DrugReturn {
-  id          String          @id @default(uuid())
-  tenantId    String          @map("tenant_id")
-  returnType  ReturnType      @map("return_type")
-  drugBatchId String          @map("drug_batch_id")
-  patientId   String?         @map("patient_id")
-  supplierId  String?         @map("supplier_id")
+  id          String           @id @default(uuid())
+  tenantId    String           @map("tenant_id")
+  returnType  ReturnType       @map("return_type")
+  drugBatchId String           @map("drug_batch_id")
+  patientId   String?          @map("patient_id")
+  supplierId  String?          @map("supplier_id")
   quantity    Int
   reason      String?
-  processedBy String?         @map("processed_by")
+  processedBy String?          @map("processed_by")
   status      DrugReturnStatus @default(pending)
-  createdAt   DateTime        @default(now()) @map("created_at")
+  createdAt   DateTime         @default(now()) @map("created_at")
 
   tenant    Tenant    @relation(fields: [tenantId], references: [id])
   drugBatch DrugBatch @relation(fields: [drugBatchId], references: [id])
@@ -2671,7 +2708,7 @@ model Supplier {
   isActive      Boolean     @default(true) @map("is_active")
   createdAt     DateTime    @default(now()) @map("created_at")
 
-  tenant            Tenant            @relation(fields: [tenantId], references: [id])
+  tenant            Tenant             @relation(fields: [tenantId], references: [id])
   drugBatches       DrugBatch[]
   drugReturns       DrugReturn[]
   stockTransactions StockTransaction[]
@@ -2754,14 +2791,14 @@ model PurchaseOrder {
 }
 
 model PurchaseOrderItem {
-  id              String   @id @default(uuid())
-  purchaseOrderId String   @map("purchase_order_id")
-  inventoryItemId String   @map("inventory_item_id")
-  quantityOrdered Int      @map("quantity_ordered")
-  quantityReceived Int     @default(0) @map("quantity_received")
-  unitPrice       Decimal? @map("unit_price") @db.Decimal(10, 2)
-  totalPrice      Decimal? @map("total_price") @db.Decimal(12, 2)
-  createdAt       DateTime @default(now()) @map("created_at")
+  id               String   @id @default(uuid())
+  purchaseOrderId  String   @map("purchase_order_id")
+  inventoryItemId  String   @map("inventory_item_id")
+  quantityOrdered  Int      @map("quantity_ordered")
+  quantityReceived Int      @default(0) @map("quantity_received")
+  unitPrice        Decimal? @map("unit_price") @db.Decimal(10, 2)
+  totalPrice       Decimal? @map("total_price") @db.Decimal(12, 2)
+  createdAt        DateTime @default(now()) @map("created_at")
 
   purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id])
   inventoryItem InventoryItem @relation(fields: [inventoryItemId], references: [id])
@@ -2882,29 +2919,29 @@ model BillItem {
 }
 
 model Payment {
-  id               String        @id @default(uuid())
-  tenantId         String        @map("tenant_id")
-  billId           String        @map("bill_id")
-  patientId        String        @map("patient_id")
-  paymentDate      DateTime      @map("payment_date")
-  amount           Decimal       @db.Decimal(12, 2)
-  paymentMethod    PaymentMethod @map("payment_method")
+  id               String          @id @default(uuid())
+  tenantId         String          @map("tenant_id")
+  billId           String          @map("bill_id")
+  patientId        String          @map("patient_id")
+  paymentDate      DateTime        @map("payment_date")
+  amount           Decimal         @db.Decimal(12, 2)
+  paymentMethod    PaymentMethod   @map("payment_method")
   paymentType      PaymentTypeEnum @default(regular) @map("payment_type")
-  transactionId    String?       @map("transaction_id") @db.VarChar(100)
-  gatewayReference String?       @map("gateway_reference") @db.VarChar(255)
-  idempotencyKey   String?       @unique @map("idempotency_key") @db.VarChar(255)
-  status           PaymentStatus @default(completed)
-  processedBy      String?       @map("processed_by")
+  transactionId    String?         @map("transaction_id") @db.VarChar(100)
+  gatewayReference String?         @map("gateway_reference") @db.VarChar(255)
+  idempotencyKey   String?         @unique @map("idempotency_key") @db.VarChar(255)
+  status           PaymentStatus   @default(completed)
+  processedBy      String?         @map("processed_by")
   notes            String?
-  createdAt        DateTime      @default(now()) @map("created_at")
+  createdAt        DateTime        @default(now()) @map("created_at")
 
-  tenant    Tenant   @relation(fields: [tenantId], references: [id])
-  bill      Bill     @relation(fields: [billId], references: [id])
-  patient   Patient  @relation(fields: [patientId], references: [id])
-  processor User?    @relation(fields: [processedBy], references: [id])
-  receipt    Receipt?
-  refunds    Refund[]
-  transfers  PaymentTransfer[]
+  tenant    Tenant            @relation(fields: [tenantId], references: [id])
+  bill      Bill              @relation(fields: [billId], references: [id])
+  patient   Patient           @relation(fields: [patientId], references: [id])
+  processor User?             @relation(fields: [processedBy], references: [id])
+  receipt   Receipt?
+  refunds   Refund[]
+  transfers PaymentTransfer[]
 
   @@map("payments")
 }
@@ -3006,27 +3043,27 @@ model TpaProvider {
 }
 
 model InsurancePolicy {
-  id              String                @id @default(uuid())
-  tenantId        String                @map("tenant_id")
-  patientId       String                @map("patient_id")
-  insurerId       String                @map("insurer_id")
-  tpaId           String?               @map("tpa_id")
-  policyNumber    String                @map("policy_number") @db.VarChar(100)
-  groupNumber     String?               @map("group_number") @db.VarChar(100)
-  planName        String?               @map("plan_name") @db.VarChar(255)
-  coverageAmount  Decimal?              @map("coverage_amount") @db.Decimal(12, 2)
-  coPayPercent    Decimal               @default(0) @map("co_pay_percent") @db.Decimal(5, 2)
-  deductibleAmount Decimal              @default(0) @map("deductible_amount") @db.Decimal(10, 2)
-  exclusions      String?
-  validFrom       DateTime              @map("valid_from") @db.Date
-  validTo         DateTime              @map("valid_to") @db.Date
-  status          InsurancePolicyStatus @default(active)
-  createdAt       DateTime              @default(now()) @map("created_at")
+  id               String                @id @default(uuid())
+  tenantId         String                @map("tenant_id")
+  patientId        String                @map("patient_id")
+  insurerId        String                @map("insurer_id")
+  tpaId            String?               @map("tpa_id")
+  policyNumber     String                @map("policy_number") @db.VarChar(100)
+  groupNumber      String?               @map("group_number") @db.VarChar(100)
+  planName         String?               @map("plan_name") @db.VarChar(255)
+  coverageAmount   Decimal?              @map("coverage_amount") @db.Decimal(12, 2)
+  coPayPercent     Decimal               @default(0) @map("co_pay_percent") @db.Decimal(5, 2)
+  deductibleAmount Decimal               @default(0) @map("deductible_amount") @db.Decimal(10, 2)
+  exclusions       String?
+  validFrom        DateTime              @map("valid_from") @db.Date
+  validTo          DateTime              @map("valid_to") @db.Date
+  status           InsurancePolicyStatus @default(active)
+  createdAt        DateTime              @default(now()) @map("created_at")
 
-  tenant          Tenant                   @relation(fields: [tenantId], references: [id])
-  patient         Patient                  @relation(fields: [patientId], references: [id])
-  insurer         Insurer                  @relation(fields: [insurerId], references: [id])
-  tpa             TpaProvider?             @relation(fields: [tpaId], references: [id])
+  tenant          Tenant                    @relation(fields: [tenantId], references: [id])
+  patient         Patient                   @relation(fields: [patientId], references: [id])
+  insurer         Insurer                   @relation(fields: [insurerId], references: [id])
+  tpa             TpaProvider?              @relation(fields: [tpaId], references: [id])
   insuranceClaims InsuranceClaim[]
   preAuthRequests PreAuthorizationRequest[]
 
@@ -3054,12 +3091,12 @@ model InsuranceClaim {
   createdAt       DateTime    @default(now()) @map("created_at")
   updatedAt       DateTime    @default(now()) @updatedAt @map("updated_at")
 
-  tenant              Tenant              @relation(fields: [tenantId], references: [id])
-  patient             Patient             @relation(fields: [patientId], references: [id])
-  policy              InsurancePolicy     @relation(fields: [policyId], references: [id])
-  bill                Bill                @relation(fields: [billId], references: [id])
-  submitter           User?               @relation("ClaimSubmitter", fields: [submittedBy], references: [id])
-  reviewer            User?               @relation("ClaimReviewer", fields: [reviewedBy], references: [id])
+  tenant               Tenant                @relation(fields: [tenantId], references: [id])
+  patient              Patient               @relation(fields: [patientId], references: [id])
+  policy               InsurancePolicy       @relation(fields: [policyId], references: [id])
+  bill                 Bill                  @relation(fields: [billId], references: [id])
+  submitter            User?                 @relation("ClaimSubmitter", fields: [submittedBy], references: [id])
+  reviewer             User?                 @relation("ClaimReviewer", fields: [reviewedBy], references: [id])
   tpaCommunicationLogs TpaCommunicationLog[]
 
   @@map("insurance_claims")
@@ -3090,16 +3127,16 @@ model PreAuthorizationRequest {
 }
 
 model TpaCommunicationLog {
-  id                String                 @id @default(uuid())
-  tenantId          String                 @map("tenant_id")
-  claimId           String?                @map("claim_id")
-  tpaId             String                 @map("tpa_id")
-  communicationType CommunicationType?     @map("communication_type")
-  subject           String?                @db.VarChar(255)
+  id                String                  @id @default(uuid())
+  tenantId          String                  @map("tenant_id")
+  claimId           String?                 @map("claim_id")
+  tpaId             String                  @map("tpa_id")
+  communicationType CommunicationType?      @map("communication_type")
+  subject           String?                 @db.VarChar(255)
   content           String?
   direction         CommunicationDirection?
-  communicatedBy    String?                @map("communicated_by")
-  createdAt         DateTime               @default(now()) @map("created_at")
+  communicatedBy    String?                 @map("communicated_by")
+  createdAt         DateTime                @default(now()) @map("created_at")
 
   tenant       Tenant          @relation(fields: [tenantId], references: [id])
   claim        InsuranceClaim? @relation(fields: [claimId], references: [id])
@@ -3129,7 +3166,7 @@ model BloodDonor {
   lastDonationDate DateTime? @map("last_donation_date") @db.Date
   createdAt        DateTime  @default(now()) @map("created_at")
 
-  tenant         Tenant           @relation(fields: [tenantId], references: [id])
+  tenant         Tenant          @relation(fields: [tenantId], references: [id])
   bloodDonations BloodDonation[]
 
   @@map("blood_donors")
@@ -3171,8 +3208,8 @@ model BloodInventory {
   createdAt       DateTime             @default(now()) @map("created_at")
   updatedAt       DateTime             @default(now()) @updatedAt @map("updated_at")
 
-  tenant          Tenant          @relation(fields: [tenantId], references: [id])
-  donation        BloodDonation?  @relation(fields: [donationId], references: [id])
+  tenant          Tenant           @relation(fields: [tenantId], references: [id])
+  donation        BloodDonation?   @relation(fields: [donationId], references: [id])
   crossMatchTests CrossMatchTest[]
   transfusions    Transfusion[]
 
@@ -3249,15 +3286,15 @@ model StaffProfile {
   createdAt             DateTime        @default(now()) @map("created_at")
   updatedAt             DateTime        @default(now()) @updatedAt @map("updated_at")
 
-  user           User            @relation(fields: [userId], references: [id])
-  tenant         Tenant          @relation(fields: [tenantId], references: [id])
-  department     Department      @relation(fields: [departmentId], references: [id])
-  staffLicenses  StaffLicense[]
-  dutyRosters    DutyRoster[]
-  attendance     Attendance[]
-  leaveRequests  LeaveRequest[]
-  payroll        Payroll[]
-  salarySlips    SalarySlip[]
+  user          User           @relation(fields: [userId], references: [id])
+  tenant        Tenant         @relation(fields: [tenantId], references: [id])
+  department    Department     @relation(fields: [departmentId], references: [id])
+  staffLicenses StaffLicense[]
+  dutyRosters   DutyRoster[]
+  attendance    Attendance[]
+  leaveRequests LeaveRequest[]
+  payroll       Payroll[]
+  salarySlips   SalarySlip[]
 
   @@map("staff_profiles")
 }
@@ -3404,41 +3441,41 @@ model Notification {
 }
 
 model Message {
-  id              String   @id @default(uuid())
-  tenantId        String   @map("tenant_id")
-  senderId        String   @map("sender_id")
-  receiverId      String   @map("receiver_id")
-  subject         String?  @db.VarChar(255)
+  id              String    @id @default(uuid())
+  tenantId        String    @map("tenant_id")
+  senderId        String    @map("sender_id")
+  receiverId      String    @map("receiver_id")
+  subject         String?   @db.VarChar(255)
   content         String
-  isEncrypted     Boolean  @default(true) @map("is_encrypted")
-  isRead          Boolean  @default(false) @map("is_read")
+  isEncrypted     Boolean   @default(true) @map("is_encrypted")
+  isRead          Boolean   @default(false) @map("is_read")
   readAt          DateTime? @map("read_at")
-  parentMessageId String?  @map("parent_message_id")
-  createdAt       DateTime @default(now()) @map("created_at")
+  parentMessageId String?   @map("parent_message_id")
+  createdAt       DateTime  @default(now()) @map("created_at")
 
-  tenant        Tenant   @relation(fields: [tenantId], references: [id])
-  sender        User     @relation("MessageSender", fields: [senderId], references: [id])
-  receiver      User     @relation("MessageReceiver", fields: [receiverId], references: [id])
-  parentMessage Message? @relation("MessageThread", fields: [parentMessageId], references: [id])
+  tenant        Tenant    @relation(fields: [tenantId], references: [id])
+  sender        User      @relation("MessageSender", fields: [senderId], references: [id])
+  receiver      User      @relation("MessageReceiver", fields: [receiverId], references: [id])
+  parentMessage Message?  @relation("MessageThread", fields: [parentMessageId], references: [id])
   replies       Message[] @relation("MessageThread")
 
   @@map("messages")
 }
 
 model ShiftHandoverNote {
-  id              String            @id @default(uuid())
-  tenantId        String            @map("tenant_id")
-  fromNurseId     String            @map("from_nurse_id")
-  toNurseId       String?           @map("to_nurse_id")
-  wardId          String            @map("ward_id")
-  shiftDate       DateTime          @map("shift_date") @db.Date
-  shiftType       HandoverShiftType @map("shift_type")
-  content         String
-  patientStatuses Json?             @map("patient_statuses")
-  outstandingTasks Json?            @map("outstanding_tasks")
-  isAcknowledged  Boolean           @default(false) @map("is_acknowledged")
-  acknowledgedAt  DateTime?         @map("acknowledged_at")
-  createdAt       DateTime          @default(now()) @map("created_at")
+  id               String            @id @default(uuid())
+  tenantId         String            @map("tenant_id")
+  fromNurseId      String            @map("from_nurse_id")
+  toNurseId        String?           @map("to_nurse_id")
+  wardId           String            @map("ward_id")
+  shiftDate        DateTime          @map("shift_date") @db.Date
+  shiftType        HandoverShiftType @map("shift_type")
+  content          String
+  patientStatuses  Json?             @map("patient_statuses")
+  outstandingTasks Json?             @map("outstanding_tasks")
+  isAcknowledged   Boolean           @default(false) @map("is_acknowledged")
+  acknowledgedAt   DateTime?         @map("acknowledged_at")
+  createdAt        DateTime          @default(now()) @map("created_at")
 
   tenant    Tenant @relation(fields: [tenantId], references: [id])
   fromNurse User   @relation("HandoverFrom", fields: [fromNurseId], references: [id])
@@ -3453,24 +3490,24 @@ model ShiftHandoverNote {
 // ============================================================
 
 model Ticket {
-  id               String       @id @default(uuid())
-  tenantId         String       @map("tenant_id")
-  ticketNumber     String       @unique @map("ticket_number") @db.VarChar(50)
-  raisedBy         String       @map("raised_by")
-  assignedTo       String?      @map("assigned_to")
-  ticketType       TicketType   @map("ticket_type")
-  subject          String       @db.VarChar(255)
-  description      String?
-  priority         Priority     @default(medium)
-  status           TicketStatus @default(open)
-  patientId        String?      @map("patient_id")
-  departmentId     String?      @map("department_id")
-  resolutionNotes  String?      @map("resolution_notes")
-  resolvedAt       DateTime?    @map("resolved_at")
-  escalatedTo      String?      @map("escalated_to")
-  attachments      Json?
-  createdAt        DateTime     @default(now()) @map("created_at")
-  updatedAt        DateTime     @default(now()) @updatedAt @map("updated_at")
+  id              String       @id @default(uuid())
+  tenantId        String       @map("tenant_id")
+  ticketNumber    String       @unique @map("ticket_number") @db.VarChar(50)
+  raisedBy        String       @map("raised_by")
+  assignedTo      String?      @map("assigned_to")
+  ticketType      TicketType   @map("ticket_type")
+  subject         String       @db.VarChar(255)
+  description     String?
+  priority        Priority     @default(medium)
+  status          TicketStatus @default(open)
+  patientId       String?      @map("patient_id")
+  departmentId    String?      @map("department_id")
+  resolutionNotes String?      @map("resolution_notes")
+  resolvedAt      DateTime?    @map("resolved_at")
+  escalatedTo     String?      @map("escalated_to")
+  attachments     Json?
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @default(now()) @updatedAt @map("updated_at")
 
   tenant     Tenant      @relation(fields: [tenantId], references: [id])
   raiser     User        @relation("TicketRaiser", fields: [raisedBy], references: [id])
@@ -3548,25 +3585,25 @@ model ComplianceDocument {
 }
 
 model OtRequest {
-  id                String          @id @default(uuid())
-  tenantId          String          @map("tenant_id")
-  patientId         String          @map("patient_id")
-  visitId           String          @map("visit_id")
-  doctorId          String          @map("doctor_id")
-  otId              String?         @map("ot_id")
-  procedureName     String          @map("procedure_name") @db.VarChar(255)
-  procedureDetails  String?         @map("procedure_details")
+  id                String           @id @default(uuid())
+  tenantId          String           @map("tenant_id")
+  patientId         String           @map("patient_id")
+  visitId           String           @map("visit_id")
+  doctorId          String           @map("doctor_id")
+  otId              String?          @map("ot_id")
+  procedureName     String           @map("procedure_name") @db.VarChar(255)
+  procedureDetails  String?          @map("procedure_details")
   urgency           OtRequestUrgency @default(elective)
-  preferredDate     DateTime?       @map("preferred_date") @db.Date
-  preferredTime     DateTime?       @map("preferred_time") @db.Time()
-  scheduledDate     DateTime?       @map("scheduled_date") @db.Date
-  scheduledTime     DateTime?       @map("scheduled_time") @db.Time()
-  durationMinutes   Int?            @map("duration_minutes")
-  requiredEquipment Json?           @map("required_equipment")
-  preOpChecklist    Json?           @map("pre_op_checklist")
-  status            OtRequestStatus @default(requested)
-  createdAt         DateTime        @default(now()) @map("created_at")
-  updatedAt         DateTime        @default(now()) @updatedAt @map("updated_at")
+  preferredDate     DateTime?        @map("preferred_date") @db.Date
+  preferredTime     DateTime?        @map("preferred_time") @db.Time()
+  scheduledDate     DateTime?        @map("scheduled_date") @db.Date
+  scheduledTime     DateTime?        @map("scheduled_time") @db.Time()
+  durationMinutes   Int?             @map("duration_minutes")
+  requiredEquipment Json?            @map("required_equipment")
+  preOpChecklist    Json?            @map("pre_op_checklist")
+  status            OtRequestStatus  @default(requested)
+  createdAt         DateTime         @default(now()) @map("created_at")
+  updatedAt         DateTime         @default(now()) @updatedAt @map("updated_at")
 
   tenant  Tenant            @relation(fields: [tenantId], references: [id])
   patient Patient           @relation(fields: [patientId], references: [id])
@@ -3578,20 +3615,20 @@ model OtRequest {
 }
 
 model IncidentReport {
-  id              String           @id @default(uuid())
-  tenantId        String           @map("tenant_id")
-  reportedBy      String           @map("reported_by")
-  patientId       String?          @map("patient_id")
-  incidentType    IncidentType     @map("incident_type")
+  id              String            @id @default(uuid())
+  tenantId        String            @map("tenant_id")
+  reportedBy      String            @map("reported_by")
+  patientId       String?           @map("patient_id")
+  incidentType    IncidentType      @map("incident_type")
   description     String
   severity        IncidentSeverity?
-  location        String?          @db.VarChar(255)
-  occurredAt      DateTime?        @map("occurred_at")
-  status          IncidentStatus   @default(reported)
-  resolutionNotes String?          @map("resolution_notes")
-  resolvedAt      DateTime?        @map("resolved_at")
-  escalatedTo     String?          @map("escalated_to")
-  createdAt       DateTime         @default(now()) @map("created_at")
+  location        String?           @db.VarChar(255)
+  occurredAt      DateTime?         @map("occurred_at")
+  status          IncidentStatus    @default(reported)
+  resolutionNotes String?           @map("resolution_notes")
+  resolvedAt      DateTime?         @map("resolved_at")
+  escalatedTo     String?           @map("escalated_to")
+  createdAt       DateTime          @default(now()) @map("created_at")
 
   tenant    Tenant   @relation(fields: [tenantId], references: [id])
   reporter  User     @relation("IncidentReporter", fields: [reportedBy], references: [id])
@@ -3700,18 +3737,18 @@ enum MrdDirection {
 }
 
 model MrdRequest {
-  id            String           @id @default(uuid())
-  tenantId      String           @map("tenant_id")
-  patientId     String           @map("patient_id")
-  requestedTo   String           @map("requested_to") @db.VarChar(255)
-  requestedBy   String?          @map("requested_by")
-  locationFrom  String?          @map("location_from") @db.VarChar(255)
-  wardRoom      String?          @map("ward_room") @db.VarChar(100)
-  status        MrdRequestStatus @default(initiated)
-  direction     MrdDirection     @default(outbound)
-  notes         String?
-  createdAt     DateTime         @default(now()) @map("created_at")
-  updatedAt     DateTime         @default(now()) @updatedAt @map("updated_at")
+  id           String           @id @default(uuid())
+  tenantId     String           @map("tenant_id")
+  patientId    String           @map("patient_id")
+  requestedTo  String           @map("requested_to") @db.VarChar(255)
+  requestedBy  String?          @map("requested_by")
+  locationFrom String?          @map("location_from") @db.VarChar(255)
+  wardRoom     String?          @map("ward_room") @db.VarChar(100)
+  status       MrdRequestStatus @default(initiated)
+  direction    MrdDirection     @default(outbound)
+  notes        String?
+  createdAt    DateTime         @default(now()) @map("created_at")
+  updatedAt    DateTime         @default(now()) @updatedAt @map("updated_at")
 
   tenant  Tenant  @relation(fields: [tenantId], references: [id])
   patient Patient @relation(fields: [patientId], references: [id])
@@ -3723,21 +3760,21 @@ model MrdRequest {
 // ─── Razorpay Route: Split Payments ─────────────────────────────
 
 model PaymentTransfer {
-  id                  String         @id @default(uuid())
-  tenantId            String         @map("tenant_id")
-  paymentId           String         @map("payment_id")
-  razorpayOrderId     String         @unique @map("razorpay_order_id") @db.VarChar(100)
-  razorpayPaymentId   String?        @map("razorpay_payment_id") @db.VarChar(100)
-  razorpayTransferId  String?        @map("razorpay_transfer_id") @db.VarChar(100)
-  totalAmount         Decimal        @map("total_amount") @db.Decimal(12, 2)
-  commissionAmount    Decimal        @map("commission_amount") @db.Decimal(12, 2)
-  hospitalAmount      Decimal        @map("hospital_amount") @db.Decimal(12, 2)
-  commissionPercent   Decimal        @map("commission_percent") @db.Decimal(5, 2)
-  transferStatus      PaymentTransferStatus @default(pending) @map("transfer_status")
-  webhookPayload      Json?          @map("webhook_payload")
-  failureReason       String?        @map("failure_reason")
-  createdAt           DateTime       @default(now()) @map("created_at")
-  updatedAt           DateTime       @default(now()) @updatedAt @map("updated_at")
+  id                 String                @id @default(uuid())
+  tenantId           String                @map("tenant_id")
+  paymentId          String                @map("payment_id")
+  razorpayOrderId    String                @unique @map("razorpay_order_id") @db.VarChar(100)
+  razorpayPaymentId  String?               @map("razorpay_payment_id") @db.VarChar(100)
+  razorpayTransferId String?               @map("razorpay_transfer_id") @db.VarChar(100)
+  totalAmount        Decimal               @map("total_amount") @db.Decimal(12, 2)
+  commissionAmount   Decimal               @map("commission_amount") @db.Decimal(12, 2)
+  hospitalAmount     Decimal               @map("hospital_amount") @db.Decimal(12, 2)
+  commissionPercent  Decimal               @map("commission_percent") @db.Decimal(5, 2)
+  transferStatus     PaymentTransferStatus @default(pending) @map("transfer_status")
+  webhookPayload     Json?                 @map("webhook_payload")
+  failureReason      String?               @map("failure_reason")
+  createdAt          DateTime              @default(now()) @map("created_at")
+  updatedAt          DateTime              @default(now()) @updatedAt @map("updated_at")
 
   tenant  Tenant  @relation(fields: [tenantId], references: [id])
   payment Payment @relation(fields: [paymentId], references: [id])
@@ -3886,20 +3923,20 @@ enum FormSubmissionStatus {
 
 /// Super-admin authored, global form blueprint. Visible to all hospitals in the Template Library.
 model FormTemplate {
-  id          String             @id @default(uuid())
-  name        String             @db.VarChar(255)
-  description String?
-  category    FormCategory       @default(other)
-  status      FormTemplateStatus @default(draft)
+  id             String             @id @default(uuid())
+  name           String             @db.VarChar(255)
+  description    String?
+  category       FormCategory       @default(other)
+  status         FormTemplateStatus @default(draft)
   /// JSON blueprint: { version, fields: [...] }
-  schema      Json
+  schema         Json
   /// Optional default trigger suggestion. Hospitals can override on their instance.
-  defaultTrigger FormTrigger?    @map("default_trigger")
-  version     Int                @default(1)
-  createdBy   String             @map("created_by")
-  publishedAt DateTime?          @map("published_at")
-  createdAt   DateTime           @default(now()) @map("created_at")
-  updatedAt   DateTime           @default(now()) @updatedAt @map("updated_at")
+  defaultTrigger FormTrigger?       @map("default_trigger")
+  version        Int                @default(1)
+  createdBy      String             @map("created_by")
+  publishedAt    DateTime?          @map("published_at")
+  createdAt      DateTime           @default(now()) @map("created_at")
+  updatedAt      DateTime           @default(now()) @updatedAt @map("updated_at")
 
   creator   User           @relation("FormTemplateCreator", fields: [createdBy], references: [id])
   instances FormInstance[]
@@ -3925,9 +3962,9 @@ model FormInstance {
   createdAt   DateTime           @default(now()) @map("created_at")
   updatedAt   DateTime           @default(now()) @updatedAt @map("updated_at")
 
-  tenant      Tenant            @relation(fields: [tenantId], references: [id])
-  template    FormTemplate?     @relation(fields: [templateId], references: [id])
-  creator     User              @relation("FormInstanceCreator", fields: [createdBy], references: [id])
+  tenant      Tenant           @relation(fields: [tenantId], references: [id])
+  template    FormTemplate?    @relation(fields: [templateId], references: [id])
+  creator     User             @relation("FormInstanceCreator", fields: [createdBy], references: [id])
   assignments FormAssignment[]
   submissions FormSubmission[]
 
@@ -3938,31 +3975,31 @@ model FormInstance {
 
 /// Binds a FormInstance to a workflow trigger so it auto-appears at that step.
 model FormAssignment {
-  id          String      @id @default(uuid())
-  tenantId    String      @map("tenant_id")
-  instanceId  String      @map("instance_id")
-  trigger     FormTrigger
+  id            String      @id @default(uuid())
+  tenantId      String      @map("tenant_id")
+  instanceId    String      @map("instance_id")
+  trigger       FormTrigger
   /// Display order when multiple forms are assigned to the same trigger.
-  sortOrder   Int         @default(0) @map("sort_order")
+  sortOrder     Int         @default(0) @map("sort_order")
   /// Whether this assignment is currently active.
-  isActive    Boolean     @default(true) @map("is_active")
+  isActive      Boolean     @default(true) @map("is_active")
   /// Global default for required (used when rolesRequired is empty).
-  isRequired  Boolean     @default(false) @map("is_required")
+  isRequired    Boolean     @default(false) @map("is_required")
   /// Which roles can SEE the form at this trigger. Empty = all roles allowed.
   /// Stored as text array of role slugs, e.g. ["patient", "front_desk"].
-  rolesAllowed String[]   @map("roles_allowed")
+  rolesAllowed  String[]    @map("roles_allowed")
   /// Which roles MUST fill the form (subset of rolesAllowed). Empty = use isRequired global.
   /// e.g. ["patient"] means: visible to allowed roles, but only patients are forced to fill.
-  rolesRequired String[]  @map("roles_required") @default([])
+  rolesRequired String[]    @default([]) @map("roles_required")
   /// Which roles can VIEW the submitted results. Empty = all roles see results.
   /// Independent from rolesAllowed (filling) so e.g. patients fill, only doctors view.
-  viewerRoles  String[]  @map("viewer_roles") @default([])
+  viewerRoles   String[]    @default([]) @map("viewer_roles")
   /// Where in the app the results appear. Empty = visible everywhere by default.
   /// Values like 'patient_detail', 'doctor_consultation', 'submissions_tab', etc.
-  viewLocations String[] @map("view_locations") @default([])
-  createdBy   String      @map("created_by")
-  createdAt   DateTime    @default(now()) @map("created_at")
-  updatedAt   DateTime    @default(now()) @updatedAt @map("updated_at")
+  viewLocations String[]    @default([]) @map("view_locations")
+  createdBy     String      @map("created_by")
+  createdAt     DateTime    @default(now()) @map("created_at")
+  updatedAt     DateTime    @default(now()) @updatedAt @map("updated_at")
 
   tenant   Tenant       @relation(fields: [tenantId], references: [id])
   instance FormInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
@@ -3976,41 +4013,41 @@ model FormAssignment {
 /// A filled-in form. Belongs to a tenant and (optionally) ties back to a specific entity
 /// like a patient, appointment, visit, or admission.
 model FormSubmission {
-  id            String               @id @default(uuid())
-  tenantId      String               @map("tenant_id")
+  id              String               @id @default(uuid())
+  tenantId        String               @map("tenant_id")
   /// Legacy: links to old FormInstance. Will be removed after full migration.
-  instanceId    String?              @map("instance_id")
+  instanceId      String?              @map("instance_id")
   /// New: links to SystemForm by slug id.
-  formId        String?              @map("form_id")
-  trigger       FormTrigger?
+  formId          String?              @map("form_id")
+  trigger         FormTrigger?
   /// JSON map of fieldId → value (matches the form schema)
-  responses     Json
-  status        FormSubmissionStatus @default(submitted)
+  responses       Json
+  status          FormSubmissionStatus @default(submitted)
   /// Optional context: which entity this submission is attached to.
-  patientId     String?              @map("patient_id")
-  appointmentId String?              @map("appointment_id")
-  visitId       String?              @map("visit_id")
-  admissionId   String?              @map("admission_id")
+  patientId       String?              @map("patient_id")
+  appointmentId   String?              @map("appointment_id")
+  visitId         String?              @map("visit_id")
+  admissionId     String?              @map("admission_id")
   /// Who filled it
-  submittedBy   String?              @map("submitted_by")
-  submittedAt   DateTime             @default(now()) @map("submitted_at")
+  submittedBy     String?              @map("submitted_by")
+  submittedAt     DateTime             @default(now()) @map("submitted_at")
   /// Verification (admin/staff)
-  verifiedBy    String?              @map("verified_by")
-  verifiedAt    DateTime?            @map("verified_at")
-  rejectionReason String?            @map("rejection_reason")
-  notes         String?
-  createdAt     DateTime             @default(now()) @map("created_at")
-  updatedAt     DateTime             @default(now()) @updatedAt @map("updated_at")
+  verifiedBy      String?              @map("verified_by")
+  verifiedAt      DateTime?            @map("verified_at")
+  rejectionReason String?              @map("rejection_reason")
+  notes           String?
+  createdAt       DateTime             @default(now()) @map("created_at")
+  updatedAt       DateTime             @default(now()) @updatedAt @map("updated_at")
 
-  tenant      Tenant       @relation(fields: [tenantId], references: [id])
+  tenant      Tenant        @relation(fields: [tenantId], references: [id])
   instance    FormInstance? @relation(fields: [instanceId], references: [id])
-  systemForm  SystemForm?  @relation("SystemFormSubmissions", fields: [formId], references: [id])
-  patient     Patient?     @relation("FormSubmissionPatient", fields: [patientId], references: [id])
-  appointment Appointment? @relation("FormSubmissionAppointment", fields: [appointmentId], references: [id])
-  visit       Visit?       @relation("FormSubmissionVisit", fields: [visitId], references: [id])
-  admission   Admission?   @relation("FormSubmissionAdmission", fields: [admissionId], references: [id])
-  submitter   User?        @relation("FormSubmissionSubmitter", fields: [submittedBy], references: [id])
-  verifier    User?        @relation("FormSubmissionVerifier", fields: [verifiedBy], references: [id])
+  systemForm  SystemForm?   @relation("SystemFormSubmissions", fields: [formId], references: [id])
+  patient     Patient?      @relation("FormSubmissionPatient", fields: [patientId], references: [id])
+  appointment Appointment?  @relation("FormSubmissionAppointment", fields: [appointmentId], references: [id])
+  visit       Visit?        @relation("FormSubmissionVisit", fields: [visitId], references: [id])
+  admission   Admission?    @relation("FormSubmissionAdmission", fields: [admissionId], references: [id])
+  submitter   User?         @relation("FormSubmissionSubmitter", fields: [submittedBy], references: [id])
+  verifier    User?         @relation("FormSubmissionVerifier", fields: [verifiedBy], references: [id])
 
   @@index([tenantId, formId, status])
   @@index([tenantId, instanceId, status])
@@ -4026,15 +4063,15 @@ model FormSubmission {
 /// Developer-seeded form definition. Trigger is FIXED — cannot be changed by any user.
 /// Super admin can edit the schema (form fields). 40 forms cover the full hospital workflow.
 model SystemForm {
-  id                  String       @id                                   // slug: "patient_health_intake"
+  id                  String       @id // slug: "patient_health_intake"
   name                String       @db.VarChar(255)
   description         String?
   category            FormCategory @default(other)
-  trigger             FormTrigger                                        // FIXED — immutable after seed
+  trigger             FormTrigger // FIXED — immutable after seed
   /// JSON blueprint: { version: 1, fields: [...] }
   schema              Json
   sortOrder           Int          @default(0) @map("sort_order")
-  isActive            Boolean      @default(true) @map("is_active")      // super admin global toggle
+  isActive            Boolean      @default(true) @map("is_active") // super admin global toggle
   /// Subscription module this form belongs to. 'core' = always available.
   /// Other values match FeatureToggle.featureKey (e.g. 'lab', 'blood_bank', 'ot_management').
   module              String       @default("core") @map("module")
@@ -4061,17 +4098,17 @@ model SystemForm {
 
 /// Per-hospital configuration for a SystemForm. Controls visibility, required-ness, and schema overrides.
 model HospitalFormConfig {
-  id             String     @id @default(uuid())
-  tenantId       String     @map("tenant_id")
-  formId         String     @map("form_id")
-  isEnabled      Boolean    @default(true) @map("is_enabled")
+  id             String   @id @default(uuid())
+  tenantId       String   @map("tenant_id")
+  formId         String   @map("form_id")
+  isEnabled      Boolean  @default(true) @map("is_enabled")
   /// Custom field definitions for this hospital. null = use SystemForm.schema.
-  schemaOverride Json?      @map("schema_override")
+  schemaOverride Json?    @map("schema_override")
   /// Per-role overrides: { "patient": "required", "front_desk": "optional", "doctor": "hidden" }
   /// Merges with SystemForm.defaultRoleSettings — config values take precedence.
-  roleSettings   Json       @default("{}") @map("role_settings")
-  createdAt      DateTime   @default(now()) @map("created_at")
-  updatedAt      DateTime   @default(now()) @updatedAt @map("updated_at")
+  roleSettings   Json     @default("{}") @map("role_settings")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at")
 
   tenant Tenant     @relation(fields: [tenantId], references: [id])
   form   SystemForm @relation(fields: [formId], references: [id])
@@ -4080,4 +4117,3 @@ model HospitalFormConfig {
   @@index([tenantId, isEnabled])
   @@map("hospital_form_configs")
 }
-

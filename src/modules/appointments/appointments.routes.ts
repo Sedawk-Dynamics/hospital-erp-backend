@@ -6,6 +6,14 @@ import {
   createDoctorProfileSchema,
   updateDoctorScheduleSchema,
   createDoctorLeaveSchema,
+  getDoctorLeavesQuerySchema,
+  listAllDoctorLeavesQuerySchema,
+  doctorLeaveIdParamSchema,
+  reviewDoctorLeaveSchema,
+  upsertScheduleOverrideSchema,
+  bulkOverrideSchema,
+  listOverridesQuerySchema,
+  overrideIdParamSchema,
   bookAppointmentSchema,
   updateAppointmentStatusSchema,
   getAppointmentsQuerySchema,
@@ -63,12 +71,92 @@ appointmentRoutes.put(
   controller.updateDoctorSchedule,
 );
 
-// Create doctor leave
+// Create doctor leave (doctor self-service — starts in pending state)
 appointmentRoutes.post(
   '/doctors/:id/leaves',
   authenticate,
   validate(createDoctorLeaveSchema),
   controller.createDoctorLeave,
+);
+
+// List a doctor's leaves
+appointmentRoutes.get(
+  '/doctors/:id/leaves',
+  authenticate,
+  validate(getDoctorLeavesQuerySchema),
+  controller.getDoctorLeaves,
+);
+
+// List all doctor leave requests (HR/admin approval queue)
+appointmentRoutes.get(
+  '/doctor-leaves',
+  authenticate,
+  requirePermission('hr', 'read'),
+  validate(listAllDoctorLeavesQuerySchema),
+  controller.listAllDoctorLeaves,
+);
+
+// Approve a doctor leave request
+appointmentRoutes.patch(
+  '/doctor-leaves/:leaveId/approve',
+  authenticate,
+  requirePermission('hr', 'approve'),
+  validate(doctorLeaveIdParamSchema),
+  controller.approveDoctorLeave,
+);
+
+// Reject a doctor leave request
+appointmentRoutes.patch(
+  '/doctor-leaves/:leaveId/reject',
+  authenticate,
+  requirePermission('hr', 'approve'),
+  validate(reviewDoctorLeaveSchema),
+  controller.rejectDoctorLeave,
+);
+
+// Doctor cancels own leave request (pending/approved)
+appointmentRoutes.patch(
+  '/doctor-leaves/:leaveId/cancel',
+  authenticate,
+  validate(doctorLeaveIdParamSchema),
+  controller.cancelDoctorLeave,
+);
+
+// ── Schedule Overrides (date-specific, admin/HR managed) ─────
+
+// List overrides in a date range
+appointmentRoutes.get(
+  '/doctors/:id/schedule-overrides',
+  authenticate,
+  validate(listOverridesQuerySchema),
+  controller.listScheduleOverrides,
+);
+
+// Create or update an override for a single date
+appointmentRoutes.post(
+  '/doctors/:id/schedule-overrides',
+  authenticate,
+  requirePermission('appointments', 'update'),
+  validate(upsertScheduleOverrideSchema),
+  controller.upsertScheduleOverride,
+);
+
+// Bulk apply the same override to a date range
+appointmentRoutes.post(
+  '/doctors/:id/schedule-overrides/bulk',
+  authenticate,
+  requirePermission('appointments', 'update'),
+  validate(bulkOverrideSchema),
+  controller.bulkApplyOverrides,
+);
+
+// Remove an override (reverts date to weekly default)
+appointmentRoutes.delete(
+  '/doctors/schedule-overrides/:overrideId',
+  authenticate,
+  requirePermission('appointments', 'update'),
+  validate(overrideIdParamSchema),
+  controller.deleteScheduleOverride,
 );
 
 // Get available slots for a doctor on a date

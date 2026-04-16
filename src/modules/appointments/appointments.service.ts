@@ -6,6 +6,10 @@ import type {
   CreateDoctorProfileInput,
   UpdateDoctorScheduleInput,
   CreateDoctorLeaveInput,
+  GetDoctorLeavesQuery,
+  ListAllDoctorLeavesQuery,
+  UpsertScheduleOverrideInput,
+  BulkOverrideInput,
   BookAppointmentInput,
   UpdateAppointmentStatusInput,
   GetAppointmentsQuery,
@@ -386,8 +390,8 @@ export async function updateDoctorSchedule(doctorId: string, data: UpdateDoctorS
 }
 
 /**
- * Create a leave entry for a doctor.
- * DoctorLeave only has leaveDate (single date), startTime, endTime, reason.
+ * Doctor applies for a leave. Supports multi-day ranges and half-day variants.
+ * Starts in `pending` state — HR/admin must approve before it blocks booking.
  */
 export async function createDoctorLeave(doctorId: string, data: CreateDoctorLeaveInput) {
   const doctor = await prisma.doctorProfile.findUnique({ where: { id: doctorId } });
@@ -395,38 +399,424 @@ export async function createDoctorLeave(doctorId: string, data: CreateDoctorLeav
     throw AppError.notFound('Doctor not found');
   }
 
-  const leaveDate = new Date(data.startDate);
+  const startDate = new Date(data.startDate);
+  const endDate = new Date(data.endDate);
 
-  if (leaveDate < new Date()) {
-    throw AppError.badRequest('Leave date cannot be in the past');
+  if (endDate < startDate) {
+    throw AppError.badRequest('End date cannot be before start date');
   }
 
-  // Check for overlapping leaves on the same date
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  if (startDate < today) {
+    throw AppError.badRequest('Leave start date cannot be in the past');
+  }
+
+  // Reject when an overlapping non-rejected leave already exists
   const overlapping = await prisma.doctorLeave.findFirst({
     where: {
       doctorId,
-      leaveDate,
+      status: { in: ['pending', 'approved'] },
+      AND: [
+        { leaveDate: { lte: endDate } },
+        {
+          OR: [
+            { endDate: null, leaveDate: { gte: startDate } },
+            { endDate: { gte: startDate } },
+          ],
+        },
+      ],
     },
   });
 
   if (overlapping) {
-    throw AppError.conflict('A leave already exists for this date');
+    throw AppError.conflict('An overlapping leave already exists for this range');
+  }
+
+  // Partial-day handling. Time range blocks matching slots on every date in the range.
+  //   full_day               → null/null  (blocks whole day)
+  //   half_day_morning       → 00:00-13:00
+  //   half_day_afternoon     → 13:00-23:59
+  //   custom_hours           → startTime-endTime (validated HH:MM)
+  let startTime: Date | null = null;
+  let endTime: Date | null = null;
+  if (data.dayType === 'half_day_morning') {
+    startTime = new Date('1970-01-01T00:00:00.000Z');
+    endTime = new Date('1970-01-01T13:00:00.000Z');
+  } else if (data.dayType === 'half_day_afternoon') {
+    startTime = new Date('1970-01-01T13:00:00.000Z');
+    endTime = new Date('1970-01-01T23:59:00.000Z');
+  } else if (data.dayType === 'custom_hours' && data.startTime && data.endTime) {
+    startTime = new Date(`1970-01-01T${data.startTime}:00.000Z`);
+    endTime = new Date(`1970-01-01T${data.endTime}:00.000Z`);
   }
 
   const leave = await prisma.doctorLeave.create({
     data: {
       doctorId,
-      leaveDate,
+      leaveDate: startDate,
+      endDate: endDate.getTime() === startDate.getTime() ? null : endDate,
+      startTime,
+      endTime,
+      leaveType: data.leaveType,
+      status: 'pending',
       reason: data.reason,
     },
   });
 
-  logger.info({ doctorId, leaveId: leave.id }, 'Doctor leave created');
+  logger.info({ doctorId, leaveId: leave.id }, 'Doctor leave requested');
   return leave;
 }
 
 /**
+ * List a specific doctor's leaves (used by the doctor's own calendar).
+ */
+export async function getDoctorLeaves(doctorId: string, query: GetDoctorLeavesQuery) {
+  const where: any = { doctorId };
+
+  if (query.status) where.status = query.status;
+  if (query.fromDate || query.toDate) {
+    where.leaveDate = {};
+    if (query.fromDate) where.leaveDate.gte = new Date(query.fromDate);
+    if (query.toDate) where.leaveDate.lte = new Date(query.toDate);
+  }
+
+  return prisma.doctorLeave.findMany({
+    where,
+    orderBy: { leaveDate: 'desc' },
+    include: {
+      approver: { select: { id: true, firstName: true, lastName: true } },
+    },
+  });
+}
+
+/**
+ * List all doctor leaves across the tenant (HR/admin approval queue).
+ */
+export async function listAllDoctorLeaves(tenantId: string, query: ListAllDoctorLeavesQuery) {
+  const { skip, take, page, limit } = getPaginationParams(query);
+
+  const where: any = {
+    doctor: { tenantId },
+  };
+  if (query.status) where.status = query.status;
+  if (query.doctorId) where.doctorId = query.doctorId;
+  if (query.fromDate || query.toDate) {
+    where.leaveDate = {};
+    if (query.fromDate) where.leaveDate.gte = new Date(query.fromDate);
+    if (query.toDate) where.leaveDate.lte = new Date(query.toDate);
+  }
+
+  const [leaves, total] = await Promise.all([
+    prisma.doctorLeave.findMany({
+      where,
+      skip,
+      take,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        doctor: {
+          select: {
+            id: true,
+            user: { select: { firstName: true, lastName: true } },
+            department: { select: { id: true, name: true } },
+          },
+        },
+        approver: { select: { id: true, firstName: true, lastName: true } },
+      },
+    }),
+    prisma.doctorLeave.count({ where }),
+  ]);
+
+  return { leaves, total, page, limit };
+}
+
+/**
+ * HR/admin approves a doctor leave request.
+ */
+export async function approveDoctorLeave(tenantId: string, leaveId: string, approverUserId: string) {
+  const leave = await prisma.doctorLeave.findFirst({
+    where: { id: leaveId, doctor: { tenantId } },
+  });
+  if (!leave) throw AppError.notFound('Leave request not found');
+  if (leave.status !== 'pending') {
+    throw AppError.badRequest(`Leave is already ${leave.status}`);
+  }
+
+  return prisma.doctorLeave.update({
+    where: { id: leaveId },
+    data: {
+      status: 'approved',
+      approvedBy: approverUserId,
+      approvedAt: new Date(),
+    },
+  });
+}
+
+/**
+ * HR/admin rejects a doctor leave request.
+ */
+export async function rejectDoctorLeave(
+  tenantId: string,
+  leaveId: string,
+  approverUserId: string,
+  reason?: string,
+) {
+  const leave = await prisma.doctorLeave.findFirst({
+    where: { id: leaveId, doctor: { tenantId } },
+  });
+  if (!leave) throw AppError.notFound('Leave request not found');
+  if (leave.status !== 'pending') {
+    throw AppError.badRequest(`Leave is already ${leave.status}`);
+  }
+
+  return prisma.doctorLeave.update({
+    where: { id: leaveId },
+    data: {
+      status: 'rejected',
+      approvedBy: approverUserId,
+      approvedAt: new Date(),
+      reason: reason ? `${leave.reason ?? ''}\n[Rejected: ${reason}]`.trim() : leave.reason,
+    },
+  });
+}
+
+/**
+ * Doctor cancels their own pending leave request.
+ */
+export async function cancelDoctorLeave(tenantId: string, leaveId: string) {
+  const leave = await prisma.doctorLeave.findFirst({
+    where: { id: leaveId, doctor: { tenantId } },
+  });
+  if (!leave) throw AppError.notFound('Leave request not found');
+  if (leave.status === 'cancelled' || leave.status === 'rejected') {
+    throw AppError.badRequest(`Leave is already ${leave.status}`);
+  }
+
+  return prisma.doctorLeave.update({
+    where: { id: leaveId },
+    data: { status: 'cancelled' },
+  });
+}
+
+// ── Schedule Overrides (date-specific) ──────────────────────────────────────
+
+function toDbTime(hhmm: string): Date {
+  return new Date(`1970-01-01T${hhmm}:00.000Z`);
+}
+
+function normalizeDate(d: string | Date): Date {
+  const r = new Date(d);
+  r.setUTCHours(0, 0, 0, 0);
+  return r;
+}
+
+/**
+ * List a doctor's date-specific schedule overrides in a window.
+ */
+export async function listScheduleOverrides(
+  tenantId: string,
+  doctorId: string,
+  query: { fromDate?: string; toDate?: string },
+) {
+  const doctor = await prisma.doctorProfile.findFirst({
+    where: { id: doctorId, tenantId },
+    select: { id: true },
+  });
+  if (!doctor) throw AppError.notFound('Doctor not found');
+
+  const where: any = { doctorId };
+  if (query.fromDate || query.toDate) {
+    where.date = {};
+    if (query.fromDate) where.date.gte = normalizeDate(query.fromDate);
+    if (query.toDate) where.date.lte = normalizeDate(query.toDate);
+  }
+
+  return prisma.doctorScheduleOverride.findMany({
+    where,
+    orderBy: { date: 'asc' },
+    include: { shifts: { orderBy: { startTime: 'asc' } } },
+  });
+}
+
+/**
+ * Create or update a date-specific override (upsert on (doctorId, date)).
+ * Replaces all shifts for that date.
+ */
+export async function upsertScheduleOverride(
+  tenantId: string,
+  doctorId: string,
+  data: UpsertScheduleOverrideInput,
+) {
+  const doctor = await prisma.doctorProfile.findFirst({
+    where: { id: doctorId, tenantId },
+    select: { id: true },
+  });
+  if (!doctor) throw AppError.notFound('Doctor not found');
+
+  for (const s of data.shifts) {
+    if (s.startTime >= s.endTime) {
+      throw AppError.badRequest(`Shift start time (${s.startTime}) must be before end time (${s.endTime})`);
+    }
+  }
+
+  const date = normalizeDate(data.date);
+
+  return prisma.$transaction(async (tx) => {
+    const existing = await tx.doctorScheduleOverride.findUnique({
+      where: { doctorId_date: { doctorId, date } },
+    });
+
+    let overrideId: string;
+    if (existing) {
+      await tx.doctorScheduleOverride.update({
+        where: { id: existing.id },
+        data: {
+          isDayOff: data.isDayOff,
+          note: data.note ?? null,
+        },
+      });
+      await tx.doctorOverrideShift.deleteMany({ where: { overrideId: existing.id } });
+      overrideId = existing.id;
+    } else {
+      const created = await tx.doctorScheduleOverride.create({
+        data: {
+          doctorId,
+          date,
+          isDayOff: data.isDayOff,
+          note: data.note ?? null,
+        },
+      });
+      overrideId = created.id;
+    }
+
+    if (!data.isDayOff && data.shifts.length > 0) {
+      await tx.doctorOverrideShift.createMany({
+        data: data.shifts.map((s) => ({
+          overrideId,
+          startTime: toDbTime(s.startTime),
+          endTime: toDbTime(s.endTime),
+          slotDurationMinutes: s.slotDurationMinutes ?? 15,
+          maxPatients: s.maxPatients,
+        })),
+      });
+    }
+
+    return tx.doctorScheduleOverride.findUnique({
+      where: { id: overrideId },
+      include: { shifts: { orderBy: { startTime: 'asc' } } },
+    });
+  });
+}
+
+/**
+ * Bulk-apply the same override to every date in the range (optionally filtered by days-of-week).
+ */
+export async function bulkApplyOverrides(
+  tenantId: string,
+  doctorId: string,
+  data: BulkOverrideInput,
+) {
+  const doctor = await prisma.doctorProfile.findFirst({
+    where: { id: doctorId, tenantId },
+    select: { id: true },
+  });
+  if (!doctor) throw AppError.notFound('Doctor not found');
+
+  const from = normalizeDate(data.fromDate);
+  const to = normalizeDate(data.toDate);
+  if (to < from) throw AppError.badRequest('toDate must be on or after fromDate');
+
+  for (const s of data.shifts) {
+    if (s.startTime >= s.endTime) {
+      throw AppError.badRequest(`Shift start time (${s.startTime}) must be before end time (${s.endTime})`);
+    }
+  }
+
+  // Enumerate every date in the range
+  const dates: Date[] = [];
+  const daySet = data.daysOfWeek && data.daysOfWeek.length > 0 ? new Set(data.daysOfWeek) : null;
+  for (let d = new Date(from); d <= to; d.setUTCDate(d.getUTCDate() + 1)) {
+    if (daySet && !daySet.has(d.getUTCDay())) continue;
+    dates.push(new Date(d));
+  }
+
+  if (dates.length === 0) return { created: 0, updated: 0, skipped: 0 };
+
+  // Find existing overrides in the range to honor skipExisting
+  const existing = await prisma.doctorScheduleOverride.findMany({
+    where: { doctorId, date: { in: dates } },
+    select: { id: true, date: true },
+  });
+  const existingByDate = new Map(existing.map((e) => [e.date.getTime(), e.id]));
+
+  let created = 0;
+  let updated = 0;
+  let skipped = 0;
+
+  await prisma.$transaction(async (tx) => {
+    for (const date of dates) {
+      const existingId = existingByDate.get(date.getTime());
+
+      if (existingId && data.skipExisting) {
+        skipped++;
+        continue;
+      }
+
+      let overrideId: string;
+      if (existingId) {
+        await tx.doctorScheduleOverride.update({
+          where: { id: existingId },
+          data: { isDayOff: data.isDayOff, note: data.note ?? null },
+        });
+        await tx.doctorOverrideShift.deleteMany({ where: { overrideId: existingId } });
+        overrideId = existingId;
+        updated++;
+      } else {
+        const ovr = await tx.doctorScheduleOverride.create({
+          data: { doctorId, date, isDayOff: data.isDayOff, note: data.note ?? null },
+        });
+        overrideId = ovr.id;
+        created++;
+      }
+
+      if (!data.isDayOff && data.shifts.length > 0) {
+        await tx.doctorOverrideShift.createMany({
+          data: data.shifts.map((s) => ({
+            overrideId,
+            startTime: toDbTime(s.startTime),
+            endTime: toDbTime(s.endTime),
+            slotDurationMinutes: s.slotDurationMinutes ?? 15,
+            maxPatients: s.maxPatients,
+          })),
+        });
+      }
+    }
+  });
+
+  return { created, updated, skipped, totalDates: dates.length };
+}
+
+/**
+ * Remove a date-specific override (reverts that date to the weekly recurring schedule).
+ */
+export async function deleteScheduleOverride(tenantId: string, overrideId: string) {
+  const override = await prisma.doctorScheduleOverride.findFirst({
+    where: { id: overrideId, doctor: { tenantId } },
+  });
+  if (!override) throw AppError.notFound('Schedule override not found');
+
+  await prisma.doctorScheduleOverride.delete({ where: { id: overrideId } });
+  return { ok: true };
+}
+
+/**
  * Calculate available time slots for a doctor on a given date.
+ * Handles:
+ *   - Multiple shifts per day (DoctorSchedule rows with the same dayOfWeek)
+ *   - Full-day approved leaves (block everything)
+ *   - Partial/custom-hour approved leaves (block only slots that overlap)
+ *   - Multi-day leave ranges via leaveDate..endDate
+ *   - Existing non-cancelled appointments
  */
 export async function getAvailableSlots(tenantId: string, doctorId: string, date: string) {
   const doctor = await prisma.doctorProfile.findFirst({
@@ -437,55 +827,72 @@ export async function getAvailableSlots(tenantId: string, doctorId: string, date
     throw AppError.notFound('Doctor not found');
   }
 
-  const targetDate = new Date(date);
-  const dayOfWeek = targetDate.getDay(); // 0=Sunday, 6=Saturday
+  const targetDate = normalizeDate(date);
+  const dayOfWeek = new Date(date).getDay();
 
-  // Get the doctor's schedule for this day of the week
-  const schedule = await prisma.doctorSchedule.findFirst({
-    where: {
-      doctorId,
-      dayOfWeek,
-      isActive: true,
-    },
+  // 1. Date-specific override takes precedence over the weekly recurring schedule.
+  const override = await prisma.doctorScheduleOverride.findUnique({
+    where: { doctorId_date: { doctorId, date: targetDate } },
+    include: { shifts: { orderBy: { startTime: 'asc' } } },
   });
 
-  if (!schedule) {
-    return { date, slots: [], message: 'Doctor does not have a schedule for this day' };
+  if (override?.isDayOff) {
+    return { date, slots: [], message: override.note || 'Doctor is off on this date' };
   }
 
-  // Check for leaves on this date
-  const leave = await prisma.doctorLeave.findFirst({
-    where: {
-      doctorId,
-      leaveDate: targetDate,
-    },
-  });
-
-  if (leave) {
-    // If no specific time range, it's a full day leave
-    if (!leave.startTime && !leave.endTime) {
-      return { date, slots: [], message: 'Doctor is on leave on this date' };
+  let shiftSources: Array<{ startTime: Date; endTime: Date; slotDurationMinutes: number }>;
+  if (override && override.shifts.length > 0) {
+    shiftSources = override.shifts.map((s) => ({
+      startTime: s.startTime as Date,
+      endTime: s.endTime as Date,
+      slotDurationMinutes: s.slotDurationMinutes,
+    }));
+  } else {
+    const schedules = await prisma.doctorSchedule.findMany({
+      where: { doctorId, dayOfWeek, isActive: true },
+      orderBy: { startTime: 'asc' },
+    });
+    if (schedules.length === 0) {
+      return { date, slots: [], message: 'Doctor does not have a schedule for this day' };
     }
+    shiftSources = schedules.map((s) => ({
+      startTime: s.startTime as Date,
+      endTime: s.endTime as Date,
+      slotDurationMinutes: s.slotDurationMinutes,
+    }));
   }
 
-  // Generate all possible slots from schedule
-  const slots: Array<{ startTime: string; endTime: string; available: boolean }> = [];
-  // schedule.startTime is a Date object (db.Time) - extract HH:MM from it
-  const schedStartTime = schedule.startTime as Date;
-  const schedEndTime = schedule.endTime as Date;
-  const startHour = schedStartTime.getUTCHours();
-  const startMin = schedStartTime.getUTCMinutes();
-  const endHour = schedEndTime.getUTCHours();
-  const endMin = schedEndTime.getUTCMinutes();
+  // Every approved leave covering this date — may be 1 full-day OR several partial windows
+  const leaves = await prisma.doctorLeave.findMany({
+    where: {
+      doctorId,
+      status: 'approved',
+      leaveDate: { lte: targetDate },
+      OR: [
+        { endDate: null, leaveDate: targetDate },
+        { endDate: { gte: targetDate } },
+      ],
+    },
+  });
 
-  const scheduleStartMinutes = startHour * 60 + startMin;
-  const scheduleEndMinutes = endHour * 60 + endMin;
-  const slotDuration = schedule.slotDurationMinutes;
+  const fullDayLeave = leaves.find((l) => !l.startTime && !l.endTime);
+  if (fullDayLeave) {
+    return { date, slots: [], message: 'Doctor is on leave on this date' };
+  }
 
-  let effectiveStart = scheduleStartMinutes;
-  let effectiveEnd = scheduleEndMinutes;
+  // Convert time-only leaves to minute ranges for overlap checks
+  const leaveWindows = leaves
+    .filter((l) => l.startTime && l.endTime)
+    .map((l) => {
+      const s = l.startTime as Date;
+      const e = l.endTime as Date;
+      return {
+        startMin: s.getUTCHours() * 60 + s.getUTCMinutes(),
+        endMin: e.getUTCHours() * 60 + e.getUTCMinutes(),
+      };
+    });
 
-  // Get existing appointments for this doctor on this date
+  // Existing bookings for this day (to mark booked slots)
   const dayStart = new Date(targetDate);
   dayStart.setUTCHours(0, 0, 0, 0);
   const dayEnd = new Date(targetDate);
@@ -500,41 +907,56 @@ export async function getAvailableSlots(tenantId: string, doctorId: string, date
     select: { startTime: true, endTime: true },
   });
 
-  const bookedSlots = existingAppointments.map((apt) => ({
-    start: apt.startTime as Date,
-    end: apt.endTime as Date | null,
-  }));
+  const bookedRanges = existingAppointments.map((apt) => {
+    const s = apt.startTime as Date;
+    const e = apt.endTime as Date | null;
+    const startMin = s.getUTCHours() * 60 + s.getUTCMinutes();
+    const endMin = e
+      ? (e as Date).getUTCHours() * 60 + (e as Date).getUTCMinutes()
+      : startMin + 60;
+    return { startMin, endMin };
+  });
 
-  // Generate time slots
-  let currentMinutes = effectiveStart;
-  while (currentMinutes + slotDuration <= effectiveEnd) {
-    const slotStartHour = Math.floor(currentMinutes / 60);
-    const slotStartMin = currentMinutes % 60;
-    const slotEndMinutes = currentMinutes + slotDuration;
-    const slotEndHour = Math.floor(slotEndMinutes / 60);
-    const slotEndMin = slotEndMinutes % 60;
+  const pad2 = (n: number) => n.toString().padStart(2, '0');
+  const fmt = (mins: number) => `${pad2(Math.floor(mins / 60))}:${pad2(mins % 60)}`;
 
-    const slotStart = `${slotStartHour.toString().padStart(2, '0')}:${slotStartMin.toString().padStart(2, '0')}`;
-    const slotEnd = `${slotEndHour.toString().padStart(2, '0')}:${slotEndMin.toString().padStart(2, '0')}`;
+  const slots: Array<{
+    startTime: string;
+    endTime: string;
+    available: boolean;
+    onLeave?: boolean;
+  }> = [];
 
-    // Check if this slot is already booked
-    const isBooked = bookedSlots.some((booked) => {
-      const bookedStartH = (booked.start as Date).getUTCHours();
-      const bookedStartM = (booked.start as Date).getUTCMinutes();
-      const bookedStart = `${bookedStartH.toString().padStart(2, '0')}:${bookedStartM.toString().padStart(2, '0')}`;
-      const bookedEndH = booked.end ? (booked.end as Date).getUTCHours() : bookedStartH + 1;
-      const bookedEndM = booked.end ? (booked.end as Date).getUTCMinutes() : bookedStartM;
-      const bookedEnd = `${bookedEndH.toString().padStart(2, '0')}:${bookedEndM.toString().padStart(2, '0')}`;
-      return bookedStart === slotStart || (bookedStart < slotEnd && bookedEnd > slotStart);
-    });
+  // Generate slots for every shift (date-override or weekly recurring)
+  for (const schedule of shiftSources) {
+    const ss = schedule.startTime as Date;
+    const se = schedule.endTime as Date;
+    const shiftStart = ss.getUTCHours() * 60 + ss.getUTCMinutes();
+    const shiftEnd = se.getUTCHours() * 60 + se.getUTCMinutes();
+    const slotDuration = schedule.slotDurationMinutes;
 
-    slots.push({
-      startTime: slotStart,
-      endTime: slotEnd,
-      available: !isBooked,
-    });
+    let cur = shiftStart;
+    while (cur + slotDuration <= shiftEnd) {
+      const slotStartMin = cur;
+      const slotEndMin = cur + slotDuration;
 
-    currentMinutes += slotDuration;
+      const onLeave = leaveWindows.some(
+        (lw) => slotStartMin < lw.endMin && slotEndMin > lw.startMin,
+      );
+
+      const isBooked = bookedRanges.some(
+        (br) => slotStartMin < br.endMin && slotEndMin > br.startMin,
+      );
+
+      slots.push({
+        startTime: fmt(slotStartMin),
+        endTime: fmt(slotEndMin),
+        available: !isBooked && !onLeave,
+        ...(onLeave ? { onLeave: true } : {}),
+      });
+
+      cur += slotDuration;
+    }
   }
 
   return { date, doctorId, slots };

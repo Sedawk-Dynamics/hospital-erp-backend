@@ -104,9 +104,175 @@ export async function createDoctorLeave(
     sendResponse({
       res,
       statusCode: 201,
-      message: 'Doctor leave created successfully',
+      message: 'Doctor leave requested successfully',
       data: leave,
     });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getDoctorLeaves(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const leaves = await appointmentsService.getDoctorLeaves(
+      req.params.id as string,
+      req.query as any,
+    );
+    sendResponse({
+      res,
+      message: 'Doctor leaves retrieved successfully',
+      data: leaves,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function listAllDoctorLeaves(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const { leaves, total, page, limit } = await appointmentsService.listAllDoctorLeaves(
+      tenantId,
+      req.query as any,
+    );
+    sendPaginatedResponse(res, leaves, total, page, limit, 'Doctor leave requests retrieved');
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function approveDoctorLeave(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const leave = await appointmentsService.approveDoctorLeave(
+      tenantId,
+      req.params.leaveId as string,
+      userId,
+    );
+    sendResponse({ res, message: 'Leave approved', data: leave });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function rejectDoctorLeave(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const leave = await appointmentsService.rejectDoctorLeave(
+      tenantId,
+      req.params.leaveId as string,
+      userId,
+      req.body?.reason,
+    );
+    sendResponse({ res, message: 'Leave rejected', data: leave });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function cancelDoctorLeave(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const leave = await appointmentsService.cancelDoctorLeave(
+      tenantId,
+      req.params.leaveId as string,
+    );
+    sendResponse({ res, message: 'Leave cancelled', data: leave });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ── Schedule Overrides ─────────────────────────────────────
+
+export async function listScheduleOverrides(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await appointmentsService.listScheduleOverrides(
+      tenantId,
+      req.params.id as string,
+      req.query as any,
+    );
+    sendResponse({ res, message: 'Schedule overrides retrieved', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function upsertScheduleOverride(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await appointmentsService.upsertScheduleOverride(
+      tenantId,
+      req.params.id as string,
+      req.body,
+    );
+    sendResponse({ res, statusCode: 201, message: 'Schedule override saved', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function bulkApplyOverrides(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await appointmentsService.bulkApplyOverrides(
+      tenantId,
+      req.params.id as string,
+      req.body,
+    );
+    sendResponse({ res, message: 'Bulk overrides applied', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function deleteScheduleOverride(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await appointmentsService.deleteScheduleOverride(
+      tenantId,
+      req.params.overrideId as string,
+    );
+    sendResponse({ res, message: 'Override removed', data });
   } catch (err) {
     next(err);
   }

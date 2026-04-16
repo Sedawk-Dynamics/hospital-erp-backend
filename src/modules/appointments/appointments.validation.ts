@@ -43,10 +43,113 @@ export const createDoctorLeaveSchema = z.object({
       message: 'Invalid end date',
     }),
     reason: z.string().min(1, 'Reason is required').max(500),
-    leaveType: z.enum(['full_day', 'half_day_morning', 'half_day_afternoon']).default('full_day'),
-  }),
+    leaveType: z.enum(['vacation', 'sick', 'casual', 'maternity', 'paternity', 'unpaid', 'other']).default('casual'),
+    dayType: z.enum(['full_day', 'half_day_morning', 'half_day_afternoon', 'custom_hours']).default('full_day'),
+    // Required when dayType === 'custom_hours'. Ignored for other dayTypes.
+    startTime: z.string().regex(/^\d{2}:\d{2}$/, 'Time must be in HH:MM format').optional(),
+    endTime: z.string().regex(/^\d{2}:\d{2}$/, 'Time must be in HH:MM format').optional(),
+  }).refine(
+    (v) => v.dayType !== 'custom_hours' || (v.startTime && v.endTime && v.startTime < v.endTime),
+    { message: 'Custom hours leave requires startTime < endTime', path: ['startTime'] },
+  ),
   params: z.object({
     id: z.string().uuid('Invalid doctor ID'),
+  }),
+});
+
+export const getDoctorLeavesQuerySchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid doctor ID'),
+  }),
+  query: z.object({
+    status: z.enum(['pending', 'approved', 'rejected', 'cancelled']).optional(),
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
+  }),
+});
+
+export const listAllDoctorLeavesQuerySchema = z.object({
+  query: paginationSchema.extend({
+    status: z.enum(['pending', 'approved', 'rejected', 'cancelled']).optional(),
+    doctorId: z.string().uuid().optional(),
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
+  }),
+});
+
+export const doctorLeaveIdParamSchema = z.object({
+  params: z.object({
+    leaveId: z.string().uuid('Invalid leave ID'),
+  }),
+});
+
+export const reviewDoctorLeaveSchema = z.object({
+  body: z.object({
+    reason: z.string().max(500).optional(),
+  }),
+  params: z.object({
+    leaveId: z.string().uuid('Invalid leave ID'),
+  }),
+});
+
+// ── Schedule Overrides ─────────────────────────────────────
+
+const overrideShiftSchema = z.object({
+  startTime: z.string().regex(/^\d{2}:\d{2}$/, 'Time must be in HH:MM format'),
+  endTime: z.string().regex(/^\d{2}:\d{2}$/, 'Time must be in HH:MM format'),
+  slotDurationMinutes: z.coerce.number().int().min(5).max(120).default(15),
+  maxPatients: z.coerce.number().int().positive().max(200).optional().nullable()
+    .transform((v) => v ?? undefined),
+});
+
+export const upsertScheduleOverrideSchema = z.object({
+  body: z.object({
+    date: z.string().refine((v) => !isNaN(Date.parse(v)), { message: 'Invalid date' }),
+    isDayOff: z.boolean().default(false),
+    note: z.string().max(500).optional(),
+    shifts: z.array(overrideShiftSchema).default([]),
+  }).refine(
+    (v) => v.isDayOff || v.shifts.length > 0,
+    { message: 'Either mark as day-off or provide at least one shift', path: ['shifts'] },
+  ),
+  params: z.object({
+    id: z.string().uuid('Invalid doctor ID'),
+  }),
+});
+
+export const bulkOverrideSchema = z.object({
+  body: z.object({
+    fromDate: z.string().refine((v) => !isNaN(Date.parse(v))),
+    toDate: z.string().refine((v) => !isNaN(Date.parse(v))),
+    // Days to apply: 0=Sun..6=Sat. If empty, applies to every date in range.
+    daysOfWeek: z.array(z.number().int().min(0).max(6)).optional(),
+    isDayOff: z.boolean().default(false),
+    note: z.string().max(500).optional(),
+    shifts: z.array(overrideShiftSchema).default([]),
+    // If true, skip dates that already have overrides. If false, replace them.
+    skipExisting: z.boolean().default(false),
+  }).refine(
+    (v) => v.isDayOff || v.shifts.length > 0,
+    { message: 'Either mark as day-off or provide at least one shift', path: ['shifts'] },
+  ),
+  params: z.object({
+    id: z.string().uuid('Invalid doctor ID'),
+  }),
+});
+
+export const listOverridesQuerySchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid doctor ID'),
+  }),
+  query: z.object({
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
+  }),
+});
+
+export const overrideIdParamSchema = z.object({
+  params: z.object({
+    overrideId: z.string().uuid('Invalid override ID'),
   }),
 });
 
@@ -165,6 +268,10 @@ export const queueQuerySchema = z.object({
 export type CreateDoctorProfileInput = z.infer<typeof createDoctorProfileSchema>['body'];
 export type UpdateDoctorScheduleInput = z.infer<typeof updateDoctorScheduleSchema>['body'];
 export type CreateDoctorLeaveInput = z.infer<typeof createDoctorLeaveSchema>['body'];
+export type GetDoctorLeavesQuery = z.infer<typeof getDoctorLeavesQuerySchema>['query'];
+export type ListAllDoctorLeavesQuery = z.infer<typeof listAllDoctorLeavesQuerySchema>['query'];
+export type UpsertScheduleOverrideInput = z.infer<typeof upsertScheduleOverrideSchema>['body'];
+export type BulkOverrideInput = z.infer<typeof bulkOverrideSchema>['body'];
 export type BookAppointmentInput = z.infer<typeof bookAppointmentSchema>['body'];
 export type UpdateAppointmentStatusInput = z.infer<typeof updateAppointmentStatusSchema>['body'];
 export type GetAppointmentsQuery = z.infer<typeof getAppointmentsQuerySchema>['query'];
