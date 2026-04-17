@@ -8,6 +8,7 @@ import { env } from '../../config/env';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { REDIS_PREFIXES } from '../../shared/constants';
+import { recordFailedLogin, clearLoginFailures } from '../../middleware/rateLimiter';
 import type {
   RegisterInput,
   LoginInput,
@@ -173,6 +174,8 @@ export const authService = {
     });
 
     if (users.length === 0) {
+      // Count email-not-found as a failed attempt to blunt email enumeration.
+      await recordFailedLogin(data.email);
       throw AppError.unauthorized('Invalid credentials');
     }
 
@@ -182,6 +185,7 @@ export const authService = {
     const user = platformUser || users[0];
 
     if (!user) {
+      await recordFailedLogin(data.email);
       throw AppError.unauthorized('Invalid credentials');
     }
 
@@ -195,12 +199,14 @@ export const authService = {
 
     const passwordValid = await bcrypt.compare(data.password, user.passwordHash);
     if (!passwordValid) {
+      await recordFailedLogin(data.email);
       throw AppError.unauthorized('Invalid credentials');
     }
 
     // Check 2FA if enabled
     if (user.is2faEnabled) {
       if (!data.twoFactorCode) {
+        // Not a credential failure — just a missing second factor input.
         throw AppError.badRequest('Two-factor authentication code is required', '2FA_REQUIRED');
       }
 
@@ -210,9 +216,13 @@ export const authService = {
       });
 
       if (!isValid) {
+        await recordFailedLogin(data.email);
         throw AppError.unauthorized('Invalid two-factor authentication code');
       }
     }
+
+    // Credentials (and 2FA if required) all passed — reset the counter.
+    await clearLoginFailures(data.email);
 
     const roles = user.userRoles.map((ur) => ur.role.name);
 

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { generalLimiter } from '../middleware/rateLimiter';
+import { userTierLimiter } from '../middleware/rateLimiter';
 import { authenticate } from '../middleware/authenticate';
 import { requireFeature, requireActiveSubscription } from '../middleware/authorize';
 
@@ -43,55 +43,64 @@ import { formsRoutes } from './forms/forms.routes';
 
 const apiRouter = Router();
 
-// Apply general rate limiting to all API routes
-apiRouter.use(generalLimiter);
+// NOTE on rate limiting:
+//   - Global per-IP limiting happens at the app level (see app.ts).
+//   - Per-user, role-tiered limiting is mounted per route group below,
+//     AFTER `authenticate` so the limiter has `req.user` and can apply the
+//     right tier (doctors/nurses/front-desk get the HIGH budget).
+//   - Auth endpoints get their own stricter IP-keyed limiter inside
+//     `auth.routes.ts` (login/register/reset).
 
 // --- Core modules (no feature gate — always available) ---
 apiRouter.use('/auth', authRoutes);
-apiRouter.use('/tenants', tenantRoutes);
-apiRouter.use('/users', userRouter);
-apiRouter.use('/roles', roleRouter);
-apiRouter.use('/patients', patientRoutes);
-apiRouter.use('/dashboard', dashboardRoutes);
-apiRouter.use('/infrastructure', infrastructureRoutes);
-apiRouter.use('/communication', communicationRoutes);
+apiRouter.use('/tenants', authenticate, userTierLimiter, tenantRoutes);
+apiRouter.use('/users', authenticate, userTierLimiter, userRouter);
+apiRouter.use('/roles', authenticate, userTierLimiter, roleRouter);
+apiRouter.use('/patients', authenticate, userTierLimiter, patientRoutes);
+apiRouter.use('/dashboard', authenticate, userTierLimiter, dashboardRoutes);
+apiRouter.use('/infrastructure', authenticate, userTierLimiter, infrastructureRoutes);
+apiRouter.use('/communication', authenticate, userTierLimiter, communicationRoutes);
 
 // --- Feature-gated modules ---
-// authenticate → subscription check → feature check → route handlers
+// authenticate → user-tier limiter → subscription check → feature check → route handlers
 const subCheck = requireActiveSubscription();
-apiRouter.use('/appointments', authenticate, subCheck, requireFeature('appointments'), appointmentRoutes);
-apiRouter.use('/billing', authenticate, subCheck, requireFeature('billing'), billingRoutes);
-apiRouter.use('/clinical', authenticate, subCheck, requireFeature('ip_management'), clinicalRoutes);
-apiRouter.use('/progress-notes', authenticate, subCheck, requireFeature('ip_management'), progressNotesRoutes);
-apiRouter.use('/prescriptions', authenticate, subCheck, requireFeature('appointments'), prescriptionRoutes);
-apiRouter.use('/lab', authenticate, subCheck, requireFeature('lab'), labRoutes);
-apiRouter.use('/imaging', authenticate, subCheck, requireFeature('imaging'), imagingRoutes);
-apiRouter.use('/pharmacy', authenticate, subCheck, requireFeature('pharmacy'), pharmacyRoutes);
-apiRouter.use('/inventory', authenticate, subCheck, requireFeature('inventory'), inventoryRoutes);
-apiRouter.use('/insurance', authenticate, subCheck, requireFeature('insurance'), insuranceRoutes);
-apiRouter.use('/blood-bank', authenticate, subCheck, requireFeature('blood_bank'), bloodBankRoutes);
-apiRouter.use('/hr', authenticate, subCheck, requireFeature('hr'), hrRoutes);
-apiRouter.use('/compliance', authenticate, subCheck, requireFeature('compliance'), complianceRoutes);
-apiRouter.use('/reports', authenticate, subCheck, requireFeature('reports'), reportsRoutes);
-apiRouter.use('/mrd', authenticate, subCheck, requireFeature('ip_management'), mrdRoutes);
-apiRouter.use('/medical-history', authenticate, subCheck, medicalHistoryRoutes);
+apiRouter.use('/appointments', authenticate, userTierLimiter, subCheck, requireFeature('appointments'), appointmentRoutes);
+apiRouter.use('/billing', authenticate, userTierLimiter, subCheck, requireFeature('billing'), billingRoutes);
+apiRouter.use('/clinical', authenticate, userTierLimiter, subCheck, requireFeature('ip_management'), clinicalRoutes);
+apiRouter.use('/progress-notes', authenticate, userTierLimiter, subCheck, requireFeature('ip_management'), progressNotesRoutes);
+apiRouter.use('/prescriptions', authenticate, userTierLimiter, subCheck, requireFeature('appointments'), prescriptionRoutes);
+apiRouter.use('/lab', authenticate, userTierLimiter, subCheck, requireFeature('lab'), labRoutes);
+apiRouter.use('/imaging', authenticate, userTierLimiter, subCheck, requireFeature('imaging'), imagingRoutes);
+apiRouter.use('/pharmacy', authenticate, userTierLimiter, subCheck, requireFeature('pharmacy'), pharmacyRoutes);
+apiRouter.use('/inventory', authenticate, userTierLimiter, subCheck, requireFeature('inventory'), inventoryRoutes);
+apiRouter.use('/insurance', authenticate, userTierLimiter, subCheck, requireFeature('insurance'), insuranceRoutes);
+apiRouter.use('/blood-bank', authenticate, userTierLimiter, subCheck, requireFeature('blood_bank'), bloodBankRoutes);
+apiRouter.use('/hr', authenticate, userTierLimiter, subCheck, requireFeature('hr'), hrRoutes);
+apiRouter.use('/compliance', authenticate, userTierLimiter, subCheck, requireFeature('compliance'), complianceRoutes);
+apiRouter.use('/reports', authenticate, userTierLimiter, subCheck, requireFeature('reports'), reportsRoutes);
+apiRouter.use('/mrd', authenticate, userTierLimiter, subCheck, requireFeature('ip_management'), mrdRoutes);
+apiRouter.use('/medical-history', authenticate, userTierLimiter, subCheck, medicalHistoryRoutes);
 
 // --- Subscription Plans (public + super_admin) ---
+// Mixed public/private endpoints (webhook + listing are public). We rely on
+// the global IP limiter at the app level here; per-user limiting is not
+// applied because we can't safely force-authenticate the public paths.
 apiRouter.use('/subscription-plans', subscriptionPlanRoutes);
 
-// --- Patient Portal (authenticated patients) ---
-apiRouter.use('/patient-portal', patientPortalRoutes);
+// --- Patient Portal (every endpoint authenticates internally) ---
+apiRouter.use('/patient-portal', authenticate, userTierLimiter, patientPortalRoutes);
 
 // --- Patient Connection Management (hospital staff) ---
-apiRouter.use('/patient-connections', connectionAdminRoutes);
+apiRouter.use('/patient-connections', authenticate, userTierLimiter, connectionAdminRoutes);
 
 // --- Razorpay Route: Split Payments ---
+// Webhook lives under this prefix → cannot force-authenticate at router level.
 apiRouter.use('/online-payments', onlinePaymentsRoutes);
-apiRouter.use('/bank-linking', bankLinkingRoutes);
-apiRouter.use('/commission', commissionRoutes);
+apiRouter.use('/bank-linking', authenticate, userTierLimiter, bankLinkingRoutes);
+apiRouter.use('/commission', authenticate, userTierLimiter, commissionRoutes);
 
-// --- Hospitals (super_admin) ---
-apiRouter.use('/hospitals', hospitalsRoutes);
+// --- Hospitals (authenticated staff / super_admin) ---
+apiRouter.use('/hospitals', authenticate, userTierLimiter, hospitalsRoutes);
 
 // --- Demo Requests (public submit + super_admin management) ---
 apiRouter.use('/demo-requests', demoRequestRoutes);
