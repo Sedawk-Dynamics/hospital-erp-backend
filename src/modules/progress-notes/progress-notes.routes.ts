@@ -16,6 +16,8 @@ import {
   createProgressNoteTemplateSchema,
   updateProgressNoteTemplateSchema,
   templateIdParamSchema,
+  unlockProgressNoteSchema,
+  listUnlockedProgressNotesSchema,
 } from './progress-notes.validation';
 
 export const progressNotesRoutes = Router();
@@ -33,6 +35,9 @@ progressNotesRoutes.post('/templates', authenticate, requirePermission('progress
 progressNotesRoutes.put('/templates/:id', authenticate, requirePermission('progress_notes', 'update'), validate(updateProgressNoteTemplateSchema), controller.updateProgressNoteTemplate);
 progressNotesRoutes.delete('/templates/:id', authenticate, requirePermission('progress_notes', 'delete'), validate(templateIdParamSchema), controller.deleteProgressNoteTemplate);
 
+// --- Unlocked Notes (must be before /:id to avoid conflict) ---
+progressNotesRoutes.get('/unlocked', authenticate, requirePermission('progress_notes', 'read'), validate(listUnlockedProgressNotesSchema), controller.listUnlockedProgressNotes);
+
 // --- Progress Notes ---
 progressNotesRoutes.post('/', authenticate, requirePermission('progress_notes', 'create'), validate(createProgressNoteSchema), controller.createProgressNote);
 progressNotesRoutes.get('/', authenticate, requirePermission('progress_notes', 'read'), validate(listProgressNotesSchema), controller.getProgressNotes);
@@ -40,3 +45,5 @@ progressNotesRoutes.get('/:id', authenticate, requirePermission('progress_notes'
 progressNotesRoutes.put('/:id', authenticate, requirePermission('progress_notes', 'update'), validate(updateProgressNoteSchema), controller.updateProgressNote);
 progressNotesRoutes.delete('/:id', authenticate, requirePermission('progress_notes', 'delete'), validate(progressNoteIdParamSchema), controller.deleteProgressNote);
 progressNotesRoutes.patch('/:id/sign', authenticate, requirePermission('progress_notes', 'approve'), validate(signProgressNoteSchema), controller.signProgressNote);
+progressNotesRoutes.post('/:id/unlock', authenticate, requirePermission('progress_notes', 'update'), validate(unlockProgressNoteSchema), controller.unlockProgressNote);
+progressNotesRoutes.post('/:id/relock', authenticate, requirePermission('progress_notes', 'update'), validate(progressNoteIdParamSchema), controller.relockProgressNote);

@@ -146,11 +146,36 @@ export const nursingNoteIdParamSchema = z.object({
   }),
 });
 
+// --- Unlock / Relock ---
+
+export const unlockProgressNoteSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid progress note ID'),
+  }),
+  body: z
+    .object({
+      hours: z.coerce.number().int().min(1).max(24).optional(),
+    })
+    .optional(),
+});
+
+export const listUnlockedProgressNotesSchema = z.object({
+  query: z.object({
+    doctorId: z.string().uuid('Invalid doctor ID').optional(),
+    mine: z
+      .union([z.boolean(), z.string()])
+      .transform((v) => v === true || v === 'true')
+      .optional(),
+  }),
+});
+
 // --- Exported Types ---
 
 export type CreateProgressNoteInput = z.infer<typeof createProgressNoteSchema>['body'];
 export type UpdateProgressNoteInput = z.infer<typeof updateProgressNoteSchema>['body'];
 export type ListProgressNotesQuery = z.infer<typeof listProgressNotesSchema>['query'];
+export type UnlockProgressNoteInput = z.infer<typeof unlockProgressNoteSchema>['body'];
+export type ListUnlockedQuery = z.infer<typeof listUnlockedProgressNotesSchema>['query'];
 
 export type CreateProgressNoteTemplateInput = z.infer<typeof createProgressNoteTemplateSchema>['body'];
 export type UpdateProgressNoteTemplateInput = z.infer<typeof updateProgressNoteTemplateSchema>['body'];

@@ -43,3 +43,14 @@ export const dischargeSummaryIdParamSchema = z.object({
     id: z.string().uuid('Invalid discharge summary ID'),
   }),
 });
+
+export const signDischargeSummarySchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid discharge summary ID'),
+  }),
+  body: z
+    .object({
+      signatureName: z.string().trim().min(1).max(255).optional(),
+    })
+    .optional(),
+});

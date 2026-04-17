@@ -632,6 +632,8 @@ export async function getTransfers(tenantId: string, query: GetTransfersQuery) {
   if (query.visitId) where.visitId = query.visitId;
   if (query.status) where.status = query.status;
   if (query.transferType) where.transferType = query.transferType;
+  if (query.fromDoctorId) where.fromDoctorId = query.fromDoctorId;
+  if (query.toDoctorId) where.toDoctorId = query.toDoctorId;
 
   if (query.search) {
     where.OR = [

@@ -116,6 +116,78 @@ export async function signProgressNote(
   }
 }
 
+export async function unlockProgressNote(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const hours = (req.body as { hours?: number } | undefined)?.hours;
+    const data = await progressNotesService.unlockProgressNote(
+      tenantId,
+      req.params.id as string,
+      userId,
+      hours,
+    );
+    sendResponse({ res, message: 'Progress note unlocked for editing', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function relockProgressNote(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const note = await progressNotesService.relockProgressNote(
+      tenantId,
+      req.params.id as string,
+      userId,
+    );
+    sendResponse({ res, message: 'Progress note re-locked', data: note });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function listUnlockedProgressNotes(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const query = req.query as { doctorId?: string; mine?: unknown };
+
+    let doctorId: string | undefined;
+    if (query.doctorId) {
+      doctorId = query.doctorId;
+    } else if (query.mine === true || query.mine === 'true') {
+      const profile = await (await import('../../config/database')).prisma.doctorProfile.findFirst({
+        where: { userId, tenantId },
+        select: { id: true },
+      });
+      doctorId = profile?.id;
+      if (!doctorId) {
+        sendResponse({ res, message: 'Unlocked progress notes', data: [] });
+        return;
+      }
+    }
+
+    const notes = await progressNotesService.listUnlockedProgressNotes(tenantId, { doctorId });
+    sendResponse({ res, message: 'Unlocked progress notes', data: notes });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // ============================================================
 // Progress Note Templates
 // ============================================================

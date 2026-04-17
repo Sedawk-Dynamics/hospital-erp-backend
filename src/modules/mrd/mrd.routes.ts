@@ -8,6 +8,7 @@ import {
   getDischargeSummaryByAdmissionSchema,
   updateDischargeSummarySchema,
   dischargeSummaryIdParamSchema,
+  signDischargeSummarySchema,
 } from './mrd.validation';
 import * as controller from './mrd.controller';
 
@@ -65,7 +66,7 @@ mrdRoutes.post(
   '/discharge-summary/:id/sign',
   authenticate,
   requirePermission('admissions', 'update'),
-  validate(dischargeSummaryIdParamSchema),
+  validate(signDischargeSummarySchema),
   controller.signDischargeSummary,
 );
 

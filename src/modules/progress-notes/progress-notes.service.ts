@@ -547,27 +547,164 @@ export async function deleteProgressNoteTemplate(tenantId: string, userId: strin
 // ============================================================
 // Any active progress note attached to an OP visit older than 24 hours
 // is flipped to 'archived'. IP notes remain editable until discharge.
+// Notes unlocked by a doctor ("unlocked:<iso>:<userId>") are respected
+// until their unlock window expires.
+
+function parseUnlockExpiry(reason: string | null): Date | null {
+  if (!reason || !reason.startsWith('unlocked:')) return null;
+  const parts = reason.split(':');
+  if (parts.length < 2) return null;
+  const iso = parts[1];
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? null : d;
+}
 
 export async function archiveStaleOpProgressNotes() {
   const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const now = new Date();
   const stale = await prisma.progressNote.findMany({
     where: {
       status: 'active',
       createdAt: { lt: cutoff },
       visit: { visitType: 'op' },
     },
-    select: { id: true },
+    select: { id: true, archiveReason: true },
   });
-  if (stale.length === 0) return { archived: 0 };
+
+  // Respect unlock windows: skip notes unlocked and still within their window.
+  const toArchive = stale.filter((n) => {
+    const until = parseUnlockExpiry(n.archiveReason);
+    return !until || until.getTime() <= now.getTime();
+  });
+
+  if (toArchive.length === 0) return { archived: 0 };
 
   const result = await prisma.progressNote.updateMany({
-    where: { id: { in: stale.map((s) => s.id) } },
+    where: { id: { in: toArchive.map((s) => s.id) } },
     data: {
       status: 'archived',
-      archivedAt: new Date(),
+      archivedAt: now,
       archiveReason: 'op_auto_24h',
     },
   });
   logger.info({ count: result.count }, 'Archived stale OP progress notes');
   return { archived: result.count };
+}
+
+// ============================================================
+// Unlock a finalized / archived note for further edits
+// ============================================================
+// Flips status back to 'active' and records an unlock window via
+// `archiveReason` = "unlocked:<ISO-expiry>:<userId>". When the window
+// expires, archiveStaleOpProgressNotes will re-archive the note.
+
+const DEFAULT_UNLOCK_HOURS = 4;
+const MAX_UNLOCK_HOURS = 24;
+
+export async function unlockProgressNote(
+  tenantId: string,
+  id: string,
+  userId: string,
+  hoursRequested?: number,
+) {
+  const existing = await prisma.progressNote.findFirst({
+    where: { id, visit: { tenantId } },
+  });
+  if (!existing) throw AppError.notFound('Progress note not found');
+
+  if (existing.status === 'active') {
+    const pending = parseUnlockExpiry(existing.archiveReason);
+    if (pending && pending.getTime() > Date.now()) {
+      // Already unlocked; extend the window instead of erroring.
+    } else {
+      throw AppError.badRequest('Progress note is already active / editable');
+    }
+  }
+
+  const hours = Math.min(
+    MAX_UNLOCK_HOURS,
+    Math.max(1, Math.floor(hoursRequested ?? DEFAULT_UNLOCK_HOURS)),
+  );
+  const until = new Date(Date.now() + hours * 60 * 60 * 1000);
+
+  const note = await prisma.progressNote.update({
+    where: { id },
+    data: {
+      status: 'active',
+      archivedAt: null,
+      archiveReason: `unlocked:${until.toISOString()}:${userId}`,
+    },
+    include: {
+      doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
+      patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
+      visit: { select: { id: true, visitType: true, visitDate: true } },
+    },
+  });
+  logger.info({ tenantId, noteId: id, userId, hours }, 'Progress note unlocked');
+  return { note, unlockedUntil: until.toISOString() };
+}
+
+/**
+ * Re-lock a previously unlocked note (ends the unlock window early).
+ */
+export async function relockProgressNote(tenantId: string, id: string, userId: string) {
+  const existing = await prisma.progressNote.findFirst({
+    where: { id, visit: { tenantId } },
+  });
+  if (!existing) throw AppError.notFound('Progress note not found');
+
+  const until = parseUnlockExpiry(existing.archiveReason);
+  if (!until) throw AppError.badRequest('Progress note is not currently unlocked');
+
+  const note = await prisma.progressNote.update({
+    where: { id },
+    data: {
+      status: 'finalized',
+      archivedAt: null,
+      archiveReason: null,
+    },
+    include: {
+      doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
+      patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
+    },
+  });
+  logger.info({ tenantId, noteId: id, userId }, 'Progress note re-locked');
+  return note;
+}
+
+/**
+ * List progress notes currently unlocked (status=active + archiveReason starts with "unlocked:").
+ * Optionally filter to the caller's own notes (by DoctorProfile.id).
+ */
+export async function listUnlockedProgressNotes(
+  tenantId: string,
+  opts: { doctorId?: string } = {},
+) {
+  const now = new Date();
+  // Use a raw substring match since Prisma can't parse the ISO out of the string.
+  const notes = await prisma.progressNote.findMany({
+    where: {
+      status: 'active',
+      archiveReason: { startsWith: 'unlocked:' },
+      visit: { tenantId },
+      ...(opts.doctorId ? { doctorId: opts.doctorId } : {}),
+    },
+    orderBy: { updatedAt: 'desc' },
+    include: {
+      doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
+      patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
+      visit: { select: { id: true, visitType: true, visitDate: true } },
+    },
+  });
+
+  return notes
+    .map((n) => {
+      const until = parseUnlockExpiry(n.archiveReason);
+      return { note: n, unlockedUntil: until };
+    })
+    .filter((x) => x.unlockedUntil && x.unlockedUntil.getTime() > now.getTime())
+    .map((x) => ({
+      ...x.note,
+      unlockedUntil: x.unlockedUntil!.toISOString(),
+    }));
 }

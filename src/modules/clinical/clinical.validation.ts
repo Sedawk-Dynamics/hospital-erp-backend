@@ -141,6 +141,8 @@ export const getTransfersQuerySchema = z.object({
     visitId: z.string().uuid().optional(),
     status: z.enum(['requested', 'approved', 'completed', 'rejected']).optional(),
     transferType: z.enum(['doctor_to_doctor', 'ward_to_ward', 'bed_to_bed']).optional(),
+    fromDoctorId: z.string().uuid().optional(),
+    toDoctorId: z.string().uuid().optional(),
   }),
 });
 

@@ -132,7 +132,8 @@ export async function signDischargeSummary(
     const tenantId = req.user!.tenantId;
     const userId = req.user!.userId;
     const id = req.params.id as string;
-    const result = await mrdService.signDischargeSummary(tenantId, id, userId);
+    const signatureName = (req.body as { signatureName?: string } | undefined)?.signatureName;
+    const result = await mrdService.signDischargeSummary(tenantId, id, userId, signatureName);
     sendResponse({
       res,
       statusCode: 200,

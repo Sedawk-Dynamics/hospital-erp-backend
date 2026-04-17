@@ -33,6 +33,7 @@ prescriptionRoutes.post('/', authenticate, requirePermission('prescriptions', 'c
 prescriptionRoutes.get('/', authenticate, requirePermission('prescriptions', 'read'), validate(getPrescriptionsQuerySchema), controller.getPrescriptions);
 prescriptionRoutes.get('/:id', authenticate, requirePermission('prescriptions', 'read'), validate(prescriptionIdParamSchema), controller.getPrescriptionById);
 prescriptionRoutes.put('/:id', authenticate, requirePermission('prescriptions', 'update'), validate(updatePrescriptionSchema), controller.updatePrescription);
+prescriptionRoutes.patch('/:id', authenticate, requirePermission('prescriptions', 'update'), validate(updatePrescriptionSchema), controller.updatePrescription);
 prescriptionRoutes.patch('/:id/cancel', authenticate, requirePermission('prescriptions', 'update'), validate(cancelPrescriptionSchema), controller.cancelPrescription);
 
 // --- Prescription Items ---

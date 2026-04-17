@@ -2,6 +2,7 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
+import { sendDischargeSummaryPublishedEmail } from '../../services/email.service';
 
 interface GetMrdQuery {
   page?: number;
@@ -461,12 +462,22 @@ export async function updateDischargeSummary(
   return updated;
 }
 
-export async function signDischargeSummary(tenantId: string, id: string, userId: string) {
+export async function signDischargeSummary(
+  tenantId: string,
+  id: string,
+  userId: string,
+  signatureName?: string,
+) {
   const existing = await getDischargeSummaryById(tenantId, id);
 
   if (existing.status !== 'draft') {
     throw AppError.badRequest('Only draft discharge summaries can be signed');
   }
+
+  // Capture the typed attestation (e-signature text) alongside signer identity.
+  // Stored in eSignatureUrl prefixed with "typed:" so downstream readers can tell
+  // it is a typed signature vs a URL to an image.
+  const eSignatureUrl = signatureName ? `typed:${signatureName.trim()}` : null;
 
   const signed = await prisma.dischargeSummary.update({
     where: { id },
@@ -474,11 +485,15 @@ export async function signDischargeSummary(tenantId: string, id: string, userId:
       status: 'finalized',
       signedBy: userId,
       signedAt: new Date(),
+      eSignatureUrl: eSignatureUrl ?? undefined,
     },
     include: dischargeSummaryInclude,
   });
 
-  logger.info({ tenantId, dischargeSummaryId: id, signedBy: userId }, 'Discharge summary signed');
+  logger.info(
+    { tenantId, dischargeSummaryId: id, signedBy: userId, hasSignatureName: !!signatureName },
+    'Discharge summary signed',
+  );
   return signed;
 }
 
@@ -498,7 +513,85 @@ export async function publishDischargeSummary(tenantId: string, id: string) {
   });
 
   logger.info({ tenantId, dischargeSummaryId: id }, 'Discharge summary published');
+
+  // Side effects: in-app notification + email. Do not fail publish if these fail.
+  try {
+    await notifyPatientOfDischargeSummary(tenantId, published);
+  } catch (err) {
+    logger.error(
+      { err, tenantId, dischargeSummaryId: id },
+      'Failed to send discharge summary notifications (publish still succeeded)',
+    );
+  }
+
   return published;
+}
+
+/**
+ * Fire-and-forget notification pipeline for a newly-published summary:
+ *  - Creates an in-app Notification for the patient's linked user (if any).
+ *  - Emails the patient (using Patient.email or linked User.email).
+ */
+async function notifyPatientOfDischargeSummary(
+  tenantId: string,
+  summary: { id: string; patientId: string; dischargeDate?: Date | null },
+) {
+  const [patient, tenant] = await Promise.all([
+    prisma.patient.findUnique({
+      where: { id: summary.patientId },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        userId: true,
+        user: { select: { id: true, email: true } },
+      },
+    }),
+    prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { name: true },
+    }),
+  ]);
+
+  if (!patient) return;
+
+  const patientName = `${patient.firstName} ${patient.lastName ?? ''}`.trim();
+  const hospitalName = tenant?.name || 'Hospital';
+  const dischargeDate = summary.dischargeDate
+    ? new Date(summary.dischargeDate).toLocaleDateString('en-IN')
+    : new Date().toLocaleDateString('en-IN');
+
+  // In-app notification — only if the patient has a portal login
+  if (patient.userId) {
+    try {
+      await prisma.notification.create({
+        data: {
+          tenantId,
+          userId: patient.userId,
+          title: 'Discharge summary available',
+          message: `Your discharge summary from ${hospitalName} is ready to view in your patient portal.`,
+          notificationType: 'system',
+          channel: 'in_app',
+          referenceType: 'discharge_summary',
+          referenceId: summary.id,
+          sentAt: new Date(),
+        },
+      });
+    } catch (err) {
+      logger.error({ err }, 'Failed to create in-app discharge notification');
+    }
+  }
+
+  // Email — use Patient.email first, fall back to linked User.email
+  const to = patient.email || patient.user?.email;
+  if (to) {
+    const base = process.env.FRONTEND_URL || process.env.APP_URL || '';
+    const portalUrl = base
+      ? `${base.replace(/\/$/, '')}/patient-portal/discharge-summaries/${summary.id}`
+      : undefined;
+    void sendDischargeSummaryPublishedEmail(to, patientName, hospitalName, dischargeDate, portalUrl);
+  }
 }
 
 /**

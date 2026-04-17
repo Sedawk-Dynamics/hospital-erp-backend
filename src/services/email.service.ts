@@ -202,6 +202,52 @@ export async function sendLabReport(
 }
 
 /**
+ * Send a discharge summary published notification email.
+ */
+export async function sendDischargeSummaryPublishedEmail(
+  to: string,
+  patientName: string,
+  hospitalName: string,
+  dischargeDate: string,
+  portalUrl?: string,
+): Promise<boolean> {
+  const cta = portalUrl
+    ? `
+      <div style="text-align: center; margin: 30px 0;">
+        <a href="${portalUrl}" style="background-color: #2563eb; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; display: inline-block;">
+          View in Patient Portal
+        </a>
+      </div>`
+    : '';
+
+  const html = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+      <h2 style="color: #2563eb;">Your Discharge Summary is Ready</h2>
+      <p>Dear ${patientName},</p>
+      <p>Your discharge summary from <strong>${hospitalName}</strong> has been finalized and is now
+      available in your patient portal.</p>
+      <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0;">
+        <p><strong>Discharge Date:</strong> ${dischargeDate}</p>
+        <p><strong>Hospital:</strong> ${hospitalName}</p>
+      </div>
+      ${cta}
+      <p>The summary includes your diagnoses, procedures, medications, key lab results, and follow-up
+      instructions. Please review it carefully and contact us if you have any questions.</p>
+      <br/>
+      <p>Wishing you a speedy recovery,</p>
+      <p><strong>${hospitalName}</strong></p>
+    </div>
+  `;
+
+  return sendEmail({
+    to,
+    subject: `Discharge Summary Available - ${hospitalName}`,
+    html,
+    text: `Dear ${patientName}, your discharge summary from ${hospitalName} (discharge date ${dischargeDate}) is now available in your patient portal${portalUrl ? `: ${portalUrl}` : ''}.`,
+  });
+}
+
+/**
  * Send a bill notification email.
  */
 export async function sendBillNotification(
