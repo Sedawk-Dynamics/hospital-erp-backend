@@ -1611,6 +1611,7 @@ export async function createPatientPaymentOrder(
       paymentDate: new Date(),
       amount: consultationFee,
       paymentMethod: 'upi',
+      paymentSource: 'online',
       paymentType: 'regular',
       status: 'pending',
       processedBy: userId,

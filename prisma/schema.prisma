@@ -601,6 +601,11 @@ enum PaymentStatus {
   reversed  @map("reversed")
 }
 
+enum PaymentSource {
+  online    @map("online")
+  frontdesk @map("frontdesk")
+}
+
 enum PaymentTransferStatus {
   pending   @map("pending")
   processed @map("processed")
@@ -2938,6 +2943,7 @@ model Payment {
   paymentDate      DateTime        @map("payment_date")
   amount           Decimal         @db.Decimal(12, 2)
   paymentMethod    PaymentMethod   @map("payment_method")
+  paymentSource    PaymentSource?  @map("payment_source")
   paymentType      PaymentTypeEnum @default(regular) @map("payment_type")
   transactionId    String?         @map("transaction_id") @db.VarChar(100)
   gatewayReference String?         @map("gateway_reference") @db.VarChar(255)

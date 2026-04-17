@@ -1208,7 +1208,7 @@ export async function getAppointments(tenantId: string, query: GetAppointmentsQu
               payments: {
                 take: 1,
                 orderBy: { createdAt: 'desc' },
-                select: { status: true, paymentMethod: true },
+                select: { status: true, paymentMethod: true, paymentSource: true },
               },
             },
           },
@@ -1226,15 +1226,21 @@ export async function getAppointments(tenantId: string, query: GetAppointmentsQu
   const appointments = rawAppointments.map((a) => {
     const bill = billMap.get(a.id);
     const latestPayment = bill?.payments?.[0];
-    let paymentStatus: 'paid_online' | 'pay_at_frontdesk' | 'pending' | 'no_billing' = 'no_billing';
+    let paymentStatus:
+      | 'paid_online'
+      | 'paid_at_frontdesk'
+      | 'pay_at_frontdesk'
+      | 'pending'
+      | 'no_billing' = 'no_billing';
 
     if (bill) {
-      if (bill.status === 'paid') {
-        paymentStatus = latestPayment?.paymentMethod === 'cash' ? 'paid_online' : 'paid_online';
-      } else if (latestPayment?.status === 'completed') {
-        paymentStatus = 'paid_online';
+      const completedSource = latestPayment?.status === 'completed' ? latestPayment.paymentSource : null;
+
+      if (bill.status === 'paid' || bill.status === 'partially_paid') {
+        // The bill has been (at least partly) collected — label by source.
+        paymentStatus = completedSource === 'frontdesk' ? 'paid_at_frontdesk' : 'paid_online';
       } else if (latestPayment?.status === 'pending') {
-        paymentStatus = 'pending'; // online payment initiated but not completed
+        paymentStatus = 'pending'; // online payment initiated but not yet captured
       } else {
         paymentStatus = 'pay_at_frontdesk';
       }

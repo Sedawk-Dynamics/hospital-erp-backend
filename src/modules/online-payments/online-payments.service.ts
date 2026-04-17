@@ -58,6 +58,7 @@ async function createOnlineOrder(tenantId: string, userId: string, data: { billI
       paymentDate: new Date(),
       amount,
       paymentMethod: 'upi',
+      paymentSource: 'online',
       paymentType: 'regular',
       status: 'pending',
       processedBy: userId,

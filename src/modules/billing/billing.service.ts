@@ -222,6 +222,40 @@ export async function getCollectionSummary(
   let bankTransfer = 0;
   let cheque = 0;
 
+  const emptyMethods = () => ({
+    total: 0,
+    cash: 0,
+    card: 0,
+    upi: 0,
+    bankTransfer: 0,
+    cheque: 0,
+    insurance: 0,
+    other: 0,
+  });
+  const bySource = {
+    online: emptyMethods(),
+    frontdesk: emptyMethods(),
+    unknown: emptyMethods(),
+  };
+
+  const addToBucket = (
+    bucket: ReturnType<typeof emptyMethods>,
+    method: string,
+    amt: number,
+  ) => {
+    bucket.total += amt;
+    switch (method) {
+      case 'cash': bucket.cash += amt; break;
+      case 'credit_card':
+      case 'debit_card': bucket.card += amt; break;
+      case 'upi': bucket.upi += amt; break;
+      case 'net_banking': bucket.bankTransfer += amt; break;
+      case 'cheque': bucket.cheque += amt; break;
+      case 'insurance': bucket.insurance += amt; break;
+      default: bucket.other += amt; break;
+    }
+  };
+
   for (const p of payments) {
     const amt = toNumber(p.amount);
     totalCollection += amt;
@@ -233,6 +267,10 @@ export async function getCollectionSummary(
       case 'net_banking': bankTransfer += amt; break;
       case 'cheque': cheque += amt; break;
     }
+
+    const sourceKey: 'online' | 'frontdesk' | 'unknown' =
+      p.paymentSource === 'online' ? 'online' : p.paymentSource === 'frontdesk' ? 'frontdesk' : 'unknown';
+    addToBucket(bySource[sourceKey], p.paymentMethod, amt);
   }
 
   // Bill-level aggregation
@@ -264,6 +302,7 @@ export async function getCollectionSummary(
     totalPaid,
     totalCredit,
     netAdvanceAdjusted: 0,
+    bySource,
   };
 }
 
@@ -800,6 +839,7 @@ export async function createPayment(tenantId: string, data: CreatePaymentInput) 
         patientId: bill.patientId,
         amount: data.amount,
         paymentMethod: mappedPaymentMethod,
+        paymentSource: 'frontdesk',
         transactionId: data.referenceNumber,
         notes: data.notes,
         status: 'completed',
