@@ -714,6 +714,11 @@ export async function getTransferById(tenantId: string, id: string) {
 
 /**
  * Approve or reject a transfer.
+ *
+ * On approval the receiving doctor / bed / ward is actually applied to the
+ * underlying records (visit, admission, appointment, bed occupancy) so the
+ * patient appears in the destination's worklist. Rejection is purely a status
+ * change.
  */
 export async function approveTransfer(
   tenantId: string,
@@ -723,6 +728,7 @@ export async function approveTransfer(
 ) {
   const transfer = await prisma.patientTransfer.findFirst({
     where: { id, tenantId },
+    include: { visit: { select: { id: true, appointmentId: true, patientId: true } } },
   });
 
   if (!transfer) {
@@ -735,28 +741,94 @@ export async function approveTransfer(
 
   const newStatus = data?.status ?? 'approved';
 
-  const updated = await prisma.patientTransfer.update({
-    where: { id },
-    data: {
-      status: newStatus,
-      approvedBy: userId,
-    },
-    include: {
-      patient: {
-        select: { id: true, mrn: true, firstName: true, lastName: true },
+  const updated = await prisma.$transaction(async (tx) => {
+    if (newStatus === 'approved') {
+      switch (transfer.transferType) {
+        case 'doctor_to_doctor': {
+          if (!transfer.toDoctorId) {
+            throw AppError.badRequest('Transfer is missing the receiving doctor');
+          }
+          // Reassign the visit to the receiving doctor.
+          await tx.visit.update({
+            where: { id: transfer.visitId },
+            data: { doctorId: transfer.toDoctorId },
+          });
+          // Mirror onto the active admission (if IP) so the IP worklist follows.
+          await tx.admission.updateMany({
+            where: { visitId: transfer.visitId, tenantId },
+            data: { doctorId: transfer.toDoctorId },
+          });
+          // Move the linked appointment so the patient surfaces on the new
+          // doctor's OP list.
+          if (transfer.visit?.appointmentId) {
+            await tx.appointment.update({
+              where: { id: transfer.visit.appointmentId },
+              data: { doctorId: transfer.toDoctorId },
+            });
+          }
+          break;
+        }
+        case 'ward_to_ward':
+        case 'bed_to_bed': {
+          const admission = await tx.admission.findFirst({
+            where: { visitId: transfer.visitId, tenantId },
+          });
+          if (!admission) {
+            throw AppError.badRequest('No active admission found for this transfer');
+          }
+          const admissionUpdate: { wardId?: string; bedId?: string } = {};
+          if (transfer.toWardId) admissionUpdate.wardId = transfer.toWardId;
+          if (transfer.toBedId) admissionUpdate.bedId = transfer.toBedId;
+          if (Object.keys(admissionUpdate).length > 0) {
+            await tx.admission.update({
+              where: { id: admission.id },
+              data: admissionUpdate,
+            });
+          }
+          // Free the old bed and occupy the new one.
+          if (transfer.fromBedId && transfer.fromBedId !== transfer.toBedId) {
+            await tx.bed.update({
+              where: { id: transfer.fromBedId },
+              data: { status: 'available', currentPatientId: null },
+            });
+          }
+          if (transfer.toBedId) {
+            await tx.bed.update({
+              where: { id: transfer.toBedId },
+              data: { status: 'occupied', currentPatientId: transfer.patientId },
+            });
+          }
+          break;
+        }
+      }
+    }
+
+    return tx.patientTransfer.update({
+      where: { id },
+      data: {
+        status: newStatus,
+        approvedBy: userId,
       },
-      fromDoctor: {
-        include: { user: { select: { firstName: true, lastName: true } } },
+      include: {
+        patient: {
+          select: { id: true, mrn: true, firstName: true, lastName: true },
+        },
+        fromDoctor: {
+          include: { user: { select: { firstName: true, lastName: true } } },
+        },
+        toDoctor: {
+          include: { user: { select: { firstName: true, lastName: true } } },
+        },
+        fromWard: { select: { id: true, name: true } },
+        toWard: { select: { id: true, name: true } },
       },
-      toDoctor: {
-        include: { user: { select: { firstName: true, lastName: true } } },
-      },
-      fromWard: { select: { id: true, name: true } },
-      toWard: { select: { id: true, name: true } },
-    },
+    });
   });
 
-  logger.info({ tenantId, transferId: id, status: newStatus }, 'Transfer status updated');
+  logger.info(
+    { tenantId, transferId: id, status: newStatus, type: transfer.transferType },
+    'Transfer status updated',
+  );
   return updated;
 }
 
