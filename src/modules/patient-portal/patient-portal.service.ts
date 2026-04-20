@@ -5,6 +5,7 @@ import { env } from '../../config/env';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { commissionService } from '../commission/commission.service';
+import { getAvailableSlots } from '../appointments/appointments.service';
 
 // ────────────────────────────────────────────────────────────
 // MRN Generation (mirrors patients.service.ts)
@@ -1122,6 +1123,11 @@ export async function getDoctorsForBooking(
     ];
   }
 
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0);
+  const horizon = new Date(today);
+  horizon.setUTCDate(horizon.getUTCDate() + 90);
+
   const doctors = await prisma.doctorProfile.findMany({
     where,
     take: 50,
@@ -1129,37 +1135,67 @@ export async function getDoctorsForBooking(
       user: { select: { firstName: true, lastName: true } },
       department: { select: { id: true, name: true } },
       schedules: { where: { isActive: true }, orderBy: { dayOfWeek: 'asc' } },
+      scheduleOverrides: {
+        where: { date: { gte: today, lte: horizon } },
+        select: { date: true, isDayOff: true, shifts: { select: { id: true } } },
+      },
     },
     orderBy: { createdAt: 'desc' },
   });
 
+  const toDateStr = (d: Date) => {
+    const y = d.getUTCFullYear();
+    const m = (d.getUTCMonth() + 1).toString().padStart(2, '0');
+    const day = d.getUTCDate().toString().padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+
   return {
-    data: doctors.map((d) => ({
-      id: d.id,
-      userId: d.userId,
-      firstName: d.user.firstName,
-      lastName: d.user.lastName,
-      specialization: d.specialization,
-      qualifications: d.qualifications,
-      consultationFee: d.consultationFee ? Number(d.consultationFee) : null,
-      experienceYears: d.experienceYears,
-      department: d.department,
-      availableDays: [...new Set(d.schedules.map((s) => s.dayOfWeek))],
-    })),
+    data: doctors.map((d) => {
+      const workingOverrides = d.scheduleOverrides.filter(
+        (o) => !o.isDayOff && o.shifts.length > 0,
+      );
+      const blockedOverrideDates = d.scheduleOverrides
+        .filter((o) => o.isDayOff)
+        .map((o) => toDateStr(o.date as Date));
+      const extraDates = workingOverrides.map((o) => toDateStr(o.date as Date));
+      return {
+        id: d.id,
+        userId: d.userId,
+        firstName: d.user.firstName,
+        lastName: d.user.lastName,
+        specialization: d.specialization,
+        qualifications: d.qualifications,
+        consultationFee: d.consultationFee ? Number(d.consultationFee) : null,
+        experienceYears: d.experienceYears,
+        department: d.department,
+        availableDays: [...new Set(d.schedules.map((s) => s.dayOfWeek))],
+        /** Future override dates (YYYY-MM-DD) where the doctor is available even if dayOfWeek is not. */
+        extraAvailableDates: extraDates,
+        /** Future override dates (YYYY-MM-DD) where the doctor is marked off, overriding weekly availability. */
+        blockedDates: blockedOverrideDates,
+      };
+    }),
   };
 }
 
 /**
  * Get available time slots for a doctor on a given date (patient-facing).
+ *
+ * Delegates to the unified appointments-service slot generator so patients see
+ * the exact same view as admin / doctor: date-specific DoctorScheduleOverride
+ * (monthly calendar edits) takes precedence over the weekly recurring schedule,
+ * with correct handling of multiple shifts per day and partial/full leaves.
  */
 export async function getDoctorSlotsForPatient(
-  userId: string,
+  _userId: string,
   tenantId: string,
   doctorId: string,
   date: string,
 ) {
   const doctor = await prisma.doctorProfile.findFirst({
     where: { id: doctorId, tenantId, isAvailable: true },
+    select: { id: true },
   });
   if (!doctor) throw AppError.notFound('Doctor not found');
 
@@ -1170,74 +1206,8 @@ export async function getDoctorSlotsForPatient(
   if (targetDate < today) {
     return { date, doctorId, slots: [], message: 'Cannot view slots for past dates' };
   }
-  targetDate.setUTCHours(0, 0, 0, 0);
-  const dayOfWeek = targetDate.getDay();
 
-  const schedule = await prisma.doctorSchedule.findFirst({
-    where: { doctorId, dayOfWeek, isActive: true },
-  });
-  if (!schedule) {
-    return { date, doctorId, slots: [], message: 'Doctor is not available on this day' };
-  }
-
-  // Check for leaves
-  const leave = await prisma.doctorLeave.findFirst({
-    where: { doctorId, leaveDate: targetDate },
-  });
-  if (leave && !leave.startTime && !leave.endTime) {
-    return { date, doctorId, slots: [], message: 'Doctor is on leave on this date' };
-  }
-
-  // Generate slots
-  const schedStartTime = schedule.startTime as Date;
-  const schedEndTime = schedule.endTime as Date;
-  const startMinutes = schedStartTime.getUTCHours() * 60 + schedStartTime.getUTCMinutes();
-  const endMinutes = schedEndTime.getUTCHours() * 60 + schedEndTime.getUTCMinutes();
-  const slotDuration = schedule.slotDurationMinutes;
-
-  // Get booked appointments
-  const dayStart = new Date(targetDate);
-  dayStart.setUTCHours(0, 0, 0, 0);
-  const dayEnd = new Date(targetDate);
-  dayEnd.setUTCHours(23, 59, 59, 999);
-
-  const existingAppointments = await prisma.appointment.findMany({
-    where: {
-      doctorId,
-      appointmentDate: { gte: dayStart, lte: dayEnd },
-      status: { notIn: ['cancelled', 'no_show'] },
-    },
-    select: { startTime: true, endTime: true },
-  });
-
-  const bookedSlots = existingAppointments.map((apt) => ({
-    start: apt.startTime as Date,
-    end: apt.endTime as Date | null,
-  }));
-
-  const slots: Array<{ startTime: string; endTime: string; available: boolean }> = [];
-  let current = startMinutes;
-
-  while (current + slotDuration <= endMinutes) {
-    const slotStart = `${Math.floor(current / 60).toString().padStart(2, '0')}:${(current % 60).toString().padStart(2, '0')}`;
-    const slotEndMin = current + slotDuration;
-    const slotEnd = `${Math.floor(slotEndMin / 60).toString().padStart(2, '0')}:${(slotEndMin % 60).toString().padStart(2, '0')}`;
-
-    const isBooked = bookedSlots.some((booked) => {
-      const bsH = (booked.start as Date).getUTCHours();
-      const bsM = (booked.start as Date).getUTCMinutes();
-      const bs = `${bsH.toString().padStart(2, '0')}:${bsM.toString().padStart(2, '0')}`;
-      const beH = booked.end ? (booked.end as Date).getUTCHours() : bsH + 1;
-      const beM = booked.end ? (booked.end as Date).getUTCMinutes() : bsM;
-      const be = `${beH.toString().padStart(2, '0')}:${beM.toString().padStart(2, '0')}`;
-      return bs === slotStart || (bs < slotEnd && be > slotStart);
-    });
-
-    slots.push({ startTime: slotStart, endTime: slotEnd, available: !isBooked });
-    current += slotDuration;
-  }
-
-  return { date, doctorId, slots };
+  return getAvailableSlots(tenantId, doctorId, date);
 }
 
 /**
@@ -1296,12 +1266,35 @@ export async function bookAppointmentAsPatient(
     throw AppError.badRequest('Cannot book an appointment in the past');
   }
 
-  // Check leave
-  const leave = await prisma.doctorLeave.findFirst({
-    where: { doctorId: data.doctorId, leaveDate: appointmentDate },
+  // Check leave — only approved leaves block bookings. Supports multi-day ranges
+  // (leaveDate..endDate) and partial-day leaves (only overlap blocks the slot).
+  const approvedLeaves = await prisma.doctorLeave.findMany({
+    where: {
+      doctorId: data.doctorId,
+      status: 'approved',
+      leaveDate: { lte: appointmentDate },
+      OR: [
+        { endDate: null, leaveDate: appointmentDate },
+        { endDate: { gte: appointmentDate } },
+      ],
+    },
   });
-  if (leave && !leave.startTime && !leave.endTime) {
+  const fullDayLeave = approvedLeaves.find((l) => !l.startTime && !l.endTime);
+  if (fullDayLeave) {
     throw AppError.badRequest('Doctor is on leave on the selected date');
+  }
+  const slotStartMin = parseInt(data.startTime.slice(0, 2)) * 60 + parseInt(data.startTime.slice(3, 5));
+  const slotEndMin = parseInt(data.endTime.slice(0, 2)) * 60 + parseInt(data.endTime.slice(3, 5));
+  const partialLeaveOverlap = approvedLeaves.some((l) => {
+    if (!l.startTime || !l.endTime) return false;
+    const ls = l.startTime as Date;
+    const le = l.endTime as Date;
+    const lStart = ls.getUTCHours() * 60 + ls.getUTCMinutes();
+    const lEnd = le.getUTCHours() * 60 + le.getUTCMinutes();
+    return slotStartMin < lEnd && slotEndMin > lStart;
+  });
+  if (partialLeaveOverlap) {
+    throw AppError.badRequest('Doctor is on leave during the selected time');
   }
 
   // Check slot conflict

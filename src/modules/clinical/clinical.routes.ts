@@ -60,7 +60,11 @@ clinicalRoutes.patch('/admissions/:id/discharge', authenticate, requirePermissio
 clinicalRoutes.post('/transfers', authenticate, requirePermission('admissions', 'create'), validate(createTransferSchema), controller.createTransfer);
 clinicalRoutes.get('/transfers', authenticate, requirePermission('admissions', 'read'), validate(getTransfersQuerySchema), controller.getTransfers);
 clinicalRoutes.get('/transfers/:id', authenticate, requirePermission('admissions', 'read'), validate(transferIdParamSchema), controller.getTransferById);
-clinicalRoutes.patch('/transfers/:id/approve', authenticate, requirePermission('admissions', 'approve'), validate(approveTransferSchema), controller.approveTransfer);
+// Patient transfers are doctor-to-doctor / bed / ward handoffs against a Visit.
+// The receiving doctor (or nurse, for bed/ward moves) is the one who accepts —
+// gate on `visits:update` rather than `admissions:approve` so doctors can
+// approve handoffs addressed to them without needing admin-level rights.
+clinicalRoutes.patch('/transfers/:id/approve', authenticate, requirePermission('visits', 'update'), validate(approveTransferSchema), controller.approveTransfer);
 
 // --- Vitals ---
 clinicalRoutes.post('/vitals', authenticate, requirePermission('vitals', 'create'), validate(recordVitalsSchema), controller.recordVitals);
