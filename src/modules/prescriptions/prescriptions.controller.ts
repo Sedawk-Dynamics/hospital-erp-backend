@@ -298,3 +298,21 @@ export async function searchFormulary(
     next(err);
   }
 }
+
+export async function checkInteractions(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const result = await prescriptionsService.checkInteractions(tenantId, req.body);
+    sendResponse({
+      res,
+      message: 'Drug interaction check complete',
+      data: result,
+    });
+  } catch (err) {
+    next(err);
+  }
+}

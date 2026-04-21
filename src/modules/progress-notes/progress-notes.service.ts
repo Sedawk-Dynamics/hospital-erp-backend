@@ -11,6 +11,13 @@ import type {
   ListNursingNotesQuery,
   CreateProgressNoteTemplateInput,
   UpdateProgressNoteTemplateInput,
+  CreateWoundCareInput,
+  ListWoundCareQuery,
+  CreateIvLineInput,
+  ListIvLinesQuery,
+  RemoveIvLineInput,
+  CreateIntakeOutputInput,
+  ListIntakeOutputQuery,
 } from './progress-notes.validation';
 
 // ============================================================
@@ -707,4 +714,330 @@ export async function listUnlockedProgressNotes(
       ...x.note,
       unlockedUntil: x.unlockedUntil!.toISOString(),
     }));
+}
+
+// ============================================================
+// Structured nursing records — Wound Care / IV Line / Intake-Output
+// ============================================================
+
+/**
+ * Resolve the visitId bound to a given admission for this tenant.
+ * Nurses work in admission context; we transparently walk to the visit.
+ */
+async function resolveVisitFromAdmission(admissionId: string, tenantId: string) {
+  const admission = await prisma.admission.findFirst({
+    where: { id: admissionId, tenantId },
+    select: { visitId: true, patientId: true },
+  });
+  if (!admission) {
+    throw AppError.notFound('Admission not found');
+  }
+  return admission;
+}
+
+/**
+ * Validate patient ownership + resolve visitId. Accepts either explicit visitId
+ * or derives it from admissionId. Throws if tenant boundary is violated.
+ */
+async function resolveVisitIdForEntry(
+  tenantId: string,
+  data: { visitId?: string; admissionId?: string; patientId: string },
+) {
+  if (data.visitId) {
+    await verifyVisitTenant(data.visitId, tenantId);
+    return data.visitId;
+  }
+  if (data.admissionId) {
+    const adm = await resolveVisitFromAdmission(data.admissionId, tenantId);
+    if (adm.patientId !== data.patientId) {
+      throw AppError.badRequest('patientId does not match admission');
+    }
+    return adm.visitId;
+  }
+  throw AppError.badRequest('Either visitId or admissionId is required');
+}
+
+// ── Wound Care ────────────────────────────────────────────
+
+export async function createWoundCare(
+  tenantId: string,
+  userId: string,
+  data: CreateWoundCareInput,
+) {
+  const visitId = await resolveVisitIdForEntry(tenantId, data);
+
+  const record = await prisma.woundCareRecord.create({
+    data: {
+      visitId,
+      patientId: data.patientId,
+      nurseId: userId,
+      woundLocation: data.woundLocation,
+      woundType: data.woundType as any,
+      woundStage: data.woundStage as any,
+      lengthCm: data.lengthCm as any,
+      widthCm: data.widthCm as any,
+      depthCm: data.depthCm as any,
+      exudateType: data.exudateType as any,
+      exudateAmount: data.exudateAmount as any,
+      dressingApplied: data.dressingApplied,
+      treatmentNotes: data.treatmentNotes,
+      photoUrl: data.photoUrl,
+      assessedAt: data.assessedAt ? new Date(data.assessedAt) : new Date(),
+      nextAssessmentDue: data.nextAssessmentDue ? new Date(data.nextAssessmentDue) : null,
+      status: (data.status as any) ?? 'active',
+    },
+    include: {
+      patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
+      nurse: { select: { id: true, firstName: true, lastName: true } },
+    },
+  });
+
+  logger.info({ tenantId, recordId: record.id }, 'Wound care record created');
+  return record;
+}
+
+export async function listWoundCare(tenantId: string, query: ListWoundCareQuery) {
+  const { skip, take, page, limit } = getPaginationParams(query);
+
+  const where: any = { visit: { tenantId } };
+  if (query.patientId) where.patientId = query.patientId;
+  if (query.visitId) where.visitId = query.visitId;
+  if (query.status) where.status = query.status;
+
+  // admissionId → visitId lookup
+  if ((query as any).admissionId) {
+    const adm = await resolveVisitFromAdmission((query as any).admissionId, tenantId);
+    where.visitId = adm.visitId;
+  }
+
+  const [records, total] = await Promise.all([
+    prisma.woundCareRecord.findMany({
+      where,
+      skip,
+      take,
+      orderBy: { assessedAt: 'desc' },
+      include: {
+        patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
+        nurse: { select: { id: true, firstName: true, lastName: true } },
+      },
+    }),
+    prisma.woundCareRecord.count({ where }),
+  ]);
+
+  return { records, total, page, limit };
+}
+
+// ── IV Line ───────────────────────────────────────────────
+
+export async function createIvLine(
+  tenantId: string,
+  userId: string,
+  data: CreateIvLineInput,
+) {
+  const visitId = await resolveVisitIdForEntry(tenantId, data);
+
+  // Resolve admissionId (if caller passed visitId only, look it up for convenience)
+  let admissionId: string | null = data.admissionId ?? null;
+  if (!admissionId) {
+    const adm = await prisma.admission.findFirst({
+      where: { visitId, tenantId },
+      select: { id: true },
+    });
+    admissionId = adm?.id ?? null;
+  }
+
+  const record = await prisma.iVLineRecord.create({
+    data: {
+      visitId,
+      patientId: data.patientId,
+      admissionId,
+      lineType: data.lineType as any,
+      catheterGauge: data.catheterGauge,
+      insertionSite: data.insertionSite,
+      insertedAt: data.insertedAt ? new Date(data.insertedAt) : new Date(),
+      insertedBy: userId,
+      dressingChangeFrequencyHours: data.dressingChangeFrequencyHours ?? 72,
+      lastDressingChangeAt: data.lastDressingChangeAt ? new Date(data.lastDressingChangeAt) : null,
+      lastFlushedAt: data.lastFlushedAt ? new Date(data.lastFlushedAt) : null,
+      fluidType: data.fluidType,
+      flowRateMlPerHr: data.flowRateMlPerHr,
+      status: 'active',
+      complications: data.complications,
+      notes: data.notes,
+    },
+    include: {
+      patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
+      inserter: { select: { id: true, firstName: true, lastName: true } },
+    },
+  });
+
+  logger.info({ tenantId, recordId: record.id }, 'IV line record created');
+  return record;
+}
+
+export async function listIvLines(tenantId: string, query: ListIvLinesQuery) {
+  const { skip, take, page, limit } = getPaginationParams(query);
+
+  const where: any = { visit: { tenantId } };
+  if (query.patientId) where.patientId = query.patientId;
+  if (query.visitId) where.visitId = query.visitId;
+  if ((query as any).admissionId) where.admissionId = (query as any).admissionId;
+  if (query.status) where.status = query.status;
+
+  const [records, total] = await Promise.all([
+    prisma.iVLineRecord.findMany({
+      where,
+      skip,
+      take,
+      orderBy: { insertedAt: 'desc' },
+      include: {
+        patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
+        inserter: { select: { id: true, firstName: true, lastName: true } },
+        remover: { select: { id: true, firstName: true, lastName: true } },
+      },
+    }),
+    prisma.iVLineRecord.count({ where }),
+  ]);
+
+  return { records, total, page, limit };
+}
+
+export async function removeIvLine(
+  tenantId: string,
+  userId: string,
+  id: string,
+  data: RemoveIvLineInput,
+) {
+  const existing = await prisma.iVLineRecord.findFirst({
+    where: { id, visit: { tenantId } },
+    select: { id: true, status: true },
+  });
+  if (!existing) {
+    throw AppError.notFound('IV line record not found');
+  }
+  if (existing.status !== 'active') {
+    throw AppError.badRequest('IV line is not active');
+  }
+
+  const record = await prisma.iVLineRecord.update({
+    where: { id },
+    data: {
+      removedAt: data.removedAt ? new Date(data.removedAt) : new Date(),
+      removedBy: userId,
+      removalReason: data.removalReason as any,
+      status: (data.status as any) ?? 'removed',
+      notes: data.notes,
+    },
+    include: {
+      patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
+      inserter: { select: { id: true, firstName: true, lastName: true } },
+      remover: { select: { id: true, firstName: true, lastName: true } },
+    },
+  });
+
+  logger.info({ tenantId, recordId: record.id }, 'IV line removed');
+  return record;
+}
+
+// ── Intake / Output ───────────────────────────────────────
+
+export async function createIntakeOutput(
+  tenantId: string,
+  userId: string,
+  data: CreateIntakeOutputInput,
+) {
+  const visitId = await resolveVisitIdForEntry(tenantId, data);
+
+  // If ivLineId supplied, verify it belongs to the same tenant/visit
+  if (data.ivLineId) {
+    const iv = await prisma.iVLineRecord.findFirst({
+      where: { id: data.ivLineId, visit: { tenantId } },
+      select: { id: true, patientId: true },
+    });
+    if (!iv) throw AppError.badRequest('Invalid IV line reference');
+    if (iv.patientId !== data.patientId) {
+      throw AppError.badRequest('IV line does not belong to this patient');
+    }
+  }
+
+  const record = await prisma.intakeOutputRecord.create({
+    data: {
+      visitId,
+      patientId: data.patientId,
+      nurseId: userId,
+      recordDatetime: data.recordDatetime ? new Date(data.recordDatetime) : new Date(),
+      entryType: data.entryType as any,
+      category: data.category as any,
+      volumeMl: data.volumeMl,
+      fluidDescription: data.fluidDescription,
+      ivLineId: data.ivLineId,
+      notes: data.notes,
+    },
+    include: {
+      patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
+      nurse: { select: { id: true, firstName: true, lastName: true } },
+    },
+  });
+
+  logger.info({ tenantId, recordId: record.id }, 'Intake/output record created');
+  return record;
+}
+
+export async function listIntakeOutput(tenantId: string, query: ListIntakeOutputQuery) {
+  const { skip, take, page, limit } = getPaginationParams(query);
+
+  const where: any = { visit: { tenantId } };
+  if (query.patientId) where.patientId = query.patientId;
+  if (query.visitId) where.visitId = query.visitId;
+  if (query.entryType) where.entryType = query.entryType;
+  if (query.category) where.category = query.category;
+
+  if (query.fromDate || query.toDate) {
+    where.recordDatetime = {};
+    if (query.fromDate) where.recordDatetime.gte = new Date(query.fromDate);
+    if (query.toDate) where.recordDatetime.lte = new Date(query.toDate);
+  }
+
+  // admissionId → visitId lookup
+  if ((query as any).admissionId) {
+    const adm = await resolveVisitFromAdmission((query as any).admissionId, tenantId);
+    where.visitId = adm.visitId;
+  }
+
+  const [records, total] = await Promise.all([
+    prisma.intakeOutputRecord.findMany({
+      where,
+      skip,
+      take,
+      orderBy: { recordDatetime: 'desc' },
+      include: {
+        patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
+        nurse: { select: { id: true, firstName: true, lastName: true } },
+        ivLine: { select: { id: true, insertionSite: true, lineType: true } },
+      },
+    }),
+    prisma.intakeOutputRecord.count({ where }),
+  ]);
+
+  // Compute 24h intake/output totals + balance for the patient window in this result set.
+  // Summarises across ALL matching records (not just the current page).
+  const summary = await prisma.intakeOutputRecord.groupBy({
+    by: ['entryType'],
+    where,
+    _sum: { volumeMl: true },
+  });
+  const intakeTotal = summary.find((s) => s.entryType === 'intake')?._sum.volumeMl ?? 0;
+  const outputTotal = summary.find((s) => s.entryType === 'output')?._sum.volumeMl ?? 0;
+
+  return {
+    records,
+    total,
+    page,
+    limit,
+    summary: {
+      intakeMl: intakeTotal,
+      outputMl: outputTotal,
+      balanceMl: intakeTotal - outputTotal,
+    },
+  };
 }

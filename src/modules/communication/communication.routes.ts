@@ -15,6 +15,8 @@ import {
   getHandoversQuerySchema,
   handoverIdParamSchema,
   addHandoverNoteSchema,
+  completeHandoverSchema,
+  shiftSummaryQuerySchema,
   createTicketSchema,
   getTicketsQuerySchema,
   ticketIdParamSchema,
@@ -39,10 +41,13 @@ communicationRoutes.patch('/messages/:id/read', authenticate, requirePermission(
 communicationRoutes.delete('/messages/:id', authenticate, requirePermission('notifications', 'delete'), validate(messageIdParamSchema), controller.deleteMessage);
 
 // --- Shift Handover ---
+// Shift summary (/shift-summary) is registered above handovers/:id to avoid route-precedence issues.
+communicationRoutes.get('/shift-summary', authenticate, requirePermission('notifications', 'read'), validate(shiftSummaryQuerySchema), controller.getShiftSummary);
 communicationRoutes.post('/handovers', authenticate, requirePermission('notifications', 'create'), validate(createHandoverSchema), controller.createHandover);
 communicationRoutes.get('/handovers', authenticate, requirePermission('notifications', 'read'), validate(getHandoversQuerySchema), controller.getHandovers);
 communicationRoutes.get('/handovers/:id', authenticate, requirePermission('notifications', 'read'), validate(handoverIdParamSchema), controller.getHandoverById);
 communicationRoutes.patch('/handovers/:id/acknowledge', authenticate, requirePermission('notifications', 'update'), validate(handoverIdParamSchema), controller.acknowledgeHandover);
+communicationRoutes.patch('/handovers/:id/complete', authenticate, requirePermission('notifications', 'update'), validate(completeHandoverSchema), controller.completeHandover);
 communicationRoutes.post('/handovers/:id/notes', authenticate, requirePermission('notifications', 'create'), validate(addHandoverNoteSchema), controller.addHandoverNote);
 
 // --- Tickets ---

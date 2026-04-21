@@ -17,6 +17,7 @@ import {
   getAdministrationScheduleQuerySchema,
   allergyCheckQuerySchema,
   formularySearchQuerySchema,
+  checkInteractionsSchema,
 } from './prescriptions.validation';
 
 export const prescriptionRoutes = Router();
@@ -24,6 +25,7 @@ export const prescriptionRoutes = Router();
 // --- Allergy Check & Formulary Search (must be before /:id) ---
 prescriptionRoutes.get('/allergy-check', authenticate, requirePermission('prescriptions', 'read'), validate(allergyCheckQuerySchema), controller.checkAllergy);
 prescriptionRoutes.get('/formulary-search', authenticate, requirePermission('prescriptions', 'read'), validate(formularySearchQuerySchema), controller.searchFormulary);
+prescriptionRoutes.post('/check-interactions', authenticate, requirePermission('prescriptions', 'read'), validate(checkInteractionsSchema), controller.checkInteractions);
 
 // --- Drug History (auto-aggregated past + current meds per patient) ---
 prescriptionRoutes.get('/drug-history/:patientId', authenticate, requirePermission('prescriptions', 'read'), controller.getDrugHistory);

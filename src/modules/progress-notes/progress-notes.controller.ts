@@ -350,3 +350,162 @@ export async function deleteNursingNote(
     next(err);
   }
 }
+
+// ============================================================
+// Wound Care
+// ============================================================
+
+export async function createWoundCare(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const record = await progressNotesService.createWoundCare(tenantId, userId, req.body);
+    sendResponse({
+      res,
+      statusCode: 201,
+      message: 'Wound care record created successfully',
+      data: record,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getWoundCare(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const { records, total, page, limit } = await progressNotesService.listWoundCare(
+      tenantId,
+      req.query as any,
+    );
+    sendPaginatedResponse(res, records, total, page, limit, 'Wound care records retrieved successfully');
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ============================================================
+// IV Lines
+// ============================================================
+
+export async function createIvLine(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const record = await progressNotesService.createIvLine(tenantId, userId, req.body);
+    sendResponse({
+      res,
+      statusCode: 201,
+      message: 'IV line record created successfully',
+      data: record,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getIvLines(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const { records, total, page, limit } = await progressNotesService.listIvLines(
+      tenantId,
+      req.query as any,
+    );
+    sendPaginatedResponse(res, records, total, page, limit, 'IV line records retrieved successfully');
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function removeIvLine(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const record = await progressNotesService.removeIvLine(
+      tenantId,
+      userId,
+      req.params.id as string,
+      req.body,
+    );
+    sendResponse({
+      res,
+      message: 'IV line removed successfully',
+      data: record,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ============================================================
+// Intake / Output
+// ============================================================
+
+export async function createIntakeOutput(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const record = await progressNotesService.createIntakeOutput(tenantId, userId, req.body);
+    sendResponse({
+      res,
+      statusCode: 201,
+      message: 'Intake/output record created successfully',
+      data: record,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getIntakeOutput(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const { records, total, page, limit, summary } = await progressNotesService.listIntakeOutput(
+      tenantId,
+      req.query as any,
+    );
+    // Include intake/output summary totals alongside the records payload.
+    res.status(200).json({
+      success: true,
+      message: 'Intake/output records retrieved successfully',
+      data: records,
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+      summary,
+    });
+  } catch (err) {
+    next(err);
+  }
+}

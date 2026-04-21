@@ -26,6 +26,8 @@ import type {
   CreateEstimationInput,
   GetEstimationsQuery,
   UpdateEstimationInput,
+  GetClinicalOrdersQuery,
+  AcknowledgeClinicalOrderInput,
 } from './clinical.validation';
 
 // ==================== Visits ====================
@@ -1569,3 +1571,218 @@ export async function updateEstimation(tenantId: string, id: string, data: Updat
   logger.info({ tenantId, estimationId: id }, 'Estimation updated');
   return estimation;
 }
+
+// ============================================================
+// Clinical Orders — Unified nurse view (lab + imaging)
+// ============================================================
+
+/**
+ * Shape normalised across lab and imaging so the nurse UI can render
+ * them in a single table.
+ */
+export interface NurseClinicalOrder {
+  id: string;
+  orderType: 'lab' | 'imaging';
+  orderNumber: string;
+  status: string;
+  priority: string;
+  description: string;
+  createdAt: Date;
+  patientId: string;
+  patient: { id: string; firstName: string; lastName: string; mrn: string | null } | null;
+  doctor: { id: string; user: { firstName: string; lastName: string } | null } | null;
+  wardId: string | null;
+  ward: { id: string; name: string } | null;
+}
+
+/**
+ * Fetch pending (or filtered) doctor orders across lab + imaging.
+ * If `wardId` is provided we scope via the admission bound to the order's visit.
+ */
+export async function getClinicalOrders(tenantId: string, query: GetClinicalOrdersQuery) {
+  const status = query.status ?? 'pending';
+  const type = query.type ?? 'all';
+  const limit = query.limit ?? 100;
+
+  // Lab "pending" = status='ordered'; imaging "pending" = status='requested'.
+  const labWhere: any = { tenantId };
+  const imagingWhere: any = { tenantId };
+
+  if (status === 'pending') {
+    labWhere.status = 'ordered';
+    imagingWhere.status = 'requested';
+  } else if (status === 'completed') {
+    labWhere.status = 'completed';
+    imagingWhere.status = 'completed';
+  } else if (status === 'cancelled') {
+    labWhere.status = 'cancelled';
+    imagingWhere.status = 'cancelled';
+  }
+
+  // Ward filter resolves via admission.visitId === visitId
+  if (query.wardId) {
+    const admission = { some: { wardId: query.wardId, tenantId } };
+    labWhere.visit = { admission };
+    imagingWhere.visit = { admission };
+  }
+
+  const [labOrders, imagingOrders] = await Promise.all([
+    type === 'imaging'
+      ? Promise.resolve([])
+      : prisma.labOrder.findMany({
+          where: labWhere,
+          take: limit,
+          orderBy: { createdAt: 'desc' },
+          include: {
+            patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+            orderer: { select: { id: true, firstName: true, lastName: true } },
+            visit: {
+              select: {
+                id: true,
+                admission: {
+                  select: {
+                    wardId: true,
+                    ward: { select: { id: true, name: true } },
+                  },
+                },
+              },
+            },
+            labOrderItems: {
+              include: { test: { select: { testName: true } } },
+            },
+          },
+        }),
+    type === 'lab'
+      ? Promise.resolve([])
+      : prisma.imagingRequest.findMany({
+          where: imagingWhere,
+          take: limit,
+          orderBy: { createdAt: 'desc' },
+          include: {
+            patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+            orderer: { select: { id: true, firstName: true, lastName: true } },
+            visit: {
+              select: {
+                id: true,
+                admission: {
+                  select: {
+                    wardId: true,
+                    ward: { select: { id: true, name: true } },
+                  },
+                },
+              },
+            },
+          },
+        }),
+  ]);
+
+  const normalised: NurseClinicalOrder[] = [];
+
+  for (const o of labOrders as any[]) {
+    const testNames = (o.labOrderItems ?? [])
+      .map((i: any) => i.test?.testName)
+      .filter(Boolean)
+      .join(', ');
+    normalised.push({
+      id: o.id,
+      orderType: 'lab',
+      orderNumber: o.id.slice(0, 8).toUpperCase(),
+      status: o.status,
+      priority: o.urgency,
+      description: testNames || 'Lab order',
+      createdAt: o.createdAt,
+      patientId: o.patientId,
+      patient: o.patient,
+      doctor: o.orderer
+        ? { id: o.orderer.id, user: { firstName: o.orderer.firstName, lastName: o.orderer.lastName } }
+        : null,
+      wardId: o.visit?.admission?.wardId ?? null,
+      ward: o.visit?.admission?.ward ?? null,
+    });
+  }
+
+  for (const o of imagingOrders as any[]) {
+    normalised.push({
+      id: o.id,
+      orderType: 'imaging',
+      orderNumber: o.id.slice(0, 8).toUpperCase(),
+      status: o.status,
+      priority: o.urgency,
+      description: `${o.imagingType}${o.bodyPart ? ' — ' + o.bodyPart : ''}${o.clinicalIndication ? ' (' + o.clinicalIndication + ')' : ''}`,
+      createdAt: o.createdAt,
+      patientId: o.patientId,
+      patient: o.patient,
+      doctor: o.orderer
+        ? { id: o.orderer.id, user: { firstName: o.orderer.firstName, lastName: o.orderer.lastName } }
+        : null,
+      wardId: o.visit?.admission?.wardId ?? null,
+      ward: o.visit?.admission?.ward ?? null,
+    });
+  }
+
+  // Sort newest-first after merging.
+  normalised.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+  return normalised;
+}
+
+/**
+ * Record nurse acknowledgment of a doctor order as a nursing note.
+ * This gives us an audit trail without schema changes. The note is
+ * attached to the order's visit + patient and tagged via metadata.
+ */
+export async function acknowledgeClinicalOrder(
+  tenantId: string,
+  userId: string,
+  data: AcknowledgeClinicalOrderInput,
+) {
+  let patientId: string;
+  let visitId: string;
+  let description: string;
+
+  if (data.orderType === 'lab') {
+    const order = await prisma.labOrder.findFirst({
+      where: { id: data.orderId, tenantId },
+      select: { patientId: true, visitId: true, id: true },
+    });
+    if (!order) throw AppError.notFound('Lab order not found');
+    patientId = order.patientId;
+    visitId = order.visitId;
+    description = `Lab order ${order.id.slice(0, 8).toUpperCase()}`;
+  } else {
+    const order = await prisma.imagingRequest.findFirst({
+      where: { id: data.orderId, tenantId },
+      select: { patientId: true, visitId: true, id: true, imagingType: true },
+    });
+    if (!order) throw AppError.notFound('Imaging request not found');
+    patientId = order.patientId;
+    visitId = order.visitId;
+    description = `Imaging request (${order.imagingType})`;
+  }
+
+  const content = data.note?.trim()
+    ? `Acknowledged ${description}. ${data.note.trim()}`
+    : `Acknowledged ${description}.`;
+
+  const note = await prisma.nursingNote.create({
+    data: {
+      patientId,
+      visitId,
+      nurseId: userId,
+      noteType: 'observation',
+      content,
+      metadata: {
+        kind: 'order_acknowledgment',
+        orderType: data.orderType,
+        orderId: data.orderId,
+      },
+    },
+  });
+
+  logger.info(
+    { tenantId, orderType: data.orderType, orderId: data.orderId, noteId: note.id },
+    'Clinical order acknowledged by nurse',
+  );
+  return { noteId: note.id, orderType: data.orderType, orderId: data.orderId };
+}
+

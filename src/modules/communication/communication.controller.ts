@@ -110,6 +110,27 @@ export async function addHandoverNote(req: AuthenticatedRequest, res: Response, 
     sendResponse({ res, message: 'Handover note added', data });
   } catch (err) { next(err); }
 }
+export async function completeHandover(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.completeHandover(
+      req.user!.tenantId,
+      req.user!.userId,
+      req.params.id as string,
+      req.body,
+    );
+    sendResponse({ res, message: 'Handover marked complete', data });
+  } catch (err) { next(err); }
+}
+export async function getShiftSummary(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.getShiftSummary(
+      req.user!.tenantId,
+      req.user!.userId,
+      req.query as any,
+    );
+    sendResponse({ res, message: 'Shift summary generated', data });
+  } catch (err) { next(err); }
+}
 
 // Tickets
 export async function createTicket(req: AuthenticatedRequest, res: Response, next: NextFunction) {

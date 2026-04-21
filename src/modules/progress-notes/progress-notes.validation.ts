@@ -169,6 +169,177 @@ export const listUnlockedProgressNotesSchema = z.object({
   }),
 });
 
+// ============================================================
+// Wound Care Records
+// ============================================================
+
+const woundTypeEnum = z.enum([
+  'surgical',
+  'pressure_ulcer',
+  'laceration',
+  'burn',
+  'diabetic_ulcer',
+  'other',
+]);
+const woundStageEnum = z.enum(['stage_1', 'stage_2', 'stage_3', 'stage_4', 'unstageable']);
+const exudateTypeEnum = z.enum(['none', 'serous', 'sanguineous', 'purulent']);
+const exudateAmountEnum = z.enum(['none', 'scant', 'moderate', 'heavy']);
+const woundStatusEnum = z.enum(['active', 'healing', 'healed', 'worsening']);
+
+export const createWoundCareSchema = z.object({
+  body: z.object({
+    // One of visitId or admissionId must be supplied; visit resolved from admission otherwise.
+    visitId: z.string().uuid('Invalid visit ID').optional(),
+    admissionId: z.string().uuid('Invalid admission ID').optional(),
+    patientId: z.string().uuid('Invalid patient ID'),
+    woundLocation: z.string().min(1, 'Wound location is required').max(100),
+    woundType: woundTypeEnum.optional(),
+    woundStage: woundStageEnum.optional(),
+    lengthCm: z.number().positive().max(999.99).optional(),
+    widthCm: z.number().positive().max(999.99).optional(),
+    depthCm: z.number().positive().max(999.99).optional(),
+    exudateType: exudateTypeEnum.optional(),
+    exudateAmount: exudateAmountEnum.optional(),
+    dressingApplied: z.string().max(255).optional(),
+    treatmentNotes: z.string().max(10000).optional(),
+    photoUrl: z.string().url().optional(),
+    assessedAt: z.string().datetime().optional(),
+    nextAssessmentDue: z.string().datetime().optional(),
+    status: woundStatusEnum.optional(),
+  }).refine((d) => d.visitId || d.admissionId, {
+    message: 'Either visitId or admissionId is required',
+    path: ['visitId'],
+  }),
+});
+
+export const listWoundCareSchema = z.object({
+  query: paginationSchema.extend({
+    patientId: z.string().uuid().optional(),
+    admissionId: z.string().uuid().optional(),
+    visitId: z.string().uuid().optional(),
+    status: woundStatusEnum.optional(),
+  }),
+});
+
+// ============================================================
+// IV Line Records
+// ============================================================
+
+const ivLineTypeEnum = z.enum([
+  'peripheral',
+  'central_picc',
+  'central_subclavian',
+  'central_jugular',
+  'arterial',
+  'midline',
+]);
+const ivRemovalReasonEnum = z.enum([
+  'completed',
+  'infiltration',
+  'phlebitis',
+  'dislodged',
+  'infection',
+  'scheduled_change',
+]);
+const ivLineStatusEnum = z.enum(['active', 'removed', 'replaced']);
+
+export const createIvLineSchema = z.object({
+  body: z.object({
+    visitId: z.string().uuid('Invalid visit ID').optional(),
+    admissionId: z.string().uuid('Invalid admission ID').optional(),
+    patientId: z.string().uuid('Invalid patient ID'),
+    lineType: ivLineTypeEnum,
+    catheterGauge: z.string().max(10).optional(),
+    insertionSite: z.string().min(1, 'Insertion site is required').max(100),
+    insertedAt: z.string().datetime().optional(),
+    dressingChangeFrequencyHours: z.number().int().min(1).max(336).optional(),
+    lastDressingChangeAt: z.string().datetime().optional(),
+    lastFlushedAt: z.string().datetime().optional(),
+    fluidType: z.string().max(100).optional(),
+    flowRateMlPerHr: z.number().int().min(0).max(10000).optional(),
+    complications: z.string().max(10000).optional(),
+    notes: z.string().max(10000).optional(),
+  }).refine((d) => d.visitId || d.admissionId, {
+    message: 'Either visitId or admissionId is required',
+    path: ['visitId'],
+  }),
+});
+
+export const listIvLinesSchema = z.object({
+  query: paginationSchema.extend({
+    patientId: z.string().uuid().optional(),
+    admissionId: z.string().uuid().optional(),
+    visitId: z.string().uuid().optional(),
+    status: ivLineStatusEnum.optional(),
+  }),
+});
+
+export const removeIvLineSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid IV line ID'),
+  }),
+  body: z.object({
+    removedAt: z.string().datetime().optional(),
+    removalReason: ivRemovalReasonEnum,
+    status: z.enum(['removed', 'replaced']).default('removed'),
+    notes: z.string().max(10000).optional(),
+  }),
+});
+
+export const ivLineIdParamSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid IV line ID'),
+  }),
+});
+
+// ============================================================
+// Intake / Output Records
+// ============================================================
+
+const ioEntryTypeEnum = z.enum(['intake', 'output']);
+const ioCategoryEnum = z.enum([
+  'oral',
+  'iv_fluid',
+  'blood_product',
+  'tube_feed',
+  'urine',
+  'drain',
+  'vomit',
+  'stool',
+  'blood_loss',
+  'other',
+]);
+
+export const createIntakeOutputSchema = z.object({
+  body: z.object({
+    visitId: z.string().uuid('Invalid visit ID').optional(),
+    admissionId: z.string().uuid('Invalid admission ID').optional(),
+    patientId: z.string().uuid('Invalid patient ID'),
+    recordDatetime: z.string().datetime().optional(),
+    entryType: ioEntryTypeEnum,
+    category: ioCategoryEnum,
+    volumeMl: z.number().int().min(0).max(100000),
+    fluidDescription: z.string().max(255).optional(),
+    ivLineId: z.string().uuid('Invalid IV line ID').optional(),
+    notes: z.string().max(10000).optional(),
+  }).refine((d) => d.visitId || d.admissionId, {
+    message: 'Either visitId or admissionId is required',
+    path: ['visitId'],
+  }),
+});
+
+export const listIntakeOutputSchema = z.object({
+  query: paginationSchema.extend({
+    patientId: z.string().uuid().optional(),
+    admissionId: z.string().uuid().optional(),
+    visitId: z.string().uuid().optional(),
+    entryType: ioEntryTypeEnum.optional(),
+    category: ioCategoryEnum.optional(),
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
+  }),
+});
+
 // --- Exported Types ---
 
 export type CreateProgressNoteInput = z.infer<typeof createProgressNoteSchema>['body'];
@@ -183,3 +354,13 @@ export type UpdateProgressNoteTemplateInput = z.infer<typeof updateProgressNoteT
 export type CreateNursingNoteInput = z.infer<typeof createNursingNoteSchema>['body'];
 export type UpdateNursingNoteInput = z.infer<typeof updateNursingNoteSchema>['body'];
 export type ListNursingNotesQuery = z.infer<typeof listNursingNotesSchema>['query'];
+
+export type CreateWoundCareInput = z.infer<typeof createWoundCareSchema>['body'];
+export type ListWoundCareQuery = z.infer<typeof listWoundCareSchema>['query'];
+
+export type CreateIvLineInput = z.infer<typeof createIvLineSchema>['body'];
+export type ListIvLinesQuery = z.infer<typeof listIvLinesSchema>['query'];
+export type RemoveIvLineInput = z.infer<typeof removeIvLineSchema>['body'];
+
+export type CreateIntakeOutputInput = z.infer<typeof createIntakeOutputSchema>['body'];
+export type ListIntakeOutputQuery = z.infer<typeof listIntakeOutputSchema>['query'];

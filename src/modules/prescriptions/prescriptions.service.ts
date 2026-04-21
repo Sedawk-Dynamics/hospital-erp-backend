@@ -14,7 +14,14 @@ import type {
   GetAdministrationScheduleQuery,
   AllergyCheckQuery,
   FormularySearchQuery,
+  CheckInteractionsInput,
 } from './prescriptions.validation';
+import {
+  INTERACTION_PAIRS,
+  drugMatchesAny,
+  normalizeDrug,
+  type InteractionSeverity,
+} from './drug-interactions.data';
 
 // ============================================================
 // Prescriptions
@@ -115,6 +122,18 @@ export async function getPrescriptions(tenantId: string, query: GetPrescriptions
   if (query.patientId) where.patientId = query.patientId;
   if (query.doctorId) where.doctorId = query.doctorId;
   if (query.visitId) where.visitId = query.visitId;
+  // Resolve admissionId → visitId (Admission is 1:1 with Visit via admission.visitId)
+  if ((query as any).admissionId) {
+    const admission = await prisma.admission.findFirst({
+      where: { id: (query as any).admissionId, tenantId },
+      select: { visitId: true },
+    });
+    if (!admission) {
+      // No matching admission → empty result (prevents cross-tenant leakage).
+      return { prescriptions: [], total: 0, page, limit };
+    }
+    where.visitId = admission.visitId;
+  }
   if (query.status) where.status = query.status;
   if (query.prescriptionType) where.prescriptionType = query.prescriptionType;
 
@@ -763,4 +782,110 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
   });
 
   return drugs;
+}
+
+// ============================================================
+// Drug-Drug Interaction Check
+// ============================================================
+
+export interface InteractionPair {
+  drugs: [string, string];
+  severity: InteractionSeverity;
+  description: string;
+}
+
+export interface DrugContraindicationEntry {
+  drugName: string;
+  matchedFormularyName?: string;
+  genericName?: string | null;
+  contraindications?: string | null;
+}
+
+/**
+ * For a given list of drug names:
+ *  - Cross-checks every pair against the curated interaction database
+ *  - Pulls formulary `contraindications` text per drug (when the tenant has it)
+ */
+export async function checkInteractions(
+  tenantId: string,
+  data: CheckInteractionsInput,
+) {
+  // Deduplicate drug names (case-insensitive)
+  const seen = new Set<string>();
+  const drugs = data.drugs
+    .map((d) => d.trim())
+    .filter((d) => {
+      const k = d.toLowerCase();
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+
+  // ── Cross-check all pairs against the curated database ──
+  const pairs: InteractionPair[] = [];
+  for (let i = 0; i < drugs.length; i++) {
+    for (let j = i + 1; j < drugs.length; j++) {
+      const left = drugs[i];
+      const right = drugs[j];
+      for (const def of INTERACTION_PAIRS) {
+        const leftHitsA = drugMatchesAny(left, def.a);
+        const rightHitsB = drugMatchesAny(right, def.b);
+        const leftHitsB = drugMatchesAny(left, def.b);
+        const rightHitsA = drugMatchesAny(right, def.a);
+        if ((leftHitsA && rightHitsB) || (leftHitsB && rightHitsA)) {
+          pairs.push({
+            drugs: [left, right],
+            severity: def.severity,
+            description: def.description,
+          });
+          break; // Only report the first (most relevant) matching pair per drug-pair
+        }
+      }
+    }
+  }
+
+  // ── Pull formulary contraindications (tenant-scoped) ────
+  // Match by normalised drugName or genericName substring on the formulary.
+  const formularyRows = await prisma.drugFormulary.findMany({
+    where: { tenantId, isActive: true },
+    select: {
+      id: true,
+      drugName: true,
+      genericName: true,
+      contraindications: true,
+    },
+  });
+
+  const perDrug: DrugContraindicationEntry[] = drugs.map((name) => {
+    const normName = normalizeDrug(name);
+    const hit = formularyRows.find((f) => {
+      const dn = normalizeDrug(f.drugName);
+      const gn = f.genericName ? normalizeDrug(f.genericName) : '';
+      return (
+        normName.includes(dn) ||
+        dn.includes(normName) ||
+        (gn && (normName.includes(gn) || gn.includes(normName)))
+      );
+    });
+    if (!hit) {
+      return { drugName: name };
+    }
+    return {
+      drugName: name,
+      matchedFormularyName: hit.drugName,
+      genericName: hit.genericName,
+      contraindications: hit.contraindications,
+    };
+  });
+
+  return {
+    pairs,
+    perDrug,
+    // Quick summary — highest severity seen across all pairs
+    highestSeverity: pairs.length
+      ? (['contraindicated', 'major', 'moderate', 'minor'] as InteractionSeverity[]).find((s) =>
+          pairs.some((p) => p.severity === s),
+        ) ?? null
+      : null,
+  };
 }

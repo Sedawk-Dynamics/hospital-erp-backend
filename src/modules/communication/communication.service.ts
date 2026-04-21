@@ -12,6 +12,8 @@ import type {
   CreateHandoverInput,
   GetHandoversQuery,
   AddHandoverNoteInput,
+  CompleteHandoverInput,
+  ShiftSummaryQuery,
   CreateTicketInput,
   GetTicketsQuery,
 } from './communication.validation';
@@ -786,4 +788,242 @@ export async function getTicketById(tenantId: string, id: string) {
   }
 
   return ticket;
+}
+
+// ============================================================
+// Shift Handover — complete / auto-summary
+// ============================================================
+
+/**
+ * Mark a handover complete. In the 3-state lifecycle (draft → submitted →
+ * acknowledged) completion is the acknowledged terminal state. Unlike
+ * `acknowledgeHandover`, this endpoint is idempotent and accepts an optional
+ * completion note that is appended to the existing content as a free-form
+ * closing remark.
+ */
+export async function completeHandover(
+  tenantId: string,
+  userId: string,
+  id: string,
+  data: CompleteHandoverInput | undefined,
+) {
+  const handover = await prisma.shiftHandoverNote.findFirst({
+    where: { id, tenantId },
+  });
+
+  if (!handover) {
+    throw AppError.notFound('Handover note not found');
+  }
+
+  const note = data?.completionNote?.trim();
+  const appendedContent = note
+    ? `${handover.content}\n\n[Completed ${formatDateTimeIST(new Date())} by current user] ${note}`
+    : handover.content;
+
+  // Idempotent: if already acknowledged, just allow appending a completion note.
+  const updated = await prisma.shiftHandoverNote.update({
+    where: { id },
+    data: {
+      isAcknowledged: true,
+      acknowledgedAt: handover.acknowledgedAt ?? new Date(),
+      toNurseId: handover.toNurseId ?? userId,
+      content: appendedContent,
+    },
+    include: {
+      fromNurse: { select: { id: true, firstName: true, lastName: true } },
+      toNurse: { select: { id: true, firstName: true, lastName: true } },
+      ward: { select: { id: true, name: true } },
+    },
+  });
+
+  logger.info(
+    { tenantId, handoverId: id, completedBy: userId, hasNote: !!note },
+    'Handover note marked complete',
+  );
+  return updated;
+}
+
+/**
+ * Compute a summary of activity for a shift window — counts of vitals
+ * recorded, medications administered, nursing notes written, admissions
+ * touched, and outstanding handovers. Used by the handover UI to auto-
+ * compile the "shift summary" card that the outgoing nurse sees.
+ */
+export async function getShiftSummary(
+  tenantId: string,
+  currentUserId: string,
+  query: ShiftSummaryQuery,
+) {
+  // Resolve the user we're summarising for — defaults to the caller.
+  const userId = query.userId ?? currentUserId;
+
+  // Resolve shift window.
+  const baseDate = query.shiftDate ? new Date(query.shiftDate) : new Date();
+  if (isNaN(baseDate.getTime())) {
+    throw AppError.badRequest('Invalid shiftDate');
+  }
+
+  // Detect shift type from time if not supplied.
+  const shiftType = query.shiftType ?? detectShiftTypeFromDate(baseDate);
+
+  // Build shift start/end in the LOCAL clock of the request's `baseDate` day.
+  // Morning: 06:00–14:00 | Afternoon: 14:00–22:00 | Night: 22:00–06:00 (crosses midnight)
+  const y = baseDate.getFullYear();
+  const m = baseDate.getMonth();
+  const d = baseDate.getDate();
+
+  let from: Date;
+  let to: Date;
+  if (shiftType === 'morning') {
+    from = new Date(y, m, d, 6, 0, 0);
+    to = new Date(y, m, d, 14, 0, 0);
+  } else if (shiftType === 'afternoon') {
+    from = new Date(y, m, d, 14, 0, 0);
+    to = new Date(y, m, d, 22, 0, 0);
+  } else {
+    // Night: 22:00 on baseDate → 06:00 on next day.
+    from = new Date(y, m, d, 22, 0, 0);
+    to = new Date(y, m, d + 1, 6, 0, 0);
+  }
+
+  // ── Run all counts in parallel (tenant-scoped) ─────────
+  const [
+    vitalsCount,
+    medsAdministeredCount,
+    nursingNotesCount,
+    woundCareCount,
+    ivLinesCount,
+    intakeOutputCount,
+    handoversInCount,
+    handoversOutCount,
+    patientsSeen,
+  ] = await Promise.all([
+    // Vitals: scoped by visit.tenantId + recordedBy
+    prisma.vital.count({
+      where: {
+        visit: { tenantId },
+        recordedBy: userId,
+        recordedAt: { gte: from, lt: to },
+      },
+    }),
+    // Medication administrations: scoped via prescriptionItem → prescription.tenantId
+    prisma.medicationAdministration.count({
+      where: {
+        administeredBy: userId,
+        status: 'given',
+        administeredAt: { gte: from, lt: to },
+        prescriptionItem: { prescription: { tenantId } },
+      },
+    }),
+    // Nursing notes by this nurse
+    prisma.nursingNote.count({
+      where: {
+        nurseId: userId,
+        createdAt: { gte: from, lt: to },
+        visit: { tenantId },
+      },
+    }),
+    // Wound care records
+    prisma.woundCareRecord.count({
+      where: {
+        nurseId: userId,
+        createdAt: { gte: from, lt: to },
+        visit: { tenantId },
+      },
+    }),
+    // IV lines inserted
+    prisma.iVLineRecord.count({
+      where: {
+        insertedBy: userId,
+        insertedAt: { gte: from, lt: to },
+        visit: { tenantId },
+      },
+    }),
+    // Intake/output entries
+    prisma.intakeOutputRecord.count({
+      where: {
+        nurseId: userId,
+        recordDatetime: { gte: from, lt: to },
+        visit: { tenantId },
+      },
+    }),
+    // Handovers received (incoming to this nurse) in window
+    prisma.shiftHandoverNote.count({
+      where: { tenantId, toNurseId: userId, createdAt: { gte: from, lt: to } },
+    }),
+    // Handovers submitted (outgoing by this nurse) in window
+    prisma.shiftHandoverNote.count({
+      where: { tenantId, fromNurseId: userId, createdAt: { gte: from, lt: to } },
+    }),
+    // Distinct patients where this nurse recorded vitals / notes / meds during window
+    countDistinctPatients(tenantId, userId, from, to),
+  ]);
+
+  return {
+    shiftType,
+    shiftDate: baseDate.toISOString(),
+    windowFrom: from.toISOString(),
+    windowTo: to.toISOString(),
+    userId,
+    counts: {
+      patientsSeen,
+      vitalsRecorded: vitalsCount,
+      medicationsAdministered: medsAdministeredCount,
+      nursingNotes: nursingNotesCount,
+      woundCareRecords: woundCareCount,
+      ivLinesInserted: ivLinesCount,
+      intakeOutputEntries: intakeOutputCount,
+      handoversReceived: handoversInCount,
+      handoversSubmitted: handoversOutCount,
+    },
+  };
+}
+
+function detectShiftTypeFromDate(d: Date): 'morning' | 'afternoon' | 'night' {
+  const h = d.getHours();
+  if (h >= 6 && h < 14) return 'morning';
+  if (h >= 14 && h < 22) return 'afternoon';
+  return 'night';
+}
+
+async function countDistinctPatients(
+  tenantId: string,
+  userId: string,
+  from: Date,
+  to: Date,
+): Promise<number> {
+  // Aggregate distinct patient IDs across vitals, notes, and administrations.
+  const [vitals, notes, admins] = await Promise.all([
+    prisma.vital.findMany({
+      where: {
+        recordedBy: userId,
+        recordedAt: { gte: from, lt: to },
+        visit: { tenantId },
+      },
+      select: { patientId: true },
+      distinct: ['patientId'],
+    }),
+    prisma.nursingNote.findMany({
+      where: {
+        nurseId: userId,
+        createdAt: { gte: from, lt: to },
+        visit: { tenantId },
+      },
+      select: { patientId: true },
+      distinct: ['patientId'],
+    }),
+    prisma.medicationAdministration.findMany({
+      where: {
+        administeredBy: userId,
+        administeredAt: { gte: from, lt: to },
+        prescriptionItem: { prescription: { tenantId } },
+      },
+      select: { patientId: true },
+      distinct: ['patientId'],
+    }),
+  ]);
+
+  const set = new Set<string>();
+  for (const row of [...vitals, ...notes, ...admins]) set.add(row.patientId);
+  return set.size;
 }

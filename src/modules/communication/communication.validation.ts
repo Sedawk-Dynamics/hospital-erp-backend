@@ -135,6 +135,26 @@ export const addHandoverNoteSchema = z.object({
   }),
 });
 
+export const completeHandoverSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid handover ID'),
+  }),
+  body: z
+    .object({
+      completionNote: z.string().max(5000).optional(),
+    })
+    .optional(),
+});
+
+export const shiftSummaryQuerySchema = z.object({
+  query: z.object({
+    shiftDate: z.string().optional(),
+    shiftType: z.enum(['morning', 'afternoon', 'night']).optional(),
+    userId: z.string().uuid().optional(),
+    wardId: z.string().uuid().optional(),
+  }),
+});
+
 // ============================================================
 // Tickets
 // ============================================================
@@ -192,6 +212,8 @@ export type ConversationQuery = z.infer<typeof conversationUserParamSchema>['que
 export type CreateHandoverInput = z.infer<typeof createHandoverSchema>['body'];
 export type GetHandoversQuery = z.infer<typeof getHandoversQuerySchema>['query'];
 export type AddHandoverNoteInput = z.infer<typeof addHandoverNoteSchema>['body'];
+export type CompleteHandoverInput = z.infer<typeof completeHandoverSchema>['body'];
+export type ShiftSummaryQuery = z.infer<typeof shiftSummaryQuerySchema>['query'];
 
 export type CreateTicketInput = z.infer<typeof createTicketSchema>['body'];
 export type GetTicketsQuery = z.infer<typeof getTicketsQuerySchema>['query'];

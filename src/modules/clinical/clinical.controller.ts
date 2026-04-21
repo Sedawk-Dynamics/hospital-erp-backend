@@ -637,3 +637,42 @@ export async function updateEstimation(
     next(err);
   }
 }
+
+// ==================== Clinical Orders (Nurse View) ====================
+
+export async function getClinicalOrders(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await clinicalService.getClinicalOrders(tenantId, req.query as any);
+    sendResponse({
+      res,
+      message: 'Clinical orders retrieved',
+      data,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function acknowledgeClinicalOrder(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const data = await clinicalService.acknowledgeClinicalOrder(tenantId, userId, req.body);
+    sendResponse({
+      res,
+      message: 'Order acknowledged',
+      data,
+    });
+  } catch (err) {
+    next(err);
+  }
+}

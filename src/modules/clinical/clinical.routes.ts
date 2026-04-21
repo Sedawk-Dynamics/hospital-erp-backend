@@ -37,6 +37,8 @@ import {
   getEstimationsQuerySchema,
   estimationIdParamSchema,
   updateEstimationSchema,
+  getClinicalOrdersQuerySchema,
+  acknowledgeClinicalOrderSchema,
 } from './clinical.validation';
 import * as controller from './clinical.controller';
 
@@ -89,6 +91,10 @@ clinicalRoutes.post('/reservations', authenticate, requirePermission('admissions
 clinicalRoutes.get('/reservations', authenticate, requirePermission('admissions', 'read'), validate(getReservationsQuerySchema), controller.getReservations);
 clinicalRoutes.get('/reservations/:id', authenticate, requirePermission('admissions', 'read'), validate(reservationIdParamSchema), controller.getReservationById);
 clinicalRoutes.put('/reservations/:id', authenticate, requirePermission('admissions', 'update'), validate(updateReservationSchema), controller.updateReservation);
+
+// --- Clinical Orders (Nurse unified view) ---
+clinicalRoutes.get('/orders', authenticate, requirePermission('prescriptions', 'read'), validate(getClinicalOrdersQuerySchema), controller.getClinicalOrders);
+clinicalRoutes.post('/orders/acknowledge', authenticate, requirePermission('nursing_notes', 'create'), validate(acknowledgeClinicalOrderSchema), controller.acknowledgeClinicalOrder);
 
 // --- Estimations ---
 clinicalRoutes.post('/estimations', authenticate, requirePermission('admissions', 'create'), validate(createEstimationSchema), controller.createEstimation);

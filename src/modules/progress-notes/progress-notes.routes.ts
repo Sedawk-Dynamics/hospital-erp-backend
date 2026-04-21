@@ -18,9 +18,29 @@ import {
   templateIdParamSchema,
   unlockProgressNoteSchema,
   listUnlockedProgressNotesSchema,
+  createWoundCareSchema,
+  listWoundCareSchema,
+  createIvLineSchema,
+  listIvLinesSchema,
+  removeIvLineSchema,
+  createIntakeOutputSchema,
+  listIntakeOutputSchema,
 } from './progress-notes.validation';
 
 export const progressNotesRoutes = Router();
+
+// --- Wound Care (must be before /:id to avoid conflict) ---
+progressNotesRoutes.post('/wound-care', authenticate, requirePermission('nursing_notes', 'create'), validate(createWoundCareSchema), controller.createWoundCare);
+progressNotesRoutes.get('/wound-care', authenticate, requirePermission('nursing_notes', 'read'), validate(listWoundCareSchema), controller.getWoundCare);
+
+// --- IV Lines (must be before /:id to avoid conflict) ---
+progressNotesRoutes.post('/iv-lines', authenticate, requirePermission('nursing_notes', 'create'), validate(createIvLineSchema), controller.createIvLine);
+progressNotesRoutes.get('/iv-lines', authenticate, requirePermission('nursing_notes', 'read'), validate(listIvLinesSchema), controller.getIvLines);
+progressNotesRoutes.patch('/iv-lines/:id/remove', authenticate, requirePermission('nursing_notes', 'update'), validate(removeIvLineSchema), controller.removeIvLine);
+
+// --- Intake / Output (must be before /:id to avoid conflict) ---
+progressNotesRoutes.post('/intake-output', authenticate, requirePermission('nursing_notes', 'create'), validate(createIntakeOutputSchema), controller.createIntakeOutput);
+progressNotesRoutes.get('/intake-output', authenticate, requirePermission('nursing_notes', 'read'), validate(listIntakeOutputSchema), controller.getIntakeOutput);
 
 // --- Nursing Notes (must be before /:id to avoid conflict) ---
 progressNotesRoutes.post('/nursing', authenticate, requirePermission('nursing_notes', 'create'), validate(createNursingNoteSchema), controller.createNursingNote);

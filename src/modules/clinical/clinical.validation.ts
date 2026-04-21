@@ -424,3 +424,25 @@ export type UpdateReservationInput = z.infer<typeof updateReservationSchema>['bo
 export type CreateEstimationInput = z.infer<typeof createEstimationSchema>['body'];
 export type GetEstimationsQuery = z.infer<typeof getEstimationsQuerySchema>['query'];
 export type UpdateEstimationInput = z.infer<typeof updateEstimationSchema>['body'];
+
+// ==================== Clinical Orders (unified nurse view) ====================
+
+export const getClinicalOrdersQuerySchema = z.object({
+  query: z.object({
+    wardId: z.string().uuid().optional(),
+    status: z.enum(['pending', 'completed', 'cancelled', 'all']).optional(),
+    type: z.enum(['lab', 'imaging', 'all']).optional(),
+    limit: z.coerce.number().int().min(1).max(200).optional(),
+  }),
+});
+
+export const acknowledgeClinicalOrderSchema = z.object({
+  body: z.object({
+    orderType: z.enum(['lab', 'imaging']),
+    orderId: z.string().uuid('Invalid order ID'),
+    note: z.string().max(2000).optional(),
+  }),
+});
+
+export type GetClinicalOrdersQuery = z.infer<typeof getClinicalOrdersQuerySchema>['query'];
+export type AcknowledgeClinicalOrderInput = z.infer<typeof acknowledgeClinicalOrderSchema>['body'];

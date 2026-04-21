@@ -66,6 +66,7 @@ export const getPrescriptionsQuerySchema = z.object({
     patientId: z.string().uuid().optional(),
     doctorId: z.string().uuid().optional(),
     visitId: z.string().uuid().optional(),
+    admissionId: z.string().uuid().optional(),
     status: z.enum(['active', 'dispensed', 'partially_dispensed', 'cancelled']).optional(),
     prescriptionType: z.enum(['op', 'ip']).optional(),
     fromDate: z.string().optional(),
@@ -174,6 +175,15 @@ export const formularySearchQuerySchema = z.object({
   }),
 });
 
+export const checkInteractionsSchema = z.object({
+  body: z.object({
+    drugs: z
+      .array(z.string().min(1).max(255))
+      .min(1, 'At least one drug name is required')
+      .max(50, 'Too many drugs supplied'),
+  }),
+});
+
 // --- Inferred Types ---
 
 export type CreatePrescriptionInput = z.infer<typeof createPrescriptionSchema>['body'];
@@ -186,3 +196,4 @@ export type GetAdministrationRecordsQuery = z.infer<typeof getAdministrationReco
 export type GetAdministrationScheduleQuery = z.infer<typeof getAdministrationScheduleQuerySchema>['query'];
 export type AllergyCheckQuery = z.infer<typeof allergyCheckQuerySchema>['query'];
 export type FormularySearchQuery = z.infer<typeof formularySearchQuerySchema>['query'];
+export type CheckInteractionsInput = z.infer<typeof checkInteractionsSchema>['body'];
