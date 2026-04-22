@@ -10,20 +10,19 @@ COPY package.json package-lock.json* ./
 RUN npm ci
 COPY prisma ./prisma
 RUN npx prisma generate
-COPY tsconfig.json ./
+COPY tsconfig.json tsconfig.seed.json ./
 COPY src ./src
-RUN npm run build
+RUN npm run build && npx tsc -p tsconfig.seed.json
 
 FROM base AS runner
 ENV NODE_ENV=production
-RUN addgroup --system --gid 1001 nodejs && \
-    adduser --system --uid 1001 expressjs
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
+COPY --from=build /app/dist-seed ./dist-seed
 COPY --from=build /app/node_modules/.prisma ./node_modules/.prisma
 COPY prisma ./prisma
-RUN mkdir -p /app/uploads && chown -R expressjs:nodejs /app/uploads
+COPY package.json ./
+RUN mkdir -p /app/uploads
 VOLUME ["/app/uploads"]
-USER expressjs
 EXPOSE 4000
-CMD ["node", "dist/server.js"]
+CMD ["sh", "-c", "./node_modules/.bin/prisma migrate deploy && node dist/server.js"]

@@ -1,9 +1,9 @@
 node_modules/
 dist/
+dist-seed/
 .env
 .env.local
 .env.production
 *.log
 coverage/
 .nyc_output/
-prisma/migrations/
