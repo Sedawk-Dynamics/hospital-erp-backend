@@ -23,6 +23,10 @@ const app = express();
 // '1' trusts the first hop, which is the correct value for a single LB/proxy.
 app.set('trust proxy', env.NODE_ENV === 'production' ? 1 : 'loopback');
 
+// CORS must run before helmet / rate limiter so preflights always get headers.
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
+
 // ---------------------------------------------------------------
 // Security headers
 // ---------------------------------------------------------------
@@ -50,7 +54,6 @@ app.use(
         : false,
   }),
 );
-app.use(cors(corsOptions));
 
 // ---------------------------------------------------------------
 // Global per-IP rate limit (DDoS / scraping guard)
