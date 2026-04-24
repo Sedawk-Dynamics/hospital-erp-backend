@@ -35,6 +35,22 @@ export const createPrescriptionSchema = z.object({
   }),
 });
 
+// Reusable item schema — mirrors addPrescriptionItemSchema's body so the
+// update endpoint can accept a full replacement list when the caller wants.
+const prescriptionItemReplaceSchema = z.object({
+  drugId: z.string().uuid('Invalid drug ID').optional(),
+  drugName: z.string().min(1).max(255),
+  dosage: z.string().min(1).max(100),
+  frequency: z.string().min(1).max(100),
+  duration: z.string().max(100).optional(),
+  route: z
+    .enum(['oral', 'iv', 'im', 'topical', 'sublingual', 'inhalation', 'other'])
+    .default('oral'),
+  instructions: z.string().max(1000).optional(),
+  quantity: z.number().int().positive().optional(),
+  isPrn: z.boolean().default(false),
+});
+
 export const updatePrescriptionSchema = z.object({
   body: z.object({
     status: z.enum(['active', 'dispensed', 'partially_dispensed', 'cancelled']).optional(),
@@ -44,6 +60,11 @@ export const updatePrescriptionSchema = z.object({
       .refine((val) => !isNaN(Date.parse(val)), { message: 'Invalid follow-up date' })
       .optional()
       .nullable(),
+    // Optional full items replacement. When supplied, the service wipes
+    // existing prescriptionItems and replaces them with this array inside
+    // a single transaction — avoids needing `prescriptions:delete` on the
+    // caller. Omitted = items untouched.
+    items: z.array(prescriptionItemReplaceSchema).max(50).optional(),
   }),
   params: z.object({
     id: z.string().uuid('Invalid prescription ID'),

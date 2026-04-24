@@ -257,23 +257,53 @@ export async function updatePrescription(
     updateData.followUpDate = data.followUpDate ? new Date(data.followUpDate) : null;
   }
 
-  const updated = await prisma.prescription.update({
-    where: { id },
-    data: updateData,
-    include: {
-      patient: {
-        select: { id: true, mrn: true, firstName: true, lastName: true },
-      },
-      doctor: {
-        include: {
-          user: { select: { firstName: true, lastName: true } },
+  // If the caller supplied a full `items` array, wipe + recreate them in
+  // the same transaction as the parent update. This lets callers replace
+  // the prescription contents with just `prescriptions:update` — no
+  // `prescriptions:delete` permission required.
+  const replaceItems = data.items !== undefined;
+  const updated = await prisma.$transaction(async (tx) => {
+    if (replaceItems) {
+      await tx.prescriptionItem.deleteMany({ where: { prescriptionId: id } });
+      if (data.items && data.items.length > 0) {
+        await tx.prescriptionItem.createMany({
+          data: data.items.map((it) => ({
+            prescriptionId: id,
+            drugId: it.drugId ?? null,
+            drugName: it.drugName,
+            dosage: it.dosage,
+            frequency: it.frequency,
+            duration: it.duration ?? null,
+            route: it.route as any,
+            instructions: it.instructions ?? null,
+            quantity: it.quantity ?? null,
+            isPrn: it.isPrn ?? false,
+          })),
+        });
+      }
+    }
+
+    return tx.prescription.update({
+      where: { id },
+      data: updateData,
+      include: {
+        patient: {
+          select: { id: true, mrn: true, firstName: true, lastName: true },
         },
+        doctor: {
+          include: {
+            user: { select: { firstName: true, lastName: true } },
+          },
+        },
+        prescriptionItems: true,
       },
-      prescriptionItems: true,
-    },
+    });
   });
 
-  logger.info({ tenantId, prescriptionId: id, status: data.status }, 'Prescription updated');
+  logger.info(
+    { tenantId, prescriptionId: id, status: data.status, replacedItems: replaceItems },
+    'Prescription updated',
+  );
   return updated;
 }
 

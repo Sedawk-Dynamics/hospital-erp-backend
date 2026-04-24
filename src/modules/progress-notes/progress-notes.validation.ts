@@ -18,18 +18,43 @@ const customFieldSchema = z.object({
   value: z.string().max(5000).optional().default(''),
 });
 
+// SOAP fields accept a record of string→any; the frontend SOAP
+// form enforces detailed shape, server stores as JSON verbatim.
+const soapSchema = z.record(z.string(), z.any());
+
+const dischargeSectionEnum = z.enum([
+  'diagnosis',
+  'hospital_course',
+  'procedure',
+  'medication',
+  'follow_up',
+  'advice',
+  'general',
+]);
+
+const pinInputSchema = z.object({
+  dischargeSection: dischargeSectionEnum,
+  content: z.string().min(1).max(10000),
+});
+
 export const createProgressNoteSchema = z.object({
   body: z.object({
     visitId: z.string().uuid('Invalid visit ID'),
+    admissionId: z.string().uuid('Invalid admission ID').optional().nullable(),
     patientId: z.string().uuid('Invalid patient ID'),
     noteType: progressNoteTypeEnum.optional(),
     content: z.string().min(1, 'Content is required').max(10000),
     impressions: z.string().max(10000).optional().nullable(),
     discussions: z.string().max(10000).optional().nullable(),
     conclusions: z.string().max(10000).optional().nullable(),
+    subjective: soapSchema.optional().nullable(),
+    objective: soapSchema.optional().nullable(),
+    assessment: soapSchema.optional().nullable(),
+    plan: soapSchema.optional().nullable(),
     customFields: z.array(customFieldSchema).max(50).optional(),
     weightKgAtEntry: z.number().positive().max(999.99).optional().nullable(),
     pinToDischargeSummary: z.boolean().default(false),
+    pins: z.array(pinInputSchema).max(20).optional(),
   }),
 });
 
@@ -40,9 +65,17 @@ export const updateProgressNoteSchema = z.object({
     impressions: z.string().max(10000).optional().nullable(),
     discussions: z.string().max(10000).optional().nullable(),
     conclusions: z.string().max(10000).optional().nullable(),
+    subjective: soapSchema.optional().nullable(),
+    objective: soapSchema.optional().nullable(),
+    assessment: soapSchema.optional().nullable(),
+    plan: soapSchema.optional().nullable(),
     customFields: z.array(customFieldSchema).max(50).optional(),
     weightKgAtEntry: z.number().positive().max(999.99).optional().nullable(),
     pinToDischargeSummary: z.boolean().optional(),
+    pins: z.array(pinInputSchema).max(20).optional(),
+    // Reason for the amendment. Required by service when note is signed/locked
+    // or was previously unlocked; always stored on each ProgressNoteAmendment row.
+    amendmentReason: z.string().min(1).max(2000).optional(),
   }),
   params: z.object({
     id: z.string().uuid('Invalid progress note ID'),
@@ -52,6 +85,7 @@ export const updateProgressNoteSchema = z.object({
 export const listProgressNotesSchema = z.object({
   query: paginationSchema.extend({
     visitId: z.string().uuid('Invalid visit ID').optional(),
+    admissionId: z.string().uuid('Invalid admission ID').optional(),
     patientId: z.string().uuid('Invalid patient ID').optional(),
     noteType: progressNoteTypeEnum.optional(),
     status: z.enum(['active', 'finalized', 'archived']).optional(),
@@ -364,3 +398,104 @@ export type RemoveIvLineInput = z.infer<typeof removeIvLineSchema>['body'];
 
 export type CreateIntakeOutputInput = z.infer<typeof createIntakeOutputSchema>['body'];
 export type ListIntakeOutputQuery = z.infer<typeof listIntakeOutputSchema>['query'];
+
+// ============================================================
+// Amendments (audit trail)
+// ============================================================
+
+export const listAmendmentsSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid progress note ID'),
+  }),
+});
+
+// ============================================================
+// Physical Observation Catalog
+// ============================================================
+
+const physicalObservationSystemEnum = z.enum([
+  'general',
+  'cardiovascular',
+  'respiratory',
+  'gastrointestinal',
+  'neurological',
+  'musculoskeletal',
+  'skin',
+  'ent',
+  'eye',
+  'genitourinary',
+  'psychiatric',
+  'other',
+]);
+
+export const listPhysicalObservationsSchema = z.object({
+  query: z.object({
+    system: physicalObservationSystemEnum.optional(),
+    search: z.string().max(200).optional(),
+    includeInactive: z
+      .union([z.boolean(), z.string()])
+      .transform((v) => v === true || v === 'true')
+      .optional(),
+  }),
+});
+
+export const createPhysicalObservationSchema = z.object({
+  body: z.object({
+    system: physicalObservationSystemEnum,
+    name: z.string().min(1).max(200),
+    description: z.string().max(2000).optional().nullable(),
+  }),
+});
+
+export const updatePhysicalObservationSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid catalog ID'),
+  }),
+  body: z.object({
+    system: physicalObservationSystemEnum.optional(),
+    name: z.string().min(1).max(200).optional(),
+    description: z.string().max(2000).optional().nullable(),
+    isActive: z.boolean().optional(),
+  }),
+});
+
+export const physicalObservationIdParamSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid catalog ID'),
+  }),
+});
+
+export type ListPhysicalObservationsQuery = z.infer<typeof listPhysicalObservationsSchema>['query'];
+export type CreatePhysicalObservationInput = z.infer<typeof createPhysicalObservationSchema>['body'];
+export type UpdatePhysicalObservationInput = z.infer<typeof updatePhysicalObservationSchema>['body'];
+
+// ============================================================
+// AI Smart Suggestions
+// ============================================================
+
+export const smartSuggestionsSchema = z.object({
+  body: z.object({
+    chiefComplaints: z.string().max(5000).optional(),
+    presentIllness: z.string().max(5000).optional(),
+    vitalsSummary: z.string().max(2000).optional(),
+    physicalObservations: z
+      .array(
+        z.object({
+          value: z.string().max(500),
+          system: z.string().max(50).optional(),
+        }),
+      )
+      .max(50)
+      .optional(),
+    investigations: z.string().max(5000).optional(),
+    diagnosis: z.string().max(2000).optional(),
+    certainty: z.enum(['provisional', 'confirmed']).optional(),
+    medications: z.string().max(5000).optional(),
+    advice: z.string().max(5000).optional(),
+    patientAge: z.number().int().min(0).max(150).nullable().optional(),
+    patientSex: z.string().max(20).nullable().optional(),
+    knownAllergies: z.array(z.string().max(200)).max(50).optional(),
+  }),
+});
+
+export type SmartSuggestionsInput = z.infer<typeof smartSuggestionsSchema>['body'];

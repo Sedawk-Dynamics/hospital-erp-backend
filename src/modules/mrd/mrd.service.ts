@@ -141,6 +141,13 @@ interface GenerateOptions {
   refresh?: boolean;
 }
 
+// Join a list of nullable section blocks with a blank line between them;
+// returns null when everything is empty.
+function mergeSections(parts: Array<string | null | undefined>): string | null {
+  const cleaned = parts.filter((p): p is string => !!p && p.trim().length > 0);
+  return cleaned.length > 0 ? cleaned.join('\n\n') : null;
+}
+
 async function buildSummaryFields(tenantId: string, admissionId: string) {
   const admission = await prisma.admission.findFirst({
     where: { id: admissionId, tenantId },
@@ -175,11 +182,14 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
   const visitId = admission.visitId;
   const patientId = admission.patientId;
 
-  const [diagnoses, pinnedNotes, labResults, prescriptions] = await Promise.all([
+  const [diagnoses, pinnedNotes, sectionPins, labResults, prescriptions] = await Promise.all([
     prisma.diagnosis.findMany({
       where: { visitId },
       orderBy: { diagnosedAt: 'asc' },
     }),
+    // Legacy whole-note pins (pinToDischargeSummary=true). Kept for
+    // backward compatibility with notes written before the per-section
+    // pin model; these feed `proceduresSummary` as before.
     prisma.progressNote.findMany({
       where: {
         visitId,
@@ -187,6 +197,29 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
         status: { in: ['active', 'finalized'] },
       },
       orderBy: { createdAt: 'asc' },
+    }),
+    // New per-section pins via ProgressNotePin. Each pin carries
+    // explicit {dischargeSection, content}; we route the content into
+    // the matching DischargeSummary column below.
+    prisma.progressNotePin.findMany({
+      where: {
+        note: {
+          visitId,
+          status: { in: ['active', 'finalized'] },
+        },
+      },
+      orderBy: { createdAt: 'asc' },
+      include: {
+        note: {
+          select: {
+            id: true,
+            createdAt: true,
+            doctor: {
+              select: { user: { select: { firstName: true, lastName: true } } },
+            },
+          },
+        },
+      },
     }),
     prisma.labResult.findMany({
       where: { labOrder: { visitId, tenantId } },
@@ -213,6 +246,27 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
     }),
   ]);
 
+  // Group section pins by discharge section — O(n) single pass.
+  const pinBuckets: Record<string, Array<{ content: string; createdAt: Date; doctor: string }>> =
+    {};
+  for (const p of sectionPins) {
+    const bucket = pinBuckets[p.dischargeSection] ?? (pinBuckets[p.dischargeSection] = []);
+    const doctor = p.note?.doctor?.user
+      ? `Dr. ${p.note.doctor.user.firstName}${p.note.doctor.user.lastName ? ' ' + p.note.doctor.user.lastName : ''}`
+      : 'Attending';
+    bucket.push({ content: p.content, createdAt: p.createdAt, doctor });
+  }
+  const renderBucket = (section: string): string | null => {
+    const b = pinBuckets[section];
+    if (!b || b.length === 0) return null;
+    return b
+      .map((x) => {
+        const when = x.createdAt.toLocaleDateString('en-IN');
+        return `- [${when} · ${x.doctor}] ${x.content}`;
+      })
+      .join('\n');
+  };
+
   // ── Header ──
   const p = admission.patient;
   const age = p.dateOfBirth
@@ -231,15 +285,20 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
   ].filter(Boolean);
   const headerSummary = headerLines.join('\n');
 
-  // ── Diagnoses ──
-  const diagnosesSummary = diagnoses.length > 0
+  // ── Diagnoses ── (source-derived + pinned section rows)
+  const diagnosesBase = diagnoses.length > 0
     ? diagnoses
         .map((d) => `- [${d.diagnosisType}] ${d.diagnosisName}${d.icdCode ? ` (${d.icdCode})` : ''}`)
         .join('\n')
     : null;
+  const diagnosisPins = renderBucket('diagnosis');
+  const diagnosesSummary = mergeSections([diagnosesBase, diagnosisPins]);
 
-  // ── Procedures / pinned notes: extract impressions, discussions, conclusions, customFields ──
-  const proceduresSummary = pinnedNotes.length > 0
+  // ── Hospital course & procedures ──
+  // Legacy whole-note pins + new "procedure" and "hospital_course" section
+  // pins all roll up into proceduresSummary, with labelled sub-sections so
+  // the doctor can tell them apart when reviewing.
+  const legacyPinBlock = pinnedNotes.length > 0
     ? pinnedNotes
         .map((n) => {
           const parts: string[] = [];
@@ -258,6 +317,10 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
         })
         .join('\n')
     : null;
+  const procedurePins = renderBucket('procedure');
+  const hospitalCoursePins = renderBucket('hospital_course');
+  const hospitalCourseBlock = hospitalCoursePins ? `Hospital course:\n${hospitalCoursePins}` : null;
+  const proceduresSummary = mergeSections([legacyPinBlock, procedurePins, hospitalCourseBlock]);
 
   // ── All lab results (full) ──
   const labResultsSummary = labResults.length > 0
@@ -281,8 +344,8 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
         .join('\n')
     : null;
 
-  // ── Meds ──
-  const medicationReconciliation = prescriptions.length > 0
+  // ── Meds ── (source-derived prescriptions + "medication" section pins)
+  const medsBase = prescriptions.length > 0
     ? prescriptions
         .flatMap((p) =>
           p.prescriptionItems.map(
@@ -292,17 +355,33 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
         )
         .join('\n')
     : null;
+  const medicationPins = renderBucket('medication');
+  const medicationReconciliation = mergeSections([medsBase, medicationPins]);
+
+  // ── Advice → dischargeInstructions ──
+  const dischargeInstructions = renderBucket('advice');
+
+  // ── Follow-up → followUpInstructions ──
+  const followUpInstructions = renderBucket('follow_up');
+
+  // ── General section pins → headerSummary suffix ──
+  const generalPins = renderBucket('general');
+  const headerSummaryWithGeneral = generalPins
+    ? `${headerSummary}\n\n${generalPins}`
+    : headerSummary;
 
   return {
     admission,
     visitId,
     patientId,
-    headerSummary,
+    headerSummary: headerSummaryWithGeneral,
     diagnosesSummary,
     proceduresSummary,
     labResultsSummary,
     keyLabsSummary,
     medicationReconciliation,
+    dischargeInstructions,
+    followUpInstructions,
   };
 }
 
@@ -326,18 +405,30 @@ export async function generateDischargeSummary(
   const built = await buildSummaryFields(tenantId, admissionId);
 
   if (existing) {
+    // Source-derived columns (diagnoses, procedures, meds, labs, header)
+    // are always rebuilt on refresh. Manual-edit columns (instructions /
+    // follow-up) are preserved unless the user left them empty — that's
+    // the "edit in discharge summary shouldn't affect progress notes"
+    // contract from the spec.
+    const updateData: any = {
+      admissionDate: built.admission.admissionDate,
+      dischargeDate: built.admission.dischargeDate,
+      headerSummary: built.headerSummary,
+      diagnosesSummary: built.diagnosesSummary,
+      proceduresSummary: built.proceduresSummary,
+      labResultsSummary: built.labResultsSummary,
+      keyLabsSummary: built.keyLabsSummary,
+      medicationReconciliation: built.medicationReconciliation,
+    };
+    if (!existing.dischargeInstructions || existing.dischargeInstructions.trim() === '') {
+      updateData.dischargeInstructions = built.dischargeInstructions;
+    }
+    if (!existing.followUpInstructions || existing.followUpInstructions.trim() === '') {
+      updateData.followUpInstructions = built.followUpInstructions;
+    }
     const updated = await prisma.dischargeSummary.update({
       where: { id: existing.id },
-      data: {
-        admissionDate: built.admission.admissionDate,
-        dischargeDate: built.admission.dischargeDate,
-        headerSummary: built.headerSummary,
-        diagnosesSummary: built.diagnosesSummary,
-        proceduresSummary: built.proceduresSummary,
-        labResultsSummary: built.labResultsSummary,
-        keyLabsSummary: built.keyLabsSummary,
-        medicationReconciliation: built.medicationReconciliation,
-      },
+      data: updateData,
       include: dischargeSummaryInclude,
     });
     logger.info({ tenantId, dischargeSummaryId: updated.id, admissionId }, 'Discharge summary refreshed');
@@ -358,6 +449,8 @@ export async function generateDischargeSummary(
       labResultsSummary: built.labResultsSummary,
       keyLabsSummary: built.keyLabsSummary,
       medicationReconciliation: built.medicationReconciliation,
+      dischargeInstructions: built.dischargeInstructions,
+      followUpInstructions: built.followUpInstructions,
       status: 'draft',
     },
     include: dischargeSummaryInclude,

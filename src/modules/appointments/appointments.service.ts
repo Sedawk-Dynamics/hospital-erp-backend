@@ -59,6 +59,7 @@ export async function getConsultationFormData(tenantId: string, id: string) {
           progressNotes: {
             orderBy: { createdAt: 'desc' },
             take: 1,
+            include: { pins: true },
           },
         },
       },
@@ -93,11 +94,41 @@ export async function getConsultationFormData(tenantId: string, id: string) {
     reason = `Appointment status '${appointment.status}' is not editable`;
   }
 
-  // Assemble prefill data shaped like the frontend ConsultationFormData
+  // Assemble prefill data shaped like the frontend ConsultationFormData.
+  //
+  // Source-of-truth priority for each field is:
+  //   1. Dedicated table (visit / vital / diagnosis / prescription item) — most authoritative
+  //   2. Progress note's structured SOAP JSON (subjective/objective/assessment/plan)
+  //   3. Progress note's content markdown (parsed best-effort as a last resort)
+  //
+  // The third path catches notes saved when the Prisma client was out of
+  // sync (the SOAP JSON columns may be null) or imported from an older
+  // version of this module. Without it, editors see empty fields even
+  // though the doctor typed the values.
+  const note = visit?.progressNotes[0] as any;
+  const objective = note?.objective ?? {};
+  const plan = note?.plan ?? {};
+  const subjective = note?.subjective ?? {};
+  const parsedContent = parseProgressNoteContent(note?.content);
+
+  // Prefer structured JSON; fall back to parsed content; fall back to empty.
+  const pick = <T>(...values: Array<T | null | undefined>): T | '' => {
+    for (const v of values) {
+      if (v !== null && v !== undefined && (typeof v !== 'string' || v.trim() !== '')) {
+        return v;
+      }
+    }
+    return '' as any;
+  };
+
   const prefill = visit
     ? {
         visitId: visit.id,
-        chiefComplaint: visit.chiefComplaint || '',
+        chiefComplaint: pick<string>(
+          subjective.chiefComplaints,
+          visit.chiefComplaint,
+          parsedContent.chiefComplaint,
+        ),
         vitals: visit.vitals[0]
           ? {
               temperature: toNum(visit.vitals[0].temperature),
@@ -116,31 +147,199 @@ export async function getConsultationFormData(tenantId: string, id: string) {
           diagnosisName: d.diagnosisName,
           diagnosisType: d.diagnosisType,
         })),
-        medicines: (visit.prescriptions[0]?.prescriptionItems ?? []).map((it) => ({
-          drugId: it.drugId || undefined,
-          drugName: it.drugName,
-          dosage: it.dosage || '',
-          frequency: it.frequency || '',
-          duration: it.duration || '',
-          route: it.route,
-          instructions: it.instructions || '',
-          isPrn: it.isPrn,
-          quantity: it.quantity ?? undefined,
-        })),
+        medicines: (visit.prescriptions[0]?.prescriptionItems ?? []).map((it) => {
+          // The save flow encodes frequency + timing as "1-0-1 - After Meal"
+          // and duration as "5 days". Decompose them here so the form fields
+          // (frequency select / timing select / durationValue / durationUnit)
+          // round-trip correctly. Also mirror `dosage` into the newer `dose`
+          // field the UI binds to.
+          const { frequency, timing, isPrn } = splitFrequency(it.frequency);
+          const { durationValue, durationUnit } = splitDuration(it.duration);
+          return {
+            drugId: it.drugId || undefined,
+            drugName: it.drugName,
+            // New UI field + legacy alias
+            dose: it.dosage || '',
+            dosage: it.dosage || '',
+            frequency,
+            timing,
+            durationValue,
+            durationUnit,
+            // Legacy `duration` kept for any consumer still reading it.
+            duration: it.duration || '',
+            route: it.route || 'oral',
+            instructions: it.instructions || '',
+            isPrn: isPrn || it.isPrn,
+            quantity: it.quantity ?? undefined,
+          };
+        }),
         prescriptionId: visit.prescriptions[0]?.id,
-        progressNoteId: visit.progressNotes[0]?.id,
-        impressions: (visit.progressNotes[0] as any)?.impressions ?? '',
-        discussions: (visit.progressNotes[0] as any)?.discussions ?? '',
-        conclusions: (visit.progressNotes[0] as any)?.conclusions ?? '',
-        customFields: (visit.progressNotes[0] as any)?.customFields ?? [],
-        pinToDischargeSummary: visit.progressNotes[0]?.pinToDischargeSummary ?? false,
+        progressNoteId: note?.id,
+
+        // Rehydrated SOAP extras — JSON > parsed content > empty
+        generalExamination: pick<string>(
+          objective.generalExamination,
+          parsedContent.generalExamination,
+        ),
+        systemicExamination: pick<string>(
+          objective.systemicExamination,
+          parsedContent.systemicExamination,
+        ),
+        physicalObservations: Array.isArray(objective.physicalObservations)
+          ? objective.physicalObservations
+          : parsedContent.physicalObservations,
+        impression: pick<string>(note?.impressions, parsedContent.impression),
+        advice: pick<string>(plan.advice, parsedContent.advice),
+        followUpNotes: pick<string>(plan.followUpNotes, parsedContent.followUpNotes),
+        referralNotes: pick<string>(plan.referralNotes, parsedContent.referralNotes),
+        pins: (note?.pins ?? []).map((p: any) => ({
+          dischargeSection: p.dischargeSection,
+          content: p.content,
+        })),
+
+        // Legacy / backward-compat
+        impressions: note?.impressions ?? '',
+        discussions: note?.discussions ?? '',
+        conclusions: note?.conclusions ?? '',
+        customFields: note?.customFields ?? [],
+        pinToDischargeSummary: note?.pinToDischargeSummary ?? false,
         followUpDate: visit.prescriptions[0]?.followUpDate
           ? new Date(visit.prescriptions[0].followUpDate).toISOString().split('T')[0]
-          : '',
+          : plan.followUpDate ?? '',
       }
     : null;
 
   return { canEdit, reason, prefill, appointmentStatus: appointment.status };
+}
+
+// Inverse of frontend encodeFrequency() — given a stored string like
+// "1-0-1 - After Meal", "As Needed (SOS)", or "Stat", recover the
+// frequency code, timing label, and isPrn flag that drive the edit form.
+function splitFrequency(raw: string | null | undefined): {
+  frequency: string;
+  timing: string;
+  isPrn: boolean;
+} {
+  if (!raw || typeof raw !== 'string') {
+    return { frequency: '', timing: '', isPrn: false };
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) return { frequency: '', timing: '', isPrn: false };
+  if (/^as needed/i.test(trimmed) || /\bsos\b/i.test(trimmed)) {
+    return { frequency: 'SOS', timing: '', isPrn: true };
+  }
+  if (/^stat$/i.test(trimmed)) {
+    return { frequency: 'Stat', timing: '', isPrn: false };
+  }
+  const parts = trimmed.split(/\s*-\s*/);
+  // "1-0-1" splits to ["1","0","1"] — that's the code itself, no timing.
+  if (parts.length === 3 && parts.every((p) => /^\d/.test(p))) {
+    return { frequency: parts.join('-'), timing: '', isPrn: false };
+  }
+  // "1-0-1 - After Meal" splits to ["1","0","1","After Meal"] under \s*-\s*
+  if (parts.length >= 4 && parts.slice(0, 3).every((p) => /^\d/.test(p))) {
+    return {
+      frequency: parts.slice(0, 3).join('-'),
+      timing: parts.slice(3).join(' - '),
+      isPrn: false,
+    };
+  }
+  // Fallback: split on " - " literal — handles non-numeric timing labels.
+  const dashIdx = trimmed.indexOf(' - ');
+  if (dashIdx !== -1) {
+    return {
+      frequency: trimmed.slice(0, dashIdx).trim(),
+      timing: trimmed.slice(dashIdx + 3).trim(),
+      isPrn: false,
+    };
+  }
+  return { frequency: trimmed, timing: '', isPrn: false };
+}
+
+// Inverse of frontend encodeDuration() — given "5 days" / "2 weeks" /
+// "1 months", recover the separate value + unit the UI binds to.
+function splitDuration(raw: string | null | undefined): {
+  durationValue: string;
+  durationUnit: 'days' | 'weeks' | 'months';
+} {
+  if (!raw || typeof raw !== 'string') {
+    return { durationValue: '', durationUnit: 'days' };
+  }
+  const m = raw.trim().match(/^(\d+(?:\.\d+)?)\s*(day|days|week|weeks|month|months)$/i);
+  if (!m) return { durationValue: '', durationUnit: 'days' };
+  const unit = m[2].toLowerCase();
+  const normalised: 'days' | 'weeks' | 'months' = unit.startsWith('week')
+    ? 'weeks'
+    : unit.startsWith('month')
+      ? 'months'
+      : 'days';
+  return { durationValue: m[1], durationUnit: normalised };
+}
+
+// Parse fields back out of the markdown `content` column that
+// use-consultation-completion.ts's buildProgressNoteContent writes on save.
+// Used as a fallback when the structured SOAP JSON is missing. The regex
+// matches section headers of the form "**Heading:**" until the next
+// heading or end-of-string.
+function parseProgressNoteContent(content: string | null | undefined): {
+  chiefComplaint: string;
+  generalExamination: string;
+  systemicExamination: string;
+  physicalObservations: Array<{ source: 'free_text'; value: string }>;
+  advice: string;
+  followUpNotes: string;
+  referralNotes: string;
+  impression: string;
+} {
+  const empty = {
+    chiefComplaint: '',
+    generalExamination: '',
+    systemicExamination: '',
+    physicalObservations: [] as Array<{ source: 'free_text'; value: string }>,
+    advice: '',
+    followUpNotes: '',
+    referralNotes: '',
+    impression: '',
+  };
+  if (!content || typeof content !== 'string') return empty;
+
+  const extract = (heading: string): string => {
+    // Captures everything from "**Heading:**\n" up to the next "**...:**" or EOS.
+    const escaped = heading.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+    const re = new RegExp(
+      `\\*\\*${escaped}:\\*\\*\\s*([\\s\\S]*?)(?=\\n\\*\\*[^\\n]+:\\*\\*|$)`,
+      'i',
+    );
+    const m = content.match(re);
+    return (m?.[1] ?? '').trim();
+  };
+
+  const physRaw = extract('Physical Observations');
+  const physicalObservations = physRaw
+    ? physRaw
+        .split(/\n/)
+        .map((line) => line.replace(/^[-*]\s*/, '').trim())
+        .filter((line) => line.length > 0)
+        .map((value) => ({ source: 'free_text' as const, value }))
+    : [];
+
+  const followUp = extract('Follow-up');
+  // Follow-up is typically formatted as "After N days — YYYY/MM/DD — notes"
+  // — pull just the trailing notes segment when present.
+  const followUpNotes = followUp.includes(' — ')
+    ? followUp.split(' — ').slice(-1)[0] || ''
+    : followUp;
+
+  return {
+    chiefComplaint: extract('Chief Complaint') || extract('Chief Complaints'),
+    generalExamination: extract('General Examination'),
+    systemicExamination: extract('Systemic Examination'),
+    physicalObservations,
+    advice: extract('Advice'),
+    followUpNotes,
+    referralNotes: extract('Referral'),
+    impression: extract('Impression'),
+  };
 }
 
 function toNum(v: any): number | undefined {

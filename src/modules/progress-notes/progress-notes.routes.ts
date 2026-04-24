@@ -9,6 +9,7 @@ import {
   progressNoteIdParamSchema,
   updateProgressNoteSchema,
   signProgressNoteSchema,
+  listAmendmentsSchema,
   createNursingNoteSchema,
   listNursingNotesSchema,
   nursingNoteIdParamSchema,
@@ -25,6 +26,11 @@ import {
   removeIvLineSchema,
   createIntakeOutputSchema,
   listIntakeOutputSchema,
+  listPhysicalObservationsSchema,
+  createPhysicalObservationSchema,
+  updatePhysicalObservationSchema,
+  physicalObservationIdParamSchema,
+  smartSuggestionsSchema,
 } from './progress-notes.validation';
 
 export const progressNotesRoutes = Router();
@@ -58,6 +64,15 @@ progressNotesRoutes.delete('/templates/:id', authenticate, requirePermission('pr
 // --- Unlocked Notes (must be before /:id to avoid conflict) ---
 progressNotesRoutes.get('/unlocked', authenticate, requirePermission('progress_notes', 'read'), validate(listUnlockedProgressNotesSchema), controller.listUnlockedProgressNotes);
 
+// --- AI Smart Suggestions (must be before /:id to avoid conflict) ---
+progressNotesRoutes.post('/ai/suggest', authenticate, requirePermission('progress_notes', 'read'), validate(smartSuggestionsSchema), controller.smartSuggestions);
+
+// --- Physical Observation Catalog (must be before /:id to avoid conflict) ---
+progressNotesRoutes.get('/physical-observations', authenticate, requirePermission('progress_notes', 'read'), validate(listPhysicalObservationsSchema), controller.listPhysicalObservations);
+progressNotesRoutes.post('/physical-observations', authenticate, requirePermission('progress_notes', 'create'), validate(createPhysicalObservationSchema), controller.createPhysicalObservation);
+progressNotesRoutes.put('/physical-observations/:id', authenticate, requirePermission('progress_notes', 'update'), validate(updatePhysicalObservationSchema), controller.updatePhysicalObservation);
+progressNotesRoutes.delete('/physical-observations/:id', authenticate, requirePermission('progress_notes', 'delete'), validate(physicalObservationIdParamSchema), controller.deletePhysicalObservation);
+
 // --- Progress Notes ---
 progressNotesRoutes.post('/', authenticate, requirePermission('progress_notes', 'create'), validate(createProgressNoteSchema), controller.createProgressNote);
 progressNotesRoutes.get('/', authenticate, requirePermission('progress_notes', 'read'), validate(listProgressNotesSchema), controller.getProgressNotes);
@@ -67,3 +82,4 @@ progressNotesRoutes.delete('/:id', authenticate, requirePermission('progress_not
 progressNotesRoutes.patch('/:id/sign', authenticate, requirePermission('progress_notes', 'approve'), validate(signProgressNoteSchema), controller.signProgressNote);
 progressNotesRoutes.post('/:id/unlock', authenticate, requirePermission('progress_notes', 'update'), validate(unlockProgressNoteSchema), controller.unlockProgressNote);
 progressNotesRoutes.post('/:id/relock', authenticate, requirePermission('progress_notes', 'update'), validate(progressNoteIdParamSchema), controller.relockProgressNote);
+progressNotesRoutes.get('/:id/amendments', authenticate, requirePermission('progress_notes', 'read'), validate(listAmendmentsSchema), controller.listProgressNoteAmendments);

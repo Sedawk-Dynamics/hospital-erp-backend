@@ -293,6 +293,31 @@ enum ProgressNoteStatus {
   archived  @map("archived")
 }
 
+enum DischargeSection {
+  diagnosis       @map("diagnosis")
+  hospital_course @map("hospital_course")
+  procedure       @map("procedure")
+  medication      @map("medication")
+  follow_up       @map("follow_up")
+  advice          @map("advice")
+  general         @map("general")
+}
+
+enum PhysicalObservationSystem {
+  general          @map("general")
+  cardiovascular   @map("cardiovascular")
+  respiratory      @map("respiratory")
+  gastrointestinal @map("gastrointestinal")
+  neurological     @map("neurological")
+  musculoskeletal  @map("musculoskeletal")
+  skin             @map("skin")
+  ent              @map("ent")
+  eye              @map("eye")
+  genitourinary    @map("genitourinary")
+  psychiatric      @map("psychiatric")
+  other            @map("other")
+}
+
 enum NursingNoteType {
   observation   @map("observation")
   wound_care    @map("wound_care")
@@ -962,6 +987,7 @@ model Tenant {
   abhaSyncLogs          AbhaSyncLog[]
   doctorProfiles        DoctorProfile[]
   progressNoteTemplates ProgressNoteTemplate[]
+  physicalObservationCatalog PhysicalObservationCatalog[]
   appointments          Appointment[]
   queueTokens           QueueToken[]
   visits                Visit[]
@@ -1161,6 +1187,8 @@ model User {
   vitalsRecorded                Vital[]
   diagnosesRecorded             Diagnosis[]
   nursingNotes                  NursingNote[]
+  progressNotesSigned           ProgressNote[]              @relation("ProgressNoteSigner")
+  progressNoteAmendments        ProgressNoteAmendment[]     @relation("ProgressNoteAmendmentEditor")
   ivLinesInserted               IVLineRecord[]              @relation("IVInserter")
   ivLinesRemoved                IVLineRecord[]              @relation("IVRemover")
   intakeOutputRecords           IntakeOutputRecord[]
@@ -1994,6 +2022,7 @@ model Admission {
   dischargeSummary DischargeSummary?
   ivLineRecords    IVLineRecord[]
   nursingNotes     NursingNote[]
+  progressNotes    ProgressNote[]
   bills            Bill[]
   formSubmissions  FormSubmission[]  @relation("FormSubmissionAdmission")
 
@@ -2140,6 +2169,7 @@ model Diagnosis {
 model ProgressNote {
   id                    String             @id @default(uuid())
   visitId               String             @map("visit_id")
+  admissionId           String?            @map("admission_id")
   patientId             String             @map("patient_id")
   doctorId              String             @map("doctor_id")
   noteType              ProgressNoteType?  @map("note_type")
@@ -2147,6 +2177,13 @@ model ProgressNote {
   impressions           String?
   discussions           String?
   conclusions           String?
+  // Structured SOAP payloads — each is a typed JSON blob matching
+  // the shape enforced by progress-notes.validation.ts. Free text still
+  // allowed in `content` for the 20% flex; SOAP carries the 80% guided part.
+  subjective            Json?
+  objective             Json?
+  assessment            Json?
+  plan                  Json?
   customFields          Json?              @map("custom_fields")
   weightKgAtEntry       Decimal?           @map("weight_kg_at_entry") @db.Decimal(5, 2)
   pinToDischargeSummary Boolean            @default(false) @map("pin_to_discharge_summary")
@@ -2154,14 +2191,22 @@ model ProgressNote {
   status                ProgressNoteStatus @default(active)
   archivedAt            DateTime?          @map("archived_at")
   archiveReason         String?            @map("archive_reason") @db.VarChar(50)
+  signedAt              DateTime?          @map("signed_at")
+  signedById            String?            @map("signed_by_id")
+  lockedAt              DateTime?          @map("locked_at")
   createdAt             DateTime           @default(now()) @map("created_at")
   updatedAt             DateTime           @default(now()) @updatedAt @map("updated_at")
 
-  visit   Visit         @relation(fields: [visitId], references: [id])
-  patient Patient       @relation(fields: [patientId], references: [id])
-  doctor  DoctorProfile @relation(fields: [doctorId], references: [id])
+  visit      Visit                   @relation(fields: [visitId], references: [id])
+  admission  Admission?              @relation(fields: [admissionId], references: [id])
+  patient    Patient                 @relation(fields: [patientId], references: [id])
+  doctor     DoctorProfile           @relation(fields: [doctorId], references: [id])
+  signer     User?                   @relation("ProgressNoteSigner", fields: [signedById], references: [id])
+  amendments ProgressNoteAmendment[]
+  pins       ProgressNotePin[]
 
   @@index([status, createdAt])
+  @@index([admissionId, createdAt])
   @@map("progress_notes")
 }
 
@@ -2180,6 +2225,63 @@ model ProgressNoteTemplate {
 
   @@index([doctorId, isDefault])
   @@map("progress_note_templates")
+}
+
+// Append-only audit trail for every field change on a progress note.
+// Reason is required when editing a signed/locked note; for in-window
+// edits (still active) it's optional but we still record the diff.
+model ProgressNoteAmendment {
+  id            String   @id @default(uuid())
+  noteId        String   @map("note_id")
+  editorId      String   @map("editor_id")
+  fieldName     String   @map("field_name") @db.VarChar(80)
+  previousValue String?  @map("previous_value")
+  newValue      String?  @map("new_value")
+  reason        String?
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  note   ProgressNote @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  editor User         @relation("ProgressNoteAmendmentEditor", fields: [editorId], references: [id])
+
+  @@index([noteId, createdAt])
+  @@map("progress_note_amendments")
+}
+
+// Per-section discharge pin — replaces the single boolean pinToDischargeSummary.
+// The boolean remains for backward compat; new UI creates one row per pinned
+// section so that the auto-built summary can slot content into the right place.
+model ProgressNotePin {
+  id               String           @id @default(uuid())
+  noteId           String           @map("note_id")
+  dischargeSection DischargeSection @map("discharge_section")
+  content          String
+  createdAt        DateTime         @default(now()) @map("created_at")
+
+  note ProgressNote @relation(fields: [noteId], references: [id], onDelete: Cascade)
+
+  @@index([noteId])
+  @@map("progress_note_pins")
+}
+
+// Master catalog of physical examination findings used as the SOAP
+// "Physical Observations" dropdown. A null tenantId means it's a
+// global (Sedawk-seeded) entry; tenant-scoped rows let hospitals add
+// their own without polluting the global list.
+model PhysicalObservationCatalog {
+  id          String                    @id @default(uuid())
+  tenantId    String?                   @map("tenant_id")
+  system      PhysicalObservationSystem
+  name        String                    @db.VarChar(200)
+  description String?
+  isGlobal    Boolean                   @default(false) @map("is_global")
+  isActive    Boolean                   @default(true) @map("is_active")
+  createdAt   DateTime                  @default(now()) @map("created_at")
+  updatedAt   DateTime                  @default(now()) @updatedAt @map("updated_at")
+
+  tenant Tenant? @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId, system, isActive])
+  @@map("physical_observation_catalog")
 }
 
 model NursingNote {

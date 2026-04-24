@@ -2,6 +2,7 @@ import { Response, NextFunction } from 'express';
 import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse, sendPaginatedResponse } from '../../shared/apiResponse';
 import * as progressNotesService from './progress-notes.service';
+import { getSmartSuggestions } from './progress-notes.ai';
 
 // ============================================================
 // Progress Notes
@@ -69,12 +70,125 @@ export async function updateProgressNote(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const note = await progressNotesService.updateProgressNote(tenantId, req.params.id as string, req.body);
+    const userId = req.user!.userId;
+    const note = await progressNotesService.updateProgressNote(
+      tenantId,
+      userId,
+      req.params.id as string,
+      req.body,
+    );
     sendResponse({
       res,
       message: 'Progress note updated successfully',
       data: note,
     });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function listProgressNoteAmendments(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const amendments = await progressNotesService.listProgressNoteAmendments(
+      tenantId,
+      req.params.id as string,
+    );
+    sendResponse({
+      res,
+      message: 'Amendments retrieved successfully',
+      data: amendments,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ============================================================
+// Physical Observation Catalog
+// ============================================================
+
+export async function listPhysicalObservations(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const items = await progressNotesService.listPhysicalObservations(tenantId, req.query as any);
+    sendResponse({ res, message: 'Physical observations retrieved', data: items });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function createPhysicalObservation(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const item = await progressNotesService.createPhysicalObservation(tenantId, req.body);
+    sendResponse({
+      res,
+      statusCode: 201,
+      message: 'Physical observation entry created',
+      data: item,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function updatePhysicalObservation(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const item = await progressNotesService.updatePhysicalObservation(
+      tenantId,
+      req.params.id as string,
+      req.body,
+    );
+    sendResponse({ res, message: 'Physical observation entry updated', data: item });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function deletePhysicalObservation(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    await progressNotesService.deletePhysicalObservation(tenantId, req.params.id as string);
+    sendResponse({ res, message: 'Physical observation entry deleted' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ============================================================
+// AI Smart Suggestions
+// ============================================================
+
+export async function smartSuggestions(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const result = await getSmartSuggestions(req.body);
+    sendResponse({ res, message: 'AI suggestions generated', data: result });
   } catch (err) {
     next(err);
   }

@@ -18,7 +18,56 @@ import type {
   RemoveIvLineInput,
   CreateIntakeOutputInput,
   ListIntakeOutputQuery,
+  ListPhysicalObservationsQuery,
+  CreatePhysicalObservationInput,
+  UpdatePhysicalObservationInput,
 } from './progress-notes.validation';
+
+// Fields on ProgressNote that are diffed + audited on every update.
+// The key is the request body field; the value is the corresponding
+// Prisma model field. JSON fields are serialised with JSON.stringify
+// so the audit row carries a deterministic snapshot.
+const AUDITED_FIELDS = [
+  'noteType',
+  'content',
+  'impressions',
+  'discussions',
+  'conclusions',
+  'subjective',
+  'objective',
+  'assessment',
+  'plan',
+  'customFields',
+  'weightKgAtEntry',
+  'pinToDischargeSummary',
+] as const;
+
+type AuditedField = (typeof AUDITED_FIELDS)[number];
+
+function stringifyForAudit(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function valuesAreEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a === null || a === undefined) return b === null || b === undefined;
+  if (b === null || b === undefined) return false;
+  if (typeof a === 'object' || typeof b === 'object') {
+    try {
+      return JSON.stringify(a) === JSON.stringify(b);
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
 
 // ============================================================
 // Progress Notes
@@ -58,9 +107,30 @@ export async function createProgressNote(
     throw AppError.badRequest('No doctor profile found for the current user');
   }
 
+  // Infer admissionId from the visit when not supplied — needed for IP timeline.
+  let admissionId = data.admissionId ?? null;
+  if (!admissionId) {
+    const admission = await prisma.admission.findFirst({
+      where: { visitId: data.visitId, tenantId },
+      select: { id: true },
+    });
+    admissionId = admission?.id ?? null;
+  } else {
+    // Validate admission belongs to the same visit/tenant when explicitly passed.
+    const adm = await prisma.admission.findFirst({
+      where: { id: admissionId, tenantId },
+      select: { id: true, visitId: true },
+    });
+    if (!adm) throw AppError.badRequest('Admission not found for this tenant');
+    if (adm.visitId !== data.visitId) {
+      throw AppError.badRequest('Admission does not belong to the supplied visit');
+    }
+  }
+
   const note = await prisma.progressNote.create({
     data: {
       visitId: data.visitId,
+      admissionId,
       patientId: data.patientId,
       doctorId: doctorProfile.id,
       noteType: data.noteType as any,
@@ -68,9 +138,21 @@ export async function createProgressNote(
       impressions: data.impressions ?? null,
       discussions: data.discussions ?? null,
       conclusions: data.conclusions ?? null,
+      subjective: (data.subjective as any) ?? undefined,
+      objective: (data.objective as any) ?? undefined,
+      assessment: (data.assessment as any) ?? undefined,
+      plan: (data.plan as any) ?? undefined,
       customFields: (data.customFields as any) ?? undefined,
       weightKgAtEntry: data.weightKgAtEntry ?? null,
       pinToDischargeSummary: data.pinToDischargeSummary ?? false,
+      pins: data.pins && data.pins.length > 0
+        ? {
+            create: data.pins.map((p) => ({
+              dischargeSection: p.dischargeSection as any,
+              content: p.content,
+            })),
+          }
+        : undefined,
     },
     include: {
       doctor: {
@@ -79,6 +161,7 @@ export async function createProgressNote(
         },
       },
       patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
+      pins: true,
     },
   });
 
@@ -98,6 +181,10 @@ export async function getProgressNotes(tenantId: string, query: ListProgressNote
 
   if (query.visitId) {
     where.visitId = query.visitId;
+  }
+
+  if (query.admissionId) {
+    where.admissionId = query.admissionId;
   }
 
   if (query.patientId) {
@@ -139,6 +226,8 @@ export async function getProgressNotes(tenantId: string, query: ListProgressNote
           },
         },
         patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
+        pins: true,
+        _count: { select: { amendments: true } },
       },
     }),
     prisma.progressNote.count({ where }),
@@ -164,6 +253,13 @@ export async function getProgressNoteById(tenantId: string, id: string) {
       },
       patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
       visit: { select: { id: true, visitType: true, visitDate: true, status: true } },
+      signer: { select: { id: true, firstName: true, lastName: true } },
+      pins: true,
+      amendments: {
+        orderBy: { createdAt: 'desc' },
+        take: 50,
+        include: { editor: { select: { id: true, firstName: true, lastName: true } } },
+      },
     },
   });
 
@@ -176,9 +272,16 @@ export async function getProgressNoteById(tenantId: string, id: string) {
 
 /**
  * Update a progress note. Only active (non-finalized) notes can be updated.
+ *
+ * Enforces the doctor-in-charge rule: only the doctor who authored the
+ * note may edit it. Every changed field is appended as a
+ * ProgressNoteAmendment row (append-only audit trail). If the note was
+ * ever signed (signedAt present) the caller must supply
+ * `amendmentReason` — matches the spec's "no silent overwrites" rule.
  */
 export async function updateProgressNote(
   tenantId: string,
+  userId: string,
   id: string,
   data: UpdateProgressNoteInput,
 ) {
@@ -186,6 +289,9 @@ export async function updateProgressNote(
     where: {
       id,
       visit: { tenantId },
+    },
+    include: {
+      pins: true,
     },
   });
 
@@ -200,31 +306,118 @@ export async function updateProgressNote(
     throw AppError.badRequest('Cannot update an archived progress note');
   }
 
-  const updateData: any = {};
-  if (data.noteType !== undefined) updateData.noteType = data.noteType;
-  if (data.content !== undefined) updateData.content = data.content;
-  if (data.impressions !== undefined) updateData.impressions = data.impressions;
-  if (data.discussions !== undefined) updateData.discussions = data.discussions;
-  if (data.conclusions !== undefined) updateData.conclusions = data.conclusions;
-  if (data.customFields !== undefined) updateData.customFields = data.customFields as any;
-  if (data.weightKgAtEntry !== undefined) updateData.weightKgAtEntry = data.weightKgAtEntry;
-  if (data.pinToDischargeSummary !== undefined)
-    updateData.pinToDischargeSummary = data.pinToDischargeSummary;
+  // Doctor-in-charge guard: only the authoring doctor may edit.
+  const doctorProfile = await prisma.doctorProfile.findFirst({
+    where: { userId, tenantId },
+    select: { id: true },
+  });
+  if (!doctorProfile || doctorProfile.id !== existing.doctorId) {
+    throw AppError.forbidden('Only the assigned doctor can edit this progress note');
+  }
 
-  const note = await prisma.progressNote.update({
-    where: { id },
-    data: updateData,
-    include: {
-      doctor: {
-        include: {
-          user: { select: { firstName: true, lastName: true } },
+  // If the note has been signed before (and later unlocked), an amendment
+  // reason is mandatory. For truly-fresh active notes we still record the
+  // diff but the reason is optional.
+  const wasSigned = !!existing.signedAt;
+  if (wasSigned && !data.amendmentReason) {
+    throw AppError.badRequest('Amendment reason is required when editing a signed note');
+  }
+
+  // Compute the diff so we can emit ProgressNoteAmendment rows for every
+  // changed audited field. Pins are tracked as a single "pins" diff.
+  const amendments: Array<{
+    fieldName: string;
+    previousValue: string | null;
+    newValue: string | null;
+  }> = [];
+
+  const updateData: any = {};
+  for (const field of AUDITED_FIELDS) {
+    if ((data as Record<string, unknown>)[field] === undefined) continue;
+    const nextRaw = (data as Record<string, unknown>)[field as AuditedField];
+    const prevRaw = (existing as unknown as Record<string, unknown>)[field as AuditedField];
+    if (valuesAreEqual(prevRaw, nextRaw)) continue;
+    updateData[field] = nextRaw as any;
+    amendments.push({
+      fieldName: field,
+      previousValue: stringifyForAudit(prevRaw),
+      newValue: stringifyForAudit(nextRaw),
+    });
+  }
+
+  const pinsChanged =
+    data.pins !== undefined &&
+    !valuesAreEqual(
+      existing.pins.map((p) => ({ dischargeSection: p.dischargeSection, content: p.content })),
+      data.pins ?? [],
+    );
+
+  if (amendments.length === 0 && !pinsChanged) {
+    // Nothing changed — return as-is with relations the client expects.
+    return prisma.progressNote.findUnique({
+      where: { id },
+      include: {
+        doctor: {
+          include: { user: { select: { firstName: true, lastName: true } } },
         },
+        patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
+        pins: true,
       },
-      patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
-    },
+    });
+  }
+
+  const note = await prisma.$transaction(async (tx) => {
+    // Pin replacement — delete-all + recreate (simplest; handful of rows max).
+    if (pinsChanged) {
+      await tx.progressNotePin.deleteMany({ where: { noteId: id } });
+      if (data.pins && data.pins.length > 0) {
+        await tx.progressNotePin.createMany({
+          data: data.pins.map((p) => ({
+            noteId: id,
+            dischargeSection: p.dischargeSection as any,
+            content: p.content,
+          })),
+        });
+      }
+      amendments.push({
+        fieldName: 'pins',
+        previousValue: stringifyForAudit(
+          existing.pins.map((p) => ({ dischargeSection: p.dischargeSection, content: p.content })),
+        ),
+        newValue: stringifyForAudit(data.pins ?? []),
+      });
+    }
+
+    if (amendments.length > 0) {
+      await tx.progressNoteAmendment.createMany({
+        data: amendments.map((a) => ({
+          noteId: id,
+          editorId: userId,
+          fieldName: a.fieldName,
+          previousValue: a.previousValue,
+          newValue: a.newValue,
+          reason: data.amendmentReason ?? null,
+        })),
+      });
+    }
+
+    return tx.progressNote.update({
+      where: { id },
+      data: updateData,
+      include: {
+        doctor: {
+          include: { user: { select: { firstName: true, lastName: true } } },
+        },
+        patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
+        pins: true,
+      },
+    });
   });
 
-  logger.info({ tenantId, noteId: id }, 'Progress note updated');
+  logger.info(
+    { tenantId, noteId: id, amendmentCount: amendments.length, wasSigned },
+    'Progress note updated',
+  );
   return note;
 }
 
@@ -251,7 +444,8 @@ export async function deleteProgressNote(tenantId: string, id: string) {
 }
 
 /**
- * Sign (finalize) a progress note. Sets status to finalized.
+ * Sign (finalize) a progress note. Sets status=finalized and stamps
+ * signedAt/signedById/lockedAt. Only the authoring doctor may sign.
  */
 export async function signProgressNote(tenantId: string, id: string, userId: string) {
   const existing = await prisma.progressNote.findFirst({
@@ -269,10 +463,22 @@ export async function signProgressNote(tenantId: string, id: string, userId: str
     throw AppError.badRequest('Progress note is already finalized');
   }
 
+  const doctorProfile = await prisma.doctorProfile.findFirst({
+    where: { userId, tenantId },
+    select: { id: true },
+  });
+  if (!doctorProfile || doctorProfile.id !== existing.doctorId) {
+    throw AppError.forbidden('Only the assigned doctor can sign this progress note');
+  }
+
+  const now = new Date();
   const note = await prisma.progressNote.update({
     where: { id },
     data: {
       status: 'finalized',
+      signedAt: now,
+      signedById: userId,
+      lockedAt: now,
     },
     include: {
       doctor: {
@@ -281,11 +487,104 @@ export async function signProgressNote(tenantId: string, id: string, userId: str
         },
       },
       patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
+      signer: { select: { id: true, firstName: true, lastName: true } },
+      pins: true,
     },
   });
 
   logger.info({ tenantId, noteId: id, signedBy: userId }, 'Progress note signed/finalized');
   return note;
+}
+
+// ============================================================
+// Amendments (audit trail for every field change)
+// ============================================================
+
+export async function listProgressNoteAmendments(tenantId: string, noteId: string) {
+  // Verify tenant ownership of the note first.
+  const note = await prisma.progressNote.findFirst({
+    where: { id: noteId, visit: { tenantId } },
+    select: { id: true },
+  });
+  if (!note) throw AppError.notFound('Progress note not found');
+
+  return prisma.progressNoteAmendment.findMany({
+    where: { noteId },
+    orderBy: { createdAt: 'desc' },
+    include: {
+      editor: { select: { id: true, firstName: true, lastName: true } },
+    },
+  });
+}
+
+// ============================================================
+// Physical Observation Catalog
+// ============================================================
+
+export async function listPhysicalObservations(
+  tenantId: string,
+  query: ListPhysicalObservationsQuery,
+) {
+  const where: any = {
+    // Union of tenant-specific entries and global entries.
+    OR: [{ tenantId }, { tenantId: null, isGlobal: true }],
+  };
+  if (!query.includeInactive) where.isActive = true;
+  if (query.system) where.system = query.system;
+  if (query.search) where.name = { contains: query.search, mode: 'insensitive' };
+
+  return prisma.physicalObservationCatalog.findMany({
+    where,
+    orderBy: [{ system: 'asc' }, { name: 'asc' }],
+  });
+}
+
+export async function createPhysicalObservation(
+  tenantId: string,
+  data: CreatePhysicalObservationInput,
+) {
+  return prisma.physicalObservationCatalog.create({
+    data: {
+      tenantId,
+      system: data.system as any,
+      name: data.name,
+      description: data.description ?? null,
+      isGlobal: false,
+      isActive: true,
+    },
+  });
+}
+
+export async function updatePhysicalObservation(
+  tenantId: string,
+  id: string,
+  data: UpdatePhysicalObservationInput,
+) {
+  const existing = await prisma.physicalObservationCatalog.findFirst({
+    where: { id, tenantId },
+  });
+  if (!existing) {
+    // Prevent hospitals from editing global entries they don't own.
+    throw AppError.notFound('Physical observation entry not found');
+  }
+  const update: any = {};
+  if (data.system !== undefined) update.system = data.system;
+  if (data.name !== undefined) update.name = data.name;
+  if (data.description !== undefined) update.description = data.description;
+  if (data.isActive !== undefined) update.isActive = data.isActive;
+
+  return prisma.physicalObservationCatalog.update({
+    where: { id },
+    data: update,
+  });
+}
+
+export async function deletePhysicalObservation(tenantId: string, id: string) {
+  const existing = await prisma.physicalObservationCatalog.findFirst({
+    where: { id, tenantId },
+  });
+  if (!existing) throw AppError.notFound('Physical observation entry not found');
+  await prisma.physicalObservationCatalog.delete({ where: { id } });
 }
 
 // ============================================================

@@ -78,26 +78,31 @@ describe('Progress Notes Service', () => {
 
   describe('updateProgressNote', () => {
     it('should update a draft progress note', async () => {
-      const existing = { id: 'note-1', status: 'draft', content: 'old' };
+      const existing = { id: 'note-1', status: 'active', doctorId: 'doc-1', content: 'old', pins: [] };
       vi.mocked(prisma.progressNote.findFirst).mockResolvedValueOnce(existing as any);
+      vi.mocked(prisma.doctorProfile.findFirst).mockResolvedValueOnce({ id: 'doc-1' } as any);
+      // $transaction callback mode: invoke the callback directly with the `tx` client.
+      vi.mocked(prisma.$transaction).mockImplementationOnce(async (cb: any) => cb(prisma));
+      vi.mocked(prisma.progressNoteAmendment.createMany).mockResolvedValueOnce({ count: 1 } as any);
       vi.mocked(prisma.progressNote.update).mockResolvedValueOnce({
         ...existing,
         content: 'new content',
       } as any);
 
-      const result = await updateProgressNote(TENANT_ID, 'note-1', { content: 'new content' } as any);
+      const result = await updateProgressNote(TENANT_ID, USER_ID, 'note-1', { content: 'new content' } as any);
 
-      expect(result.content).toBe('new content');
+      expect(result!.content).toBe('new content');
     });
 
     it('should throw badRequest when updating a finalized note', async () => {
       vi.mocked(prisma.progressNote.findFirst).mockResolvedValueOnce({
         id: 'note-1',
         status: 'finalized',
+        pins: [],
       } as any);
 
       await expect(
-        updateProgressNote(TENANT_ID, 'note-1', { content: 'x' } as any),
+        updateProgressNote(TENANT_ID, USER_ID, 'note-1', { content: 'x' } as any),
       ).rejects.toThrow('Cannot update a finalized progress note');
     });
 
@@ -105,8 +110,22 @@ describe('Progress Notes Service', () => {
       vi.mocked(prisma.progressNote.findFirst).mockResolvedValueOnce(null);
 
       await expect(
-        updateProgressNote(TENANT_ID, 'bad-id', { content: 'x' } as any),
+        updateProgressNote(TENANT_ID, USER_ID, 'bad-id', { content: 'x' } as any),
       ).rejects.toThrow('Progress note not found');
+    });
+
+    it('should throw forbidden when a different doctor tries to edit', async () => {
+      vi.mocked(prisma.progressNote.findFirst).mockResolvedValueOnce({
+        id: 'note-1',
+        status: 'active',
+        doctorId: 'doc-other',
+        pins: [],
+      } as any);
+      vi.mocked(prisma.doctorProfile.findFirst).mockResolvedValueOnce({ id: 'doc-1' } as any);
+
+      await expect(
+        updateProgressNote(TENANT_ID, USER_ID, 'note-1', { content: 'x' } as any),
+      ).rejects.toThrow('Only the assigned doctor can edit this progress note');
     });
   });
 
@@ -114,8 +133,10 @@ describe('Progress Notes Service', () => {
     it('should finalize a draft progress note', async () => {
       vi.mocked(prisma.progressNote.findFirst).mockResolvedValueOnce({
         id: 'note-1',
-        status: 'draft',
+        status: 'active',
+        doctorId: 'doc-1',
       } as any);
+      vi.mocked(prisma.doctorProfile.findFirst).mockResolvedValueOnce({ id: 'doc-1' } as any);
       vi.mocked(prisma.progressNote.update).mockResolvedValueOnce({
         id: 'note-1',
         status: 'finalized',
