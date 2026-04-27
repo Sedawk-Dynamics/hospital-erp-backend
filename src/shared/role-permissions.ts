@@ -5,8 +5,9 @@
  */
 
 export const SYSTEM_ROLE_NAMES = [
-  'super_admin', 'admin', 'doctor', 'patient', 'nurse', 'front_desk',
-  'lab_technician', 'lab_supervisor', 'radiologist', 'pharmacist',
+  'super_admin', 'admin', 'doctor', 'patient', 'nurse',
+  'nurse_incharge', 'head_nurse', 'nurse_admin',
+  'front_desk', 'lab_technician', 'lab_supervisor', 'radiologist', 'pharmacist',
   'pharmacy_technician', 'pharmacy_admin', 'inventory_manager',
   'billing_admin', 'cashier', 'insurance_staff', 'blood_bank_staff', 'hr_staff',
 ] as const;
@@ -17,7 +18,7 @@ export const PERMISSION_MODULES = [
   'progress_notes', 'nursing_notes', 'prescriptions', 'lab_orders', 'lab_reports',
   'imaging', 'pharmacy', 'inventory', 'billing', 'payments', 'insurance',
   'blood_bank', 'hr', 'notifications', 'tickets', 'reports', 'audit_logs', 'compliance',
-  'forms',
+  'forms', 'nurse_assignments', 'duty_rosters',
 ] as const;
 
 export const PERMISSION_ACTIONS = ['create', 'read', 'update', 'delete', 'export', 'approve'] as const;
@@ -105,7 +106,84 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'progress_notes', action: 'read' },
       { module: 'prescriptions', action: 'read' }, { module: 'prescriptions', action: 'update' },
       { module: 'lab_orders', action: 'read' }, { module: 'lab_reports', action: 'read' },
+      { module: 'imaging', action: 'read' },
+      { module: 'nurse_assignments', action: 'read' },
       { module: 'forms', action: 'read' }, { module: 'forms', action: 'create' }, { module: 'forms', action: 'approve' },
+    ],
+
+    nurse_incharge: [
+      // All nurse permissions
+      { module: 'patients', action: 'read' }, { module: 'patients', action: 'update' },
+      { module: 'appointments', action: 'read' }, { module: 'appointments', action: 'update' },
+      { module: 'visits', action: 'read' }, { module: 'visits', action: 'update' },
+      { module: 'admissions', action: 'read' }, { module: 'admissions', action: 'update' },
+      { module: 'vitals', action: 'read' }, { module: 'vitals', action: 'create' }, { module: 'vitals', action: 'update' },
+      { module: 'diagnoses', action: 'read' },
+      { module: 'nursing_notes', action: 'read' }, { module: 'nursing_notes', action: 'create' },
+      { module: 'nursing_notes', action: 'update' }, { module: 'nursing_notes', action: 'approve' },
+      { module: 'progress_notes', action: 'read' },
+      { module: 'prescriptions', action: 'read' }, { module: 'prescriptions', action: 'update' },
+      { module: 'lab_orders', action: 'read' }, { module: 'lab_reports', action: 'read' },
+      { module: 'imaging', action: 'read' },
+      // Supervisory additions
+      { module: 'nurse_assignments', action: 'create' }, { module: 'nurse_assignments', action: 'read' },
+      { module: 'nurse_assignments', action: 'update' }, { module: 'nurse_assignments', action: 'delete' },
+      { module: 'duty_rosters', action: 'read' },
+      { module: 'wards', action: 'read' }, { module: 'beds', action: 'read' },
+      { module: 'users', action: 'read' },
+      { module: 'forms', action: 'read' }, { module: 'forms', action: 'create' }, { module: 'forms', action: 'approve' },
+      { module: 'reports', action: 'read' },
+    ],
+
+    head_nurse: [
+      // Clinical read-through + selective write
+      { module: 'patients', action: 'read' }, { module: 'patients', action: 'update' },
+      { module: 'appointments', action: 'read' },
+      { module: 'visits', action: 'read' },
+      { module: 'admissions', action: 'read' }, { module: 'admissions', action: 'update' },
+      { module: 'vitals', action: 'read' }, { module: 'vitals', action: 'create' },
+      { module: 'diagnoses', action: 'read' },
+      { module: 'nursing_notes', action: 'read' }, { module: 'nursing_notes', action: 'create' },
+      { module: 'nursing_notes', action: 'update' }, { module: 'nursing_notes', action: 'approve' },
+      { module: 'progress_notes', action: 'read' },
+      { module: 'prescriptions', action: 'read' },
+      { module: 'lab_orders', action: 'read' }, { module: 'lab_reports', action: 'read' },
+      { module: 'imaging', action: 'read' },
+      // Supervisory scope
+      { module: 'nurse_assignments', action: 'read' }, { module: 'nurse_assignments', action: 'update' },
+      { module: 'nurse_assignments', action: 'approve' },
+      { module: 'duty_rosters', action: 'create' }, { module: 'duty_rosters', action: 'read' },
+      { module: 'duty_rosters', action: 'update' }, { module: 'duty_rosters', action: 'delete' },
+      { module: 'duty_rosters', action: 'approve' }, { module: 'duty_rosters', action: 'export' },
+      { module: 'users', action: 'read' },
+      { module: 'departments', action: 'read' }, { module: 'wards', action: 'read' }, { module: 'beds', action: 'read' },
+      { module: 'hr', action: 'read' },
+      { module: 'forms', action: 'read' }, { module: 'forms', action: 'approve' },
+      { module: 'reports', action: 'read' }, { module: 'reports', action: 'export' },
+    ],
+
+    nurse_admin: [
+      // Read-only clinical footprint
+      { module: 'patients', action: 'read' },
+      { module: 'visits', action: 'read' },
+      { module: 'admissions', action: 'read' },
+      { module: 'vitals', action: 'read' },
+      { module: 'nursing_notes', action: 'read' },
+      { module: 'progress_notes', action: 'read' },
+      { module: 'prescriptions', action: 'read' },
+      // Managerial scope
+      { module: 'nurse_assignments', action: 'read' }, { module: 'nurse_assignments', action: 'approve' },
+      { module: 'duty_rosters', action: 'create' }, { module: 'duty_rosters', action: 'read' },
+      { module: 'duty_rosters', action: 'update' }, { module: 'duty_rosters', action: 'delete' },
+      { module: 'duty_rosters', action: 'approve' }, { module: 'duty_rosters', action: 'export' },
+      { module: 'departments', action: 'read' }, { module: 'wards', action: 'read' }, { module: 'beds', action: 'read' },
+      { module: 'users', action: 'read' },
+      { module: 'hr', action: 'read' }, { module: 'hr', action: 'approve' }, { module: 'hr', action: 'export' },
+      { module: 'compliance', action: 'read' }, { module: 'compliance', action: 'create' },
+      { module: 'compliance', action: 'update' }, { module: 'compliance', action: 'approve' },
+      { module: 'forms', action: 'read' }, { module: 'forms', action: 'approve' },
+      { module: 'audit_logs', action: 'read' },
+      { module: 'reports', action: 'read' }, { module: 'reports', action: 'create' }, { module: 'reports', action: 'export' },
     ],
 
     front_desk: [

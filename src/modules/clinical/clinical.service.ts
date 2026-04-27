@@ -28,7 +28,19 @@ import type {
   UpdateEstimationInput,
   GetClinicalOrdersQuery,
   AcknowledgeClinicalOrderInput,
+  CorrectVitalInput,
+  GetOrderAcknowledgementsQuery,
 } from './clinical.validation';
+
+/**
+ * Window during which the original recorder can silently fix a typo in their
+ * own vital entry without the edit being treated as an audited correction.
+ * Kept intentionally short (15 minutes). Any edit outside this window, or any
+ * edit by a different user, creates a new append-only Vital row whose
+ * `supersedesVitalId` points at the original.
+ */
+export const VITAL_SELF_CORRECTION_WINDOW_MS = 15 * 60 * 1000;
+const VITAL_SELF_CORRECT_ROLES = new Set(['nurse', 'nurse_incharge']);
 
 // ==================== Visits ====================
 
@@ -1003,6 +1015,168 @@ export async function getLatestVitals(tenantId: string, patientId: string) {
   return vital;
 }
 
+/**
+ * Append-only correction for a vital. Three paths:
+ *   1. Self-correction within the grace window by the original recorder (must be
+ *      a nurse/nurse_incharge) — in-place update, no audit row created.
+ *   2. Any doctor, or any edit outside the grace window, or any edit by a user
+ *      who is NOT the original recorder — creates a new Vital row with
+ *      supersedesVitalId, isCorrection=true, correctionReason required.
+ *   3. OPD/IPD distinction is irrelevant for this endpoint; enforcement is
+ *      purely on role + time + recorder identity.
+ */
+export async function correctVital(
+  tenantId: string,
+  userId: string,
+  roles: string[],
+  vitalId: string,
+  data: CorrectVitalInput,
+) {
+  const original = await prisma.vital.findFirst({
+    where: { id: vitalId, visit: { tenantId } },
+    include: { visit: { select: { tenantId: true } } },
+  });
+  if (!original) throw AppError.notFound('Vital not found');
+
+  // Can't correct a row that has already been superseded — correct the newest
+  // row in its chain instead to avoid ambiguous history.
+  const superseder = await prisma.vital.findFirst({
+    where: { supersedesVitalId: vitalId },
+    select: { id: true },
+  });
+  if (superseder) {
+    throw AppError.badRequest(
+      'This reading has already been corrected. Correct the latest entry instead.',
+    );
+  }
+
+  const withinGrace =
+    Date.now() - original.recordedAt.getTime() <= VITAL_SELF_CORRECTION_WINDOW_MS;
+  const sameRecorder = original.recordedBy === userId;
+  const isCorrectiveRole = roles.some((r) => VITAL_SELF_CORRECT_ROLES.has(r));
+  const canSelfCorrect = withinGrace && sameRecorder && isCorrectiveRole;
+
+  const clamp = (val: number | undefined | null, max: number): number | undefined =>
+    val != null && val > 0 && val <= max ? val : undefined;
+
+  // Recompute BMI if weight/height are being changed.
+  const nextWeight = data.weightKg ?? (Number(original.weightKg ?? 0) || undefined);
+  const nextHeight = data.heightCm ?? (Number(original.heightCm ?? 0) || undefined);
+  let nextBmi: number | undefined;
+  if (nextWeight && nextHeight && nextHeight >= 30) {
+    const heightM = nextHeight / 100;
+    const raw = parseFloat((nextWeight / (heightM * heightM)).toFixed(1));
+    nextBmi = raw > 0 && raw < 999.9 ? raw : undefined;
+  }
+
+  if (canSelfCorrect) {
+    const updated = await prisma.vital.update({
+      where: { id: vitalId },
+      data: {
+        bloodPressureSystolic: data.bloodPressureSystolic ?? original.bloodPressureSystolic,
+        bloodPressureDiastolic: data.bloodPressureDiastolic ?? original.bloodPressureDiastolic,
+        pulseRate: data.pulseRate ?? original.pulseRate,
+        temperature: clamp(data.temperature, 999.9) ?? original.temperature,
+        respiratoryRate: data.respiratoryRate ?? original.respiratoryRate,
+        oxygenSaturation: clamp(data.oxygenSaturation, 100) ?? original.oxygenSaturation,
+        weightKg: clamp(data.weightKg, 999.99) ?? original.weightKg,
+        heightCm: clamp(data.heightCm, 9999.9) ?? original.heightCm,
+        bmi: nextBmi ?? original.bmi,
+        bloodSugar: clamp(data.bloodSugar, 9999.99) ?? original.bloodSugar,
+        notes: data.notes ?? original.notes,
+      },
+      include: { recorder: { select: { id: true, firstName: true, lastName: true } } },
+    });
+    logger.info({ vitalId, userId, mode: 'self-correct-silent' }, 'Vital edited in place');
+    return { mode: 'self-correct-silent', vital: updated };
+  }
+
+  // Out-of-grace or cross-role correction: create a new append-only row.
+  const correction = await prisma.vital.create({
+    data: {
+      visitId: original.visitId,
+      patientId: original.patientId,
+      bloodPressureSystolic: data.bloodPressureSystolic ?? original.bloodPressureSystolic,
+      bloodPressureDiastolic: data.bloodPressureDiastolic ?? original.bloodPressureDiastolic,
+      pulseRate: data.pulseRate ?? original.pulseRate,
+      temperature: clamp(data.temperature, 999.9) ?? original.temperature,
+      respiratoryRate: data.respiratoryRate ?? original.respiratoryRate,
+      oxygenSaturation: clamp(data.oxygenSaturation, 100) ?? original.oxygenSaturation,
+      weightKg: clamp(data.weightKg, 999.99) ?? original.weightKg,
+      heightCm: clamp(data.heightCm, 9999.9) ?? original.heightCm,
+      bmi: nextBmi ?? original.bmi,
+      bloodSugar: clamp(data.bloodSugar, 9999.99) ?? original.bloodSugar,
+      notes: data.notes ?? original.notes,
+      recordedBy: userId,
+      supersedesVitalId: vitalId,
+      isCorrection: true,
+      correctionReason: data.correctionReason,
+      correctedById: userId,
+    },
+    include: {
+      recorder: { select: { id: true, firstName: true, lastName: true } },
+      corrector: { select: { id: true, firstName: true, lastName: true } },
+      supersedes: {
+        select: { id: true, recordedAt: true, recordedBy: true },
+      },
+    },
+  });
+
+  logger.info(
+    { originalId: vitalId, newId: correction.id, userId, mode: 'audited-correction' },
+    'Vital correction appended',
+  );
+  return { mode: 'audited-correction', vital: correction };
+}
+
+/**
+ * Return the full correction chain for a vital: the ancestor (if this row is
+ * itself a correction), the row, and all rows that have ever superseded it.
+ * Ordered newest-first.
+ */
+export async function getVitalHistory(tenantId: string, vitalId: string) {
+  const seed = await prisma.vital.findFirst({
+    where: { id: vitalId, visit: { tenantId } },
+  });
+  if (!seed) throw AppError.notFound('Vital not found');
+
+  // Walk backwards to the root.
+  let rootId = seed.id;
+  let cursor: { supersedesVitalId: string | null } | null = {
+    supersedesVitalId: (seed as any).supersedesVitalId ?? null,
+  };
+  while (cursor?.supersedesVitalId) {
+    rootId = cursor.supersedesVitalId;
+    cursor = await prisma.vital.findFirst({
+      where: { id: cursor.supersedesVitalId },
+      select: { supersedesVitalId: true },
+    });
+  }
+
+  // Walk forward from the root collecting the full chain.
+  const chain: any[] = [];
+  let current: any = await prisma.vital.findFirst({
+    where: { id: rootId },
+    include: {
+      recorder: { select: { id: true, firstName: true, lastName: true } },
+      corrector: { select: { id: true, firstName: true, lastName: true } },
+    },
+  });
+  while (current) {
+    chain.push(current);
+    current = await prisma.vital.findFirst({
+      where: { supersedesVitalId: current.id },
+      include: {
+        recorder: { select: { id: true, firstName: true, lastName: true } },
+        corrector: { select: { id: true, firstName: true, lastName: true } },
+      },
+    });
+  }
+
+  // Newest first.
+  return chain.reverse();
+}
+
 // ==================== Diagnoses ====================
 
 /**
@@ -1784,5 +1958,155 @@ export async function acknowledgeClinicalOrder(
     'Clinical order acknowledged by nurse',
   );
   return { noteId: note.id, orderType: data.orderType, orderId: data.orderId };
+}
+
+/**
+ * Return lab + imaging orders that are open against the caller's scope, each
+ * annotated with whether a NursingNote acknowledgement exists.
+ *   - scope=mine  → orders for admissions that have an active NurseAssignment to userId
+ *   - scope=ward  → orders for admissions currently housed in wardId
+ *   - scope=all   → every non-completed order in the tenant (supervisory views)
+ */
+export async function getOrderAcknowledgements(
+  tenantId: string,
+  userId: string,
+  query: GetOrderAcknowledgementsQuery,
+) {
+  const limit = query.limit ?? 100;
+
+  // Resolve the admission filter based on scope.
+  let admissionIds: string[] | null = null;
+  if (query.scope === 'mine') {
+    const assigns = await prisma.nurseAssignment.findMany({
+      where: { tenantId, nurseId: userId, status: 'active' },
+      select: { admissionId: true },
+    });
+    admissionIds = Array.from(new Set(assigns.map((a) => a.admissionId)));
+    if (admissionIds.length === 0) {
+      return { orders: [], total: 0 };
+    }
+  } else if (query.scope === 'ward') {
+    if (!query.wardId) {
+      throw AppError.badRequest('wardId is required when scope=ward');
+    }
+    const wardAdmissions = await prisma.admission.findMany({
+      where: { tenantId, wardId: query.wardId, status: 'admitted' },
+      select: { id: true, visitId: true },
+    });
+    admissionIds = wardAdmissions.map((a) => a.id);
+    if (admissionIds.length === 0) {
+      return { orders: [], total: 0 };
+    }
+  }
+
+  // Build the visit filter from admissions (orders are tied to visit, not admission).
+  let visitIdFilter: string[] | null = null;
+  if (admissionIds) {
+    const admissions = await prisma.admission.findMany({
+      where: { id: { in: admissionIds } },
+      select: { visitId: true },
+    });
+    visitIdFilter = admissions.map((a) => a.visitId);
+  }
+
+  const wantLab = query.orderType === 'lab' || query.orderType === 'all';
+  const wantImaging = query.orderType === 'imaging' || query.orderType === 'all';
+
+  const [labOrders, imagingOrders] = await Promise.all([
+    wantLab
+      ? prisma.labOrder.findMany({
+          where: {
+            tenantId,
+            ...(visitIdFilter ? { visitId: { in: visitIdFilter } } : {}),
+          },
+          orderBy: { createdAt: 'desc' },
+          take: limit,
+          include: {
+            patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+            visit: { select: { id: true } },
+          },
+        })
+      : Promise.resolve([]),
+    wantImaging
+      ? prisma.imagingRequest.findMany({
+          where: {
+            tenantId,
+            ...(visitIdFilter ? { visitId: { in: visitIdFilter } } : {}),
+          },
+          orderBy: { createdAt: 'desc' },
+          take: limit,
+          include: {
+            patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+            visit: { select: { id: true } },
+          },
+        })
+      : Promise.resolve([]),
+  ]);
+
+  // Collect ack-metadata in bulk from nursing notes (avoids N+1).
+  const orderIds = [
+    ...labOrders.map((o) => ({ id: o.id, type: 'lab' as const })),
+    ...imagingOrders.map((o) => ({ id: o.id, type: 'imaging' as const })),
+  ];
+
+  const nurseNotes = orderIds.length
+    ? await prisma.nursingNote.findMany({
+        where: {
+          visit: { tenantId },
+          metadata: {
+            path: ['kind'],
+            equals: 'order_acknowledgment',
+          } as any,
+        },
+        select: {
+          id: true,
+          metadata: true,
+          nurseId: true,
+          createdAt: true,
+          nurse: { select: { id: true, firstName: true, lastName: true } },
+        },
+      })
+    : [];
+
+  const ackByKey = new Map<string, (typeof nurseNotes)[number]>();
+  for (const note of nurseNotes) {
+    const meta = (note.metadata as any) || {};
+    if (meta.kind === 'order_acknowledgment' && meta.orderId && meta.orderType) {
+      ackByKey.set(`${meta.orderType}:${meta.orderId}`, note);
+    }
+  }
+
+  const decorate = (order: any, orderType: 'lab' | 'imaging') => {
+    const ack = ackByKey.get(`${orderType}:${order.id}`) || null;
+    return {
+      ...order,
+      orderType,
+      acknowledgement: ack
+        ? {
+            noteId: ack.id,
+            acknowledgedBy: ack.nurse,
+            acknowledgedAt: ack.createdAt,
+          }
+        : null,
+    };
+  };
+
+  const merged = [
+    ...labOrders.map((o) => decorate(o, 'lab')),
+    ...imagingOrders.map((o) => decorate(o, 'imaging')),
+  ];
+
+  const filtered =
+    query.status === 'all'
+      ? merged
+      : merged.filter((o) =>
+          query.status === 'acknowledged' ? !!o.acknowledgement : !o.acknowledgement,
+        );
+
+  filtered.sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  );
+
+  return { orders: filtered, total: filtered.length };
 }
 

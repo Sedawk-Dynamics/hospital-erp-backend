@@ -189,6 +189,35 @@ export const patientIdParamSchema = z.object({
   }),
 });
 
+// Correction to an existing Vital row. A new append-only row is created whenever
+// the caller is outside the grace window OR is a doctor — both paths require
+// `correctionReason` to be set. The legacy in-place update (grace window) is
+// allowed only when recordedBy === userId and role is nurse/nurse_incharge.
+export const correctVitalSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid vital ID'),
+  }),
+  body: z.object({
+    bloodPressureSystolic: z.number().int().min(0).max(400).optional(),
+    bloodPressureDiastolic: z.number().int().min(0).max(300).optional(),
+    pulseRate: z.number().int().min(0).max(300).optional(),
+    temperature: z.number().min(25).max(50).optional(),
+    respiratoryRate: z.number().int().min(0).max(100).optional(),
+    oxygenSaturation: z.number().min(0).max(100).optional(),
+    weightKg: z.number().min(0).max(700).optional(),
+    heightCm: z.number().min(0).max(300).optional(),
+    bloodSugar: z.number().min(0).max(2000).optional(),
+    notes: z.string().max(2000).optional(),
+    correctionReason: z.string().min(1, 'Correction reason is required').max(500),
+  }),
+});
+
+export const vitalIdParamSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid vital ID'),
+  }),
+});
+
 export const getVitalsQuerySchema = z.object({
   params: z.object({
     patientId: z.string().uuid('Invalid patient ID'),
@@ -444,5 +473,19 @@ export const acknowledgeClinicalOrderSchema = z.object({
   }),
 });
 
+// Ack list: scope=mine filters to admissions with an active NurseAssignment to
+// the caller; scope=ward filters to a ward (for nurse_incharge / head_nurse).
+export const getOrderAcknowledgementsQuerySchema = z.object({
+  query: z.object({
+    scope: z.enum(['mine', 'ward', 'all']).default('mine'),
+    wardId: z.string().uuid().optional(),
+    status: z.enum(['pending', 'acknowledged', 'all']).default('all'),
+    orderType: z.enum(['lab', 'imaging', 'all']).default('all'),
+    limit: z.coerce.number().int().min(1).max(200).optional(),
+  }),
+});
+
 export type GetClinicalOrdersQuery = z.infer<typeof getClinicalOrdersQuerySchema>['query'];
 export type AcknowledgeClinicalOrderInput = z.infer<typeof acknowledgeClinicalOrderSchema>['body'];
+export type CorrectVitalInput = z.infer<typeof correctVitalSchema>['body'];
+export type GetOrderAcknowledgementsQuery = z.infer<typeof getOrderAcknowledgementsQuerySchema>['query'];

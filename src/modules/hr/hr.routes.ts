@@ -13,6 +13,7 @@ import {
   updateLicenseSchema,
   getExpiringLicensesSchema,
   createDutyRosterSchema,
+  createDutyRosterBulkSchema,
   getDutyRostersSchema,
   dutyRosterIdParamSchema,
   updateDutyRosterSchema,
@@ -43,12 +44,14 @@ hrRoutes.get('/licenses', authenticate, requirePermission('hr', 'read'), validat
 hrRoutes.put('/licenses/:id', authenticate, requirePermission('hr', 'update'), validate(updateLicenseSchema), controller.updateLicense);
 hrRoutes.get('/licenses/expiring', authenticate, requirePermission('hr', 'read'), validate(getExpiringLicensesSchema), controller.getExpiringLicenses);
 
-// --- Duty Rosters ---
-hrRoutes.post('/rosters', authenticate, requirePermission('hr', 'create'), validate(createDutyRosterSchema), controller.createDutyRoster);
-hrRoutes.get('/rosters', authenticate, requirePermission('hr', 'read'), validate(getDutyRostersSchema), controller.getDutyRosters);
-hrRoutes.get('/rosters/:id', authenticate, requirePermission('hr', 'read'), validate(dutyRosterIdParamSchema), controller.getDutyRosterById);
-hrRoutes.put('/rosters/:id', authenticate, requirePermission('hr', 'update'), validate(updateDutyRosterSchema), controller.updateDutyRoster);
-hrRoutes.patch('/rosters/:id/publish', authenticate, requirePermission('hr', 'approve'), validate(dutyRosterIdParamSchema), controller.publishDutyRoster);
+// --- Duty Rosters --- gated by duty_rosters:* so nurse_admin / head_nurse can
+// operate here without full HR access.
+hrRoutes.post('/rosters', authenticate, requirePermission('duty_rosters', 'create'), validate(createDutyRosterSchema), controller.createDutyRoster);
+hrRoutes.post('/rosters/bulk', authenticate, requirePermission('duty_rosters', 'create'), validate(createDutyRosterBulkSchema), controller.createDutyRosterBulk);
+hrRoutes.get('/rosters', authenticate, requirePermission('duty_rosters', 'read'), validate(getDutyRostersSchema), controller.getDutyRosters);
+hrRoutes.get('/rosters/:id', authenticate, requirePermission('duty_rosters', 'read'), validate(dutyRosterIdParamSchema), controller.getDutyRosterById);
+hrRoutes.put('/rosters/:id', authenticate, requirePermission('duty_rosters', 'update'), validate(updateDutyRosterSchema), controller.updateDutyRoster);
+hrRoutes.patch('/rosters/:id/publish', authenticate, requirePermission('duty_rosters', 'approve'), validate(dutyRosterIdParamSchema), controller.publishDutyRoster);
 
 // --- Attendance ---
 hrRoutes.post('/attendance', authenticate, requirePermission('hr', 'create'), validate(recordAttendanceSchema), controller.recordAttendance);

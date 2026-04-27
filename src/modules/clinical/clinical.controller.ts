@@ -676,3 +676,58 @@ export async function acknowledgeClinicalOrder(
     next(err);
   }
 }
+
+export async function getOrderAcknowledgements(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const data = await clinicalService.getOrderAcknowledgements(
+      tenantId,
+      userId,
+      req.query as any,
+    );
+    sendResponse({ res, message: 'Order acknowledgements retrieved', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function correctVital(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const roles = req.user!.roles || [];
+    const data = await clinicalService.correctVital(
+      tenantId,
+      userId,
+      roles,
+      req.params.id as string,
+      req.body,
+    );
+    sendResponse({ res, message: 'Vital correction recorded', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getVitalHistory(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await clinicalService.getVitalHistory(tenantId, req.params.id as string);
+    sendResponse({ res, message: 'Vital history retrieved', data });
+  } catch (err) {
+    next(err);
+  }
+}

@@ -749,9 +749,17 @@ enum ShiftType {
 
 enum DutyRosterStatus {
   scheduled @map("scheduled")
+  published @map("published")
   completed @map("completed")
   swapped   @map("swapped")
   cancelled @map("cancelled")
+}
+
+enum NurseAssignmentStatus {
+  active       @map("active")
+  ended        @map("ended")
+  handed_over  @map("handed_over")
+  cancelled    @map("cancelled")
 }
 
 enum AttendanceSource {
@@ -1027,6 +1035,7 @@ model Tenant {
   transfusions          Transfusion[]
   staffProfiles         StaffProfile[]
   dutyRosters           DutyRoster[]
+  nurseAssignments      NurseAssignment[]
   attendance            Attendance[]
   leaveRequests         LeaveRequest[]
   payroll               Payroll[]
@@ -1234,6 +1243,12 @@ model User {
   messagesReceived              Message[]                   @relation("MessageReceiver")
   shiftHandoverFrom             ShiftHandoverNote[]         @relation("HandoverFrom")
   shiftHandoverTo               ShiftHandoverNote[]         @relation("HandoverTo")
+  nurseAssignmentsAsNurse       NurseAssignment[]           @relation("NurseAssignmentNurse")
+  nurseAssignmentsAssigned      NurseAssignment[]           @relation("NurseAssignmentAssigner")
+  nurseAssignmentsHandoverTo    NurseAssignment[]           @relation("NurseAssignmentHandoverTo")
+  dutyRostersApproved           DutyRoster[]                @relation("DutyRosterApprover")
+  dutyRostersCreated            DutyRoster[]                @relation("DutyRosterCreator")
+  vitalCorrectionsMade          Vital[]                     @relation("VitalCorrector")
   ticketsRaised                 Ticket[]                    @relation("TicketRaiser")
   ticketsAssigned               Ticket[]                    @relation("TicketAssignee")
   ticketsEscalated              Ticket[]                    @relation("TicketEscalator")
@@ -1435,6 +1450,8 @@ model Ward {
   patientTransfersTo   PatientTransfer[]   @relation("TransferToWard")
   supplyRequests       SupplyRequest[]
   shiftHandoverNotes   ShiftHandoverNote[]
+  nurseAssignments     NurseAssignment[]
+  dutyRosters          DutyRoster[]
   reservations         Reservation[]
 
   @@map("wards")
@@ -1474,6 +1491,7 @@ model Bed {
   admissions           Admission[]
   patientTransfersFrom PatientTransfer[] @relation("TransferFromBed")
   patientTransfersTo   PatientTransfer[] @relation("TransferToBed")
+  nurseAssignments     NurseAssignment[]
   reservations         Reservation[]
 
   @@map("beds")
@@ -2023,6 +2041,7 @@ model Admission {
   ivLineRecords    IVLineRecord[]
   nursingNotes     NursingNote[]
   progressNotes    ProgressNote[]
+  nurseAssignments NurseAssignment[]
   bills            Bill[]
   formSubmissions  FormSubmission[]  @relation("FormSubmissionAdmission")
 
@@ -2137,10 +2156,25 @@ model Vital {
   recordedBy             String?  @map("recorded_by")
   recordedAt             DateTime @default(now()) @map("recorded_at")
 
-  visit    Visit   @relation(fields: [visitId], references: [id])
-  patient  Patient @relation(fields: [patientId], references: [id])
-  recorder User?   @relation(fields: [recordedBy], references: [id])
+  // Append-only correction chain. When a doctor (or an out-of-grace-window nurse)
+  // corrects a vital, insert a new row with supersedesVitalId pointing to the
+  // original. The canonical latest reading is the row whose id is NOT referenced
+  // by another row's supersedesVitalId — in practice query with
+  // `WHERE id NOT IN (SELECT supersedes_vital_id FROM vitals WHERE supersedes_vital_id IS NOT NULL)`.
+  supersedesVitalId String?  @map("supersedes_vital_id")
+  correctionReason  String?  @map("correction_reason")
+  correctedById     String?  @map("corrected_by_id")
+  isCorrection      Boolean  @default(false) @map("is_correction")
 
+  visit          Visit   @relation(fields: [visitId], references: [id])
+  patient        Patient @relation(fields: [patientId], references: [id])
+  recorder       User?   @relation(fields: [recordedBy], references: [id])
+  supersedes     Vital?  @relation("VitalCorrection", fields: [supersedesVitalId], references: [id])
+  correctedBy    Vital[] @relation("VitalCorrection")
+  corrector      User?   @relation("VitalCorrector", fields: [correctedById], references: [id])
+
+  @@index([visitId, recordedAt])
+  @@index([supersedesVitalId])
   @@map("vitals")
 }
 
@@ -3441,18 +3475,71 @@ model DutyRoster {
   tenantId     String           @map("tenant_id")
   staffId      String           @map("staff_id")
   departmentId String           @map("department_id")
+  wardId       String?          @map("ward_id")
+  role         String?          @db.VarChar(50)
   shiftDate    DateTime         @map("shift_date") @db.Date
   shiftType    ShiftType        @map("shift_type")
   startTime    DateTime         @map("start_time") @db.Time()
   endTime      DateTime         @map("end_time") @db.Time()
   status       DutyRosterStatus @default(scheduled)
+  approvedBy   String?          @map("approved_by")
+  approvedAt   DateTime?        @map("approved_at")
+  createdBy    String?          @map("created_by")
   createdAt    DateTime         @default(now()) @map("created_at")
 
   tenant     Tenant       @relation(fields: [tenantId], references: [id])
   staff      StaffProfile @relation(fields: [staffId], references: [id])
   department Department   @relation(fields: [departmentId], references: [id])
+  ward       Ward?        @relation(fields: [wardId], references: [id])
+  approver   User?        @relation("DutyRosterApprover", fields: [approvedBy], references: [id])
+  creator    User?        @relation("DutyRosterCreator", fields: [createdBy], references: [id])
 
+  @@index([wardId, shiftDate, shiftType])
+  @@index([staffId, shiftDate])
   @@map("duty_rosters")
+}
+
+// Per-shift patient→nurse assignment. Only required for IPD admissions.
+// Exactly one row with status=active per (admissionId, shiftDate, shiftType) —
+// enforced by a partial unique index added by hand in the migration SQL
+// (Prisma cannot express partial uniques declaratively):
+//   CREATE UNIQUE INDEX uq_nurse_assignment_active
+//     ON nurse_assignments(admission_id, shift_date, shift_type)
+//     WHERE status = 'active';
+model NurseAssignment {
+  id              String                @id @default(uuid())
+  tenantId        String                @map("tenant_id")
+  admissionId     String                @map("admission_id")
+  nurseId         String                @map("nurse_id")
+  wardId          String                @map("ward_id")
+  bedId           String?               @map("bed_id")
+  shiftDate       DateTime              @map("shift_date") @db.Date
+  shiftType       ShiftType             @map("shift_type")
+  assignedById    String                @map("assigned_by_id")
+  assignedAt      DateTime              @default(now()) @map("assigned_at")
+  status          NurseAssignmentStatus @default(active)
+  handedOverToId  String?               @map("handed_over_to_id")
+  handedOverAt    DateTime?             @map("handed_over_at")
+  handoverNoteId  String?               @map("handover_note_id")
+  endedAt         DateTime?             @map("ended_at")
+  endedReason     String?               @map("ended_reason")
+  notes           String?
+  createdAt       DateTime              @default(now()) @map("created_at")
+  updatedAt       DateTime              @default(now()) @updatedAt @map("updated_at")
+
+  tenant       Tenant             @relation(fields: [tenantId], references: [id])
+  admission    Admission          @relation(fields: [admissionId], references: [id])
+  nurse        User               @relation("NurseAssignmentNurse", fields: [nurseId], references: [id])
+  ward         Ward               @relation(fields: [wardId], references: [id])
+  bed          Bed?               @relation(fields: [bedId], references: [id])
+  assigner     User               @relation("NurseAssignmentAssigner", fields: [assignedById], references: [id])
+  handedOverTo User?              @relation("NurseAssignmentHandoverTo", fields: [handedOverToId], references: [id])
+  handoverNote ShiftHandoverNote? @relation(fields: [handoverNoteId], references: [id])
+
+  @@index([admissionId, status])
+  @@index([nurseId, shiftDate])
+  @@index([wardId, shiftDate, shiftType])
+  @@map("nurse_assignments")
 }
 
 model Attendance {
@@ -3597,10 +3684,11 @@ model ShiftHandoverNote {
   acknowledgedAt   DateTime?         @map("acknowledged_at")
   createdAt        DateTime          @default(now()) @map("created_at")
 
-  tenant    Tenant @relation(fields: [tenantId], references: [id])
-  fromNurse User   @relation("HandoverFrom", fields: [fromNurseId], references: [id])
-  toNurse   User?  @relation("HandoverTo", fields: [toNurseId], references: [id])
-  ward      Ward   @relation(fields: [wardId], references: [id])
+  tenant           Tenant            @relation(fields: [tenantId], references: [id])
+  fromNurse        User              @relation("HandoverFrom", fields: [fromNurseId], references: [id])
+  toNurse          User?             @relation("HandoverTo", fields: [toNurseId], references: [id])
+  ward             Ward              @relation(fields: [wardId], references: [id])
+  nurseAssignments NurseAssignment[]
 
   @@map("shift_handover_notes")
 }

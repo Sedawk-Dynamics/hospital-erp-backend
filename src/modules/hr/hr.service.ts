@@ -12,6 +12,7 @@ import type {
   GetLicensesQuery,
   GetExpiringLicensesQuery,
   CreateDutyRosterInput,
+  CreateDutyRosterBulkInput,
   UpdateDutyRosterInput,
   GetDutyRostersQuery,
   RecordAttendanceInput,
@@ -364,7 +365,11 @@ export async function getExpiringLicenses(tenantId: string, query: GetExpiringLi
 // Duty Rosters
 // ============================================================
 
-export async function createDutyRoster(tenantId: string, data: CreateDutyRosterInput) {
+export async function createDutyRoster(
+  tenantId: string,
+  data: CreateDutyRosterInput,
+  createdBy?: string,
+) {
   const staff = await prisma.staffProfile.findFirst({
     where: { id: data.staffId, tenantId },
   });
@@ -372,17 +377,19 @@ export async function createDutyRoster(tenantId: string, data: CreateDutyRosterI
     throw AppError.notFound('Staff profile not found');
   }
 
-  // Check for overlapping roster on the same date for same staff
+  // Reject duplicate same-staff / same-date / same-shift entries; allow different
+  // shifts on the same day (morning + night is legitimate for split shifts).
   const overlap = await prisma.dutyRoster.findFirst({
     where: {
       tenantId,
       staffId: data.staffId,
       shiftDate: new Date(data.shiftDate),
+      shiftType: data.shiftType as any,
       status: { not: 'cancelled' },
     },
   });
   if (overlap) {
-    throw AppError.conflict('Staff already has a roster entry for this date');
+    throw AppError.conflict('Staff already has a roster entry for this date and shift');
   }
 
   const roster = await prisma.dutyRoster.create({
@@ -390,21 +397,52 @@ export async function createDutyRoster(tenantId: string, data: CreateDutyRosterI
       tenantId,
       staffId: data.staffId,
       departmentId: data.departmentId,
+      wardId: data.wardId ?? null,
+      role: data.role ?? null,
       shiftDate: new Date(data.shiftDate),
       shiftType: data.shiftType as any,
       startTime: new Date(`1970-01-01T${data.startTime}`),
       endTime: new Date(`1970-01-01T${data.endTime}`),
+      createdBy: createdBy ?? null,
     },
     include: {
       staff: {
         include: { user: { select: { firstName: true, lastName: true } } },
       },
       department: { select: { id: true, name: true } },
+      ward: { select: { id: true, name: true } },
     },
   });
 
   logger.info({ tenantId, rosterId: roster.id }, 'Duty roster created');
   return roster;
+}
+
+export async function createDutyRosterBulk(
+  tenantId: string,
+  data: CreateDutyRosterBulkInput,
+  createdBy?: string,
+) {
+  const results: { created: any[]; skipped: Array<{ index: number; reason: string }> } = {
+    created: [],
+    skipped: [],
+  };
+
+  for (let i = 0; i < data.entries.length; i++) {
+    const entry = data.entries[i]!;
+    try {
+      const row = await createDutyRoster(tenantId, entry, createdBy);
+      results.created.push(row);
+    } catch (err: any) {
+      results.skipped.push({ index: i, reason: err?.message || 'unknown error' });
+    }
+  }
+
+  logger.info(
+    { tenantId, created: results.created.length, skipped: results.skipped.length },
+    'Duty roster bulk create',
+  );
+  return results;
 }
 
 export async function getDutyRosters(tenantId: string, query: GetDutyRostersQuery) {
@@ -414,6 +452,8 @@ export async function getDutyRosters(tenantId: string, query: GetDutyRostersQuer
 
   if (query.staffId) where.staffId = query.staffId;
   if (query.departmentId) where.departmentId = query.departmentId;
+  if (query.wardId) where.wardId = query.wardId;
+  if (query.role) where.role = query.role;
   if (query.shiftType) where.shiftType = query.shiftType as any;
   if (query.status) where.status = query.status as any;
 
@@ -441,6 +481,7 @@ export async function getDutyRosters(tenantId: string, query: GetDutyRostersQuer
           include: { user: { select: { firstName: true, lastName: true } } },
         },
         department: { select: { id: true, name: true } },
+        ward: { select: { id: true, name: true } },
       },
     }),
     prisma.dutyRoster.count({ where }),
@@ -482,6 +523,8 @@ export async function updateDutyRoster(
   const updateData: any = {};
   if (data.staffId !== undefined) updateData.staffId = data.staffId;
   if (data.departmentId !== undefined) updateData.departmentId = data.departmentId;
+  if (data.wardId !== undefined) updateData.wardId = data.wardId;
+  if (data.role !== undefined) updateData.role = data.role;
   if (data.shiftDate !== undefined) updateData.shiftDate = new Date(data.shiftDate);
   if (data.shiftType !== undefined) updateData.shiftType = data.shiftType;
   if (data.startTime !== undefined) updateData.startTime = new Date(`1970-01-01T${data.startTime}`);
@@ -496,6 +539,7 @@ export async function updateDutyRoster(
         include: { user: { select: { firstName: true, lastName: true } } },
       },
       department: { select: { id: true, name: true } },
+      ward: { select: { id: true, name: true } },
     },
   });
 
@@ -503,7 +547,7 @@ export async function updateDutyRoster(
   return roster;
 }
 
-export async function publishDutyRoster(tenantId: string, id: string) {
+export async function publishDutyRoster(tenantId: string, id: string, approvedBy?: string) {
   const existing = await prisma.dutyRoster.findFirst({
     where: { id, tenantId },
   });
@@ -517,7 +561,11 @@ export async function publishDutyRoster(tenantId: string, id: string) {
 
   const roster = await prisma.dutyRoster.update({
     where: { id },
-    data: { status: 'completed' },
+    data: {
+      status: 'published',
+      approvedBy: approvedBy ?? null,
+      approvedAt: new Date(),
+    },
   });
 
   logger.info({ tenantId, rosterId: id }, 'Duty roster published');

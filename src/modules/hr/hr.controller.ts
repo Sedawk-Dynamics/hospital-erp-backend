@@ -64,8 +64,14 @@ export async function getExpiringLicenses(req: AuthenticatedRequest, res: Respon
 // Rosters
 export async function createDutyRoster(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
-    const data = await service.createDutyRoster(req.user!.tenantId, req.body);
+    const data = await service.createDutyRoster(req.user!.tenantId, req.body, req.user!.userId);
     sendResponse({ res, statusCode: 201, message: 'Duty roster created', data });
+  } catch (err) { next(err); }
+}
+export async function createDutyRosterBulk(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.createDutyRosterBulk(req.user!.tenantId, req.body, req.user!.userId);
+    sendResponse({ res, statusCode: 201, message: 'Duty rosters created', data });
   } catch (err) { next(err); }
 }
 export async function getDutyRosters(req: AuthenticatedRequest, res: Response, next: NextFunction) {
@@ -88,7 +94,7 @@ export async function updateDutyRoster(req: AuthenticatedRequest, res: Response,
 }
 export async function publishDutyRoster(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
-    const data = await service.publishDutyRoster(req.user!.tenantId, req.params.id as string);
+    const data = await service.publishDutyRoster(req.user!.tenantId, req.params.id as string, req.user!.userId);
     sendResponse({ res, message: 'Roster published', data });
   } catch (err) { next(err); }
 }

@@ -113,6 +113,8 @@ export const createDutyRosterSchema = z.object({
   body: z.object({
     staffId: z.string().uuid('Invalid staff ID'),
     departmentId: z.string().uuid('Invalid department ID'),
+    wardId: z.string().uuid('Invalid ward ID').optional(),
+    role: z.string().max(50).optional(),
     shiftDate: dateString,
     shiftType: z.enum(['morning', 'afternoon', 'night', 'general']),
     startTime: z.string().min(1, 'Start time is required'),
@@ -120,15 +122,37 @@ export const createDutyRosterSchema = z.object({
   }),
 });
 
+export const createDutyRosterBulkSchema = z.object({
+  body: z.object({
+    entries: z
+      .array(
+        z.object({
+          staffId: z.string().uuid(),
+          departmentId: z.string().uuid(),
+          wardId: z.string().uuid().optional(),
+          role: z.string().max(50).optional(),
+          shiftDate: dateString,
+          shiftType: z.enum(['morning', 'afternoon', 'night', 'general']),
+          startTime: z.string().min(1),
+          endTime: z.string().min(1),
+        }),
+      )
+      .min(1)
+      .max(500),
+  }),
+});
+
 export const updateDutyRosterSchema = z.object({
   body: z.object({
     staffId: z.string().uuid().optional(),
     departmentId: z.string().uuid().optional(),
+    wardId: z.string().uuid().nullable().optional(),
+    role: z.string().max(50).nullable().optional(),
     shiftDate: dateString.optional(),
     shiftType: z.enum(['morning', 'afternoon', 'night', 'general']).optional(),
     startTime: z.string().min(1).optional(),
     endTime: z.string().min(1).optional(),
-    status: z.enum(['scheduled', 'completed', 'swapped', 'cancelled']).optional(),
+    status: z.enum(['scheduled', 'published', 'completed', 'swapped', 'cancelled']).optional(),
   }),
   params: z.object({ id: uuidParam }),
 });
@@ -137,8 +161,10 @@ export const getDutyRostersSchema = z.object({
   query: paginationSchema.extend({
     staffId: z.string().uuid().optional(),
     departmentId: z.string().uuid().optional(),
+    wardId: z.string().uuid().optional(),
+    role: z.string().max(50).optional(),
     shiftType: z.enum(['morning', 'afternoon', 'night', 'general']).optional(),
-    status: z.enum(['scheduled', 'completed', 'swapped', 'cancelled']).optional(),
+    status: z.enum(['scheduled', 'published', 'completed', 'swapped', 'cancelled']).optional(),
     fromDate: z.string().optional(),
     toDate: z.string().optional(),
   }),
@@ -260,6 +286,7 @@ export type GetLicensesQuery = z.infer<typeof getLicensesSchema>['query'];
 export type GetExpiringLicensesQuery = z.infer<typeof getExpiringLicensesSchema>['query'];
 
 export type CreateDutyRosterInput = z.infer<typeof createDutyRosterSchema>['body'];
+export type CreateDutyRosterBulkInput = z.infer<typeof createDutyRosterBulkSchema>['body'];
 export type UpdateDutyRosterInput = z.infer<typeof updateDutyRosterSchema>['body'];
 export type GetDutyRostersQuery = z.infer<typeof getDutyRostersSchema>['query'];
 

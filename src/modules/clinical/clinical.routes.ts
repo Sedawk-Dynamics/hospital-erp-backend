@@ -18,6 +18,8 @@ import {
   transferIdParamSchema,
   approveTransferSchema,
   recordVitalsSchema,
+  correctVitalSchema,
+  vitalIdParamSchema,
   patientIdParamSchema,
   getVitalsQuerySchema,
   getAllVitalsQuerySchema,
@@ -39,8 +41,19 @@ import {
   updateEstimationSchema,
   getClinicalOrdersQuerySchema,
   acknowledgeClinicalOrderSchema,
+  getOrderAcknowledgementsQuerySchema,
 } from './clinical.validation';
+import {
+  createNurseAssignmentSchema,
+  getNurseAssignmentsQuerySchema,
+  nurseAssignmentIdParamSchema,
+  updateNurseAssignmentSchema,
+  endNurseAssignmentSchema,
+  handoverNurseAssignmentSchema,
+  bulkHandoverSchema,
+} from './nurse-assignments.validation';
 import * as controller from './clinical.controller';
+import * as nurseAssignmentsController from './nurse-assignments.controller';
 
 export const clinicalRoutes = Router();
 
@@ -71,6 +84,12 @@ clinicalRoutes.patch('/transfers/:id/approve', authenticate, requirePermission('
 // --- Vitals ---
 clinicalRoutes.post('/vitals', authenticate, requirePermission('vitals', 'create'), validate(recordVitalsSchema), controller.recordVitals);
 clinicalRoutes.get('/vitals', authenticate, requirePermission('vitals', 'read'), validate(getAllVitalsQuerySchema), controller.getAllVitals);
+// Append-only correction: any attempt to modify a vital (by doctor or by nurse
+// outside the grace window) creates a NEW row linked to the original via
+// supersedesVitalId. Within-grace self-edits by the original nurse are the only
+// in-place updates and happen via this same endpoint.
+clinicalRoutes.post('/vitals/:id/correct', authenticate, requirePermission('vitals', 'update'), validate(correctVitalSchema), controller.correctVital);
+clinicalRoutes.get('/vitals/:id/history', authenticate, requirePermission('vitals', 'read'), validate(vitalIdParamSchema), controller.getVitalHistory);
 clinicalRoutes.get('/vitals/:patientId', authenticate, requirePermission('vitals', 'read'), validate(getVitalsQuerySchema), controller.getVitals);
 clinicalRoutes.get('/vitals/:patientId/latest', authenticate, requirePermission('vitals', 'read'), validate(patientIdParamSchema), controller.getLatestVitals);
 
@@ -94,7 +113,17 @@ clinicalRoutes.put('/reservations/:id', authenticate, requirePermission('admissi
 
 // --- Clinical Orders (Nurse unified view) ---
 clinicalRoutes.get('/orders', authenticate, requirePermission('prescriptions', 'read'), validate(getClinicalOrdersQuerySchema), controller.getClinicalOrders);
+clinicalRoutes.get('/orders/acknowledgements', authenticate, requirePermission('nursing_notes', 'read'), validate(getOrderAcknowledgementsQuerySchema), controller.getOrderAcknowledgements);
 clinicalRoutes.post('/orders/acknowledge', authenticate, requirePermission('nursing_notes', 'create'), validate(acknowledgeClinicalOrderSchema), controller.acknowledgeClinicalOrder);
+
+// --- Nurse Assignments (per-shift patient→nurse, IPD only) ---
+clinicalRoutes.get('/nurse-assignments', authenticate, requirePermission('nurse_assignments', 'read'), validate(getNurseAssignmentsQuerySchema), nurseAssignmentsController.listNurseAssignments);
+clinicalRoutes.post('/nurse-assignments', authenticate, requirePermission('nurse_assignments', 'create'), validate(createNurseAssignmentSchema), nurseAssignmentsController.createNurseAssignment);
+clinicalRoutes.post('/nurse-assignments/bulk-handover', authenticate, requirePermission('nurse_assignments', 'update'), validate(bulkHandoverSchema), nurseAssignmentsController.bulkHandoverAssignments);
+clinicalRoutes.get('/nurse-assignments/:id', authenticate, requirePermission('nurse_assignments', 'read'), validate(nurseAssignmentIdParamSchema), nurseAssignmentsController.getNurseAssignmentById);
+clinicalRoutes.patch('/nurse-assignments/:id', authenticate, requirePermission('nurse_assignments', 'update'), validate(updateNurseAssignmentSchema), nurseAssignmentsController.updateNurseAssignment);
+clinicalRoutes.post('/nurse-assignments/:id/end', authenticate, requirePermission('nurse_assignments', 'update'), validate(endNurseAssignmentSchema), nurseAssignmentsController.endNurseAssignment);
+clinicalRoutes.post('/nurse-assignments/:id/handover', authenticate, requirePermission('nurse_assignments', 'update'), validate(handoverNurseAssignmentSchema), nurseAssignmentsController.handoverNurseAssignment);
 
 // --- Estimations ---
 clinicalRoutes.post('/estimations', authenticate, requirePermission('admissions', 'create'), validate(createEstimationSchema), controller.createEstimation);
