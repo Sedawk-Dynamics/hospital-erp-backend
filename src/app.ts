@@ -1,3 +1,11 @@
+// Prisma returns BigInt for fields like fileSizeBytes; JSON.stringify cannot
+// serialize BigInt natively and Express's res.json() would otherwise 500.
+// Serialize as a string to preserve precision — callers that need a number
+// can wrap in Number().
+(BigInt.prototype as unknown as { toJSON: () => string }).toJSON = function () {
+  return this.toString();
+};
+
 import express from 'express';
 import path from 'path';
 import cors from 'cors';

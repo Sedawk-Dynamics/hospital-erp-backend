@@ -12,6 +12,7 @@
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
     "db:seed:physical-observations": "tsx prisma/seed-physical-observations.ts",
+    "db:seed:lab-tests": "tsx prisma/seed-lab-tests.ts",
     "db:seed:prod": "node dist-seed/prisma/seed.js",
     "db:studio": "prisma studio",
     "lint": "eslint src --ext .ts",
