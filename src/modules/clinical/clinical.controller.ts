@@ -275,7 +275,8 @@ export async function recordVitals(
   try {
     const tenantId = req.user!.tenantId;
     const userId = req.user!.userId;
-    const vital = await clinicalService.recordVitals(tenantId, userId, req.body);
+    const roles = req.user!.roles || [];
+    const vital = await clinicalService.recordVitals(tenantId, userId, roles, req.body);
     sendResponse({
       res,
       statusCode: 201,

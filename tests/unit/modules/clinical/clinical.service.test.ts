@@ -608,7 +608,7 @@ describe('ClinicalService', () => {
       };
       vi.mocked(prisma.vital.create).mockResolvedValue(createdVital as any);
 
-      const result = await recordVitals(TENANT_ID, USER_ID, {
+      const result = await recordVitals(TENANT_ID, USER_ID, ['nurse'], {
         visitId: 'visit-1',
         patientId: 'patient-1',
         bloodPressureSystolic: 120,
@@ -646,7 +646,7 @@ describe('ClinicalService', () => {
       } as any);
 
       await expect(
-        recordVitals(TENANT_ID, USER_ID, {
+        recordVitals(TENANT_ID, USER_ID, ['nurse'], {
           visitId: 'visit-1',
           patientId: 'patient-1',
           bloodPressureSystolic: 120,
@@ -655,13 +655,34 @@ describe('ClinicalService', () => {
       ).rejects.toThrow('Patient does not match the visit');
     });
 
+    it('should reject doctors and other non-nursing roles', async () => {
+      vi.mocked(prisma.visit.findFirst).mockResolvedValue(mockVisitActive as any);
+
+      await expect(
+        recordVitals(TENANT_ID, USER_ID, ['doctor'], {
+          visitId: 'visit-1',
+          patientId: 'patient-1',
+          bloodPressureSystolic: 120,
+          bloodPressureDiastolic: 80,
+        }),
+      ).rejects.toThrow(/nursing team/);
+
+      await expect(
+        recordVitals(TENANT_ID, USER_ID, ['front_desk'], {
+          visitId: 'visit-1',
+          patientId: 'patient-1',
+          bloodPressureSystolic: 120,
+        }),
+      ).rejects.toThrow(/nursing team/);
+    });
+
     it('should calculate BMI when weight and height are provided', async () => {
       vi.mocked(prisma.visit.findFirst).mockResolvedValue(mockVisitActive as any);
       vi.mocked(prisma.vital.create).mockImplementation(async (args: any) => {
         return { id: 'vital-2', ...args.data };
       });
 
-      const result = await recordVitals(TENANT_ID, USER_ID, {
+      const result = await recordVitals(TENANT_ID, USER_ID, ['nurse'], {
         visitId: 'visit-1',
         patientId: 'patient-1',
         weightKg: 70,

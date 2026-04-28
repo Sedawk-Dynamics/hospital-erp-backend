@@ -78,7 +78,9 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'appointments', action: 'read' }, { module: 'appointments', action: 'create' }, { module: 'appointments', action: 'update' },
       { module: 'visits', action: 'read' }, { module: 'visits', action: 'create' }, { module: 'visits', action: 'update' },
       { module: 'admissions', action: 'read' }, { module: 'admissions', action: 'create' }, { module: 'admissions', action: 'update' },
-      { module: 'vitals', action: 'read' }, { module: 'vitals', action: 'create' },
+      // Vitals are owned by the nursing team. Doctors can read but never create
+      // or correct — corrections are append-only and limited to nursing roles.
+      { module: 'vitals', action: 'read' },
       { module: 'diagnoses', action: 'read' }, { module: 'diagnoses', action: 'create' }, { module: 'diagnoses', action: 'update' }, { module: 'diagnoses', action: 'delete' },
       { module: 'progress_notes', action: 'read' }, { module: 'progress_notes', action: 'create' }, { module: 'progress_notes', action: 'update' },
       { module: 'prescriptions', action: 'read' }, { module: 'prescriptions', action: 'create' }, { module: 'prescriptions', action: 'update' },

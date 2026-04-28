@@ -36,11 +36,37 @@ import type {
  * Window during which the original recorder can silently fix a typo in their
  * own vital entry without the edit being treated as an audited correction.
  * Kept intentionally short (15 minutes). Any edit outside this window, or any
- * edit by a different user, creates a new append-only Vital row whose
+ * edit by a different nurse, creates a new append-only Vital row whose
  * `supersedesVitalId` points at the original.
  */
 export const VITAL_SELF_CORRECTION_WINDOW_MS = 15 * 60 * 1000;
+
+/**
+ * Roles permitted to record or correct vitals. Vitals are nursing-owned —
+ * doctors and other clinical staff can read but never write. Super admin keeps
+ * write access for support / data correction scenarios.
+ */
+const VITAL_RECORDER_ROLES = new Set([
+  'nurse',
+  'nurse_incharge',
+  'head_nurse',
+  'super_admin',
+]);
+
+/**
+ * Subset of recorder roles allowed to silently self-correct within the grace
+ * window. `head_nurse` and `super_admin` always go through the audited
+ * append-only path even if they were the original recorder.
+ */
 const VITAL_SELF_CORRECT_ROLES = new Set(['nurse', 'nurse_incharge']);
+
+function assertCanWriteVitals(roles: string[]): void {
+  if (!roles.some((r) => VITAL_RECORDER_ROLES.has(r))) {
+    throw AppError.forbidden(
+      'Vitals are recorded by the nursing team. Doctors and other roles cannot create or correct vitals.',
+    );
+  }
+}
 
 // ==================== Visits ====================
 
@@ -851,8 +877,20 @@ export async function approveTransfer(
 /**
  * Record vital signs for a patient.
  * Scoped by tenant through the visit relation since Vital has no tenantId.
+ *
+ * Vitals are nursing-owned: only nurse / nurse_incharge / head_nurse (plus
+ * super_admin for support flows) may write. The route is also gated on
+ * `vitals:create`, but we re-check here because permissions may drift between
+ * tenants and the role rule is stricter than the permission alias.
  */
-export async function recordVitals(tenantId: string, userId: string, data: RecordVitalsInput) {
+export async function recordVitals(
+  tenantId: string,
+  userId: string,
+  roles: string[],
+  data: RecordVitalsInput,
+) {
+  assertCanWriteVitals(roles);
+
   // Verify visit belongs to tenant
   const visit = await prisma.visit.findFirst({
     where: { id: data.visitId, tenantId },
@@ -1019,11 +1057,12 @@ export async function getLatestVitals(tenantId: string, patientId: string) {
  * Append-only correction for a vital. Three paths:
  *   1. Self-correction within the grace window by the original recorder (must be
  *      a nurse/nurse_incharge) — in-place update, no audit row created.
- *   2. Any doctor, or any edit outside the grace window, or any edit by a user
- *      who is NOT the original recorder — creates a new Vital row with
- *      supersedesVitalId, isCorrection=true, correctionReason required.
- *   3. OPD/IPD distinction is irrelevant for this endpoint; enforcement is
- *      purely on role + time + recorder identity.
+ *   2. Any other write by a nurse / nurse_incharge / head_nurse — creates a new
+ *      Vital row with supersedesVitalId, isCorrection=true, correctionReason
+ *      required.
+ *   3. Doctors and non-nursing roles are rejected outright. Vitals are owned by
+ *      the nursing team; if a doctor disputes a reading they ask a nurse to
+ *      re-measure rather than correcting silently.
  */
 export async function correctVital(
   tenantId: string,
@@ -1032,6 +1071,8 @@ export async function correctVital(
   vitalId: string,
   data: CorrectVitalInput,
 ) {
+  assertCanWriteVitals(roles);
+
   const original = await prisma.vital.findFirst({
     where: { id: vitalId, visit: { tenantId } },
     include: { visit: { select: { tenantId: true } } },
