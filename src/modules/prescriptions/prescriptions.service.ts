@@ -134,7 +134,25 @@ export async function getPrescriptions(tenantId: string, query: GetPrescriptions
     }
     where.visitId = admission.visitId;
   }
-  if (query.status) where.status = query.status;
+  // Pharmacy-queue filters: `status=pending` and/or `dispensed=false`
+  // both map to the same incoming-prescription set (active OR
+  // partially_dispensed). The two are kept as separate filters so
+  // callers can mix them without contradicting each other.
+  const pendingStatuses = ['active', 'partially_dispensed'] as const;
+  if (query.status === 'pending') {
+    where.status = { in: pendingStatuses };
+  } else if (query.status) {
+    where.status = query.status;
+  }
+  if (query.dispensed === false) {
+    // If a status filter was already set, intersect it with pending.
+    where.status =
+      where.status && typeof where.status === 'object' && 'in' in where.status
+        ? where.status
+        : { in: pendingStatuses };
+  } else if (query.dispensed === true) {
+    where.status = 'dispensed';
+  }
   if (query.prescriptionType) where.prescriptionType = query.prescriptionType;
 
   if (query.fromDate) {

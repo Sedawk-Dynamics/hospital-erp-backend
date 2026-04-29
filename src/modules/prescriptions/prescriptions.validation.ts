@@ -88,8 +88,19 @@ export const getPrescriptionsQuerySchema = z.object({
     doctorId: z.string().uuid().optional(),
     visitId: z.string().uuid().optional(),
     admissionId: z.string().uuid().optional(),
-    status: z.enum(['active', 'dispensed', 'partially_dispensed', 'cancelled']).optional(),
+    // 'pending' is an alias for the pharmacy queue — resolves to
+    // status IN (active, partially_dispensed) so prescriptions still
+    // awaiting (full) dispense show up in one filter.
+    status: z
+      .enum(['active', 'dispensed', 'partially_dispensed', 'cancelled', 'pending'])
+      .optional(),
     prescriptionType: z.enum(['op', 'ip']).optional(),
+    // Pharmacy queue filter: when explicitly false, restricts to
+    // prescriptions that are NOT fully dispensed (active /
+    // partially_dispensed). When true, returns only fully dispensed.
+    dispensed: z
+      .union([z.boolean(), z.string().transform((v) => v === 'true')])
+      .optional(),
     fromDate: z.string().optional(),
     toDate: z.string().optional(),
   }),

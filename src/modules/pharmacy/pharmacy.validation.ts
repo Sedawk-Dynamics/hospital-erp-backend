@@ -144,6 +144,12 @@ export const getBatchesQuerySchema = z.object({
       .string()
       .transform((val) => val === 'true')
       .optional(),
+    // Convenience filter for the POS picker: only batches that are not
+    // expired, not recalled, and have stock > 0. Trumps `isExpired`.
+    availableOnly: z
+      .string()
+      .transform((val) => val === 'true')
+      .optional(),
   }),
 });
 

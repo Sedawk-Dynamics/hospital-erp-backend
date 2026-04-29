@@ -359,7 +359,13 @@ export async function getBatches(tenantId: string, query: GetBatchesQuery) {
   const where: any = { tenantId };
 
   if (query.drugId) where.drugId = query.drugId;
-  if (query.isExpired !== undefined) where.isExpired = query.isExpired;
+  if ((query as any).availableOnly) {
+    where.isExpired = false;
+    where.isRecalled = false;
+    where.quantityInStock = { gt: 0 };
+  } else if (query.isExpired !== undefined) {
+    where.isExpired = query.isExpired;
+  }
 
   if (query.search) {
     where.OR = [
