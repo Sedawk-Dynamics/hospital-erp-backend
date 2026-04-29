@@ -265,6 +265,30 @@ export async function cancelLabOrder(
   }
 }
 
+export async function acceptLabOrder(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const order = await labService.acceptLabOrder(
+      tenantId,
+      req.params.id as string,
+      userId,
+      req.body,
+    );
+    sendResponse({
+      res,
+      message: 'Lab order accepted successfully',
+      data: order,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // ============================================================
 // Samples
 // ============================================================
@@ -391,10 +415,15 @@ export async function verifyResults(
   try {
     const tenantId = req.user!.tenantId;
     const userId = req.user!.userId;
-    const result = await labService.verifyResult(tenantId, req.params.id as string, userId);
+    const result = await labService.verifyResult(
+      tenantId,
+      req.params.id as string,
+      userId,
+      req.body,
+    );
     sendResponse({
       res,
-      message: 'Result verified successfully',
+      message: 'Result reviewed successfully',
       data: result,
     });
   } catch (err) {
@@ -415,11 +444,13 @@ export async function generateLabReport(
     const tenantId = req.user!.tenantId;
     const userId = req.user!.userId;
     const reportContent = req.body?.reportContent;
+    const hospitalBranding = req.body?.hospitalBranding;
     const report = await labService.generateLabReport(
       tenantId,
       req.params.orderId as string,
       userId,
       reportContent,
+      hospitalBranding,
     );
     sendResponse({
       res,
@@ -477,6 +508,78 @@ export async function getInvestigationHistory(
     const patientId = req.params.patientId as string;
     const data = await labService.getInvestigationHistory(tenantId, patientId);
     sendResponse({ res, message: 'Investigation history', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function signLabReport(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const report = await labService.signLabReport(tenantId, req.params.id as string, userId);
+    sendResponse({ res, message: 'Lab report signed', data: report });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function publishLabReport(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const notify = (req.body?.notify ?? true) as boolean;
+    const report = await labService.publishLabReport(
+      tenantId,
+      req.params.id as string,
+      userId,
+      notify,
+    );
+    sendResponse({ res, message: 'Lab report published', data: report });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function correctLabReport(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const report = await labService.correctLabReport(
+      tenantId,
+      req.params.id as string,
+      userId,
+      req.body,
+    );
+    sendResponse({ res, message: 'Lab report corrected', data: report });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getLabReportAnalytics(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const fromDate = (req.query.fromDate as string) || undefined;
+    const toDate = (req.query.toDate as string) || undefined;
+    const data = await labService.getLabReportAnalytics(tenantId, { fromDate, toDate });
+    sendResponse({ res, message: 'Lab analytics', data });
   } catch (err) {
     next(err);
   }

@@ -37,8 +37,10 @@ export const getImagingRequestsQuerySchema = z.object({
     imagingType: z.enum(['xray', 'mri', 'ct_scan', 'ultrasound', 'ecg', 'echo', 'other']).optional(),
     urgency: z.enum(['routine', 'urgent', 'stat']).optional(),
     patientId: z.string().uuid().optional(),
+    assignedTechnicianId: z.string().uuid().optional(),
     fromDate: z.string().optional(),
     toDate: z.string().optional(),
+    date: z.string().optional(),
   }),
 });
 
@@ -54,6 +56,12 @@ export const updateImagingRequestSchema = z.object({
     urgency: z.enum(['routine', 'urgent', 'stat']).optional(),
     clinicalIndication: z.string().optional(),
     notes: z.string().optional(),
+    scheduledAt: z
+      .string()
+      .refine((val) => !isNaN(Date.parse(val)), { message: 'Invalid scheduled date' })
+      .optional(),
+    assignedTechnicianId: z.string().uuid('Invalid technician ID').optional(),
+    room: z.string().max(100).optional(),
   }),
 });
 
@@ -71,6 +79,8 @@ export const scheduleImagingSchema = z.object({
     scheduledAt: z.string().refine((val) => !isNaN(Date.parse(val)), {
       message: 'Invalid scheduled date',
     }),
+    assignedTechnicianId: z.string().uuid('Invalid technician ID').optional(),
+    room: z.string().max(100).optional(),
   }),
 });
 
@@ -117,6 +127,17 @@ export const verifyImagingResultSchema = z.object({
   params: z.object({
     id: z.string().uuid('Invalid imaging result ID'),
   }),
+});
+
+export const publishImagingResultSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid imaging result ID'),
+  }),
+  body: z
+    .object({
+      notify: z.boolean().default(true),
+    })
+    .optional(),
 });
 
 // ============================================================

@@ -16,6 +16,7 @@ import {
   labOrderIdParamSchema,
   updateLabOrderSchema,
   cancelLabOrderSchema,
+  acceptLabOrderSchema,
   collectSampleSchema,
   getSamplesSchema,
   updateSampleStatusSchema,
@@ -26,6 +27,9 @@ import {
   generateLabReportSchema,
   getLabReportsSchema,
   labReportIdParamSchema,
+  signLabReportSchema,
+  publishLabReportSchema,
+  correctLabReportSchema,
 } from './lab.validation';
 import * as controller from './lab.controller';
 
@@ -51,6 +55,7 @@ labRoutes.get('/orders', authenticate, requirePermission('lab_orders', 'read'), 
 labRoutes.get('/orders/:id', authenticate, requirePermission('lab_orders', 'read'), validate(labOrderIdParamSchema), controller.getLabOrderById);
 labRoutes.put('/orders/:id', authenticate, requirePermission('lab_orders', 'update'), validate(updateLabOrderSchema), controller.updateLabOrder);
 labRoutes.patch('/orders/:id/cancel', authenticate, requirePermission('lab_orders', 'update'), validate(cancelLabOrderSchema), controller.cancelLabOrder);
+labRoutes.patch('/orders/:id/accept', authenticate, requirePermission('lab_orders', 'update'), validate(acceptLabOrderSchema), controller.acceptLabOrder);
 
 // --- Samples ---
 labRoutes.post('/samples', authenticate, requirePermission('lab_orders', 'update'), validate(collectSampleSchema), controller.collectSample);
@@ -65,8 +70,12 @@ labRoutes.patch('/results/:id/verify', authenticate, requirePermission('lab_repo
 
 // --- Reports ---
 labRoutes.post('/reports/:orderId/generate', authenticate, requirePermission('lab_reports', 'create'), validate(generateLabReportSchema), controller.generateLabReport);
+labRoutes.get('/reports/analytics', authenticate, requirePermission('lab_reports', 'read'), controller.getLabReportAnalytics);
 labRoutes.get('/reports', authenticate, requirePermission('lab_reports', 'read'), validate(getLabReportsSchema), controller.getLabReports);
 labRoutes.get('/reports/:id', authenticate, requirePermission('lab_reports', 'read'), validate(labReportIdParamSchema), controller.getLabReportById);
+labRoutes.patch('/reports/:id/sign', authenticate, requirePermission('lab_reports', 'approve'), validate(signLabReportSchema), controller.signLabReport);
+labRoutes.patch('/reports/:id/publish', authenticate, requirePermission('lab_reports', 'approve'), validate(publishLabReportSchema), controller.publishLabReport);
+labRoutes.patch('/reports/:id/correct', authenticate, requirePermission('lab_reports', 'update'), validate(correctLabReportSchema), controller.correctLabReport);
 
 // --- Investigation History (aggregated per patient) ---
 labRoutes.get('/investigation-history/:patientId', authenticate, requirePermission('lab_reports', 'read'), controller.getInvestigationHistory);

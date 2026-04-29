@@ -12,6 +12,123 @@ import type {
   AddImagingReportInput,
 } from './imaging.validation';
 
+// Best-effort notification (failures don't break workflow)
+async function safeNotify(params: {
+  tenantId: string;
+  userId: string;
+  title: string;
+  message: string;
+  notificationType?: 'lab_result' | 'general' | 'alert';
+  referenceType?: string;
+  referenceId?: string;
+}) {
+  try {
+    await prisma.notification.create({
+      data: {
+        tenantId: params.tenantId,
+        userId: params.userId,
+        title: params.title,
+        message: params.message,
+        notificationType: params.notificationType ?? 'general',
+        channel: 'in_app',
+        referenceType: params.referenceType,
+        referenceId: params.referenceId,
+      },
+    });
+  } catch (err) {
+    logger.warn({ err, ...params }, 'Failed to dispatch imaging notification');
+  }
+}
+
+// Resolve a tariff price for a given imaging type (best-effort lookup against ServiceTariff)
+async function lookupImagingPrice(tenantId: string, imagingType: string, bodyPart?: string | null) {
+  try {
+    const tariff = await prisma.serviceTariff.findFirst({
+      where: {
+        tenantId,
+        category: 'radiology',
+        OR: [
+          { serviceName: { contains: bodyPart || imagingType, mode: 'insensitive' } },
+          { serviceName: { contains: imagingType, mode: 'insensitive' } },
+        ],
+      },
+    });
+    if (tariff) return { id: tariff.id, price: Number(tariff.basePrice ?? 0) };
+  } catch {}
+  return { id: null as string | null, price: 0 };
+}
+
+// Auto-add a radiology line item to the patient's draft bill
+export async function autoLinkImagingToBill(tenantId: string, requestId: string) {
+  try {
+    const request = await prisma.imagingRequest.findFirst({
+      where: { id: requestId, tenantId },
+    });
+    if (!request) return;
+
+    let bill = await prisma.bill.findFirst({
+      where: { tenantId, visitId: request.visitId, status: 'draft' },
+    });
+    if (!bill) {
+      const billNumber = `BILL-${Date.now()}`;
+      bill = await prisma.bill.create({
+        data: {
+          tenantId,
+          billNumber,
+          patientId: request.patientId,
+          visitId: request.visitId,
+          billDate: new Date(),
+          status: 'draft',
+        },
+      });
+    }
+
+    const existing = await prisma.billItem.findFirst({
+      where: {
+        billId: bill.id,
+        referenceType: 'imaging_request',
+        referenceId: requestId,
+      },
+    });
+    if (existing) return;
+
+    const { id: serviceTariffId, price } = await lookupImagingPrice(
+      tenantId,
+      request.imagingType,
+      request.bodyPart,
+    );
+
+    await prisma.billItem.create({
+      data: {
+        billId: bill.id,
+        serviceTariffId: serviceTariffId ?? undefined,
+        description: `${request.imagingType.toUpperCase()}${request.bodyPart ? ' — ' + request.bodyPart : ''}`,
+        category: 'radiology',
+        quantity: 1,
+        unitPrice: price,
+        totalAmount: price,
+        referenceType: 'imaging_request',
+        referenceId: requestId,
+        isAutoPulled: true,
+      },
+    });
+
+    const items = await prisma.billItem.findMany({ where: { billId: bill.id } });
+    const subtotal = items.reduce((sum, x) => sum + Number(x.totalAmount ?? 0), 0);
+    await prisma.bill.update({
+      where: { id: bill.id },
+      data: {
+        subtotal,
+        totalAmount: subtotal,
+        patientPayableAmount: subtotal,
+        balanceDue: subtotal - Number(bill.amountPaid ?? 0),
+      },
+    });
+  } catch (err) {
+    logger.warn({ err, requestId }, 'Failed to auto-link imaging request to bill');
+  }
+}
+
 // ============================================================
 // Imaging Requests
 // ============================================================
@@ -58,6 +175,10 @@ export async function createImagingRequest(
   });
 
   logger.info({ tenantId, imagingRequestId: request.id }, 'Imaging request created');
+
+  // Auto-link to draft bill (best effort)
+  void autoLinkImagingToBill(tenantId, request.id);
+
   return request;
 }
 
@@ -80,6 +201,19 @@ export async function getImagingRequests(tenantId: string, query: GetImagingRequ
 
   if (query.patientId) {
     where.patientId = query.patientId;
+  }
+
+  if (query.assignedTechnicianId) {
+    where.assignedTechnicianId = query.assignedTechnicianId;
+  }
+
+  if (query.date) {
+    const start = new Date(query.date);
+    if (!isNaN(start.getTime())) {
+      const end = new Date(start);
+      end.setDate(end.getDate() + 1);
+      where.scheduledAt = { gte: start, lt: end };
+    }
   }
 
   if (query.fromDate) {
@@ -105,9 +239,11 @@ export async function getImagingRequests(tenantId: string, query: GetImagingRequ
       skip,
       take,
       include: {
-        patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+        patient: { select: { id: true, mrn: true, firstName: true, lastName: true, phone: true } },
         orderer: { select: { id: true, firstName: true, lastName: true } },
+        assignedTechnician: { select: { id: true, firstName: true, lastName: true } },
         visit: { select: { id: true, visitType: true } },
+        imagingResult: { select: { id: true, status: true } },
       },
       orderBy: { createdAt: query.sortOrder || 'desc' },
     }),
@@ -162,6 +298,14 @@ export async function updateImagingRequest(
     throw AppError.badRequest(`Cannot update a ${request.status} imaging request`);
   }
 
+  // Validate technician belongs to tenant
+  if (data.assignedTechnicianId) {
+    const tech = await prisma.user.findFirst({
+      where: { id: data.assignedTechnicianId, tenantId, isActive: true },
+    });
+    if (!tech) throw AppError.badRequest('Assigned technician not found in tenant');
+  }
+
   const updated = await prisma.imagingRequest.update({
     where: { id },
     data: {
@@ -170,10 +314,16 @@ export async function updateImagingRequest(
       urgency: data.urgency,
       clinicalIndication: data.clinicalIndication,
       notes: data.notes,
+      scheduledAt: data.scheduledAt ? new Date(data.scheduledAt) : undefined,
+      assignedTechnicianId: data.assignedTechnicianId,
+      room: data.room,
+      // If a schedule is being set on a 'requested' record, advance it
+      ...(data.scheduledAt && request.status === 'requested' ? { status: 'scheduled' } : {}),
     },
     include: {
       patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
       orderer: { select: { id: true, firstName: true, lastName: true } },
+      assignedTechnician: { select: { id: true, firstName: true, lastName: true } },
       visit: { select: { id: true, visitType: true } },
     },
   });
@@ -225,18 +375,41 @@ export async function scheduleImaging(tenantId: string, id: string, data: Schedu
     throw AppError.badRequest(`Cannot schedule a ${request.status} imaging request`);
   }
 
+  if (data.assignedTechnicianId) {
+    const tech = await prisma.user.findFirst({
+      where: { id: data.assignedTechnicianId, tenantId, isActive: true },
+    });
+    if (!tech) throw AppError.badRequest('Assigned technician not found in tenant');
+  }
+
   const updated = await prisma.imagingRequest.update({
     where: { id },
     data: {
       scheduledAt: new Date(data.scheduledAt),
+      assignedTechnicianId: data.assignedTechnicianId,
+      room: data.room,
       status: 'scheduled',
     },
     include: {
       patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
       orderer: { select: { id: true, firstName: true, lastName: true } },
+      assignedTechnician: { select: { id: true, firstName: true, lastName: true } },
       visit: { select: { id: true, visitType: true } },
     },
   });
+
+  // Notify the assigned technician
+  if (data.assignedTechnicianId) {
+    await safeNotify({
+      tenantId,
+      userId: data.assignedTechnicianId,
+      title: 'New imaging study assigned',
+      message: `Imaging study scheduled at ${new Date(data.scheduledAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}.`,
+      notificationType: 'general',
+      referenceType: 'imaging_request',
+      referenceId: id,
+    });
+  }
 
   logger.info({ tenantId, imagingRequestId: id }, 'Imaging request scheduled');
   return updated;
@@ -462,13 +635,40 @@ export async function verifyImagingResult(tenantId: string, id: string, userId: 
     },
     include: {
       imagingRequest: {
-        select: { id: true, imagingType: true, bodyPart: true },
+        select: { id: true, imagingType: true, bodyPart: true, orderedBy: true },
       },
       patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
       radiologist: { select: { id: true, firstName: true, lastName: true } },
       signer: { select: { id: true, firstName: true, lastName: true } },
     },
   });
+
+  const reportRefMsg = `Radiology report (${updated.imagingRequest.imagingType.toUpperCase()}${updated.imagingRequest.bodyPart ? ' - ' + updated.imagingRequest.bodyPart : ''}) is ready.`;
+
+  if (updated.imagingRequest.orderedBy) {
+    await safeNotify({
+      tenantId,
+      userId: updated.imagingRequest.orderedBy,
+      title: 'Radiology report ready',
+      message: reportRefMsg,
+      notificationType: 'lab_result',
+      referenceType: 'imaging_result',
+      referenceId: id,
+    });
+  }
+  const patient = await prisma.patient.findUnique({ where: { id: result.patientId } });
+  const patientUserId = (patient as any)?.userId as string | undefined;
+  if (patientUserId) {
+    await safeNotify({
+      tenantId,
+      userId: patientUserId,
+      title: 'Your imaging report is ready',
+      message: 'Your imaging report has been published. Tap to view.',
+      notificationType: 'lab_result',
+      referenceType: 'imaging_result',
+      referenceId: id,
+    });
+  }
 
   logger.info({ tenantId, imagingResultId: id, verifiedBy: userId }, 'Imaging result verified');
   return updated;

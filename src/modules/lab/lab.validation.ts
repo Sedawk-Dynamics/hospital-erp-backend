@@ -130,6 +130,21 @@ export const getLabOrdersSchema = z.object({
     urgency: z.enum(['routine', 'urgent', 'stat']).optional(),
     fromDate: z.string().optional(),
     toDate: z.string().optional(),
+    assignedTo: z.string().optional(),
+    assignedDeptId: z.string().uuid().optional(),
+    outsourced: z
+      .string()
+      .transform((val) => val === 'true')
+      .optional(),
+    isThirdParty: z
+      .string()
+      .transform((val) => val === 'true')
+      .optional(),
+    accepted: z
+      .string()
+      .transform((val) => val === 'true')
+      .optional(),
+    date: z.string().optional(),
   }),
 });
 
@@ -167,6 +182,17 @@ export const cancelLabOrderSchema = z.object({
   body: z.object({
     reason: z.string().max(500).optional(),
   }).optional(),
+});
+
+export const acceptLabOrderSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid order ID'),
+  }),
+  body: z.object({
+    assignedToId: z.string().uuid('Invalid technician user ID').optional(),
+    assignedDeptId: z.string().uuid('Invalid department ID').optional(),
+    notes: z.string().max(500).optional(),
+  }),
 });
 
 // ============================================================
@@ -244,6 +270,12 @@ export const verifyResultSchema = z.object({
   params: z.object({
     id: z.string().uuid('Invalid result ID'),
   }),
+  body: z
+    .object({
+      action: z.enum(['approve', 'request_correction']).default('approve'),
+      correctionNotes: z.string().max(1000).optional(),
+    })
+    .optional(),
 });
 
 // ============================================================
@@ -254,9 +286,49 @@ export const generateLabReportSchema = z.object({
   params: z.object({
     orderId: z.string().uuid('Invalid order ID'),
   }),
+  body: z
+    .object({
+      reportContent: z.string().optional(),
+      hospitalBranding: z
+        .object({
+          name: z.string().optional(),
+          logoUrl: z.string().optional(),
+          address: z.string().optional(),
+          phone: z.string().optional(),
+          accreditation: z.string().optional(),
+        })
+        .partial()
+        .optional(),
+    })
+    .optional(),
+});
+
+export const signLabReportSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid report ID'),
+  }),
+});
+
+export const publishLabReportSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid report ID'),
+  }),
+  body: z
+    .object({
+      notify: z.boolean().default(true),
+    })
+    .optional(),
+});
+
+export const correctLabReportSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid report ID'),
+  }),
   body: z.object({
+    correctionNotes: z.string().min(1, 'Correction reason is required').max(2000),
     reportContent: z.string().optional(),
-  }).optional(),
+    notify: z.boolean().default(true),
+  }),
 });
 
 export const getLabReportsSchema = z.object({
@@ -289,6 +361,8 @@ export type GetTestsQuery = z.infer<typeof getTestsSchema>['query'];
 export type CreateLabOrderInput = z.infer<typeof createLabOrderSchema>['body'];
 export type UpdateLabOrderInput = z.infer<typeof updateLabOrderSchema>['body'];
 export type GetLabOrdersQuery = z.infer<typeof getLabOrdersSchema>['query'];
+export type AcceptLabOrderInput = z.infer<typeof acceptLabOrderSchema>['body'];
+export type VerifyResultInput = NonNullable<z.infer<typeof verifyResultSchema>['body']>;
 
 export type CollectSampleInput = z.infer<typeof collectSampleSchema>['body'];
 export type GetSamplesQuery = z.infer<typeof getSamplesSchema>['query'];
@@ -299,3 +373,4 @@ export type EnterResultsInput = z.infer<typeof enterResultsSchema>['body'];
 export type GetResultsQuery = z.infer<typeof getResultsSchema>['query'];
 
 export type GetLabReportsQuery = z.infer<typeof getLabReportsSchema>['query'];
+export type CorrectLabReportInput = z.infer<typeof correctLabReportSchema>['body'];

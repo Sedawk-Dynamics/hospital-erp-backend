@@ -12,14 +12,119 @@ import type {
   CreateLabOrderInput,
   UpdateLabOrderInput,
   GetLabOrdersQuery,
+  AcceptLabOrderInput,
   CollectSampleInput,
   GetSamplesQuery,
   UpdateSampleStatusInput,
   RejectSampleInput,
   EnterResultsInput,
   GetResultsQuery,
+  VerifyResultInput,
   GetLabReportsQuery,
+  CorrectLabReportInput,
 } from './lab.validation';
+
+// Helper: send in-app notification (failures must not break the workflow)
+async function safeNotify(params: {
+  tenantId: string;
+  userId: string;
+  title: string;
+  message: string;
+  notificationType: 'lab_result' | 'general' | 'alert';
+  channel?: 'in_app' | 'email' | 'sms' | 'push';
+  referenceType?: string;
+  referenceId?: string;
+}) {
+  try {
+    await prisma.notification.create({
+      data: {
+        tenantId: params.tenantId,
+        userId: params.userId,
+        title: params.title,
+        message: params.message,
+        notificationType: params.notificationType,
+        channel: params.channel ?? 'in_app',
+        referenceType: params.referenceType,
+        referenceId: params.referenceId,
+      },
+    });
+  } catch (err) {
+    logger.warn({ err, ...params }, 'Failed to dispatch lab notification');
+  }
+}
+
+// Helper: auto-link lab order tests to a draft bill on the patient's visit
+export async function autoLinkLabOrderToBill(tenantId: string, labOrderId: string) {
+  try {
+    const order = await prisma.labOrder.findFirst({
+      where: { id: labOrderId, tenantId },
+      include: {
+        labOrderItems: { include: { test: true } },
+      },
+    });
+    if (!order) return;
+
+    // Find or create a draft bill for the visit
+    let bill = await prisma.bill.findFirst({
+      where: { tenantId, visitId: order.visitId, status: 'draft' },
+    });
+    if (!bill) {
+      const billNumber = `BILL-${Date.now()}`;
+      bill = await prisma.bill.create({
+        data: {
+          tenantId,
+          billNumber,
+          patientId: order.patientId,
+          visitId: order.visitId,
+          billDate: new Date(),
+          status: 'draft',
+        },
+      });
+    }
+
+    // Add items per test (idempotent on referenceId+description)
+    for (const it of order.labOrderItems) {
+      const existing = await prisma.billItem.findFirst({
+        where: {
+          billId: bill.id,
+          referenceType: 'lab_order_item',
+          referenceId: it.id,
+        },
+      });
+      if (existing) continue;
+
+      const price = Number(it.test.price ?? 0);
+      await prisma.billItem.create({
+        data: {
+          billId: bill.id,
+          description: it.test.testName,
+          category: 'lab',
+          quantity: 1,
+          unitPrice: price,
+          totalAmount: price,
+          referenceType: 'lab_order_item',
+          referenceId: it.id,
+          isAutoPulled: true,
+        },
+      });
+    }
+
+    // Recompute totals on the bill
+    const items = await prisma.billItem.findMany({ where: { billId: bill.id } });
+    const subtotal = items.reduce((sum, x) => sum + Number(x.totalAmount ?? 0), 0);
+    await prisma.bill.update({
+      where: { id: bill.id },
+      data: {
+        subtotal,
+        totalAmount: subtotal,
+        patientPayableAmount: subtotal,
+        balanceDue: subtotal - Number(bill.amountPaid ?? 0),
+      },
+    });
+  } catch (err) {
+    logger.warn({ err, labOrderId }, 'Failed to auto-link lab order to bill');
+  }
+}
 
 // ============================================================
 // Lab Departments
@@ -352,6 +457,12 @@ export async function createLabOrder(tenantId: string, userId: string, data: Cre
   });
 
   logger.info({ tenantId, orderId: order?.id }, 'Lab order created');
+
+  // Auto-link to draft bill (best-effort, must not fail order creation)
+  if (order?.id) {
+    void autoLinkLabOrderToBill(tenantId, order.id);
+  }
+
   return order;
 }
 
@@ -370,6 +481,35 @@ export async function getLabOrders(tenantId: string, query: GetLabOrdersQuery) {
 
   if (query.urgency) {
     where.urgency = query.urgency;
+  }
+
+  if (query.assignedTo) {
+    where.assignedToId = query.assignedTo;
+  }
+
+  if (query.assignedDeptId) {
+    where.assignedDeptId = query.assignedDeptId;
+  }
+
+  // Outsourced filter (alias for isThirdParty)
+  if (query.outsourced !== undefined) {
+    where.isThirdParty = query.outsourced;
+  } else if (query.isThirdParty !== undefined) {
+    where.isThirdParty = query.isThirdParty;
+  }
+
+  if (query.accepted !== undefined) {
+    where.acceptedAt = query.accepted ? { not: null } : null;
+  }
+
+  // Single-day date filter (UTC -> tenant-day approximation; Asia/Kolkata clients send IST date)
+  if (query.date) {
+    const start = new Date(query.date);
+    if (!isNaN(start.getTime())) {
+      const end = new Date(start);
+      end.setDate(end.getDate() + 1);
+      where.createdAt = { ...where.createdAt, gte: start, lt: end };
+    }
   }
 
   if (query.fromDate) {
@@ -394,15 +534,24 @@ export async function getLabOrders(tenantId: string, query: GetLabOrdersQuery) {
       take,
       include: {
         patient: {
-          select: { id: true, mrn: true, firstName: true, lastName: true },
+          select: { id: true, mrn: true, firstName: true, lastName: true, phone: true },
         },
         orderer: {
           select: { id: true, firstName: true, lastName: true },
+        },
+        assignedTo: {
+          select: { id: true, firstName: true, lastName: true },
+        },
+        assignedDept: {
+          select: { id: true, name: true },
         },
         labOrderItems: {
           include: {
             test: { select: { id: true, testName: true, testCode: true } },
           },
+        },
+        labSamples: {
+          select: { id: true, status: true, sampleType: true },
         },
       },
       orderBy: { createdAt: 'desc' },
@@ -498,6 +647,62 @@ export async function updateLabOrder(
   });
 
   logger.info({ tenantId, orderId: id }, 'Lab order updated');
+  return updated;
+}
+
+export async function acceptLabOrder(
+  tenantId: string,
+  id: string,
+  acceptorUserId: string,
+  data: AcceptLabOrderInput,
+) {
+  const order = await prisma.labOrder.findFirst({
+    where: { id, tenantId },
+  });
+  if (!order) throw AppError.notFound('Lab order not found');
+  if (order.status === 'cancelled') throw AppError.badRequest('Cannot accept a cancelled order');
+  if (order.status === 'completed') throw AppError.badRequest('Cannot accept a completed order');
+
+  // Validate technician belongs to tenant
+  if (data.assignedToId) {
+    const tech = await prisma.user.findFirst({
+      where: { id: data.assignedToId, tenantId, isActive: true },
+    });
+    if (!tech) throw AppError.badRequest('Assigned user not found in tenant');
+  }
+
+  if (data.assignedDeptId) {
+    const dept = await prisma.labDepartment.findFirst({
+      where: { id: data.assignedDeptId, tenantId },
+    });
+    if (!dept) throw AppError.notFound('Lab department not found');
+  }
+
+  const updated = await prisma.labOrder.update({
+    where: { id },
+    data: {
+      assignedToId: data.assignedToId ?? order.assignedToId,
+      assignedDeptId: data.assignedDeptId ?? order.assignedDeptId,
+      acceptedAt: new Date(),
+      acceptedBy: acceptorUserId,
+      // Move ordered → received once accepted (sample may already be in transit)
+      status: order.status === 'ordered' ? 'received' : order.status,
+      notes: data.notes ?? order.notes,
+    },
+    include: {
+      patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+      orderer: { select: { id: true, firstName: true, lastName: true } },
+      assignedTo: { select: { id: true, firstName: true, lastName: true } },
+      assignedDept: { select: { id: true, name: true } },
+      labOrderItems: {
+        include: {
+          test: { select: { id: true, testName: true, testCode: true } },
+        },
+      },
+    },
+  });
+
+  logger.info({ tenantId, orderId: id, assignedToId: data.assignedToId }, 'Lab order accepted');
   return updated;
 }
 
@@ -727,6 +932,32 @@ export async function rejectSample(tenantId: string, id: string, data: RejectSam
 // Results
 // ============================================================
 
+/**
+ * Determine whether a numeric result value falls outside the supplied reference range.
+ * Supports common formats: "10-20", "<5", ">100", "10.5-20.5", "≤5", "≥10".
+ * Returns null when the range or value is non-numeric so callers fall back to user-supplied flag.
+ */
+export function evaluateAbnormal(value: string | undefined, normalRange: string | undefined): boolean | null {
+  if (!value || !normalRange) return null;
+  const num = Number(String(value).trim());
+  if (Number.isNaN(num)) return null;
+  const r = String(normalRange).trim().replace(/\s+/g, '');
+  // <X or ≤X
+  let m = r.match(/^[<≤]=?(-?\d+\.?\d*)$/);
+  if (m) return num >= Number(m[1]);
+  // >X or ≥X
+  m = r.match(/^[>≥]=?(-?\d+\.?\d*)$/);
+  if (m) return num <= Number(m[1]);
+  // X-Y range
+  m = r.match(/^(-?\d+\.?\d*)\s*[-–to]+\s*(-?\d+\.?\d*)$/i);
+  if (m) {
+    const lo = Number(m[1]);
+    const hi = Number(m[2]);
+    return num < lo || num > hi;
+  }
+  return null;
+}
+
 export async function enterResults(tenantId: string, userId: string, data: EnterResultsInput) {
   // Verify the order item exists and belongs to tenant
   const orderItem = await prisma.labOrderItem.findFirst({
@@ -747,8 +978,10 @@ export async function enterResults(tenantId: string, userId: string, data: Enter
 
   const results = await prisma.$transaction(async (tx) => {
     const created = await Promise.all(
-      data.results.map((result) =>
-        tx.labResult.create({
+      data.results.map((result) => {
+        const auto = evaluateAbnormal(result.value, result.normalRange);
+        const isAbnormal = auto !== null ? auto : !!result.isAbnormal;
+        return tx.labResult.create({
           data: {
             labOrderItemId: data.labOrderItemId,
             labOrderId: data.labOrderId,
@@ -757,12 +990,13 @@ export async function enterResults(tenantId: string, userId: string, data: Enter
             value: result.value,
             unit: result.unit,
             normalRange: result.normalRange,
-            isAbnormal: result.isAbnormal,
+            isAbnormal,
+            status: 'entered',
             enteredBy: userId,
             enteredAt: new Date(),
           },
-        }),
-      ),
+        });
+      }),
     );
 
     // Update order item status to in_progress
@@ -834,7 +1068,14 @@ export async function getResults(tenantId: string, query: GetResultsQuery) {
   return { results, total, page, limit };
 }
 
-export async function verifyResult(tenantId: string, id: string, userId: string) {
+export async function verifyResult(
+  tenantId: string,
+  id: string,
+  userId: string,
+  body?: VerifyResultInput,
+) {
+  const action = body?.action ?? 'approve';
+
   const result = await prisma.labResult.findFirst({
     where: { id, labOrder: { tenantId } },
     include: {
@@ -846,42 +1087,64 @@ export async function verifyResult(tenantId: string, id: string, userId: string)
     throw AppError.notFound('Lab result not found');
   }
 
-  // For now we don't have verifiedBy on LabResult in schema,
-  // but we can mark the order item as completed once all results for it are verified.
-  // We'll update the order item status to completed.
   const orderItem = result.labOrderItem;
 
-  const updatedItem = await prisma.$transaction(async (tx) => {
-    // Mark order item as completed
-    const updated = await tx.labOrderItem.update({
-      where: { id: orderItem.id },
-      data: { status: 'completed' },
-      include: {
-        test: { select: { id: true, testName: true, testCode: true } },
-        labResults: true,
-      },
-    });
-
-    // Check if all order items are completed; if so, mark the order as completed
-    const pendingItems = await tx.labOrderItem.count({
-      where: {
-        labOrderId: orderItem.labOrderId,
-        status: { not: 'completed' },
-      },
-    });
-
-    if (pendingItems === 0) {
-      await tx.labOrder.update({
-        where: { id: orderItem.labOrderId },
-        data: { status: 'completed' },
+  const updated = await prisma.$transaction(async (tx) => {
+    if (action === 'request_correction') {
+      const r = await tx.labResult.update({
+        where: { id },
+        data: {
+          status: 'corrected',
+          correctionNotes: body?.correctionNotes ?? null,
+        },
       });
+      return { result: r, orderItem };
     }
 
-    return updated;
+    // Approve flow
+    const r = await tx.labResult.update({
+      where: { id },
+      data: {
+        status: 'approved',
+        verifiedBy: userId,
+        verifiedAt: new Date(),
+        correctionNotes: null,
+      },
+    });
+
+    // If all results for this order item are approved, mark the item completed
+    const pendingResults = await tx.labResult.count({
+      where: {
+        labOrderItemId: orderItem.id,
+        status: { not: 'approved' },
+      },
+    });
+
+    if (pendingResults === 0) {
+      await tx.labOrderItem.update({
+        where: { id: orderItem.id },
+        data: { status: 'completed' },
+      });
+
+      const pendingItems = await tx.labOrderItem.count({
+        where: {
+          labOrderId: orderItem.labOrderId,
+          status: { not: 'completed' },
+        },
+      });
+      if (pendingItems === 0) {
+        await tx.labOrder.update({
+          where: { id: orderItem.labOrderId },
+          data: { status: 'completed' },
+        });
+      }
+    }
+
+    return { result: r, orderItem };
   });
 
-  logger.info({ tenantId, resultId: id, verifiedBy: userId }, 'Lab result verified');
-  return updatedItem;
+  logger.info({ tenantId, resultId: id, action, userId }, 'Lab result review action');
+  return updated.result;
 }
 
 // ============================================================
@@ -893,6 +1156,7 @@ export async function generateLabReport(
   orderId: string,
   userId: string,
   reportContent?: string,
+  hospitalBranding?: any,
 ) {
   const order = await prisma.labOrder.findFirst({
     where: { id: orderId, tenantId },
@@ -911,21 +1175,61 @@ export async function generateLabReport(
     throw AppError.notFound('Lab order not found');
   }
 
-  // Check if a report already exists for this order
   const existing = await prisma.labReport.findUnique({
     where: { labOrderId: orderId },
   });
-
   if (existing) {
     throw AppError.conflict('A report already exists for this order');
   }
+
+  // Pull tenant info for default branding when not supplied
+  const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } });
+  const branding = {
+    name: hospitalBranding?.name ?? tenant?.name ?? 'Hospital',
+    logoUrl: hospitalBranding?.logoUrl ?? null,
+    address: hospitalBranding?.address ?? null,
+    phone: hospitalBranding?.phone ?? null,
+    accreditation: hospitalBranding?.accreditation ?? null,
+  };
+
+  // Build a structured snapshot inside reportContent for downstream renderers
+  const structured = {
+    branding,
+    patient: {
+      id: order.patient.id,
+      mrn: order.patient.mrn,
+      name: `${order.patient.firstName} ${order.patient.lastName ?? ''}`.trim(),
+      dateOfBirth: order.patient.dateOfBirth,
+      gender: order.patient.gender,
+    },
+    items: order.labOrderItems.map((it) => ({
+      testName: it.test.testName,
+      testCode: it.test.testCode,
+      sampleType: it.test.sampleType,
+      results: it.labResults.map((r) => ({
+        parameter: r.parameterName,
+        value: r.value,
+        unit: r.unit,
+        normalRange: r.normalRange,
+        isAbnormal: r.isAbnormal,
+      })),
+    })),
+    notes: reportContent ?? null,
+    generatedAt: new Date().toISOString(),
+  };
+
+  // QR points to the patient-portal report page; concrete domain configured per tenant
+  const qrCodeUrl = `${process.env.PUBLIC_PORTAL_URL ?? ''}/r/lab/${orderId}`;
 
   const report = await prisma.labReport.create({
     data: {
       labOrderId: orderId,
       patientId: order.patientId,
-      reportContent: reportContent || null,
+      reportContent: JSON.stringify(structured),
+      hospitalBranding: branding as any,
+      qrCodeUrl,
       status: 'draft',
+      version: 1,
     },
     include: {
       labOrder: {
@@ -947,8 +1251,261 @@ export async function generateLabReport(
     },
   });
 
-  logger.info({ tenantId, reportId: report.id, orderId }, 'Lab report generated');
+  logger.info({ tenantId, reportId: report.id, orderId, generatedBy: userId }, 'Lab report generated');
   return report;
+}
+
+export async function signLabReport(tenantId: string, reportId: string, userId: string) {
+  const report = await prisma.labReport.findFirst({
+    where: { id: reportId, labOrder: { tenantId } },
+  });
+  if (!report) throw AppError.notFound('Lab report not found');
+  if (report.status === 'published') throw AppError.badRequest('Report is already published');
+
+  const updated = await prisma.labReport.update({
+    where: { id: reportId },
+    data: {
+      signedBy: userId,
+      signedAt: new Date(),
+      approvedBy: userId,
+      approvedAt: new Date(),
+      status: 'approved',
+    },
+    include: {
+      patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+      labOrder: { select: { id: true, patientId: true, orderedBy: true } },
+      signer: { select: { id: true, firstName: true, lastName: true } },
+    },
+  });
+
+  logger.info({ tenantId, reportId, userId }, 'Lab report signed');
+  return updated;
+}
+
+export async function publishLabReport(
+  tenantId: string,
+  reportId: string,
+  userId: string,
+  notify: boolean,
+) {
+  const report = await prisma.labReport.findFirst({
+    where: { id: reportId, labOrder: { tenantId } },
+    include: {
+      labOrder: { select: { id: true, orderedBy: true, patient: true } },
+    },
+  });
+  if (!report) throw AppError.notFound('Lab report not found');
+  if (!report.signedAt) {
+    throw AppError.badRequest('Report must be signed before publishing');
+  }
+  if (report.status === 'published') {
+    throw AppError.badRequest('Report is already published');
+  }
+
+  const updated = await prisma.labReport.update({
+    where: { id: reportId },
+    data: {
+      status: 'published',
+      publishedAt: new Date(),
+    },
+    include: {
+      labOrder: {
+        include: {
+          orderer: { select: { id: true, firstName: true, lastName: true } },
+          patient: { select: { id: true, firstName: true, lastName: true, mrn: true, userId: true } as any },
+        },
+      },
+      patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
+      signer: { select: { id: true, firstName: true, lastName: true } },
+    } as any,
+  });
+
+  if (notify) {
+    const patientName = `${report.labOrder.patient.firstName} ${report.labOrder.patient.lastName ?? ''}`.trim();
+    const message = `Lab report for ${patientName} is ready.`;
+
+    // Notify ordering doctor
+    if (report.labOrder.orderedBy) {
+      await safeNotify({
+        tenantId,
+        userId: report.labOrder.orderedBy,
+        title: 'Lab report ready',
+        message,
+        notificationType: 'lab_result',
+        referenceType: 'lab_report',
+        referenceId: reportId,
+      });
+    }
+
+    // Notify the patient (if a portal account exists)
+    const patient = await prisma.patient.findUnique({ where: { id: report.patientId } });
+    const patientUserId = (patient as any)?.userId as string | undefined;
+    if (patientUserId) {
+      await safeNotify({
+        tenantId,
+        userId: patientUserId,
+        title: 'Your lab report is ready',
+        message: 'Your lab report has been published. Tap to view.',
+        notificationType: 'lab_result',
+        referenceType: 'lab_report',
+        referenceId: reportId,
+      });
+    }
+  }
+
+  logger.info({ tenantId, reportId, userId }, 'Lab report published');
+  return updated;
+}
+
+export async function correctLabReport(
+  tenantId: string,
+  reportId: string,
+  userId: string,
+  data: CorrectLabReportInput,
+) {
+  const report = await prisma.labReport.findFirst({
+    where: { id: reportId, labOrder: { tenantId } },
+    include: { labOrder: { select: { orderedBy: true, patientId: true } } },
+  });
+  if (!report) throw AppError.notFound('Lab report not found');
+
+  // Bump version + carry forward signature requirement (must be re-signed)
+  const updated = await prisma.labReport.update({
+    where: { id: reportId },
+    data: {
+      version: report.version + 1,
+      correctionNotes: data.correctionNotes,
+      reportContent: data.reportContent ?? report.reportContent,
+      status: 'corrected',
+      signedBy: null,
+      signedAt: null,
+      publishedAt: null,
+    },
+  });
+
+  if (data.notify) {
+    const message = 'Your lab report has been corrected and re-issued.';
+    if (report.labOrder.orderedBy) {
+      await safeNotify({
+        tenantId,
+        userId: report.labOrder.orderedBy,
+        title: 'Lab report corrected',
+        message,
+        notificationType: 'lab_result',
+        referenceType: 'lab_report',
+        referenceId: reportId,
+      });
+    }
+    const patient = await prisma.patient.findUnique({ where: { id: report.patientId } });
+    const patientUserId = (patient as any)?.userId as string | undefined;
+    if (patientUserId) {
+      await safeNotify({
+        tenantId,
+        userId: patientUserId,
+        title: 'Lab report corrected',
+        message,
+        notificationType: 'lab_result',
+        referenceType: 'lab_report',
+        referenceId: reportId,
+      });
+    }
+  }
+
+  logger.info(
+    { tenantId, reportId, userId, version: updated.version },
+    'Lab report corrected; re-sign required',
+  );
+  return updated;
+}
+
+export async function getLabReportAnalytics(
+  tenantId: string,
+  range: { fromDate?: string; toDate?: string },
+) {
+  const where: any = { tenantId };
+  if (range.fromDate) where.createdAt = { ...where.createdAt, gte: new Date(range.fromDate) };
+  if (range.toDate) where.createdAt = { ...where.createdAt, lte: new Date(range.toDate) };
+
+  const [orders, completedOrders, totalSamples, openOrders] = await Promise.all([
+    prisma.labOrder.findMany({
+      where,
+      select: {
+        id: true,
+        createdAt: true,
+        status: true,
+        assignedDeptId: true,
+        labOrderItems: { select: { id: true, testId: true } },
+      },
+    }),
+    prisma.labOrder.findMany({
+      where: { ...where, status: 'completed' },
+      include: {
+        labReport: { select: { publishedAt: true } },
+      },
+    }),
+    prisma.labSample.count({ where: { labOrder: where } }),
+    prisma.labOrder.count({ where: { ...where, status: { not: 'completed' } } }),
+  ]);
+
+  // Test volume per test
+  const volumeMap = new Map<string, number>();
+  for (const o of orders) {
+    for (const it of o.labOrderItems) {
+      volumeMap.set(it.testId, (volumeMap.get(it.testId) ?? 0) + 1);
+    }
+  }
+  const tests = await prisma.labTestCatalog.findMany({
+    where: { tenantId, id: { in: Array.from(volumeMap.keys()) } },
+    select: { id: true, testName: true, labDepartmentId: true },
+  });
+  const testVolume = tests
+    .map((t) => ({
+      testId: t.id,
+      testName: t.testName,
+      count: volumeMap.get(t.id) ?? 0,
+      labDepartmentId: t.labDepartmentId,
+    }))
+    .sort((a, b) => b.count - a.count);
+
+  // Department workload
+  const deptMap = new Map<string, number>();
+  for (const t of testVolume) {
+    deptMap.set(t.labDepartmentId, (deptMap.get(t.labDepartmentId) ?? 0) + t.count);
+  }
+  const departments = await prisma.labDepartment.findMany({
+    where: { tenantId, id: { in: Array.from(deptMap.keys()) } },
+  });
+  const departmentWorkload = departments.map((d) => ({
+    departmentId: d.id,
+    departmentName: d.name,
+    count: deptMap.get(d.id) ?? 0,
+  }));
+
+  // TAT (in hours) order createdAt → labReport.publishedAt
+  const tats: number[] = [];
+  for (const o of completedOrders) {
+    const pub = o.labReport?.publishedAt;
+    if (pub) {
+      tats.push((pub.getTime() - o.createdAt.getTime()) / (1000 * 60 * 60));
+    }
+  }
+  const avgTatHours = tats.length ? tats.reduce((a, b) => a + b, 0) / tats.length : 0;
+  const medianTatHours = tats.length
+    ? [...tats].sort((a, b) => a - b)[Math.floor(tats.length / 2)]
+    : 0;
+
+  return {
+    summary: {
+      totalOrders: orders.length,
+      completedOrders: completedOrders.length,
+      openOrders,
+      totalSamples,
+      avgTatHours: Number(avgTatHours.toFixed(2)),
+      medianTatHours: Number(medianTatHours.toFixed(2)),
+    },
+    testVolume: testVolume.slice(0, 50),
+    departmentWorkload,
+  };
 }
 
 export async function getLabReports(tenantId: string, query: GetLabReportsQuery) {
