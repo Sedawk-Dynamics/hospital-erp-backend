@@ -1067,10 +1067,6 @@ model Tenant {
   demoRequests          DemoRequest[]
   reservations          Reservation[]
   estimations           Estimation[]
-  formInstances         FormInstance[]
-  formAssignments       FormAssignment[]
-  formSubmissions       FormSubmission[]
-  hospitalFormConfigs   HospitalFormConfig[]
 
   @@map("tenants")
 }
@@ -1286,11 +1282,6 @@ model User {
   ownedSubscriptions            UserSubscription[]          @relation("SubscriptionOwner")
   reservationsCreated           Reservation[]               @relation("ReservationCreator")
   estimationsCreated            Estimation[]                @relation("EstimationCreator")
-  formTemplatesCreated          FormTemplate[]              @relation("FormTemplateCreator")
-  formInstancesCreated          FormInstance[]              @relation("FormInstanceCreator")
-  formAssignmentsCreated        FormAssignment[]            @relation("FormAssignmentCreator")
-  formSubmissionsSubmitted      FormSubmission[]            @relation("FormSubmissionSubmitter")
-  formSubmissionsVerified       FormSubmission[]            @relation("FormSubmissionVerifier")
 
   @@unique([tenantId, email])
   @@map("users")
@@ -1643,7 +1634,6 @@ model Patient {
   mrdRequests               MrdRequest[]
   reservations              Reservation[]
   estimations               Estimation[]
-  formSubmissions           FormSubmission[]           @relation("FormSubmissionPatient")
 
   @@unique([tenantId, mrn])
   @@map("patients")
@@ -1956,7 +1946,6 @@ model Appointment {
   canceller       User?            @relation("AppointmentCanceller", fields: [cancelledBy], references: [id])
   queueTokens     QueueToken[]
   visits          Visit[]
-  formSubmissions FormSubmission[] @relation("FormSubmissionAppointment")
 
   @@map("appointments")
 }
@@ -2020,7 +2009,6 @@ model Visit {
   bills               Bill[]
   transfusions        Transfusion[]
   otRequests          OtRequest[]
-  formSubmissions     FormSubmission[]     @relation("FormSubmissionVisit")
 
   @@map("visits")
 }
@@ -2058,7 +2046,6 @@ model Admission {
   progressNotes    ProgressNote[]
   nurseAssignments NurseAssignment[]
   bills            Bill[]
-  formSubmissions  FormSubmission[]  @relation("FormSubmissionAdmission")
 
   @@map("admissions")
 }
@@ -4077,311 +4064,4 @@ model HospitalCommission {
   updater User?  @relation("HospitalCommissionUpdater", fields: [updatedBy], references: [id])
 
   @@map("hospital_commissions")
-}
-
-// ============================================================
-// 20. FORM TEMPLATE SYSTEM
-// ============================================================
-//
-// Three-layer model:
-//   FormTemplate    — global, super-admin authored. The "blueprint" library.
-//   FormInstance    — per-hospital cloned + customized copy of a template.
-//   FormAssignment  — binds an instance to a workflow trigger (e.g. appointment_booking).
-//   FormSubmission  — the actual filled responses.
-//
-// Schemas (`schema` field) are JSON blueprints of the form fields:
-//   { version: 1, fields: [ { id, type, label, required, options, validation, ... }, ... ] }
-
-enum FormCategory {
-  registration
-  consent
-  intake
-  feedback
-  checklist
-  clinical
-  discharge
-  other
-}
-
-enum FormTrigger {
-  // ─── Patient lifecycle ───
-  appointment_booking
-  patient_registration
-  visit_check_in
-  pre_consultation
-  admission
-  pre_op
-  post_op
-  discharge
-  feedback
-
-  // ─── Clinical workflow ───
-  vital_signs_entry
-  prescription_created
-  prescription_dispensed
-  lab_order_created
-  lab_sample_collected
-  lab_report_finalized
-  imaging_request_created
-  imaging_result_finalized
-  progress_note_added
-  nursing_note_added
-  medication_administered
-  patient_transfer
-
-  // ─── Staff & HR ───
-  staff_check_in
-  staff_check_out
-  shift_handover
-  leave_request
-  performance_review
-  employee_onboarding
-  exit_interview
-  training_completion
-
-  // ─── Pharmacy ───
-  drug_stock_received
-  drug_returned
-  pharmacy_expiry_audit
-
-  // ─── Lab ───
-  specimen_received
-  lab_qc_check
-
-  // ─── Blood bank ───
-  blood_donation_collected
-  transfusion_initiated
-  transfusion_reaction_reported
-
-  // ─── Insurance & billing ───
-  insurance_claim_submitted
-  pre_authorization_request
-  payment_received
-  refund_requested
-
-  // ─── Operations & compliance ───
-  daily_safety_check
-  incident_reported
-  equipment_check
-  inventory_audit
-  maintenance_request
-  compliance_audit
-
-  // ─── Periodic / time-based ───
-  daily_review
-  weekly_review
-  monthly_review
-
-  // ─── Manual / on-demand ───
-  manual
-}
-
-enum FormTemplateStatus {
-  draft
-  published
-  archived
-}
-
-enum FormSubmissionStatus {
-  draft
-  submitted
-  verified
-  rejected
-}
-
-/// Super-admin authored, global form blueprint. Visible to all hospitals in the Template Library.
-model FormTemplate {
-  id             String             @id @default(uuid())
-  name           String             @db.VarChar(255)
-  description    String?
-  category       FormCategory       @default(other)
-  status         FormTemplateStatus @default(draft)
-  /// JSON blueprint: { version, fields: [...] }
-  schema         Json
-  /// Optional default trigger suggestion. Hospitals can override on their instance.
-  defaultTrigger FormTrigger?       @map("default_trigger")
-  version        Int                @default(1)
-  createdBy      String             @map("created_by")
-  publishedAt    DateTime?          @map("published_at")
-  createdAt      DateTime           @default(now()) @map("created_at")
-  updatedAt      DateTime           @default(now()) @updatedAt @map("updated_at")
-
-  creator   User           @relation("FormTemplateCreator", fields: [createdBy], references: [id])
-  instances FormInstance[]
-
-  @@index([status, category])
-  @@map("form_templates")
-}
-
-/// Per-hospital customized copy of a FormTemplate. Editable by hospital admins.
-model FormInstance {
-  id          String             @id @default(uuid())
-  tenantId    String             @map("tenant_id")
-  /// Optional link to the source template (null when admin authored from scratch — future).
-  templateId  String?            @map("template_id")
-  name        String             @db.VarChar(255)
-  description String?
-  category    FormCategory       @default(other)
-  status      FormTemplateStatus @default(draft)
-  /// JSON blueprint (same shape as FormTemplate.schema). Edited locally.
-  schema      Json
-  isArchived  Boolean            @default(false) @map("is_archived")
-  createdBy   String             @map("created_by")
-  createdAt   DateTime           @default(now()) @map("created_at")
-  updatedAt   DateTime           @default(now()) @updatedAt @map("updated_at")
-
-  tenant      Tenant           @relation(fields: [tenantId], references: [id])
-  template    FormTemplate?    @relation(fields: [templateId], references: [id])
-  creator     User             @relation("FormInstanceCreator", fields: [createdBy], references: [id])
-  assignments FormAssignment[]
-  submissions FormSubmission[]
-
-  @@index([tenantId, status])
-  @@index([tenantId, isArchived])
-  @@map("form_instances")
-}
-
-/// Binds a FormInstance to a workflow trigger so it auto-appears at that step.
-model FormAssignment {
-  id            String      @id @default(uuid())
-  tenantId      String      @map("tenant_id")
-  instanceId    String      @map("instance_id")
-  trigger       FormTrigger
-  /// Display order when multiple forms are assigned to the same trigger.
-  sortOrder     Int         @default(0) @map("sort_order")
-  /// Whether this assignment is currently active.
-  isActive      Boolean     @default(true) @map("is_active")
-  /// Global default for required (used when rolesRequired is empty).
-  isRequired    Boolean     @default(false) @map("is_required")
-  /// Which roles can SEE the form at this trigger. Empty = all roles allowed.
-  /// Stored as text array of role slugs, e.g. ["patient", "front_desk"].
-  rolesAllowed  String[]    @map("roles_allowed")
-  /// Which roles MUST fill the form (subset of rolesAllowed). Empty = use isRequired global.
-  /// e.g. ["patient"] means: visible to allowed roles, but only patients are forced to fill.
-  rolesRequired String[]    @default([]) @map("roles_required")
-  /// Which roles can VIEW the submitted results. Empty = all roles see results.
-  /// Independent from rolesAllowed (filling) so e.g. patients fill, only doctors view.
-  viewerRoles   String[]    @default([]) @map("viewer_roles")
-  /// Where in the app the results appear. Empty = visible everywhere by default.
-  /// Values like 'patient_detail', 'doctor_consultation', 'submissions_tab', etc.
-  viewLocations String[]    @default([]) @map("view_locations")
-  createdBy     String      @map("created_by")
-  createdAt     DateTime    @default(now()) @map("created_at")
-  updatedAt     DateTime    @default(now()) @updatedAt @map("updated_at")
-
-  tenant   Tenant       @relation(fields: [tenantId], references: [id])
-  instance FormInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
-  creator  User         @relation("FormAssignmentCreator", fields: [createdBy], references: [id])
-
-  @@unique([tenantId, instanceId, trigger])
-  @@index([tenantId, trigger, isActive])
-  @@map("form_assignments")
-}
-
-/// A filled-in form. Belongs to a tenant and (optionally) ties back to a specific entity
-/// like a patient, appointment, visit, or admission.
-model FormSubmission {
-  id              String               @id @default(uuid())
-  tenantId        String               @map("tenant_id")
-  /// Legacy: links to old FormInstance. Will be removed after full migration.
-  instanceId      String?              @map("instance_id")
-  /// New: links to SystemForm by slug id.
-  formId          String?              @map("form_id")
-  trigger         FormTrigger?
-  /// JSON map of fieldId → value (matches the form schema)
-  responses       Json
-  status          FormSubmissionStatus @default(submitted)
-  /// Optional context: which entity this submission is attached to.
-  patientId       String?              @map("patient_id")
-  appointmentId   String?              @map("appointment_id")
-  visitId         String?              @map("visit_id")
-  admissionId     String?              @map("admission_id")
-  /// Who filled it
-  submittedBy     String?              @map("submitted_by")
-  submittedAt     DateTime             @default(now()) @map("submitted_at")
-  /// Verification (admin/staff)
-  verifiedBy      String?              @map("verified_by")
-  verifiedAt      DateTime?            @map("verified_at")
-  rejectionReason String?              @map("rejection_reason")
-  notes           String?
-  createdAt       DateTime             @default(now()) @map("created_at")
-  updatedAt       DateTime             @default(now()) @updatedAt @map("updated_at")
-
-  tenant      Tenant        @relation(fields: [tenantId], references: [id])
-  instance    FormInstance? @relation(fields: [instanceId], references: [id])
-  systemForm  SystemForm?   @relation("SystemFormSubmissions", fields: [formId], references: [id])
-  patient     Patient?      @relation("FormSubmissionPatient", fields: [patientId], references: [id])
-  appointment Appointment?  @relation("FormSubmissionAppointment", fields: [appointmentId], references: [id])
-  visit       Visit?        @relation("FormSubmissionVisit", fields: [visitId], references: [id])
-  admission   Admission?    @relation("FormSubmissionAdmission", fields: [admissionId], references: [id])
-  submitter   User?         @relation("FormSubmissionSubmitter", fields: [submittedBy], references: [id])
-  verifier    User?         @relation("FormSubmissionVerifier", fields: [verifiedBy], references: [id])
-
-  @@index([tenantId, formId, status])
-  @@index([tenantId, instanceId, status])
-  @@index([tenantId, patientId])
-  @@index([tenantId, appointmentId])
-  @@map("form_submissions")
-}
-
-// ════════════════════════════════════════════════════════════════════
-//   SYSTEM FORMS — Fixed, developer-defined forms with immutable triggers
-// ════════════════════════════════════════════════════════════════════
-
-/// Developer-seeded form definition. Trigger is FIXED — cannot be changed by any user.
-/// Super admin can edit the schema (form fields). 40 forms cover the full hospital workflow.
-model SystemForm {
-  id                  String       @id // slug: "patient_health_intake"
-  name                String       @db.VarChar(255)
-  description         String?
-  category            FormCategory @default(other)
-  trigger             FormTrigger // FIXED — immutable after seed
-  /// JSON blueprint: { version: 1, fields: [...] }
-  schema              Json
-  sortOrder           Int          @default(0) @map("sort_order")
-  isActive            Boolean      @default(true) @map("is_active") // super admin global toggle
-  /// Subscription module this form belongs to. 'core' = always available.
-  /// Other values match FeatureToggle.featureKey (e.g. 'lab', 'blood_bank', 'ot_management').
-  module              String       @default("core") @map("module")
-  /// Which roles are relevant for this form. Only these roles appear in the configure dialog.
-  /// admin and super_admin always have implicit view access (not listed here).
-  applicableRoles     String[]     @default([]) @map("applicable_roles")
-  /// Human-readable description of where this form appears in the workflow.
-  appearsAt           String       @default("") @map("appears_at")
-  /// Human-readable list of pages/views where submitted results are displayed.
-  resultsVisibleAt    String[]     @default([]) @map("results_visible_at")
-  /// Default per-role settings: { "patient": "required", "doctor": "view_only", ... }
-  /// Values: "required" | "optional" | "view_only" | "hidden"
-  defaultRoleSettings Json         @default("{}") @map("default_role_settings")
-  createdAt           DateTime     @default(now()) @map("created_at")
-  updatedAt           DateTime     @default(now()) @updatedAt @map("updated_at")
-
-  hospitalConfigs HospitalFormConfig[]
-  submissions     FormSubmission[]     @relation("SystemFormSubmissions")
-
-  @@index([trigger, sortOrder])
-  @@index([isActive])
-  @@map("system_forms")
-}
-
-/// Per-hospital configuration for a SystemForm. Controls visibility, required-ness, and schema overrides.
-model HospitalFormConfig {
-  id             String   @id @default(uuid())
-  tenantId       String   @map("tenant_id")
-  formId         String   @map("form_id")
-  isEnabled      Boolean  @default(true) @map("is_enabled")
-  /// Custom field definitions for this hospital. null = use SystemForm.schema.
-  schemaOverride Json?    @map("schema_override")
-  /// Per-role overrides: { "patient": "required", "front_desk": "optional", "doctor": "hidden" }
-  /// Merges with SystemForm.defaultRoleSettings — config values take precedence.
-  roleSettings   Json     @default("{}") @map("role_settings")
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at")
-
-  tenant Tenant     @relation(fields: [tenantId], references: [id])
-  form   SystemForm @relation(fields: [formId], references: [id])
-
-  @@unique([tenantId, formId])
-  @@index([tenantId, isEnabled])
-  @@map("hospital_form_configs")
 }

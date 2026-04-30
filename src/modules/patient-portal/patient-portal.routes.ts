@@ -202,22 +202,6 @@ router.get('/appointments', async (req: AuthenticatedRequest, res: Response, nex
   }
 });
 
-// GET /patient-portal/available-forms — all forms the patient can fill across all hospitals
-router.get(
-  '/available-forms',
-  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-    try {
-      const result = await patientPortalService.getPatientAvailableForms(
-        req.user!.userId,
-        req.user!.email,
-      );
-      sendResponse({ res, statusCode: 200, message: 'Patient available forms', data: result.data });
-    } catch (err) {
-      next(err);
-    }
-  },
-);
-
 // GET /patient-portal/lab-reports
 router.get('/lab-reports', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {

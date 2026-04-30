@@ -8,9 +8,7 @@
     "sourceMap": false
   },
   "include": [
-    "prisma/seed.ts",
-    "prisma/seed-forms.ts",
-    "prisma/seed-system-forms.ts"
+    "prisma/seed.ts"
   ],
   "exclude": ["node_modules", "dist", "dist-seed"]
 }
