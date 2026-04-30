@@ -1,15 +1,13 @@
 /**
- * Seed test user profiles for the three nurse-hierarchy roles.
+ * Seed a test user for the consolidated `nurse_admin` role.
  *
- * Idempotent. For every non-platform tenant, ensures a user exists for each of:
- *   - nurse_incharge@hospital.com  (Nurse In-Charge)
- *   - head_nurse@hospital.com      (Head Nurse)
- *   - nurse_admin@hospital.com     (Nurse Admin / Nursing Administrator)
+ * Idempotent. For every non-platform tenant, ensures a user exists for:
+ *   - nurse_admin@hospital.com  (Nurse Admin / Nursing Administrator)
  *
- * Password for all three: Nurse@123
+ * Password: Nurse@123
  *
- * Prerequisite: `backfill-nurse-roles.ts` must have been run so the role rows
- * exist on each tenant.
+ * Prerequisite: `backfill-nurse-roles.ts` must have been run so the role row
+ * exists on each tenant.
  *
  * Usage:
  *   npx tsx prisma/scripts/seed-nurse-users.ts
@@ -23,20 +21,6 @@ const prisma = new PrismaClient();
 
 const NURSE_USERS = [
   {
-    roleName: 'nurse_incharge',
-    email: 'nurse_incharge@hospital.com',
-    firstName: 'Nurse',
-    lastName: 'In-Charge',
-    phone: '+910000000301',
-  },
-  {
-    roleName: 'head_nurse',
-    email: 'head_nurse@hospital.com',
-    firstName: 'Head',
-    lastName: 'Nurse',
-    phone: '+910000000302',
-  },
-  {
     roleName: 'nurse_admin',
     email: 'nurse_admin@hospital.com',
     firstName: 'Nurse',
@@ -48,7 +32,7 @@ const NURSE_USERS = [
 const DEFAULT_PASSWORD = 'Nurse@123';
 
 async function main() {
-  console.log('=== Nurse hierarchy: seeding test users ===');
+  console.log('=== Nurse role: seeding test users ===');
 
   const tenants = await prisma.tenant.findMany({
     where: { slug: { not: '__platform__' } },
@@ -114,7 +98,7 @@ async function main() {
   }
 
   console.log('\n=== done ===');
-  console.log('Login: <email above> / Nurse@123');
+  console.log('Login: nurse_admin@hospital.com / Nurse@123');
   console.log('Tip: select the hospital tenant on the clinic-selection screen.');
 }
 

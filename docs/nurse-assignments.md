@@ -1,6 +1,20 @@
 # Nurse Assignments & Vital Corrections
 
-Backend design notes for the nurse-hierarchy feature.
+Backend design notes for the nursing module.
+
+## Role model (consolidated)
+
+Two nursing roles exist:
+
+| Role | Responsibility |
+|------|----------------|
+| `nurse_admin` | Manages nurses, nurse-to-doctor and nurse-to-patient assignment, ward / floor / bed setup, weekly duty rosters, and shift handover. Read-only on clinical data. |
+| `nurse` | Bedside care. Records and corrects vitals, writes nursing notes, acknowledges doctor orders. |
+
+The earlier three-tier hierarchy (`nurse_incharge`, `head_nurse`, `nurse_admin`)
+has been collapsed into the single `nurse_admin` role to match the SOW. The
+backfill script `prisma/scripts/backfill-nurse-roles.ts` migrates any existing
+users on the legacy roles onto `nurse_admin` and removes the legacy role rows.
 
 ## NurseAssignment model
 
@@ -12,7 +26,7 @@ One row per (admission, shift) covering the IPD nurse-to-bed assignment. OPD adm
 | `nurseId` | FK to `User`. |
 | `wardId`, `bedId` | Defaults copied from the admission when not specified. |
 | `shiftDate` + `shiftType` | Key for partial uniqueness (see below). |
-| `assignedById` | Actor creating the row. For `nurse_incharge`-driven assignment this is always the in-charge user; for bulk handovers it is the caller (in-charge or system). |
+| `assignedById` | Actor creating the row — typically the `nurse_admin` user; for bulk handovers it is the caller. |
 | `status` | `active` (default), `ended`, `handed_over`, `cancelled`. |
 | `handedOverToId` / `handedOverAt` / `handoverNoteId` | Populated when a new row is created from this row via handover. The previous row transitions to `handed_over`. |
 
@@ -33,17 +47,17 @@ This enforces "at most one active assignment per admission per shift" without bl
 Core constants live in `clinical.service.ts`:
 
 - `VITAL_SELF_CORRECTION_WINDOW_MS = 15 * 60 * 1000` (15 min).
-- `VITAL_SELF_CORRECT_ROLES = {'nurse', 'nurse_incharge'}` — these roles can silently fix their own entries within the grace window.
+- `VITAL_RECORDER_ROLES = {'nurse', 'super_admin'}` — only these roles can write vitals.
+- `VITAL_SELF_CORRECT_ROLES = {'nurse'}` — bedside nurse can silently fix their own entries within the grace window.
 
 Decision matrix for `POST /clinical/vitals/:id/correct`:
 
 | Caller role | Grace window? | Same user as `recordedBy`? | Result |
 |-------------|---------------|-----------------------------|--------|
-| nurse / nurse_incharge | yes | yes | in-place update (mode `self-correct-silent`) |
-| nurse / nurse_incharge | no | any | new Vital row with `supersedesVitalId`, `isCorrection=true` (mode `audited-correction`) |
-| nurse / nurse_incharge | yes | no | audited-correction (cross-nurse) |
-| doctor | any | any | audited-correction — doctors never silent-edit |
-| anyone else with `vitals:update` | any | any | audited-correction |
+| nurse | yes | yes | in-place update (mode `self-correct-silent`) |
+| nurse | no | any | new Vital row with `supersedesVitalId`, `isCorrection=true` (mode `audited-correction`) |
+| nurse | yes | no | audited-correction (cross-nurse) |
+| doctor / nurse_admin / anyone else | any | any | rejected — vitals are nurse-owned. Ask a nurse to re-measure. |
 
 Additional guard: you cannot correct a row that has already been superseded — the service returns 400 and asks the caller to correct the newest row in the chain. This keeps the supersede chain linear.
 
@@ -51,7 +65,7 @@ Additional guard: you cannot correct a row that has already been superseded — 
 
 The existing `POST /clinical/orders/acknowledge` endpoint records an ack by creating a `NursingNote` with `metadata = { kind: 'order_acknowledgment', orderType, orderId }`. This avoids a schema change.
 
-`GET /clinical/orders/acknowledgements?scope=mine|ward|all&wardId=&status=&orderType=` aggregates lab + imaging orders and joins the ack metadata in-process. `scope=mine` filters admissions via the caller's active NurseAssignments; `scope=ward` requires `wardId` and filters through current admissions.
+`GET /clinical/orders/acknowledgements?scope=mine|ward|all&wardId=&status=&orderType=` aggregates lab + imaging orders and joins the ack metadata in-process. `scope=mine` filters admissions via the caller's active NurseAssignments; `scope=ward` requires `wardId` and is used by `nurse_admin` for oversight.
 
 ## Duty rosters
 

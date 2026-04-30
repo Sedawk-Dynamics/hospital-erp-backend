@@ -44,8 +44,8 @@ hrRoutes.get('/licenses', authenticate, requirePermission('hr', 'read'), validat
 hrRoutes.put('/licenses/:id', authenticate, requirePermission('hr', 'update'), validate(updateLicenseSchema), controller.updateLicense);
 hrRoutes.get('/licenses/expiring', authenticate, requirePermission('hr', 'read'), validate(getExpiringLicensesSchema), controller.getExpiringLicenses);
 
-// --- Duty Rosters --- gated by duty_rosters:* so nurse_admin / head_nurse can
-// operate here without full HR access.
+// --- Duty Rosters --- gated by duty_rosters:* so nurse_admin can operate
+// here without full HR access.
 hrRoutes.post('/rosters', authenticate, requirePermission('duty_rosters', 'create'), validate(createDutyRosterSchema), controller.createDutyRoster);
 hrRoutes.post('/rosters/bulk', authenticate, requirePermission('duty_rosters', 'create'), validate(createDutyRosterBulkSchema), controller.createDutyRosterBulk);
 hrRoutes.get('/rosters', authenticate, requirePermission('duty_rosters', 'read'), validate(getDutyRostersSchema), controller.getDutyRosters);

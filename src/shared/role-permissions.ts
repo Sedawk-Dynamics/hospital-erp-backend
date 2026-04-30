@@ -5,8 +5,7 @@
  */
 
 export const SYSTEM_ROLE_NAMES = [
-  'super_admin', 'admin', 'doctor', 'patient', 'nurse',
-  'nurse_incharge', 'head_nurse', 'nurse_admin',
+  'super_admin', 'admin', 'doctor', 'patient', 'nurse', 'nurse_admin',
   'front_desk', 'lab_technician', 'lab_supervisor', 'radiologist', 'pharmacist',
   'pharmacy_technician', 'pharmacy_admin', 'inventory_manager',
   'billing_admin', 'cashier', 'insurance_staff', 'blood_bank_staff', 'hr_staff',
@@ -113,74 +112,42 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'forms', action: 'read' }, { module: 'forms', action: 'create' }, { module: 'forms', action: 'approve' },
     ],
 
-    nurse_incharge: [
-      // All nurse permissions
-      { module: 'patients', action: 'read' }, { module: 'patients', action: 'update' },
-      { module: 'appointments', action: 'read' }, { module: 'appointments', action: 'update' },
-      { module: 'visits', action: 'read' }, { module: 'visits', action: 'update' },
-      { module: 'admissions', action: 'read' }, { module: 'admissions', action: 'update' },
-      { module: 'vitals', action: 'read' }, { module: 'vitals', action: 'create' }, { module: 'vitals', action: 'update' },
-      { module: 'diagnoses', action: 'read' },
-      { module: 'nursing_notes', action: 'read' }, { module: 'nursing_notes', action: 'create' },
-      { module: 'nursing_notes', action: 'update' }, { module: 'nursing_notes', action: 'approve' },
-      { module: 'progress_notes', action: 'read' },
-      { module: 'prescriptions', action: 'read' }, { module: 'prescriptions', action: 'update' },
-      { module: 'lab_orders', action: 'read' }, { module: 'lab_reports', action: 'read' },
-      { module: 'imaging', action: 'read' },
-      // Supervisory additions
-      { module: 'nurse_assignments', action: 'create' }, { module: 'nurse_assignments', action: 'read' },
-      { module: 'nurse_assignments', action: 'update' }, { module: 'nurse_assignments', action: 'delete' },
-      { module: 'duty_rosters', action: 'read' },
-      { module: 'wards', action: 'read' }, { module: 'beds', action: 'read' },
-      { module: 'users', action: 'read' },
-      { module: 'forms', action: 'read' }, { module: 'forms', action: 'create' }, { module: 'forms', action: 'approve' },
-      { module: 'reports', action: 'read' },
-    ],
-
-    head_nurse: [
-      // Clinical read-through + selective write
-      { module: 'patients', action: 'read' }, { module: 'patients', action: 'update' },
-      { module: 'appointments', action: 'read' },
-      { module: 'visits', action: 'read' },
-      { module: 'admissions', action: 'read' }, { module: 'admissions', action: 'update' },
-      { module: 'vitals', action: 'read' }, { module: 'vitals', action: 'create' },
-      { module: 'diagnoses', action: 'read' },
-      { module: 'nursing_notes', action: 'read' }, { module: 'nursing_notes', action: 'create' },
-      { module: 'nursing_notes', action: 'update' }, { module: 'nursing_notes', action: 'approve' },
-      { module: 'progress_notes', action: 'read' },
-      { module: 'prescriptions', action: 'read' },
-      { module: 'lab_orders', action: 'read' }, { module: 'lab_reports', action: 'read' },
-      { module: 'imaging', action: 'read' },
-      // Supervisory scope
-      { module: 'nurse_assignments', action: 'read' }, { module: 'nurse_assignments', action: 'update' },
-      { module: 'nurse_assignments', action: 'approve' },
-      { module: 'duty_rosters', action: 'create' }, { module: 'duty_rosters', action: 'read' },
-      { module: 'duty_rosters', action: 'update' }, { module: 'duty_rosters', action: 'delete' },
-      { module: 'duty_rosters', action: 'approve' }, { module: 'duty_rosters', action: 'export' },
-      { module: 'users', action: 'read' },
-      { module: 'departments', action: 'read' }, { module: 'wards', action: 'read' }, { module: 'beds', action: 'read' },
-      { module: 'hr', action: 'read' },
-      { module: 'forms', action: 'read' }, { module: 'forms', action: 'approve' },
-      { module: 'reports', action: 'read' }, { module: 'reports', action: 'export' },
-    ],
-
+    // Single nursing-management role. Owns nurse-to-doctor assignment,
+    // ward/floor management, shift planning, and shift handover. Read-only
+    // on clinical data — vitals/notes/prescriptions are written by `nurse`.
     nurse_admin: [
-      // Read-only clinical footprint
+      // Clinical read-through (no writes — vitals are nurse-owned)
       { module: 'patients', action: 'read' },
+      { module: 'appointments', action: 'read' },
       { module: 'visits', action: 'read' },
       { module: 'admissions', action: 'read' },
       { module: 'vitals', action: 'read' },
+      { module: 'diagnoses', action: 'read' },
       { module: 'nursing_notes', action: 'read' },
       { module: 'progress_notes', action: 'read' },
       { module: 'prescriptions', action: 'read' },
-      // Managerial scope
-      { module: 'nurse_assignments', action: 'read' }, { module: 'nurse_assignments', action: 'approve' },
+      { module: 'lab_orders', action: 'read' }, { module: 'lab_reports', action: 'read' },
+      { module: 'imaging', action: 'read' },
+      // Nurse-to-doctor / nurse-to-patient assignment lifecycle
+      { module: 'nurse_assignments', action: 'create' }, { module: 'nurse_assignments', action: 'read' },
+      { module: 'nurse_assignments', action: 'update' }, { module: 'nurse_assignments', action: 'delete' },
+      { module: 'nurse_assignments', action: 'approve' },
+      // Shift planning (full lifecycle)
       { module: 'duty_rosters', action: 'create' }, { module: 'duty_rosters', action: 'read' },
       { module: 'duty_rosters', action: 'update' }, { module: 'duty_rosters', action: 'delete' },
       { module: 'duty_rosters', action: 'approve' }, { module: 'duty_rosters', action: 'export' },
-      { module: 'departments', action: 'read' }, { module: 'wards', action: 'read' }, { module: 'beds', action: 'read' },
+      // Ward / floor / bed management
+      { module: 'departments', action: 'read' },
+      { module: 'wards', action: 'create' }, { module: 'wards', action: 'read' },
+      { module: 'wards', action: 'update' }, { module: 'wards', action: 'delete' },
+      { module: 'rooms', action: 'create' }, { module: 'rooms', action: 'read' },
+      { module: 'rooms', action: 'update' }, { module: 'rooms', action: 'delete' },
+      { module: 'beds', action: 'create' }, { module: 'beds', action: 'read' },
+      { module: 'beds', action: 'update' }, { module: 'beds', action: 'delete' },
+      // Manage nursing staff records
       { module: 'users', action: 'read' },
       { module: 'hr', action: 'read' }, { module: 'hr', action: 'approve' }, { module: 'hr', action: 'export' },
+      // Compliance / audit / reporting
       { module: 'compliance', action: 'read' }, { module: 'compliance', action: 'create' },
       { module: 'compliance', action: 'update' }, { module: 'compliance', action: 'approve' },
       { module: 'forms', action: 'read' }, { module: 'forms', action: 'approve' },

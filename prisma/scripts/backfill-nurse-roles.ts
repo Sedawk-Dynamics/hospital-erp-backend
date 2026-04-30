@@ -1,12 +1,20 @@
 /**
- * Backfill script for the nurse-hierarchy RBAC additions.
+ * Backfill / migration script for the consolidated nursing-role design.
  *
- * Two-phase backfill:
- *   1. Insert any missing global `Permission` rows for the two new modules
- *      (`nurse_assignments`, `duty_rosters`) × 6 actions.
- *   2. For each existing tenant, re-run `bootstrapRolesAndPermissions` which
- *      idempotently inserts the three new roles (`nurse_incharge`, `head_nurse`,
- *      `nurse_admin`) and their `RolePermission` rows.
+ * Originally seeded three nursing roles (`nurse_incharge`, `head_nurse`,
+ * `nurse_admin`). The SOW only requires a single managerial role
+ * (`nurse_admin`) plus the existing `nurse` role, so this script now:
+ *
+ *   1. Inserts any missing global `Permission` rows for `nurse_assignments`
+ *      and `duty_rosters` × 6 actions (idempotent).
+ *   2. For each tenant, ensures the consolidated `nurse_admin` role exists
+ *      with the merged permission set.
+ *   3. Migrates any existing user assignments from the legacy
+ *      `nurse_incharge` / `head_nurse` roles onto `nurse_admin`.
+ *   4. Removes the legacy `nurse_incharge` / `head_nurse` Role rows (and
+ *      their RolePermission rows) so the role list matches SYSTEM_ROLE_NAMES.
+ *
+ * Safe to re-run.
  *
  * Usage:
  *   npx ts-node prisma/scripts/backfill-nurse-roles.ts
@@ -23,7 +31,8 @@ import {
 const prisma = new PrismaClient();
 
 const NEW_MODULES = ['nurse_assignments', 'duty_rosters'] as const;
-const NEW_ROLES = ['nurse_incharge', 'head_nurse', 'nurse_admin'] as const;
+const KEEP_ROLES = ['nurse_admin'] as const;
+const LEGACY_ROLES = ['nurse_incharge', 'head_nurse'] as const;
 
 async function seedNewPermissions() {
   const rows = NEW_MODULES.flatMap((mod) =>
@@ -42,13 +51,12 @@ async function seedNewPermissions() {
 }
 
 async function backfillTenantRoles() {
-  // Sanity-check our role-permissions source still lists the new modules/roles.
   for (const mod of NEW_MODULES) {
     if (!(PERMISSION_MODULES as readonly string[]).includes(mod)) {
       throw new Error(`PERMISSION_MODULES is missing ${mod}`);
     }
   }
-  for (const role of NEW_ROLES) {
+  for (const role of KEEP_ROLES) {
     if (!(SYSTEM_ROLE_NAMES as readonly string[]).includes(role)) {
       throw new Error(`SYSTEM_ROLE_NAMES is missing ${role}`);
     }
@@ -63,42 +71,76 @@ async function backfillTenantRoles() {
   for (const p of allPerms) permMap[`${p.module}:${p.action}`] = p.id;
 
   for (const tenant of tenants) {
-    for (const roleName of NEW_ROLES) {
-      let role = await prisma.role.findFirst({
-        where: { tenantId: tenant.id, name: roleName },
+    // Ensure nurse_admin exists with the merged permission set.
+    let nurseAdmin = await prisma.role.findFirst({
+      where: { tenantId: tenant.id, name: 'nurse_admin' },
+    });
+    if (!nurseAdmin) {
+      nurseAdmin = await prisma.role.create({
+        data: {
+          tenantId: tenant.id,
+          name: 'nurse_admin',
+          description: 'System role: nurse admin',
+          isSystemRole: true,
+        },
       });
-      if (!role) {
-        role = await prisma.role.create({
-          data: {
-            tenantId: tenant.id,
-            name: roleName,
-            description: `System role: ${roleName.replace(/_/g, ' ')}`,
-            isSystemRole: true,
-          },
-        });
-      }
-
-      const desired = rolePermsDef[roleName] || [];
-      const rolePermRows = desired
-        .map((p) => {
-          const pid = permMap[`${p.module}:${p.action}`];
-          return pid ? { roleId: role!.id, permissionId: pid } : null;
-        })
-        .filter((r): r is { roleId: string; permissionId: string } => r !== null);
-
-      if (rolePermRows.length > 0) {
-        await prisma.rolePermission.createMany({
-          data: rolePermRows,
-          skipDuplicates: true,
-        });
-      }
     }
-    console.log(`[tenant:${tenant.id}] ${tenant.name} — nurse hierarchy roles seeded`);
+
+    const desired = rolePermsDef.nurse_admin || [];
+    const desiredPermIds = new Set(
+      desired
+        .map((p) => permMap[`${p.module}:${p.action}`])
+        .filter((id): id is string => Boolean(id)),
+    );
+
+    // Insert missing role-permissions.
+    const rows = Array.from(desiredPermIds).map((permissionId) => ({
+      roleId: nurseAdmin!.id,
+      permissionId,
+    }));
+    if (rows.length > 0) {
+      await prisma.rolePermission.createMany({
+        data: rows,
+        skipDuplicates: true,
+      });
+    }
+
+    // Migrate any users still on legacy nurse roles onto nurse_admin, then
+    // delete the legacy role rows for this tenant.
+    for (const legacyName of LEGACY_ROLES) {
+      const legacyRole = await prisma.role.findFirst({
+        where: { tenantId: tenant.id, name: legacyName },
+      });
+      if (!legacyRole) continue;
+
+      const userRoles = await prisma.userRole.findMany({
+        where: { roleId: legacyRole.id },
+        select: { userId: true },
+      });
+      for (const ur of userRoles) {
+        const already = await prisma.userRole.findFirst({
+          where: { userId: ur.userId, roleId: nurseAdmin.id },
+        });
+        if (!already) {
+          await prisma.userRole.create({
+            data: { userId: ur.userId, roleId: nurseAdmin.id },
+          });
+        }
+      }
+      await prisma.userRole.deleteMany({ where: { roleId: legacyRole.id } });
+      await prisma.rolePermission.deleteMany({ where: { roleId: legacyRole.id } });
+      await prisma.role.delete({ where: { id: legacyRole.id } });
+      console.log(
+        `[tenant:${tenant.id}] migrated ${userRoles.length} user(s) from ${legacyName} → nurse_admin`,
+      );
+    }
+
+    console.log(`[tenant:${tenant.id}] ${tenant.name} — nurse_admin synced`);
   }
 }
 
 async function main() {
-  console.log('=== Nurse-hierarchy RBAC backfill ===');
+  console.log('=== Nurse-role consolidation backfill ===');
   await seedNewPermissions();
   await backfillTenantRoles();
   console.log('=== done ===');

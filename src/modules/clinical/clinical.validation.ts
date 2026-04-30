@@ -192,7 +192,7 @@ export const patientIdParamSchema = z.object({
 // Correction to an existing Vital row. A new append-only row is created whenever
 // the caller is outside the grace window OR is a doctor — both paths require
 // `correctionReason` to be set. The legacy in-place update (grace window) is
-// allowed only when recordedBy === userId and role is nurse/nurse_incharge.
+// allowed only when recordedBy === userId and role is `nurse`.
 export const correctVitalSchema = z.object({
   params: z.object({
     id: z.string().uuid('Invalid vital ID'),
@@ -474,7 +474,7 @@ export const acknowledgeClinicalOrderSchema = z.object({
 });
 
 // Ack list: scope=mine filters to admissions with an active NurseAssignment to
-// the caller; scope=ward filters to a ward (for nurse_incharge / head_nurse).
+// the caller; scope=ward filters to a ward (for nurse_admin oversight).
 export const getOrderAcknowledgementsQuerySchema = z.object({
   query: z.object({
     scope: z.enum(['mine', 'ward', 'all']).default('mine'),
