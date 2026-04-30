@@ -52,8 +52,16 @@ import {
   handoverNurseAssignmentSchema,
   bulkHandoverSchema,
 } from './nurse-assignments.validation';
+import {
+  createNurseDoctorAssignmentSchema,
+  getNurseDoctorAssignmentsQuerySchema,
+  nurseDoctorAssignmentIdParamSchema,
+  endNurseDoctorAssignmentSchema,
+  myPatientsQuerySchema,
+} from './nurse-doctor-assignments.validation';
 import * as controller from './clinical.controller';
 import * as nurseAssignmentsController from './nurse-assignments.controller';
+import * as nurseDoctorController from './nurse-doctor-assignments.controller';
 
 export const clinicalRoutes = Router();
 
@@ -115,6 +123,17 @@ clinicalRoutes.put('/reservations/:id', authenticate, requirePermission('admissi
 clinicalRoutes.get('/orders', authenticate, requirePermission('prescriptions', 'read'), validate(getClinicalOrdersQuerySchema), controller.getClinicalOrders);
 clinicalRoutes.get('/orders/acknowledgements', authenticate, requirePermission('nursing_notes', 'read'), validate(getOrderAcknowledgementsQuerySchema), controller.getOrderAcknowledgements);
 clinicalRoutes.post('/orders/acknowledge', authenticate, requirePermission('nursing_notes', 'create'), validate(acknowledgeClinicalOrderSchema), controller.acknowledgeClinicalOrder);
+
+// --- Nurse → Doctor Assignments (persistent mapping; SOW core flow) ---
+// `my-doctors` and `my-patients` are scoped to the calling user, so any
+// authenticated user can call them — `nurse_assignments:read` covers both
+// admin lookups and bedside-nurse self-service.
+clinicalRoutes.get('/nurse-doctor-assignments/my-doctors', authenticate, nurseDoctorController.getMyDoctors);
+clinicalRoutes.get('/nurse-doctor-assignments/my-patients', authenticate, validate(myPatientsQuerySchema), nurseDoctorController.getMyPatients);
+clinicalRoutes.get('/nurse-doctor-assignments', authenticate, requirePermission('nurse_assignments', 'read'), validate(getNurseDoctorAssignmentsQuerySchema), nurseDoctorController.listNurseDoctorAssignments);
+clinicalRoutes.post('/nurse-doctor-assignments', authenticate, requirePermission('nurse_assignments', 'create'), validate(createNurseDoctorAssignmentSchema), nurseDoctorController.createNurseDoctorAssignments);
+clinicalRoutes.get('/nurse-doctor-assignments/:id', authenticate, requirePermission('nurse_assignments', 'read'), validate(nurseDoctorAssignmentIdParamSchema), nurseDoctorController.getNurseDoctorAssignmentById);
+clinicalRoutes.post('/nurse-doctor-assignments/:id/end', authenticate, requirePermission('nurse_assignments', 'update'), validate(endNurseDoctorAssignmentSchema), nurseDoctorController.endNurseDoctorAssignment);
 
 // --- Nurse Assignments (per-shift patient→nurse, IPD only) ---
 clinicalRoutes.get('/nurse-assignments', authenticate, requirePermission('nurse_assignments', 'read'), validate(getNurseAssignmentsQuerySchema), nurseAssignmentsController.listNurseAssignments);
