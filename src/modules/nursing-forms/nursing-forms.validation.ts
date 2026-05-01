@@ -18,14 +18,15 @@ const dateString = z
   .string()
   .refine((v) => !Number.isNaN(Date.parse(v)), { message: 'Invalid date' });
 
-// Either visitId or admissionId must be provided. The service resolves the
-// missing side via the Admission ↔ Visit join, so the nurse UI only needs to
-// know whichever id it has on hand. Use `requireVisitOrAdmission` on the body.
-function requireVisitOrAdmission<T extends { visitId?: string; admissionId?: string }>(
-  schema: z.ZodType<T>,
-) {
-  return schema.refine((d) => !!d.visitId || !!d.admissionId, {
-    message: 'Either visitId or admissionId is required',
+// Either visitId, admissionId, or appointmentId must be provided. The service
+// resolves the missing pieces (Admission ↔ Visit join for IPD, Appointment →
+// Visit lookup/creation for OPD), so the nurse UI only needs to pass whichever
+// id it has on hand. Use `requireVisitOrAdmission` on the body.
+function requireVisitOrAdmission<
+  T extends { visitId?: string; admissionId?: string; appointmentId?: string },
+>(schema: z.ZodType<T>) {
+  return schema.refine((d) => !!d.visitId || !!d.admissionId || !!d.appointmentId, {
+    message: 'Either visitId, admissionId, or appointmentId is required',
     path: ['visitId'],
   });
 }
@@ -40,6 +41,7 @@ export const createAdmissionAssessmentSchema = z.object({
     z.object({
       visitId: z.string().uuid('Invalid visit ID').optional(),
       admissionId: z.string().uuid('Invalid admission ID').optional(),
+      appointmentId: z.string().uuid('Invalid appointment ID').optional(),
       patientId: z.string().uuid('Invalid patient ID'),
       arrivalMode: arrivalMode.optional(),
       consciousnessLevel: consciousnessLevel.optional(),
@@ -75,6 +77,7 @@ export const createPainAssessmentSchema = z.object({
     z.object({
       visitId: z.string().uuid('Invalid visit ID').optional(),
       admissionId: z.string().uuid().optional(),
+      appointmentId: z.string().uuid('Invalid appointment ID').optional(),
       patientId: z.string().uuid('Invalid patient ID'),
       painScore: z.number().int().min(0).max(10),
       painScale: painScale.default('numeric'),
@@ -101,6 +104,7 @@ export const createFallRiskSchema = z.object({
     z.object({
       visitId: z.string().uuid('Invalid visit ID').optional(),
       admissionId: z.string().uuid().optional(),
+      appointmentId: z.string().uuid('Invalid appointment ID').optional(),
       patientId: z.string().uuid('Invalid patient ID'),
       historyOfFalling: z.union([z.literal(0), z.literal(25)]),
       secondaryDiagnosis: z.union([z.literal(0), z.literal(15)]),
@@ -135,6 +139,7 @@ export const createIntakeOutputSchema = z.object({
     z.object({
       visitId: z.string().uuid('Invalid visit ID').optional(),
       admissionId: z.string().uuid().optional(),
+      appointmentId: z.string().uuid('Invalid appointment ID').optional(),
       patientId: z.string().uuid('Invalid patient ID'),
       recordDatetime: dateString,
       entryType: ioEntryType,
@@ -160,6 +165,7 @@ export const createWoundCareSchema = z.object({
     z.object({
       visitId: z.string().uuid('Invalid visit ID').optional(),
       admissionId: z.string().uuid().optional(),
+      appointmentId: z.string().uuid('Invalid appointment ID').optional(),
       patientId: z.string().uuid('Invalid patient ID'),
       woundLocation: z.string().min(1).max(100),
       woundType: woundType.optional(),

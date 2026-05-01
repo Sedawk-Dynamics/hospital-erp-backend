@@ -244,23 +244,42 @@ export async function getMyPatients(
     ]);
   }
 
-  let visits: any[] = [];
-  let visitsTotal = 0;
+  // OPD branch is appointment-driven: a nurse only sees the patients whose
+  // booking has been confirmed by front-desk (and onwards, up to in-consult).
+  // Pre-confirmation bookings (booked / pending_payment) and terminal states
+  // (completed / cancelled / no_show) are excluded from the nurse worklist.
+  const FRONT_DESK_CONFIRMED_STATUSES = [
+    'confirmed',
+    'checked_in',
+    'waiting',
+    'in_consultation',
+  ] as const;
+
+  let appointments: any[] = [];
+  let appointmentsTotal = 0;
   if (type === 'op' || type === 'all') {
-    const visitWhere: any = {
+    // Default OPD scope to today; explicit `date` overrides.
+    const targetDate = query.date ? new Date(query.date) : new Date();
+    const dayStart = new Date(targetDate);
+    dayStart.setUTCHours(0, 0, 0, 0);
+    const dayEnd = new Date(targetDate);
+    dayEnd.setUTCHours(23, 59, 59, 999);
+
+    const appointmentWhere: any = {
       tenantId,
       doctorId: { in: doctorIds },
-      visitType: 'op',
+      status: { in: FRONT_DESK_CONFIRMED_STATUSES as unknown as string[] },
+      appointmentDate: { gte: dayStart, lte: dayEnd },
     };
     if (query.search) {
-      visitWhere.patient = admissionWhere.patient;
+      appointmentWhere.patient = admissionWhere.patient;
     }
-    [visits, visitsTotal] = await Promise.all([
-      prisma.visit.findMany({
-        where: visitWhere,
+    [appointments, appointmentsTotal] = await Promise.all([
+      prisma.appointment.findMany({
+        where: appointmentWhere,
         skip: type === 'op' ? skip : 0,
         take: type === 'op' ? take : 200,
-        orderBy: { visitDate: 'desc' },
+        orderBy: [{ appointmentDate: 'asc' }, { startTime: 'asc' }],
         include: {
           patient: {
             select: { id: true, mrn: true, firstName: true, lastName: true, dateOfBirth: true, gender: true, phone: true },
@@ -271,9 +290,18 @@ export async function getMyPatients(
               user: { select: { id: true, firstName: true, lastName: true } },
             },
           },
+          // Latest visit for the appointment, if one already exists. Forms +
+          // vitals creation needs a visitId; the frontend uses this when
+          // present, otherwise falls back to the appointment id and the
+          // creation endpoint resolves/creates the visit.
+          visits: {
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+            select: { id: true, visitDate: true, status: true },
+          },
         },
       }),
-      prisma.visit.count({ where: visitWhere }),
+      prisma.appointment.count({ where: appointmentWhere }),
     ]);
   }
 
@@ -291,21 +319,24 @@ export async function getMyPatients(
       admissionDate: a.admissionDate,
       dischargeDate: a.dischargeDate,
     })),
-    ...visits.map((v) => ({
-      recordType: 'visit' as const,
-      id: v.id,
-      patientId: v.patientId,
-      patient: v.patient,
-      doctor: v.doctor,
-      visitDate: v.visitDate,
-      visitType: v.visitType,
-      status: v.status,
+    ...appointments.map((a) => ({
+      recordType: 'appointment' as const,
+      id: a.id,
+      appointmentId: a.id,
+      visitId: a.visits?.[0]?.id ?? null,
+      patientId: a.patientId,
+      patient: a.patient,
+      doctor: a.doctor,
+      appointmentDate: a.appointmentDate,
+      startTime: a.startTime,
+      visitType: 'op' as const,
+      status: a.status,
     })),
   ];
 
   return {
     rows,
-    total: admissionsTotal + visitsTotal,
+    total: admissionsTotal + appointmentsTotal,
     page,
     limit,
   };

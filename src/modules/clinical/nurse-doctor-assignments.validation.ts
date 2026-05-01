@@ -40,6 +40,13 @@ export const myPatientsQuerySchema = z.object({
     status: z.enum(['admitted', 'discharged', 'all']).optional(),
     type: z.enum(['ip', 'op', 'all']).optional(),
     search: z.string().optional(),
+    // OPD: defaults to today. Set explicitly (yyyy-MM-dd) to scope to a different
+    // day. Ignored for the IPD branch, which always returns currently-admitted
+    // patients regardless of date.
+    date: z
+      .string()
+      .refine((v) => !Number.isNaN(Date.parse(v)), { message: 'Invalid date' })
+      .optional(),
   }),
 });
 

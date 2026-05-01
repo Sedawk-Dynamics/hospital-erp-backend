@@ -39,14 +39,20 @@ async function assertVisitInTenant(tenantId: string, visitId: string, patientId:
   }
 }
 
-// Most callers know the admission id, not the visit id. Resolve the missing
-// side here so each form schema only has to require one of the two. Always
-// validates that whatever the caller did pass is in the tenant + matches the
-// patient — same guarantee assertVisitInTenant gives for visit-keyed callers.
+// Most callers know the admission id (IPD) or the appointment id (OPD), not
+// the visit id. Resolve the missing side here so each form schema only has
+// to require one of the three. Always validates that whatever the caller did
+// pass is in the tenant + matches the patient — same guarantee
+// assertVisitInTenant gives for visit-keyed callers.
+//
+// OPD nurses act on confirmed appointments before the doctor opens the
+// consultation, so a Visit row may not exist yet. When `appointmentId` is
+// passed and no Visit is attached, we create one automatically (visitType=op,
+// status=active) so the form has somewhere to anchor.
 async function resolveVisitContext(
   tenantId: string,
   patientId: string,
-  raw: { visitId?: string; admissionId?: string },
+  raw: { visitId?: string; admissionId?: string; appointmentId?: string },
 ): Promise<{ visitId: string; admissionId?: string }> {
   if (raw.visitId) {
     await assertVisitInTenant(tenantId, raw.visitId, patientId);
@@ -67,7 +73,34 @@ async function resolveVisitContext(
     if (!adm) throw AppError.notFound('Admission not found');
     return { visitId: adm.visitId, admissionId: adm.id };
   }
-  throw AppError.badRequest('Either visitId or admissionId is required');
+  if (raw.appointmentId) {
+    const appt = await prisma.appointment.findFirst({
+      where: { id: raw.appointmentId, tenantId, patientId },
+      select: {
+        id: true,
+        doctorId: true,
+        appointmentDate: true,
+        visits: { orderBy: { createdAt: 'desc' }, take: 1, select: { id: true } },
+      },
+    });
+    if (!appt) throw AppError.notFound('Appointment not found');
+    const existingVisitId = appt.visits[0]?.id;
+    if (existingVisitId) return { visitId: existingVisitId };
+    const visit = await prisma.visit.create({
+      data: {
+        tenantId,
+        patientId,
+        doctorId: appt.doctorId,
+        appointmentId: appt.id,
+        visitType: 'op',
+        visitDate: appt.appointmentDate,
+        status: 'active',
+      },
+      select: { id: true },
+    });
+    return { visitId: visit.id };
+  }
+  throw AppError.badRequest('Either visitId, admissionId, or appointmentId is required');
 }
 
 // ──────────────────────────────────────────────────────────
