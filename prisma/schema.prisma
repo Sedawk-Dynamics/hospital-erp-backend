@@ -406,6 +406,40 @@ enum WoundStatus {
   worsening @map("worsening")
 }
 
+// ── Nursing Forms ────────────────────────────────────────
+//
+// Phase-1 nursing assessment forms. Owned by the nursing team (write
+// gated to `nurse`/`super_admin`, doctors read-only) — same pattern
+// vitals follow.
+
+enum ArrivalMode {
+  ambulance  @map("ambulance")
+  walk_in    @map("walk_in")
+  wheelchair @map("wheelchair")
+  stretcher  @map("stretcher")
+  other      @map("other")
+}
+
+enum ConsciousnessLevel {
+  alert        @map("alert")
+  drowsy       @map("drowsy")
+  confused     @map("confused")
+  unresponsive @map("unresponsive")
+}
+
+enum PainScale {
+  numeric @map("numeric")
+  faces   @map("faces")
+  flacc   @map("flacc")
+  pqrst   @map("pqrst")
+}
+
+enum FallRiskLevel {
+  low      @map("low")
+  moderate @map("moderate")
+  high     @map("high")
+}
+
 enum DischargeSummaryStatus {
   draft     @map("draft")
   finalized @map("finalized")
@@ -482,10 +516,10 @@ enum LabReportStatus {
 }
 
 enum LabResultStatus {
-  entered    @map("entered")
-  review     @map("review")
-  corrected  @map("corrected")
-  approved   @map("approved")
+  entered   @map("entered")
+  review    @map("review")
+  corrected @map("corrected")
+  approved  @map("approved")
 }
 
 enum ImagingType {
@@ -763,10 +797,10 @@ enum DutyRosterStatus {
 }
 
 enum NurseAssignmentStatus {
-  active       @map("active")
-  ended        @map("ended")
-  handed_over  @map("handed_over")
-  cancelled    @map("cancelled")
+  active      @map("active")
+  ended       @map("ended")
+  handed_over @map("handed_over")
+  cancelled   @map("cancelled")
 }
 
 enum AttendanceSource {
@@ -988,85 +1022,85 @@ model Tenant {
   createdAt                    DateTime  @default(now()) @map("created_at")
   updatedAt                    DateTime  @default(now()) @updatedAt @map("updated_at")
 
-  featureToggles        FeatureToggle[]
-  users                 User[]
-  roles                 Role[]
-  loginAuditLogs        LoginAuditLog[]
-  departments           Department[]
-  wards                 Ward[]
-  rooms                 Room[]
-  beds                  Bed[]
-  operatingTheaters     OperatingTheater[]
-  hospitalResources     HospitalResource[]
-  patients              Patient[]
-  abhaSyncLogs          AbhaSyncLog[]
-  doctorProfiles        DoctorProfile[]
-  progressNoteTemplates ProgressNoteTemplate[]
+  featureToggles             FeatureToggle[]
+  users                      User[]
+  roles                      Role[]
+  loginAuditLogs             LoginAuditLog[]
+  departments                Department[]
+  wards                      Ward[]
+  rooms                      Room[]
+  beds                       Bed[]
+  operatingTheaters          OperatingTheater[]
+  hospitalResources          HospitalResource[]
+  patients                   Patient[]
+  abhaSyncLogs               AbhaSyncLog[]
+  doctorProfiles             DoctorProfile[]
+  progressNoteTemplates      ProgressNoteTemplate[]
   physicalObservationCatalog PhysicalObservationCatalog[]
-  appointments          Appointment[]
-  queueTokens           QueueToken[]
-  visits                Visit[]
-  admissions            Admission[]
-  patientTransfers      PatientTransfer[]
-  prescriptions         Prescription[]
-  labDepartments        LabDepartment[]
-  labTestCatalog        LabTestCatalog[]
-  labOrders             LabOrder[]
-  imagingRequests       ImagingRequest[]
-  drugCategories        DrugCategory[]
-  drugFormulary         DrugFormulary[]
-  drugBatches           DrugBatch[]
-  dispensingRecords     DispensingRecord[]
-  drugReturns           DrugReturn[]
-  suppliers             Supplier[]
-  inventoryItems        InventoryItem[]
-  stockTransactions     StockTransaction[]
-  purchaseOrders        PurchaseOrder[]
-  supplyRequests        SupplyRequest[]
-  serviceTariffs        ServiceTariff[]
-  bills                 Bill[]
-  payments              Payment[]
-  receipts              Receipt[]
-  refunds               Refund[]
-  discounts             Discount[]
-  insurers              Insurer[]
-  tpaProviders          TpaProvider[]
-  insurancePolicies     InsurancePolicy[]
-  insuranceClaims       InsuranceClaim[]
-  preAuthRequests       PreAuthorizationRequest[]
-  tpaCommunicationLogs  TpaCommunicationLog[]
-  bloodDonors           BloodDonor[]
-  bloodDonations        BloodDonation[]
-  bloodInventory        BloodInventory[]
-  crossMatchTests       CrossMatchTest[]
-  transfusions          Transfusion[]
-  staffProfiles         StaffProfile[]
-  dutyRosters           DutyRoster[]
-  nurseAssignments      NurseAssignment[]
-  nurseDoctorAssignments NurseDoctorAssignment[]
-  attendance            Attendance[]
-  leaveRequests         LeaveRequest[]
-  payroll               Payroll[]
-  notifications         Notification[]
-  messages              Message[]
-  shiftHandoverNotes    ShiftHandoverNote[]
-  tickets               Ticket[]
-  feedback              Feedback[]
-  auditLogs             AuditLog[]
-  complianceDocuments   ComplianceDocument[]
-  otRequests            OtRequest[]
-  incidentReports       IncidentReport[]
-  savedReports          SavedReport[]
-  scheduledReports      ScheduledReport[]
-  supportTickets        SupportTicket[]
-  tenantOwners          TenantOwner[]
-  patientConnections    PatientHospitalConnection[]
-  mrdRequests           MrdRequest[]
-  paymentTransfers      PaymentTransfer[]
-  hospitalCommission    HospitalCommission?
-  demoRequests          DemoRequest[]
-  reservations          Reservation[]
-  estimations           Estimation[]
+  appointments               Appointment[]
+  queueTokens                QueueToken[]
+  visits                     Visit[]
+  admissions                 Admission[]
+  patientTransfers           PatientTransfer[]
+  prescriptions              Prescription[]
+  labDepartments             LabDepartment[]
+  labTestCatalog             LabTestCatalog[]
+  labOrders                  LabOrder[]
+  imagingRequests            ImagingRequest[]
+  drugCategories             DrugCategory[]
+  drugFormulary              DrugFormulary[]
+  drugBatches                DrugBatch[]
+  dispensingRecords          DispensingRecord[]
+  drugReturns                DrugReturn[]
+  suppliers                  Supplier[]
+  inventoryItems             InventoryItem[]
+  stockTransactions          StockTransaction[]
+  purchaseOrders             PurchaseOrder[]
+  supplyRequests             SupplyRequest[]
+  serviceTariffs             ServiceTariff[]
+  bills                      Bill[]
+  payments                   Payment[]
+  receipts                   Receipt[]
+  refunds                    Refund[]
+  discounts                  Discount[]
+  insurers                   Insurer[]
+  tpaProviders               TpaProvider[]
+  insurancePolicies          InsurancePolicy[]
+  insuranceClaims            InsuranceClaim[]
+  preAuthRequests            PreAuthorizationRequest[]
+  tpaCommunicationLogs       TpaCommunicationLog[]
+  bloodDonors                BloodDonor[]
+  bloodDonations             BloodDonation[]
+  bloodInventory             BloodInventory[]
+  crossMatchTests            CrossMatchTest[]
+  transfusions               Transfusion[]
+  staffProfiles              StaffProfile[]
+  dutyRosters                DutyRoster[]
+  nurseAssignments           NurseAssignment[]
+  nurseDoctorAssignments     NurseDoctorAssignment[]
+  attendance                 Attendance[]
+  leaveRequests              LeaveRequest[]
+  payroll                    Payroll[]
+  notifications              Notification[]
+  messages                   Message[]
+  shiftHandoverNotes         ShiftHandoverNote[]
+  tickets                    Ticket[]
+  feedback                   Feedback[]
+  auditLogs                  AuditLog[]
+  complianceDocuments        ComplianceDocument[]
+  otRequests                 OtRequest[]
+  incidentReports            IncidentReport[]
+  savedReports               SavedReport[]
+  scheduledReports           ScheduledReport[]
+  supportTickets             SupportTicket[]
+  tenantOwners               TenantOwner[]
+  patientConnections         PatientHospitalConnection[]
+  mrdRequests                MrdRequest[]
+  paymentTransfers           PaymentTransfer[]
+  hospitalCommission         HospitalCommission?
+  demoRequests               DemoRequest[]
+  reservations               Reservation[]
+  estimations                Estimation[]
 
   @@map("tenants")
 }
@@ -1177,111 +1211,114 @@ model User {
   updatedAt            DateTime  @default(now()) @updatedAt @map("updated_at")
   deactivatedAt        DateTime? @map("deactivated_at")
 
-  tenant                        Tenant                      @relation(fields: [tenantId], references: [id])
-  patients                      Patient[]
-  doctorProfile                 DoctorProfile?
-  staffProfile                  StaffProfile?
-  userRoles                     UserRole[]                  @relation("UserRoleUser")
-  assignedUserRoles             UserRole[]                  @relation("UserRoleAssigner")
-  loginAuditLogs                LoginAuditLog[]
-  departmentsHeaded             Department[]
-  patientPersonalHistoryUpdates PatientPersonalHistory[]    @relation("PersonalHistoryUpdater")
-  patientFamilyHistoryUpdates   PatientFamilyHistory[]      @relation("FamilyHistoryUpdater")
-  patientAllergyNotes           PatientAllergy[]            @relation("AllergyNoter")
-  patientCurrentMedAdds         PatientCurrentMedication[]  @relation("CurrentMedAdder")
-  patientDocUploads             PatientDocument[]           @relation("DocUploader")
-  patientDocVerifications       PatientDocument[]           @relation("DocVerifier")
-  appointmentsBooked            Appointment[]               @relation("AppointmentBooker")
-  appointmentsCancelled         Appointment[]               @relation("AppointmentCanceller")
-  admissionsAdmitted            Admission[]                 @relation("Admitter")
-  admissionsDischarged          Admission[]                 @relation("Discharger")
-  transfersRequested            PatientTransfer[]           @relation("TransferRequester")
-  transfersApproved             PatientTransfer[]           @relation("TransferApprover")
-  vitalsRecorded                Vital[]
-  diagnosesRecorded             Diagnosis[]
-  nursingNotes                  NursingNote[]
-  progressNotesSigned           ProgressNote[]              @relation("ProgressNoteSigner")
-  progressNoteAmendments        ProgressNoteAmendment[]     @relation("ProgressNoteAmendmentEditor")
-  ivLinesInserted               IVLineRecord[]              @relation("IVInserter")
-  ivLinesRemoved                IVLineRecord[]              @relation("IVRemover")
-  intakeOutputRecords           IntakeOutputRecord[]
-  woundCareRecords              WoundCareRecord[]
-  dischargeSummariesSigned      DischargeSummary[]
-  medicationAdministrations     MedicationAdministration[]
-  labOrdersOrdered              LabOrder[]
-  labOrdersAssigned             LabOrder[]                  @relation("LabOrderAssignee")
-  labOrdersAccepted             LabOrder[]                  @relation("LabOrderAcceptor")
-  labSamplesCollected           LabSample[]
-  labResultsEntered             LabResult[]
-  labResultsVerified            LabResult[]                 @relation("LabResultVerifier")
-  labReportsReviewed            LabReport[]                 @relation("LabReportReviewer")
-  labReportsApproved            LabReport[]                 @relation("LabReportApprover")
-  labReportsSigned              LabReport[]                 @relation("LabReportSigner")
-  imagingOrdersOrdered          ImagingRequest[]
-  imagingRequestsAssigned       ImagingRequest[]            @relation("ImagingTechnician")
-  imagingResultsRadiologist     ImagingResult[]             @relation("ImagingRadiologist")
-  imagingResultsSigned          ImagingResult[]             @relation("ImagingResultSigner")
-  dispensingRecords             DispensingRecord[]          @relation("Dispenser")
-  dispensingVerifications       DispensingRecord[]          @relation("DispensingVerifier")
-  drugReturnsProcessed          DrugReturn[]
-  stockTransactions             StockTransaction[]
-  purchaseOrdersApproved        PurchaseOrder[]
-  supplyRequestsRequested       SupplyRequest[]             @relation("SupplyRequester")
-  supplyRequestsApproved        SupplyRequest[]             @relation("SupplyApprover")
-  billsGenerated                Bill[]                      @relation("BillGenerator")
-  billsApproved                 Bill[]                      @relation("BillApprover")
-  billsCancelled                Bill[]                      @relation("BillCanceller")
-  paymentsProcessed             Payment[]
-  refundsRequested              Refund[]                    @relation("RefundRequester")
-  refundsApproved               Refund[]                    @relation("RefundApprover")
-  discountsApproved             Discount[]
-  insuranceClaimsSubmitted      InsuranceClaim[]            @relation("ClaimSubmitter")
-  insuranceClaimsReviewed       InsuranceClaim[]            @relation("ClaimReviewer")
-  preAuthSubmitted              PreAuthorizationRequest[]
-  tpaCommunications             TpaCommunicationLog[]
-  bloodDonationsCollected       BloodDonation[]
-  crossMatchTests               CrossMatchTest[]
-  transfusionsAdministered      Transfusion[]               @relation("TransfusionAdministerer")
-  transfusionsOrdered           Transfusion[]               @relation("TransfusionOrderer")
-  leaveRequestsApproved         LeaveRequest[]
-  doctorLeavesApproved          DoctorLeave[]               @relation("DoctorLeaveApprover")
-  payrollProcessed              Payroll[]
-  notifications                 Notification[]
-  messagesSent                  Message[]                   @relation("MessageSender")
-  messagesReceived              Message[]                   @relation("MessageReceiver")
-  shiftHandoverFrom             ShiftHandoverNote[]         @relation("HandoverFrom")
-  shiftHandoverTo               ShiftHandoverNote[]         @relation("HandoverTo")
-  nurseAssignmentsAsNurse       NurseAssignment[]           @relation("NurseAssignmentNurse")
-  nurseAssignmentsAssigned      NurseAssignment[]           @relation("NurseAssignmentAssigner")
-  nurseAssignmentsHandoverTo    NurseAssignment[]           @relation("NurseAssignmentHandoverTo")
-  nurseDoctorAssignmentsAsNurse NurseDoctorAssignment[]     @relation("NurseDoctorAssignmentNurse")
-  nurseDoctorAssignmentsAssigned NurseDoctorAssignment[]    @relation("NurseDoctorAssignmentAssigner")
-  dutyRostersApproved           DutyRoster[]                @relation("DutyRosterApprover")
-  dutyRostersCreated            DutyRoster[]                @relation("DutyRosterCreator")
-  vitalCorrectionsMade          Vital[]                     @relation("VitalCorrector")
-  ticketsRaised                 Ticket[]                    @relation("TicketRaiser")
-  ticketsAssigned               Ticket[]                    @relation("TicketAssignee")
-  ticketsEscalated              Ticket[]                    @relation("TicketEscalator")
-  feedbackSubmitted             Feedback[]
-  auditLogs                     AuditLog[]
-  complianceDocUploads          ComplianceDocument[]
-  incidentReportsReported       IncidentReport[]            @relation("IncidentReporter")
-  incidentReportsEscalated      IncidentReport[]            @relation("IncidentEscalator")
-  savedReports                  SavedReport[]
-  scheduledReports              ScheduledReport[]
-  supportTickets                SupportTicket[]
-  tenantOwners                  TenantOwner[]
-  subscriptionPayments          SubscriptionPayment[]
-  connectionRequests            PatientHospitalConnection[] @relation("ConnectionUser")
-  connectionReviews             PatientHospitalConnection[] @relation("ConnectionReviewer")
-  mrdRequestsMade               MrdRequest[]                @relation("MrdRequestedBy")
-  commissionSettingsUpdated     CommissionSetting[]         @relation("CommissionSettingUpdater")
-  hospitalCommissionsUpdated    HospitalCommission[]        @relation("HospitalCommissionUpdater")
-  demoRequestsApproved          DemoRequest[]               @relation("DemoApprover")
-  demoRequestsCreatedUser       DemoRequest[]               @relation("DemoCreatedUser")
-  ownedSubscriptions            UserSubscription[]          @relation("SubscriptionOwner")
-  reservationsCreated           Reservation[]               @relation("ReservationCreator")
-  estimationsCreated            Estimation[]                @relation("EstimationCreator")
+  tenant                         Tenant                       @relation(fields: [tenantId], references: [id])
+  patients                       Patient[]
+  doctorProfile                  DoctorProfile?
+  staffProfile                   StaffProfile?
+  userRoles                      UserRole[]                   @relation("UserRoleUser")
+  assignedUserRoles              UserRole[]                   @relation("UserRoleAssigner")
+  loginAuditLogs                 LoginAuditLog[]
+  departmentsHeaded              Department[]
+  patientPersonalHistoryUpdates  PatientPersonalHistory[]     @relation("PersonalHistoryUpdater")
+  patientFamilyHistoryUpdates    PatientFamilyHistory[]       @relation("FamilyHistoryUpdater")
+  patientAllergyNotes            PatientAllergy[]             @relation("AllergyNoter")
+  patientCurrentMedAdds          PatientCurrentMedication[]   @relation("CurrentMedAdder")
+  patientDocUploads              PatientDocument[]            @relation("DocUploader")
+  patientDocVerifications        PatientDocument[]            @relation("DocVerifier")
+  appointmentsBooked             Appointment[]                @relation("AppointmentBooker")
+  appointmentsCancelled          Appointment[]                @relation("AppointmentCanceller")
+  admissionsAdmitted             Admission[]                  @relation("Admitter")
+  admissionsDischarged           Admission[]                  @relation("Discharger")
+  transfersRequested             PatientTransfer[]            @relation("TransferRequester")
+  transfersApproved              PatientTransfer[]            @relation("TransferApprover")
+  vitalsRecorded                 Vital[]
+  diagnosesRecorded              Diagnosis[]
+  nursingNotes                   NursingNote[]
+  progressNotesSigned            ProgressNote[]               @relation("ProgressNoteSigner")
+  progressNoteAmendments         ProgressNoteAmendment[]      @relation("ProgressNoteAmendmentEditor")
+  ivLinesInserted                IVLineRecord[]               @relation("IVInserter")
+  ivLinesRemoved                 IVLineRecord[]               @relation("IVRemover")
+  intakeOutputRecords            IntakeOutputRecord[]
+  woundCareRecords               WoundCareRecord[]
+  admissionAssessments           NursingAdmissionAssessment[]
+  painAssessments                PainAssessment[]
+  fallRiskAssessments            FallRiskAssessment[]
+  dischargeSummariesSigned       DischargeSummary[]
+  medicationAdministrations      MedicationAdministration[]
+  labOrdersOrdered               LabOrder[]
+  labOrdersAssigned              LabOrder[]                   @relation("LabOrderAssignee")
+  labOrdersAccepted              LabOrder[]                   @relation("LabOrderAcceptor")
+  labSamplesCollected            LabSample[]
+  labResultsEntered              LabResult[]
+  labResultsVerified             LabResult[]                  @relation("LabResultVerifier")
+  labReportsReviewed             LabReport[]                  @relation("LabReportReviewer")
+  labReportsApproved             LabReport[]                  @relation("LabReportApprover")
+  labReportsSigned               LabReport[]                  @relation("LabReportSigner")
+  imagingOrdersOrdered           ImagingRequest[]
+  imagingRequestsAssigned        ImagingRequest[]             @relation("ImagingTechnician")
+  imagingResultsRadiologist      ImagingResult[]              @relation("ImagingRadiologist")
+  imagingResultsSigned           ImagingResult[]              @relation("ImagingResultSigner")
+  dispensingRecords              DispensingRecord[]           @relation("Dispenser")
+  dispensingVerifications        DispensingRecord[]           @relation("DispensingVerifier")
+  drugReturnsProcessed           DrugReturn[]
+  stockTransactions              StockTransaction[]
+  purchaseOrdersApproved         PurchaseOrder[]
+  supplyRequestsRequested        SupplyRequest[]              @relation("SupplyRequester")
+  supplyRequestsApproved         SupplyRequest[]              @relation("SupplyApprover")
+  billsGenerated                 Bill[]                       @relation("BillGenerator")
+  billsApproved                  Bill[]                       @relation("BillApprover")
+  billsCancelled                 Bill[]                       @relation("BillCanceller")
+  paymentsProcessed              Payment[]
+  refundsRequested               Refund[]                     @relation("RefundRequester")
+  refundsApproved                Refund[]                     @relation("RefundApprover")
+  discountsApproved              Discount[]
+  insuranceClaimsSubmitted       InsuranceClaim[]             @relation("ClaimSubmitter")
+  insuranceClaimsReviewed        InsuranceClaim[]             @relation("ClaimReviewer")
+  preAuthSubmitted               PreAuthorizationRequest[]
+  tpaCommunications              TpaCommunicationLog[]
+  bloodDonationsCollected        BloodDonation[]
+  crossMatchTests                CrossMatchTest[]
+  transfusionsAdministered       Transfusion[]                @relation("TransfusionAdministerer")
+  transfusionsOrdered            Transfusion[]                @relation("TransfusionOrderer")
+  leaveRequestsApproved          LeaveRequest[]
+  doctorLeavesApproved           DoctorLeave[]                @relation("DoctorLeaveApprover")
+  payrollProcessed               Payroll[]
+  notifications                  Notification[]
+  messagesSent                   Message[]                    @relation("MessageSender")
+  messagesReceived               Message[]                    @relation("MessageReceiver")
+  shiftHandoverFrom              ShiftHandoverNote[]          @relation("HandoverFrom")
+  shiftHandoverTo                ShiftHandoverNote[]          @relation("HandoverTo")
+  nurseAssignmentsAsNurse        NurseAssignment[]            @relation("NurseAssignmentNurse")
+  nurseAssignmentsAssigned       NurseAssignment[]            @relation("NurseAssignmentAssigner")
+  nurseAssignmentsHandoverTo     NurseAssignment[]            @relation("NurseAssignmentHandoverTo")
+  nurseDoctorAssignmentsAsNurse  NurseDoctorAssignment[]      @relation("NurseDoctorAssignmentNurse")
+  nurseDoctorAssignmentsAssigned NurseDoctorAssignment[]      @relation("NurseDoctorAssignmentAssigner")
+  dutyRostersApproved            DutyRoster[]                 @relation("DutyRosterApprover")
+  dutyRostersCreated             DutyRoster[]                 @relation("DutyRosterCreator")
+  vitalCorrectionsMade           Vital[]                      @relation("VitalCorrector")
+  ticketsRaised                  Ticket[]                     @relation("TicketRaiser")
+  ticketsAssigned                Ticket[]                     @relation("TicketAssignee")
+  ticketsEscalated               Ticket[]                     @relation("TicketEscalator")
+  feedbackSubmitted              Feedback[]
+  auditLogs                      AuditLog[]
+  complianceDocUploads           ComplianceDocument[]
+  incidentReportsReported        IncidentReport[]             @relation("IncidentReporter")
+  incidentReportsEscalated       IncidentReport[]             @relation("IncidentEscalator")
+  savedReports                   SavedReport[]
+  scheduledReports               ScheduledReport[]
+  supportTickets                 SupportTicket[]
+  tenantOwners                   TenantOwner[]
+  subscriptionPayments           SubscriptionPayment[]
+  connectionRequests             PatientHospitalConnection[]  @relation("ConnectionUser")
+  connectionReviews              PatientHospitalConnection[]  @relation("ConnectionReviewer")
+  mrdRequestsMade                MrdRequest[]                 @relation("MrdRequestedBy")
+  commissionSettingsUpdated      CommissionSetting[]          @relation("CommissionSettingUpdater")
+  hospitalCommissionsUpdated     HospitalCommission[]         @relation("HospitalCommissionUpdater")
+  demoRequestsApproved           DemoRequest[]                @relation("DemoApprover")
+  demoRequestsCreatedUser        DemoRequest[]                @relation("DemoCreatedUser")
+  ownedSubscriptions             UserSubscription[]           @relation("SubscriptionOwner")
+  reservationsCreated            Reservation[]                @relation("ReservationCreator")
+  estimationsCreated             Estimation[]                 @relation("EstimationCreator")
 
   @@unique([tenantId, email])
   @@map("users")
@@ -1584,8 +1621,8 @@ model Patient {
   createdAt          DateTime            @default(now()) @map("created_at")
   updatedAt          DateTime            @default(now()) @updatedAt @map("updated_at")
 
-  tenant                    Tenant                     @relation(fields: [tenantId], references: [id])
-  user                      User?                      @relation(fields: [userId], references: [id])
+  tenant                    Tenant                       @relation(fields: [tenantId], references: [id])
+  user                      User?                        @relation(fields: [userId], references: [id])
   beds                      Bed[]
   emergencyContacts         PatientEmergencyContact[]
   personalHistory           PatientPersonalHistory?
@@ -1608,6 +1645,9 @@ model Patient {
   ivLineRecords             IVLineRecord[]
   intakeOutputRecords       IntakeOutputRecord[]
   woundCareRecords          WoundCareRecord[]
+  admissionAssessments      NursingAdmissionAssessment[]
+  painAssessments           PainAssessment[]
+  fallRiskAssessments       FallRiskAssessment[]
   dischargeSummaries        DischargeSummary[]
   prescriptions             Prescription[]
   medicationAdministrations MedicationAdministration[]
@@ -1939,13 +1979,13 @@ model Appointment {
   createdAt          DateTime          @default(now()) @map("created_at")
   updatedAt          DateTime          @default(now()) @updatedAt @map("updated_at")
 
-  tenant          Tenant           @relation(fields: [tenantId], references: [id])
-  patient         Patient          @relation(fields: [patientId], references: [id])
-  doctor          DoctorProfile    @relation(fields: [doctorId], references: [id])
-  booker          User?            @relation("AppointmentBooker", fields: [bookedBy], references: [id])
-  canceller       User?            @relation("AppointmentCanceller", fields: [cancelledBy], references: [id])
-  queueTokens     QueueToken[]
-  visits          Visit[]
+  tenant      Tenant        @relation(fields: [tenantId], references: [id])
+  patient     Patient       @relation(fields: [patientId], references: [id])
+  doctor      DoctorProfile @relation(fields: [doctorId], references: [id])
+  booker      User?         @relation("AppointmentBooker", fields: [bookedBy], references: [id])
+  canceller   User?         @relation("AppointmentCanceller", fields: [cancelledBy], references: [id])
+  queueTokens QueueToken[]
+  visits      Visit[]
 
   @@map("appointments")
 }
@@ -1989,26 +2029,29 @@ model Visit {
   createdAt      DateTime    @default(now()) @map("created_at")
   updatedAt      DateTime    @default(now()) @updatedAt @map("updated_at")
 
-  tenant              Tenant               @relation(fields: [tenantId], references: [id])
-  patient             Patient              @relation(fields: [patientId], references: [id])
-  doctor              DoctorProfile        @relation(fields: [doctorId], references: [id])
-  appointment         Appointment?         @relation(fields: [appointmentId], references: [id])
-  admission           Admission?
-  patientTransfers    PatientTransfer[]
-  vitals              Vital[]
-  diagnoses           Diagnosis[]
-  progressNotes       ProgressNote[]
-  nursingNotes        NursingNote[]
-  ivLineRecords       IVLineRecord[]
-  intakeOutputRecords IntakeOutputRecord[]
-  woundCareRecords    WoundCareRecord[]
-  dischargeSummaries  DischargeSummary[]
-  prescriptions       Prescription[]
-  labOrders           LabOrder[]
-  imagingRequests     ImagingRequest[]
-  bills               Bill[]
-  transfusions        Transfusion[]
-  otRequests          OtRequest[]
+  tenant               Tenant                       @relation(fields: [tenantId], references: [id])
+  patient              Patient                      @relation(fields: [patientId], references: [id])
+  doctor               DoctorProfile                @relation(fields: [doctorId], references: [id])
+  appointment          Appointment?                 @relation(fields: [appointmentId], references: [id])
+  admission            Admission?
+  patientTransfers     PatientTransfer[]
+  vitals               Vital[]
+  diagnoses            Diagnosis[]
+  progressNotes        ProgressNote[]
+  nursingNotes         NursingNote[]
+  ivLineRecords        IVLineRecord[]
+  intakeOutputRecords  IntakeOutputRecord[]
+  woundCareRecords     WoundCareRecord[]
+  admissionAssessments NursingAdmissionAssessment[]
+  painAssessments      PainAssessment[]
+  fallRiskAssessments  FallRiskAssessment[]
+  dischargeSummaries   DischargeSummary[]
+  prescriptions        Prescription[]
+  labOrders            LabOrder[]
+  imagingRequests      ImagingRequest[]
+  bills                Bill[]
+  transfusions         Transfusion[]
+  otRequests           OtRequest[]
 
   @@map("visits")
 }
@@ -2032,20 +2075,23 @@ model Admission {
   createdAt             DateTime        @default(now()) @map("created_at")
   updatedAt             DateTime        @default(now()) @updatedAt @map("updated_at")
 
-  tenant           Tenant            @relation(fields: [tenantId], references: [id])
-  visit            Visit             @relation(fields: [visitId], references: [id])
-  patient          Patient           @relation(fields: [patientId], references: [id])
-  doctor           DoctorProfile     @relation(fields: [doctorId], references: [id])
-  bed              Bed               @relation(fields: [bedId], references: [id])
-  ward             Ward              @relation(fields: [wardId], references: [id])
-  admitter         User?             @relation("Admitter", fields: [admittedBy], references: [id])
-  discharger       User?             @relation("Discharger", fields: [dischargedBy], references: [id])
-  dischargeSummary DischargeSummary?
-  ivLineRecords    IVLineRecord[]
-  nursingNotes     NursingNote[]
-  progressNotes    ProgressNote[]
-  nurseAssignments NurseAssignment[]
-  bills            Bill[]
+  tenant               Tenant                       @relation(fields: [tenantId], references: [id])
+  visit                Visit                        @relation(fields: [visitId], references: [id])
+  patient              Patient                      @relation(fields: [patientId], references: [id])
+  doctor               DoctorProfile                @relation(fields: [doctorId], references: [id])
+  bed                  Bed                          @relation(fields: [bedId], references: [id])
+  ward                 Ward                         @relation(fields: [wardId], references: [id])
+  admitter             User?                        @relation("Admitter", fields: [admittedBy], references: [id])
+  discharger           User?                        @relation("Discharger", fields: [dischargedBy], references: [id])
+  dischargeSummary     DischargeSummary?
+  ivLineRecords        IVLineRecord[]
+  nursingNotes         NursingNote[]
+  progressNotes        ProgressNote[]
+  nurseAssignments     NurseAssignment[]
+  admissionAssessments NursingAdmissionAssessment[]
+  painAssessments      PainAssessment[]
+  fallRiskAssessments  FallRiskAssessment[]
+  bills                Bill[]
 
   @@map("admissions")
 }
@@ -2163,17 +2209,17 @@ model Vital {
   // original. The canonical latest reading is the row whose id is NOT referenced
   // by another row's supersedesVitalId — in practice query with
   // `WHERE id NOT IN (SELECT supersedes_vital_id FROM vitals WHERE supersedes_vital_id IS NOT NULL)`.
-  supersedesVitalId String?  @map("supersedes_vital_id")
-  correctionReason  String?  @map("correction_reason")
-  correctedById     String?  @map("corrected_by_id")
-  isCorrection      Boolean  @default(false) @map("is_correction")
+  supersedesVitalId String? @map("supersedes_vital_id")
+  correctionReason  String? @map("correction_reason")
+  correctedById     String? @map("corrected_by_id")
+  isCorrection      Boolean @default(false) @map("is_correction")
 
-  visit          Visit   @relation(fields: [visitId], references: [id])
-  patient        Patient @relation(fields: [patientId], references: [id])
-  recorder       User?   @relation(fields: [recordedBy], references: [id])
-  supersedes     Vital?  @relation("VitalCorrection", fields: [supersedesVitalId], references: [id])
-  correctedBy    Vital[] @relation("VitalCorrection")
-  corrector      User?   @relation("VitalCorrector", fields: [correctedById], references: [id])
+  visit       Visit   @relation(fields: [visitId], references: [id])
+  patient     Patient @relation(fields: [patientId], references: [id])
+  recorder    User?   @relation(fields: [recordedBy], references: [id])
+  supersedes  Vital?  @relation("VitalCorrection", fields: [supersedesVitalId], references: [id])
+  correctedBy Vital[] @relation("VitalCorrection")
+  corrector   User?   @relation("VitalCorrector", fields: [correctedById], references: [id])
 
   @@index([visitId, recordedAt])
   @@index([supersedesVitalId])
@@ -2424,6 +2470,107 @@ model WoundCareRecord {
   @@map("wound_care_records")
 }
 
+// Nursing admission intake. One per admission/visit; capture on the
+// patient's first contact with the ward. Free-text fields stay short
+// — anything more clinical lives in NursingNote.
+model NursingAdmissionAssessment {
+  id                 String              @id @default(uuid())
+  visitId            String              @map("visit_id")
+  admissionId        String?             @map("admission_id")
+  patientId          String              @map("patient_id")
+  nurseId            String              @map("nurse_id")
+  arrivalMode        ArrivalMode?        @map("arrival_mode")
+  consciousnessLevel ConsciousnessLevel? @map("consciousness_level")
+  chiefComplaint     String?             @map("chief_complaint")
+  allergies          String?
+  currentMedications String?             @map("current_medications")
+  skinCondition      String?             @map("skin_condition")
+  mobility           String?
+  nutritionStatus    String?             @map("nutrition_status")
+  elimination        String?
+  preferredLanguage  String?             @map("preferred_language")
+  religiousNeeds     String?             @map("religious_needs")
+  nextOfKin          Json?               @map("next_of_kin")
+  notes              String?
+  assessedAt         DateTime            @default(now()) @map("assessed_at")
+  createdAt          DateTime            @default(now()) @map("created_at")
+  updatedAt          DateTime            @default(now()) @updatedAt @map("updated_at")
+
+  visit     Visit      @relation(fields: [visitId], references: [id])
+  admission Admission? @relation(fields: [admissionId], references: [id])
+  patient   Patient    @relation(fields: [patientId], references: [id])
+  nurse     User       @relation(fields: [nurseId], references: [id])
+
+  @@index([patientId, assessedAt])
+  @@index([admissionId])
+  @@map("nursing_admission_assessments")
+}
+
+// Pain reassessments are frequent; expect many rows per admission.
+// `painScore` is a 0–10 numeric on whichever scale was used (FLACC
+// is also 0–10 by design, so a single column stays fine).
+model PainAssessment {
+  id                 String    @id @default(uuid())
+  visitId            String    @map("visit_id")
+  admissionId        String?   @map("admission_id")
+  patientId          String    @map("patient_id")
+  nurseId            String    @map("nurse_id")
+  painScore          Int       @map("pain_score")
+  painScale          PainScale @default(numeric) @map("pain_scale")
+  painLocation       String?   @map("pain_location") @db.VarChar(255)
+  painCharacter      String?   @map("pain_character") @db.VarChar(255)
+  painOnsetAt        DateTime? @map("pain_onset_at")
+  aggravatingFactors String?   @map("aggravating_factors")
+  relievingFactors   String?   @map("relieving_factors")
+  intervention       String?
+  reassessmentDueAt  DateTime? @map("reassessment_due_at")
+  notes              String?
+  assessedAt         DateTime  @default(now()) @map("assessed_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+
+  visit     Visit      @relation(fields: [visitId], references: [id])
+  admission Admission? @relation(fields: [admissionId], references: [id])
+  patient   Patient    @relation(fields: [patientId], references: [id])
+  nurse     User       @relation(fields: [nurseId], references: [id])
+
+  @@index([patientId, assessedAt])
+  @@index([admissionId])
+  @@map("pain_assessments")
+}
+
+// Morse Fall Scale. Subscores carry the weights from the published
+// scale (history 0/25, secondary 0/15, aid 0/15/30, IV 0/20, gait
+// 0/10/20, mental 0/15). Total + risk band are computed server-side
+// and stored so reports can group without re-deriving.
+model FallRiskAssessment {
+  id                 String        @id @default(uuid())
+  visitId            String        @map("visit_id")
+  admissionId        String?       @map("admission_id")
+  patientId          String        @map("patient_id")
+  nurseId            String        @map("nurse_id")
+  historyOfFalling   Int           @default(0) @map("history_of_falling")
+  secondaryDiagnosis Int           @default(0) @map("secondary_diagnosis")
+  ambulatoryAid      Int           @default(0) @map("ambulatory_aid")
+  ivOrSalineLock     Int           @default(0) @map("iv_or_saline_lock")
+  gait               Int           @default(0)
+  mentalStatus       Int           @default(0) @map("mental_status")
+  totalScore         Int           @map("total_score")
+  riskLevel          FallRiskLevel @map("risk_level")
+  intervention       String?
+  notes              String?
+  assessedAt         DateTime      @default(now()) @map("assessed_at")
+  createdAt          DateTime      @default(now()) @map("created_at")
+
+  visit     Visit      @relation(fields: [visitId], references: [id])
+  admission Admission? @relation(fields: [admissionId], references: [id])
+  patient   Patient    @relation(fields: [patientId], references: [id])
+  nurse     User       @relation(fields: [nurseId], references: [id])
+
+  @@index([patientId, assessedAt])
+  @@index([admissionId])
+  @@map("fall_risk_assessments")
+}
+
 model DischargeSummary {
   id                       String                 @id @default(uuid())
   admissionId              String                 @unique @map("admission_id")
@@ -2633,21 +2780,21 @@ model LabSample {
 }
 
 model LabResult {
-  id              String         @id @default(uuid())
-  labOrderItemId  String         @map("lab_order_item_id")
-  labOrderId      String         @map("lab_order_id")
-  patientId       String         @map("patient_id")
-  parameterName   String         @map("parameter_name") @db.VarChar(255)
-  value           String?        @db.VarChar(255)
-  unit            String?        @db.VarChar(50)
-  normalRange     String?        @map("normal_range") @db.VarChar(100)
-  isAbnormal      Boolean        @default(false) @map("is_abnormal")
+  id              String          @id @default(uuid())
+  labOrderItemId  String          @map("lab_order_item_id")
+  labOrderId      String          @map("lab_order_id")
+  patientId       String          @map("patient_id")
+  parameterName   String          @map("parameter_name") @db.VarChar(255)
+  value           String?         @db.VarChar(255)
+  unit            String?         @db.VarChar(50)
+  normalRange     String?         @map("normal_range") @db.VarChar(100)
+  isAbnormal      Boolean         @default(false) @map("is_abnormal")
   status          LabResultStatus @default(entered)
-  enteredBy       String?        @map("entered_by")
-  enteredAt       DateTime       @default(now()) @map("entered_at")
-  verifiedBy      String?        @map("verified_by")
-  verifiedAt      DateTime?      @map("verified_at")
-  correctionNotes String?        @map("correction_notes")
+  enteredBy       String?         @map("entered_by")
+  enteredAt       DateTime        @default(now()) @map("entered_at")
+  verifiedBy      String?         @map("verified_by")
+  verifiedAt      DateTime?       @map("verified_at")
+  correctionNotes String?         @map("correction_notes")
 
   labOrderItem LabOrderItem @relation(fields: [labOrderItemId], references: [id])
   labOrder     LabOrder     @relation(fields: [labOrderId], references: [id])
@@ -2693,30 +2840,30 @@ model LabReport {
 // ============================================================
 
 model ImagingRequest {
-  id                    String               @id @default(uuid())
-  tenantId              String               @map("tenant_id")
-  patientId             String               @map("patient_id")
-  visitId               String               @map("visit_id")
-  orderedBy             String               @map("ordered_by")
-  imagingType           ImagingType          @map("imaging_type")
-  bodyPart              String?              @map("body_part") @db.VarChar(100)
-  urgency               Urgency              @default(routine)
-  clinicalIndication    String?              @map("clinical_indication")
-  status                ImagingRequestStatus @default(requested)
-  scheduledAt           DateTime?            @map("scheduled_at")
-  completedAt           DateTime?            @map("completed_at")
-  assignedTechnicianId  String?              @map("assigned_technician_id")
-  room                  String?              @db.VarChar(100)
-  notes                 String?
-  createdAt             DateTime             @default(now()) @map("created_at")
-  updatedAt             DateTime             @default(now()) @updatedAt @map("updated_at")
+  id                   String               @id @default(uuid())
+  tenantId             String               @map("tenant_id")
+  patientId            String               @map("patient_id")
+  visitId              String               @map("visit_id")
+  orderedBy            String               @map("ordered_by")
+  imagingType          ImagingType          @map("imaging_type")
+  bodyPart             String?              @map("body_part") @db.VarChar(100)
+  urgency              Urgency              @default(routine)
+  clinicalIndication   String?              @map("clinical_indication")
+  status               ImagingRequestStatus @default(requested)
+  scheduledAt          DateTime?            @map("scheduled_at")
+  completedAt          DateTime?            @map("completed_at")
+  assignedTechnicianId String?              @map("assigned_technician_id")
+  room                 String?              @db.VarChar(100)
+  notes                String?
+  createdAt            DateTime             @default(now()) @map("created_at")
+  updatedAt            DateTime             @default(now()) @updatedAt @map("updated_at")
 
-  tenant              Tenant         @relation(fields: [tenantId], references: [id])
-  patient             Patient        @relation(fields: [patientId], references: [id])
-  visit               Visit          @relation(fields: [visitId], references: [id])
-  orderer             User           @relation(fields: [orderedBy], references: [id])
-  assignedTechnician  User?          @relation("ImagingTechnician", fields: [assignedTechnicianId], references: [id])
-  imagingResult       ImagingResult?
+  tenant             Tenant         @relation(fields: [tenantId], references: [id])
+  patient            Patient        @relation(fields: [patientId], references: [id])
+  visit              Visit          @relation(fields: [visitId], references: [id])
+  orderer            User           @relation(fields: [orderedBy], references: [id])
+  assignedTechnician User?          @relation("ImagingTechnician", fields: [assignedTechnicianId], references: [id])
+  imagingResult      ImagingResult?
 
   @@map("imaging_requests")
 }
@@ -3525,25 +3672,25 @@ model DutyRoster {
 //     ON nurse_assignments(admission_id, shift_date, shift_type)
 //     WHERE status = 'active';
 model NurseAssignment {
-  id              String                @id @default(uuid())
-  tenantId        String                @map("tenant_id")
-  admissionId     String                @map("admission_id")
-  nurseId         String                @map("nurse_id")
-  wardId          String                @map("ward_id")
-  bedId           String?               @map("bed_id")
-  shiftDate       DateTime              @map("shift_date") @db.Date
-  shiftType       ShiftType             @map("shift_type")
-  assignedById    String                @map("assigned_by_id")
-  assignedAt      DateTime              @default(now()) @map("assigned_at")
-  status          NurseAssignmentStatus @default(active)
-  handedOverToId  String?               @map("handed_over_to_id")
-  handedOverAt    DateTime?             @map("handed_over_at")
-  handoverNoteId  String?               @map("handover_note_id")
-  endedAt         DateTime?             @map("ended_at")
-  endedReason     String?               @map("ended_reason")
-  notes           String?
-  createdAt       DateTime              @default(now()) @map("created_at")
-  updatedAt       DateTime              @default(now()) @updatedAt @map("updated_at")
+  id             String                @id @default(uuid())
+  tenantId       String                @map("tenant_id")
+  admissionId    String                @map("admission_id")
+  nurseId        String                @map("nurse_id")
+  wardId         String                @map("ward_id")
+  bedId          String?               @map("bed_id")
+  shiftDate      DateTime              @map("shift_date") @db.Date
+  shiftType      ShiftType             @map("shift_type")
+  assignedById   String                @map("assigned_by_id")
+  assignedAt     DateTime              @default(now()) @map("assigned_at")
+  status         NurseAssignmentStatus @default(active)
+  handedOverToId String?               @map("handed_over_to_id")
+  handedOverAt   DateTime?             @map("handed_over_at")
+  handoverNoteId String?               @map("handover_note_id")
+  endedAt        DateTime?             @map("ended_at")
+  endedReason    String?               @map("ended_reason")
+  notes          String?
+  createdAt      DateTime              @default(now()) @map("created_at")
+  updatedAt      DateTime              @default(now()) @updatedAt @map("updated_at")
 
   tenant       Tenant             @relation(fields: [tenantId], references: [id])
   admission    Admission          @relation(fields: [admissionId], references: [id])
