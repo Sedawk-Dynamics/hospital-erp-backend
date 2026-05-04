@@ -166,21 +166,31 @@ export const approveTransferSchema = z.object({
 
 // ==================== Vitals ====================
 
+// Accepts visitId, admissionId, or appointmentId — at least one is required.
+// The service resolves to a visitId, creating a Visit row from a confirmed
+// appointment if none exists yet (mirrors nursing-forms.resolveVisitContext).
 export const recordVitalsSchema = z.object({
-  body: z.object({
-    patientId: z.string().uuid('Invalid patient ID'),
-    visitId: z.string().uuid('Invalid visit ID'),
-    bloodPressureSystolic: z.number().int().min(0).max(400).optional(),
-    bloodPressureDiastolic: z.number().int().min(0).max(300).optional(),
-    pulseRate: z.number().int().min(0).max(300).optional(),
-    temperature: z.number().min(25).max(50).optional(),
-    respiratoryRate: z.number().int().min(0).max(100).optional(),
-    oxygenSaturation: z.number().min(0).max(100).optional(),
-    weightKg: z.number().min(0).max(700).optional(),
-    heightCm: z.number().min(0).max(300).optional(),
-    bloodSugar: z.number().min(0).max(2000).optional(),
-    notes: z.string().max(2000).optional(),
-  }),
+  body: z
+    .object({
+      patientId: z.string().uuid('Invalid patient ID'),
+      visitId: z.string().uuid('Invalid visit ID').optional(),
+      admissionId: z.string().uuid('Invalid admission ID').optional(),
+      appointmentId: z.string().uuid('Invalid appointment ID').optional(),
+      bloodPressureSystolic: z.number().int().min(0).max(400).optional(),
+      bloodPressureDiastolic: z.number().int().min(0).max(300).optional(),
+      pulseRate: z.number().int().min(0).max(300).optional(),
+      temperature: z.number().min(25).max(50).optional(),
+      respiratoryRate: z.number().int().min(0).max(100).optional(),
+      oxygenSaturation: z.number().min(0).max(100).optional(),
+      weightKg: z.number().min(0).max(700).optional(),
+      heightCm: z.number().min(0).max(300).optional(),
+      bloodSugar: z.number().min(0).max(2000).optional(),
+      notes: z.string().max(2000).optional(),
+    })
+    .refine(
+      (b) => Boolean(b.visitId || b.admissionId || b.appointmentId),
+      { message: 'Either visitId, admissionId, or appointmentId is required' },
+    ),
 });
 
 export const patientIdParamSchema = z.object({

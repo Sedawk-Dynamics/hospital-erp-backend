@@ -886,9 +886,59 @@ export async function recordVitals(
 ) {
   assertCanWriteVitals(roles);
 
+  // Resolve to a visitId. Nurses on OPD see confirmed appointments before the
+  // doctor opens consultation, so a Visit row may not exist yet — auto-create
+  // one from the appointment in that case (parallels
+  // nursing-forms.resolveVisitContext).
+  let resolvedVisitId: string | null = data.visitId ?? null;
+
+  if (!resolvedVisitId && data.admissionId) {
+    const adm = await prisma.admission.findFirst({
+      where: { id: data.admissionId, tenantId, patientId: data.patientId },
+      select: { visitId: true },
+    });
+    if (!adm) throw AppError.notFound('Admission not found');
+    resolvedVisitId = adm.visitId;
+  }
+
+  if (!resolvedVisitId && data.appointmentId) {
+    const appt = await prisma.appointment.findFirst({
+      where: { id: data.appointmentId, tenantId, patientId: data.patientId },
+      select: {
+        id: true,
+        doctorId: true,
+        appointmentDate: true,
+        visits: { orderBy: { createdAt: 'desc' }, take: 1, select: { id: true } },
+      },
+    });
+    if (!appt) throw AppError.notFound('Appointment not found');
+    const existingVisitId = appt.visits[0]?.id;
+    if (existingVisitId) {
+      resolvedVisitId = existingVisitId;
+    } else {
+      const newVisit = await prisma.visit.create({
+        data: {
+          tenantId,
+          patientId: data.patientId,
+          doctorId: appt.doctorId,
+          appointmentId: appt.id,
+          visitType: 'op',
+          visitDate: appt.appointmentDate,
+          status: 'active',
+        },
+        select: { id: true },
+      });
+      resolvedVisitId = newVisit.id;
+    }
+  }
+
+  if (!resolvedVisitId) {
+    throw AppError.badRequest('Either visitId, admissionId, or appointmentId is required');
+  }
+
   // Verify visit belongs to tenant
   const visit = await prisma.visit.findFirst({
-    where: { id: data.visitId, tenantId },
+    where: { id: resolvedVisitId, tenantId },
   });
   if (!visit) {
     throw AppError.notFound('Visit not found');
@@ -914,7 +964,7 @@ export async function recordVitals(
 
   const vital = await prisma.vital.create({
     data: {
-      visitId: data.visitId,
+      visitId: resolvedVisitId,
       patientId: data.patientId,
       bloodPressureSystolic: data.bloodPressureSystolic,
       bloodPressureDiastolic: data.bloodPressureDiastolic,
@@ -934,7 +984,7 @@ export async function recordVitals(
     },
   });
 
-  logger.info({ visitId: data.visitId, vitalId: vital.id }, 'Vitals recorded');
+  logger.info({ visitId: resolvedVisitId, vitalId: vital.id }, 'Vitals recorded');
   return vital;
 }
 
