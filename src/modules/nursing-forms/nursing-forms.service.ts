@@ -9,6 +9,15 @@ import type {
   CreateIntakeOutputInput,
   CreateWoundCareInput,
   CreateNursingNoteInput,
+  CreateObservationInput,
+  CreateDeviceInput,
+  UpdateDeviceInput,
+  RemoveDeviceInput,
+  CreateDeviceCheckInput,
+  CreateProcedureInput,
+  ListDevicesQuery,
+  ListProceduresQuery,
+  IOTotalsQuery,
   ListFormsQuery,
 } from './nursing-forms.validation';
 
@@ -317,11 +326,49 @@ export async function createIntakeOutput(
       volumeMl: data.volumeMl,
       fluidDescription: data.fluidDescription,
       ivLineId: data.ivLineId,
+      subType: data.subType,
+      color: data.color,
+      frequencyCount: data.frequencyCount,
       notes: data.notes,
     },
     include: { nurse: { select: { id: true, firstName: true, lastName: true } } },
   });
   return row;
+}
+
+// Sums intake/output volume for a patient in a date window. Used by the
+// charting UI's "Total intake / Total output" footer.
+export async function getIntakeOutputTotals(tenantId: string, q: IOTotalsQuery) {
+  const patient = await prisma.patient.findFirst({
+    where: { id: q.patientId, tenantId },
+    select: { id: true },
+  });
+  if (!patient) throw AppError.notFound('Patient not found');
+
+  const where: any = { patientId: q.patientId, visit: { tenantId } };
+  if (q.visitId) where.visitId = q.visitId;
+  if (q.fromDate || q.toDate) {
+    where.recordDatetime = {};
+    if (q.fromDate) where.recordDatetime.gte = new Date(q.fromDate);
+    if (q.toDate) where.recordDatetime.lte = new Date(q.toDate);
+  }
+
+  const grouped = await prisma.intakeOutputRecord.groupBy({
+    by: ['entryType', 'category'],
+    where,
+    _sum: { volumeMl: true },
+  });
+
+  let totalIntake = 0;
+  let totalOutput = 0;
+  const byCategory: Record<string, number> = {};
+  for (const g of grouped) {
+    const v = g._sum.volumeMl ?? 0;
+    if (g.entryType === 'intake') totalIntake += v;
+    else totalOutput += v;
+    byCategory[`${g.entryType}:${g.category}`] = v;
+  }
+  return { totalIntake, totalOutput, balance: totalIntake - totalOutput, byCategory };
 }
 
 export async function listIntakeOutput(tenantId: string, query: ListFormsQuery) {
@@ -525,6 +572,29 @@ export async function getPatientFormsSummary(tenantId: string, patientId: string
     ]),
   ]);
 
+  // Charting additions — observations, active devices, recent procedures.
+  const [observations, activeDevices, recentProcedures, chartingCounts] = await Promise.all([
+    prisma.clinicalObservation.findMany({
+      where, orderBy: { observedAt: 'desc' }, take: 10, include: nurseInclude,
+    }),
+    prisma.clinicalDevice.findMany({
+      where: { ...where, status: 'active' },
+      orderBy: { insertionTime: 'desc' },
+      include: {
+        inserter: { select: { id: true, firstName: true, lastName: true } },
+        checks: { orderBy: { checkedAt: 'desc' }, take: 1 },
+      },
+    }),
+    prisma.clinicalProcedure.findMany({
+      where, orderBy: { performedAt: 'desc' }, take: 10, include: nurseInclude,
+    }),
+    Promise.all([
+      prisma.clinicalObservation.count({ where }),
+      prisma.clinicalDevice.count({ where }),
+      prisma.clinicalProcedure.count({ where }),
+    ]),
+  ]);
+
   return {
     admissionAssessment: { latest: admission, total: counts[0] },
     pain: { recent: pain, total: counts[1] },
@@ -532,5 +602,438 @@ export async function getPatientFormsSummary(tenantId: string, patientId: string
     intakeOutput: { recent: intakeOutput, total: counts[3] },
     woundCare: { recent: woundCare, total: counts[4] },
     nursingNote: { latest: nursingNote, total: counts[5] },
+    observations: { recent: observations, total: chartingCounts[0] },
+    devices: { active: activeDevices, total: chartingCounts[1] },
+    procedures: { recent: recentProcedures, total: chartingCounts[2] },
   };
+}
+
+// ──────────────────────────────────────────────────────────
+// Clinical Observation
+// ──────────────────────────────────────────────────────────
+
+export async function createObservation(
+  tenantId: string,
+  userId: string,
+  roles: string[],
+  data: CreateObservationInput,
+) {
+  assertCanWriteForms(roles);
+  const { visitId, admissionId } = await resolveVisitContext(tenantId, data.patientId, data);
+
+  const row = await prisma.clinicalObservation.create({
+    data: {
+      visitId,
+      admissionId,
+      patientId: data.patientId,
+      nurseId: userId,
+      observedAt: data.observedAt ? new Date(data.observedAt) : new Date(),
+      painScore: data.painScore,
+      painLocation: data.painLocation,
+      consciousnessAvpu: data.consciousnessAvpu,
+      generalCondition: data.generalCondition,
+      mobility: data.mobility,
+      fluidIntakeMl: data.fluidIntakeMl,
+      foodIntakeNotes: data.foodIntakeNotes,
+      urineOutputMl: data.urineOutputMl,
+      stoolPassed: data.stoolPassed,
+      stoolCount: data.stoolCount,
+      notes: data.notes,
+      metadata: data.metadata ?? undefined,
+    },
+    include: { nurse: { select: { id: true, firstName: true, lastName: true } } },
+  });
+  logger.info({ id: row.id, patientId: data.patientId }, 'Clinical observation recorded');
+  return row;
+}
+
+export async function listObservations(tenantId: string, query: ListFormsQuery) {
+  const { skip, take, page, limit } = getPaginationParams(query);
+  const where: any = { visit: { tenantId } };
+  if (query.patientId) where.patientId = query.patientId;
+  if (query.admissionId) where.admissionId = query.admissionId;
+  if (query.visitId) where.visitId = query.visitId;
+  const [items, total] = await Promise.all([
+    prisma.clinicalObservation.findMany({
+      where,
+      skip,
+      take,
+      orderBy: { observedAt: 'desc' },
+      include: { nurse: { select: { id: true, firstName: true, lastName: true } } },
+    }),
+    prisma.clinicalObservation.count({ where }),
+  ]);
+  return { items, total, page, limit };
+}
+
+// ──────────────────────────────────────────────────────────
+// Clinical Device / Line
+// ──────────────────────────────────────────────────────────
+
+export async function createDevice(
+  tenantId: string,
+  userId: string,
+  roles: string[],
+  data: CreateDeviceInput,
+) {
+  assertCanWriteForms(roles);
+  const { visitId, admissionId } = await resolveVisitContext(tenantId, data.patientId, data);
+
+  // If linking to an existing procedure, verify it belongs to the same patient
+  // and tenant — prevents a malformed payload from cross-linking records.
+  if (data.createdByProcedureId) {
+    const proc = await prisma.clinicalProcedure.findFirst({
+      where: { id: data.createdByProcedureId, patientId: data.patientId, visit: { tenantId } },
+      select: { id: true },
+    });
+    if (!proc) throw AppError.badRequest('Procedure not found for this patient');
+  }
+
+  const row = await prisma.clinicalDevice.create({
+    data: {
+      visitId,
+      admissionId,
+      patientId: data.patientId,
+      deviceType: data.deviceType,
+      deviceSubtype: data.deviceSubtype,
+      site: data.site,
+      insertionTime: new Date(data.insertionTime),
+      insertedBy: userId,
+      flowStatus: data.flowStatus,
+      fluidType: data.fluidType,
+      flowRateMlPerHr: data.flowRateMlPerHr,
+      oxygenMode: data.oxygenMode,
+      oxygenFlowRate: data.oxygenFlowRate,
+      createdByProcedureId: data.createdByProcedureId,
+      notes: data.notes,
+      metadata: data.metadata ?? undefined,
+    },
+    include: {
+      inserter: { select: { id: true, firstName: true, lastName: true } },
+    },
+  });
+  // If the device was created standalone (no parent procedure), keep the back-
+  // link consistent — procedures linked here have deviceCreated=true.
+  if (data.createdByProcedureId) {
+    await prisma.clinicalProcedure.update({
+      where: { id: data.createdByProcedureId },
+      data: { deviceCreated: true },
+    });
+  }
+  logger.info({ id: row.id, deviceType: data.deviceType }, 'Clinical device recorded');
+  return row;
+}
+
+export async function listDevices(tenantId: string, query: ListDevicesQuery) {
+  const { skip, take, page, limit } = getPaginationParams(query);
+  const where: any = { visit: { tenantId } };
+  if (query.patientId) where.patientId = query.patientId;
+  if (query.admissionId) where.admissionId = query.admissionId;
+  if (query.visitId) where.visitId = query.visitId;
+  if (query.status) where.status = query.status;
+  if (query.deviceType) where.deviceType = query.deviceType;
+  const [items, total] = await Promise.all([
+    prisma.clinicalDevice.findMany({
+      where,
+      skip,
+      take,
+      orderBy: { insertionTime: 'desc' },
+      include: {
+        inserter: { select: { id: true, firstName: true, lastName: true } },
+        remover: { select: { id: true, firstName: true, lastName: true } },
+        checks: { orderBy: { checkedAt: 'desc' }, take: 1 },
+      },
+    }),
+    prisma.clinicalDevice.count({ where }),
+  ]);
+  return { items, total, page, limit };
+}
+
+export async function getDevice(tenantId: string, id: string) {
+  const device = await prisma.clinicalDevice.findFirst({
+    where: { id, visit: { tenantId } },
+    include: {
+      inserter: { select: { id: true, firstName: true, lastName: true } },
+      remover: { select: { id: true, firstName: true, lastName: true } },
+      createdByProcedure: true,
+      checks: {
+        orderBy: { checkedAt: 'desc' },
+        include: { nurse: { select: { id: true, firstName: true, lastName: true } } },
+      },
+    },
+  });
+  if (!device) throw AppError.notFound('Device not found');
+  return device;
+}
+
+export async function updateDevice(
+  tenantId: string,
+  userId: string,
+  roles: string[],
+  id: string,
+  data: UpdateDeviceInput,
+) {
+  assertCanWriteForms(roles);
+  const existing = await prisma.clinicalDevice.findFirst({
+    where: { id, visit: { tenantId } },
+    select: { id: true, status: true },
+  });
+  if (!existing) throw AppError.notFound('Device not found');
+  if (existing.status !== 'active') {
+    throw AppError.badRequest('Cannot update a removed/replaced device');
+  }
+  void userId;
+  const row = await prisma.clinicalDevice.update({
+    where: { id },
+    data: {
+      deviceSubtype: data.deviceSubtype,
+      site: data.site,
+      flowStatus: data.flowStatus,
+      fluidType: data.fluidType,
+      flowRateMlPerHr: data.flowRateMlPerHr,
+      oxygenMode: data.oxygenMode,
+      oxygenFlowRate: data.oxygenFlowRate,
+      notes: data.notes,
+      metadata: data.metadata ?? undefined,
+    },
+  });
+  return row;
+}
+
+export async function removeDevice(
+  tenantId: string,
+  userId: string,
+  roles: string[],
+  id: string,
+  data: RemoveDeviceInput,
+) {
+  assertCanWriteForms(roles);
+  const existing = await prisma.clinicalDevice.findFirst({
+    where: { id, visit: { tenantId } },
+    select: { id: true, status: true, notes: true },
+  });
+  if (!existing) throw AppError.notFound('Device not found');
+  if (existing.status !== 'active') {
+    throw AppError.badRequest('Device is not active');
+  }
+  return prisma.clinicalDevice.update({
+    where: { id },
+    data: {
+      status: data.status,
+      removalTime: data.removalTime ? new Date(data.removalTime) : new Date(),
+      removedBy: userId,
+      notes: data.notes ?? existing.notes,
+    },
+  });
+}
+
+// ──────────────────────────────────────────────────────────
+// Device check (periodic monitoring)
+// ──────────────────────────────────────────────────────────
+
+export async function createDeviceCheck(
+  tenantId: string,
+  userId: string,
+  roles: string[],
+  deviceId: string,
+  data: CreateDeviceCheckInput,
+) {
+  assertCanWriteForms(roles);
+  const device = await prisma.clinicalDevice.findFirst({
+    where: { id: deviceId, visit: { tenantId } },
+    select: { id: true, visitId: true, patientId: true, status: true },
+  });
+  if (!device) throw AppError.notFound('Device not found');
+  if (device.status !== 'active') {
+    throw AppError.badRequest('Cannot check a removed/replaced device');
+  }
+  return prisma.clinicalDeviceCheck.create({
+    data: {
+      deviceId,
+      visitId: device.visitId,
+      patientId: device.patientId,
+      nurseId: userId,
+      checkedAt: data.checkedAt ? new Date(data.checkedAt) : new Date(),
+      patency: data.patency,
+      siteCondition: data.siteCondition,
+      painPresent: data.painPresent,
+      securement: data.securement,
+      flowStatus: data.flowStatus,
+      urineFlow: data.urineFlow,
+      urineColor: data.urineColor,
+      infectionSuspected: data.infectionSuspected,
+      dislodged: data.dislodged,
+      blocked: data.blocked,
+      remarks: data.remarks,
+      metadata: data.metadata ?? undefined,
+    },
+    include: { nurse: { select: { id: true, firstName: true, lastName: true } } },
+  });
+}
+
+export async function listDeviceChecks(
+  tenantId: string,
+  deviceId: string,
+  query: any,
+) {
+  const device = await prisma.clinicalDevice.findFirst({
+    where: { id: deviceId, visit: { tenantId } },
+    select: { id: true },
+  });
+  if (!device) throw AppError.notFound('Device not found');
+  const { skip, take, page, limit } = getPaginationParams(query);
+  const [items, total] = await Promise.all([
+    prisma.clinicalDeviceCheck.findMany({
+      where: { deviceId },
+      skip,
+      take,
+      orderBy: { checkedAt: 'desc' },
+      include: { nurse: { select: { id: true, firstName: true, lastName: true } } },
+    }),
+    prisma.clinicalDeviceCheck.count({ where: { deviceId } }),
+  ]);
+  return { items, total, page, limit };
+}
+
+// ──────────────────────────────────────────────────────────
+// Clinical Procedure
+// ──────────────────────────────────────────────────────────
+
+export async function createProcedure(
+  tenantId: string,
+  userId: string,
+  roles: string[],
+  data: CreateProcedureInput,
+) {
+  assertCanWriteForms(roles);
+  const { visitId, admissionId } = await resolveVisitContext(tenantId, data.patientId, data);
+
+  // Procedure + (optional) device created in one tx so we don't end up with a
+  // procedure flagged `deviceCreated=true` without a real device row, or vice
+  // versa.
+  return prisma.$transaction(async (tx) => {
+    const proc = await tx.clinicalProcedure.create({
+      data: {
+        visitId,
+        admissionId,
+        patientId: data.patientId,
+        nurseId: userId,
+        procedureType: data.procedureType,
+        procedureSubtype: data.procedureSubtype,
+        performedAt: new Date(data.performedAt),
+        site: data.site,
+        side: data.side,
+        status: data.status,
+        attemptCount: data.attemptCount,
+        asepticTechnique: data.asepticTechnique,
+        equipmentUsed: data.equipmentUsed,
+        complications: data.complications,
+        complicationNotes: data.complicationNotes,
+        tolerance: data.tolerance,
+        painScore: data.painScore,
+        deviceCreated: !!data.device,
+        notes: data.notes,
+        metadata: data.metadata ?? undefined,
+      },
+    });
+
+    let device = null as any;
+    if (data.device) {
+      device = await tx.clinicalDevice.create({
+        data: {
+          visitId,
+          admissionId,
+          patientId: data.patientId,
+          deviceType: data.device.deviceType,
+          deviceSubtype: data.device.deviceSubtype,
+          site: data.device.site,
+          insertionTime: new Date(data.performedAt),
+          insertedBy: userId,
+          flowStatus: data.device.flowStatus,
+          fluidType: data.device.fluidType,
+          flowRateMlPerHr: data.device.flowRateMlPerHr,
+          oxygenMode: data.device.oxygenMode,
+          oxygenFlowRate: data.device.oxygenFlowRate,
+          createdByProcedureId: proc.id,
+        },
+      });
+    }
+    return { procedure: proc, device };
+  });
+}
+
+export async function listProcedures(tenantId: string, query: ListProceduresQuery) {
+  const { skip, take, page, limit } = getPaginationParams(query);
+  const where: any = { visit: { tenantId } };
+  if (query.patientId) where.patientId = query.patientId;
+  if (query.admissionId) where.admissionId = query.admissionId;
+  if (query.visitId) where.visitId = query.visitId;
+  const [items, total] = await Promise.all([
+    prisma.clinicalProcedure.findMany({
+      where,
+      skip,
+      take,
+      orderBy: { performedAt: 'desc' },
+      include: {
+        nurse: { select: { id: true, firstName: true, lastName: true } },
+        devices: { select: { id: true, deviceType: true, status: true } },
+      },
+    }),
+    prisma.clinicalProcedure.count({ where }),
+  ]);
+  return { items, total, page, limit };
+}
+
+// Combined chronological feed across devices, checks, procedures and
+// observations — drives the "Timeline" tab on the charting page.
+export async function getChartingTimeline(tenantId: string, patientId: string, limit = 50) {
+  const patient = await prisma.patient.findFirst({
+    where: { id: patientId, tenantId },
+    select: { id: true },
+  });
+  if (!patient) throw AppError.notFound('Patient not found');
+
+  const baseWhere = { patientId, visit: { tenantId } } as const;
+  const [observations, devices, checks, procedures] = await Promise.all([
+    prisma.clinicalObservation.findMany({
+      where: baseWhere,
+      orderBy: { observedAt: 'desc' },
+      take: limit,
+      include: { nurse: { select: { id: true, firstName: true, lastName: true } } },
+    }),
+    prisma.clinicalDevice.findMany({
+      where: baseWhere,
+      orderBy: { insertionTime: 'desc' },
+      take: limit,
+      include: { inserter: { select: { id: true, firstName: true, lastName: true } } },
+    }),
+    prisma.clinicalDeviceCheck.findMany({
+      where: baseWhere,
+      orderBy: { checkedAt: 'desc' },
+      take: limit,
+      include: {
+        device: { select: { id: true, deviceType: true, site: true } },
+        nurse: { select: { id: true, firstName: true, lastName: true } },
+      },
+    }),
+    prisma.clinicalProcedure.findMany({
+      where: baseWhere,
+      orderBy: { performedAt: 'desc' },
+      take: limit,
+      include: { nurse: { select: { id: true, firstName: true, lastName: true } } },
+    }),
+  ]);
+
+  type Item = { kind: string; at: Date; payload: any };
+  const items: Item[] = [
+    ...observations.map((o) => ({ kind: 'observation', at: o.observedAt, payload: o })),
+    ...devices.map((d) => ({ kind: 'device_inserted', at: d.insertionTime, payload: d })),
+    ...devices
+      .filter((d) => d.removalTime)
+      .map((d) => ({ kind: 'device_removed', at: d.removalTime as Date, payload: d })),
+    ...checks.map((c) => ({ kind: 'device_check', at: c.checkedAt, payload: c })),
+    ...procedures.map((p) => ({ kind: 'procedure', at: p.performedAt, payload: p })),
+  ];
+  items.sort((a, b) => b.at.getTime() - a.at.getTime());
+  return items.slice(0, limit);
 }

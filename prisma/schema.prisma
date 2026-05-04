@@ -440,6 +440,121 @@ enum FallRiskLevel {
   high     @map("high")
 }
 
+// ── Clinical Charting (bedside nursing) ──────────────────
+//
+// Observations, Devices/Lines (with periodic checks), and one-time
+// Procedures. Devices and Procedures are split because a procedure is
+// a single action at a moment in time while a device is an ongoing
+// state that is monitored repeatedly. A procedure may create a device
+// (e.g. IV insertion → IV cannula) — see ClinicalDevice.createdByProcedureId.
+
+enum AvpuLevel {
+  alert        @map("alert")
+  voice        @map("voice")
+  pain         @map("pain")
+  unresponsive @map("unresponsive")
+}
+
+enum GeneralCondition {
+  stable        @map("stable")
+  critical      @map("critical")
+  improving     @map("improving")
+  deteriorating @map("deteriorating")
+}
+
+enum MobilityLevel {
+  bedridden   @map("bedridden")
+  assisted    @map("assisted")
+  independent @map("independent")
+}
+
+enum ClinicalDeviceType {
+  iv_cannula        @map("iv_cannula")
+  central_line      @map("central_line")
+  urinary_catheter  @map("urinary_catheter")
+  oxygen_device     @map("oxygen_device")
+  drain             @map("drain")
+  ng_tube           @map("ng_tube")
+  other             @map("other")
+}
+
+enum ClinicalDeviceStatus {
+  active   @map("active")
+  removed  @map("removed")
+  replaced @map("replaced")
+}
+
+enum DevicePatency {
+  patent  @map("patent")
+  blocked @map("blocked")
+}
+
+enum DeviceSiteCondition {
+  normal    @map("normal")
+  redness   @map("redness")
+  swelling  @map("swelling")
+  infection @map("infection")
+  leakage   @map("leakage")
+}
+
+enum DeviceSecurement {
+  secure @map("secure")
+  loose  @map("loose")
+}
+
+enum DeviceFlowStatus {
+  running @map("running")
+  stopped @map("stopped")
+}
+
+enum UrineFlow {
+  adequate @map("adequate")
+  reduced  @map("reduced")
+  none     @map("none")
+}
+
+enum UrineColor {
+  clear  @map("clear")
+  yellow @map("yellow")
+  amber  @map("amber")
+  dark   @map("dark")
+  bloody @map("bloody")
+}
+
+enum OxygenMode {
+  nasal_cannula @map("nasal_cannula")
+  mask          @map("mask")
+  venturi       @map("venturi")
+  rebreather    @map("rebreather")
+  high_flow     @map("high_flow")
+  none          @map("none")
+}
+
+enum ProcedureStatus {
+  successful @map("successful")
+  failed     @map("failed")
+  partial    @map("partial")
+}
+
+enum ProcedureSide {
+  left    @map("left")
+  right   @map("right")
+  midline @map("midline")
+}
+
+enum ProcedureTolerance {
+  well_tolerated   @map("well_tolerated")
+  poorly_tolerated @map("poorly_tolerated")
+}
+
+enum ProcedureComplication {
+  none            @map("none")
+  bleeding        @map("bleeding")
+  pain            @map("pain")
+  infection_risk  @map("infection_risk")
+  other           @map("other")
+}
+
 enum DischargeSummaryStatus {
   draft     @map("draft")
   finalized @map("finalized")
@@ -1243,6 +1358,11 @@ model User {
   admissionAssessments           NursingAdmissionAssessment[]
   painAssessments                PainAssessment[]
   fallRiskAssessments            FallRiskAssessment[]
+  clinicalObservations           ClinicalObservation[]
+  clinicalDevicesInserted        ClinicalDevice[]             @relation("DeviceInserter")
+  clinicalDevicesRemoved         ClinicalDevice[]             @relation("DeviceRemover")
+  clinicalDeviceChecks           ClinicalDeviceCheck[]
+  clinicalProcedures             ClinicalProcedure[]
   dischargeSummariesSigned       DischargeSummary[]
   medicationAdministrations      MedicationAdministration[]
   labOrdersOrdered               LabOrder[]
@@ -1648,6 +1768,10 @@ model Patient {
   admissionAssessments      NursingAdmissionAssessment[]
   painAssessments           PainAssessment[]
   fallRiskAssessments       FallRiskAssessment[]
+  clinicalObservations      ClinicalObservation[]
+  clinicalDevices           ClinicalDevice[]
+  clinicalDeviceChecks      ClinicalDeviceCheck[]
+  clinicalProcedures        ClinicalProcedure[]
   dischargeSummaries        DischargeSummary[]
   prescriptions             Prescription[]
   medicationAdministrations MedicationAdministration[]
@@ -2045,6 +2169,10 @@ model Visit {
   admissionAssessments NursingAdmissionAssessment[]
   painAssessments      PainAssessment[]
   fallRiskAssessments  FallRiskAssessment[]
+  clinicalObservations ClinicalObservation[]
+  clinicalDevices      ClinicalDevice[]
+  clinicalDeviceChecks ClinicalDeviceCheck[]
+  clinicalProcedures   ClinicalProcedure[]
   dischargeSummaries   DischargeSummary[]
   prescriptions        Prescription[]
   labOrders            LabOrder[]
@@ -2091,6 +2219,9 @@ model Admission {
   admissionAssessments NursingAdmissionAssessment[]
   painAssessments      PainAssessment[]
   fallRiskAssessments  FallRiskAssessment[]
+  clinicalObservations ClinicalObservation[]
+  clinicalDevices      ClinicalDevice[]
+  clinicalProcedures   ClinicalProcedure[]
   bills                Bill[]
 
   @@map("admissions")
@@ -2431,6 +2562,10 @@ model IntakeOutputRecord {
   volumeMl         Int         @map("volume_ml")
   fluidDescription String?     @map("fluid_description") @db.VarChar(255)
   ivLineId         String?     @map("iv_line_id")
+  // Free-text subtype (drain type, route, etc.) and per-source extras
+  subType          String?     @map("sub_type") @db.VarChar(100)
+  color            String?     @db.VarChar(50)
+  frequencyCount   Int?        @map("frequency_count")
   notes            String?
   createdAt        DateTime    @default(now()) @map("created_at")
 
@@ -2569,6 +2704,156 @@ model FallRiskAssessment {
   @@index([patientId, assessedAt])
   @@index([admissionId])
   @@map("fall_risk_assessments")
+}
+
+// ── Clinical Charting models ─────────────────────────────
+//
+// Multi-section bedside note. One row per "rounds" snapshot — pain,
+// AVPU, mobility, condition, oral intake/output and free-text notes.
+// Fluid intake/urine output kept here are the *bedside snapshot*; the
+// authoritative running tally lives in IntakeOutputRecord.
+model ClinicalObservation {
+  id                String            @id @default(uuid())
+  visitId           String            @map("visit_id")
+  admissionId       String?           @map("admission_id")
+  patientId         String            @map("patient_id")
+  nurseId           String            @map("nurse_id")
+  observedAt        DateTime          @default(now()) @map("observed_at")
+  painScore         Int?              @map("pain_score")
+  painLocation      String?           @map("pain_location") @db.VarChar(255)
+  consciousnessAvpu AvpuLevel?        @map("consciousness_avpu")
+  generalCondition  GeneralCondition? @map("general_condition")
+  mobility          MobilityLevel?
+  fluidIntakeMl     Int?              @map("fluid_intake_ml")
+  foodIntakeNotes   String?           @map("food_intake_notes")
+  urineOutputMl     Int?              @map("urine_output_ml")
+  stoolPassed       Boolean?          @map("stool_passed")
+  stoolCount        Int?              @map("stool_count")
+  notes             String?
+  metadata          Json?
+  createdAt         DateTime          @default(now()) @map("created_at")
+
+  visit     Visit      @relation(fields: [visitId], references: [id])
+  admission Admission? @relation(fields: [admissionId], references: [id])
+  patient   Patient    @relation(fields: [patientId], references: [id])
+  nurse     User       @relation(fields: [nurseId], references: [id])
+
+  @@index([patientId, observedAt])
+  @@index([admissionId])
+  @@map("clinical_observations")
+}
+
+// Ongoing device/line state. Lifecycle = inserted → checked* → removed.
+// Repeated checks live in ClinicalDeviceCheck so the device row
+// captures *current* status without rewriting history.
+model ClinicalDevice {
+  id                   String               @id @default(uuid())
+  visitId              String               @map("visit_id")
+  admissionId          String?              @map("admission_id")
+  patientId            String               @map("patient_id")
+  deviceType           ClinicalDeviceType   @map("device_type")
+  deviceSubtype        String?              @map("device_subtype") @db.VarChar(100)
+  site                 String               @db.VarChar(100)
+  insertionTime        DateTime             @map("insertion_time")
+  insertedBy           String               @map("inserted_by")
+  removalTime          DateTime?            @map("removal_time")
+  removedBy            String?              @map("removed_by")
+  status               ClinicalDeviceStatus @default(active)
+  flowStatus           DeviceFlowStatus?    @map("flow_status")
+  fluidType            String?              @map("fluid_type") @db.VarChar(100)
+  flowRateMlPerHr      Int?                 @map("flow_rate_ml_per_hr")
+  oxygenMode           OxygenMode?          @map("oxygen_mode")
+  oxygenFlowRate       Decimal?             @map("oxygen_flow_rate") @db.Decimal(5, 2)
+  createdByProcedureId String?              @map("created_by_procedure_id")
+  notes                String?
+  metadata             Json?
+  createdAt            DateTime             @default(now()) @map("created_at")
+  updatedAt            DateTime             @default(now()) @updatedAt @map("updated_at")
+
+  visit              Visit                 @relation(fields: [visitId], references: [id])
+  admission          Admission?            @relation(fields: [admissionId], references: [id])
+  patient            Patient               @relation(fields: [patientId], references: [id])
+  inserter           User                  @relation("DeviceInserter", fields: [insertedBy], references: [id])
+  remover            User?                 @relation("DeviceRemover", fields: [removedBy], references: [id])
+  createdByProcedure ClinicalProcedure?    @relation(fields: [createdByProcedureId], references: [id])
+  checks             ClinicalDeviceCheck[]
+
+  @@index([patientId, status])
+  @@index([visitId, status])
+  @@index([admissionId])
+  @@map("clinical_devices")
+}
+
+// Periodic monitoring against a ClinicalDevice. One row per check —
+// gives a timeline of patency / site / complications.
+model ClinicalDeviceCheck {
+  id                 String               @id @default(uuid())
+  deviceId           String               @map("device_id")
+  visitId            String               @map("visit_id")
+  patientId          String               @map("patient_id")
+  nurseId            String               @map("nurse_id")
+  checkedAt          DateTime             @default(now()) @map("checked_at")
+  patency            DevicePatency?
+  siteCondition      DeviceSiteCondition? @map("site_condition")
+  painPresent        Boolean?             @map("pain_present")
+  securement         DeviceSecurement?
+  flowStatus         DeviceFlowStatus?    @map("flow_status")
+  urineFlow          UrineFlow?           @map("urine_flow")
+  urineColor         UrineColor?          @map("urine_color")
+  infectionSuspected Boolean?             @map("infection_suspected")
+  dislodged          Boolean?
+  blocked            Boolean?
+  remarks            String?
+  metadata           Json?
+  createdAt          DateTime             @default(now()) @map("created_at")
+
+  device  ClinicalDevice @relation(fields: [deviceId], references: [id])
+  visit   Visit          @relation(fields: [visitId], references: [id])
+  patient Patient        @relation(fields: [patientId], references: [id])
+  nurse   User           @relation(fields: [nurseId], references: [id])
+
+  @@index([deviceId, checkedAt])
+  @@index([patientId, checkedAt])
+  @@map("clinical_device_checks")
+}
+
+// One-time clinical action (e.g. IV insertion, catheterisation,
+// suctioning, dressing change). When the action creates an ongoing
+// item (IV cannula, drain) the resulting ClinicalDevice points back
+// here via `createdByProcedureId`.
+model ClinicalProcedure {
+  id                String                 @id @default(uuid())
+  visitId           String                 @map("visit_id")
+  admissionId       String?                @map("admission_id")
+  patientId         String                 @map("patient_id")
+  nurseId           String                 @map("nurse_id")
+  procedureType     String                 @map("procedure_type") @db.VarChar(100)
+  procedureSubtype  String?                @map("procedure_subtype") @db.VarChar(100)
+  performedAt       DateTime               @map("performed_at")
+  site              String?                @db.VarChar(100)
+  side              ProcedureSide?
+  status            ProcedureStatus        @default(successful)
+  attemptCount      Int?                   @map("attempt_count")
+  asepticTechnique  Boolean?               @map("aseptic_technique")
+  equipmentUsed     String?                @map("equipment_used") @db.VarChar(255)
+  complications     ProcedureComplication?
+  complicationNotes String?                @map("complication_notes")
+  tolerance         ProcedureTolerance?
+  painScore         Int?                   @map("pain_score")
+  deviceCreated     Boolean                @default(false) @map("device_created")
+  notes             String?
+  metadata          Json?
+  createdAt         DateTime               @default(now()) @map("created_at")
+
+  visit     Visit            @relation(fields: [visitId], references: [id])
+  admission Admission?       @relation(fields: [admissionId], references: [id])
+  patient   Patient          @relation(fields: [patientId], references: [id])
+  nurse     User             @relation(fields: [nurseId], references: [id])
+  devices   ClinicalDevice[]
+
+  @@index([patientId, performedAt])
+  @@index([admissionId])
+  @@map("clinical_procedures")
 }
 
 model DischargeSummary {

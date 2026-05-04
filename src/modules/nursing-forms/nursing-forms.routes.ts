@@ -9,6 +9,16 @@ import {
   createIntakeOutputSchema,
   createWoundCareSchema,
   createNursingNoteSchema,
+  createObservationSchema,
+  createDeviceSchema,
+  updateDeviceSchema,
+  removeDeviceSchema,
+  createDeviceCheckSchema,
+  listDeviceChecksQuerySchema,
+  createProcedureSchema,
+  listDevicesQuerySchema,
+  listProceduresQuerySchema,
+  ioTotalsQuerySchema,
   listFormsQuerySchema,
   summaryQuerySchema,
 } from './nursing-forms.validation';
@@ -115,6 +125,106 @@ nursingFormsRoutes.get(
   requirePermission('forms', 'read'),
   validate(listFormsQuerySchema),
   controller.listNursingNotes,
+);
+
+// --- Intake/Output totals (running tally for the charting footer) ---
+nursingFormsRoutes.get(
+  '/intake-output/totals',
+  authenticate,
+  requirePermission('forms', 'read'),
+  validate(ioTotalsQuerySchema),
+  controller.getIntakeOutputTotals,
+);
+
+// --- Clinical Observation ---
+nursingFormsRoutes.post(
+  '/observations',
+  authenticate,
+  requirePermission('forms', 'create'),
+  validate(createObservationSchema),
+  controller.createObservation,
+);
+nursingFormsRoutes.get(
+  '/observations',
+  authenticate,
+  requirePermission('forms', 'read'),
+  validate(listFormsQuerySchema),
+  controller.listObservations,
+);
+
+// --- Clinical Devices / Lines ---
+nursingFormsRoutes.post(
+  '/devices',
+  authenticate,
+  requirePermission('forms', 'create'),
+  validate(createDeviceSchema),
+  controller.createDevice,
+);
+nursingFormsRoutes.get(
+  '/devices',
+  authenticate,
+  requirePermission('forms', 'read'),
+  validate(listDevicesQuerySchema),
+  controller.listDevices,
+);
+nursingFormsRoutes.get(
+  '/devices/:id',
+  authenticate,
+  requirePermission('forms', 'read'),
+  controller.getDevice,
+);
+nursingFormsRoutes.patch(
+  '/devices/:id',
+  authenticate,
+  requirePermission('forms', 'create'),
+  validate(updateDeviceSchema),
+  controller.updateDevice,
+);
+nursingFormsRoutes.post(
+  '/devices/:id/remove',
+  authenticate,
+  requirePermission('forms', 'create'),
+  validate(removeDeviceSchema),
+  controller.removeDevice,
+);
+nursingFormsRoutes.post(
+  '/devices/:id/checks',
+  authenticate,
+  requirePermission('forms', 'create'),
+  validate(createDeviceCheckSchema),
+  controller.createDeviceCheck,
+);
+nursingFormsRoutes.get(
+  '/devices/:id/checks',
+  authenticate,
+  requirePermission('forms', 'read'),
+  validate(listDeviceChecksQuerySchema),
+  controller.listDeviceChecks,
+);
+
+// --- Clinical Procedures ---
+nursingFormsRoutes.post(
+  '/procedures',
+  authenticate,
+  requirePermission('forms', 'create'),
+  validate(createProcedureSchema),
+  controller.createProcedure,
+);
+nursingFormsRoutes.get(
+  '/procedures',
+  authenticate,
+  requirePermission('forms', 'read'),
+  validate(listProceduresQuerySchema),
+  controller.listProcedures,
+);
+
+// --- Charting timeline (combined feed) ---
+nursingFormsRoutes.get(
+  '/timeline/:patientId',
+  authenticate,
+  requirePermission('forms', 'read'),
+  validate(summaryQuerySchema),
+  controller.getChartingTimeline,
 );
 
 // --- Aggregate patient summary (powers read-only panels on doctor screens) ---
