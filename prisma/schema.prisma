@@ -42,13 +42,6 @@ enum WardType {
   emergency    @map("emergency")
 }
 
-enum RoomType {
-  single @map("single")
-  double @map("double")
-  shared @map("shared")
-  suite  @map("suite")
-}
-
 enum BedType {
   standard  @map("standard")
   electric  @map("electric")
@@ -1142,8 +1135,8 @@ model Tenant {
   roles                      Role[]
   loginAuditLogs             LoginAuditLog[]
   departments                Department[]
+  floors                     Floor[]
   wards                      Ward[]
-  rooms                      Room[]
   beds                       Bed[]
   operatingTheaters          OperatingTheater[]
   hospitalResources          HospitalResource[]
@@ -1601,20 +1594,39 @@ model Department {
   @@map("departments")
 }
 
+model Floor {
+  id           String   @id @default(uuid())
+  tenantId     String   @map("tenant_id")
+  name         String   @db.VarChar(60)
+  level        Int      @default(0)
+  description  String?
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  wards  Ward[]
+
+  @@unique([tenantId, name])
+  @@unique([tenantId, level])
+  @@map("floors")
+}
+
 model Ward {
   id           String    @id @default(uuid())
   tenantId     String    @map("tenant_id")
   departmentId String?   @map("department_id")
+  floorId      String?   @map("floor_id")
   name         String    @db.VarChar(100)
   wardType     WardType? @map("ward_type")
-  floor        String?   @db.VarChar(20)
   totalBeds    Int       @default(0) @map("total_beds")
   isActive     Boolean   @default(true) @map("is_active")
   createdAt    DateTime  @default(now()) @map("created_at")
 
   tenant               Tenant              @relation(fields: [tenantId], references: [id])
   department           Department?         @relation(fields: [departmentId], references: [id])
-  rooms                Room[]
+  floor                Floor?              @relation(fields: [floorId], references: [id])
+  beds                 Bed[]
   admissions           Admission[]
   patientTransfersFrom PatientTransfer[]   @relation("TransferFromWard")
   patientTransfersTo   PatientTransfer[]   @relation("TransferToWard")
@@ -1627,27 +1639,10 @@ model Ward {
   @@map("wards")
 }
 
-model Room {
-  id         String    @id @default(uuid())
-  tenantId   String    @map("tenant_id")
-  wardId     String    @map("ward_id")
-  roomNumber String    @map("room_number") @db.VarChar(20)
-  roomType   RoomType? @map("room_type")
-  floor      String?   @db.VarChar(20)
-  isActive   Boolean   @default(true) @map("is_active")
-  createdAt  DateTime  @default(now()) @map("created_at")
-
-  tenant Tenant @relation(fields: [tenantId], references: [id])
-  ward   Ward   @relation(fields: [wardId], references: [id])
-  beds   Bed[]
-
-  @@map("rooms")
-}
-
 model Bed {
   id               String    @id @default(uuid())
   tenantId         String    @map("tenant_id")
-  roomId           String    @map("room_id")
+  wardId           String    @map("ward_id")
   bedNumber        String    @map("bed_number") @db.VarChar(20)
   bedType          BedType?  @map("bed_type")
   status           BedStatus @default(available)
@@ -1656,7 +1651,7 @@ model Bed {
   updatedAt        DateTime  @default(now()) @updatedAt @map("updated_at")
 
   tenant               Tenant            @relation(fields: [tenantId], references: [id])
-  room                 Room              @relation(fields: [roomId], references: [id])
+  ward                 Ward              @relation(fields: [wardId], references: [id])
   currentPatient       Patient?          @relation(fields: [currentPatientId], references: [id])
   admissions           Admission[]
   patientTransfersFrom PatientTransfer[] @relation("TransferFromBed")

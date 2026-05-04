@@ -67,35 +67,35 @@ export async function deleteWard(req: AuthenticatedRequest, res: Response, next:
   } catch (err) { next(err); }
 }
 
-// Rooms
-export async function createRoom(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+// Floors
+export async function createFloor(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
-    const data = await service.createRoom(req.user!.tenantId, req.body);
-    sendResponse({ res, statusCode: 201, message: 'Room created', data });
+    const data = await service.createFloor(req.user!.tenantId, req.body);
+    sendResponse({ res, statusCode: 201, message: 'Floor created', data });
   } catch (err) { next(err); }
 }
-export async function getRooms(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+export async function getFloors(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
-    const result = await service.getRooms(req.user!.tenantId, req.query as any);
-    sendPaginatedResponse(res, result.rooms, result.total, result.page, result.limit, 'Rooms retrieved');
+    const result = await service.getFloors(req.user!.tenantId, req.query as any);
+    sendPaginatedResponse(res, result.floors, result.total, result.page, result.limit, 'Floors retrieved');
   } catch (err) { next(err); }
 }
-export async function getRoomById(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+export async function getFloorById(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
-    const data = await service.getRoomById(req.user!.tenantId, req.params.id as string);
-    sendResponse({ res, message: 'Room retrieved', data });
+    const data = await service.getFloorById(req.user!.tenantId, req.params.id as string);
+    sendResponse({ res, message: 'Floor retrieved', data });
   } catch (err) { next(err); }
 }
-export async function updateRoom(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+export async function updateFloor(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
-    const data = await service.updateRoom(req.user!.tenantId, req.params.id as string, req.body);
-    sendResponse({ res, message: 'Room updated', data });
+    const data = await service.updateFloor(req.user!.tenantId, req.params.id as string, req.body);
+    sendResponse({ res, message: 'Floor updated', data });
   } catch (err) { next(err); }
 }
-export async function deleteRoom(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+export async function deleteFloor(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
-    await service.deleteRoom(req.user!.tenantId, req.params.id as string);
-    sendResponse({ res, message: 'Room deleted' });
+    await service.deleteFloor(req.user!.tenantId, req.params.id as string);
+    sendResponse({ res, message: 'Floor deleted' });
   } catch (err) { next(err); }
 }
 
@@ -104,6 +104,12 @@ export async function createBed(req: AuthenticatedRequest, res: Response, next: 
   try {
     const data = await service.createBed(req.user!.tenantId, req.body);
     sendResponse({ res, statusCode: 201, message: 'Bed created', data });
+  } catch (err) { next(err); }
+}
+export async function bulkCreateBeds(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.bulkCreateBeds(req.user!.tenantId, req.body);
+    sendResponse({ res, statusCode: 201, message: `${data.count} beds created`, data });
   } catch (err) { next(err); }
 }
 export async function getBeds(req: AuthenticatedRequest, res: Response, next: NextFunction) {
@@ -141,8 +147,8 @@ export async function getBedAvailability(req: AuthenticatedRequest, res: Respons
 export async function getOccupancy(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const tenantId = req.user!.tenantId;
-    const { wardId, departmentId } = req.query as { wardId?: string; departmentId?: string };
-    const data = await service.getOccupancy(tenantId, { wardId, departmentId });
+    const { wardId, floorId, departmentId } = req.query as { wardId?: string; floorId?: string; departmentId?: string };
+    const data = await service.getOccupancy(tenantId, { wardId, floorId, departmentId });
     sendResponse({ res, message: 'Occupancy data retrieved', data });
   } catch (err) { next(err); }
 }

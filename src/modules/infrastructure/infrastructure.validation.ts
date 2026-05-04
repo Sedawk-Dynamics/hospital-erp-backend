@@ -46,6 +46,41 @@ export const listDepartmentsSchema = z.object({
 
 export const departmentIdParamSchema = idParamSchema;
 
+// ─── Floors ────────────────────────────────────────────────────────────────────
+
+export const createFloorSchema = z.object({
+  body: z.object({
+    name: z.string().min(1, 'Floor name is required').max(60),
+    level: z.number().int().min(-10).max(200).default(0),
+    description: z.string().max(1000).optional(),
+    isActive: z.boolean().default(true),
+  }),
+});
+
+export const updateFloorSchema = z.object({
+  body: z.object({
+    name: z.string().min(1).max(60).optional(),
+    level: z.number().int().min(-10).max(200).optional(),
+    description: z.string().max(1000).optional().nullable(),
+    isActive: z.boolean().optional(),
+  }),
+  params: z.object({
+    id: z.string().uuid('Invalid floor ID'),
+  }),
+});
+
+export const listFloorsSchema = z.object({
+  query: paginationSchema.extend({
+    search: z.string().optional(),
+    isActive: z
+      .string()
+      .transform((val) => val === 'true')
+      .optional(),
+  }),
+});
+
+export const floorIdParamSchema = idParamSchema;
+
 // ─── Wards ─────────────────────────────────────────────────────────────────────
 
 const wardTypeEnum = z.enum([
@@ -62,8 +97,8 @@ export const createWardSchema = z.object({
   body: z.object({
     name: z.string().min(1, 'Ward name is required').max(100),
     departmentId: z.string().uuid('Invalid department ID').optional(),
+    floorId: z.string().uuid('Invalid floor ID').optional(),
     wardType: wardTypeEnum.optional(),
-    floor: z.string().max(20).optional(),
     totalBeds: z.number().int().min(0).default(0),
     isActive: z.boolean().default(true),
   }),
@@ -73,8 +108,8 @@ export const updateWardSchema = z.object({
   body: z.object({
     name: z.string().min(1).max(100).optional(),
     departmentId: z.string().uuid('Invalid department ID').optional().nullable(),
+    floorId: z.string().uuid('Invalid floor ID').optional().nullable(),
     wardType: wardTypeEnum.optional().nullable(),
-    floor: z.string().max(20).optional().nullable(),
     totalBeds: z.number().int().min(0).optional(),
     isActive: z.boolean().optional(),
   }),
@@ -87,6 +122,7 @@ export const listWardsSchema = z.object({
   query: paginationSchema.extend({
     search: z.string().optional(),
     departmentId: z.string().uuid().optional(),
+    floorId: z.string().uuid().optional(),
     wardType: wardTypeEnum.optional(),
     isActive: z
       .string()
@@ -97,47 +133,6 @@ export const listWardsSchema = z.object({
 
 export const wardIdParamSchema = idParamSchema;
 
-// ─── Rooms ─────────────────────────────────────────────────────────────────────
-
-const roomTypeEnum = z.enum(['single', 'double', 'shared', 'suite']);
-
-export const createRoomSchema = z.object({
-  body: z.object({
-    wardId: z.string().uuid('Invalid ward ID'),
-    roomNumber: z.string().min(1, 'Room number is required').max(20),
-    roomType: roomTypeEnum.optional(),
-    floor: z.string().max(20).optional(),
-    isActive: z.boolean().default(true),
-  }),
-});
-
-export const updateRoomSchema = z.object({
-  body: z.object({
-    wardId: z.string().uuid('Invalid ward ID').optional(),
-    roomNumber: z.string().min(1).max(20).optional(),
-    roomType: roomTypeEnum.optional().nullable(),
-    floor: z.string().max(20).optional().nullable(),
-    isActive: z.boolean().optional(),
-  }),
-  params: z.object({
-    id: z.string().uuid('Invalid room ID'),
-  }),
-});
-
-export const listRoomsSchema = z.object({
-  query: paginationSchema.extend({
-    search: z.string().optional(),
-    wardId: z.string().uuid().optional(),
-    roomType: roomTypeEnum.optional(),
-    isActive: z
-      .string()
-      .transform((val) => val === 'true')
-      .optional(),
-  }),
-});
-
-export const roomIdParamSchema = idParamSchema;
-
 // ─── Beds ──────────────────────────────────────────────────────────────────────
 
 const bedTypeEnum = z.enum(['standard', 'electric', 'icu', 'pediatric', 'bariatric']);
@@ -145,16 +140,32 @@ const bedStatusEnum = z.enum(['available', 'occupied', 'maintenance', 'reserved'
 
 export const createBedSchema = z.object({
   body: z.object({
-    roomId: z.string().uuid('Invalid room ID'),
+    wardId: z.string().uuid('Invalid ward ID'),
     bedNumber: z.string().min(1, 'Bed number is required').max(20),
     bedType: bedTypeEnum.optional(),
     status: bedStatusEnum.default('available'),
   }),
 });
 
+export const bulkCreateBedsSchema = z.object({
+  body: z.object({
+    wardId: z.string().uuid('Invalid ward ID'),
+    bedType: bedTypeEnum.optional(),
+    beds: z
+      .array(
+        z.object({
+          bedNumber: z.string().min(1, 'Bed number is required').max(20),
+          bedType: bedTypeEnum.optional(),
+        }),
+      )
+      .min(1, 'At least one bed is required')
+      .max(200, 'Cannot create more than 200 beds at once'),
+  }),
+});
+
 export const updateBedSchema = z.object({
   body: z.object({
-    roomId: z.string().uuid('Invalid room ID').optional(),
+    wardId: z.string().uuid('Invalid ward ID').optional(),
     bedNumber: z.string().min(1).max(20).optional(),
     bedType: bedTypeEnum.optional().nullable(),
     status: bedStatusEnum.optional(),
@@ -167,8 +178,8 @@ export const updateBedSchema = z.object({
 export const listBedsSchema = z.object({
   query: paginationSchema.extend({
     search: z.string().optional(),
-    roomId: z.string().uuid().optional(),
     wardId: z.string().uuid().optional(),
+    floorId: z.string().uuid().optional(),
     bedType: bedTypeEnum.optional(),
     status: bedStatusEnum.optional(),
   }),
@@ -177,6 +188,7 @@ export const listBedsSchema = z.object({
 export const bedAvailabilitySchema = z.object({
   query: z.object({
     wardId: z.string().uuid().optional(),
+    floorId: z.string().uuid().optional(),
     departmentId: z.string().uuid().optional(),
   }),
 });
@@ -189,15 +201,16 @@ export type CreateDepartmentInput = z.infer<typeof createDepartmentSchema>['body
 export type UpdateDepartmentInput = z.infer<typeof updateDepartmentSchema>['body'];
 export type ListDepartmentsQuery = z.infer<typeof listDepartmentsSchema>['query'];
 
+export type CreateFloorInput = z.infer<typeof createFloorSchema>['body'];
+export type UpdateFloorInput = z.infer<typeof updateFloorSchema>['body'];
+export type ListFloorsQuery = z.infer<typeof listFloorsSchema>['query'];
+
 export type CreateWardInput = z.infer<typeof createWardSchema>['body'];
 export type UpdateWardInput = z.infer<typeof updateWardSchema>['body'];
 export type ListWardsQuery = z.infer<typeof listWardsSchema>['query'];
 
-export type CreateRoomInput = z.infer<typeof createRoomSchema>['body'];
-export type UpdateRoomInput = z.infer<typeof updateRoomSchema>['body'];
-export type ListRoomsQuery = z.infer<typeof listRoomsSchema>['query'];
-
 export type CreateBedInput = z.infer<typeof createBedSchema>['body'];
+export type BulkCreateBedsInput = z.infer<typeof bulkCreateBedsSchema>['body'];
 export type UpdateBedInput = z.infer<typeof updateBedSchema>['body'];
 export type ListBedsQuery = z.infer<typeof listBedsSchema>['query'];
 export type BedAvailabilityQuery = z.infer<typeof bedAvailabilitySchema>['query'];

@@ -14,6 +14,7 @@
     "db:seed:physical-observations": "tsx prisma/seed-physical-observations.ts",
     "db:seed:lab-tests": "tsx prisma/seed-lab-tests.ts",
     "db:seed:nurse-roles": "tsx prisma/scripts/backfill-nurse-roles.ts",
+    "db:seed:floor-permissions": "tsx prisma/scripts/backfill-floor-permissions.ts",
     "db:seed:nurse-users": "tsx prisma/scripts/seed-nurse-users.ts",
     "db:seed:prod": "node dist-seed/prisma/seed.js",
     "db:studio": "prisma studio",

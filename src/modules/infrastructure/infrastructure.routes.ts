@@ -8,15 +8,16 @@ import {
   updateDepartmentSchema,
   listDepartmentsSchema,
   departmentIdParamSchema,
+  createFloorSchema,
+  updateFloorSchema,
+  listFloorsSchema,
+  floorIdParamSchema,
   createWardSchema,
   updateWardSchema,
   listWardsSchema,
   wardIdParamSchema,
-  createRoomSchema,
-  updateRoomSchema,
-  listRoomsSchema,
-  roomIdParamSchema,
   createBedSchema,
+  bulkCreateBedsSchema,
   updateBedSchema,
   listBedsSchema,
   bedAvailabilitySchema,
@@ -32,6 +33,13 @@ infrastructureRoutes.get('/departments/:id', authenticate, requirePermission('de
 infrastructureRoutes.put('/departments/:id', authenticate, requirePermission('departments', 'update'), validate(updateDepartmentSchema), controller.updateDepartment);
 infrastructureRoutes.delete('/departments/:id', authenticate, requirePermission('departments', 'delete'), validate(departmentIdParamSchema), controller.deleteDepartment);
 
+// --- Floors ---
+infrastructureRoutes.post('/floors', authenticate, requirePermission('floors', 'create'), validate(createFloorSchema), controller.createFloor);
+infrastructureRoutes.get('/floors', authenticate, requirePermission('floors', 'read'), validate(listFloorsSchema), controller.getFloors);
+infrastructureRoutes.get('/floors/:id', authenticate, requirePermission('floors', 'read'), validate(floorIdParamSchema), controller.getFloorById);
+infrastructureRoutes.put('/floors/:id', authenticate, requirePermission('floors', 'update'), validate(updateFloorSchema), controller.updateFloor);
+infrastructureRoutes.delete('/floors/:id', authenticate, requirePermission('floors', 'delete'), validate(floorIdParamSchema), controller.deleteFloor);
+
 // --- Wards ---
 infrastructureRoutes.post('/wards', authenticate, requirePermission('wards', 'create'), validate(createWardSchema), controller.createWard);
 infrastructureRoutes.get('/wards', authenticate, requirePermission('wards', 'read'), validate(listWardsSchema), controller.getWards);
@@ -39,15 +47,9 @@ infrastructureRoutes.get('/wards/:id', authenticate, requirePermission('wards', 
 infrastructureRoutes.put('/wards/:id', authenticate, requirePermission('wards', 'update'), validate(updateWardSchema), controller.updateWard);
 infrastructureRoutes.delete('/wards/:id', authenticate, requirePermission('wards', 'delete'), validate(wardIdParamSchema), controller.deleteWard);
 
-// --- Rooms ---
-infrastructureRoutes.post('/rooms', authenticate, requirePermission('rooms', 'create'), validate(createRoomSchema), controller.createRoom);
-infrastructureRoutes.get('/rooms', authenticate, requirePermission('rooms', 'read'), validate(listRoomsSchema), controller.getRooms);
-infrastructureRoutes.get('/rooms/:id', authenticate, requirePermission('rooms', 'read'), validate(roomIdParamSchema), controller.getRoomById);
-infrastructureRoutes.put('/rooms/:id', authenticate, requirePermission('rooms', 'update'), validate(updateRoomSchema), controller.updateRoom);
-infrastructureRoutes.delete('/rooms/:id', authenticate, requirePermission('rooms', 'delete'), validate(roomIdParamSchema), controller.deleteRoom);
-
 // --- Beds ---
 infrastructureRoutes.post('/beds', authenticate, requirePermission('beds', 'create'), validate(createBedSchema), controller.createBed);
+infrastructureRoutes.post('/beds/bulk', authenticate, requirePermission('beds', 'create'), validate(bulkCreateBedsSchema), controller.bulkCreateBeds);
 infrastructureRoutes.get('/beds', authenticate, requirePermission('beds', 'read'), validate(listBedsSchema), controller.getBeds);
 infrastructureRoutes.get('/beds/availability', authenticate, requirePermission('beds', 'read'), validate(bedAvailabilitySchema), controller.getBedAvailability);
 infrastructureRoutes.get('/occupancy', authenticate, requirePermission('beds', 'read'), controller.getOccupancy);

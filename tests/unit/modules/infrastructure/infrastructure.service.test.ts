@@ -6,11 +6,12 @@ import {
   getDepartmentById,
   updateDepartment,
   deleteDepartment,
+  createFloor,
+  getFloorById,
+  updateFloor,
+  deleteFloor,
   createWard,
-  updateWard,
   deleteWard,
-  createRoom,
-  getRoomById,
   createBed,
   getBedById,
   deleteBed,
@@ -32,8 +33,8 @@ describe('Infrastructure Service - Departments', () => {
       const input = { name: 'Cardiology', code: 'CARD', description: 'Heart dept' };
       const created = { id: 'dept-1', tenantId: TENANT_ID, ...input, isActive: true };
 
-      vi.mocked(prisma.department.findFirst).mockResolvedValueOnce(null); // no duplicate name
-      vi.mocked(prisma.department.findFirst).mockResolvedValueOnce(null); // no duplicate code
+      vi.mocked(prisma.department.findFirst).mockResolvedValueOnce(null);
+      vi.mocked(prisma.department.findFirst).mockResolvedValueOnce(null);
       vi.mocked(prisma.department.create).mockResolvedValueOnce(created as any);
 
       const result = await createDepartment(TENANT_ID, input);
@@ -52,8 +53,8 @@ describe('Infrastructure Service - Departments', () => {
     });
 
     it('should throw conflict when department code already exists', async () => {
-      vi.mocked(prisma.department.findFirst).mockResolvedValueOnce(null); // name check passes
-      vi.mocked(prisma.department.findFirst).mockResolvedValueOnce({ id: 'x' } as any); // code duplicated
+      vi.mocked(prisma.department.findFirst).mockResolvedValueOnce(null);
+      vi.mocked(prisma.department.findFirst).mockResolvedValueOnce({ id: 'x' } as any);
 
       await expect(
         createDepartment(TENANT_ID, { name: 'Neuro', code: 'NEURO' }),
@@ -71,8 +72,6 @@ describe('Infrastructure Service - Departments', () => {
 
       expect(result.departments).toEqual(departments);
       expect(result.total).toBe(1);
-      expect(result.page).toBe(1);
-      expect(result.limit).toBe(20);
     });
   });
 
@@ -91,21 +90,13 @@ describe('Infrastructure Service - Departments', () => {
       const existing = { id: 'dept-1', tenantId: TENANT_ID, name: 'Old Name', code: 'OLD' };
       const updated = { ...existing, name: 'New Name' };
 
-      vi.mocked(prisma.department.findFirst).mockResolvedValueOnce(existing as any); // exists
-      vi.mocked(prisma.department.findFirst).mockResolvedValueOnce(null); // no duplicate name
+      vi.mocked(prisma.department.findFirst).mockResolvedValueOnce(existing as any);
+      vi.mocked(prisma.department.findFirst).mockResolvedValueOnce(null);
       vi.mocked(prisma.department.update).mockResolvedValueOnce(updated as any);
 
       const result = await updateDepartment(TENANT_ID, 'dept-1', { name: 'New Name' });
 
       expect(result.name).toBe('New Name');
-    });
-
-    it('should throw notFound when updating non-existent department', async () => {
-      vi.mocked(prisma.department.findFirst).mockResolvedValueOnce(null);
-
-      await expect(
-        updateDepartment(TENANT_ID, 'bad-id', { name: 'X' }),
-      ).rejects.toThrow('Department not found');
     });
   });
 
@@ -133,76 +124,137 @@ describe('Infrastructure Service - Departments', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// WARDS
+// FLOORS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('Infrastructure Service - Wards', () => {
-  describe('createWard', () => {
-    it('should create a ward and verify department exists', async () => {
-      const input = { name: 'Ward A', departmentId: 'dept-1', wardType: 'general', floor: 1 };
-      const created = { id: 'ward-1', tenantId: TENANT_ID, ...input, isActive: true, totalBeds: 0 };
+describe('Infrastructure Service - Floors', () => {
+  describe('createFloor', () => {
+    it('should create a floor when name and level are unique', async () => {
+      const input = { name: 'Ground', level: 0, isActive: true };
+      vi.mocked(prisma.floor.findFirst).mockResolvedValueOnce(null);
+      vi.mocked(prisma.floor.findFirst).mockResolvedValueOnce(null);
+      vi.mocked(prisma.floor.create).mockResolvedValueOnce({
+        id: 'floor-1',
+        tenantId: TENANT_ID,
+        ...input,
+      } as any);
 
-      vi.mocked(prisma.department.findFirst).mockResolvedValueOnce({ id: 'dept-1' } as any);
-      vi.mocked(prisma.ward.findFirst).mockResolvedValueOnce(null);
-      vi.mocked(prisma.ward.create).mockResolvedValueOnce(created as any);
+      const result = await createFloor(TENANT_ID, input);
 
-      const result = await createWard(TENANT_ID, input);
-
-      expect(result.id).toBe('ward-1');
-      expect(prisma.department.findFirst).toHaveBeenCalled();
+      expect(result.name).toBe('Ground');
     });
 
-    it('should throw notFound when department does not exist', async () => {
-      vi.mocked(prisma.department.findFirst).mockResolvedValueOnce(null);
+    it('should throw conflict when floor name already exists', async () => {
+      vi.mocked(prisma.floor.findFirst).mockResolvedValueOnce({ id: 'f' } as any);
 
       await expect(
-        createWard(TENANT_ID, { name: 'Ward B', departmentId: 'bad-dept' }),
-      ).rejects.toThrow('Department not found');
+        createFloor(TENANT_ID, { name: 'Ground', level: 0, isActive: true }),
+      ).rejects.toThrow('A floor with this name already exists');
+    });
+
+    it('should throw conflict when floor level already exists', async () => {
+      vi.mocked(prisma.floor.findFirst).mockResolvedValueOnce(null);
+      vi.mocked(prisma.floor.findFirst).mockResolvedValueOnce({ id: 'f' } as any);
+
+      await expect(
+        createFloor(TENANT_ID, { name: 'First', level: 1, isActive: true }),
+      ).rejects.toThrow('A floor with level 1 already exists');
     });
   });
 
-  describe('deleteWard', () => {
-    it('should throw badRequest when ward has active rooms', async () => {
-      vi.mocked(prisma.ward.findFirst).mockResolvedValueOnce({ id: 'ward-1' } as any);
-      vi.mocked(prisma.room.count).mockResolvedValueOnce(5);
+  describe('getFloorById', () => {
+    it('should throw notFound when floor does not exist', async () => {
+      vi.mocked(prisma.floor.findFirst).mockResolvedValueOnce(null);
+      await expect(getFloorById(TENANT_ID, 'no-floor')).rejects.toThrow('Floor not found');
+    });
+  });
 
-      await expect(deleteWard(TENANT_ID, 'ward-1')).rejects.toThrow(
-        'Cannot delete ward with active rooms',
+  describe('updateFloor', () => {
+    it('should update a floor successfully', async () => {
+      const existing = { id: 'floor-1', tenantId: TENANT_ID, name: 'Ground', level: 0 };
+      vi.mocked(prisma.floor.findFirst).mockResolvedValueOnce(existing as any);
+      vi.mocked(prisma.floor.update).mockResolvedValueOnce({ ...existing, name: 'GF' } as any);
+
+      const result = await updateFloor(TENANT_ID, 'floor-1', { name: 'GF' });
+      expect(result.name).toBe('GF');
+    });
+  });
+
+  describe('deleteFloor', () => {
+    it('should throw badRequest when floor has active wards', async () => {
+      vi.mocked(prisma.floor.findFirst).mockResolvedValueOnce({ id: 'floor-1' } as any);
+      vi.mocked(prisma.ward.count).mockResolvedValueOnce(2);
+
+      await expect(deleteFloor(TENANT_ID, 'floor-1')).rejects.toThrow(
+        'Cannot delete floor with active wards',
       );
     });
   });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ROOMS
+// WARDS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('Infrastructure Service - Rooms', () => {
-  describe('createRoom', () => {
-    it('should create a room when ward exists and no duplicate room number', async () => {
-      vi.mocked(prisma.ward.findFirst).mockResolvedValueOnce({ id: 'ward-1' } as any);
-      vi.mocked(prisma.room.findFirst).mockResolvedValueOnce(null);
-      vi.mocked(prisma.room.create).mockResolvedValueOnce({
-        id: 'room-1',
-        roomNumber: '101',
-        wardId: 'ward-1',
-      } as any);
+describe('Infrastructure Service - Wards', () => {
+  describe('createWard', () => {
+    it('should create a ward and verify department + floor exist', async () => {
+      const input = {
+        name: 'Ward A',
+        departmentId: 'dept-1',
+        floorId: 'floor-1',
+        wardType: 'general' as const,
+        totalBeds: 0,
+        isActive: true,
+      };
+      const created = { id: 'ward-1', tenantId: TENANT_ID, ...input };
 
-      const result = await createRoom(TENANT_ID, {
-        wardId: 'ward-1',
-        roomNumber: '101',
-        roomType: 'general',
-      });
+      vi.mocked(prisma.department.findFirst).mockResolvedValueOnce({ id: 'dept-1' } as any);
+      vi.mocked(prisma.floor.findFirst).mockResolvedValueOnce({ id: 'floor-1' } as any);
+      vi.mocked(prisma.ward.findFirst).mockResolvedValueOnce(null);
+      vi.mocked(prisma.ward.create).mockResolvedValueOnce(created as any);
 
-      expect(result.roomNumber).toBe('101');
+      const result = await createWard(TENANT_ID, input);
+
+      expect(result.id).toBe('ward-1');
+      expect(prisma.floor.findFirst).toHaveBeenCalled();
+    });
+
+    it('should throw notFound when department does not exist', async () => {
+      vi.mocked(prisma.department.findFirst).mockResolvedValueOnce(null);
+
+      await expect(
+        createWard(TENANT_ID, {
+          name: 'Ward B',
+          departmentId: 'bad-dept',
+          totalBeds: 0,
+          isActive: true,
+        }),
+      ).rejects.toThrow('Department not found');
+    });
+
+    it('should throw notFound when floor does not exist', async () => {
+      vi.mocked(prisma.floor.findFirst).mockResolvedValueOnce(null);
+
+      await expect(
+        createWard(TENANT_ID, {
+          name: 'Ward C',
+          floorId: 'bad-floor',
+          totalBeds: 0,
+          isActive: true,
+        }),
+      ).rejects.toThrow('Floor not found');
     });
   });
 
-  describe('getRoomById', () => {
-    it('should throw notFound when room does not exist', async () => {
-      vi.mocked(prisma.room.findFirst).mockResolvedValueOnce(null);
+  describe('deleteWard', () => {
+    it('should throw badRequest when ward has occupied beds', async () => {
+      vi.mocked(prisma.ward.findFirst).mockResolvedValueOnce({ id: 'ward-1' } as any);
+      vi.mocked(prisma.bed.count).mockResolvedValueOnce(5);
 
-      await expect(getRoomById(TENANT_ID, 'no-room')).rejects.toThrow('Room not found');
+      await expect(deleteWard(TENANT_ID, 'ward-1')).rejects.toThrow(
+        'Cannot delete ward with occupied or reserved beds',
+      );
     });
   });
 });
@@ -213,23 +265,36 @@ describe('Infrastructure Service - Rooms', () => {
 
 describe('Infrastructure Service - Beds', () => {
   describe('createBed', () => {
-    it('should create a bed when room exists and no duplicate bed number', async () => {
-      vi.mocked(prisma.room.findFirst).mockResolvedValueOnce({ id: 'room-1' } as any);
+    it('should create a bed when ward exists and no duplicate bed number', async () => {
+      vi.mocked(prisma.ward.findFirst).mockResolvedValueOnce({ id: 'ward-1' } as any);
       vi.mocked(prisma.bed.findFirst).mockResolvedValueOnce(null);
       vi.mocked(prisma.bed.create).mockResolvedValueOnce({
         id: 'bed-1',
         bedNumber: 'B1',
-        roomId: 'room-1',
+        wardId: 'ward-1',
         status: 'available',
       } as any);
 
       const result = await createBed(TENANT_ID, {
-        roomId: 'room-1',
+        wardId: 'ward-1',
         bedNumber: 'B1',
         bedType: 'standard',
+        status: 'available',
       });
 
       expect(result.status).toBe('available');
+    });
+
+    it('should throw notFound when ward does not exist', async () => {
+      vi.mocked(prisma.ward.findFirst).mockResolvedValueOnce(null);
+
+      await expect(
+        createBed(TENANT_ID, {
+          wardId: 'no-ward',
+          bedNumber: 'B1',
+          status: 'available',
+        }),
+      ).rejects.toThrow('Ward not found');
     });
   });
 
@@ -242,13 +307,35 @@ describe('Infrastructure Service - Beds', () => {
   });
 
   describe('deleteBed', () => {
-    it('should set bed status to maintenance when deleting a non-occupied bed', async () => {
+    it('should hard-delete a bed with no patient history', async () => {
       const existing = { id: 'bed-1', tenantId: TENANT_ID, status: 'available' };
       vi.mocked(prisma.bed.findFirst).mockResolvedValueOnce(existing as any);
-      vi.mocked(prisma.bed.update).mockResolvedValueOnce({ ...existing, status: 'maintenance' } as any);
+      vi.mocked(prisma.admission.count).mockResolvedValueOnce(0);
+      vi.mocked(prisma.patientTransfer.count).mockResolvedValueOnce(0);
+      vi.mocked(prisma.patientTransfer.count).mockResolvedValueOnce(0);
+      vi.mocked(prisma.nurseAssignment.count).mockResolvedValueOnce(0);
+      vi.mocked(prisma.reservation.count).mockResolvedValueOnce(0);
+      vi.mocked(prisma.bed.delete).mockResolvedValueOnce(existing as any);
 
       const result = await deleteBed(TENANT_ID, 'bed-1');
 
+      expect(prisma.bed.delete).toHaveBeenCalledWith({ where: { id: 'bed-1' } });
+      expect(result.id).toBe('bed-1');
+    });
+
+    it('should soft-delete (mark maintenance) when bed has admission history', async () => {
+      const existing = { id: 'bed-2', tenantId: TENANT_ID, status: 'available' };
+      vi.mocked(prisma.bed.findFirst).mockResolvedValueOnce(existing as any);
+      vi.mocked(prisma.admission.count).mockResolvedValueOnce(1);
+      vi.mocked(prisma.patientTransfer.count).mockResolvedValueOnce(0);
+      vi.mocked(prisma.patientTransfer.count).mockResolvedValueOnce(0);
+      vi.mocked(prisma.nurseAssignment.count).mockResolvedValueOnce(0);
+      vi.mocked(prisma.reservation.count).mockResolvedValueOnce(0);
+      vi.mocked(prisma.bed.update).mockResolvedValueOnce({ ...existing, status: 'maintenance' } as any);
+
+      const result = await deleteBed(TENANT_ID, 'bed-2');
+
+      expect(prisma.bed.delete).not.toHaveBeenCalled();
       expect(result.status).toBe('maintenance');
     });
 

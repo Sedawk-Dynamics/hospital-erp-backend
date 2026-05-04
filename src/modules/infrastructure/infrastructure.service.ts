@@ -5,13 +5,14 @@ import type {
   CreateDepartmentInput,
   UpdateDepartmentInput,
   ListDepartmentsQuery,
+  CreateFloorInput,
+  UpdateFloorInput,
+  ListFloorsQuery,
   CreateWardInput,
   UpdateWardInput,
   ListWardsQuery,
-  CreateRoomInput,
-  UpdateRoomInput,
-  ListRoomsQuery,
   CreateBedInput,
+  BulkCreateBedsInput,
   UpdateBedInput,
   ListBedsQuery,
   BedAvailabilityQuery,
@@ -22,7 +23,6 @@ import type {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export async function createDepartment(tenantId: string, data: CreateDepartmentInput) {
-  // Check for duplicate name within the tenant
   const existing = await prisma.department.findFirst({
     where: { tenantId, name: { equals: data.name, mode: 'insensitive' } },
   });
@@ -30,7 +30,6 @@ export async function createDepartment(tenantId: string, data: CreateDepartmentI
     throw AppError.conflict('A department with this name already exists');
   }
 
-  // Check for duplicate code if provided
   if (data.code) {
     const existingByCode = await prisma.department.findFirst({
       where: { tenantId, code: { equals: data.code, mode: 'insensitive' } },
@@ -129,7 +128,6 @@ export async function updateDepartment(tenantId: string, id: string, data: Updat
     throw AppError.notFound('Department not found');
   }
 
-  // Check for duplicate name if being updated
   if (data.name && data.name !== existing.name) {
     const duplicate = await prisma.department.findFirst({
       where: { tenantId, name: { equals: data.name, mode: 'insensitive' }, id: { not: id } },
@@ -139,7 +137,6 @@ export async function updateDepartment(tenantId: string, id: string, data: Updat
     }
   }
 
-  // Check for duplicate code if being updated
   if (data.code && data.code !== existing.code) {
     const duplicate = await prisma.department.findFirst({
       where: { tenantId, code: { equals: data.code, mode: 'insensitive' }, id: { not: id } },
@@ -172,7 +169,6 @@ export async function deleteDepartment(tenantId: string, id: string) {
     throw AppError.notFound('Department not found');
   }
 
-  // Check for active wards before deleting
   const activeWards = await prisma.ward.count({
     where: { departmentId: id, tenantId, isActive: true },
   });
@@ -183,7 +179,6 @@ export async function deleteDepartment(tenantId: string, id: string) {
     );
   }
 
-  // Soft delete by deactivating
   const department = await prisma.department.update({
     where: { id },
     data: { isActive: false },
@@ -193,11 +188,169 @@ export async function deleteDepartment(tenantId: string, id: string) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// FLOORS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export async function createFloor(tenantId: string, data: CreateFloorInput) {
+  const existingByName = await prisma.floor.findFirst({
+    where: { tenantId, name: { equals: data.name, mode: 'insensitive' } },
+  });
+  if (existingByName) {
+    throw AppError.conflict('A floor with this name already exists');
+  }
+
+  const existingByLevel = await prisma.floor.findFirst({
+    where: { tenantId, level: data.level },
+  });
+  if (existingByLevel) {
+    throw AppError.conflict(`A floor with level ${data.level} already exists`);
+  }
+
+  const floor = await prisma.floor.create({
+    data: {
+      tenantId,
+      name: data.name,
+      level: data.level,
+      description: data.description,
+      isActive: data.isActive ?? true,
+    },
+  });
+
+  return floor;
+}
+
+export async function getFloors(tenantId: string, query: ListFloorsQuery) {
+  const { skip, take, page, limit } = getPaginationParams(query);
+
+  const where: any = { tenantId };
+
+  if (query.search) {
+    const search = query.search.trim();
+    where.OR = [
+      { name: { contains: search, mode: 'insensitive' } },
+      { description: { contains: search, mode: 'insensitive' } },
+    ];
+  }
+
+  where.isActive = query.isActive ?? true;
+
+  const orderBy: any = query.sortBy
+    ? { [query.sortBy]: query.sortOrder || 'asc' }
+    : { level: 'asc' };
+
+  const [floors, total] = await Promise.all([
+    prisma.floor.findMany({
+      where,
+      skip,
+      take,
+      orderBy,
+      include: {
+        _count: { select: { wards: true } },
+      },
+    }),
+    prisma.floor.count({ where }),
+  ]);
+
+  return { floors, total, page, limit };
+}
+
+export async function getFloorById(tenantId: string, id: string) {
+  const floor = await prisma.floor.findFirst({
+    where: { id, tenantId },
+    include: {
+      wards: {
+        where: { isActive: true },
+        orderBy: { name: 'asc' },
+        include: { _count: { select: { beds: true } } },
+      },
+      _count: { select: { wards: true } },
+    },
+  });
+
+  if (!floor) {
+    throw AppError.notFound('Floor not found');
+  }
+
+  return floor;
+}
+
+export async function updateFloor(tenantId: string, id: string, data: UpdateFloorInput) {
+  const existing = await prisma.floor.findFirst({
+    where: { id, tenantId },
+  });
+
+  if (!existing) {
+    throw AppError.notFound('Floor not found');
+  }
+
+  if (data.name && data.name !== existing.name) {
+    const duplicate = await prisma.floor.findFirst({
+      where: { tenantId, name: { equals: data.name, mode: 'insensitive' }, id: { not: id } },
+    });
+    if (duplicate) {
+      throw AppError.conflict('A floor with this name already exists');
+    }
+  }
+
+  if (data.level !== undefined && data.level !== existing.level) {
+    const duplicate = await prisma.floor.findFirst({
+      where: { tenantId, level: data.level, id: { not: id } },
+    });
+    if (duplicate) {
+      throw AppError.conflict(`A floor with level ${data.level} already exists`);
+    }
+  }
+
+  const floor = await prisma.floor.update({
+    where: { id },
+    data: {
+      ...(data.name !== undefined && { name: data.name }),
+      ...(data.level !== undefined && { level: data.level }),
+      ...(data.description !== undefined && { description: data.description }),
+      ...(data.isActive !== undefined && { isActive: data.isActive }),
+    },
+  });
+
+  return floor;
+}
+
+export async function deleteFloor(tenantId: string, id: string) {
+  const existing = await prisma.floor.findFirst({
+    where: { id, tenantId },
+  });
+
+  if (!existing) {
+    throw AppError.notFound('Floor not found');
+  }
+
+  const activeWards = await prisma.ward.count({
+    where: { floorId: id, tenantId, isActive: true },
+  });
+
+  if (activeWards > 0) {
+    throw AppError.badRequest(
+      'Cannot delete floor with active wards. Move or deactivate the wards first.',
+    );
+  }
+
+  // Hard delete so the (tenantId, name) and (tenantId, level) unique
+  // constraints free up — otherwise the user can never re-create a
+  // floor with the same name. Detach any soft-deleted wards still
+  // pointing at this floor first to avoid FK violations.
+  return prisma.$transaction(async (tx) => {
+    await tx.ward.updateMany({
+      where: { floorId: id, tenantId },
+      data: { floorId: null },
+    });
+    return tx.floor.delete({ where: { id } });
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // WARDS
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export async function createWard(tenantId: string, data: CreateWardInput) {
-  // Verify department exists if provided
   if (data.departmentId) {
     const department = await prisma.department.findFirst({
       where: { id: data.departmentId, tenantId },
@@ -207,9 +360,21 @@ export async function createWard(tenantId: string, data: CreateWardInput) {
     }
   }
 
-  // Check for duplicate name within tenant
+  if (data.floorId) {
+    const floor = await prisma.floor.findFirst({
+      where: { id: data.floorId, tenantId },
+    });
+    if (!floor) {
+      throw AppError.notFound('Floor not found');
+    }
+  }
+
   const existing = await prisma.ward.findFirst({
-    where: { tenantId, name: { equals: data.name, mode: 'insensitive' } },
+    where: {
+      tenantId,
+      isActive: true,
+      name: { equals: data.name, mode: 'insensitive' },
+    },
   });
   if (existing) {
     throw AppError.conflict('A ward with this name already exists');
@@ -220,10 +385,14 @@ export async function createWard(tenantId: string, data: CreateWardInput) {
       tenantId,
       name: data.name,
       departmentId: data.departmentId,
+      floorId: data.floorId,
       wardType: data.wardType as any,
-      floor: data.floor,
       totalBeds: data.totalBeds ?? 0,
       isActive: data.isActive ?? true,
+    },
+    include: {
+      floor: { select: { id: true, name: true, level: true } },
+      department: { select: { id: true, name: true } },
     },
   });
 
@@ -237,29 +406,17 @@ export async function getWards(tenantId: string, query: ListWardsQuery) {
 
   if (query.search) {
     const search = query.search.trim();
-    where.OR = [
-      { name: { contains: search, mode: 'insensitive' } },
-    ];
+    where.OR = [{ name: { contains: search, mode: 'insensitive' } }];
   }
 
-  if (query.departmentId) {
-    where.departmentId = query.departmentId;
-  }
+  if (query.departmentId) where.departmentId = query.departmentId;
+  if (query.floorId) where.floorId = query.floorId;
+  if (query.wardType) where.wardType = query.wardType;
+  where.isActive = query.isActive ?? true;
 
-  if (query.wardType) {
-    where.wardType = query.wardType;
-  }
-
-  if (query.isActive !== undefined) {
-    where.isActive = query.isActive;
-  }
-
-  const orderBy: any = {};
-  if (query.sortBy) {
-    orderBy[query.sortBy] = query.sortOrder || 'desc';
-  } else {
-    orderBy.createdAt = 'desc';
-  }
+  const orderBy: any = query.sortBy
+    ? { [query.sortBy]: query.sortOrder || 'desc' }
+    : { createdAt: 'desc' };
 
   const [wards, total] = await Promise.all([
     prisma.ward.findMany({
@@ -269,7 +426,8 @@ export async function getWards(tenantId: string, query: ListWardsQuery) {
       orderBy,
       include: {
         department: { select: { id: true, name: true } },
-        _count: { select: { rooms: true } },
+        floor: { select: { id: true, name: true, level: true } },
+        _count: { select: { beds: true } },
       },
     }),
     prisma.ward.count({ where }),
@@ -283,14 +441,11 @@ export async function getWardById(tenantId: string, id: string) {
     where: { id, tenantId },
     include: {
       department: { select: { id: true, name: true } },
-      rooms: {
-        where: { isActive: true },
-        orderBy: { roomNumber: 'asc' },
-        include: {
-          _count: { select: { beds: true } },
-        },
+      floor: { select: { id: true, name: true, level: true } },
+      beds: {
+        orderBy: { bedNumber: 'asc' },
       },
-      _count: { select: { rooms: true } },
+      _count: { select: { beds: true } },
     },
   });
 
@@ -310,7 +465,6 @@ export async function updateWard(tenantId: string, id: string, data: UpdateWardI
     throw AppError.notFound('Ward not found');
   }
 
-  // Verify department exists if being updated
   if (data.departmentId) {
     const department = await prisma.department.findFirst({
       where: { id: data.departmentId, tenantId },
@@ -320,10 +474,23 @@ export async function updateWard(tenantId: string, id: string, data: UpdateWardI
     }
   }
 
-  // Check for duplicate name if being updated
+  if (data.floorId) {
+    const floor = await prisma.floor.findFirst({
+      where: { id: data.floorId, tenantId },
+    });
+    if (!floor) {
+      throw AppError.notFound('Floor not found');
+    }
+  }
+
   if (data.name && data.name !== existing.name) {
     const duplicate = await prisma.ward.findFirst({
-      where: { tenantId, name: { equals: data.name, mode: 'insensitive' }, id: { not: id } },
+      where: {
+        tenantId,
+        isActive: true,
+        name: { equals: data.name, mode: 'insensitive' },
+        id: { not: id },
+      },
     });
     if (duplicate) {
       throw AppError.conflict('A ward with this name already exists');
@@ -335,10 +502,14 @@ export async function updateWard(tenantId: string, id: string, data: UpdateWardI
     data: {
       ...(data.name !== undefined && { name: data.name }),
       ...(data.departmentId !== undefined && { departmentId: data.departmentId }),
+      ...(data.floorId !== undefined && { floorId: data.floorId }),
       ...(data.wardType !== undefined && { wardType: data.wardType as any }),
-      ...(data.floor !== undefined && { floor: data.floor }),
       ...(data.totalBeds !== undefined && { totalBeds: data.totalBeds }),
       ...(data.isActive !== undefined && { isActive: data.isActive }),
+    },
+    include: {
+      floor: { select: { id: true, name: true, level: true } },
+      department: { select: { id: true, name: true } },
     },
   });
 
@@ -354,14 +525,13 @@ export async function deleteWard(tenantId: string, id: string) {
     throw AppError.notFound('Ward not found');
   }
 
-  // Check for active rooms before deleting
-  const activeRooms = await prisma.room.count({
-    where: { wardId: id, tenantId, isActive: true },
+  const activeBeds = await prisma.bed.count({
+    where: { wardId: id, tenantId, status: { in: ['occupied', 'reserved'] } },
   });
 
-  if (activeRooms > 0) {
+  if (activeBeds > 0) {
     throw AppError.badRequest(
-      'Cannot delete ward with active rooms. Deactivate or reassign rooms first.',
+      'Cannot delete ward with occupied or reserved beds. Discharge patients or free beds first.',
     );
   }
 
@@ -374,11 +544,10 @@ export async function deleteWard(tenantId: string, id: string) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ROOMS
+// BEDS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-export async function createRoom(tenantId: string, data: CreateRoomInput) {
-  // Verify ward exists
+export async function createBed(tenantId: string, data: CreateBedInput) {
   const ward = await prisma.ward.findFirst({
     where: { id: data.wardId, tenantId },
   });
@@ -386,218 +555,105 @@ export async function createRoom(tenantId: string, data: CreateRoomInput) {
     throw AppError.notFound('Ward not found');
   }
 
-  // Check for duplicate room number within the same ward
-  const existing = await prisma.room.findFirst({
-    where: {
-      tenantId,
-      wardId: data.wardId,
-      roomNumber: { equals: data.roomNumber, mode: 'insensitive' },
-    },
-  });
-  if (existing) {
-    throw AppError.conflict('A room with this number already exists in this ward');
-  }
-
-  const room = await prisma.room.create({
-    data: {
-      tenantId,
-      wardId: data.wardId,
-      roomNumber: data.roomNumber,
-      roomType: data.roomType as any,
-      floor: data.floor,
-      isActive: data.isActive ?? true,
-    },
-  });
-
-  return room;
-}
-
-export async function getRooms(tenantId: string, query: ListRoomsQuery) {
-  const { skip, take, page, limit } = getPaginationParams(query);
-
-  const where: any = { tenantId };
-
-  if (query.search) {
-    const search = query.search.trim();
-    where.OR = [
-      { roomNumber: { contains: search, mode: 'insensitive' } },
-    ];
-  }
-
-  if (query.wardId) {
-    where.wardId = query.wardId;
-  }
-
-  if (query.roomType) {
-    where.roomType = query.roomType;
-  }
-
-  if (query.isActive !== undefined) {
-    where.isActive = query.isActive;
-  }
-
-  const orderBy: any = {};
-  if (query.sortBy) {
-    orderBy[query.sortBy] = query.sortOrder || 'desc';
-  } else {
-    orderBy.createdAt = 'desc';
-  }
-
-  const [rooms, total] = await Promise.all([
-    prisma.room.findMany({
-      where,
-      skip,
-      take,
-      orderBy,
-      include: {
-        ward: { select: { id: true, name: true } },
-        _count: { select: { beds: true } },
-      },
-    }),
-    prisma.room.count({ where }),
-  ]);
-
-  return { rooms, total, page, limit };
-}
-
-export async function getRoomById(tenantId: string, id: string) {
-  const room = await prisma.room.findFirst({
-    where: { id, tenantId },
-    include: {
-      ward: {
-        select: { id: true, name: true, departmentId: true },
-      },
-      beds: {
-        orderBy: { bedNumber: 'asc' },
-      },
-      _count: { select: { beds: true } },
-    },
-  });
-
-  if (!room) {
-    throw AppError.notFound('Room not found');
-  }
-
-  return room;
-}
-
-export async function updateRoom(tenantId: string, id: string, data: UpdateRoomInput) {
-  const existing = await prisma.room.findFirst({
-    where: { id, tenantId },
-  });
-
-  if (!existing) {
-    throw AppError.notFound('Room not found');
-  }
-
-  // Verify ward exists if being changed
-  if (data.wardId && data.wardId !== existing.wardId) {
-    const ward = await prisma.ward.findFirst({
-      where: { id: data.wardId, tenantId },
-    });
-    if (!ward) {
-      throw AppError.notFound('Ward not found');
-    }
-  }
-
-  // Check for duplicate room number if being updated
-  const targetWardId = data.wardId ?? existing.wardId;
-  if (data.roomNumber && (data.roomNumber !== existing.roomNumber || data.wardId !== existing.wardId)) {
-    const duplicate = await prisma.room.findFirst({
-      where: {
-        tenantId,
-        wardId: targetWardId,
-        roomNumber: { equals: data.roomNumber, mode: 'insensitive' },
-        id: { not: id },
-      },
-    });
-    if (duplicate) {
-      throw AppError.conflict('A room with this number already exists in this ward');
-    }
-  }
-
-  const room = await prisma.room.update({
-    where: { id },
-    data: {
-      ...(data.wardId !== undefined && { wardId: data.wardId }),
-      ...(data.roomNumber !== undefined && { roomNumber: data.roomNumber }),
-      ...(data.roomType !== undefined && { roomType: data.roomType as any }),
-      ...(data.floor !== undefined && { floor: data.floor }),
-      ...(data.isActive !== undefined && { isActive: data.isActive }),
-    },
-  });
-
-  return room;
-}
-
-export async function deleteRoom(tenantId: string, id: string) {
-  const existing = await prisma.room.findFirst({
-    where: { id, tenantId },
-  });
-
-  if (!existing) {
-    throw AppError.notFound('Room not found');
-  }
-
-  // Check for beds that are occupied or reserved
-  const activeBeds = await prisma.bed.count({
-    where: {
-      roomId: id,
-      tenantId,
-      status: { in: ['occupied', 'reserved'] },
-    },
-  });
-
-  if (activeBeds > 0) {
-    throw AppError.badRequest(
-      'Cannot delete room with occupied or reserved beds. Discharge patients or free beds first.',
-    );
-  }
-
-  const room = await prisma.room.update({
-    where: { id },
-    data: { isActive: false },
-  });
-
-  return room;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// BEDS
-// ═══════════════════════════════════════════════════════════════════════════════
-
-export async function createBed(tenantId: string, data: CreateBedInput) {
-  // Verify room exists
-  const room = await prisma.room.findFirst({
-    where: { id: data.roomId, tenantId },
-  });
-  if (!room) {
-    throw AppError.notFound('Room not found');
-  }
-
-  // Check for duplicate bed number within the same room
   const existing = await prisma.bed.findFirst({
     where: {
       tenantId,
-      roomId: data.roomId,
+      wardId: data.wardId,
       bedNumber: { equals: data.bedNumber, mode: 'insensitive' },
     },
   });
   if (existing) {
-    throw AppError.conflict('A bed with this number already exists in this room');
+    throw AppError.conflict('A bed with this number already exists in this ward');
   }
 
   const bed = await prisma.bed.create({
     data: {
       tenantId,
-      roomId: data.roomId,
+      wardId: data.wardId,
       bedNumber: data.bedNumber,
       bedType: data.bedType as any,
       status: (data.status as any) ?? 'available',
     },
+    include: {
+      ward: {
+        select: {
+          id: true,
+          name: true,
+          floor: { select: { id: true, name: true, level: true } },
+        },
+      },
+    },
   });
 
   return bed;
+}
+
+export async function bulkCreateBeds(tenantId: string, data: BulkCreateBedsInput) {
+  const ward = await prisma.ward.findFirst({
+    where: { id: data.wardId, tenantId },
+  });
+  if (!ward) {
+    throw AppError.notFound('Ward not found');
+  }
+
+  // Reject duplicates within the incoming payload (case-insensitive)
+  const seen = new Set<string>();
+  const dupesInPayload: string[] = [];
+  for (const b of data.beds) {
+    const key = b.bedNumber.trim().toLowerCase();
+    if (seen.has(key)) dupesInPayload.push(b.bedNumber);
+    seen.add(key);
+  }
+  if (dupesInPayload.length) {
+    throw AppError.badRequest(
+      `Duplicate bed numbers in request: ${dupesInPayload.join(', ')}`,
+    );
+  }
+
+  // Reject any number that already exists in this ward (case-insensitive)
+  const existing = await prisma.bed.findMany({
+    where: {
+      tenantId,
+      wardId: data.wardId,
+      bedNumber: { in: data.beds.map((b) => b.bedNumber), mode: 'insensitive' },
+    },
+    select: { bedNumber: true },
+  });
+  if (existing.length) {
+    throw AppError.conflict(
+      `Bed numbers already exist in this ward: ${existing.map((b) => b.bedNumber).join(', ')}`,
+    );
+  }
+
+  const result = await prisma.bed.createMany({
+    data: data.beds.map((b) => ({
+      tenantId,
+      wardId: data.wardId,
+      bedNumber: b.bedNumber,
+      bedType: (b.bedType ?? data.bedType) as any,
+      status: 'available' as any,
+    })),
+  });
+
+  const created = await prisma.bed.findMany({
+    where: {
+      tenantId,
+      wardId: data.wardId,
+      bedNumber: { in: data.beds.map((b) => b.bedNumber) },
+    },
+    include: {
+      ward: {
+        select: {
+          id: true,
+          name: true,
+          floor: { select: { id: true, name: true, level: true } },
+        },
+      },
+    },
+    orderBy: { bedNumber: 'asc' },
+  });
+
+  return { count: result.count, beds: created };
 }
 
 export async function getBeds(tenantId: string, query: ListBedsQuery) {
@@ -607,33 +663,25 @@ export async function getBeds(tenantId: string, query: ListBedsQuery) {
 
   if (query.search) {
     const search = query.search.trim();
-    where.OR = [
-      { bedNumber: { contains: search, mode: 'insensitive' } },
-    ];
-  }
-
-  if (query.roomId) {
-    where.roomId = query.roomId;
+    where.OR = [{ bedNumber: { contains: search, mode: 'insensitive' } }];
   }
 
   if (query.wardId) {
-    where.room = { wardId: query.wardId };
-  }
-
-  if (query.bedType) {
-    where.bedType = query.bedType;
-  }
-
-  if (query.status) {
-    where.status = query.status;
-  }
-
-  const orderBy: any = {};
-  if (query.sortBy) {
-    orderBy[query.sortBy] = query.sortOrder || 'desc';
+    where.wardId = query.wardId;
+  } else if (query.floorId) {
+    where.ward = { floorId: query.floorId, isActive: true };
   } else {
-    orderBy.createdAt = 'desc';
+    // Hide beds whose ward has been soft-deleted so counts match the
+    // visible ward list. An explicit wardId still surfaces all beds
+    // (e.g., for admin recovery flows).
+    where.ward = { isActive: true };
   }
+  if (query.bedType) where.bedType = query.bedType;
+  if (query.status) where.status = query.status;
+
+  const orderBy: any = query.sortBy
+    ? { [query.sortBy]: query.sortOrder || 'desc' }
+    : { createdAt: 'desc' };
 
   const [beds, total] = await Promise.all([
     prisma.bed.findMany({
@@ -642,11 +690,12 @@ export async function getBeds(tenantId: string, query: ListBedsQuery) {
       take,
       orderBy,
       include: {
-        room: {
+        ward: {
           select: {
             id: true,
-            roomNumber: true,
-            ward: { select: { id: true, name: true } },
+            name: true,
+            wardType: true,
+            floor: { select: { id: true, name: true, level: true } },
           },
         },
         currentPatient: {
@@ -664,19 +713,14 @@ export async function getBedById(tenantId: string, id: string) {
   const bed = await prisma.bed.findFirst({
     where: { id, tenantId },
     include: {
-      room: {
+      ward: {
         select: {
           id: true,
-          roomNumber: true,
-          roomType: true,
-          ward: {
-            select: {
-              id: true,
-              name: true,
-              departmentId: true,
-              department: { select: { id: true, name: true } },
-            },
-          },
+          name: true,
+          wardType: true,
+          departmentId: true,
+          department: { select: { id: true, name: true } },
+          floor: { select: { id: true, name: true, level: true } },
         },
       },
       currentPatient: {
@@ -701,36 +745,34 @@ export async function updateBed(tenantId: string, id: string, data: UpdateBedInp
     throw AppError.notFound('Bed not found');
   }
 
-  // Verify room exists if being changed
-  if (data.roomId && data.roomId !== existing.roomId) {
-    const room = await prisma.room.findFirst({
-      where: { id: data.roomId, tenantId },
+  if (data.wardId && data.wardId !== existing.wardId) {
+    const ward = await prisma.ward.findFirst({
+      where: { id: data.wardId, tenantId },
     });
-    if (!room) {
-      throw AppError.notFound('Room not found');
+    if (!ward) {
+      throw AppError.notFound('Ward not found');
     }
   }
 
-  // Check for duplicate bed number if being updated
-  const targetRoomId = data.roomId ?? existing.roomId;
-  if (data.bedNumber && (data.bedNumber !== existing.bedNumber || data.roomId !== existing.roomId)) {
+  const targetWardId = data.wardId ?? existing.wardId;
+  if (data.bedNumber && (data.bedNumber !== existing.bedNumber || data.wardId !== existing.wardId)) {
     const duplicate = await prisma.bed.findFirst({
       where: {
         tenantId,
-        roomId: targetRoomId,
+        wardId: targetWardId,
         bedNumber: { equals: data.bedNumber, mode: 'insensitive' },
         id: { not: id },
       },
     });
     if (duplicate) {
-      throw AppError.conflict('A bed with this number already exists in this room');
+      throw AppError.conflict('A bed with this number already exists in this ward');
     }
   }
 
   const bed = await prisma.bed.update({
     where: { id },
     data: {
-      ...(data.roomId !== undefined && { roomId: data.roomId }),
+      ...(data.wardId !== undefined && { wardId: data.wardId }),
       ...(data.bedNumber !== undefined && { bedNumber: data.bedNumber }),
       ...(data.bedType !== undefined && { bedType: data.bedType as any }),
       ...(data.status !== undefined && { status: data.status as any }),
@@ -755,28 +797,38 @@ export async function deleteBed(tenantId: string, id: string) {
     );
   }
 
-  // Set status to maintenance as a soft delete
-  const bed = await prisma.bed.update({
-    where: { id },
-    data: { status: 'maintenance' },
-  });
+  // Hard delete when there's no patient-history FK pointing at the bed
+  // (admissions, transfers, nurse assignments, reservations). Otherwise
+  // we'd be lying to the user — a soft-delete-as-maintenance leaves the
+  // bed in the count and looks identical to a bed actually under
+  // maintenance. With patient history we keep it as maintenance to
+  // preserve the audit trail.
+  const [admissions, transfersFrom, transfersTo, assignments, reservations] = await Promise.all([
+    prisma.admission.count({ where: { bedId: id } }),
+    prisma.patientTransfer.count({ where: { fromBedId: id } }),
+    prisma.patientTransfer.count({ where: { toBedId: id } }),
+    prisma.nurseAssignment.count({ where: { bedId: id } }),
+    prisma.reservation.count({ where: { bedId: id } }),
+  ]);
 
-  return bed;
+  const hasHistory = admissions + transfersFrom + transfersTo + assignments + reservations > 0;
+
+  if (hasHistory) {
+    return prisma.bed.update({
+      where: { id },
+      data: { status: 'maintenance' },
+    });
+  }
+
+  return prisma.bed.delete({ where: { id } });
 }
 
 export async function getBedAvailability(tenantId: string, query: BedAvailabilityQuery) {
   const where: any = { tenantId };
 
-  if (query.wardId) {
-    where.room = { wardId: query.wardId };
-  }
-
-  if (query.departmentId) {
-    where.room = {
-      ...where.room,
-      ward: { departmentId: query.departmentId },
-    };
-  }
+  if (query.wardId) where.wardId = query.wardId;
+  if (query.floorId) where.ward = { ...(where.ward || {}), floorId: query.floorId };
+  if (query.departmentId) where.ward = { ...(where.ward || {}), departmentId: query.departmentId };
 
   const [total, available, occupied, maintenance, reserved] = await Promise.all([
     prisma.bed.count({ where }),
@@ -786,12 +838,12 @@ export async function getBedAvailability(tenantId: string, query: BedAvailabilit
     prisma.bed.count({ where: { ...where, status: 'reserved' } }),
   ]);
 
-  // Get per-ward breakdown
   const wards = await prisma.ward.findMany({
     where: {
       tenantId,
       isActive: true,
       ...(query.wardId && { id: query.wardId }),
+      ...(query.floorId && { floorId: query.floorId }),
       ...(query.departmentId && { departmentId: query.departmentId }),
     },
     select: {
@@ -799,38 +851,30 @@ export async function getBedAvailability(tenantId: string, query: BedAvailabilit
       name: true,
       wardType: true,
       totalBeds: true,
-      rooms: {
-        where: { isActive: true },
+      floor: { select: { id: true, name: true, level: true } },
+      beds: {
         select: {
           id: true,
-          roomNumber: true,
-          beds: {
-            select: {
-              id: true,
-              bedNumber: true,
-              bedType: true,
-              status: true,
-            },
-          },
+          bedNumber: true,
+          bedType: true,
+          status: true,
         },
       },
     },
     orderBy: { name: 'asc' },
   });
 
-  const wardSummaries = wards.map((ward) => {
-    const allBeds = ward.rooms.flatMap((room) => room.beds);
-    return {
-      wardId: ward.id,
-      wardName: ward.name,
-      wardType: ward.wardType,
-      totalBeds: allBeds.length,
-      available: allBeds.filter((b) => b.status === 'available').length,
-      occupied: allBeds.filter((b) => b.status === 'occupied').length,
-      maintenance: allBeds.filter((b) => b.status === 'maintenance').length,
-      reserved: allBeds.filter((b) => b.status === 'reserved').length,
-    };
-  });
+  const wardSummaries = wards.map((ward) => ({
+    wardId: ward.id,
+    wardName: ward.name,
+    wardType: ward.wardType,
+    floor: ward.floor,
+    totalBeds: ward.beds.length,
+    available: ward.beds.filter((b) => b.status === 'available').length,
+    occupied: ward.beds.filter((b) => b.status === 'occupied').length,
+    maintenance: ward.beds.filter((b) => b.status === 'maintenance').length,
+    reserved: ward.beds.filter((b) => b.status === 'reserved').length,
+  }));
 
   return {
     summary: { total, available, occupied, maintenance, reserved },
@@ -838,36 +882,38 @@ export async function getBedAvailability(tenantId: string, query: BedAvailabilit
   };
 }
 
-export async function getOccupancy(tenantId: string, query: { wardId?: string; departmentId?: string }) {
+export async function getOccupancy(
+  tenantId: string,
+  query: { wardId?: string; floorId?: string; departmentId?: string },
+) {
   const where: any = { tenantId, isActive: true };
   if (query.wardId) where.id = query.wardId;
+  if (query.floorId) where.floorId = query.floorId;
   if (query.departmentId) where.departmentId = query.departmentId;
 
   const wards = await prisma.ward.findMany({
     where,
     include: {
-      rooms: {
-        include: {
-          beds: {
-            select: {
-              id: true,
-              status: true,
-              currentPatientId: true,
-            },
-          },
+      beds: {
+        select: {
+          id: true,
+          status: true,
+          currentPatientId: true,
         },
       },
       department: { select: { id: true, name: true } },
+      floor: { select: { id: true, name: true, level: true } },
     },
-    orderBy: { name: 'asc' },
+    orderBy: [{ floor: { level: 'asc' } }, { name: 'asc' }],
   });
 
   return wards.map((ward) => {
-    const allBeds = ward.rooms.flatMap((r) => r.beds);
-    const total = allBeds.length;
-    const occupied = allBeds.filter((b) => b.status === 'occupied').length;
-    const available = allBeds.filter((b) => b.status === 'available').length;
-    const maintenance = allBeds.filter((b) => b.status === 'maintenance' || b.status === 'reserved').length;
+    const total = ward.beds.length;
+    const occupied = ward.beds.filter((b) => b.status === 'occupied').length;
+    const available = ward.beds.filter((b) => b.status === 'available').length;
+    const maintenance = ward.beds.filter(
+      (b) => b.status === 'maintenance' || b.status === 'reserved',
+    ).length;
 
     return {
       wardId: ward.id,

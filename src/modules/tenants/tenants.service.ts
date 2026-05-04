@@ -370,8 +370,8 @@ export const tenantsService = {
 
       // 6. Delete infrastructure
       await tx.bed.deleteMany({ where: { tenantId } });
-      await tx.room.deleteMany({ where: { tenantId } });
       await tx.ward.deleteMany({ where: { tenantId } });
+      await tx.floor.deleteMany({ where: { tenantId } });
       await tx.operatingTheater.deleteMany({ where: { tenantId } });
       await tx.hospitalResource.deleteMany({ where: { tenantId } });
       await tx.department.deleteMany({ where: { tenantId } });

@@ -12,7 +12,7 @@ export const SYSTEM_ROLE_NAMES = [
 ] as const;
 
 export const PERMISSION_MODULES = [
-  'auth', 'tenants', 'users', 'roles', 'departments', 'wards', 'rooms', 'beds',
+  'auth', 'tenants', 'users', 'roles', 'departments', 'floors', 'wards', 'beds',
   'patients', 'appointments', 'visits', 'admissions', 'vitals', 'diagnoses',
   'progress_notes', 'nursing_notes', 'prescriptions', 'lab_orders', 'lab_reports',
   'imaging', 'pharmacy', 'inventory', 'billing', 'payments', 'insurance',
@@ -42,8 +42,8 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'users', action: 'create' }, { module: 'users', action: 'read' }, { module: 'users', action: 'update' }, { module: 'users', action: 'delete' }, { module: 'users', action: 'export' },
       { module: 'roles', action: 'create' }, { module: 'roles', action: 'read' }, { module: 'roles', action: 'update' }, { module: 'roles', action: 'delete' },
       { module: 'departments', action: 'create' }, { module: 'departments', action: 'read' }, { module: 'departments', action: 'update' }, { module: 'departments', action: 'delete' },
+      { module: 'floors', action: 'create' }, { module: 'floors', action: 'read' }, { module: 'floors', action: 'update' }, { module: 'floors', action: 'delete' },
       { module: 'wards', action: 'create' }, { module: 'wards', action: 'read' }, { module: 'wards', action: 'update' }, { module: 'wards', action: 'delete' },
-      { module: 'rooms', action: 'create' }, { module: 'rooms', action: 'read' }, { module: 'rooms', action: 'update' }, { module: 'rooms', action: 'delete' },
       { module: 'beds', action: 'create' }, { module: 'beds', action: 'read' }, { module: 'beds', action: 'update' }, { module: 'beds', action: 'delete' },
       { module: 'patients', action: 'create' }, { module: 'patients', action: 'read' }, { module: 'patients', action: 'update' }, { module: 'patients', action: 'export' },
       { module: 'appointments', action: 'create' }, { module: 'appointments', action: 'read' }, { module: 'appointments', action: 'update' }, { module: 'appointments', action: 'delete' }, { module: 'appointments', action: 'export' },
@@ -138,10 +138,10 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'duty_rosters', action: 'approve' }, { module: 'duty_rosters', action: 'export' },
       // Ward / floor / bed management
       { module: 'departments', action: 'read' },
+      { module: 'floors', action: 'create' }, { module: 'floors', action: 'read' },
+      { module: 'floors', action: 'update' }, { module: 'floors', action: 'delete' },
       { module: 'wards', action: 'create' }, { module: 'wards', action: 'read' },
       { module: 'wards', action: 'update' }, { module: 'wards', action: 'delete' },
-      { module: 'rooms', action: 'create' }, { module: 'rooms', action: 'read' },
-      { module: 'rooms', action: 'update' }, { module: 'rooms', action: 'delete' },
       { module: 'beds', action: 'create' }, { module: 'beds', action: 'read' },
       { module: 'beds', action: 'update' }, { module: 'beds', action: 'delete' },
       // Manage nursing staff records

@@ -331,10 +331,8 @@ export async function createAdmission(tenantId: string, userId: string, data: Cr
     throw AppError.notFound('Doctor not found');
   }
 
-  // Verify bed exists and belongs to the ward (bed→room→ward)
   const bed = await prisma.bed.findFirst({
-    where: { id: data.bedId, room: { wardId: data.wardId } },
-    include: { room: true },
+    where: { id: data.bedId, wardId: data.wardId, tenantId },
   });
   if (!bed) {
     throw AppError.notFound('Bed not found in the specified ward');
@@ -501,11 +499,10 @@ export async function updateAdmission(tenantId: string, id: string, data: Update
     throw AppError.badRequest('Cannot update a discharged admission');
   }
 
-  // If changing bed, verify bed exists in the ward (bed→room→ward)
   if (data.bedId) {
     const wardId = data.wardId ?? admission.wardId;
     const bed = await prisma.bed.findFirst({
-      where: { id: data.bedId, room: { wardId } },
+      where: { id: data.bedId, wardId, tenantId },
     });
     if (!bed) {
       throw AppError.notFound('Bed not found in the specified ward');
