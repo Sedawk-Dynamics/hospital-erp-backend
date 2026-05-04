@@ -469,13 +469,13 @@ enum MobilityLevel {
 }
 
 enum ClinicalDeviceType {
-  iv_cannula        @map("iv_cannula")
-  central_line      @map("central_line")
-  urinary_catheter  @map("urinary_catheter")
-  oxygen_device     @map("oxygen_device")
-  drain             @map("drain")
-  ng_tube           @map("ng_tube")
-  other             @map("other")
+  iv_cannula       @map("iv_cannula")
+  central_line     @map("central_line")
+  urinary_catheter @map("urinary_catheter")
+  oxygen_device    @map("oxygen_device")
+  drain            @map("drain")
+  ng_tube          @map("ng_tube")
+  other            @map("other")
 }
 
 enum ClinicalDeviceStatus {
@@ -548,11 +548,11 @@ enum ProcedureTolerance {
 }
 
 enum ProcedureComplication {
-  none            @map("none")
-  bleeding        @map("bleeding")
-  pain            @map("pain")
-  infection_risk  @map("infection_risk")
-  other           @map("other")
+  none           @map("none")
+  bleeding       @map("bleeding")
+  pain           @map("pain")
+  infection_risk @map("infection_risk")
+  other          @map("other")
 }
 
 enum DischargeSummaryStatus {
@@ -1216,6 +1216,11 @@ model Tenant {
   demoRequests               DemoRequest[]
   reservations               Reservation[]
   estimations                Estimation[]
+  emarTimeSlots              EmarTimeSlot[]
+  emarFrequencies            EmarFrequency[]
+  emarSettings               EmarSettings?
+  emarSchedules              EmarSchedule[]
+  emarAuditLogs              EmarAuditLog[]
 
   @@map("tenants")
 }
@@ -1439,6 +1444,9 @@ model User {
   ownedSubscriptions             UserSubscription[]           @relation("SubscriptionOwner")
   reservationsCreated            Reservation[]                @relation("ReservationCreator")
   estimationsCreated             Estimation[]                 @relation("EstimationCreator")
+  emarSchedulesGiven             EmarSchedule[]               @relation("EmarGivenBy")
+  emarSchedulesAmended           EmarSchedule[]               @relation("EmarAmendedBy")
+  emarAuditLogs                  EmarAuditLog[]
 
   @@unique([tenantId, email])
   @@map("users")
@@ -1798,6 +1806,7 @@ model Patient {
   mrdRequests               MrdRequest[]
   reservations              Reservation[]
   estimations               Estimation[]
+  emarSchedules             EmarSchedule[]
 
   @@unique([tenantId, mrn])
   @@map("patients")
@@ -2223,6 +2232,7 @@ model Admission {
   clinicalDevices      ClinicalDevice[]
   clinicalProcedures   ClinicalProcedure[]
   bills                Bill[]
+  emarSchedules        EmarSchedule[]
 
   @@map("admissions")
 }
@@ -2913,6 +2923,7 @@ model Prescription {
   doctor            DoctorProfile      @relation(fields: [doctorId], references: [id])
   prescriptionItems PrescriptionItem[]
   dispensingRecords DispensingRecord[]
+  emarSchedules     EmarSchedule[]
 
   @@map("prescriptions")
 }
@@ -2935,6 +2946,7 @@ model PrescriptionItem {
   drug                      DrugFormulary?             @relation(fields: [drugId], references: [id])
   medicationAdministrations MedicationAdministration[]
   dispensingRecords         DispensingRecord[]
+  emarSchedules             EmarSchedule[]
 
   @@map("prescription_items")
 }
@@ -2955,6 +2967,179 @@ model MedicationAdministration {
   administrator    User             @relation(fields: [administeredBy], references: [id])
 
   @@map("medication_administrations")
+}
+
+// ============================================================
+// 8b. eMAR — DOSE-LEVEL EXECUTION
+// ============================================================
+// The eMAR module converts physician prescriptions into time-based
+// executable dose tasks, one row per dose. This is a separate
+// purpose-built layer over PrescriptionItem; it does NOT replace
+// MedicationAdministration (which stays as the legacy/ad-hoc admin log).
+
+enum EmarFrequencyType {
+  slot     @map("slot")
+  interval @map("interval")
+  once     @map("once")
+  prn      @map("prn")
+}
+
+enum EmarDoseStatus {
+  pending    @map("pending")
+  due        @map("due")
+  overdue    @map("overdue")
+  given      @map("given")
+  given_late @map("given_late")
+  missed     @map("missed")
+  held       @map("held")
+  refused    @map("refused")
+  cancelled  @map("cancelled")
+}
+
+enum EmarAuditAction {
+  generated @map("generated")
+  given     @map("given")
+  late      @map("late")
+  missed    @map("missed")
+  held      @map("held")
+  refused   @map("refused")
+  amended   @map("amended")
+  cancelled @map("cancelled")
+  prn       @map("prn")
+  status    @map("status")
+}
+
+/// Per-tenant configurable time slots that map slot codes (MORNING,
+/// AFTERNOON, NIGHT, ...) to actual times of day. Defaults are seeded
+/// per tenant and can be edited by nurse_admin.
+model EmarTimeSlot {
+  id        String   @id @default(uuid())
+  tenantId  String   @map("tenant_id")
+  code      String   @db.VarChar(40) // MORNING, AFTERNOON, NIGHT, etc.
+  label     String   @db.VarChar(80)
+  time      String   @db.VarChar(5) // "HH:mm"
+  sortOrder Int      @default(0) @map("sort_order")
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, code])
+  @@map("emar_time_slots")
+}
+
+/// Per-tenant frequency master mapping codes (BD, TID, Q6H, ...) to
+/// either a list of slot codes (slot-based) or an interval in hours.
+model EmarFrequency {
+  id                    String            @id @default(uuid())
+  tenantId              String            @map("tenant_id")
+  code                  String            @db.VarChar(40) // BD, TID, Q6H, OD, STAT, PRN
+  label                 String            @db.VarChar(120)
+  type                  EmarFrequencyType
+  slotCodes             String[]          @default([]) @map("slot_codes") // for slot type: ["MORNING","NIGHT"]
+  intervalHours         Int?              @map("interval_hours") // for interval type: 6
+  minPrnIntervalMinutes Int?              @map("min_prn_interval_minutes") // for prn type
+  isActive              Boolean           @default(true) @map("is_active")
+  createdAt             DateTime          @default(now()) @map("created_at")
+  updatedAt             DateTime          @default(now()) @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, code])
+  @@map("emar_frequencies")
+}
+
+/// Per-tenant eMAR settings (grace period etc).
+model EmarSettings {
+  id                           String   @id @default(uuid())
+  tenantId                     String   @unique @map("tenant_id")
+  gracePeriodMinutes           Int      @default(120) @map("grace_period_minutes")
+  defaultPrnMinIntervalMinutes Int      @default(240) @map("default_prn_min_interval_minutes")
+  createdAt                    DateTime @default(now()) @map("created_at")
+  updatedAt                    DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@map("emar_settings")
+}
+
+/// Core execution table — one row per individual dose. The eMAR UI
+/// reads from this table exclusively. PRN orders DO NOT pre-generate
+/// rows; they are inserted on-the-fly when a nurse triggers a dose.
+model EmarSchedule {
+  id                 String          @id @default(uuid())
+  tenantId           String          @map("tenant_id")
+  prescriptionId     String          @map("prescription_id")
+  prescriptionItemId String          @map("prescription_item_id")
+  patientId          String          @map("patient_id")
+  admissionId        String?         @map("admission_id")
+  drugName           String          @map("drug_name") @db.VarChar(255)
+  dosage             String          @db.VarChar(100)
+  route              MedicationRoute @default(oral)
+  frequencyCode      String?         @map("frequency_code") @db.VarChar(40)
+  slotCode           String?         @map("slot_code") @db.VarChar(40)
+  scheduledAt        DateTime        @map("scheduled_at")
+  status             EmarDoseStatus  @default(pending)
+  isPrn              Boolean         @default(false) @map("is_prn")
+  // Action audit fields
+  actionedAt         DateTime?       @map("actioned_at") // when the row last transitioned
+  actualGivenTime    DateTime?       @map("actual_given_time") // when nurse actually gave
+  givenById          String?         @map("given_by_id")
+  delayMinutes       Int?            @map("delay_minutes") // for given_late: actualGivenTime - scheduledAt
+  reason             String?
+  notes              String?
+  // Amendment tracking
+  amendedAt          DateTime?       @map("amended_at")
+  amendedById        String?         @map("amended_by_id")
+  previousStatus     EmarDoseStatus? @map("previous_status")
+  // Soft cancel (e.g., when prescription cancelled)
+  cancelledAt        DateTime?       @map("cancelled_at")
+  cancelReason       String?         @map("cancel_reason")
+  createdAt          DateTime        @default(now()) @map("created_at")
+  updatedAt          DateTime        @default(now()) @updatedAt @map("updated_at")
+
+  tenant           Tenant           @relation(fields: [tenantId], references: [id])
+  prescription     Prescription     @relation(fields: [prescriptionId], references: [id])
+  prescriptionItem PrescriptionItem @relation(fields: [prescriptionItemId], references: [id])
+  patient          Patient          @relation(fields: [patientId], references: [id])
+  admission        Admission?       @relation(fields: [admissionId], references: [id])
+  givenBy          User?            @relation("EmarGivenBy", fields: [givenById], references: [id])
+  amendedBy        User?            @relation("EmarAmendedBy", fields: [amendedById], references: [id])
+  auditLogs        EmarAuditLog[]
+
+  @@index([tenantId, scheduledAt])
+  @@index([tenantId, patientId, scheduledAt])
+  @@index([tenantId, admissionId, scheduledAt])
+  @@index([tenantId, status])
+  @@map("emar_schedules")
+}
+
+/// Append-only audit trail. Every status change on a schedule row
+/// produces a record here. The schedule row itself can be edited
+/// (amended) but old states are preserved here.
+model EmarAuditLog {
+  id            String          @id @default(uuid())
+  tenantId      String          @map("tenant_id")
+  scheduleId    String          @map("schedule_id")
+  action        EmarAuditAction
+  fromStatus    EmarDoseStatus? @map("from_status")
+  toStatus      EmarDoseStatus  @map("to_status")
+  performedById String?         @map("performed_by_id")
+  performedAt   DateTime        @default(now()) @map("performed_at")
+  serverTime    DateTime        @default(now()) @map("server_time")
+  reason        String?
+  notes         String?
+  delayMinutes  Int?            @map("delay_minutes")
+  metadata      Json?
+
+  tenant      Tenant       @relation(fields: [tenantId], references: [id])
+  schedule    EmarSchedule @relation(fields: [scheduleId], references: [id])
+  performedBy User?        @relation(fields: [performedById], references: [id])
+
+  @@index([tenantId, scheduleId])
+  @@index([tenantId, performedAt])
+  @@map("emar_audit_logs")
 }
 
 // ============================================================

@@ -6,6 +6,7 @@ import { redis } from './config/redis';
 import { app } from './app';
 import { runSubscriptionJobs } from './jobs/subscription-reminders';
 import { archiveStaleOpProgressNotes } from './modules/progress-notes/progress-notes.service';
+import { tickLifecycle as emarTickLifecycle } from './modules/emar/emar.service';
 
 const server = app.listen(env.PORT, () => {
   logger.info(`Server running on port ${env.PORT} in ${env.NODE_ENV} mode`);
@@ -32,6 +33,15 @@ setInterval(() => {
     logger.error({ err }, 'Progress-note auto-archive failed'),
   );
 }, ONE_HOUR);
+
+// eMAR lifecycle tick: pending → due → overdue → missed (every 60s)
+const ONE_MINUTE = 60 * 1000;
+setTimeout(() => {
+  emarTickLifecycle().catch((err) => logger.error({ err }, 'eMAR lifecycle tick failed on startup'));
+}, 90_000);
+setInterval(() => {
+  emarTickLifecycle().catch((err) => logger.error({ err }, 'eMAR lifecycle tick failed'));
+}, ONE_MINUTE);
 
 // Graceful shutdown
 const shutdown = async (signal: string) => {

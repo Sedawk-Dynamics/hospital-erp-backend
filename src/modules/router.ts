@@ -19,6 +19,7 @@ import { clinicalRoutes } from './clinical/clinical.routes';
 import { progressNotesRoutes } from './progress-notes/progress-notes.routes';
 import { nursingFormsRoutes } from './nursing-forms/nursing-forms.routes';
 import { prescriptionRoutes } from './prescriptions/prescriptions.routes';
+import { emarRoutes } from './emar/emar.routes';
 import { labRoutes } from './lab/lab.routes';
 import { imagingRoutes } from './imaging/imaging.routes';
 import { pharmacyRoutes } from './pharmacy/pharmacy.routes';
@@ -70,6 +71,7 @@ apiRouter.use('/clinical', authenticate, userTierLimiter, subCheck, requireFeatu
 apiRouter.use('/progress-notes', authenticate, userTierLimiter, subCheck, requireFeature('ip_management'), progressNotesRoutes);
 apiRouter.use('/nursing-forms', authenticate, userTierLimiter, subCheck, requireFeature('ip_management'), nursingFormsRoutes);
 apiRouter.use('/prescriptions', authenticate, userTierLimiter, subCheck, requireFeature('appointments'), prescriptionRoutes);
+apiRouter.use('/emar', authenticate, userTierLimiter, subCheck, requireFeature('ip_management'), emarRoutes);
 apiRouter.use('/lab', authenticate, userTierLimiter, subCheck, requireFeature('lab'), labRoutes);
 apiRouter.use('/imaging', authenticate, userTierLimiter, subCheck, requireFeature('imaging'), imagingRoutes);
 apiRouter.use('/pharmacy', authenticate, userTierLimiter, subCheck, requireFeature('pharmacy'), pharmacyRoutes);

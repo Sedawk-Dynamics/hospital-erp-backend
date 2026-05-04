@@ -1,0 +1,164 @@
+import { z } from 'zod';
+import { paginationSchema } from '../../shared/pagination';
+
+// ── Time Slot Master ─────────────────────────────────────────
+
+export const createTimeSlotSchema = z.object({
+  body: z.object({
+    code: z.string().min(1).max(40),
+    label: z.string().min(1).max(80),
+    time: z.string().regex(/^\d{2}:\d{2}$/, 'Time must be HH:mm'),
+    sortOrder: z.number().int().min(0).default(0),
+    isActive: z.boolean().default(true),
+  }),
+});
+
+export const updateTimeSlotSchema = z.object({
+  params: z.object({ id: z.string().uuid() }),
+  body: z.object({
+    code: z.string().min(1).max(40).optional(),
+    label: z.string().min(1).max(80).optional(),
+    time: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+    sortOrder: z.number().int().min(0).optional(),
+    isActive: z.boolean().optional(),
+  }),
+});
+
+export const timeSlotIdParamSchema = z.object({
+  params: z.object({ id: z.string().uuid() }),
+});
+
+// ── Frequency Master ─────────────────────────────────────────
+
+export const createFrequencySchema = z.object({
+  body: z.object({
+    code: z.string().min(1).max(40),
+    label: z.string().min(1).max(120),
+    type: z.enum(['slot', 'interval', 'once', 'prn']),
+    slotCodes: z.array(z.string().max(40)).default([]),
+    intervalHours: z.number().int().min(1).max(48).optional(),
+    minPrnIntervalMinutes: z.number().int().min(0).optional(),
+    isActive: z.boolean().default(true),
+  }),
+});
+
+export const updateFrequencySchema = z.object({
+  params: z.object({ id: z.string().uuid() }),
+  body: z.object({
+    code: z.string().min(1).max(40).optional(),
+    label: z.string().min(1).max(120).optional(),
+    type: z.enum(['slot', 'interval', 'once', 'prn']).optional(),
+    slotCodes: z.array(z.string().max(40)).optional(),
+    intervalHours: z.number().int().min(1).max(48).optional().nullable(),
+    minPrnIntervalMinutes: z.number().int().min(0).optional().nullable(),
+    isActive: z.boolean().optional(),
+  }),
+});
+
+export const frequencyIdParamSchema = z.object({
+  params: z.object({ id: z.string().uuid() }),
+});
+
+// ── Settings ─────────────────────────────────────────────────
+
+export const updateSettingsSchema = z.object({
+  body: z.object({
+    gracePeriodMinutes: z.number().int().min(0).max(1440).optional(),
+    defaultPrnMinIntervalMinutes: z.number().int().min(0).max(1440).optional(),
+  }),
+});
+
+// ── Schedule listing ─────────────────────────────────────────
+
+export const listSchedulesQuerySchema = z.object({
+  query: paginationSchema.extend({
+    patientId: z.string().uuid().optional(),
+    admissionId: z.string().uuid().optional(),
+    wardId: z.string().uuid().optional(),
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
+    status: z
+      .union([
+        z.enum(['pending', 'due', 'overdue', 'given', 'given_late', 'missed', 'held', 'refused', 'cancelled']),
+        z.array(z.enum(['pending', 'due', 'overdue', 'given', 'given_late', 'missed', 'held', 'refused', 'cancelled'])),
+      ])
+      .optional(),
+    includePrn: z.coerce.boolean().optional(),
+  }),
+});
+
+export const scheduleIdParamSchema = z.object({
+  params: z.object({ id: z.string().uuid() }),
+});
+
+// ── Dose actions ─────────────────────────────────────────────
+
+export const giveDoseSchema = z.object({
+  params: z.object({ id: z.string().uuid() }),
+  body: z.object({
+    actualGivenTime: z.string().datetime().optional(), // server-side default = now
+    notes: z.string().max(1000).optional(),
+  }),
+});
+
+export const holdRefuseDoseSchema = z.object({
+  params: z.object({ id: z.string().uuid() }),
+  body: z.object({
+    reason: z.string().min(1, 'Reason is required').max(500),
+    notes: z.string().max(1000).optional(),
+  }),
+});
+
+export const missedDoseSchema = z.object({
+  params: z.object({ id: z.string().uuid() }),
+  body: z.object({
+    reason: z.string().max(500).optional(),
+    notes: z.string().max(1000).optional(),
+  }),
+});
+
+/// Amend a previously logged dose (e.g., missed → given_late, or correct an earlier action).
+/// `actualGivenTime` is mandatory when amending to given/given_late so delayMinutes can be computed.
+export const amendDoseSchema = z.object({
+  params: z.object({ id: z.string().uuid() }),
+  body: z.object({
+    toStatus: z.enum(['given', 'given_late', 'missed', 'held', 'refused']),
+    actualGivenTime: z.string().datetime().optional(),
+    reason: z.string().max(500).optional(),
+    notes: z.string().max(1000).optional(),
+  }),
+});
+
+// ── PRN trigger ──────────────────────────────────────────────
+
+export const triggerPrnSchema = z.object({
+  params: z.object({ prescriptionItemId: z.string().uuid() }),
+  body: z.object({
+    actualGivenTime: z.string().datetime().optional(),
+    notes: z.string().max(1000).optional(),
+  }),
+});
+
+// ── Regenerate schedules ─────────────────────────────────────
+
+export const regenerateSchedulesSchema = z.object({
+  params: z.object({ prescriptionId: z.string().uuid() }),
+});
+
+export const auditQuerySchema = z.object({
+  params: z.object({ id: z.string().uuid() }),
+});
+
+// ── Type exports ─────────────────────────────────────────────
+
+export type CreateTimeSlotInput = z.infer<typeof createTimeSlotSchema>['body'];
+export type UpdateTimeSlotInput = z.infer<typeof updateTimeSlotSchema>['body'];
+export type CreateFrequencyInput = z.infer<typeof createFrequencySchema>['body'];
+export type UpdateFrequencyInput = z.infer<typeof updateFrequencySchema>['body'];
+export type UpdateSettingsInput = z.infer<typeof updateSettingsSchema>['body'];
+export type ListSchedulesQuery = z.infer<typeof listSchedulesQuerySchema>['query'];
+export type GiveDoseInput = z.infer<typeof giveDoseSchema>['body'];
+export type HoldRefuseDoseInput = z.infer<typeof holdRefuseDoseSchema>['body'];
+export type MissedDoseInput = z.infer<typeof missedDoseSchema>['body'];
+export type AmendDoseInput = z.infer<typeof amendDoseSchema>['body'];
+export type TriggerPrnInput = z.infer<typeof triggerPrnSchema>['body'];

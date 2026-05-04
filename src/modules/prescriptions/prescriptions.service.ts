@@ -3,6 +3,10 @@ import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { formatDateIST } from '../../shared/date.utils';
 import { getPaginationParams } from '../../shared/pagination';
+import {
+  generateForPrescription as emarGenerateForPrescription,
+  cancelFutureSchedules as emarCancelFutureSchedules,
+} from '../emar/emar.scheduler-engine';
 import type {
   CreatePrescriptionInput,
   UpdatePrescriptionInput,
@@ -107,6 +111,14 @@ export async function createPrescription(
     { tenantId, prescriptionId: prescription.id, doctorId: data.doctorId, patientId: data.patientId },
     'Prescription created',
   );
+
+  // Auto-generate eMAR dose schedules for IP prescriptions. We swallow errors
+  // so a scheduling glitch never blocks the doctor's prescription write.
+  if (prescription.prescriptionType === 'ip') {
+    emarGenerateForPrescription(prescription.id).catch((err) => {
+      logger.error({ err, prescriptionId: prescription.id }, 'eMAR generation failed (create)');
+    });
+  }
 
   return prescription;
 }
@@ -322,6 +334,14 @@ export async function updatePrescription(
     { tenantId, prescriptionId: id, status: data.status, replacedItems: replaceItems },
     'Prescription updated',
   );
+
+  // If items were replaced on an active IP prescription, regenerate eMAR rows.
+  if (replaceItems && updated.prescriptionType === 'ip' && updated.status !== 'cancelled') {
+    emarGenerateForPrescription(updated.id).catch((err) => {
+      logger.error({ err, prescriptionId: updated.id }, 'eMAR generation failed (update)');
+    });
+  }
+
   return updated;
 }
 
@@ -358,6 +378,14 @@ export async function cancelPrescription(tenantId: string, id: string) {
   });
 
   logger.info({ tenantId, prescriptionId: id }, 'Prescription cancelled');
+
+  // Cancel future eMAR doses for this prescription
+  if (updated.prescriptionType === 'ip') {
+    emarCancelFutureSchedules(id, 'Prescription cancelled').catch((err) => {
+      logger.error({ err, prescriptionId: id }, 'eMAR future-cancel failed');
+    });
+  }
+
   return updated;
 }
 
@@ -419,6 +447,12 @@ export async function addPrescriptionItem(
     { tenantId, prescriptionId, itemId: item.id },
     'Prescription item added',
   );
+
+  if (prescription.prescriptionType === 'ip') {
+    emarGenerateForPrescription(prescriptionId).catch((err) => {
+      logger.error({ err, prescriptionId }, 'eMAR generation failed (item add)');
+    });
+  }
 
   return item;
 }
