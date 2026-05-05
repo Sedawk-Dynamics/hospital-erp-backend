@@ -33,35 +33,35 @@ app.set('trust proxy', env.NODE_ENV === 'production' ? 1 : 'loopback');
 
 // CORS must run before helmet / rate limiter so preflights always get headers.
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));
+// app.options('*', cors(corsOptions));
 
 // ---------------------------------------------------------------
 // Security headers
 // ---------------------------------------------------------------
-app.use(
-  helmet({
-    // We serve an API — no inline HTML — so a strict default CSP is safe.
-    // Note: static `/uploads` is served by the same origin so we allow self.
-    contentSecurityPolicy: {
-      directives: {
-        defaultSrc: ["'self'"],
-        imgSrc: ["'self'", 'data:', 'blob:'],
-        scriptSrc: ["'self'"],
-        styleSrc: ["'self'", "'unsafe-inline'"],
-        connectSrc: ["'self'"],
-        frameAncestors: ["'none'"],
-      },
-    },
-    // API responses should never be cached across users by intermediaries.
-    crossOriginResourcePolicy: { policy: 'cross-origin' },
-    referrerPolicy: { policy: 'no-referrer' },
-    // HSTS only applies in production (dev uses http://localhost).
-    hsts:
-      env.NODE_ENV === 'production'
-        ? { maxAge: 15552000, includeSubDomains: true, preload: false }
-        : false,
-  }),
-);
+// app.use(
+//   helmet({
+//     // We serve an API — no inline HTML — so a strict default CSP is safe.
+//     // Note: static `/uploads` is served by the same origin so we allow self.
+//     contentSecurityPolicy: {
+//       directives: {
+//         defaultSrc: ["'self'"],
+//         imgSrc: ["'self'", 'data:', 'blob:'],
+//         scriptSrc: ["'self'"],
+//         styleSrc: ["'self'", "'unsafe-inline'"],
+//         connectSrc: ["'self'"],
+//         frameAncestors: ["'none'"],
+//       },
+//     },
+//     // API responses should never be cached across users by intermediaries.
+//     crossOriginResourcePolicy: { policy: 'cross-origin' },
+//     referrerPolicy: { policy: 'no-referrer' },
+//     // HSTS only applies in production (dev uses http://localhost).
+//     hsts:
+//       env.NODE_ENV === 'production'
+//         ? { maxAge: 15552000, includeSubDomains: true, preload: false }
+//         : false,
+//   }),
+// );
 
 // ---------------------------------------------------------------
 // Global per-IP rate limit (DDoS / scraping guard)
