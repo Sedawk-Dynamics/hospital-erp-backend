@@ -32,8 +32,8 @@ const app = express();
 app.set('trust proxy', env.NODE_ENV === 'production' ? 1 : 'loopback');
 
 // CORS must run before helmet / rate limiter so preflights always get headers.
-app.use(cors(corsOptions));
-// app.options('*', cors(corsOptions));
+app.use(cors({ origin: true, credentials: true }));
+// app.options('*', cors({ origin: true, credentials: true })); // ← uncomment this
 
 // ---------------------------------------------------------------
 // Security headers
