@@ -110,32 +110,44 @@ export const getExpiringLicensesSchema = z.object({
 // ============================================================
 
 export const createDutyRosterSchema = z.object({
-  body: z.object({
-    staffId: z.string().uuid('Invalid staff ID'),
-    departmentId: z.string().uuid('Invalid department ID'),
-    wardId: z.string().uuid('Invalid ward ID').optional(),
-    role: z.string().max(50).optional(),
-    shiftDate: dateString,
-    shiftType: z.enum(['morning', 'afternoon', 'night', 'general']),
-    startTime: z.string().min(1, 'Start time is required'),
-    endTime: z.string().min(1, 'End time is required'),
-  }),
+  body: z
+    .object({
+      staffId: z.string().uuid('Invalid staff ID').optional(),
+      userId: z.string().uuid('Invalid user ID').optional(),
+      departmentId: z.string().uuid('Invalid department ID').optional(),
+      wardId: z.string().uuid('Invalid ward ID').optional(),
+      role: z.string().max(50).optional(),
+      shiftDate: dateString,
+      shiftType: z.enum(['morning', 'afternoon', 'night', 'general']),
+      startTime: z.string().min(1, 'Start time is required'),
+      endTime: z.string().min(1, 'End time is required'),
+    })
+    .refine((d) => Boolean(d.staffId || d.userId), {
+      message: 'Either staffId or userId is required',
+      path: ['staffId'],
+    }),
 });
 
 export const createDutyRosterBulkSchema = z.object({
   body: z.object({
     entries: z
       .array(
-        z.object({
-          staffId: z.string().uuid(),
-          departmentId: z.string().uuid(),
-          wardId: z.string().uuid().optional(),
-          role: z.string().max(50).optional(),
-          shiftDate: dateString,
-          shiftType: z.enum(['morning', 'afternoon', 'night', 'general']),
-          startTime: z.string().min(1),
-          endTime: z.string().min(1),
-        }),
+        z
+          .object({
+            staffId: z.string().uuid().optional(),
+            userId: z.string().uuid().optional(),
+            departmentId: z.string().uuid().optional(),
+            wardId: z.string().uuid().optional(),
+            role: z.string().max(50).optional(),
+            shiftDate: dateString,
+            shiftType: z.enum(['morning', 'afternoon', 'night', 'general']),
+            startTime: z.string().min(1),
+            endTime: z.string().min(1),
+          })
+          .refine((d) => Boolean(d.staffId || d.userId), {
+            message: 'Each entry needs either staffId or userId',
+            path: ['staffId'],
+          }),
       )
       .min(1)
       .max(500),
@@ -160,6 +172,10 @@ export const updateDutyRosterSchema = z.object({
 export const getDutyRostersSchema = z.object({
   query: paginationSchema.extend({
     staffId: z.string().uuid().optional(),
+    // userId is the User PK; the service resolves it to that user's
+    // StaffProfile so the nurse self-view can ask for "my shifts" without
+    // having to know its own staffId.
+    userId: z.string().uuid().optional(),
     departmentId: z.string().uuid().optional(),
     wardId: z.string().uuid().optional(),
     role: z.string().max(50).optional(),

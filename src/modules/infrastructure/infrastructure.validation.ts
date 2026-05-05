@@ -182,6 +182,11 @@ export const listBedsSchema = z.object({
     floorId: z.string().uuid().optional(),
     bedType: bedTypeEnum.optional(),
     status: bedStatusEnum.optional(),
+    // When set together with `status=available`, also include beds that are
+    // currently held (reserved/occupied) for THIS patient — used by the
+    // admission/transfer pickers so a patient's pre-reserved bed remains
+    // selectable.
+    forPatientId: z.string().uuid().optional(),
   }),
 });
 

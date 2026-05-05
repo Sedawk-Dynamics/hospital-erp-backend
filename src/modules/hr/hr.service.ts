@@ -365,24 +365,81 @@ export async function getExpiringLicenses(tenantId: string, query: GetExpiringLi
 // Duty Rosters
 // ============================================================
 
+async function resolveDefaultDepartmentId(tenantId: string): Promise<string> {
+  const departments = await prisma.department.findMany({
+    where: { tenantId, isActive: true },
+    orderBy: { createdAt: 'asc' },
+    select: { id: true, name: true },
+  });
+  if (departments.length === 0) {
+    throw AppError.badRequest(
+      'No departments configured for this tenant; create one before adding rosters',
+    );
+  }
+  const nursing = departments.find((d) => /nurs/i.test(d.name));
+  return (nursing ?? departments[0]!).id;
+}
+
+async function resolveStaffForRoster(
+  tenantId: string,
+  data: CreateDutyRosterInput,
+): Promise<{ staffId: string; departmentId: string }> {
+  if (data.staffId) {
+    const staff = await prisma.staffProfile.findFirst({
+      where: { id: data.staffId, tenantId },
+      select: { id: true, departmentId: true },
+    });
+    if (!staff) {
+      throw AppError.notFound('Staff profile not found');
+    }
+    return { staffId: staff.id, departmentId: data.departmentId ?? staff.departmentId };
+  }
+
+  if (!data.userId) {
+    throw AppError.badRequest('Either staffId or userId is required');
+  }
+
+  const user = await prisma.user.findFirst({
+    where: { id: data.userId, tenantId },
+    select: { id: true },
+  });
+  if (!user) {
+    throw AppError.notFound('User not found in this tenant');
+  }
+
+  const existing = await prisma.staffProfile.findFirst({
+    where: { userId: data.userId, tenantId },
+    select: { id: true, departmentId: true },
+  });
+  if (existing) {
+    return { staffId: existing.id, departmentId: data.departmentId ?? existing.departmentId };
+  }
+
+  const departmentId = data.departmentId ?? (await resolveDefaultDepartmentId(tenantId));
+  const created = await prisma.staffProfile.create({
+    data: { userId: data.userId, tenantId, departmentId },
+    select: { id: true, departmentId: true },
+  });
+  logger.info(
+    { tenantId, userId: data.userId, staffId: created.id },
+    'Auto-created staff profile for roster',
+  );
+  return { staffId: created.id, departmentId: created.departmentId };
+}
+
 export async function createDutyRoster(
   tenantId: string,
   data: CreateDutyRosterInput,
   createdBy?: string,
 ) {
-  const staff = await prisma.staffProfile.findFirst({
-    where: { id: data.staffId, tenantId },
-  });
-  if (!staff) {
-    throw AppError.notFound('Staff profile not found');
-  }
+  const { staffId, departmentId } = await resolveStaffForRoster(tenantId, data);
 
   // Reject duplicate same-staff / same-date / same-shift entries; allow different
   // shifts on the same day (morning + night is legitimate for split shifts).
   const overlap = await prisma.dutyRoster.findFirst({
     where: {
       tenantId,
-      staffId: data.staffId,
+      staffId,
       shiftDate: new Date(data.shiftDate),
       shiftType: data.shiftType as any,
       status: { not: 'cancelled' },
@@ -392,17 +449,23 @@ export async function createDutyRoster(
     throw AppError.conflict('Staff already has a roster entry for this date and shift');
   }
 
+  // Rosters are published on create — nurse_admin authoring is the approval.
+  // No separate approve/publish step.
+  const now = new Date();
   const roster = await prisma.dutyRoster.create({
     data: {
       tenantId,
-      staffId: data.staffId,
-      departmentId: data.departmentId,
+      staffId,
+      departmentId,
       wardId: data.wardId ?? null,
       role: data.role ?? null,
       shiftDate: new Date(data.shiftDate),
       shiftType: data.shiftType as any,
       startTime: new Date(`1970-01-01T${data.startTime}`),
       endTime: new Date(`1970-01-01T${data.endTime}`),
+      status: 'published',
+      approvedBy: createdBy ?? null,
+      approvedAt: now,
       createdBy: createdBy ?? null,
     },
     include: {
@@ -451,6 +514,20 @@ export async function getDutyRosters(tenantId: string, query: GetDutyRostersQuer
   const where: Prisma.DutyRosterWhereInput = { tenantId };
 
   if (query.staffId) where.staffId = query.staffId;
+  // Resolve userId → staffId so callers (e.g. the nurse self-view) can ask
+  // for "my shifts" without first having to fetch their staff profile. If
+  // the user has no profile, return an empty page rather than the whole
+  // tenant's roster.
+  if (query.userId) {
+    const staff = await prisma.staffProfile.findFirst({
+      where: { userId: query.userId, tenantId },
+      select: { id: true },
+    });
+    if (!staff) {
+      return { rosters: [], total: 0, page, limit };
+    }
+    where.staffId = staff.id;
+  }
   if (query.departmentId) where.departmentId = query.departmentId;
   if (query.wardId) where.wardId = query.wardId;
   if (query.role) where.role = query.role;
@@ -478,7 +555,9 @@ export async function getDutyRosters(tenantId: string, query: GetDutyRostersQuer
       orderBy,
       include: {
         staff: {
-          include: { user: { select: { firstName: true, lastName: true } } },
+          // user.id is needed so the nurse-admin handover screen can match
+          // a roster row against a candidate user without a second roundtrip.
+          include: { user: { select: { id: true, firstName: true, lastName: true } } },
         },
         department: { select: { id: true, name: true } },
         ward: { select: { id: true, name: true } },

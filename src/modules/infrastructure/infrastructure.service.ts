@@ -677,7 +677,19 @@ export async function getBeds(tenantId: string, query: ListBedsQuery) {
     where.ward = { isActive: true };
   }
   if (query.bedType) where.bedType = query.bedType;
-  if (query.status) where.status = query.status;
+  if (query.status) {
+    if (query.status === 'available' && query.forPatientId) {
+      // Broaden "available" to include beds reserved/occupied for this
+      // specific patient so admission/transfer flows can keep the patient on
+      // a bed that was pre-blocked for them.
+      where.OR = [
+        { status: 'available' },
+        { status: { in: ['reserved', 'occupied'] }, currentPatientId: query.forPatientId },
+      ];
+    } else {
+      where.status = query.status;
+    }
+  }
 
   const orderBy: any = query.sortBy
     ? { [query.sortBy]: query.sortOrder || 'desc' }

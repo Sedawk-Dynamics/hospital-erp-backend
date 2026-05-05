@@ -158,6 +158,14 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
     front_desk: [
       { module: 'patients', action: 'read' }, { module: 'patients', action: 'create' }, { module: 'patients', action: 'update' },
       { module: 'appointments', action: 'read' }, { module: 'appointments', action: 'create' }, { module: 'appointments', action: 'update' },
+      // Front desk owns the admission counter per the SOW: take the
+      // request, allocate ward/bed, generate the admission slip. They
+      // need read-through on infrastructure and write on visits/admissions.
+      { module: 'visits', action: 'read' }, { module: 'visits', action: 'create' }, { module: 'visits', action: 'update' },
+      { module: 'admissions', action: 'read' }, { module: 'admissions', action: 'create' }, { module: 'admissions', action: 'update' },
+      { module: 'floors', action: 'read' },
+      { module: 'wards', action: 'read' },
+      { module: 'beds', action: 'read' },
       { module: 'billing', action: 'read' }, { module: 'billing', action: 'create' },
       { module: 'payments', action: 'read' }, { module: 'payments', action: 'create' },
       { module: 'departments', action: 'read' },

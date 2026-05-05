@@ -338,46 +338,95 @@ export async function createAdmission(tenantId: string, userId: string, data: Cr
     throw AppError.notFound('Bed not found in the specified ward');
   }
 
-  const admission = await prisma.admission.create({
-    data: {
-      tenantId,
-      visitId: data.visitId,
-      patientId: data.patientId,
-      doctorId: data.doctorId,
-      wardId: data.wardId,
-      bedId: data.bedId,
-      admissionDate: new Date(data.admissionDate),
-      expectedDischargeDate: data.expectedDischargeDate
-        ? new Date(data.expectedDischargeDate)
-        : undefined,
-      admissionReason: data.admissionReason,
-      depositAmount: data.depositAmount ?? 0,
-      status: 'admitted',
-      admittedBy: userId,
-    },
-    include: {
-      patient: {
-        select: { id: true, mrn: true, firstName: true, lastName: true },
-      },
-      doctor: {
-        include: {
-          user: { select: { firstName: true, lastName: true } },
-        },
-      },
-      ward: { select: { id: true, name: true } },
-      bed: { select: { id: true, bedNumber: true } },
-    },
-  });
-
-  // Update visit type to IP if not already
-  if (visit.visitType !== 'ip') {
-    await prisma.visit.update({
-      where: { id: data.visitId },
-      data: { visitType: 'ip' },
-    });
+  // The bed must be free, or reserved/occupied for THIS patient already
+  // (e.g. a reservation getting converted into an admission).
+  const bedHeldByThisPatient =
+    bed.currentPatientId === data.patientId &&
+    (bed.status === 'reserved' || bed.status === 'occupied');
+  if (bed.status !== 'available' && !bedHeldByThisPatient) {
+    throw AppError.conflict(`Bed ${bed.bedNumber} is not available (status: ${bed.status})`);
   }
 
-  logger.info({ tenantId, admissionId: admission.id }, 'Admission created');
+  const admission = await prisma.$transaction(async (tx) => {
+    const created = await tx.admission.create({
+      data: {
+        tenantId,
+        visitId: data.visitId,
+        patientId: data.patientId,
+        doctorId: data.doctorId,
+        wardId: data.wardId,
+        bedId: data.bedId,
+        admissionDate: new Date(data.admissionDate),
+        expectedDischargeDate: data.expectedDischargeDate
+          ? new Date(data.expectedDischargeDate)
+          : undefined,
+        admissionReason: data.admissionReason,
+        depositAmount: data.depositAmount ?? 0,
+        status: 'admitted',
+        admittedBy: userId,
+      },
+      include: {
+        patient: {
+          select: { id: true, mrn: true, firstName: true, lastName: true },
+        },
+        doctor: {
+          include: {
+            user: { select: { firstName: true, lastName: true } },
+          },
+        },
+        ward: { select: { id: true, name: true } },
+        bed: { select: { id: true, bedNumber: true } },
+      },
+    });
+
+    // Occupy the bed atomically.
+    await tx.bed.update({
+      where: { id: data.bedId },
+      data: { status: 'occupied', currentPatientId: data.patientId },
+    });
+
+    // If the patient had active reservations, close them out and free any
+    // reserved-but-different bed so it doesn't leak in the 'reserved' state.
+    const activeReservations = await tx.reservation.findMany({
+      where: {
+        tenantId,
+        patientId: data.patientId,
+        status: { in: ['reserved', 'confirmed'] },
+      },
+      select: { id: true, bedId: true },
+    });
+    if (activeReservations.length > 0) {
+      await tx.reservation.updateMany({
+        where: { id: { in: activeReservations.map((r) => r.id) } },
+        data: { status: 'admitted' },
+      });
+      const staleBedIds = activeReservations
+        .map((r) => r.bedId)
+        .filter((id): id is string => Boolean(id) && id !== data.bedId);
+      if (staleBedIds.length > 0) {
+        await tx.bed.updateMany({
+          where: {
+            id: { in: staleBedIds },
+            status: 'reserved',
+            currentPatientId: data.patientId,
+          },
+          data: { status: 'available', currentPatientId: null },
+        });
+      }
+    }
+
+    // Update visit type to IP if not already.
+    if (visit.visitType !== 'ip') {
+      await tx.visit.update({
+        where: { id: data.visitId },
+        data: { visitType: 'ip' },
+      });
+    }
+
+    return created;
+  });
+
+  logger.info({ tenantId, admissionId: admission.id, bedId: data.bedId }, 'Admission created');
   return admission;
 }
 
@@ -581,6 +630,15 @@ export async function dischargePatient(
         bed: { select: { id: true, bedNumber: true } },
       },
     });
+
+    // Free the bed only if it is still tied to this patient (defensive
+    // against a concurrent transfer that already moved them off it).
+    if (admission.bedId) {
+      await tx.bed.updateMany({
+        where: { id: admission.bedId, currentPatientId: admission.patientId },
+        data: { status: 'available', currentPatientId: null },
+      });
+    }
 
     // Update the visit status to discharged
     await tx.visit.update({
@@ -1608,30 +1666,60 @@ export async function getOtRequestById(tenantId: string, id: string) {
 // ==================== Reservations ====================
 
 export async function createReservation(tenantId: string, userId: string, data: CreateReservationInput) {
-  const reservation = await prisma.reservation.create({
-    data: {
-      tenantId,
-      patientId: data.patientId,
-      doctorId: data.doctorId,
-      wardId: data.wardId,
-      bedId: data.bedId,
-      reservedDate: new Date(data.reservedDate),
-      expectedAdmission: data.expectedAdmission ? new Date(data.expectedAdmission) : undefined,
-      diagnosis: data.diagnosis,
-      speciality: data.speciality,
-      advanceAmount: data.advanceAmount ?? 0,
-      notes: data.notes,
-      createdBy: userId,
-    },
-    include: {
-      patient: { select: { id: true, mrn: true, firstName: true, lastName: true, phone: true } },
-      doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
-      ward: { select: { id: true, name: true } },
-      bed: { select: { id: true, bedNumber: true } },
-    },
+  // Validate ward + (optional) bed before any writes.
+  const ward = await prisma.ward.findFirst({ where: { id: data.wardId, tenantId } });
+  if (!ward) throw AppError.notFound('Ward not found');
+
+  if (data.bedId) {
+    const bed = await prisma.bed.findFirst({
+      where: { id: data.bedId, wardId: data.wardId, tenantId },
+    });
+    if (!bed) throw AppError.notFound('Bed not found in the specified ward');
+    if (bed.status !== 'available') {
+      throw AppError.conflict(`Bed ${bed.bedNumber} is not available (status: ${bed.status})`);
+    }
+  }
+
+  const reservation = await prisma.$transaction(async (tx) => {
+    const created = await tx.reservation.create({
+      data: {
+        tenantId,
+        patientId: data.patientId,
+        doctorId: data.doctorId,
+        wardId: data.wardId,
+        bedId: data.bedId,
+        reservedDate: new Date(data.reservedDate),
+        expectedAdmission: data.expectedAdmission ? new Date(data.expectedAdmission) : undefined,
+        diagnosis: data.diagnosis,
+        speciality: data.speciality,
+        advanceAmount: data.advanceAmount ?? 0,
+        notes: data.notes,
+        createdBy: userId,
+      },
+      include: {
+        patient: { select: { id: true, mrn: true, firstName: true, lastName: true, phone: true } },
+        doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
+        ward: { select: { id: true, name: true } },
+        bed: { select: { id: true, bedNumber: true } },
+      },
+    });
+
+    if (data.bedId) {
+      // Block the bed only if still available — guard against the race where
+      // another writer occupied it between the check above and this update.
+      const blocked = await tx.bed.updateMany({
+        where: { id: data.bedId, status: 'available' },
+        data: { status: 'reserved', currentPatientId: data.patientId },
+      });
+      if (blocked.count === 0) {
+        throw AppError.conflict('Bed was taken before the reservation could block it');
+      }
+    }
+
+    return created;
   });
 
-  logger.info({ tenantId, reservationId: reservation.id }, 'Reservation created');
+  logger.info({ tenantId, reservationId: reservation.id, bedId: data.bedId }, 'Reservation created');
   return reservation;
 }
 
@@ -1700,26 +1788,73 @@ export async function updateReservation(tenantId: string, id: string, data: Upda
   const existing = await prisma.reservation.findFirst({ where: { id, tenantId } });
   if (!existing) throw AppError.notFound('Reservation not found');
 
-  const reservation = await prisma.reservation.update({
-    where: { id },
-    data: {
-      ...(data.wardId && { wardId: data.wardId }),
-      ...(data.bedId !== undefined && { bedId: data.bedId }),
-      ...(data.expectedAdmission && { expectedAdmission: new Date(data.expectedAdmission) }),
-      ...(data.diagnosis !== undefined && { diagnosis: data.diagnosis }),
-      ...(data.advanceAmount !== undefined && { advanceAmount: data.advanceAmount }),
-      ...(data.notes !== undefined && { notes: data.notes }),
-      ...(data.status && { status: data.status as any }),
-    },
-    include: {
-      patient: { select: { id: true, mrn: true, firstName: true, lastName: true, phone: true } },
-      doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
-      ward: { select: { id: true, name: true } },
-      bed: { select: { id: true, bedNumber: true } },
-    },
+  const newWardId = data.wardId ?? existing.wardId;
+  const newBedId = data.bedId !== undefined ? data.bedId : existing.bedId;
+  const newStatus = (data.status ?? existing.status) as typeof existing.status;
+  const bedChanging = newBedId !== existing.bedId;
+  const releaseStatuses: (typeof existing.status)[] = ['cancelled', 'completed', 'admitted'];
+  const willRelease = releaseStatuses.includes(newStatus);
+
+  // Validate the incoming bed if the caller is moving to a new bed.
+  if (bedChanging && newBedId) {
+    const bed = await prisma.bed.findFirst({
+      where: { id: newBedId, wardId: newWardId, tenantId },
+    });
+    if (!bed) throw AppError.notFound('Bed not found in the specified ward');
+    if (bed.status !== 'available') {
+      throw AppError.conflict(`Bed ${bed.bedNumber} is not available (status: ${bed.status})`);
+    }
+  }
+
+  const reservation = await prisma.$transaction(async (tx) => {
+    const updated = await tx.reservation.update({
+      where: { id },
+      data: {
+        ...(data.wardId && { wardId: data.wardId }),
+        ...(data.bedId !== undefined && { bedId: data.bedId }),
+        ...(data.expectedAdmission && { expectedAdmission: new Date(data.expectedAdmission) }),
+        ...(data.diagnosis !== undefined && { diagnosis: data.diagnosis }),
+        ...(data.advanceAmount !== undefined && { advanceAmount: data.advanceAmount }),
+        ...(data.notes !== undefined && { notes: data.notes }),
+        ...(data.status && { status: data.status as any }),
+      },
+      include: {
+        patient: { select: { id: true, mrn: true, firstName: true, lastName: true, phone: true } },
+        doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
+        ward: { select: { id: true, name: true } },
+        bed: { select: { id: true, bedNumber: true } },
+      },
+    });
+
+    // Free the old bed if we're either swapping or terminating the
+    // reservation. Only release it if it is still reserved for THIS patient
+    // (don't undo a parallel admission that already flipped it to occupied).
+    if (existing.bedId && (bedChanging || willRelease)) {
+      await tx.bed.updateMany({
+        where: {
+          id: existing.bedId,
+          status: 'reserved',
+          currentPatientId: existing.patientId,
+        },
+        data: { status: 'available', currentPatientId: null },
+      });
+    }
+
+    // Block the new bed unless the reservation is being terminated.
+    if (bedChanging && newBedId && !willRelease) {
+      const blocked = await tx.bed.updateMany({
+        where: { id: newBedId, status: 'available' },
+        data: { status: 'reserved', currentPatientId: existing.patientId },
+      });
+      if (blocked.count === 0) {
+        throw AppError.conflict('Bed was taken before the reservation could block it');
+      }
+    }
+
+    return updated;
   });
 
-  logger.info({ tenantId, reservationId: id }, 'Reservation updated');
+  logger.info({ tenantId, reservationId: id, status: newStatus }, 'Reservation updated');
   return reservation;
 }
 
