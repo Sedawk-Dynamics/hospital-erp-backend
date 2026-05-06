@@ -319,6 +319,19 @@ enum NursingNoteType {
   general       @map("general")
 }
 
+// Categories for the dynamic form system. Used to group templates +
+// hospital forms in the builder UI and on the nurse-side catalogue.
+enum FormCategory {
+  assessment @map("assessment")
+  screening  @map("screening")
+  intake     @map("intake")
+  vitals     @map("vitals")
+  daily_note @map("daily_note")
+  procedure  @map("procedure")
+  discharge  @map("discharge")
+  other      @map("other")
+}
+
 enum IVLineType {
   peripheral         @map("peripheral")
   central_picc       @map("central_picc")
@@ -1214,6 +1227,8 @@ model Tenant {
   emarSettings               EmarSettings?
   emarSchedules              EmarSchedule[]
   emarAuditLogs              EmarAuditLog[]
+  hospitalForms              HospitalForm[]
+  formSubmissions            HospitalFormSubmission[]
 
   @@map("tenants")
 }
@@ -1440,6 +1455,10 @@ model User {
   emarSchedulesGiven             EmarSchedule[]               @relation("EmarGivenBy")
   emarSchedulesAmended           EmarSchedule[]               @relation("EmarAmendedBy")
   emarAuditLogs                  EmarAuditLog[]
+  formTemplatesCreated           FormTemplate[]               @relation("FormTemplateCreator")
+  hospitalFormsCreated           HospitalForm[]               @relation("HospitalFormCreator")
+  hospitalFormsArchived          HospitalForm[]               @relation("HospitalFormArchiver")
+  formSubmissions                HospitalFormSubmission[]     @relation("FormSubmitter")
 
   @@unique([tenantId, email])
   @@map("users")
@@ -1802,6 +1821,7 @@ model Patient {
   reservations              Reservation[]
   estimations               Estimation[]
   emarSchedules             EmarSchedule[]
+  formSubmissions           HospitalFormSubmission[]
 
   @@unique([tenantId, mrn])
   @@map("patients")
@@ -2112,8 +2132,9 @@ model Appointment {
   doctor      DoctorProfile @relation(fields: [doctorId], references: [id])
   booker      User?         @relation("AppointmentBooker", fields: [bookedBy], references: [id])
   canceller   User?         @relation("AppointmentCanceller", fields: [cancelledBy], references: [id])
-  queueTokens QueueToken[]
-  visits      Visit[]
+  queueTokens     QueueToken[]
+  visits          Visit[]
+  formSubmissions HospitalFormSubmission[]
 
   @@map("appointments")
 }
@@ -2184,6 +2205,7 @@ model Visit {
   bills                Bill[]
   transfusions         Transfusion[]
   otRequests           OtRequest[]
+  formSubmissions      HospitalFormSubmission[]
 
   @@map("visits")
 }
@@ -2228,6 +2250,7 @@ model Admission {
   clinicalProcedures   ClinicalProcedure[]
   bills                Bill[]
   emarSchedules        EmarSchedule[]
+  formSubmissions      HospitalFormSubmission[]
 
   @@map("admissions")
 }
@@ -4676,4 +4699,97 @@ model HospitalCommission {
   updater User?  @relation("HospitalCommissionUpdater", fields: [updatedBy], references: [id])
 
   @@map("hospital_commissions")
+}
+
+// ============================================================
+// 21. DYNAMIC FORM BUILDER
+// ============================================================
+// Three-tier system replacing the 6 hardcoded nursing patient forms:
+//   FormTemplate           — built by super_admin, visible to every hospital
+//   HospitalForm           — built by hospital admin or cloned from a template,
+//                            tenant-scoped; soft-deleted via archivedAt
+//   HospitalFormSubmission — filled by a nurse against a patient/visit; data
+//                            persists even after the parent HospitalForm is
+//                            archived (required by spec)
+//
+// `schema` (Json) shape: { fields: FormField[], version: 1 }
+// `data`   (Json) shape: { [fieldKey: string]: string | number | boolean | string[] | null }
+// `formSnapshot` on a submission is a deep copy of the form's schema at the
+// moment the nurse submitted, so an old submission renders correctly even
+// after the form is later edited or archived.
+
+model FormTemplate {
+  id          String       @id @default(uuid())
+  name        String       @db.VarChar(150)
+  description String?
+  category    FormCategory @default(other)
+  schema      Json
+  isPublished Boolean      @default(false) @map("is_published")
+  version     Int          @default(1)
+  createdById String       @map("created_by_id")
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+
+  createdBy     User           @relation("FormTemplateCreator", fields: [createdById], references: [id])
+  hospitalForms HospitalForm[]
+
+  @@index([category, isPublished])
+  @@map("form_templates")
+}
+
+model HospitalForm {
+  id            String       @id @default(uuid())
+  tenantId      String       @map("tenant_id")
+  name          String       @db.VarChar(150)
+  description   String?
+  category      FormCategory @default(other)
+  schema        Json
+  isPublished   Boolean      @default(true) @map("is_published")
+  version       Int          @default(1)
+  templateId    String?      @map("template_id")
+  createdById   String       @map("created_by_id")
+  archivedAt    DateTime?    @map("archived_at")
+  archiveReason String?      @map("archive_reason") @db.VarChar(255)
+  archivedById  String?      @map("archived_by_id")
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @updatedAt @map("updated_at")
+
+  tenant      Tenant                   @relation(fields: [tenantId], references: [id])
+  template    FormTemplate?            @relation(fields: [templateId], references: [id])
+  createdBy   User                     @relation("HospitalFormCreator", fields: [createdById], references: [id])
+  archivedBy  User?                    @relation("HospitalFormArchiver", fields: [archivedById], references: [id])
+  submissions HospitalFormSubmission[]
+
+  @@index([tenantId, archivedAt])
+  @@index([tenantId, category])
+  @@map("hospital_forms")
+}
+
+model HospitalFormSubmission {
+  id            String   @id @default(uuid())
+  tenantId      String   @map("tenant_id")
+  formId        String   @map("form_id")
+  formVersion   Int      @map("form_version")
+  formSnapshot  Json     @map("form_snapshot")
+  patientId     String   @map("patient_id")
+  visitId       String?  @map("visit_id")
+  admissionId   String?  @map("admission_id")
+  appointmentId String?  @map("appointment_id")
+  submittedById String   @map("submitted_by_id")
+  data          Json
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  tenant      Tenant       @relation(fields: [tenantId], references: [id])
+  form        HospitalForm @relation(fields: [formId], references: [id])
+  patient     Patient      @relation(fields: [patientId], references: [id])
+  visit       Visit?       @relation(fields: [visitId], references: [id])
+  admission   Admission?   @relation(fields: [admissionId], references: [id])
+  appointment Appointment? @relation(fields: [appointmentId], references: [id])
+  submittedBy User         @relation("FormSubmitter", fields: [submittedById], references: [id])
+
+  @@index([patientId, createdAt])
+  @@index([formId, createdAt])
+  @@index([tenantId, patientId])
+  @@map("hospital_form_submissions")
 }

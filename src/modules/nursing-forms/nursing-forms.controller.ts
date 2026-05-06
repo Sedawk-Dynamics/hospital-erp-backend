@@ -3,111 +3,14 @@ import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse, sendPaginatedResponse } from '../../shared/apiResponse';
 import * as service from './nursing-forms.service';
 
-// Tiny helpers — every route follows the same pattern: pull tenantId/
+// Tiny helper — every route follows the same pattern: pull tenantId/
 // userId/roles off the auth payload, hand off to the service.
-
 function ctx(req: AuthenticatedRequest) {
   return {
     tenantId: req.user!.tenantId,
     userId: req.user!.userId,
     roles: req.user!.roles ?? [],
   };
-}
-
-// ── Admission Assessment ─────────────────────────────────
-
-export async function createAdmissionAssessment(
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction,
-) {
-  try {
-    const { tenantId, userId, roles } = ctx(req);
-    const data = await service.createAdmissionAssessment(tenantId, userId, roles, req.body);
-    sendResponse({ res, statusCode: 201, message: 'Admission assessment recorded', data });
-  } catch (err) {
-    next(err);
-  }
-}
-
-export async function listAdmissionAssessments(
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction,
-) {
-  try {
-    const { tenantId } = ctx(req);
-    const { items, total, page, limit } = await service.listAdmissionAssessments(
-      tenantId,
-      req.query as any,
-    );
-    sendPaginatedResponse(res, items, total, page, limit, 'Admission assessments retrieved');
-  } catch (err) {
-    next(err);
-  }
-}
-
-// ── Pain Assessment ──────────────────────────────────────
-
-export async function createPainAssessment(
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction,
-) {
-  try {
-    const { tenantId, userId, roles } = ctx(req);
-    const data = await service.createPainAssessment(tenantId, userId, roles, req.body);
-    sendResponse({ res, statusCode: 201, message: 'Pain assessment recorded', data });
-  } catch (err) {
-    next(err);
-  }
-}
-
-export async function listPainAssessments(
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction,
-) {
-  try {
-    const { tenantId } = ctx(req);
-    const { items, total, page, limit } = await service.listPainAssessments(
-      tenantId,
-      req.query as any,
-    );
-    sendPaginatedResponse(res, items, total, page, limit, 'Pain assessments retrieved');
-  } catch (err) {
-    next(err);
-  }
-}
-
-// ── Fall Risk ────────────────────────────────────────────
-
-export async function createFallRisk(
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction,
-) {
-  try {
-    const { tenantId, userId, roles } = ctx(req);
-    const data = await service.createFallRisk(tenantId, userId, roles, req.body);
-    sendResponse({ res, statusCode: 201, message: 'Fall risk assessment recorded', data });
-  } catch (err) {
-    next(err);
-  }
-}
-
-export async function listFallRisks(
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction,
-) {
-  try {
-    const { tenantId } = ctx(req);
-    const { items, total, page, limit } = await service.listFallRisks(tenantId, req.query as any);
-    sendPaginatedResponse(res, items, total, page, limit, 'Fall risk assessments retrieved');
-  } catch (err) {
-    next(err);
-  }
 }
 
 // ── Intake / Output ──────────────────────────────────────
@@ -135,94 +38,13 @@ export async function listIntakeOutput(
     const { tenantId } = ctx(req);
     const { items, total, page, limit } = await service.listIntakeOutput(
       tenantId,
-      req.query as any,
+      req.query as never,
     );
     sendPaginatedResponse(res, items, total, page, limit, 'Intake/output records retrieved');
   } catch (err) {
     next(err);
   }
 }
-
-// ── Wound Care ───────────────────────────────────────────
-
-export async function createWoundCare(
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction,
-) {
-  try {
-    const { tenantId, userId, roles } = ctx(req);
-    const data = await service.createWoundCare(tenantId, userId, roles, req.body);
-    sendResponse({ res, statusCode: 201, message: 'Wound care recorded', data });
-  } catch (err) {
-    next(err);
-  }
-}
-
-export async function listWoundCare(
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction,
-) {
-  try {
-    const { tenantId } = ctx(req);
-    const { items, total, page, limit } = await service.listWoundCare(tenantId, req.query as any);
-    sendPaginatedResponse(res, items, total, page, limit, 'Wound care records retrieved');
-  } catch (err) {
-    next(err);
-  }
-}
-
-// ── Nursing Daily Note ───────────────────────────────────
-
-export async function createNursingNote(
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction,
-) {
-  try {
-    const { tenantId, userId, roles } = ctx(req);
-    const data = await service.createNursingNote(tenantId, userId, roles, req.body);
-    sendResponse({ res, statusCode: 201, message: 'Nursing note recorded', data });
-  } catch (err) {
-    next(err);
-  }
-}
-
-export async function listNursingNotes(
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction,
-) {
-  try {
-    const { tenantId } = ctx(req);
-    const { items, total, page, limit } = await service.listNursingNotes(
-      tenantId,
-      req.query as any,
-    );
-    sendPaginatedResponse(res, items, total, page, limit, 'Nursing notes retrieved');
-  } catch (err) {
-    next(err);
-  }
-}
-
-// ── Aggregate summary (one call powers the doctor read-only panel) ──
-
-export async function getPatientSummary(
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction,
-) {
-  try {
-    const { tenantId } = ctx(req);
-    const data = await service.getPatientFormsSummary(tenantId, req.params.patientId as string);
-    sendResponse({ res, message: 'Patient nursing-forms summary retrieved', data });
-  } catch (err) {
-    next(err);
-  }
-}
-
-// ── Intake/Output totals ─────────────────────────────────
 
 export async function getIntakeOutputTotals(
   req: AuthenticatedRequest,
@@ -231,7 +53,7 @@ export async function getIntakeOutputTotals(
 ) {
   try {
     const { tenantId } = ctx(req);
-    const data = await service.getIntakeOutputTotals(tenantId, req.query as any);
+    const data = await service.getIntakeOutputTotals(tenantId, req.query as never);
     sendResponse({ res, message: 'Intake/output totals retrieved', data });
   } catch (err) {
     next(err);
@@ -253,7 +75,7 @@ export async function createObservation(req: AuthenticatedRequest, res: Response
 export async function listObservations(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const { tenantId } = ctx(req);
-    const { items, total, page, limit } = await service.listObservations(tenantId, req.query as any);
+    const { items, total, page, limit } = await service.listObservations(tenantId, req.query as never);
     sendPaginatedResponse(res, items, total, page, limit, 'Observations retrieved');
   } catch (err) {
     next(err);
@@ -275,7 +97,7 @@ export async function createDevice(req: AuthenticatedRequest, res: Response, nex
 export async function listDevices(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const { tenantId } = ctx(req);
-    const { items, total, page, limit } = await service.listDevices(tenantId, req.query as any);
+    const { items, total, page, limit } = await service.listDevices(tenantId, req.query as never);
     sendPaginatedResponse(res, items, total, page, limit, 'Devices retrieved');
   } catch (err) {
     next(err);
@@ -328,7 +150,7 @@ export async function listDeviceChecks(req: AuthenticatedRequest, res: Response,
     const { items, total, page, limit } = await service.listDeviceChecks(
       tenantId,
       req.params.id as string,
-      req.query as any,
+      req.query as never,
     );
     sendPaginatedResponse(res, items, total, page, limit, 'Device checks retrieved');
   } catch (err) {
@@ -351,7 +173,7 @@ export async function createProcedure(req: AuthenticatedRequest, res: Response, 
 export async function listProcedures(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const { tenantId } = ctx(req);
-    const { items, total, page, limit } = await service.listProcedures(tenantId, req.query as any);
+    const { items, total, page, limit } = await service.listProcedures(tenantId, req.query as never);
     sendPaginatedResponse(res, items, total, page, limit, 'Procedures retrieved');
   } catch (err) {
     next(err);
