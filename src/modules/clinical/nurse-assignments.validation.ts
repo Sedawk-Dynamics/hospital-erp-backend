@@ -68,6 +68,17 @@ export const handoverNurseAssignmentSchema = z.object({
   }),
 });
 
+export const handoverFeedQuerySchema = z.object({
+  query: z.object({
+    shiftDate: z.string().optional(),
+    shiftType: shiftType.optional(),
+    lookbackHours: z.coerce.number().int().min(1).max(168).optional(),
+    // Admin can pass a userId to inspect another nurse's feed; falls back to
+    // the authenticated user when omitted.
+    userId: z.string().uuid().optional(),
+  }),
+});
+
 export const bulkHandoverSchema = z.object({
   body: z.object({
     wardId: z.string().uuid('Invalid ward ID'),
@@ -94,3 +105,4 @@ export type UpdateNurseAssignmentInput = z.infer<typeof updateNurseAssignmentSch
 export type EndNurseAssignmentInput = z.infer<typeof endNurseAssignmentSchema>['body'];
 export type HandoverNurseAssignmentInput = z.infer<typeof handoverNurseAssignmentSchema>['body'];
 export type BulkHandoverInput = z.infer<typeof bulkHandoverSchema>['body'];
+export type HandoverFeedQuery = z.infer<typeof handoverFeedQuerySchema>['query'];

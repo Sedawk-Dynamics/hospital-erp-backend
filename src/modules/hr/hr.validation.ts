@@ -190,6 +190,24 @@ export const dutyRosterIdParamSchema = z.object({
   params: z.object({ id: uuidParam }),
 });
 
+export const getActiveRosterSchema = z.object({
+  query: z.object({
+    at: z.string().optional(),
+    wardId: z.string().uuid().optional(),
+    role: z.string().max(50).optional(),
+    userId: z.string().uuid().optional(),
+  }),
+});
+
+export const getRosterCoverageSchema = z.object({
+  query: z.object({
+    fromDate: dateString,
+    toDate: dateString,
+    wardId: z.string().uuid().optional(),
+    role: z.string().max(50).optional(),
+  }),
+});
+
 // ============================================================
 // Attendance
 // ============================================================
@@ -305,6 +323,8 @@ export type CreateDutyRosterInput = z.infer<typeof createDutyRosterSchema>['body
 export type CreateDutyRosterBulkInput = z.infer<typeof createDutyRosterBulkSchema>['body'];
 export type UpdateDutyRosterInput = z.infer<typeof updateDutyRosterSchema>['body'];
 export type GetDutyRostersQuery = z.infer<typeof getDutyRostersSchema>['query'];
+export type GetActiveRosterQuery = z.infer<typeof getActiveRosterSchema>['query'];
+export type GetRosterCoverageQuery = z.infer<typeof getRosterCoverageSchema>['query'];
 
 export type RecordAttendanceInput = z.infer<typeof recordAttendanceSchema>['body'];
 export type GetAttendanceQuery = z.infer<typeof getAttendanceSchema>['query'];

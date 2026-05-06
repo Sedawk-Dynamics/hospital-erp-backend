@@ -51,6 +51,7 @@ import {
   endNurseAssignmentSchema,
   handoverNurseAssignmentSchema,
   bulkHandoverSchema,
+  handoverFeedQuerySchema,
 } from './nurse-assignments.validation';
 import {
   createNurseDoctorAssignmentSchema,
@@ -139,6 +140,9 @@ clinicalRoutes.post('/nurse-doctor-assignments/:id/end', authenticate, requirePe
 clinicalRoutes.get('/nurse-assignments', authenticate, requirePermission('nurse_assignments', 'read'), validate(getNurseAssignmentsQuerySchema), nurseAssignmentsController.listNurseAssignments);
 clinicalRoutes.post('/nurse-assignments', authenticate, requirePermission('nurse_assignments', 'create'), validate(createNurseAssignmentSchema), nurseAssignmentsController.createNurseAssignment);
 clinicalRoutes.post('/nurse-assignments/bulk-handover', authenticate, requirePermission('nurse_assignments', 'update'), validate(bulkHandoverSchema), nurseAssignmentsController.bulkHandoverAssignments);
+// Per-nurse "what nurse_admin set up for me" feed (incoming + outgoing handovers).
+// Defaults to the logged-in user; nurse_admin can pass userId to inspect any nurse.
+clinicalRoutes.get('/nurse-assignments/handover-feed', authenticate, requirePermission('nurse_assignments', 'read'), validate(handoverFeedQuerySchema), nurseAssignmentsController.getHandoverFeed);
 clinicalRoutes.get('/nurse-assignments/:id', authenticate, requirePermission('nurse_assignments', 'read'), validate(nurseAssignmentIdParamSchema), nurseAssignmentsController.getNurseAssignmentById);
 clinicalRoutes.patch('/nurse-assignments/:id', authenticate, requirePermission('nurse_assignments', 'update'), validate(updateNurseAssignmentSchema), nurseAssignmentsController.updateNurseAssignment);
 clinicalRoutes.post('/nurse-assignments/:id/end', authenticate, requirePermission('nurse_assignments', 'update'), validate(endNurseAssignmentSchema), nurseAssignmentsController.endNurseAssignment);

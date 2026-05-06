@@ -109,6 +109,23 @@ export async function handoverNurseAssignment(
   }
 }
 
+export async function getHandoverFeed(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const query = req.query as any;
+    // Default to the authenticated user; admin tooling can pass a userId.
+    const target = query.userId ?? req.user!.userId;
+    const data = await service.getHandoverFeedForNurse(tenantId, target, query);
+    sendResponse({ res, message: 'Handover feed retrieved', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function bulkHandoverAssignments(
   req: AuthenticatedRequest,
   res: Response,

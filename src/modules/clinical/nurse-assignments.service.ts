@@ -319,3 +319,130 @@ export async function getActiveAssignmentForAdmission(tenantId: string, admissio
     include: assignmentInclude,
   });
 }
+
+/**
+ * Per-nurse "what nurse_admin set up for me" feed.
+ *
+ * `incoming`: every active assignment that was created from a handover
+ *  pointing at this nurse. Each row carries the prior nurse so the bedside
+ *  view can say "you're taking over from Nurse X".
+ *
+ * `outgoing`: every handed_over assignment where this nurse was the source.
+ *  Carries the recipient so the outgoing nurse can see "you handed over to
+ *  Nurse Y at HH:mm".
+ *
+ * No schema additions — lineage is reconstructed by matching admissionId +
+ * handoverNoteId between the source and successor rows. The handover note
+ * narrative is included so the nurse sees the ward-level context inline.
+ */
+export async function getHandoverFeedForNurse(
+  tenantId: string,
+  nurseUserId: string,
+  query: { shiftDate?: string; shiftType?: string; lookbackHours?: number },
+) {
+  const lookbackHours = query.lookbackHours ?? 24;
+  const since = new Date(Date.now() - lookbackHours * 60 * 60 * 1000);
+
+  // Outgoing: rows where I was the source nurse and admin marked them handed_over.
+  const outgoingRows = await prisma.nurseAssignment.findMany({
+    where: {
+      tenantId,
+      nurseId: nurseUserId,
+      status: 'handed_over',
+      handedOverAt: { gte: since },
+      ...(query.shiftDate ? { shiftDate: new Date(query.shiftDate) } : {}),
+      ...(query.shiftType ? { shiftType: query.shiftType as any } : {}),
+    },
+    orderBy: { handedOverAt: 'desc' },
+    include: {
+      ...assignmentInclude,
+      handoverNote: {
+        select: { id: true, content: true, shiftDate: true, shiftType: true },
+      },
+    },
+  });
+
+  // Incoming: rows where I was the handover *recipient*. Source row's
+  // handedOverToId == me; the successor active row is created in the same
+  // transaction with the same admission + handoverNoteId.
+  const incomingSourceRows = await prisma.nurseAssignment.findMany({
+    where: {
+      tenantId,
+      handedOverToId: nurseUserId,
+      status: 'handed_over',
+      handedOverAt: { gte: since },
+    },
+    orderBy: { handedOverAt: 'desc' },
+    include: {
+      ...assignmentInclude,
+      handoverNote: {
+        select: { id: true, content: true, shiftDate: true, shiftType: true },
+      },
+    },
+  });
+
+  // For each incoming source row, locate the matching active successor that
+  // was created for this nurse. A nurse can technically have two handovers
+  // for the same admission (rare) so we pick the latest active row by
+  // assignedAt; that's the one bedside care should follow.
+  const successors = await prisma.nurseAssignment.findMany({
+    where: {
+      tenantId,
+      nurseId: nurseUserId,
+      status: 'active',
+      admissionId: { in: incomingSourceRows.map((r) => r.admissionId) },
+    },
+    orderBy: { assignedAt: 'desc' },
+    include: assignmentInclude,
+  });
+  const successorByAdmission = new Map<string, (typeof successors)[number]>();
+  for (const s of successors) {
+    if (!successorByAdmission.has(s.admissionId)) {
+      successorByAdmission.set(s.admissionId, s);
+    }
+  }
+
+  const incoming = incomingSourceRows.map((src) => {
+    const successor = successorByAdmission.get(src.admissionId) ?? null;
+    return {
+      sourceAssignmentId: src.id,
+      handedOverAt: src.handedOverAt,
+      fromShiftDate: src.shiftDate,
+      fromShiftType: src.shiftType,
+      fromNurse: src.nurse,
+      ward: src.ward,
+      bed: src.bed,
+      admission: src.admission,
+      note: src.handoverNote ?? null,
+      successor: successor
+        ? {
+            id: successor.id,
+            shiftDate: successor.shiftDate,
+            shiftType: successor.shiftType,
+            assignedAt: successor.assignedAt,
+            ward: successor.ward,
+            bed: successor.bed,
+          }
+        : null,
+    };
+  });
+
+  const outgoing = outgoingRows.map((row) => ({
+    sourceAssignmentId: row.id,
+    handedOverAt: row.handedOverAt,
+    shiftDate: row.shiftDate,
+    shiftType: row.shiftType,
+    toNurse: row.handedOverTo,
+    ward: row.ward,
+    bed: row.bed,
+    admission: row.admission,
+    note: row.handoverNote ?? null,
+  }));
+
+  return {
+    nurseId: nurseUserId,
+    incoming,
+    outgoing,
+    counts: { incoming: incoming.length, outgoing: outgoing.length },
+  };
+}

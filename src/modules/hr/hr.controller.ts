@@ -98,6 +98,18 @@ export async function publishDutyRoster(req: AuthenticatedRequest, res: Response
     sendResponse({ res, message: 'Roster published', data });
   } catch (err) { next(err); }
 }
+export async function getActiveRoster(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.getActiveRoster(req.user!.tenantId, req.query as any);
+    sendResponse({ res, message: 'Active roster retrieved', data });
+  } catch (err) { next(err); }
+}
+export async function getRosterCoverage(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.getRosterCoverage(req.user!.tenantId, req.query as any);
+    sendResponse({ res, message: 'Roster coverage retrieved', data });
+  } catch (err) { next(err); }
+}
 
 // Attendance
 export async function recordAttendance(req: AuthenticatedRequest, res: Response, next: NextFunction) {

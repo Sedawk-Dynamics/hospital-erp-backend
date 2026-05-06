@@ -15,6 +15,8 @@ import type {
   CreateDutyRosterBulkInput,
   UpdateDutyRosterInput,
   GetDutyRostersQuery,
+  GetActiveRosterQuery,
+  GetRosterCoverageQuery,
   RecordAttendanceInput,
   GetAttendanceQuery,
   GetAttendanceSummaryQuery,
@@ -649,6 +651,165 @@ export async function publishDutyRoster(tenantId: string, id: string, approvedBy
 
   logger.info({ tenantId, rosterId: id }, 'Duty roster published');
   return roster;
+}
+
+// ============================================================
+// Roster: live coverage helpers
+// ============================================================
+
+/**
+ * Roster `startTime` / `endTime` are stored against the epoch date 1970-01-01,
+ * so the wall-clock minute count is what matters. Returns minutes-since-midnight
+ * (0..1439) in UTC, which is what the DB column actually contains.
+ */
+function rosterTimeToMinutes(d: Date): number {
+  return d.getUTCHours() * 60 + d.getUTCMinutes();
+}
+
+function ymd(d: Date): string {
+  const y = d.getUTCFullYear();
+  const m = (d.getUTCMonth() + 1).toString().padStart(2, '0');
+  const day = d.getUTCDate().toString().padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * Resolve "who is on duty right now" against the published roster. The
+ * `at` timestamp is interpreted in UTC (the same frame the DB stores
+ * shift times in). Night shifts whose end-time is numerically smaller
+ * than the start-time wrap past midnight, so we also load the previous
+ * day's shifts and check whether `at` still falls inside them.
+ */
+export async function getActiveRoster(
+  tenantId: string,
+  query: GetActiveRosterQuery,
+) {
+  const at = query.at ? new Date(query.at) : new Date();
+  if (Number.isNaN(at.getTime())) {
+    throw AppError.badRequest('Invalid `at` timestamp');
+  }
+
+  const today = new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate()));
+  const yesterday = new Date(today);
+  yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+  const minutesNow = at.getUTCHours() * 60 + at.getUTCMinutes();
+
+  const where: Prisma.DutyRosterWhereInput = {
+    tenantId,
+    status: { in: ['published', 'completed', 'scheduled'] },
+    shiftDate: { in: [today, yesterday] },
+  };
+  if (query.wardId) where.wardId = query.wardId;
+  if (query.role) where.role = query.role;
+  if (query.userId) {
+    const staff = await prisma.staffProfile.findFirst({
+      where: { userId: query.userId, tenantId },
+      select: { id: true },
+    });
+    if (!staff) {
+      return { at: at.toISOString(), entries: [], byShiftType: {}, mine: null };
+    }
+    where.staffId = staff.id;
+  }
+
+  const candidates = await prisma.dutyRoster.findMany({
+    where,
+    include: {
+      staff: {
+        include: { user: { select: { id: true, firstName: true, lastName: true } } },
+      },
+      department: { select: { id: true, name: true } },
+      ward: { select: { id: true, name: true } },
+    },
+    orderBy: [{ shiftDate: 'asc' }, { staffId: 'asc' }],
+  });
+
+  const todayKey = ymd(today);
+  const yesterdayKey = ymd(yesterday);
+
+  const active = candidates.filter((r) => {
+    const start = rosterTimeToMinutes(r.startTime);
+    const end = rosterTimeToMinutes(r.endTime);
+    const shiftKey = ymd(r.shiftDate);
+    const wraps = end <= start; // midnight-crossing shift
+    if (shiftKey === todayKey) {
+      if (!wraps) return minutesNow >= start && minutesNow < end;
+      // Wrapping shift starting today: live from start until 23:59.
+      return minutesNow >= start;
+    }
+    if (shiftKey === yesterdayKey) {
+      // Only yesterday's wrapping shift can leak into today.
+      return wraps && minutesNow < end;
+    }
+    return false;
+  });
+
+  const byShiftType: Record<string, number> = {};
+  for (const r of active) {
+    byShiftType[r.shiftType] = (byShiftType[r.shiftType] ?? 0) + 1;
+  }
+
+  // If the caller asked for a specific user, surface that user's currently
+  // active row (if any) so the caller can label the dashboard.
+  let mine: (typeof active)[number] | null = null;
+  if (query.userId) {
+    mine = active.find((r) => r.staff?.user?.id === query.userId) ?? null;
+  }
+
+  return { at: at.toISOString(), entries: active, byShiftType, mine };
+}
+
+/**
+ * Coverage rollup for the roster grid. For each (date, shiftType) inside the
+ * range, returns the number of rostered staff. The frontend uses this to flag
+ * shifts with zero coverage and to nudge admins toward gaps.
+ */
+export async function getRosterCoverage(
+  tenantId: string,
+  query: GetRosterCoverageQuery,
+) {
+  const fromDate = new Date(query.fromDate);
+  const toDate = new Date(query.toDate);
+  if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime()) || toDate < fromDate) {
+    throw AppError.badRequest('Invalid date range');
+  }
+
+  const where: Prisma.DutyRosterWhereInput = {
+    tenantId,
+    status: { not: 'cancelled' },
+    shiftDate: { gte: fromDate, lte: toDate },
+  };
+  if (query.wardId) where.wardId = query.wardId;
+  if (query.role) where.role = query.role;
+
+  const rows = await prisma.dutyRoster.findMany({
+    where,
+    select: { shiftDate: true, shiftType: true, staffId: true },
+  });
+
+  // Count distinct staff per (date, shiftType). Distinct because nurse_admin
+  // can theoretically file two entries for the same staff on the same shift,
+  // and we want headcount, not row-count.
+  const buckets = new Map<string, Set<string>>();
+  for (const r of rows) {
+    const key = `${ymd(r.shiftDate)}|${r.shiftType}`;
+    const set = buckets.get(key) ?? new Set<string>();
+    set.add(r.staffId);
+    buckets.set(key, set);
+  }
+
+  const coverage: Array<{ shiftDate: string; shiftType: string; rostered: number }> = [];
+  for (const [key, staffSet] of buckets) {
+    const [shiftDate, shiftType] = key.split('|') as [string, string];
+    coverage.push({ shiftDate, shiftType, rostered: staffSet.size });
+  }
+  coverage.sort((a, b) =>
+    a.shiftDate === b.shiftDate
+      ? a.shiftType.localeCompare(b.shiftType)
+      : a.shiftDate.localeCompare(b.shiftDate),
+  );
+
+  return { fromDate: query.fromDate, toDate: query.toDate, coverage };
 }
 
 // ============================================================

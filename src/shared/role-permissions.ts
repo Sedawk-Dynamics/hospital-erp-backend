@@ -109,6 +109,10 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'lab_orders', action: 'read' }, { module: 'lab_reports', action: 'read' },
       { module: 'imaging', action: 'read' },
       { module: 'nurse_assignments', action: 'read' },
+      // Read-only on the duty roster so the nurse dashboard can detect "what
+      // shift am I on right now" from /hr/rosters/active and render rostered
+      // hours instead of the hardcoded clock fallback.
+      { module: 'duty_rosters', action: 'read' },
       { module: 'forms', action: 'read' }, { module: 'forms', action: 'create' }, { module: 'forms', action: 'approve' },
     ],
 

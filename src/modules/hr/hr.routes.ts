@@ -17,6 +17,8 @@ import {
   getDutyRostersSchema,
   dutyRosterIdParamSchema,
   updateDutyRosterSchema,
+  getActiveRosterSchema,
+  getRosterCoverageSchema,
   recordAttendanceSchema,
   getAttendanceSchema,
   getAttendanceSummarySchema,
@@ -48,6 +50,10 @@ hrRoutes.get('/licenses/expiring', authenticate, requirePermission('hr', 'read')
 // here without full HR access.
 hrRoutes.post('/rosters', authenticate, requirePermission('duty_rosters', 'create'), validate(createDutyRosterSchema), controller.createDutyRoster);
 hrRoutes.post('/rosters/bulk', authenticate, requirePermission('duty_rosters', 'create'), validate(createDutyRosterBulkSchema), controller.createDutyRosterBulk);
+// Order matters: register specific paths before the `:id` catch-all so that
+// /rosters/active and /rosters/coverage don't get parsed as roster IDs.
+hrRoutes.get('/rosters/active', authenticate, requirePermission('duty_rosters', 'read'), validate(getActiveRosterSchema), controller.getActiveRoster);
+hrRoutes.get('/rosters/coverage', authenticate, requirePermission('duty_rosters', 'read'), validate(getRosterCoverageSchema), controller.getRosterCoverage);
 hrRoutes.get('/rosters', authenticate, requirePermission('duty_rosters', 'read'), validate(getDutyRostersSchema), controller.getDutyRosters);
 hrRoutes.get('/rosters/:id', authenticate, requirePermission('duty_rosters', 'read'), validate(dutyRosterIdParamSchema), controller.getDutyRosterById);
 hrRoutes.put('/rosters/:id', authenticate, requirePermission('duty_rosters', 'update'), validate(updateDutyRosterSchema), controller.updateDutyRoster);
