@@ -13,6 +13,7 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:seed:physical-observations": "tsx prisma/seed-physical-observations.ts",
     "db:seed:lab-tests": "tsx prisma/seed-lab-tests.ts",
+    "db:seed:form-templates": "tsx prisma/seed-form-templates.ts",
     "db:seed:nurse-roles": "tsx prisma/scripts/backfill-nurse-roles.ts",
     "db:seed:floor-permissions": "tsx prisma/scripts/backfill-floor-permissions.ts",
     "db:seed:resync-permissions": "tsx prisma/scripts/resync-role-permissions.ts",
