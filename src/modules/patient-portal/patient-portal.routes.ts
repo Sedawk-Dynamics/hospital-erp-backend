@@ -344,6 +344,42 @@ router.delete('/medical-history/allergies/:id', async (req: AuthenticatedRequest
   } catch (err) { next(err); }
 });
 
+// ── Consultation Summaries (OP-flow, signed by doctor) ──────
+router.get(
+  '/consultation-summaries',
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const data = await patientPortalService.getPatientConsultationSummaries(
+        req.user!.userId,
+        req.user!.email,
+        {
+          tenantId: req.query.tenantId as string | undefined,
+          profileId: req.query.profileId as string | undefined,
+        },
+      );
+      sendResponse({ res, statusCode: 200, message: 'Consultation summaries', data });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+router.get(
+  '/consultation-summaries/:id',
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const data = await patientPortalService.getPatientConsultationSummaryById(
+        req.user!.userId,
+        req.user!.email,
+        req.params.id as string,
+      );
+      sendResponse({ res, statusCode: 200, message: 'Consultation summary', data });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 // GET /patient-portal/discharge-summaries
 router.get('/discharge-summaries', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {

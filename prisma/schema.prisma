@@ -286,6 +286,10 @@ enum ProgressNoteStatus {
   archived  @map("archived")
 }
 
+// Pin section keys. Originally modelled around IP discharge summaries; now also
+// drives the OP consultation summary, which is composed by per-section pins set
+// by the doctor inside the consultation form (chief complaint, examination,
+// investigation, diagnosis, impression, etc).
 enum DischargeSection {
   diagnosis       @map("diagnosis")
   hospital_course @map("hospital_course")
@@ -294,6 +298,10 @@ enum DischargeSection {
   follow_up       @map("follow_up")
   advice          @map("advice")
   general         @map("general")
+  chief_complaint @map("chief_complaint")
+  examination     @map("examination")
+  investigation   @map("investigation")
+  impression      @map("impression")
 }
 
 enum PhysicalObservationSystem {

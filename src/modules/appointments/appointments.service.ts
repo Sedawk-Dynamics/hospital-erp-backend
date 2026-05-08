@@ -1593,6 +1593,132 @@ export async function cancelAppointment(
 }
 
 /**
+ * Staff-side: convert a `pending_payment` appointment into a booked one with a
+ * pending front-desk Bill attached, so the cashier can collect cash/UPI on the
+ * spot. Mirrors `confirmFrontdeskPayment` from the patient portal but is
+ * gated by tenant ownership instead of patient connection — used by the
+ * Front Desk Dashboard's "Collect Payment" action on `pending_payment` rows.
+ */
+export async function initiateFrontdeskPayment(
+  tenantId: string,
+  appointmentId: string,
+  userId: string,
+) {
+  const appointment = await prisma.appointment.findFirst({
+    where: { id: appointmentId, tenantId },
+    include: { doctor: true },
+  });
+  if (!appointment) throw AppError.notFound('Appointment not found');
+  if (appointment.status === 'cancelled' || appointment.status === 'no_show') {
+    throw AppError.badRequest(`Cannot collect payment for ${appointment.status} appointment`);
+  }
+
+  // Reuse an existing bill if one is already linked to this appointment
+  // (idempotent — second click should just return the existing bill).
+  const existingBill = await prisma.bill.findFirst({
+    where: {
+      tenantId,
+      patientId: appointment.patientId,
+      billItems: { some: { referenceType: 'appointment', referenceId: appointment.id } },
+    },
+  });
+
+  let bill = existingBill;
+  if (!bill) {
+    const consultationFee = appointment.doctor.consultationFee
+      ? Number(appointment.doctor.consultationFee)
+      : 0;
+    const amount = consultationFee > 0 ? consultationFee : 0;
+    const billNumber = await generateFrontdeskBillNumber(tenantId);
+
+    bill = await prisma.bill.create({
+      data: {
+        tenantId,
+        patientId: appointment.patientId,
+        billNumber,
+        billDate: new Date(),
+        subtotal: amount,
+        discountAmount: 0,
+        taxAmount: 0,
+        totalAmount: amount,
+        insuranceCoveredAmount: 0,
+        patientPayableAmount: amount,
+        amountPaid: 0,
+        balanceDue: amount,
+        status: 'pending',
+        generatedBy: userId,
+        billItems: {
+          create: {
+            description: 'Consultation Fee (Pay at Front Desk)',
+            category: 'consultation',
+            quantity: 1,
+            unitPrice: amount,
+            discountPercent: 0,
+            discountAmount: 0,
+            taxPercent: 0,
+            taxAmount: 0,
+            totalAmount: amount,
+            referenceType: 'appointment',
+            referenceId: appointment.id,
+          },
+        },
+      },
+    });
+    logger.info(
+      { tenantId, appointmentId, billId: bill.id, by: userId },
+      'Frontdesk payment bill created by staff',
+    );
+  }
+
+  // Move pending_payment → booked. Other statuses are left alone — the bill
+  // is what the cashier needs; the appointment may already be booked/confirmed
+  // for an already-checked-in walk-in.
+  if (appointment.status === 'pending_payment') {
+    await prisma.appointment.update({
+      where: { id: appointmentId },
+      data: { status: 'booked' },
+    });
+  }
+
+  return {
+    billId: bill.id,
+    billNumber: bill.billNumber,
+    totalAmount: Number(bill.totalAmount),
+    amountPaid: Number(bill.amountPaid),
+    balanceDue: Number(bill.balanceDue),
+    status: bill.status,
+  };
+}
+
+/**
+ * Build a BILL-YYYYMMDD-XXXX number scoped to the tenant. Mirrors the helper
+ * inside patient-portal.service.ts; duplicated here to keep the module's
+ * dependency graph clean (appointments → patient-portal would invert layers).
+ */
+async function generateFrontdeskBillNumber(tenantId: string): Promise<string> {
+  const now = new Date();
+  const ist = new Date(now.getTime() + 5.5 * 60 * 60 * 1000);
+  const y = ist.getUTCFullYear();
+  const m = (ist.getUTCMonth() + 1).toString().padStart(2, '0');
+  const d = ist.getUTCDate().toString().padStart(2, '0');
+  const dateStr = `${y}${m}${d}`;
+  const prefix = `BILL-${dateStr}-`;
+
+  const last = await prisma.bill.findFirst({
+    where: { tenantId, billNumber: { startsWith: prefix } },
+    orderBy: { billNumber: 'desc' },
+    select: { billNumber: true },
+  });
+
+  let next = 1;
+  if (last?.billNumber) {
+    const n = parseInt(last.billNumber.replace(prefix, ''), 10);
+    if (!isNaN(n)) next = n + 1;
+  }
+  return `${prefix}${next.toString().padStart(4, '0')}`;
+}
+
+/**
  * Generate a queue token for an appointment (auto-incrementing daily number).
  */
 export async function generateQueueToken(tenantId: string, appointmentId: string) {

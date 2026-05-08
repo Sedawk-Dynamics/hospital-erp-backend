@@ -430,6 +430,30 @@ export async function cancelAppointment(
   }
 }
 
+export async function initiateFrontdeskPayment(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const result = await appointmentsService.initiateFrontdeskPayment(
+      tenantId,
+      req.params.id as string,
+      userId,
+    );
+    sendResponse({
+      res,
+      statusCode: 201,
+      message: 'Frontdesk payment bill created',
+      data: result,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getConsultationFormData(
   req: AuthenticatedRequest,
   res: Response,

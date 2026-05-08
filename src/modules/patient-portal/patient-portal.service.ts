@@ -750,6 +750,101 @@ export async function getPatientDischargeSummaries(userId: string, email: string
   return getPublishedDischargeSummariesForPatients(patientIds);
 }
 
+// ────────────────────────────────────────────────────────────
+// Consultation Summaries
+//
+// The OP-flow analogue of discharge summaries — composed from per-section pins
+// the doctor flagged inside the consultation form, finalized via the standard
+// /progress-notes/:id/sign endpoint. Only finalized (signed) notes are exposed
+// to the patient; active drafts stay private until the doctor signs.
+// ────────────────────────────────────────────────────────────
+
+const CONSULTATION_PIN_SECTIONS = [
+  'chief_complaint',
+  'examination',
+  'investigation',
+  'diagnosis',
+  'impression',
+  'advice',
+  'follow_up',
+] as const;
+
+export async function getPatientConsultationSummaries(
+  userId: string,
+  email: string,
+  query: { tenantId?: string; profileId?: string } = {},
+) {
+  const patientIds = await resolvePatientIds(userId, email, query.tenantId, query.profileId);
+  if (patientIds.length === 0) return [];
+
+  const notes = await prisma.progressNote.findMany({
+    where: {
+      patientId: { in: patientIds },
+      status: 'finalized',
+      // Only surface notes that have at least one consultation-section pin —
+      // IP discharge notes are excluded from this list (they live under the
+      // /discharge-summaries endpoint).
+      pins: { some: { dischargeSection: { in: CONSULTATION_PIN_SECTIONS as any } } },
+    },
+    orderBy: { signedAt: 'desc' },
+    take: 50,
+    include: {
+      doctor: {
+        include: { user: { select: { firstName: true, lastName: true } } },
+      },
+      patient: {
+        select: {
+          id: true,
+          mrn: true,
+          firstName: true,
+          lastName: true,
+          tenant: { select: { id: true, name: true } },
+        },
+      },
+      signer: { select: { id: true, firstName: true, lastName: true } },
+      pins: true,
+    },
+  });
+
+  return notes;
+}
+
+export async function getPatientConsultationSummaryById(
+  userId: string,
+  email: string,
+  id: string,
+) {
+  const patientIds = await resolvePatientIds(userId, email);
+  const note = await prisma.progressNote.findFirst({
+    where: {
+      id,
+      patientId: { in: patientIds },
+      status: 'finalized',
+    },
+    include: {
+      doctor: {
+        include: { user: { select: { firstName: true, lastName: true } } },
+      },
+      patient: {
+        select: {
+          id: true,
+          mrn: true,
+          firstName: true,
+          lastName: true,
+          tenant: { select: { id: true, name: true } },
+        },
+      },
+      signer: { select: { id: true, firstName: true, lastName: true } },
+      pins: true,
+      visit: { select: { id: true, visitType: true, visitDate: true } },
+    },
+  });
+  if (!note) {
+    throw AppError.notFound('Consultation summary not found');
+  }
+  return note;
+}
+
 export async function getPatientDischargeSummaryById(userId: string, email: string, id: string) {
   const patientIds = await resolvePatientIds(userId, email);
   const { getPublishedDischargeSummaryForPatient } = await import('../mrd/mrd.service');

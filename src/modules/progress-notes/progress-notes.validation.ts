@@ -22,6 +22,9 @@ const customFieldSchema = z.object({
 // form enforces detailed shape, server stores as JSON verbatim.
 const soapSchema = z.record(z.string(), z.any());
 
+// Pin sections — covers IP discharge sections AND OP consultation summary
+// sections. The latter were added when the consultation form switched from
+// a single bulk discharge-pin block to per-section pin toggles.
 const dischargeSectionEnum = z.enum([
   'diagnosis',
   'hospital_course',
@@ -30,6 +33,10 @@ const dischargeSectionEnum = z.enum([
   'follow_up',
   'advice',
   'general',
+  'chief_complaint',
+  'examination',
+  'investigation',
+  'impression',
 ]);
 
 const pinInputSchema = z.object({

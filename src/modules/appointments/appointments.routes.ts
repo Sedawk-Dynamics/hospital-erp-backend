@@ -229,6 +229,16 @@ appointmentRoutes.patch(
   controller.cancelAppointment,
 );
 
+// Staff-side: convert a `pending_payment` appointment into a booked one with a
+// pending front-desk Bill so the cashier can collect cash/UPI on the spot.
+appointmentRoutes.post(
+  '/:id/frontdesk-payment',
+  authenticate,
+  requirePermission('appointments', 'update'),
+  validate(appointmentIdParamSchema),
+  controller.initiateFrontdeskPayment,
+);
+
 // Fetch assembled consultation form data for prefill + editability check
 // (OP: 24h window, IP: until discharge). Does NOT change appointment status.
 appointmentRoutes.get(
