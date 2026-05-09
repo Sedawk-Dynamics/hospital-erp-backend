@@ -544,8 +544,10 @@ export async function getPatientLabReports(
   const patientIds = await resolvePatientIds(userId, email, query.tenantId, query.profileId);
   if (patientIds.length === 0) return { data: [] };
 
+  // Patients only see what's been formally published — drafts and
+  // corrections-in-progress are hospital-internal until the lab signs them off.
   const reports = await prisma.labReport.findMany({
-    where: { patientId: { in: patientIds } },
+    where: { patientId: { in: patientIds }, status: 'published' },
     take: query.limit || 50,
     include: {
       labOrder: {
@@ -553,13 +555,42 @@ export async function getPatientLabReports(
           id: true,
           status: true,
           labOrderItems: {
-            select: { id: true, test: { select: { id: true, testName: true, testCode: true } } },
+            select: {
+              id: true,
+              test: { select: { id: true, testName: true, testCode: true } },
+              labResults: {
+                where: { status: 'approved' },
+                select: {
+                  id: true,
+                  parameterName: true,
+                  value: true,
+                  unit: true,
+                  normalRange: true,
+                  isAbnormal: true,
+                  enteredAt: true,
+                },
+              },
+            },
           },
         },
       },
       patient: { select: { id: true, mrn: true, firstName: true, lastName: true, tenant: { select: { id: true, name: true } } } },
+      attachments: {
+        where: { deletedAt: null },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          category: true,
+          fileName: true,
+          fileUrl: true,
+          mimeType: true,
+          sizeBytes: true,
+          description: true,
+          createdAt: true,
+        },
+      },
     },
-    orderBy: { createdAt: 'desc' },
+    orderBy: { publishedAt: 'desc' },
   });
 
   return { data: reports };

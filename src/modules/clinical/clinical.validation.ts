@@ -75,6 +75,10 @@ export const getAdmissionsQuerySchema = z.object({
   query: paginationSchema.extend({
     patientId: z.string().uuid().optional(),
     doctorId: z.string().uuid().optional(),
+    // Doctor's own User ID — service resolves to DoctorProfile.id. Mirrors the
+    // appointments query so the frontend can pass the logged-in user.id without
+    // round-tripping for the doctor profile first.
+    doctorUserId: z.string().uuid().optional(),
     nurseId: z.string().uuid().optional(),
     wardId: z.string().uuid().optional(),
     status: z.enum(['admitted', 'discharged', 'transferred', 'absconded']).optional(),
@@ -537,16 +541,19 @@ export const admissionRequestIdParamSchema = z.object({
   }),
 });
 
-// Front desk accepts the request. Optionally creates a Reservation in the
-// same call when ward/bed are already known — otherwise the request is
-// marked accepted and the front desk goes through the normal Reservation
-// or Admission flow afterwards.
+// Front desk accepts the request. Three branches:
+//   • createReservation: blocks a bed/ward for later admission
+//   • directAdmit: admits the patient on the spot (creates an IP visit if the
+//     request didn't carry one) and links request.admissionId
+//   • neither: just flips the request to "accepted"
+// The two action flags are mutually exclusive — service refuses both at once.
 export const acceptAdmissionRequestSchema = z.object({
   params: z.object({
     id: z.string().uuid('Invalid admission request ID'),
   }),
   body: z.object({
     createReservation: z.boolean().optional(),
+    directAdmit: z.boolean().optional(),
     wardId: z.string().uuid().optional(),
     bedId: z.string().uuid().optional(),
     reservedDate: z
@@ -557,8 +564,40 @@ export const acceptAdmissionRequestSchema = z.object({
       .string()
       .refine((val) => !isNaN(Date.parse(val)), { message: 'Invalid date' })
       .optional(),
+    // Direct admit only — when omitted defaults to "now"
+    admissionDate: z
+      .string()
+      .refine((val) => !isNaN(Date.parse(val)), { message: 'Invalid admission date' })
+      .optional(),
+    expectedDischargeDate: z
+      .string()
+      .refine((val) => !isNaN(Date.parse(val)), { message: 'Invalid discharge date' })
+      .optional(),
+    admissionReason: z.string().max(1000).optional(),
+    depositAmount: z.number().min(0).optional(),
     advanceAmount: z.number().min(0).optional(),
     notes: z.string().max(2000).optional(),
+  }),
+});
+
+// Convert an existing reservation into an admission. Bed defaults to the
+// reservation's blocked bed; pass bedId here to admit into a different bed.
+export const admitFromReservationSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid reservation ID'),
+  }),
+  body: z.object({
+    bedId: z.string().uuid().optional(),
+    admissionDate: z
+      .string()
+      .refine((val) => !isNaN(Date.parse(val)), { message: 'Invalid admission date' })
+      .optional(),
+    expectedDischargeDate: z
+      .string()
+      .refine((val) => !isNaN(Date.parse(val)), { message: 'Invalid discharge date' })
+      .optional(),
+    admissionReason: z.string().max(1000).optional(),
+    depositAmount: z.number().min(0).optional(),
   }),
 });
 
@@ -581,3 +620,4 @@ export type CreateAdmissionRequestInput = z.infer<typeof createAdmissionRequestS
 export type GetAdmissionRequestsQuery = z.infer<typeof getAdmissionRequestsQuerySchema>['query'];
 export type AcceptAdmissionRequestInput = z.infer<typeof acceptAdmissionRequestSchema>['body'];
 export type RejectAdmissionRequestInput = z.infer<typeof rejectAdmissionRequestSchema>['body'];
+export type AdmitFromReservationInput = z.infer<typeof admitFromReservationSchema>['body'];

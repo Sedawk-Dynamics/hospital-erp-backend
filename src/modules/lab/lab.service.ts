@@ -597,6 +597,11 @@ export async function getLabOrderById(tenantId: string, id: string) {
       },
       labSamples: true,
       labReport: true,
+      attachments: {
+        where: { deletedAt: null },
+        orderBy: { createdAt: 'desc' },
+        include: { uploader: { select: { id: true, firstName: true, lastName: true } } },
+      },
     },
   });
 
@@ -1614,6 +1619,11 @@ export async function getLabReportById(tenantId: string, id: string) {
       signer: {
         select: { id: true, firstName: true, lastName: true },
       },
+      attachments: {
+        where: { deletedAt: null },
+        orderBy: { createdAt: 'desc' },
+        include: { uploader: { select: { id: true, firstName: true, lastName: true } } },
+      },
     },
   });
 
@@ -1655,7 +1665,21 @@ export async function getInvestigationHistory(tenantId: string, patientId: strin
         },
       },
       labReport: {
-        select: { id: true, status: true, publishedAt: true, signedAt: true },
+        select: { id: true, status: true, publishedAt: true, signedAt: true, pdfUrl: true },
+      },
+      attachments: {
+        where: { deletedAt: null },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          category: true,
+          fileName: true,
+          fileUrl: true,
+          mimeType: true,
+          sizeBytes: true,
+          description: true,
+          createdAt: true,
+        },
       },
     },
   });

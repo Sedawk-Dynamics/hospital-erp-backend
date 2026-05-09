@@ -34,6 +34,7 @@ import type {
   GetAdmissionRequestsQuery,
   AcceptAdmissionRequestInput,
   RejectAdmissionRequestInput,
+  AdmitFromReservationInput,
 } from './clinical.validation';
 
 /**
@@ -444,6 +445,20 @@ export async function getAdmissions(tenantId: string, query: GetAdmissionsQuery)
 
   if (query.patientId) where.patientId = query.patientId;
   if (query.doctorId) where.doctorId = query.doctorId;
+  if ((query as any).doctorUserId) {
+    // Resolve DoctorProfile from the logged-in user ID. Without this the
+    // doctor's IP panel filters by user.id against Admission.doctorId
+    // (which is DoctorProfile.id) and silently returns nothing, which is
+    // exactly the bug that landed in /doctor/ip after frontdesk admits.
+    const dp = await prisma.doctorProfile.findFirst({
+      where: { userId: (query as any).doctorUserId, tenantId },
+      select: { id: true },
+    });
+    if (!dp) {
+      return { admissions: [], total: 0, page, limit };
+    }
+    where.doctorId = dp.id;
+  }
   if ((query as any).nurseId) where.nurseId = (query as any).nurseId;
   if (query.wardId) where.wardId = query.wardId;
   if (query.status) where.status = query.status;
@@ -2521,11 +2536,16 @@ export async function rejectAdmissionRequest(
 }
 
 /**
- * Front-desk acceptance. If the front desk already has the ward (and
- * optionally a bed) lined up, they can pass `createReservation: true` and we
- * spin up a Reservation in the same transaction so the request directly
- * tracks back to a bed-blocking record. Otherwise we just flip status to
- * `accepted` and the Reservation/Admission is filed separately.
+ * Front-desk acceptance. Three branches:
+ *   • `createReservation`: spins up a Reservation in the same transaction
+ *     so the request tracks back to a bed-blocking record.
+ *   • `directAdmit`: creates the IP Admission immediately. We pull or create
+ *     a visit (request.visitId → existing active OP visit → new IP visit) so
+ *     the existing Admission FK constraint is satisfied.
+ *   • neither: just flips status to `accepted`; downstream flow continues
+ *     manually via the regular Reservation / Admission endpoints.
+ * `createReservation` and `directAdmit` are mutually exclusive — passing both
+ * is a 400.
  */
 export async function acceptAdmissionRequest(
   tenantId: string,
@@ -2541,6 +2561,12 @@ export async function acceptAdmissionRequest(
     );
   }
 
+  if (data.createReservation && data.directAdmit) {
+    throw AppError.badRequest('Pick either reserve-now or direct-admit, not both');
+  }
+
+  // Pre-flight bed/ward checks — same logic shared by both branches so the
+  // service rejects bad input before we open the transaction.
   if (data.createReservation) {
     if (!data.wardId) {
       throw AppError.badRequest('wardId is required when creating a reservation');
@@ -2559,8 +2585,29 @@ export async function acceptAdmissionRequest(
     }
   }
 
+  if (data.directAdmit) {
+    if (!data.wardId) throw AppError.badRequest('wardId is required for direct admit');
+    if (!data.bedId) throw AppError.badRequest('bedId is required for direct admit');
+    const ward = await prisma.ward.findFirst({ where: { id: data.wardId, tenantId } });
+    if (!ward) throw AppError.notFound('Ward not found');
+    const bed = await prisma.bed.findFirst({
+      where: { id: data.bedId, wardId: data.wardId, tenantId },
+    });
+    if (!bed) throw AppError.notFound('Bed not found in the specified ward');
+    // Mirror createAdmission: the bed must be free OR already held for THIS
+    // patient via an existing reservation (in which case admission flips it
+    // to occupied without breaking ownership).
+    const heldForThisPatient =
+      bed.currentPatientId === existing.patientId &&
+      (bed.status === 'reserved' || bed.status === 'occupied');
+    if (bed.status !== 'available' && !heldForThisPatient) {
+      throw AppError.conflict(`Bed ${bed.bedNumber} is not available (status: ${bed.status})`);
+    }
+  }
+
   return prisma.$transaction(async (tx) => {
     let reservationId: string | undefined;
+    let admissionId: string | undefined;
 
     if (data.createReservation && data.wardId) {
       const reservation = await tx.reservation.create({
@@ -2593,11 +2640,109 @@ export async function acceptAdmissionRequest(
       }
     }
 
+    if (data.directAdmit && data.wardId && data.bedId) {
+      // Resolve the visit: prefer the request's linked visit, else any active
+      // visit for the patient, else create an IP visit on the fly.
+      let visitId = existing.visitId ?? null;
+      if (!visitId) {
+        const activeVisit = await tx.visit.findFirst({
+          where: { tenantId, patientId: existing.patientId, status: 'active' },
+          orderBy: { visitDate: 'desc' },
+          select: { id: true, visitType: true },
+        });
+        if (activeVisit) {
+          visitId = activeVisit.id;
+          if (activeVisit.visitType !== 'ip') {
+            await tx.visit.update({ where: { id: activeVisit.id }, data: { visitType: 'ip' } });
+          }
+        }
+      }
+      if (!visitId) {
+        const newVisit = await tx.visit.create({
+          data: {
+            tenantId,
+            patientId: existing.patientId,
+            doctorId: existing.doctorId,
+            visitType: 'ip',
+            visitDate: data.admissionDate ? new Date(data.admissionDate) : new Date(),
+            chiefComplaint: existing.reason,
+            status: 'active',
+          },
+          select: { id: true },
+        });
+        visitId = newVisit.id;
+      }
+
+      // Block any duplicate admission against the same visit (Admission.visitId
+      // is unique). This realistically only fires if two front-desk users race.
+      const dupe = await tx.admission.findUnique({ where: { visitId } });
+      if (dupe) {
+        throw AppError.conflict('This visit already has an admission');
+      }
+
+      const adm = await tx.admission.create({
+        data: {
+          tenantId,
+          visitId,
+          patientId: existing.patientId,
+          doctorId: existing.doctorId,
+          wardId: data.wardId,
+          bedId: data.bedId,
+          admissionDate: data.admissionDate ? new Date(data.admissionDate) : new Date(),
+          expectedDischargeDate: data.expectedDischargeDate
+            ? new Date(data.expectedDischargeDate)
+            : undefined,
+          admissionReason: data.admissionReason ?? existing.reason,
+          depositAmount: data.depositAmount ?? data.advanceAmount ?? 0,
+          status: 'admitted',
+          admittedBy: userId,
+        },
+      });
+      admissionId = adm.id;
+
+      // Bed → occupied. Tolerate the "reserved for this patient" pre-state.
+      await tx.bed.update({
+        where: { id: data.bedId },
+        data: { status: 'occupied', currentPatientId: existing.patientId },
+      });
+
+      // Sweep up any other open reservations for this patient — they're
+      // satisfied by this admission. Mirrors the cleanup in createAdmission.
+      const stale = await tx.reservation.findMany({
+        where: {
+          tenantId,
+          patientId: existing.patientId,
+          status: { in: ['reserved', 'confirmed'] },
+        },
+        select: { id: true, bedId: true },
+      });
+      if (stale.length > 0) {
+        await tx.reservation.updateMany({
+          where: { id: { in: stale.map((r) => r.id) } },
+          data: { status: 'admitted', admissionId: adm.id },
+        });
+        const orphanBeds = stale
+          .map((r) => r.bedId)
+          .filter((bid): bid is string => !!bid && bid !== data.bedId);
+        if (orphanBeds.length > 0) {
+          await tx.bed.updateMany({
+            where: {
+              id: { in: orphanBeds },
+              status: 'reserved',
+              currentPatientId: existing.patientId,
+            },
+            data: { status: 'available', currentPatientId: null },
+          });
+        }
+      }
+    }
+
     const updated = await tx.admissionRequest.update({
       where: { id },
       data: {
         status: 'accepted',
         reservationId,
+        admissionId,
         processedById: userId,
         processedAt: new Date(),
       },
@@ -2605,10 +2750,145 @@ export async function acceptAdmissionRequest(
     });
 
     logger.info(
-      { tenantId, admissionRequestId: id, userId, reservationId },
+      { tenantId, admissionRequestId: id, userId, reservationId, admissionId },
       'Admission request accepted',
     );
     return updated;
+  });
+}
+
+/**
+ * Convert an existing Reservation into an Admission. Bed defaults to the
+ * reservation's blocked bed; the front desk can override (e.g. patient
+ * arrives but the originally-blocked bed is now better used elsewhere) by
+ * passing a different `bedId`. Visit resolution mirrors directAdmit so this
+ * works for both walk-ins (no visit yet) and patients with an active OP visit.
+ */
+export async function admitFromReservation(
+  tenantId: string,
+  reservationId: string,
+  userId: string,
+  data: AdmitFromReservationInput,
+) {
+  const reservation = await prisma.reservation.findFirst({
+    where: { id: reservationId, tenantId },
+  });
+  if (!reservation) throw AppError.notFound('Reservation not found');
+  if (reservation.status === 'admitted') {
+    throw AppError.conflict('Reservation is already admitted');
+  }
+  if (reservation.status === 'cancelled' || reservation.status === 'completed') {
+    throw AppError.conflict(
+      `Reservation cannot be admitted — current status is ${reservation.status}`,
+    );
+  }
+
+  const targetBedId = data.bedId ?? reservation.bedId;
+  if (!targetBedId) {
+    throw AppError.badRequest('A bed must be selected to admit this reservation');
+  }
+
+  const bed = await prisma.bed.findFirst({
+    where: { id: targetBedId, wardId: reservation.wardId, tenantId },
+  });
+  if (!bed) throw AppError.notFound('Bed not found in the reservation ward');
+  const heldForThisPatient =
+    bed.currentPatientId === reservation.patientId &&
+    (bed.status === 'reserved' || bed.status === 'occupied');
+  if (bed.status !== 'available' && !heldForThisPatient) {
+    throw AppError.conflict(`Bed ${bed.bedNumber} is not available (status: ${bed.status})`);
+  }
+
+  return prisma.$transaction(async (tx) => {
+    let visitId: string | null = null;
+    const activeVisit = await tx.visit.findFirst({
+      where: { tenantId, patientId: reservation.patientId, status: 'active' },
+      orderBy: { visitDate: 'desc' },
+      select: { id: true, visitType: true },
+    });
+    if (activeVisit) {
+      visitId = activeVisit.id;
+      if (activeVisit.visitType !== 'ip') {
+        await tx.visit.update({ where: { id: activeVisit.id }, data: { visitType: 'ip' } });
+      }
+    } else {
+      const newVisit = await tx.visit.create({
+        data: {
+          tenantId,
+          patientId: reservation.patientId,
+          doctorId: reservation.doctorId,
+          visitType: 'ip',
+          visitDate: data.admissionDate ? new Date(data.admissionDate) : new Date(),
+          chiefComplaint: reservation.diagnosis ?? undefined,
+          status: 'active',
+        },
+        select: { id: true },
+      });
+      visitId = newVisit.id;
+    }
+
+    const dupe = await tx.admission.findUnique({ where: { visitId } });
+    if (dupe) throw AppError.conflict('This visit already has an admission');
+
+    const adm = await tx.admission.create({
+      data: {
+        tenantId,
+        visitId,
+        patientId: reservation.patientId,
+        doctorId: reservation.doctorId,
+        wardId: reservation.wardId,
+        bedId: targetBedId,
+        admissionDate: data.admissionDate ? new Date(data.admissionDate) : new Date(),
+        expectedDischargeDate: data.expectedDischargeDate
+          ? new Date(data.expectedDischargeDate)
+          : undefined,
+        admissionReason: data.admissionReason ?? reservation.diagnosis ?? undefined,
+        depositAmount: data.depositAmount ?? Number(reservation.advanceAmount ?? 0),
+        status: 'admitted',
+        admittedBy: userId,
+      },
+      include: {
+        patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+        doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
+        ward: { select: { id: true, name: true } },
+        bed: { select: { id: true, bedNumber: true } },
+      },
+    });
+
+    // Bed → occupied (tolerates the reserved-for-this-patient pre-state).
+    await tx.bed.update({
+      where: { id: targetBedId },
+      data: { status: 'occupied', currentPatientId: reservation.patientId },
+    });
+
+    // Free up the originally-blocked bed if we admitted into a different one.
+    if (reservation.bedId && reservation.bedId !== targetBedId) {
+      await tx.bed.updateMany({
+        where: {
+          id: reservation.bedId,
+          status: 'reserved',
+          currentPatientId: reservation.patientId,
+        },
+        data: { status: 'available', currentPatientId: null },
+      });
+    }
+
+    await tx.reservation.update({
+      where: { id: reservation.id },
+      data: { status: 'admitted', admissionId: adm.id },
+    });
+
+    // Close out the originating admission request, if any.
+    await tx.admissionRequest.updateMany({
+      where: { tenantId, reservationId: reservation.id, admissionId: null },
+      data: { admissionId: adm.id },
+    });
+
+    logger.info(
+      { tenantId, reservationId, admissionId: adm.id, bedId: targetBedId },
+      'Reservation admitted',
+    );
+    return adm;
   });
 }
 

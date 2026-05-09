@@ -564,6 +564,31 @@ export async function updateReservation(
   }
 }
 
+export async function admitReservation(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const data = await clinicalService.admitFromReservation(
+      tenantId,
+      req.params.id as string,
+      userId,
+      req.body,
+    );
+    sendResponse({
+      res,
+      statusCode: 201,
+      message: 'Reservation admitted',
+      data,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // ==================== Estimations ====================
 
 export async function createEstimation(

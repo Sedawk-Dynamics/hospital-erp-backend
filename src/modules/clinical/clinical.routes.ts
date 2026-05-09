@@ -35,6 +35,7 @@ import {
   getReservationsQuerySchema,
   reservationIdParamSchema,
   updateReservationSchema,
+  admitFromReservationSchema,
   createEstimationSchema,
   getEstimationsQuerySchema,
   estimationIdParamSchema,
@@ -125,6 +126,10 @@ clinicalRoutes.post('/reservations', authenticate, requirePermission('admissions
 clinicalRoutes.get('/reservations', authenticate, requirePermission('admissions', 'read'), validate(getReservationsQuerySchema), controller.getReservations);
 clinicalRoutes.get('/reservations/:id', authenticate, requirePermission('admissions', 'read'), validate(reservationIdParamSchema), controller.getReservationById);
 clinicalRoutes.put('/reservations/:id', authenticate, requirePermission('admissions', 'update'), validate(updateReservationSchema), controller.updateReservation);
+// Convert a reservation into an admission. Front desk presses Admit on the
+// reservation row; the service pulls patient/doctor/ward (+ default bed) from
+// the reservation and spins up the Admission, freeing any orphaned beds.
+clinicalRoutes.post('/reservations/:id/admit', authenticate, requirePermission('admissions', 'create'), validate(admitFromReservationSchema), controller.admitReservation);
 
 // --- Clinical Orders (Nurse unified view) ---
 clinicalRoutes.get('/orders', authenticate, requirePermission('prescriptions', 'read'), validate(getClinicalOrdersQuerySchema), controller.getClinicalOrders);

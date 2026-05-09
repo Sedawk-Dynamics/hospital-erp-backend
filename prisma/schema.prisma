@@ -669,6 +669,14 @@ enum LabResultStatus {
   approved  @map("approved")
 }
 
+enum LabAttachmentCategory {
+  report_pdf @map("report_pdf")
+  image      @map("image")
+  scan       @map("scan")
+  raw_data   @map("raw_data")
+  other      @map("other")
+}
+
 enum ImagingType {
   xray       @map("xray")
   mri        @map("mri")
@@ -1193,6 +1201,7 @@ model Tenant {
   labDepartments             LabDepartment[]
   labTestCatalog             LabTestCatalog[]
   labOrders                  LabOrder[]
+  labAttachments             LabAttachment[]
   imagingRequests            ImagingRequest[]
   drugCategories             DrugCategory[]
   drugFormulary              DrugFormulary[]
@@ -1414,6 +1423,7 @@ model User {
   labReportsReviewed             LabReport[]                  @relation("LabReportReviewer")
   labReportsApproved             LabReport[]                  @relation("LabReportApprover")
   labReportsSigned               LabReport[]                  @relation("LabReportSigner")
+  labAttachmentsUploaded         LabAttachment[]              @relation("LabAttachmentUploader")
   imagingOrdersOrdered           ImagingRequest[]
   imagingRequestsAssigned        ImagingRequest[]             @relation("ImagingTechnician")
   imagingResultsRadiologist      ImagingResult[]              @relation("ImagingRadiologist")
@@ -3287,17 +3297,18 @@ model LabOrder {
   createdAt         DateTime       @default(now()) @map("created_at")
   updatedAt         DateTime       @default(now()) @updatedAt @map("updated_at")
 
-  tenant         Tenant         @relation(fields: [tenantId], references: [id])
-  patient        Patient        @relation(fields: [patientId], references: [id])
-  visit          Visit          @relation(fields: [visitId], references: [id])
-  orderer        User           @relation(fields: [orderedBy], references: [id])
-  assignedTo     User?          @relation("LabOrderAssignee", fields: [assignedToId], references: [id])
-  acceptedByUser User?          @relation("LabOrderAcceptor", fields: [acceptedBy], references: [id])
-  assignedDept   LabDepartment? @relation("LabOrderDept", fields: [assignedDeptId], references: [id])
+  tenant         Tenant          @relation(fields: [tenantId], references: [id])
+  patient        Patient         @relation(fields: [patientId], references: [id])
+  visit          Visit           @relation(fields: [visitId], references: [id])
+  orderer        User            @relation(fields: [orderedBy], references: [id])
+  assignedTo     User?           @relation("LabOrderAssignee", fields: [assignedToId], references: [id])
+  acceptedByUser User?           @relation("LabOrderAcceptor", fields: [acceptedBy], references: [id])
+  assignedDept   LabDepartment?  @relation("LabOrderDept", fields: [assignedDeptId], references: [id])
   labOrderItems  LabOrderItem[]
   labSamples     LabSample[]
   labResults     LabResult[]
   labReport      LabReport?
+  attachments    LabAttachment[]
 
   @@map("lab_orders")
 }
@@ -3383,13 +3394,45 @@ model LabReport {
   createdAt        DateTime        @default(now()) @map("created_at")
   updatedAt        DateTime        @default(now()) @updatedAt @map("updated_at")
 
-  labOrder LabOrder @relation(fields: [labOrderId], references: [id])
-  patient  Patient  @relation(fields: [patientId], references: [id])
-  reviewer User?    @relation("LabReportReviewer", fields: [reviewedBy], references: [id])
-  approver User?    @relation("LabReportApprover", fields: [approvedBy], references: [id])
-  signer   User?    @relation("LabReportSigner", fields: [signedBy], references: [id])
+  labOrder    LabOrder        @relation(fields: [labOrderId], references: [id])
+  patient     Patient         @relation(fields: [patientId], references: [id])
+  reviewer    User?           @relation("LabReportReviewer", fields: [reviewedBy], references: [id])
+  approver    User?           @relation("LabReportApprover", fields: [approvedBy], references: [id])
+  signer      User?           @relation("LabReportSigner", fields: [signedBy], references: [id])
+  attachments LabAttachment[]
 
   @@map("lab_reports")
+}
+
+// LabAttachment — files (PDFs, scanned reports, microscopy images, gel scans,
+// instrument output) tied to a lab order (and optionally to a specific report
+// or order item). Persisted on disk under /uploads with metadata in this row;
+// the same file is what doctors, nurses and patients see in their respective
+// surfaces. Soft-deleted via deletedAt so audit trail is preserved.
+model LabAttachment {
+  id             String                @id @default(uuid())
+  tenantId       String                @map("tenant_id")
+  labOrderId     String                @map("lab_order_id")
+  labReportId    String?               @map("lab_report_id")
+  labOrderItemId String?               @map("lab_order_item_id")
+  category       LabAttachmentCategory @default(report_pdf)
+  fileName       String                @map("file_name") @db.VarChar(255)
+  fileUrl        String                @map("file_url")
+  mimeType       String                @map("mime_type") @db.VarChar(100)
+  sizeBytes      Int                   @map("size_bytes")
+  description    String?
+  uploadedBy     String                @map("uploaded_by")
+  createdAt      DateTime              @default(now()) @map("created_at")
+  deletedAt      DateTime?             @map("deleted_at")
+
+  tenant    Tenant     @relation(fields: [tenantId], references: [id])
+  labOrder  LabOrder   @relation(fields: [labOrderId], references: [id])
+  labReport LabReport? @relation(fields: [labReportId], references: [id])
+  uploader  User       @relation("LabAttachmentUploader", fields: [uploadedBy], references: [id])
+
+  @@index([tenantId, labOrderId])
+  @@index([tenantId, labReportId])
+  @@map("lab_attachments")
 }
 
 // ============================================================
