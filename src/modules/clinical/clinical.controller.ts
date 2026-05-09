@@ -732,3 +732,118 @@ export async function getVitalHistory(
     next(err);
   }
 }
+
+// ==================== Admission Requests ====================
+
+export async function createAdmissionRequest(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const data = await clinicalService.createAdmissionRequest(tenantId, userId, req.body);
+    sendResponse({
+      res,
+      statusCode: 201,
+      message: 'Admission request submitted',
+      data,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getAdmissionRequests(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const { requests, total, page, limit } = await clinicalService.getAdmissionRequests(
+      tenantId,
+      req.query as any,
+    );
+    sendPaginatedResponse(res, requests, total, page, limit, 'Admission requests retrieved');
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getAdmissionRequestById(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await clinicalService.getAdmissionRequestById(
+      tenantId,
+      req.params.id as string,
+    );
+    sendResponse({ res, message: 'Admission request retrieved', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function cancelAdmissionRequest(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const data = await clinicalService.cancelAdmissionRequest(
+      tenantId,
+      req.params.id as string,
+      userId,
+    );
+    sendResponse({ res, message: 'Admission request cancelled', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function acceptAdmissionRequest(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const data = await clinicalService.acceptAdmissionRequest(
+      tenantId,
+      req.params.id as string,
+      userId,
+      req.body,
+    );
+    sendResponse({ res, message: 'Admission request accepted', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function rejectAdmissionRequest(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const data = await clinicalService.rejectAdmissionRequest(
+      tenantId,
+      req.params.id as string,
+      userId,
+      req.body,
+    );
+    sendResponse({ res, message: 'Admission request rejected', data });
+  } catch (err) {
+    next(err);
+  }
+}

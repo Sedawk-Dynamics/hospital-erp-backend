@@ -42,6 +42,12 @@ import {
   getClinicalOrdersQuerySchema,
   acknowledgeClinicalOrderSchema,
   getOrderAcknowledgementsQuerySchema,
+  createAdmissionRequestSchema,
+  getAdmissionRequestsQuerySchema,
+  admissionRequestIdParamSchema,
+  acceptAdmissionRequestSchema,
+  rejectAdmissionRequestSchema,
+  cancelAdmissionRequestSchema,
 } from './clinical.validation';
 import {
   createNurseAssignmentSchema,
@@ -147,6 +153,18 @@ clinicalRoutes.get('/nurse-assignments/:id', authenticate, requirePermission('nu
 clinicalRoutes.patch('/nurse-assignments/:id', authenticate, requirePermission('nurse_assignments', 'update'), validate(updateNurseAssignmentSchema), nurseAssignmentsController.updateNurseAssignment);
 clinicalRoutes.post('/nurse-assignments/:id/end', authenticate, requirePermission('nurse_assignments', 'update'), validate(endNurseAssignmentSchema), nurseAssignmentsController.endNurseAssignment);
 clinicalRoutes.post('/nurse-assignments/:id/handover', authenticate, requirePermission('nurse_assignments', 'update'), validate(handoverNurseAssignmentSchema), nurseAssignmentsController.handoverNurseAssignment);
+
+// --- Admission Requests (doctor → front desk handoff for OP→IP) ---
+// Doctor raises the request from the consultation workspace
+// (`admissions:create`); front desk works the queue from IP Home
+// (`admissions:read` / `update`). Cancel is doctor self-service so it shares
+// the same `admissions:create` permission as the create call.
+clinicalRoutes.post('/admission-requests', authenticate, requirePermission('admissions', 'create'), validate(createAdmissionRequestSchema), controller.createAdmissionRequest);
+clinicalRoutes.get('/admission-requests', authenticate, requirePermission('admissions', 'read'), validate(getAdmissionRequestsQuerySchema), controller.getAdmissionRequests);
+clinicalRoutes.get('/admission-requests/:id', authenticate, requirePermission('admissions', 'read'), validate(admissionRequestIdParamSchema), controller.getAdmissionRequestById);
+clinicalRoutes.post('/admission-requests/:id/cancel', authenticate, requirePermission('admissions', 'create'), validate(cancelAdmissionRequestSchema), controller.cancelAdmissionRequest);
+clinicalRoutes.post('/admission-requests/:id/accept', authenticate, requirePermission('admissions', 'update'), validate(acceptAdmissionRequestSchema), controller.acceptAdmissionRequest);
+clinicalRoutes.post('/admission-requests/:id/reject', authenticate, requirePermission('admissions', 'update'), validate(rejectAdmissionRequestSchema), controller.rejectAdmissionRequest);
 
 // --- Estimations ---
 clinicalRoutes.post('/estimations', authenticate, requirePermission('admissions', 'create'), validate(createEstimationSchema), controller.createEstimation);

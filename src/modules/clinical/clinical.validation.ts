@@ -499,3 +499,85 @@ export type GetClinicalOrdersQuery = z.infer<typeof getClinicalOrdersQuerySchema
 export type AcknowledgeClinicalOrderInput = z.infer<typeof acknowledgeClinicalOrderSchema>['body'];
 export type CorrectVitalInput = z.infer<typeof correctVitalSchema>['body'];
 export type GetOrderAcknowledgementsQuery = z.infer<typeof getOrderAcknowledgementsQuerySchema>['query'];
+
+// ==================== Admission Requests ====================
+
+export const createAdmissionRequestSchema = z.object({
+  body: z.object({
+    patientId: z.string().uuid('Invalid patient ID'),
+    visitId: z.string().uuid('Invalid visit ID').optional(),
+    doctorId: z.string().uuid('Invalid doctor ID'),
+    reason: z.string().min(1, 'Reason is required').max(500),
+    provisionalDiagnosis: z.string().max(1000).optional(),
+    urgency: z.enum(['routine', 'urgent', 'emergency']).default('routine'),
+    preferredWardType: z.string().max(100).optional(),
+    expectedAdmissionDate: z
+      .string()
+      .refine((val) => !isNaN(Date.parse(val)), { message: 'Invalid expected date' })
+      .optional(),
+    notes: z.string().max(2000).optional(),
+  }),
+});
+
+export const getAdmissionRequestsQuerySchema = z.object({
+  query: paginationSchema.extend({
+    status: z.enum(['pending', 'accepted', 'rejected', 'cancelled']).optional(),
+    urgency: z.enum(['routine', 'urgent', 'emergency']).optional(),
+    doctorId: z.string().uuid().optional(),
+    patientId: z.string().uuid().optional(),
+    search: z.string().max(255).optional(),
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
+  }),
+});
+
+export const admissionRequestIdParamSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid admission request ID'),
+  }),
+});
+
+// Front desk accepts the request. Optionally creates a Reservation in the
+// same call when ward/bed are already known — otherwise the request is
+// marked accepted and the front desk goes through the normal Reservation
+// or Admission flow afterwards.
+export const acceptAdmissionRequestSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid admission request ID'),
+  }),
+  body: z.object({
+    createReservation: z.boolean().optional(),
+    wardId: z.string().uuid().optional(),
+    bedId: z.string().uuid().optional(),
+    reservedDate: z
+      .string()
+      .refine((val) => !isNaN(Date.parse(val)), { message: 'Invalid reserved date' })
+      .optional(),
+    expectedAdmission: z
+      .string()
+      .refine((val) => !isNaN(Date.parse(val)), { message: 'Invalid date' })
+      .optional(),
+    advanceAmount: z.number().min(0).optional(),
+    notes: z.string().max(2000).optional(),
+  }),
+});
+
+export const rejectAdmissionRequestSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid admission request ID'),
+  }),
+  body: z.object({
+    rejectionReason: z.string().min(1, 'Rejection reason is required').max(2000),
+  }),
+});
+
+export const cancelAdmissionRequestSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid admission request ID'),
+  }),
+});
+
+export type CreateAdmissionRequestInput = z.infer<typeof createAdmissionRequestSchema>['body'];
+export type GetAdmissionRequestsQuery = z.infer<typeof getAdmissionRequestsQuerySchema>['query'];
+export type AcceptAdmissionRequestInput = z.infer<typeof acceptAdmissionRequestSchema>['body'];
+export type RejectAdmissionRequestInput = z.infer<typeof rejectAdmissionRequestSchema>['body'];

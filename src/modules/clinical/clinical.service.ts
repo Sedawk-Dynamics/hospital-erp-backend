@@ -30,6 +30,10 @@ import type {
   AcknowledgeClinicalOrderInput,
   CorrectVitalInput,
   GetOrderAcknowledgementsQuery,
+  CreateAdmissionRequestInput,
+  GetAdmissionRequestsQuery,
+  AcceptAdmissionRequestInput,
+  RejectAdmissionRequestInput,
 } from './clinical.validation';
 
 /**
@@ -2326,5 +2330,285 @@ export async function getOrderAcknowledgements(
   );
 
   return { orders: filtered, total: filtered.length };
+}
+
+// ==================== Admission Requests ====================
+
+const ADMISSION_REQUEST_INCLUDE = {
+  patient: {
+    select: {
+      id: true,
+      mrn: true,
+      firstName: true,
+      lastName: true,
+      phone: true,
+      dateOfBirth: true,
+      gender: true,
+    },
+  },
+  doctor: {
+    include: {
+      user: { select: { firstName: true, lastName: true } },
+      department: { select: { id: true, name: true } },
+    },
+  },
+  visit: { select: { id: true, visitType: true, visitDate: true, chiefComplaint: true } },
+  requestedBy: { select: { id: true, firstName: true, lastName: true } },
+  processedBy: { select: { id: true, firstName: true, lastName: true } },
+} as const;
+
+export async function createAdmissionRequest(
+  tenantId: string,
+  userId: string,
+  data: CreateAdmissionRequestInput,
+) {
+  const patient = await prisma.patient.findFirst({
+    where: { id: data.patientId, tenantId },
+    select: { id: true },
+  });
+  if (!patient) throw AppError.notFound('Patient not found');
+
+  const doctor = await prisma.doctorProfile.findFirst({
+    where: { id: data.doctorId, tenantId },
+    select: { id: true },
+  });
+  if (!doctor) throw AppError.notFound('Doctor not found');
+
+  if (data.visitId) {
+    const visit = await prisma.visit.findFirst({
+      where: { id: data.visitId, tenantId },
+      select: { id: true },
+    });
+    if (!visit) throw AppError.notFound('Visit not found');
+  }
+
+  // Block stacking — one open request per (patient, doctor) is enough.
+  const openRequest = await prisma.admissionRequest.findFirst({
+    where: { tenantId, patientId: data.patientId, doctorId: data.doctorId, status: 'pending' },
+    select: { id: true },
+  });
+  if (openRequest) {
+    throw AppError.conflict(
+      'A pending admission request already exists for this patient. Cancel it first or wait for front desk.',
+    );
+  }
+
+  const request = await prisma.admissionRequest.create({
+    data: {
+      tenantId,
+      patientId: data.patientId,
+      visitId: data.visitId,
+      doctorId: data.doctorId,
+      reason: data.reason,
+      provisionalDiagnosis: data.provisionalDiagnosis,
+      urgency: data.urgency ?? 'routine',
+      preferredWardType: data.preferredWardType,
+      expectedAdmissionDate: data.expectedAdmissionDate
+        ? new Date(data.expectedAdmissionDate)
+        : undefined,
+      notes: data.notes,
+      requestedById: userId,
+    },
+    include: ADMISSION_REQUEST_INCLUDE,
+  });
+
+  logger.info({ tenantId, admissionRequestId: request.id }, 'Admission request created');
+  return request;
+}
+
+export async function getAdmissionRequests(tenantId: string, query: GetAdmissionRequestsQuery) {
+  const { skip, take, page, limit } = getPaginationParams(query);
+  const where: any = { tenantId };
+
+  if (query.status) where.status = query.status;
+  if (query.urgency) where.urgency = query.urgency;
+  if (query.doctorId) where.doctorId = query.doctorId;
+  if (query.patientId) where.patientId = query.patientId;
+
+  if (query.fromDate || query.toDate) {
+    where.createdAt = {};
+    if (query.fromDate) where.createdAt.gte = new Date(query.fromDate);
+    if (query.toDate) {
+      const end = new Date(query.toDate);
+      end.setUTCHours(23, 59, 59, 999);
+      where.createdAt.lte = end;
+    }
+  }
+
+  if (query.search) {
+    where.OR = [
+      { patient: { firstName: { contains: query.search, mode: 'insensitive' } } },
+      { patient: { lastName: { contains: query.search, mode: 'insensitive' } } },
+      { patient: { mrn: { contains: query.search, mode: 'insensitive' } } },
+      { provisionalDiagnosis: { contains: query.search, mode: 'insensitive' } },
+      { reason: { contains: query.search, mode: 'insensitive' } },
+    ];
+  }
+
+  const [requests, total] = await Promise.all([
+    prisma.admissionRequest.findMany({
+      where,
+      skip,
+      take,
+      include: ADMISSION_REQUEST_INCLUDE,
+      // Surface pending → most urgent → newest. Once acted on, fall back to
+      // straight chronology so the audit trail reads top-down.
+      orderBy: [
+        { status: 'asc' },
+        { urgency: 'desc' },
+        { createdAt: 'desc' },
+      ],
+    }),
+    prisma.admissionRequest.count({ where }),
+  ]);
+
+  return { requests, total, page, limit };
+}
+
+export async function getAdmissionRequestById(tenantId: string, id: string) {
+  const request = await prisma.admissionRequest.findFirst({
+    where: { id, tenantId },
+    include: ADMISSION_REQUEST_INCLUDE,
+  });
+  if (!request) throw AppError.notFound('Admission request not found');
+  return request;
+}
+
+export async function cancelAdmissionRequest(tenantId: string, id: string, userId: string) {
+  const existing = await prisma.admissionRequest.findFirst({ where: { id, tenantId } });
+  if (!existing) throw AppError.notFound('Admission request not found');
+  if (existing.status !== 'pending') {
+    throw AppError.conflict(
+      `Admission request cannot be cancelled — current status is ${existing.status}`,
+    );
+  }
+
+  const updated = await prisma.admissionRequest.update({
+    where: { id },
+    data: { status: 'cancelled', processedById: userId, processedAt: new Date() },
+    include: ADMISSION_REQUEST_INCLUDE,
+  });
+  logger.info({ tenantId, admissionRequestId: id, userId }, 'Admission request cancelled');
+  return updated;
+}
+
+export async function rejectAdmissionRequest(
+  tenantId: string,
+  id: string,
+  userId: string,
+  data: RejectAdmissionRequestInput,
+) {
+  const existing = await prisma.admissionRequest.findFirst({ where: { id, tenantId } });
+  if (!existing) throw AppError.notFound('Admission request not found');
+  if (existing.status !== 'pending') {
+    throw AppError.conflict(
+      `Admission request cannot be rejected — current status is ${existing.status}`,
+    );
+  }
+
+  const updated = await prisma.admissionRequest.update({
+    where: { id },
+    data: {
+      status: 'rejected',
+      rejectionReason: data.rejectionReason,
+      processedById: userId,
+      processedAt: new Date(),
+    },
+    include: ADMISSION_REQUEST_INCLUDE,
+  });
+  logger.info({ tenantId, admissionRequestId: id, userId }, 'Admission request rejected');
+  return updated;
+}
+
+/**
+ * Front-desk acceptance. If the front desk already has the ward (and
+ * optionally a bed) lined up, they can pass `createReservation: true` and we
+ * spin up a Reservation in the same transaction so the request directly
+ * tracks back to a bed-blocking record. Otherwise we just flip status to
+ * `accepted` and the Reservation/Admission is filed separately.
+ */
+export async function acceptAdmissionRequest(
+  tenantId: string,
+  id: string,
+  userId: string,
+  data: AcceptAdmissionRequestInput,
+) {
+  const existing = await prisma.admissionRequest.findFirst({ where: { id, tenantId } });
+  if (!existing) throw AppError.notFound('Admission request not found');
+  if (existing.status !== 'pending') {
+    throw AppError.conflict(
+      `Admission request cannot be accepted — current status is ${existing.status}`,
+    );
+  }
+
+  if (data.createReservation) {
+    if (!data.wardId) {
+      throw AppError.badRequest('wardId is required when creating a reservation');
+    }
+    const ward = await prisma.ward.findFirst({ where: { id: data.wardId, tenantId } });
+    if (!ward) throw AppError.notFound('Ward not found');
+
+    if (data.bedId) {
+      const bed = await prisma.bed.findFirst({
+        where: { id: data.bedId, wardId: data.wardId, tenantId },
+      });
+      if (!bed) throw AppError.notFound('Bed not found in the specified ward');
+      if (bed.status !== 'available') {
+        throw AppError.conflict(`Bed ${bed.bedNumber} is not available (status: ${bed.status})`);
+      }
+    }
+  }
+
+  return prisma.$transaction(async (tx) => {
+    let reservationId: string | undefined;
+
+    if (data.createReservation && data.wardId) {
+      const reservation = await tx.reservation.create({
+        data: {
+          tenantId,
+          patientId: existing.patientId,
+          doctorId: existing.doctorId,
+          wardId: data.wardId,
+          bedId: data.bedId,
+          reservedDate: data.reservedDate ? new Date(data.reservedDate) : new Date(),
+          expectedAdmission: data.expectedAdmission
+            ? new Date(data.expectedAdmission)
+            : existing.expectedAdmissionDate ?? undefined,
+          diagnosis: existing.provisionalDiagnosis ?? undefined,
+          advanceAmount: data.advanceAmount ?? 0,
+          notes: data.notes ?? existing.notes ?? undefined,
+          createdBy: userId,
+        },
+      });
+      reservationId = reservation.id;
+
+      if (data.bedId) {
+        const blocked = await tx.bed.updateMany({
+          where: { id: data.bedId, status: 'available' },
+          data: { status: 'reserved', currentPatientId: existing.patientId },
+        });
+        if (blocked.count === 0) {
+          throw AppError.conflict('Bed was taken before the reservation could block it');
+        }
+      }
+    }
+
+    const updated = await tx.admissionRequest.update({
+      where: { id },
+      data: {
+        status: 'accepted',
+        reservationId,
+        processedById: userId,
+        processedAt: new Date(),
+      },
+      include: ADMISSION_REQUEST_INCLUDE,
+    });
+
+    logger.info(
+      { tenantId, admissionRequestId: id, userId, reservationId },
+      'Admission request accepted',
+    );
+    return updated;
+  });
 }
 

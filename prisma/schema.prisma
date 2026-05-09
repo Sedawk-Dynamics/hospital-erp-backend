@@ -251,6 +251,24 @@ enum EstimationStatus {
   cancelled @map("cancelled")
 }
 
+// Doctor → Front-desk handoff for moving an OP patient into IP. The doctor
+// raises the request from the consultation workspace; front desk reviews the
+// queue and either accepts (which optionally creates a Reservation/Admission
+// and links it back) or rejects with a reason. Doctors can cancel their own
+// pending requests.
+enum AdmissionRequestStatus {
+  pending   @map("pending")
+  accepted  @map("accepted")
+  rejected  @map("rejected")
+  cancelled @map("cancelled")
+}
+
+enum AdmissionRequestUrgency {
+  routine   @map("routine")
+  urgent    @map("urgent")
+  emergency @map("emergency")
+}
+
 enum TransferType {
   doctor_to_doctor @map("doctor_to_doctor")
   ward_to_ward     @map("ward_to_ward")
@@ -1230,6 +1248,7 @@ model Tenant {
   demoRequests               DemoRequest[]
   reservations               Reservation[]
   estimations                Estimation[]
+  admissionRequests          AdmissionRequest[]
   emarTimeSlots              EmarTimeSlot[]
   emarFrequencies            EmarFrequency[]
   emarSettings               EmarSettings?
@@ -1460,6 +1479,8 @@ model User {
   ownedSubscriptions             UserSubscription[]           @relation("SubscriptionOwner")
   reservationsCreated            Reservation[]                @relation("ReservationCreator")
   estimationsCreated             Estimation[]                 @relation("EstimationCreator")
+  admissionRequestsRequested     AdmissionRequest[]           @relation("AdmissionRequestRequester")
+  admissionRequestsProcessed     AdmissionRequest[]           @relation("AdmissionRequestProcessor")
   emarSchedulesGiven             EmarSchedule[]               @relation("EmarGivenBy")
   emarSchedulesAmended           EmarSchedule[]               @relation("EmarAmendedBy")
   emarAuditLogs                  EmarAuditLog[]
@@ -1622,14 +1643,14 @@ model Department {
 }
 
 model Floor {
-  id           String   @id @default(uuid())
-  tenantId     String   @map("tenant_id")
-  name         String   @db.VarChar(60)
-  level        Int      @default(0)
-  description  String?
-  isActive     Boolean  @default(true) @map("is_active")
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
+  id          String   @id @default(uuid())
+  tenantId    String   @map("tenant_id")
+  name        String   @db.VarChar(60)
+  level       Int      @default(0)
+  description String?
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
   wards  Ward[]
@@ -1828,6 +1849,7 @@ model Patient {
   mrdRequests               MrdRequest[]
   reservations              Reservation[]
   estimations               Estimation[]
+  admissionRequests         AdmissionRequest[]
   emarSchedules             EmarSchedule[]
   formSubmissions           HospitalFormSubmission[]
 
@@ -2044,6 +2066,7 @@ model DoctorProfile {
   feedback              Feedback[]
   reservations          Reservation[]
   estimations           Estimation[]
+  admissionRequests     AdmissionRequest[]
   nurseAssignments      NurseDoctorAssignment[]
 
   @@map("doctor_profiles")
@@ -2135,11 +2158,11 @@ model Appointment {
   createdAt          DateTime          @default(now()) @map("created_at")
   updatedAt          DateTime          @default(now()) @updatedAt @map("updated_at")
 
-  tenant      Tenant        @relation(fields: [tenantId], references: [id])
-  patient     Patient       @relation(fields: [patientId], references: [id])
-  doctor      DoctorProfile @relation(fields: [doctorId], references: [id])
-  booker      User?         @relation("AppointmentBooker", fields: [bookedBy], references: [id])
-  canceller   User?         @relation("AppointmentCanceller", fields: [cancelledBy], references: [id])
+  tenant          Tenant                   @relation(fields: [tenantId], references: [id])
+  patient         Patient                  @relation(fields: [patientId], references: [id])
+  doctor          DoctorProfile            @relation(fields: [doctorId], references: [id])
+  booker          User?                    @relation("AppointmentBooker", fields: [bookedBy], references: [id])
+  canceller       User?                    @relation("AppointmentCanceller", fields: [cancelledBy], references: [id])
   queueTokens     QueueToken[]
   visits          Visit[]
   formSubmissions HospitalFormSubmission[]
@@ -2213,6 +2236,7 @@ model Visit {
   bills                Bill[]
   transfusions         Transfusion[]
   otRequests           OtRequest[]
+  admissionRequests    AdmissionRequest[]
   formSubmissions      HospitalFormSubmission[]
 
   @@map("visits")
@@ -2351,6 +2375,43 @@ model Estimation {
   creator User?         @relation("EstimationCreator", fields: [createdBy], references: [id])
 
   @@map("estimations")
+}
+
+// Doctor-raised request to admit an OP patient. The front desk works the
+// pending queue from the IP Home page and either accepts (optionally creating
+// a Reservation when ward/bed are known) or rejects. Linking to Visit is
+// optional — emergency walk-ins can be requested before any visit exists.
+model AdmissionRequest {
+  id                    String                  @id @default(uuid())
+  tenantId              String                  @map("tenant_id")
+  patientId             String                  @map("patient_id")
+  visitId               String?                 @map("visit_id")
+  doctorId              String                  @map("doctor_id")
+  reason                String                  @db.VarChar(500)
+  provisionalDiagnosis  String?                 @map("provisional_diagnosis") @db.VarChar(1000)
+  urgency               AdmissionRequestUrgency @default(routine)
+  preferredWardType     String?                 @map("preferred_ward_type") @db.VarChar(100)
+  expectedAdmissionDate DateTime?               @map("expected_admission_date") @db.Date
+  notes                 String?
+  status                AdmissionRequestStatus  @default(pending)
+  reservationId         String?                 @map("reservation_id")
+  admissionId           String?                 @map("admission_id")
+  rejectionReason       String?                 @map("rejection_reason")
+  requestedById         String?                 @map("requested_by_id")
+  processedById         String?                 @map("processed_by_id")
+  processedAt           DateTime?               @map("processed_at")
+  createdAt             DateTime                @default(now()) @map("created_at")
+  updatedAt             DateTime                @default(now()) @updatedAt @map("updated_at")
+
+  tenant      Tenant        @relation(fields: [tenantId], references: [id])
+  patient     Patient       @relation(fields: [patientId], references: [id])
+  visit       Visit?        @relation(fields: [visitId], references: [id])
+  doctor      DoctorProfile @relation(fields: [doctorId], references: [id])
+  requestedBy User?         @relation("AdmissionRequestRequester", fields: [requestedById], references: [id])
+  processedBy User?         @relation("AdmissionRequestProcessor", fields: [processedById], references: [id])
+
+  @@index([tenantId, status, createdAt])
+  @@map("admission_requests")
 }
 
 model Vital {
