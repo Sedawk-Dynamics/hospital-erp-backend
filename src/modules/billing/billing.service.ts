@@ -1087,6 +1087,535 @@ export async function applyDiscount(tenantId: string, billId: string, data: Appl
   return discount;
 }
 
+// --- Patient Charges (auto-pull from clinical sources) ---
+
+export type ChargeSource =
+  | 'consultation'
+  | 'lab'
+  | 'pharmacy'
+  | 'imaging'
+  | 'room'
+  | 'all';
+
+interface ChargeRow {
+  source: 'consultation' | 'lab' | 'pharmacy' | 'imaging' | 'room';
+  referenceType: string;
+  referenceId: string;
+  description: string;
+  quantity: number;
+  unitPrice: number;
+  totalAmount: number;
+  taxRate: number;
+  category: string;
+  occurredAt: string;
+  status: string;
+  alreadyBilled: boolean;
+  billItemId?: string;
+  billId?: string;
+}
+
+const CHARGE_TAX_RATES: Record<string, number> = {
+  consultation: 0,
+  lab: 0,
+  pharmacy: 12,
+  imaging: 0,
+  room: 0,
+};
+
+/**
+ * Lookup of bill_items already created against a (referenceType, referenceId)
+ * tuple for this patient. Used to mark auto-pulled charges so the UI can
+ * grey them out (and so we don't double-bill).
+ */
+async function indexBilledReferences(tenantId: string, patientId: string) {
+  const items = await prisma.billItem.findMany({
+    where: {
+      bill: { tenantId, patientId, status: { not: 'cancelled' } },
+      referenceType: { not: null },
+      referenceId: { not: null },
+    },
+    select: {
+      id: true,
+      billId: true,
+      referenceType: true,
+      referenceId: true,
+    },
+  });
+  const map = new Map<string, { billItemId: string; billId: string }>();
+  for (const it of items) {
+    if (it.referenceType && it.referenceId) {
+      map.set(`${it.referenceType}:${it.referenceId}`, {
+        billItemId: it.id,
+        billId: it.billId,
+      });
+    }
+  }
+  return map;
+}
+
+async function getConsultationCharges(
+  tenantId: string,
+  patientId: string,
+  billedIndex: Map<string, { billItemId: string; billId: string }>,
+): Promise<ChargeRow[]> {
+  const visits = await prisma.visit.findMany({
+    where: { tenantId, patientId },
+    include: {
+      doctor: {
+        select: {
+          consultationFee: true,
+          user: { select: { firstName: true, lastName: true } },
+          specialization: true,
+        },
+      },
+      appointment: { select: { id: true, appointmentDate: true } },
+    },
+    orderBy: { visitDate: 'desc' },
+    take: 50,
+  });
+
+  return visits
+    .filter((v) => v.visitType === 'op' || v.visitType === 'ip')
+    .map((v) => {
+      const fee = toNumber(v.doctor?.consultationFee ?? 0);
+      const doctorName = v.doctor?.user
+        ? `Dr. ${v.doctor.user.firstName} ${v.doctor.user.lastName}`
+        : 'Doctor';
+      const billed = billedIndex.get(`visit:${v.id}`);
+      return {
+        source: 'consultation' as const,
+        referenceType: 'visit',
+        referenceId: v.id,
+        description: `Consultation — ${doctorName} (${formatDateTimeIST(v.visitDate)})`,
+        quantity: 1,
+        unitPrice: fee,
+        totalAmount: fee,
+        taxRate: CHARGE_TAX_RATES.consultation,
+        category: 'consultation',
+        occurredAt: formatDateTimeIST(v.visitDate),
+        status: v.status,
+        alreadyBilled: !!billed,
+        billItemId: billed?.billItemId,
+        billId: billed?.billId,
+      };
+    })
+    .filter((r) => r.unitPrice > 0 || !r.alreadyBilled);
+}
+
+async function getLabCharges(
+  tenantId: string,
+  patientId: string,
+  billedIndex: Map<string, { billItemId: string; billId: string }>,
+): Promise<ChargeRow[]> {
+  const orders = await prisma.labOrder.findMany({
+    where: {
+      tenantId,
+      patientId,
+      status: { notIn: ['cancelled'] as any },
+    },
+    include: {
+      labOrderItems: {
+        include: {
+          test: { select: { id: true, testName: true, testCode: true, price: true } },
+        },
+      },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 100,
+  });
+
+  const rows: ChargeRow[] = [];
+  for (const order of orders) {
+    for (const item of order.labOrderItems) {
+      if (!item.test) continue;
+      const price = toNumber(item.test.price);
+      const billed = billedIndex.get(`lab_order_item:${item.id}`);
+      rows.push({
+        source: 'lab',
+        referenceType: 'lab_order_item',
+        referenceId: item.id,
+        description: `Lab: ${item.test.testName}${item.test.testCode ? ` (${item.test.testCode})` : ''}`,
+        quantity: 1,
+        unitPrice: price,
+        totalAmount: price,
+        taxRate: CHARGE_TAX_RATES.lab,
+        category: 'lab',
+        occurredAt: formatDateTimeIST(order.createdAt),
+        status: item.status,
+        alreadyBilled: !!billed,
+        billItemId: billed?.billItemId,
+        billId: billed?.billId,
+      });
+    }
+  }
+  return rows;
+}
+
+async function getPharmacyCharges(
+  tenantId: string,
+  patientId: string,
+  billedIndex: Map<string, { billItemId: string; billId: string }>,
+): Promise<ChargeRow[]> {
+  const records = await prisma.dispensingRecord.findMany({
+    where: { tenantId, patientId },
+    include: {
+      drugBatch: {
+        select: {
+          batchNumber: true,
+          sellingPrice: true,
+          purchasePrice: true,
+          drug: { select: { drugName: true, price: true } },
+        },
+      },
+    },
+    orderBy: { dispensedAt: 'desc' },
+    take: 200,
+  });
+
+  return records.map((r) => {
+    const unit =
+      toNumber((r.drugBatch as any)?.sellingPrice) ||
+      toNumber((r.drugBatch as any)?.drug?.price) ||
+      toNumber((r.drugBatch as any)?.purchasePrice);
+    const total = unit * r.quantityDispensed;
+    const drugName = (r.drugBatch as any)?.drug?.drugName ?? 'Medication';
+    const batchTag = (r.drugBatch as any)?.batchNumber ? ` (Batch ${(r.drugBatch as any).batchNumber})` : '';
+    const billed = billedIndex.get(`dispensing_record:${r.id}`);
+    return {
+      source: 'pharmacy' as const,
+      referenceType: 'dispensing_record',
+      referenceId: r.id,
+      description: `${drugName}${batchTag}`,
+      quantity: r.quantityDispensed,
+      unitPrice: unit,
+      totalAmount: total,
+      taxRate: CHARGE_TAX_RATES.pharmacy,
+      category: 'pharmacy',
+      occurredAt: formatDateTimeIST(r.dispensedAt),
+      status: 'dispensed',
+      alreadyBilled: !!billed,
+      billItemId: billed?.billItemId,
+      billId: billed?.billId,
+    };
+  });
+}
+
+async function getImagingCharges(
+  tenantId: string,
+  patientId: string,
+  billedIndex: Map<string, { billItemId: string; billId: string }>,
+): Promise<ChargeRow[]> {
+  const requests = await prisma.imagingRequest.findMany({
+    where: { tenantId, patientId, status: { not: 'cancelled' as any } },
+    orderBy: { createdAt: 'desc' },
+    take: 100,
+  });
+
+  // Pricing for imaging: lookup tariff by category=radiology and try to match
+  // by imagingType. Fallback to a configurable baseline.
+  const tariffs = await prisma.serviceTariff.findMany({
+    where: { tenantId, category: 'radiology', isActive: true },
+    select: { id: true, serviceName: true, serviceCode: true, basePrice: true, gstRatePercent: true },
+  });
+
+  const tariffByCode = new Map<string, (typeof tariffs)[number]>();
+  for (const t of tariffs) {
+    if (t.serviceCode) tariffByCode.set(t.serviceCode.toLowerCase(), t);
+    tariffByCode.set(t.serviceName.toLowerCase(), t);
+  }
+
+  return requests.map((req) => {
+    const typeLabel = `${req.imagingType}${req.bodyPart ? ` — ${req.bodyPart}` : ''}`;
+    const tariff =
+      tariffByCode.get(req.imagingType.toLowerCase()) ||
+      tariffByCode.get(typeLabel.toLowerCase());
+    const price = toNumber(tariff?.basePrice ?? 0);
+    const taxRate = toNumber(tariff?.gstRatePercent ?? 0);
+    const billed = billedIndex.get(`imaging_request:${req.id}`);
+    return {
+      source: 'imaging' as const,
+      referenceType: 'imaging_request',
+      referenceId: req.id,
+      description: `Imaging: ${typeLabel}`,
+      quantity: 1,
+      unitPrice: price,
+      totalAmount: price,
+      taxRate,
+      category: 'radiology',
+      occurredAt: formatDateTimeIST(req.createdAt),
+      status: req.status,
+      alreadyBilled: !!billed,
+      billItemId: billed?.billItemId,
+      billId: billed?.billId,
+    };
+  });
+}
+
+async function getRoomCharges(
+  tenantId: string,
+  patientId: string,
+  billedIndex: Map<string, { billItemId: string; billId: string }>,
+): Promise<ChargeRow[]> {
+  const admissions = await prisma.admission.findMany({
+    where: { tenantId, patientId },
+    include: {
+      bed: { select: { bedNumber: true, bedType: true } },
+      ward: { select: { name: true } },
+    },
+    orderBy: { admissionDate: 'desc' },
+    take: 20,
+  });
+
+  // Per-day room rate from ServiceTariff (category=room). Match by bedType
+  // as serviceCode (e.g. "general", "icu", "private") — fallback to first
+  // active room tariff.
+  const roomTariffs = await prisma.serviceTariff.findMany({
+    where: { tenantId, category: 'room', isActive: true },
+  });
+
+  return admissions.map((adm) => {
+    const start = new Date(adm.admissionDate);
+    const end = adm.dischargeDate ? new Date(adm.dischargeDate) : new Date();
+    const days = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)));
+
+    const bedType = adm.bed?.bedType ?? null;
+    const tariff =
+      roomTariffs.find((t) => (t.serviceCode ?? '').toLowerCase() === String(bedType ?? '').toLowerCase()) ||
+      roomTariffs[0];
+
+    const unit = toNumber(tariff?.basePrice ?? 0);
+    const total = unit * days;
+    const wardName = adm.ward?.name ?? 'Ward';
+    const bedNumber = adm.bed?.bedNumber ?? '-';
+    const billed = billedIndex.get(`admission:${adm.id}`);
+    return {
+      source: 'room' as const,
+      referenceType: 'admission',
+      referenceId: adm.id,
+      description: `Room (${wardName} / Bed ${bedNumber}) — ${days} day${days === 1 ? '' : 's'}`,
+      quantity: days,
+      unitPrice: unit,
+      totalAmount: total,
+      taxRate: CHARGE_TAX_RATES.room,
+      category: 'room',
+      occurredAt: formatDateTimeIST(adm.admissionDate),
+      status: adm.status,
+      alreadyBilled: !!billed,
+      billItemId: billed?.billItemId,
+      billId: billed?.billId,
+    };
+  });
+}
+
+/**
+ * Unified "what hasn't been billed yet" feed for a patient. Front-desk uses
+ * this on the Billing tab to auto-pull line items across modules into a
+ * single bill, and to flag charges that are already on a bill.
+ */
+export async function getPatientCharges(
+  tenantId: string,
+  query: { patientId: string; source?: ChargeSource; includeBilled?: boolean },
+) {
+  const patient = await prisma.patient.findFirst({
+    where: { id: query.patientId, tenantId },
+  });
+  if (!patient) {
+    throw AppError.notFound('Patient not found');
+  }
+
+  const source = query.source ?? 'all';
+  const billedIndex = await indexBilledReferences(tenantId, query.patientId);
+
+  let rows: ChargeRow[] = [];
+  if (source === 'consultation' || source === 'all') {
+    rows = rows.concat(await getConsultationCharges(tenantId, query.patientId, billedIndex));
+  }
+  if (source === 'lab' || source === 'all') {
+    rows = rows.concat(await getLabCharges(tenantId, query.patientId, billedIndex));
+  }
+  if (source === 'pharmacy' || source === 'all') {
+    rows = rows.concat(await getPharmacyCharges(tenantId, query.patientId, billedIndex));
+  }
+  if (source === 'imaging' || source === 'all') {
+    rows = rows.concat(await getImagingCharges(tenantId, query.patientId, billedIndex));
+  }
+  if (source === 'room' || source === 'all') {
+    rows = rows.concat(await getRoomCharges(tenantId, query.patientId, billedIndex));
+  }
+
+  if (!query.includeBilled) {
+    rows = rows.filter((r) => !r.alreadyBilled);
+  }
+
+  // Totals by source for the auto-pull UI summary strip.
+  const summary = {
+    consultation: 0,
+    lab: 0,
+    pharmacy: 0,
+    imaging: 0,
+    room: 0,
+    grandTotal: 0,
+    count: rows.length,
+  };
+  for (const r of rows) {
+    summary[r.source] += r.totalAmount;
+    summary.grandTotal += r.totalAmount;
+  }
+
+  return { charges: rows, summary };
+}
+
+/**
+ * Bulk-add unbilled charges to a bill (creates one BillItem per row with
+ * referenceType/referenceId set so future pulls won't duplicate). Used by
+ * the "Auto-Pull Selected" button on the Billing tab.
+ */
+export async function pullChargesToBill(
+  tenantId: string,
+  billId: string,
+  charges: Array<{
+    referenceType: string;
+    referenceId: string;
+    description: string;
+    quantity: number;
+    unitPrice: number;
+    taxRate?: number;
+    category?: string;
+  }>,
+) {
+  const bill = await prisma.bill.findFirst({ where: { id: billId, tenantId } });
+  if (!bill) throw AppError.notFound('Bill not found');
+  if (bill.status !== 'draft') {
+    throw AppError.badRequest('Can only auto-pull into draft bills');
+  }
+
+  const created: any[] = [];
+  await prisma.$transaction(async (tx) => {
+    for (const c of charges) {
+      // Idempotency: skip if a bill item with the same reference already
+      // exists on this bill.
+      const exists = await tx.billItem.findFirst({
+        where: { billId, referenceType: c.referenceType, referenceId: c.referenceId },
+      });
+      if (exists) continue;
+
+      const taxPercent = c.taxRate ?? 0;
+      const subtotal = c.quantity * c.unitPrice;
+      const taxAmount = subtotal * (taxPercent / 100);
+      const totalAmount = subtotal + taxAmount;
+      const item = await tx.billItem.create({
+        data: {
+          billId,
+          description: c.description,
+          category: (c.category as any) ?? 'other',
+          quantity: c.quantity,
+          unitPrice: c.unitPrice,
+          discountAmount: 0,
+          discountPercent: 0,
+          taxPercent,
+          taxAmount,
+          totalAmount,
+          referenceType: c.referenceType,
+          referenceId: c.referenceId,
+          isAutoPulled: true,
+        },
+      });
+      created.push(item);
+    }
+  });
+
+  await recalculateBillTotals(billId);
+  logger.info({ tenantId, billId, count: created.length }, 'Charges auto-pulled to bill');
+  return { added: created.length, billId };
+}
+
+// --- Bill-level discount (single value, editable) ---
+
+export async function setBillDiscount(
+  tenantId: string,
+  billId: string,
+  data: {
+    discountType: 'percentage' | 'fixed';
+    discountValue: number;
+    reason?: string;
+    approvedBy?: string;
+  },
+) {
+  const bill = await prisma.bill.findFirst({
+    where: { id: billId, tenantId },
+    include: { billItems: true },
+  });
+  if (!bill) throw AppError.notFound('Bill not found');
+  if (bill.status !== 'draft' && bill.status !== 'pending' && bill.status !== 'partially_paid') {
+    throw AppError.badRequest('Discount can only be applied to draft, pending or partially-paid bills');
+  }
+
+  const subtotal = bill.billItems.reduce(
+    (sum, it) => sum + it.quantity * toNumber(it.unitPrice),
+    0,
+  );
+  const itemDiscounts = bill.billItems.reduce(
+    (sum, it) => sum + toNumber(it.discountAmount),
+    0,
+  );
+  const itemTax = bill.billItems.reduce(
+    (sum, it) => sum + toNumber(it.taxAmount),
+    0,
+  );
+
+  let billDiscountAmt = 0;
+  if (data.discountType === 'percentage') {
+    if (data.discountValue < 0 || data.discountValue > 100) {
+      throw AppError.badRequest('Percentage discount must be between 0 and 100');
+    }
+    billDiscountAmt = (subtotal - itemDiscounts) * (data.discountValue / 100);
+  } else {
+    if (data.discountValue < 0) throw AppError.badRequest('Discount cannot be negative');
+    billDiscountAmt = Math.min(data.discountValue, subtotal - itemDiscounts);
+  }
+
+  const totalDiscount = itemDiscounts + billDiscountAmt;
+  const totalAmount = Math.max(0, subtotal - totalDiscount + itemTax);
+
+  // Remove any prior bill-level discount rows (keep an audit row).
+  await prisma.discount.deleteMany({ where: { billId } });
+  if (data.discountValue > 0) {
+    await prisma.discount.create({
+      data: {
+        tenantId,
+        billId,
+        discountType: data.discountType as any,
+        value: billDiscountAmt,
+        reason: data.reason,
+        approvedBy: data.approvedBy,
+      },
+    });
+  }
+
+  const amountPaid = toNumber(bill.amountPaid);
+  const updated = await prisma.bill.update({
+    where: { id: billId },
+    data: {
+      subtotal,
+      taxAmount: itemTax,
+      discountAmount: totalDiscount,
+      totalAmount,
+      balanceDue: Math.max(0, totalAmount - amountPaid),
+      status:
+        bill.status === 'draft'
+          ? 'draft'
+          : amountPaid >= totalAmount && totalAmount > 0
+            ? 'paid'
+            : amountPaid > 0
+              ? 'partially_paid'
+              : 'pending',
+    },
+  });
+
+  logger.info({ tenantId, billId, billDiscountAmt }, 'Bill-level discount applied');
+  return updated;
+}
+
 // --- Patient Bills ---
 
 export async function getPatientBills(tenantId: string, patientId: string) {

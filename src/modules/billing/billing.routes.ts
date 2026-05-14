@@ -17,10 +17,23 @@ import {
   billIdParamSchema,
   refundIdParamSchema,
   patientIdParamSchema,
+  getChargesQuerySchema,
+  pullChargesSchema,
+  setBillDiscountSchema,
 } from './billing.validation';
 import * as controller from './billing.controller';
 
 export const billingRoutes = Router();
+
+// --- Charges (auto-pull from clinical sources) ---
+
+billingRoutes.get(
+  '/charges',
+  authenticate,
+  requirePermission('billing', 'read'),
+  validate(getChargesQuerySchema),
+  controller.getCharges,
+);
 
 // --- Service Tariffs ---
 
@@ -146,6 +159,22 @@ billingRoutes.post(
   authenticate,
   validate(addBillItemSchema),
   controller.addBillItem,
+);
+
+billingRoutes.post(
+  '/:id/pull-charges',
+  authenticate,
+  requirePermission('billing', 'create'),
+  validate(pullChargesSchema),
+  controller.pullCharges,
+);
+
+billingRoutes.patch(
+  '/:id/discount',
+  authenticate,
+  requirePermission('billing', 'update'),
+  validate(setBillDiscountSchema),
+  controller.setBillDiscount,
 );
 
 billingRoutes.delete(

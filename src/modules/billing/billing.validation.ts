@@ -202,6 +202,67 @@ export const tariffIdParamSchema = z.object({
   }),
 });
 
+export const getChargesQuerySchema = z.object({
+  query: z.object({
+    patientId: z.string().uuid('Invalid patient ID'),
+    source: z
+      .enum(['consultation', 'lab', 'pharmacy', 'imaging', 'room', 'all'])
+      .optional(),
+    includeBilled: z
+      .string()
+      .transform((v) => v === 'true')
+      .optional(),
+  }),
+});
+
+export const pullChargesSchema = z.object({
+  body: z.object({
+    charges: z
+      .array(
+        z.object({
+          referenceType: z.string().min(1),
+          referenceId: z.string().min(1),
+          description: z.string().min(1).max(500),
+          quantity: z.number().int().positive().default(1),
+          unitPrice: z.number().nonnegative(),
+          taxRate: z.number().min(0).max(100).optional(),
+          category: z
+            .enum([
+              'consultation',
+              'surgery',
+              'room',
+              'lab',
+              'radiology',
+              'pharmacy',
+              'procedure',
+              'other',
+            ])
+            .optional(),
+        }),
+      )
+      .min(1, 'At least one charge is required'),
+  }),
+  params: z.object({
+    id: z.string().uuid('Invalid bill ID'),
+  }),
+});
+
+export const setBillDiscountSchema = z.object({
+  body: z.object({
+    discountType: z.enum(['percentage', 'fixed']),
+    discountValue: z.number().min(0, 'Discount cannot be negative'),
+    reason: z.string().max(500).optional(),
+    approvedBy: z.string().uuid().optional(),
+  }),
+  params: z.object({
+    id: z.string().uuid('Invalid bill ID'),
+  }),
+});
+
+export type GetChargesQuery = z.infer<typeof getChargesQuerySchema>['query'];
+export type PullChargesInput = z.infer<typeof pullChargesSchema>['body'];
+export type SetBillDiscountInput = z.infer<typeof setBillDiscountSchema>['body'];
+
 export type CreateServiceTariffInput = z.infer<typeof createServiceTariffSchema>['body'];
 export type UpdateServiceTariffInput = z.infer<typeof updateServiceTariffSchema>['body'];
 export type CreateBillInput = z.infer<typeof createBillSchema>['body'];

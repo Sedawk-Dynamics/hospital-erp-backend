@@ -3,6 +3,68 @@ import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse, sendPaginatedResponse } from '../../shared/apiResponse';
 import * as billingService from './billing.service';
 
+// --- Charges (auto-pull) ---
+
+export async function getCharges(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const result = await billingService.getPatientCharges(tenantId, req.query as any);
+    sendResponse({ res, message: 'Charges retrieved successfully', data: result });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function pullCharges(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const result = await billingService.pullChargesToBill(
+      tenantId,
+      req.params.id as string,
+      req.body.charges,
+    );
+    sendResponse({
+      res,
+      statusCode: 201,
+      message: 'Charges auto-pulled to bill',
+      data: result,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// --- Bill-level discount ---
+
+export async function setBillDiscount(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const bill = await billingService.setBillDiscount(
+      tenantId,
+      req.params.id as string,
+      {
+        ...req.body,
+        approvedBy: req.body.approvedBy ?? req.user!.userId,
+      },
+    );
+    sendResponse({ res, message: 'Discount updated', data: bill });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // --- Service Tariffs ---
 
 export async function createServiceTariff(
