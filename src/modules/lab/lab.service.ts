@@ -1818,6 +1818,48 @@ export async function getLabReportById(tenantId: string, id: string) {
 }
 
 // ============================================================
+// Public report verification (QR landing)
+// ============================================================
+// Returns a minimal, privacy-preserving authenticity card. Used by the
+// `qrCodeUrl` printed on the branded lab report — anyone with the QR can
+// confirm the report exists and is genuine, without seeing PHI.
+export async function getPublicLabReportSummary(orderId: string) {
+  const report = await prisma.labReport.findUnique({
+    where: { labOrderId: orderId },
+    include: {
+      labOrder: {
+        select: {
+          id: true,
+          tenantId: true,
+          patient: { select: { firstName: true, lastName: true } },
+        },
+      },
+    },
+  });
+
+  if (!report) return null;
+
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: report.labOrder.tenantId },
+    select: { name: true },
+  });
+
+  const initials = `${(report.labOrder.patient.firstName ?? '').slice(0, 1)}${(report.labOrder.patient.lastName ?? '').slice(0, 1)}`.toUpperCase();
+
+  return {
+    reportId: report.id,
+    orderId: report.labOrderId,
+    hospitalName: tenant?.name ?? 'Hospital',
+    patientInitials: initials || 'XX',
+    status: report.status,
+    version: report.version,
+    issuedAt: report.publishedAt ?? report.signedAt,
+    isPublished: report.status === 'published',
+    isCorrectedCopy: report.status === 'corrected',
+  };
+}
+
+// ============================================================
 // Investigation History (aggregated per patient)
 // ============================================================
 // Returns every lab order for the patient within the tenant, with:

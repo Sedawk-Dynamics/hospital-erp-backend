@@ -1,4 +1,4 @@
-import { Response, NextFunction } from 'express';
+import { Request, Response, NextFunction } from 'express';
 import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse, sendPaginatedResponse } from '../../shared/apiResponse';
 import * as labService from './lab.service';
@@ -622,6 +622,24 @@ export async function getLabDashboard(
     const tenantId = req.user!.tenantId;
     const data = await labService.getLabDashboard(tenantId);
     sendResponse({ res, message: 'Lab dashboard', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Public — no auth. Backs the QR code on the printed branded report.
+export async function getPublicLabReportSummary(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await labService.getPublicLabReportSummary(req.params.orderId as string);
+    if (!data) {
+      sendResponse({ res, statusCode: 404, message: 'Report not found' });
+      return;
+    }
+    sendResponse({ res, message: 'Report verification', data });
   } catch (err) {
     next(err);
   }

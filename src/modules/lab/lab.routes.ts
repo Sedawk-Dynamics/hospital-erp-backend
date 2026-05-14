@@ -40,6 +40,12 @@ import { sendResponse } from '../../shared/apiResponse';
 
 export const labRoutes = Router();
 
+// --- Public report verification (no auth) ---
+// The branded report's QR code points here. Returns a minimal, PHI-free
+// authenticity summary so any third party scanning the code can confirm the
+// report is genuine.
+labRoutes.get('/public/verify/:orderId', controller.getPublicLabReportSummary);
+
 // --- Lab Departments ---
 labRoutes.post('/departments', authenticate, requirePermission('lab_orders', 'create'), validate(createLabDepartmentSchema), controller.createLabDepartment);
 labRoutes.get('/departments', authenticate, requirePermission('lab_orders', 'read'), validate(getLabDepartmentsSchema), controller.getLabDepartments);

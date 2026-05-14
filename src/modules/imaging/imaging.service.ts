@@ -673,3 +673,123 @@ export async function verifyImagingResult(tenantId: string, id: string, userId: 
   logger.info({ tenantId, imagingResultId: id, verifiedBy: userId }, 'Imaging result verified');
   return updated;
 }
+
+// ============================================================
+// Analytics (TAT, volume by modality, status mix, technician load)
+// ============================================================
+
+export async function getImagingAnalytics(
+  tenantId: string,
+  range: { fromDate?: string; toDate?: string },
+) {
+  const where: any = { tenantId };
+  if (range.fromDate) where.createdAt = { ...where.createdAt, gte: new Date(range.fromDate) };
+  if (range.toDate) where.createdAt = { ...where.createdAt, lte: new Date(range.toDate) };
+
+  const [requests, publishedResults] = await Promise.all([
+    prisma.imagingRequest.findMany({
+      where,
+      select: {
+        id: true,
+        status: true,
+        imagingType: true,
+        bodyPart: true,
+        urgency: true,
+        createdAt: true,
+        scheduledAt: true,
+        completedAt: true,
+        assignedTechnicianId: true,
+        assignedTechnician: { select: { id: true, firstName: true, lastName: true } },
+      },
+    }),
+    prisma.imagingResult.findMany({
+      where: { imagingRequest: where, status: 'published' },
+      select: {
+        id: true,
+        imagingRequest: { select: { createdAt: true } },
+        signedAt: true,
+      },
+    }),
+  ]);
+
+  // Status mix
+  const statusMix: Record<string, number> = {
+    requested: 0,
+    scheduled: 0,
+    in_progress: 0,
+    completed: 0,
+    cancelled: 0,
+  };
+  for (const r of requests) {
+    statusMix[r.status] = (statusMix[r.status] ?? 0) + 1;
+  }
+
+  // Volume by modality
+  const modalityMap = new Map<string, number>();
+  for (const r of requests) {
+    modalityMap.set(r.imagingType, (modalityMap.get(r.imagingType) ?? 0) + 1);
+  }
+  const modalityVolume = Array.from(modalityMap.entries())
+    .map(([modality, count]) => ({ modality, count }))
+    .sort((a, b) => b.count - a.count);
+
+  // Body part top list
+  const bodyPartMap = new Map<string, number>();
+  for (const r of requests) {
+    if (r.bodyPart) bodyPartMap.set(r.bodyPart, (bodyPartMap.get(r.bodyPart) ?? 0) + 1);
+  }
+  const bodyPartVolume = Array.from(bodyPartMap.entries())
+    .map(([bodyPart, count]) => ({ bodyPart, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 10);
+
+  // Urgency mix
+  const urgencyMix: Record<string, number> = { routine: 0, urgent: 0, stat: 0 };
+  for (const r of requests) {
+    urgencyMix[r.urgency] = (urgencyMix[r.urgency] ?? 0) + 1;
+  }
+
+  // TAT: request createdAt → result signedAt
+  const tats: number[] = [];
+  for (const res of publishedResults) {
+    if (res.signedAt && res.imagingRequest?.createdAt) {
+      tats.push((res.signedAt.getTime() - res.imagingRequest.createdAt.getTime()) / (1000 * 60 * 60));
+    }
+  }
+  const avgTatHours = tats.length ? tats.reduce((a, b) => a + b, 0) / tats.length : 0;
+  const medianTatHours = tats.length
+    ? [...tats].sort((a, b) => a - b)[Math.floor(tats.length / 2)]
+    : 0;
+
+  // Technician workload (assigned requests)
+  const techMap = new Map<string, { id: string; name: string; count: number }>();
+  for (const r of requests) {
+    if (!r.assignedTechnicianId || !r.assignedTechnician) continue;
+    const key = r.assignedTechnicianId;
+    const existing = techMap.get(key);
+    const name = `${r.assignedTechnician.firstName} ${r.assignedTechnician.lastName ?? ''}`.trim();
+    if (existing) {
+      existing.count += 1;
+    } else {
+      techMap.set(key, { id: r.assignedTechnicianId, name, count: 1 });
+    }
+  }
+  const technicianWorkload = Array.from(techMap.values()).sort((a, b) => b.count - a.count);
+
+  return {
+    summary: {
+      totalRequests: requests.length,
+      completedRequests: statusMix.completed,
+      openRequests:
+        statusMix.requested + statusMix.scheduled + statusMix.in_progress,
+      publishedReports: publishedResults.length,
+      avgTatHours: Number(avgTatHours.toFixed(2)),
+      medianTatHours: Number(medianTatHours.toFixed(2)),
+    },
+    statusMix,
+    urgencyMix,
+    modalityVolume,
+    bodyPartVolume,
+    technicianWorkload,
+  };
+}
