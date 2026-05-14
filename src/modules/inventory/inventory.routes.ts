@@ -25,6 +25,21 @@ import {
   fulfillSupplyRequestSchema,
 } from './inventory.validation';
 import * as controller from './inventory.controller';
+import * as reportsController from './inventory.reports.controller';
+import {
+  stockBalanceReportSchema,
+  deptConsumptionReportSchema,
+  reorderHistoryReportSchema,
+  expiryWasteReportSchema,
+  auditLogsReportSchema,
+  createStockTransferSchema,
+  listStockTransfersSchema,
+  stockTransferIdSchema,
+  approveStockTransferSchema,
+  rejectStockTransferSchema,
+  dispatchStockTransferSchema,
+  cancelStockTransferSchema,
+} from './inventory.reports.validation';
 
 export const inventoryRoutes = Router();
 
@@ -57,6 +72,26 @@ inventoryRoutes.get('/purchase-orders/:id', authenticate, requirePermission('inv
 inventoryRoutes.put('/purchase-orders/:id', authenticate, requirePermission('inventory', 'update'), validate(updatePurchaseOrderSchema), controller.updatePurchaseOrder);
 inventoryRoutes.patch('/purchase-orders/:id/approve', authenticate, requirePermission('inventory', 'approve'), validate(approvePurchaseOrderSchema), controller.approvePurchaseOrder);
 inventoryRoutes.patch('/purchase-orders/:id/receive', authenticate, requirePermission('inventory', 'update'), validate(receivePurchaseOrderSchema), controller.receivePurchaseOrder);
+
+// --- Reports (Week 10) ---
+// Stock balance / dept consumption / reorder history / expiry-waste / audit logs.
+// All are read-only and require `inventory:read`; access is further scoped per
+// tenant inside the service.
+inventoryRoutes.get('/reports/stock-balance', authenticate, requirePermission('inventory', 'read'), validate(stockBalanceReportSchema), reportsController.stockBalanceReport);
+inventoryRoutes.get('/reports/dept-consumption', authenticate, requirePermission('inventory', 'read'), validate(deptConsumptionReportSchema), reportsController.deptConsumptionReport);
+inventoryRoutes.get('/reports/reorder-history', authenticate, requirePermission('inventory', 'read'), validate(reorderHistoryReportSchema), reportsController.reorderHistoryReport);
+inventoryRoutes.get('/reports/expiry-waste', authenticate, requirePermission('inventory', 'read'), validate(expiryWasteReportSchema), reportsController.expiryWasteReport);
+inventoryRoutes.get('/reports/audit-logs', authenticate, requirePermission('inventory', 'read'), validate(auditLogsReportSchema), reportsController.auditLogsReport);
+
+// --- Stock Transfers (Week 10) ---
+inventoryRoutes.post('/transfers', authenticate, requirePermission('inventory', 'create'), validate(createStockTransferSchema), reportsController.createTransfer);
+inventoryRoutes.get('/transfers', authenticate, requirePermission('inventory', 'read'), validate(listStockTransfersSchema), reportsController.listTransfers);
+inventoryRoutes.get('/transfers/:id', authenticate, requirePermission('inventory', 'read'), validate(stockTransferIdSchema), reportsController.getTransfer);
+inventoryRoutes.patch('/transfers/:id/approve', authenticate, requirePermission('inventory', 'approve'), validate(approveStockTransferSchema), reportsController.approveTransfer);
+inventoryRoutes.patch('/transfers/:id/reject', authenticate, requirePermission('inventory', 'approve'), validate(rejectStockTransferSchema), reportsController.rejectTransfer);
+inventoryRoutes.patch('/transfers/:id/dispatch', authenticate, requirePermission('inventory', 'update'), validate(dispatchStockTransferSchema), reportsController.dispatchTransfer);
+inventoryRoutes.patch('/transfers/:id/receive', authenticate, requirePermission('inventory', 'update'), validate(stockTransferIdSchema), reportsController.receiveTransfer);
+inventoryRoutes.patch('/transfers/:id/cancel', authenticate, requirePermission('inventory', 'update'), validate(cancelStockTransferSchema), reportsController.cancelTransfer);
 
 // --- Supply Requests ---
 inventoryRoutes.post('/supply-requests', authenticate, requirePermission('inventory', 'create'), validate(createSupplyRequestSchema), controller.createSupplyRequest);

@@ -756,6 +756,15 @@ enum SupplyUrgency {
   urgent  @map("urgent")
 }
 
+enum StockTransferStatus {
+  pending     @map("pending")
+  approved    @map("approved")
+  dispatched  @map("dispatched")
+  received    @map("received")
+  rejected    @map("rejected")
+  cancelled   @map("cancelled")
+}
+
 enum ReturnType {
   patient_return @map("patient_return")
   vendor_return  @map("vendor_return")
@@ -1213,6 +1222,7 @@ model Tenant {
   stockTransactions          StockTransaction[]
   purchaseOrders             PurchaseOrder[]
   supplyRequests             SupplyRequest[]
+  stockTransfers             StockTransfer[]
   serviceTariffs             ServiceTariff[]
   bills                      Bill[]
   payments                   Payment[]
@@ -1438,6 +1448,10 @@ model User {
   purchaseOrdersApproved         PurchaseOrder[]
   supplyRequestsRequested        SupplyRequest[]              @relation("SupplyRequester")
   supplyRequestsApproved         SupplyRequest[]              @relation("SupplyApprover")
+  stockTransfersRequested        StockTransfer[]              @relation("StockTransferRequester")
+  stockTransfersApproved         StockTransfer[]              @relation("StockTransferApprover")
+  stockTransfersDispatched       StockTransfer[]              @relation("StockTransferDispatcher")
+  stockTransfersReceived         StockTransfer[]              @relation("StockTransferReceiver")
   billsGenerated                 Bill[]                       @relation("BillGenerator")
   billsApproved                  Bill[]                       @relation("BillApprover")
   billsCancelled                 Bill[]                       @relation("BillCanceller")
@@ -1651,6 +1665,8 @@ model Department {
   tickets           Ticket[]
   feedback          Feedback[]
   doctorProfiles    DoctorProfile[]
+  stockTransfersFrom StockTransfer[] @relation("StockTransferFromDept")
+  stockTransfersTo   StockTransfer[] @relation("StockTransferToDept")
 
   @@map("departments")
 }
@@ -2077,6 +2093,8 @@ model DoctorProfile {
   dischargeSummaries    DischargeSummary[]
   prescriptions         Prescription[]
   otRequests            OtRequest[]
+  otRequestsAsSurgeon     OtRequest[]            @relation("OtSurgeon")
+  otRequestsAsAnaesthetist OtRequest[]            @relation("OtAnaesthetist")
   feedback              Feedback[]
   reservations          Reservation[]
   estimations           Estimation[]
@@ -3744,6 +3762,7 @@ model InventoryItem {
   stockTransactions  StockTransaction[]
   purchaseOrderItems PurchaseOrderItem[]
   supplyRequests     SupplyRequest[]
+  stockTransfers     StockTransfer[]
 
   @@map("inventory_items")
 }
@@ -3836,6 +3855,46 @@ model SupplyRequest {
   approver      User?         @relation("SupplyApprover", fields: [approvedBy], references: [id])
 
   @@map("supply_requests")
+}
+
+model StockTransfer {
+  id                  String              @id @default(uuid())
+  tenantId            String              @map("tenant_id")
+  transferNumber      String              @unique @map("transfer_number") @db.VarChar(50)
+  inventoryItemId     String              @map("inventory_item_id")
+  fromDepartmentId    String?             @map("from_department_id")
+  toDepartmentId      String?             @map("to_department_id")
+  fromLocation        String?             @map("from_location") @db.VarChar(100)
+  toLocation          String?             @map("to_location") @db.VarChar(100)
+  quantityRequested   Int                 @map("quantity_requested")
+  quantityTransferred Int                 @default(0) @map("quantity_transferred")
+  batchNumber         String?             @map("batch_number") @db.VarChar(100)
+  status              StockTransferStatus @default(pending)
+  reason              String?
+  notes               String?
+  requestedBy         String              @map("requested_by")
+  approvedBy          String?             @map("approved_by")
+  approvedAt          DateTime?           @map("approved_at")
+  dispatchedBy        String?             @map("dispatched_by")
+  dispatchedAt        DateTime?           @map("dispatched_at")
+  receivedBy          String?             @map("received_by")
+  receivedAt          DateTime?           @map("received_at")
+  rejectionReason     String?             @map("rejection_reason")
+  createdAt           DateTime            @default(now()) @map("created_at")
+  updatedAt           DateTime            @default(now()) @updatedAt @map("updated_at")
+
+  tenant         Tenant        @relation(fields: [tenantId], references: [id])
+  inventoryItem  InventoryItem @relation(fields: [inventoryItemId], references: [id])
+  fromDepartment Department?   @relation("StockTransferFromDept", fields: [fromDepartmentId], references: [id])
+  toDepartment   Department?   @relation("StockTransferToDept", fields: [toDepartmentId], references: [id])
+  requester      User          @relation("StockTransferRequester", fields: [requestedBy], references: [id])
+  approver       User?         @relation("StockTransferApprover", fields: [approvedBy], references: [id])
+  dispatcher     User?         @relation("StockTransferDispatcher", fields: [dispatchedBy], references: [id])
+  receiver       User?         @relation("StockTransferReceiver", fields: [receivedBy], references: [id])
+
+  @@index([tenantId, status])
+  @@index([tenantId, inventoryItemId])
+  @@map("stock_transfers")
 }
 
 // ============================================================
@@ -4676,32 +4735,51 @@ model ComplianceDocument {
 }
 
 model OtRequest {
-  id                String           @id @default(uuid())
-  tenantId          String           @map("tenant_id")
-  patientId         String           @map("patient_id")
-  visitId           String           @map("visit_id")
-  doctorId          String           @map("doctor_id")
-  otId              String?          @map("ot_id")
-  procedureName     String           @map("procedure_name") @db.VarChar(255)
-  procedureDetails  String?          @map("procedure_details")
-  urgency           OtRequestUrgency @default(elective)
-  preferredDate     DateTime?        @map("preferred_date") @db.Date
-  preferredTime     DateTime?        @map("preferred_time") @db.Time()
-  scheduledDate     DateTime?        @map("scheduled_date") @db.Date
-  scheduledTime     DateTime?        @map("scheduled_time") @db.Time()
-  durationMinutes   Int?             @map("duration_minutes")
-  requiredEquipment Json?            @map("required_equipment")
-  preOpChecklist    Json?            @map("pre_op_checklist")
-  status            OtRequestStatus  @default(requested)
-  createdAt         DateTime         @default(now()) @map("created_at")
-  updatedAt         DateTime         @default(now()) @updatedAt @map("updated_at")
+  id                  String           @id @default(uuid())
+  tenantId            String           @map("tenant_id")
+  patientId           String           @map("patient_id")
+  visitId             String           @map("visit_id")
+  doctorId            String           @map("doctor_id")
+  surgeonId           String?          @map("surgeon_id")
+  anaesthetistId      String?          @map("anaesthetist_id")
+  otId                String?          @map("ot_id")
+  procedureName       String           @map("procedure_name") @db.VarChar(255)
+  procedureDetails    String?          @map("procedure_details")
+  surgeryType         String?          @map("surgery_type") @db.VarChar(50)
+  speciality          String?          @db.VarChar(100)
+  urgency             OtRequestUrgency @default(elective)
+  preferredDate       DateTime?        @map("preferred_date") @db.Date
+  preferredTime       DateTime?        @map("preferred_time") @db.Time()
+  scheduledDate       DateTime?        @map("scheduled_date") @db.Date
+  scheduledTime       DateTime?        @map("scheduled_time") @db.Time()
+  scheduledStartTime  String?          @map("scheduled_start_time") @db.VarChar(10)
+  scheduledEndTime    String?          @map("scheduled_end_time") @db.VarChar(10)
+  actualStartTime     DateTime?        @map("actual_start_time")
+  actualEndTime       DateTime?        @map("actual_end_time")
+  durationMinutes     Int?             @map("duration_minutes")
+  requiredEquipment   Json?            @map("required_equipment")
+  preOpChecklist      Json?            @map("pre_op_checklist")
+  preOpDiagnosis      String?          @map("pre_op_diagnosis")
+  postOpDiagnosis     String?          @map("post_op_diagnosis")
+  notes               String?
+  billingAmount       Decimal?         @map("billing_amount") @db.Decimal(12, 2)
+  billingStatus       String?          @map("billing_status") @db.VarChar(20)
+  cancellationReason  String?          @map("cancellation_reason")
+  status              OtRequestStatus  @default(requested)
+  createdAt           DateTime         @default(now()) @map("created_at")
+  updatedAt           DateTime         @default(now()) @updatedAt @map("updated_at")
 
-  tenant  Tenant            @relation(fields: [tenantId], references: [id])
-  patient Patient           @relation(fields: [patientId], references: [id])
-  visit   Visit             @relation(fields: [visitId], references: [id])
-  doctor  DoctorProfile     @relation(fields: [doctorId], references: [id])
-  ot      OperatingTheater? @relation(fields: [otId], references: [id])
+  tenant       Tenant            @relation(fields: [tenantId], references: [id])
+  patient      Patient           @relation(fields: [patientId], references: [id])
+  visit        Visit             @relation(fields: [visitId], references: [id])
+  doctor       DoctorProfile     @relation(fields: [doctorId], references: [id])
+  surgeon      DoctorProfile?    @relation("OtSurgeon", fields: [surgeonId], references: [id])
+  anaesthetist DoctorProfile?    @relation("OtAnaesthetist", fields: [anaesthetistId], references: [id])
+  ot           OperatingTheater? @relation(fields: [otId], references: [id])
 
+  @@index([surgeonId])
+  @@index([anaesthetistId])
+  @@index([scheduledDate])
   @@map("ot_requests")
 }
 

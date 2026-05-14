@@ -26,6 +26,11 @@ import {
   otRequestIdParamSchema,
   approveOtRequestSchema,
   scheduleOtSchema,
+  updateOtRequestSchema,
+  otAnalyticsQuerySchema,
+  createOtSchema,
+  updateOtSchema,
+  otIdParamSchema,
   reportIncidentSchema,
   getIncidentsQuerySchema,
   incidentIdParamSchema,
@@ -64,11 +69,20 @@ complianceRoutes.put('/documents/:id', authenticate, requirePermission('complian
 complianceRoutes.patch('/documents/:id/approve', authenticate, requirePermission('compliance', 'approve'), validate(approveComplianceDocSchema), controller.approveComplianceDoc);
 
 // --- OT Requests ---
+// Analytics endpoint comes first so it's not shadowed by the `:id` matcher.
+complianceRoutes.get('/ot-requests/analytics', authenticate, validate(otAnalyticsQuerySchema), controller.otAnalytics);
 complianceRoutes.post('/ot-requests', authenticate, validate(createOtRequestSchema), controller.createOTRequest);
 complianceRoutes.get('/ot-requests', authenticate, validate(getOtRequestsQuerySchema), controller.getOTRequests);
 complianceRoutes.get('/ot-requests/:id', authenticate, validate(otRequestIdParamSchema), controller.getOTRequestById);
+complianceRoutes.patch('/ot-requests/:id', authenticate, validate(updateOtRequestSchema), controller.updateOTRequest);
 complianceRoutes.patch('/ot-requests/:id/approve', authenticate, validate(approveOtRequestSchema), controller.approveOTRequest);
 complianceRoutes.patch('/ot-requests/:id/schedule', authenticate, validate(scheduleOtSchema), controller.scheduleOT);
+
+// --- Operating Theaters (rooms) CRUD ---
+complianceRoutes.get('/operating-theaters', authenticate, controller.listOperatingTheaters);
+complianceRoutes.post('/operating-theaters', authenticate, validate(createOtSchema), controller.createOperatingTheater);
+complianceRoutes.put('/operating-theaters/:id', authenticate, validate(updateOtSchema), controller.updateOperatingTheater);
+complianceRoutes.delete('/operating-theaters/:id', authenticate, validate(otIdParamSchema), controller.deleteOperatingTheater);
 
 // --- Incidents ---
 complianceRoutes.post('/incidents', authenticate, validate(reportIncidentSchema), controller.reportIncident);

@@ -213,26 +213,45 @@ export const approveComplianceDocSchema = z.object({
 // OT Requests
 // ============================================================
 
+// `procedureName` is the canonical column name, but the OT UI talks in terms
+// of `surgeryName` / `priority` (matching the EmedHub clone reference). Accept
+// both forms and normalize before persisting.
 export const createOtRequestSchema = z.object({
-  body: z.object({
-    patientId: z.string().uuid('Invalid patient ID'),
-    visitId: z.string().uuid('Invalid visit ID'),
-    doctorId: z.string().uuid('Invalid doctor ID'),
-    procedureName: z.string().min(1, 'Procedure name is required').max(255),
-    procedureDetails: z.string().optional(),
-    urgency: z.enum(['elective', 'urgent', 'emergency']).default('elective'),
-    preferredDate: z
-      .string()
-      .refine((val) => !isNaN(Date.parse(val)), { message: 'Invalid preferred date' })
-      .optional(),
-    preferredTime: z
-      .string()
-      .regex(/^\d{2}:\d{2}$/, 'Time must be in HH:MM format')
-      .optional(),
-    durationMinutes: z.number().int().positive().max(1440).optional(),
-    requiredEquipment: z.array(z.string()).optional(),
-    preOpChecklist: z.record(z.unknown()).optional(),
-  }),
+  body: z
+    .object({
+      patientId: z.string().uuid('Invalid patient ID'),
+      visitId: z.string().uuid('Invalid visit ID').optional(),
+      doctorId: z.string().uuid('Invalid doctor ID').optional(),
+      procedureName: z.string().min(1).max(255).optional(),
+      surgeryName: z.string().min(1).max(255).optional(),
+      procedureDetails: z.string().optional(),
+      surgeryType: z.string().max(50).optional(),
+      speciality: z.string().max(100).optional(),
+      urgency: z.enum(['elective', 'urgent', 'emergency']).optional(),
+      priority: z.enum(['routine', 'urgent', 'emergency']).optional(),
+      surgeonId: z.string().uuid().optional(),
+      anaesthetistId: z.string().uuid().optional(),
+      otId: z.string().uuid().optional(),
+      otName: z.string().max(100).optional(),
+      preferredDate: z.string().optional(),
+      preferredTime: z
+        .string()
+        .regex(/^\d{2}:\d{2}$/, 'Time must be HH:MM')
+        .optional(),
+      scheduledDate: z.string().optional(),
+      scheduledStartTime: z.string().optional(),
+      scheduledEndTime: z.string().optional(),
+      durationMinutes: z.number().int().positive().max(1440).optional(),
+      estimatedDuration: z.number().int().positive().max(1440).optional(),
+      requiredEquipment: z.array(z.string()).optional(),
+      preOpChecklist: z.record(z.unknown()).optional(),
+      preOpDiagnosis: z.string().max(2000).optional(),
+      notes: z.string().max(5000).optional(),
+    })
+    .refine((d) => d.procedureName || d.surgeryName, {
+      message: 'Either procedureName or surgeryName is required',
+      path: ['surgeryName'],
+    }),
 });
 
 export const getOtRequestsQuerySchema = z.object({
@@ -262,13 +281,86 @@ export const scheduleOtSchema = z.object({
   }),
   body: z.object({
     otId: z.string().uuid('Invalid operating theater ID').optional(),
+    otName: z.string().max(100).optional(),
     scheduledDate: z.string().refine((val) => !isNaN(Date.parse(val)), {
       message: 'Invalid scheduled date',
     }),
-    scheduledTime: z.string().regex(/^\d{2}:\d{2}$/, 'Time must be in HH:MM format'),
+    scheduledTime: z
+      .string()
+      .regex(/^\d{2}:\d{2}$/, 'Time must be HH:MM')
+      .optional(),
+    scheduledStartTime: z
+      .string()
+      .regex(/^\d{2}:\d{2}$/, 'Time must be HH:MM')
+      .optional(),
+    scheduledEndTime: z
+      .string()
+      .regex(/^\d{2}:\d{2}$/, 'Time must be HH:MM')
+      .optional(),
+    surgeonId: z.string().uuid().optional(),
+    anaesthetistId: z.string().uuid().optional(),
     durationMinutes: z.number().int().positive().max(1440).optional(),
   }),
 });
+
+// Update existing OT request — used by the UI for in-flight edits like start
+// surgery, end surgery, mark cancelled, attach post-op notes.
+export const updateOtRequestSchema = z.object({
+  params: z.object({ id: z.string().uuid() }),
+  body: z.object({
+    status: z
+      .enum(['requested', 'scheduled', 'in_progress', 'completed', 'cancelled'])
+      .optional(),
+    actualStartTime: z.string().optional(),
+    actualEndTime: z.string().optional(),
+    postOpDiagnosis: z.string().max(2000).optional(),
+    cancellationReason: z.string().max(2000).optional(),
+    notes: z.string().max(5000).optional(),
+    billingAmount: z.number().min(0).optional(),
+    billingStatus: z.enum(['pending', 'paid', 'partially_paid', 'cancelled']).optional(),
+    surgeonId: z.string().uuid().optional(),
+    anaesthetistId: z.string().uuid().optional(),
+    surgeryType: z.string().max(50).optional(),
+    speciality: z.string().max(100).optional(),
+  }),
+});
+
+export const otAnalyticsQuerySchema = z.object({
+  query: z.object({
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
+    otId: z.string().uuid().optional(),
+    surgeonId: z.string().uuid().optional(),
+  }),
+});
+
+// --- Operating Theaters (rooms) ---
+export const createOtSchema = z.object({
+  body: z.object({
+    name: z.string().min(1).max(100),
+    location: z.string().max(255).optional(),
+    status: z.enum(['available', 'in_use', 'maintenance']).optional(),
+    equipmentList: z.array(z.string()).optional(),
+  }),
+});
+
+export const updateOtSchema = z.object({
+  params: z.object({ id: z.string().uuid() }),
+  body: z.object({
+    name: z.string().min(1).max(100).optional(),
+    location: z.string().max(255).optional().nullable(),
+    status: z.enum(['available', 'in_use', 'maintenance']).optional(),
+    equipmentList: z.array(z.string()).optional(),
+  }),
+});
+
+export const otIdParamSchema = z.object({
+  params: z.object({ id: z.string().uuid('Invalid operating theater ID') }),
+});
+
+export type UpdateOtRequestInput = z.infer<typeof updateOtRequestSchema>['body'];
+export type CreateOtInput = z.infer<typeof createOtSchema>['body'];
+export type UpdateOtInput = z.infer<typeof updateOtSchema>['body'];
 
 // ============================================================
 // Incidents

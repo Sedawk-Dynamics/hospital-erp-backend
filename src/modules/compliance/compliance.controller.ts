@@ -268,6 +268,69 @@ export async function scheduleOT(req: AuthenticatedRequest, res: Response, next:
   }
 }
 
+export async function updateOTRequest(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const request = await complianceService.updateOTRequest(tenantId, req.params.id as string, userId, req.body);
+    sendResponse({ res, message: 'OT request updated', data: request });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function otAnalytics(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await complianceService.getOTAnalytics(tenantId, req.query as any);
+    sendResponse({ res, message: 'OT analytics', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// --- Operating Theaters (rooms) CRUD ---
+
+export async function listOperatingTheaters(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await complianceService.listOperatingTheaters(req.user!.tenantId);
+    sendResponse({ res, message: 'Operating theaters', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function createOperatingTheater(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await complianceService.createOperatingTheater(req.user!.tenantId, req.body);
+    sendResponse({ res, statusCode: 201, message: 'Operating theater created', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function updateOperatingTheater(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await complianceService.updateOperatingTheater(
+      req.user!.tenantId,
+      req.params.id as string,
+      req.body,
+    );
+    sendResponse({ res, message: 'Operating theater updated', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function deleteOperatingTheater(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    await complianceService.deleteOperatingTheater(req.user!.tenantId, req.params.id as string);
+    sendResponse({ res, message: 'Operating theater deleted' });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // ============================================================
 // Incidents
 // ============================================================

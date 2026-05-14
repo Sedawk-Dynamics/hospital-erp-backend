@@ -3,6 +3,7 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
+import { safeInventoryAudit } from './inventory.audit';
 import type {
   CreateSupplierInput,
   UpdateSupplierInput,
@@ -592,6 +593,22 @@ export async function createStockTransaction(
     { tenantId, transactionId: result.id, itemId: data.inventoryItemId, type: data.transactionType, quantity: data.quantity },
     'Stock transaction created',
   );
+
+  void safeInventoryAudit({
+    tenantId,
+    userId,
+    action: 'create',
+    entityType: 'stock_transaction',
+    entityId: result.id,
+    description: `${data.transactionType.replace('_', ' ')} of ${data.quantity} × ${item.itemName}${data.batchNumber ? ` (batch ${data.batchNumber})` : ''}`,
+    newValues: {
+      transactionType: data.transactionType,
+      quantity: data.quantity,
+      inventoryItemId: data.inventoryItemId,
+      departmentId: data.departmentId ?? null,
+    },
+  });
+
   return result;
 }
 
@@ -936,6 +953,18 @@ export async function approvePurchaseOrder(tenantId: string, id: string, approve
   });
 
   logger.info({ tenantId, purchaseOrderId: id, approvedBy }, 'Purchase order approved');
+
+  void safeInventoryAudit({
+    tenantId,
+    userId: approvedBy,
+    action: 'update',
+    entityType: 'purchase_order',
+    entityId: id,
+    description: `Purchase order ${order.orderNumber} approved`,
+    oldValues: { status: order.status },
+    newValues: { status: 'approved' },
+  });
+
   return updated;
 }
 
@@ -1050,6 +1079,17 @@ export async function receivePurchaseOrder(
   });
 
   logger.info({ tenantId, purchaseOrderId: id, userId }, 'Purchase order items received');
+
+  void safeInventoryAudit({
+    tenantId,
+    userId,
+    action: 'update',
+    entityType: 'purchase_order',
+    entityId: id,
+    description: `Purchase order ${order.orderNumber} items received`,
+    newValues: { status: result.status, items: data.items },
+  });
+
   return result;
 }
 
