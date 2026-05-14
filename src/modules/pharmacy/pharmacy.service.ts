@@ -489,6 +489,177 @@ export async function getExpiringBatches(tenantId: string, query: GetExpiringBat
 // Dispensing
 // ============================================================
 
+// Best-effort notification helper (failures must not break dispense)
+async function safePharmacyNotify(params: {
+  tenantId: string;
+  userId: string;
+  title: string;
+  message: string;
+  referenceType?: string;
+  referenceId?: string;
+}) {
+  try {
+    await prisma.notification.create({
+      data: {
+        tenantId: params.tenantId,
+        userId: params.userId,
+        title: params.title,
+        message: params.message,
+        notificationType: 'general',
+        channel: 'in_app',
+        referenceType: params.referenceType,
+        referenceId: params.referenceId,
+      },
+    });
+  } catch (err) {
+    logger.warn({ err, ...params }, 'Failed to dispatch pharmacy notification');
+  }
+}
+
+// Recomputes a prescription's status based on its items' dispensed totals.
+// Called from inside the dispense transaction so the queue is always coherent.
+async function recomputePrescriptionStatus(
+  tx: typeof prisma,
+  prescriptionId: string,
+) {
+  const rx = await tx.prescription.findUnique({
+    where: { id: prescriptionId },
+    include: {
+      prescriptionItems: {
+        include: {
+          dispensingRecords: { select: { quantityDispensed: true } },
+        },
+      },
+    },
+  });
+  if (!rx || rx.status === 'cancelled') return;
+
+  let totalOrderedItems = 0;
+  let fullyDispensedItems = 0;
+  let anyDispensed = false;
+
+  for (const it of rx.prescriptionItems) {
+    totalOrderedItems += 1;
+    const dispensed = it.dispensingRecords.reduce(
+      (sum, r) => sum + r.quantityDispensed,
+      0,
+    );
+    if (dispensed > 0) anyDispensed = true;
+    // Only "fully" dispensed if the prescription item has an explicit quantity
+    // and dispensed total >= ordered quantity.
+    if (it.quantity != null && dispensed >= it.quantity) {
+      fullyDispensedItems += 1;
+    } else if (it.quantity == null && dispensed > 0) {
+      // No explicit quantity means PRN / continuous — treat any dispense as
+      // fulfilled for queue-clearing purposes.
+      fullyDispensedItems += 1;
+    }
+  }
+
+  let nextStatus: 'active' | 'partially_dispensed' | 'dispensed' = 'active';
+  if (totalOrderedItems > 0 && fullyDispensedItems === totalOrderedItems) {
+    nextStatus = 'dispensed';
+  } else if (anyDispensed) {
+    nextStatus = 'partially_dispensed';
+  }
+
+  if (nextStatus !== rx.status) {
+    await tx.prescription.update({
+      where: { id: prescriptionId },
+      data: { status: nextStatus },
+    });
+  }
+
+  return { nextStatus, prev: rx.status };
+}
+
+// Resolves the supplier-specified selling price for a batch — used by the
+// auto-bill so the patient gets charged the batch-level price actually used.
+function pickDispenseUnitPrice(batch: { sellingPrice: any; purchasePrice: any }) {
+  return Number(batch.sellingPrice ?? batch.purchasePrice ?? 0);
+}
+
+// Auto-link a dispense to the patient's draft bill on the same visit. Idempotent
+// on (billId, referenceType, referenceId).
+export async function autoLinkDispenseToBill(
+  tx: typeof prisma,
+  tenantId: string,
+  dispensingId: string,
+) {
+  try {
+    const record = await tx.dispensingRecord.findFirst({
+      where: { id: dispensingId, tenantId },
+      include: {
+        prescription: { select: { visitId: true } },
+        drugBatch: {
+          select: { drug: { select: { drugName: true } }, sellingPrice: true, purchasePrice: true, batchNumber: true },
+        },
+      },
+    });
+    if (!record || !record.prescription?.visitId) return;
+    const visitId = record.prescription.visitId;
+
+    let bill = await tx.bill.findFirst({
+      where: { tenantId, visitId, status: 'draft' },
+    });
+    if (!bill) {
+      const billNumber = `BILL-${Date.now()}`;
+      bill = await tx.bill.create({
+        data: {
+          tenantId,
+          billNumber,
+          patientId: record.patientId,
+          visitId,
+          billDate: new Date(),
+          status: 'draft',
+        },
+      });
+    }
+
+    const existing = await tx.billItem.findFirst({
+      where: {
+        billId: bill.id,
+        referenceType: 'dispensing_record',
+        referenceId: dispensingId,
+      },
+    });
+    if (existing) return;
+
+    const unit = pickDispenseUnitPrice(record.drugBatch as any);
+    const total = unit * record.quantityDispensed;
+    const drugName = (record.drugBatch as any)?.drug?.drugName ?? 'Medication';
+    const batchTag = (record.drugBatch as any)?.batchNumber ? ` (Batch ${(record.drugBatch as any).batchNumber})` : '';
+
+    await tx.billItem.create({
+      data: {
+        billId: bill.id,
+        description: `${drugName}${batchTag}`,
+        category: 'pharmacy',
+        quantity: record.quantityDispensed,
+        unitPrice: unit,
+        totalAmount: total,
+        referenceType: 'dispensing_record',
+        referenceId: dispensingId,
+        isAutoPulled: true,
+      },
+    });
+
+    const items = await tx.billItem.findMany({ where: { billId: bill.id } });
+    const subtotal = items.reduce((sum, x) => sum + Number(x.totalAmount ?? 0), 0);
+    await tx.bill.update({
+      where: { id: bill.id },
+      data: {
+        subtotal,
+        totalAmount: subtotal,
+        patientPayableAmount: subtotal,
+        balanceDue: subtotal - Number(bill.amountPaid ?? 0),
+      },
+    });
+  } catch (err) {
+    logger.warn({ err, dispensingId }, 'Failed to auto-link dispense to bill');
+  }
+}
+
 export async function createDispense(tenantId: string, userId: string, data: CreateDispenseInput) {
   // Validate the drug batch exists and has enough stock
   const drugBatch = await prisma.drugBatch.findFirst({
@@ -522,7 +693,9 @@ export async function createDispense(tenantId: string, userId: string, data: Cre
     throw AppError.notFound('Patient not found');
   }
 
-  // Create dispensing record and decrement stock in a transaction
+  // Create dispensing record, decrement stock, recompute Rx status, and
+  // auto-link to the patient bill — all in one transaction so the queue,
+  // inventory, prescription, and billing surfaces stay consistent.
   const result = await prisma.$transaction(async (tx) => {
     const record = await tx.dispensingRecord.create({
       data: {
@@ -555,8 +728,48 @@ export async function createDispense(tenantId: string, userId: string, data: Cre
       },
     });
 
+    // Mark prescription as partially_dispensed / dispensed based on totals
+    await recomputePrescriptionStatus(tx as any, data.prescriptionId);
+
+    // Auto-add a line item to the patient's draft bill
+    await autoLinkDispenseToBill(tx as any, tenantId, record.id);
+
     return record;
   });
+
+  // Post-commit notifications — never inside the transaction
+  try {
+    const rx = await prisma.prescription.findUnique({
+      where: { id: data.prescriptionId },
+      include: {
+        patient: { select: { firstName: true, lastName: true, userId: true } },
+        doctor: { select: { userId: true } },
+      },
+    });
+    if (rx?.doctor?.userId) {
+      const patientName = rx.patient ? `${rx.patient.firstName} ${rx.patient.lastName ?? ''}`.trim() : 'Patient';
+      void safePharmacyNotify({
+        tenantId,
+        userId: rx.doctor.userId,
+        title: 'Medication dispensed',
+        message: `${result.drugBatch.drug.drugName} (${result.quantityDispensed}) dispensed to ${patientName}.`,
+        referenceType: 'dispensing_record',
+        referenceId: result.id,
+      });
+    }
+    if (rx?.patient?.userId) {
+      void safePharmacyNotify({
+        tenantId,
+        userId: rx.patient.userId,
+        title: 'Your medication is ready',
+        message: `${result.drugBatch.drug.drugName} (${result.quantityDispensed}) has been dispensed at the pharmacy.`,
+        referenceType: 'dispensing_record',
+        referenceId: result.id,
+      });
+    }
+  } catch (err) {
+    logger.warn({ err, dispensingId: result.id }, 'Pharmacy post-dispense notify failed');
+  }
 
   logger.info(
     { tenantId, dispensingId: result.id, drugBatchId: data.drugBatchId, quantity: data.quantityDispensed },
@@ -866,4 +1079,190 @@ export async function processReturn(
 
   logger.info({ tenantId, returnId: id, status: 'rejected', processedBy: userId }, 'Drug return rejected');
   return updated;
+}
+
+// ============================================================
+// Analytics — drives the Pharmacy Reports page
+// ============================================================
+// One endpoint, four bundled reports (Sales / Expiry / Stock Usage / Batch-wise)
+// so the frontend can render the whole dashboard from a single fetch and avoid
+// flicker across sections.
+
+export async function getPharmacyAnalytics(
+  tenantId: string,
+  range: { fromDate?: string; toDate?: string },
+) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const weekAgo = new Date(today); weekAgo.setDate(weekAgo.getDate() - 7);
+  const monthAgo = new Date(today); monthAgo.setDate(monthAgo.getDate() - 30);
+  const ninetyDaysFromNow = new Date(today); ninetyDaysFromNow.setDate(ninetyDaysFromNow.getDate() + 90);
+
+  const dispenseWhere: any = { tenantId };
+  if (range.fromDate) dispenseWhere.dispensedAt = { ...dispenseWhere.dispensedAt, gte: new Date(range.fromDate) };
+  if (range.toDate) dispenseWhere.dispensedAt = { ...dispenseWhere.dispensedAt, lte: new Date(range.toDate) };
+
+  const [
+    allDispenses,
+    todayDispenses,
+    weekDispenses,
+    monthDispenses,
+    expiringBatches,
+    expiredBatches,
+    activeBatches,
+  ] = await Promise.all([
+    prisma.dispensingRecord.findMany({
+      where: dispenseWhere,
+      include: {
+        drugBatch: {
+          select: {
+            sellingPrice: true,
+            purchasePrice: true,
+            drug: { select: { id: true, drugName: true, category: { select: { id: true, name: true } } } },
+          },
+        },
+      },
+    }),
+    prisma.dispensingRecord.findMany({
+      where: { tenantId, dispensedAt: { gte: today } },
+      include: { drugBatch: { select: { sellingPrice: true } } },
+    }),
+    prisma.dispensingRecord.findMany({
+      where: { tenantId, dispensedAt: { gte: weekAgo } },
+      include: { drugBatch: { select: { sellingPrice: true } } },
+    }),
+    prisma.dispensingRecord.findMany({
+      where: { tenantId, dispensedAt: { gte: monthAgo } },
+      include: { drugBatch: { select: { sellingPrice: true } } },
+    }),
+    prisma.drugBatch.findMany({
+      where: {
+        tenantId,
+        isExpired: false,
+        isRecalled: false,
+        expiryDate: { gte: today, lte: ninetyDaysFromNow },
+        quantityInStock: { gt: 0 },
+      },
+      include: { drug: { select: { drugName: true } } },
+      orderBy: { expiryDate: 'asc' },
+    }),
+    prisma.drugBatch.findMany({
+      where: { tenantId, OR: [{ isExpired: true }, { expiryDate: { lt: today } }] },
+      include: { drug: { select: { drugName: true } } },
+      take: 50,
+    }),
+    prisma.drugBatch.findMany({
+      where: { tenantId, isExpired: false, isRecalled: false, quantityInStock: { gt: 0 } },
+      include: { drug: { select: { drugName: true } } },
+    }),
+  ]);
+
+  const lineRevenue = (r: { quantityDispensed: number; drugBatch: { sellingPrice: any } | null }) =>
+    Number(r.drugBatch?.sellingPrice ?? 0) * r.quantityDispensed;
+
+  const lineMargin = (r: {
+    quantityDispensed: number;
+    drugBatch: { sellingPrice: any; purchasePrice: any } | null;
+  }) => (Number(r.drugBatch?.sellingPrice ?? 0) - Number(r.drugBatch?.purchasePrice ?? 0)) * r.quantityDispensed;
+
+  const totalRevenue = allDispenses.reduce((s, r) => s + lineRevenue(r), 0);
+  const totalMargin = allDispenses.reduce((s, r) => s + lineMargin(r), 0);
+
+  // Top-dispensed drugs
+  const drugTally = new Map<string, { drugId: string; drugName: string; qty: number; revenue: number }>();
+  for (const r of allDispenses) {
+    const drug = r.drugBatch?.drug;
+    if (!drug) continue;
+    const k = drug.id;
+    const prev = drugTally.get(k);
+    const inc = lineRevenue(r);
+    if (prev) {
+      prev.qty += r.quantityDispensed;
+      prev.revenue += inc;
+    } else {
+      drugTally.set(k, { drugId: drug.id, drugName: drug.drugName, qty: r.quantityDispensed, revenue: inc });
+    }
+  }
+  const topDrugs = Array.from(drugTally.values()).sort((a, b) => b.qty - a.qty).slice(0, 15);
+
+  // Revenue by category
+  const categoryTally = new Map<string, { categoryId: string; categoryName: string; revenue: number }>();
+  for (const r of allDispenses) {
+    const cat = r.drugBatch?.drug?.category;
+    if (!cat) continue;
+    const prev = categoryTally.get(cat.id);
+    const inc = lineRevenue(r);
+    if (prev) prev.revenue += inc;
+    else categoryTally.set(cat.id, { categoryId: cat.id, categoryName: cat.name, revenue: inc });
+  }
+  const revenueByCategory = Array.from(categoryTally.values()).sort((a, b) => b.revenue - a.revenue);
+
+  // Sum helpers for sale windows
+  const sumRevenue = (rows: typeof todayDispenses) =>
+    rows.reduce((s, r) => s + Number(r.drugBatch?.sellingPrice ?? 0) * r.quantityDispensed, 0);
+
+  // Batch-wise summary
+  const totalStockValue = activeBatches.reduce(
+    (s, b) => s + Number(b.purchasePrice ?? 0) * b.quantityInStock,
+    0,
+  );
+  const totalRetailValue = activeBatches.reduce(
+    (s, b) => s + Number(b.sellingPrice ?? 0) * b.quantityInStock,
+    0,
+  );
+
+  // Expiry "value at risk" = retail value of soon-to-expire stock
+  const valueAtRisk = expiringBatches.reduce(
+    (s, b) => s + Number(b.sellingPrice ?? 0) * b.quantityInStock,
+    0,
+  );
+
+  // Slow movers — active batches that haven't been dispensed at all in range
+  const dispensedBatchIds = new Set(allDispenses.map((r) => (r as any).drugBatchId));
+  const slowMovers = activeBatches
+    .filter((b) => !dispensedBatchIds.has(b.id))
+    .slice(0, 25)
+    .map((b) => ({
+      batchId: b.id,
+      drugName: b.drug.drugName,
+      batchNumber: b.batchNumber,
+      quantityInStock: b.quantityInStock,
+      expiryDate: b.expiryDate,
+    }));
+
+  return {
+    sales: {
+      today: sumRevenue(todayDispenses),
+      week: sumRevenue(weekDispenses),
+      month: sumRevenue(monthDispenses),
+      rangeRevenue: totalRevenue,
+      rangeMargin: totalMargin,
+      rangeTransactions: allDispenses.length,
+      revenueByCategory,
+    },
+    topDrugs,
+    expiry: {
+      soonCount: expiringBatches.length,
+      expiredCount: expiredBatches.length,
+      valueAtRisk: Number(valueAtRisk.toFixed(2)),
+      upcoming: expiringBatches.slice(0, 25).map((b) => ({
+        batchId: b.id,
+        drugName: b.drug.drugName,
+        batchNumber: b.batchNumber,
+        quantityInStock: b.quantityInStock,
+        expiryDate: b.expiryDate,
+        sellingPrice: Number(b.sellingPrice ?? 0),
+      })),
+    },
+    stockUsage: {
+      activeBatches: activeBatches.length,
+      slowMovers,
+    },
+    batchSummary: {
+      activeBatches: activeBatches.length,
+      totalStockValue: Number(totalStockValue.toFixed(2)),
+      totalRetailValue: Number(totalRetailValue.toFixed(2)),
+      potentialMargin: Number((totalRetailValue - totalStockValue).toFixed(2)),
+    },
+  };
 }

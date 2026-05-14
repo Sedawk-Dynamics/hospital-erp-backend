@@ -413,3 +413,20 @@ export async function processReturn(
     next(err);
   }
 }
+
+export async function getPharmacyAnalytics(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await pharmacyService.getPharmacyAnalytics(tenantId, {
+      fromDate: req.query.fromDate as string | undefined,
+      toDate: req.query.toDate as string | undefined,
+    });
+    sendResponse({ res, message: 'Pharmacy analytics retrieved successfully', data });
+  } catch (err) {
+    next(err);
+  }
+}
