@@ -23,6 +23,12 @@ import {
   createReturnSchema,
   getReturnsQuerySchema,
   processReturnSchema,
+  recallBatchSchema,
+  unrecallBatchSchema,
+  recallDrugSchema,
+  recallAffectedPatientsParamSchema,
+  getRecalledItemsQuerySchema,
+  getGstReportQuerySchema,
 } from './pharmacy.validation';
 
 export const pharmacyRoutes = Router();
@@ -60,3 +66,16 @@ pharmacyRoutes.get('/analytics', authenticate, requirePermission('pharmacy', 're
 pharmacyRoutes.post('/returns', authenticate, requirePermission('pharmacy', 'create'), validate(createReturnSchema), controller.createReturn);
 pharmacyRoutes.get('/returns', authenticate, requirePermission('pharmacy', 'read'), validate(getReturnsQuerySchema), controller.getReturns);
 pharmacyRoutes.patch('/returns/:id/process', authenticate, requirePermission('pharmacy', 'approve'), validate(processReturnSchema), controller.processReturn);
+
+// --- Recall Management ---
+pharmacyRoutes.get('/recalls', authenticate, requirePermission('pharmacy', 'read'), validate(getRecalledItemsQuerySchema), controller.getRecalledItems);
+pharmacyRoutes.get('/recalls/batches/:id/affected-patients', authenticate, requirePermission('pharmacy', 'read'), validate(recallAffectedPatientsParamSchema), controller.getRecallAffectedPatients);
+pharmacyRoutes.patch('/recalls/batches/:id', authenticate, requirePermission('pharmacy', 'approve'), validate(recallBatchSchema), controller.recallBatch);
+pharmacyRoutes.delete('/recalls/batches/:id', authenticate, requirePermission('pharmacy', 'approve'), validate(unrecallBatchSchema), controller.unrecallBatch);
+pharmacyRoutes.patch('/recalls/drugs/:id', authenticate, requirePermission('pharmacy', 'approve'), validate(recallDrugSchema), controller.recallDrug);
+
+// --- GST Report ---
+pharmacyRoutes.get('/gst', authenticate, requirePermission('pharmacy', 'read'), validate(getGstReportQuerySchema), controller.getGstReport);
+
+// --- Maintenance: auto-flag expired batches (idempotent) ---
+pharmacyRoutes.post('/maintenance/flag-expired', authenticate, requirePermission('pharmacy', 'approve'), controller.flagExpiredBatches);

@@ -17,6 +17,10 @@ import type {
   CreateReturnInput,
   GetReturnsQuery,
   ProcessReturnInput,
+  RecallBatchInput,
+  RecallDrugInput,
+  GetRecalledItemsQuery,
+  GetGstReportQuery,
 } from './pharmacy.validation';
 
 // ============================================================
@@ -1265,4 +1269,362 @@ export async function getPharmacyAnalytics(
       potentialMargin: Number((totalRetailValue - totalStockValue).toFixed(2)),
     },
   };
+}
+
+// ============================================================
+// Recall Management
+// ============================================================
+// Marks a batch (or all batches of a drug) as recalled. The dispense path
+// already rejects recalled batches, so once flagged the stock is auto-blocked.
+// Returns the list of patients who received doses of the batch so the clinic
+// can contact them.
+
+export async function recallBatch(
+  tenantId: string,
+  batchId: string,
+  userId: string,
+  data: RecallBatchInput,
+) {
+  const batch = await prisma.drugBatch.findFirst({
+    where: { id: batchId, tenantId },
+  });
+  if (!batch) throw AppError.notFound('Drug batch not found');
+
+  const updated = await prisma.drugBatch.update({
+    where: { id: batchId },
+    data: {
+      isRecalled: true,
+      recallReason: data.recallReason,
+    },
+    include: {
+      drug: { select: { id: true, drugName: true, genericName: true } },
+      supplier: { select: { id: true, name: true } },
+    },
+  });
+
+  // Notify pharmacy admins
+  try {
+    const pharmacyUsers = await prisma.user.findMany({
+      where: {
+        tenantId,
+        isActive: true,
+        userRoles: {
+          some: { role: { name: { in: ['pharmacy_admin', 'pharmacist', 'admin'] } } },
+        },
+      },
+      select: { id: true },
+      take: 25,
+    });
+    for (const u of pharmacyUsers) {
+      void safePharmacyNotify({
+        tenantId,
+        userId: u.id,
+        title: 'Batch recalled',
+        message: `${updated.drug.drugName} batch ${updated.batchNumber} has been recalled. Reason: ${data.recallReason}`,
+        referenceType: 'drug_batch',
+        referenceId: batchId,
+      });
+    }
+  } catch (err) {
+    logger.warn({ err, batchId }, 'Failed to notify recall');
+  }
+
+  logger.info({ tenantId, batchId, userId }, 'Batch recalled');
+  return updated;
+}
+
+export async function unrecallBatch(tenantId: string, batchId: string) {
+  const batch = await prisma.drugBatch.findFirst({ where: { id: batchId, tenantId } });
+  if (!batch) throw AppError.notFound('Drug batch not found');
+  if (!batch.isRecalled) throw AppError.badRequest('Batch is not recalled');
+
+  return prisma.drugBatch.update({
+    where: { id: batchId },
+    data: { isRecalled: false, recallReason: null },
+    include: {
+      drug: { select: { id: true, drugName: true, genericName: true } },
+    },
+  });
+}
+
+export async function recallDrug(
+  tenantId: string,
+  drugId: string,
+  userId: string,
+  data: RecallDrugInput,
+) {
+  const drug = await prisma.drugFormulary.findFirst({ where: { id: drugId, tenantId } });
+  if (!drug) throw AppError.notFound('Drug not found');
+
+  // Flag the formulary entry + cascade to every batch.
+  await prisma.$transaction([
+    prisma.drugFormulary.update({
+      where: { id: drugId },
+      data: { isRecalled: true },
+    }),
+    prisma.drugBatch.updateMany({
+      where: { tenantId, drugId },
+      data: { isRecalled: true, recallReason: data.recallReason },
+    }),
+  ]);
+
+  logger.info({ tenantId, drugId, userId }, 'Drug recalled (all batches)');
+  return { drugId, batchesRecalled: true };
+}
+
+/**
+ * For a given recalled batch, return the patients (with dispense dates &
+ * quantities) who actually received the drug. Used to print a contact list.
+ */
+export async function getRecallAffectedPatients(tenantId: string, batchId: string) {
+  const batch = await prisma.drugBatch.findFirst({
+    where: { id: batchId, tenantId },
+    include: {
+      drug: { select: { id: true, drugName: true, genericName: true } },
+    },
+  });
+  if (!batch) throw AppError.notFound('Drug batch not found');
+
+  const records = await prisma.dispensingRecord.findMany({
+    where: { tenantId, drugBatchId: batchId },
+    include: {
+      patient: {
+        select: {
+          id: true, mrn: true, firstName: true, lastName: true,
+          phone: true, email: true, dateOfBirth: true,
+        },
+      },
+      prescription: {
+        select: {
+          id: true,
+          doctor: { select: { user: { select: { firstName: true, lastName: true } } } },
+        },
+      },
+      dispenser: { select: { id: true, firstName: true, lastName: true } },
+    },
+    orderBy: { dispensedAt: 'desc' },
+  });
+
+  // Group by patient for the call sheet, summing the quantity received.
+  const grouped = new Map<string, {
+    patientId: string;
+    mrn: string;
+    name: string;
+    phone: string | null;
+    email: string | null;
+    totalQuantity: number;
+    dispenses: { dispensedAt: Date; quantity: number; prescriptionId: string; doctorName: string | null }[];
+  }>();
+
+  for (const r of records) {
+    const p = r.patient;
+    const key = p.id;
+    const existing = grouped.get(key);
+    const doctorName = r.prescription?.doctor?.user
+      ? `${r.prescription.doctor.user.firstName} ${r.prescription.doctor.user.lastName}`.trim()
+      : null;
+    const dispense = {
+      dispensedAt: r.dispensedAt,
+      quantity: r.quantityDispensed,
+      prescriptionId: r.prescriptionId,
+      doctorName,
+    };
+    if (existing) {
+      existing.totalQuantity += r.quantityDispensed;
+      existing.dispenses.push(dispense);
+    } else {
+      grouped.set(key, {
+        patientId: p.id,
+        mrn: p.mrn,
+        name: `${p.firstName} ${p.lastName ?? ''}`.trim(),
+        phone: p.phone,
+        email: p.email,
+        totalQuantity: r.quantityDispensed,
+        dispenses: [dispense],
+      });
+    }
+  }
+
+  return {
+    batch: {
+      id: batch.id,
+      batchNumber: batch.batchNumber,
+      expiryDate: batch.expiryDate,
+      isRecalled: batch.isRecalled,
+      recallReason: batch.recallReason,
+      drug: batch.drug,
+    },
+    totalPatients: grouped.size,
+    totalDispenses: records.length,
+    patients: Array.from(grouped.values()).sort((a, b) => b.totalQuantity - a.totalQuantity),
+  };
+}
+
+/**
+ * Combined view for the Pharmacy Recall page: recalled formulary drugs +
+ * recalled batches with affected-patient counts.
+ */
+export async function getRecalledItems(tenantId: string, query: GetRecalledItemsQuery) {
+  const showBatch = query.type === 'all' || query.type === 'batch';
+  const showDrug = query.type === 'all' || query.type === 'drug';
+
+  const [recalledBatches, recalledDrugs] = await Promise.all([
+    showBatch
+      ? prisma.drugBatch.findMany({
+          where: { tenantId, isRecalled: true },
+          include: {
+            drug: { select: { id: true, drugName: true, genericName: true } },
+            supplier: { select: { id: true, name: true } },
+            _count: { select: { dispensingRecords: true } },
+          },
+          orderBy: { updatedAt: 'desc' },
+          take: 100,
+        })
+      : Promise.resolve([] as any[]),
+    showDrug
+      ? prisma.drugFormulary.findMany({
+          where: { tenantId, isRecalled: true },
+          include: {
+            category: { select: { id: true, name: true } },
+            _count: { select: { drugBatches: true } },
+          },
+          orderBy: { updatedAt: 'desc' },
+          take: 100,
+        })
+      : Promise.resolve([] as any[]),
+  ]);
+
+  return { recalledBatches, recalledDrugs };
+}
+
+// ============================================================
+// GST Report
+// ============================================================
+// We don't have HSN codes per drug yet — but we can derive GST liability
+// from dispense × selling price × configured rate (default 12% if the
+// caller doesn't pass one). Categorises by drug category so the
+// finance/pharmacy team can file by HSN once that field is added.
+
+export async function getGstReport(tenantId: string, query: GetGstReportQuery) {
+  const gstRate = query.gstRate ?? 12;
+
+  const where: any = { tenantId };
+  if (query.fromDate) where.dispensedAt = { ...where.dispensedAt, gte: new Date(query.fromDate) };
+  if (query.toDate) where.dispensedAt = { ...where.dispensedAt, lte: new Date(query.toDate) };
+
+  const records = await prisma.dispensingRecord.findMany({
+    where,
+    include: {
+      drugBatch: {
+        select: {
+          sellingPrice: true,
+          drug: {
+            select: {
+              id: true,
+              drugName: true,
+              category: { select: { id: true, name: true } },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  // Total taxable & gst per category
+  const categories = new Map<string, {
+    categoryId: string;
+    categoryName: string;
+    taxableValue: number;
+    gstAmount: number;
+    totalAmount: number;
+    transactions: number;
+  }>();
+
+  let totalTaxable = 0;
+  let totalGst = 0;
+  let totalSales = 0;
+
+  for (const r of records) {
+    const sellingPrice = Number(r.drugBatch?.sellingPrice ?? 0);
+    const lineTotal = sellingPrice * r.quantityDispensed;
+    // Treat sellingPrice as GST-inclusive (most retail pharmacy pricing).
+    // Reverse-calc taxable: total / (1 + rate/100).
+    const taxable = lineTotal / (1 + gstRate / 100);
+    const gst = lineTotal - taxable;
+
+    totalSales += lineTotal;
+    totalTaxable += taxable;
+    totalGst += gst;
+
+    const cat = r.drugBatch?.drug?.category;
+    const catId = cat?.id ?? '__uncat__';
+    const catName = cat?.name ?? 'Uncategorised';
+    const existing = categories.get(catId);
+    if (existing) {
+      existing.taxableValue += taxable;
+      existing.gstAmount += gst;
+      existing.totalAmount += lineTotal;
+      existing.transactions += 1;
+    } else {
+      categories.set(catId, {
+        categoryId: catId,
+        categoryName: catName,
+        taxableValue: taxable,
+        gstAmount: gst,
+        totalAmount: lineTotal,
+        transactions: 1,
+      });
+    }
+  }
+
+  // CGST + SGST is a 50/50 split of the total GST for intra-state sales.
+  const cgst = totalGst / 2;
+  const sgst = totalGst / 2;
+
+  return {
+    gstRate,
+    summary: {
+      totalSales: Number(totalSales.toFixed(2)),
+      taxableValue: Number(totalTaxable.toFixed(2)),
+      totalGst: Number(totalGst.toFixed(2)),
+      cgst: Number(cgst.toFixed(2)),
+      sgst: Number(sgst.toFixed(2)),
+      igst: 0,
+      transactions: records.length,
+    },
+    byCategory: Array.from(categories.values())
+      .map((c) => ({
+        ...c,
+        taxableValue: Number(c.taxableValue.toFixed(2)),
+        gstAmount: Number(c.gstAmount.toFixed(2)),
+        totalAmount: Number(c.totalAmount.toFixed(2)),
+      }))
+      .sort((a, b) => b.totalAmount - a.totalAmount),
+  };
+}
+
+// ============================================================
+// Auto-Expiry Job — called by scheduler (or manually) to flag any batch
+// whose expiryDate has passed but isExpired = false. Idempotent.
+// ============================================================
+
+export async function flagExpiredBatches(tenantId?: string) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const where: any = {
+    isExpired: false,
+    expiryDate: { lt: today },
+  };
+  if (tenantId) where.tenantId = tenantId;
+
+  const result = await prisma.drugBatch.updateMany({
+    where,
+    data: { isExpired: true },
+  });
+
+  if (result.count > 0) {
+    logger.info({ tenantId, count: result.count }, 'Auto-flagged expired batches');
+  }
+  return { flagged: result.count };
 }

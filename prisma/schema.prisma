@@ -1265,6 +1265,9 @@ model Tenant {
   emarAuditLogs              EmarAuditLog[]
   hospitalForms              HospitalForm[]
   formSubmissions            HospitalFormSubmission[]
+  dicomStudies               DicomStudy[]
+  dicomSeries                DicomSeries[]
+  dicomInstances             DicomInstance[]
 
   @@map("tenants")
 }
@@ -1841,6 +1844,7 @@ model Patient {
   labReports                LabReport[]
   imagingRequests           ImagingRequest[]
   imagingResults            ImagingResult[]
+  dicomStudies              DicomStudy[]
   dispensingRecords         DispensingRecord[]
   drugReturns               DrugReturn[]
   bills                     Bill[]
@@ -3488,8 +3492,93 @@ model ImagingResult {
   patient        Patient        @relation(fields: [patientId], references: [id])
   radiologist    User?          @relation("ImagingRadiologist", fields: [radiologistId], references: [id])
   signer         User?          @relation("ImagingResultSigner", fields: [signedBy], references: [id])
+  dicomStudies   DicomStudy[]
 
   @@map("imaging_results")
+}
+
+// ============================================================
+// 10b. PACS / DICOM
+// ============================================================
+// Lightweight metadata-only storage: actual DICOM files live on disk
+// (uploads/dicom/<studyUid>/...) and a web viewer (OHIF/Cornerstone)
+// renders them via study/series/instance URLs served from this app.
+//
+// For a real DICOM PACS receive (DIMSE C-STORE SCP) you'd run a separate
+// process — this layer is the metadata + retrieve side; integrate that
+// process to POST DicomInstance rows here on receipt.
+
+model DicomStudy {
+  id                 String   @id @default(uuid())
+  tenantId           String   @map("tenant_id")
+  imagingResultId    String?  @map("imaging_result_id")
+  imagingRequestId   String?  @map("imaging_request_id")
+  patientId          String   @map("patient_id")
+  studyInstanceUid   String   @unique @map("study_instance_uid") @db.VarChar(255)
+  accessionNumber    String?  @map("accession_number") @db.VarChar(64)
+  studyDate          DateTime? @map("study_date")
+  studyDescription   String?  @map("study_description") @db.VarChar(255)
+  modality           String?  @db.VarChar(20)
+  numberOfSeries     Int?     @map("number_of_series")
+  numberOfInstances  Int?     @map("number_of_instances")
+  patientName        String?  @map("patient_name") @db.VarChar(255)
+  patientDicomId     String?  @map("patient_dicom_id") @db.VarChar(64)
+  referringPhysician String?  @map("referring_physician") @db.VarChar(255)
+  storagePath        String?  @map("storage_path")
+  viewerUrl          String?  @map("viewer_url")
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id])
+  imagingResult ImagingResult? @relation(fields: [imagingResultId], references: [id])
+  patient       Patient        @relation(fields: [patientId], references: [id])
+  series        DicomSeries[]
+  instances     DicomInstance[]
+
+  @@index([tenantId, patientId, studyDate])
+  @@map("dicom_studies")
+}
+
+model DicomSeries {
+  id                String   @id @default(uuid())
+  tenantId          String   @map("tenant_id")
+  studyId           String   @map("study_id")
+  seriesInstanceUid String   @unique @map("series_instance_uid") @db.VarChar(255)
+  seriesNumber      Int?     @map("series_number")
+  seriesDescription String?  @map("series_description") @db.VarChar(255)
+  modality          String?  @db.VarChar(20)
+  bodyPart          String?  @map("body_part") @db.VarChar(100)
+  numberOfInstances Int?     @map("number_of_instances")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  tenant    Tenant          @relation(fields: [tenantId], references: [id])
+  study     DicomStudy      @relation(fields: [studyId], references: [id], onDelete: Cascade)
+  instances DicomInstance[]
+
+  @@index([tenantId, studyId])
+  @@map("dicom_series")
+}
+
+model DicomInstance {
+  id                  String   @id @default(uuid())
+  tenantId            String   @map("tenant_id")
+  studyId             String   @map("study_id")
+  seriesId            String?  @map("series_id")
+  sopInstanceUid      String   @unique @map("sop_instance_uid") @db.VarChar(255)
+  sopClassUid         String?  @map("sop_class_uid") @db.VarChar(255)
+  instanceNumber      Int?     @map("instance_number")
+  fileUrl             String   @map("file_url")
+  fileSizeBytes       BigInt?  @map("file_size_bytes")
+  mimeType            String?  @map("mime_type") @db.VarChar(100)
+  rows                Int?
+  columns             Int?
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  tenant Tenant       @relation(fields: [tenantId], references: [id])
+  study  DicomStudy   @relation(fields: [studyId], references: [id], onDelete: Cascade)
+  series DicomSeries? @relation(fields: [seriesId], references: [id])
+
+  @@index([tenantId, studyId])
+  @@map("dicom_instances")
 }
 
 // ============================================================

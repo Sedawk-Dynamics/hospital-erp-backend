@@ -430,3 +430,128 @@ export async function getPharmacyAnalytics(
     next(err);
   }
 }
+
+// ============================================================
+// Recall Management
+// ============================================================
+
+export async function recallBatch(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const data = await pharmacyService.recallBatch(
+      tenantId,
+      req.params.id as string,
+      userId,
+      req.body,
+    );
+    sendResponse({ res, message: 'Batch recalled successfully', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function unrecallBatch(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await pharmacyService.unrecallBatch(tenantId, req.params.id as string);
+    sendResponse({ res, message: 'Batch unmarked from recall', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function recallDrug(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const data = await pharmacyService.recallDrug(
+      tenantId,
+      req.params.id as string,
+      userId,
+      req.body,
+    );
+    sendResponse({ res, message: 'Drug recalled (all batches)', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getRecallAffectedPatients(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await pharmacyService.getRecallAffectedPatients(
+      tenantId,
+      req.params.id as string,
+    );
+    sendResponse({ res, message: 'Recall affected patients retrieved', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getRecalledItems(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await pharmacyService.getRecalledItems(tenantId, req.query as any);
+    sendResponse({ res, message: 'Recalled items retrieved', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ============================================================
+// GST Report
+// ============================================================
+
+export async function getGstReport(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await pharmacyService.getGstReport(tenantId, req.query as any);
+    sendResponse({ res, message: 'GST report retrieved', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ============================================================
+// Maintenance: flag expired batches
+// ============================================================
+
+export async function flagExpiredBatches(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await pharmacyService.flagExpiredBatches(tenantId);
+    sendResponse({ res, message: 'Expired batches flagged', data });
+  } catch (err) {
+    next(err);
+  }
+}

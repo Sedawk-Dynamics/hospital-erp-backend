@@ -20,6 +20,7 @@ import type {
   GetSupplyRequestsQuery,
   ApproveSupplyRequestInput,
   FulfillSupplyRequestInput,
+  GetExpiringQuery,
 } from './inventory.validation';
 
 // ============================================================
@@ -331,6 +332,134 @@ export async function deleteItem(tenantId: string, id: string) {
   });
 
   logger.info({ tenantId, itemId: id }, 'Inventory item deactivated');
+}
+
+/**
+ * Items that have stock-in batches expiring within `months`. We look at
+ * stock_in transactions with an expiryDate set, and sum the remaining
+ * quantity per (item, batchNumber) by subtracting later stock_outs from
+ * the same batch. Equipment items with no expiry are excluded.
+ */
+export async function getExpiringInventory(tenantId: string, query: GetExpiringQuery) {
+  const months = query.months ?? 3;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const threshold = new Date(today);
+  threshold.setMonth(threshold.getMonth() + months);
+
+  // Look at stock_in transactions with a non-null expiryDate within the window
+  const stockIns = await prisma.stockTransaction.findMany({
+    where: {
+      tenantId,
+      transactionType: 'stock_in',
+      expiryDate: { gte: today, lte: threshold },
+    },
+    include: {
+      inventoryItem: {
+        select: { id: true, itemName: true, itemCode: true, unitOfMeasurement: true, category: true, currentStock: true },
+      },
+      supplier: { select: { id: true, name: true } },
+    },
+    orderBy: { expiryDate: 'asc' },
+  });
+
+  // For each stock-in, find later stock_out transactions referencing the same item + batchNumber
+  const rows = await Promise.all(
+    stockIns.map(async (tx) => {
+      const used = await prisma.stockTransaction.aggregate({
+        where: {
+          tenantId,
+          inventoryItemId: tx.inventoryItemId,
+          batchNumber: tx.batchNumber ?? undefined,
+          transactionType: { in: ['stock_out', 'expired_removal'] },
+          createdAt: { gte: tx.createdAt },
+        },
+        _sum: { quantity: true },
+      });
+      const remaining = tx.quantity - (used._sum.quantity ?? 0);
+      return {
+        transactionId: tx.id,
+        inventoryItemId: tx.inventoryItemId,
+        item: tx.inventoryItem,
+        batchNumber: tx.batchNumber,
+        receivedAt: tx.createdAt,
+        expiryDate: tx.expiryDate,
+        receivedQuantity: tx.quantity,
+        remainingQuantity: Math.max(0, remaining),
+        unitCost: tx.unitCost ? Number(tx.unitCost) : 0,
+        supplier: tx.supplier,
+      };
+    }),
+  );
+
+  // Drop fully consumed batches
+  const expiring = rows.filter((r) => r.remainingQuantity > 0);
+
+  return {
+    months,
+    total: expiring.length,
+    items: expiring,
+  };
+}
+
+/**
+ * Mark expired batches: any stock-in with expiryDate < today and remaining
+ * quantity > 0 gets an `expired_removal` transaction that zeroes it out.
+ * Idempotent — if the expired_removal already exists for the batch, skip.
+ */
+export async function flagExpiredInventory(tenantId: string, userId: string) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const expiredIns = await prisma.stockTransaction.findMany({
+    where: {
+      tenantId,
+      transactionType: 'stock_in',
+      expiryDate: { lt: today },
+    },
+  });
+
+  let flagged = 0;
+  for (const tx of expiredIns) {
+    if (!tx.batchNumber) continue;
+    const used = await prisma.stockTransaction.aggregate({
+      where: {
+        tenantId,
+        inventoryItemId: tx.inventoryItemId,
+        batchNumber: tx.batchNumber,
+        transactionType: { in: ['stock_out', 'expired_removal'] },
+        createdAt: { gte: tx.createdAt },
+      },
+      _sum: { quantity: true },
+    });
+    const remaining = tx.quantity - (used._sum.quantity ?? 0);
+    if (remaining <= 0) continue;
+
+    await prisma.$transaction([
+      prisma.stockTransaction.create({
+        data: {
+          tenantId,
+          inventoryItemId: tx.inventoryItemId,
+          transactionType: 'expired_removal',
+          quantity: remaining,
+          batchNumber: tx.batchNumber,
+          expiryDate: tx.expiryDate,
+          referenceType: 'auto_expiry',
+          referenceId: tx.id,
+          notes: `Auto-flagged expired batch ${tx.batchNumber}`,
+          performedBy: userId,
+        },
+      }),
+      prisma.inventoryItem.update({
+        where: { id: tx.inventoryItemId },
+        data: { currentStock: { decrement: remaining } },
+      }),
+    ]);
+    flagged += 1;
+  }
+
+  logger.info({ tenantId, count: flagged }, 'Auto-flagged expired inventory batches');
+  return { flagged };
 }
 
 export async function getLowStockItems(tenantId: string, query: any) {

@@ -108,6 +108,12 @@ export const getLowStockQuerySchema = z.object({
   query: paginationSchema,
 });
 
+export const getExpiringQuerySchema = z.object({
+  query: paginationSchema.extend({
+    months: z.coerce.number().int().min(1).max(36).default(3),
+  }),
+});
+
 // ============================================================
 // Stock Transactions
 // ============================================================
@@ -273,6 +279,7 @@ export type UpdatePurchaseOrderInput = z.infer<typeof updatePurchaseOrderSchema>
 export type GetPurchaseOrdersQuery = z.infer<typeof getPurchaseOrdersQuerySchema>['query'];
 export type ReceivePurchaseOrderInput = z.infer<typeof receivePurchaseOrderSchema>['body'];
 
+export type GetExpiringQuery = z.infer<typeof getExpiringQuerySchema>['query'];
 export type CreateSupplyRequestInput = z.infer<typeof createSupplyRequestSchema>['body'];
 export type GetSupplyRequestsQuery = z.infer<typeof getSupplyRequestsQuerySchema>['query'];
 export type ApproveSupplyRequestInput = z.infer<typeof approveSupplyRequestSchema>['body'];

@@ -1,0 +1,354 @@
+import { prisma } from '../../config/database';
+import { logger } from '../../config/logger';
+import { AppError } from '../../shared/appError';
+import { checkInteractions } from '../prescriptions/prescriptions.service';
+import {
+  evaluatePanic,
+  findDosageLimit,
+  parseDoseMg,
+  parseFrequencyToDosesPerDay,
+  getOrderSuggestions,
+} from './cdss.data';
+import type {
+  ValidatePrescriptionInput,
+  OrderSuggestionsQuery,
+  EvaluateLabResultsInput,
+  AlertsQuery,
+} from './cdss.validation';
+
+// ============================================================
+// Prescription validation: allergy + interaction + dosage
+// ============================================================
+
+export interface CdssWarning {
+  severity: 'info' | 'minor' | 'moderate' | 'major' | 'contraindicated';
+  kind: 'allergy' | 'interaction' | 'dosage' | 'recall';
+  drug?: string;
+  pair?: [string, string];
+  message: string;
+  detail?: string;
+}
+
+export async function validatePrescription(
+  tenantId: string,
+  data: ValidatePrescriptionInput,
+): Promise<{ warnings: CdssWarning[]; blockers: CdssWarning[] }> {
+  const patient = await prisma.patient.findFirst({
+    where: { id: data.patientId, tenantId },
+    include: { allergies: true },
+  });
+  if (!patient) throw AppError.notFound('Patient not found');
+
+  // Weight (kg) is needed for weight-based dosage check — pull latest from Vital.
+  const latestVital = await prisma.vital.findFirst({
+    where: { patientId: data.patientId, weightKg: { not: null } },
+    orderBy: { recordedAt: 'desc' },
+    select: { weightKg: true },
+  });
+  const weightKg = latestVital?.weightKg ? Number(latestVital.weightKg) : null;
+
+  // Resolve drug names to formulary entries so we know generic + active-recall state.
+  const drugNames = data.items.map((i) => i.drugName);
+  const formulary = await prisma.drugFormulary.findMany({
+    where: { tenantId },
+    select: {
+      drugName: true, genericName: true, contraindications: true, isRecalled: true,
+    },
+  });
+
+  const findFormulary = (name: string) => {
+    const n = name.toLowerCase();
+    return formulary.find((f) =>
+      f.drugName.toLowerCase().includes(n) ||
+      n.includes(f.drugName.toLowerCase()) ||
+      (f.genericName && (f.genericName.toLowerCase().includes(n) || n.includes(f.genericName.toLowerCase()))),
+    );
+  };
+
+  const warnings: CdssWarning[] = [];
+  const blockers: CdssWarning[] = [];
+
+  // ── Allergy check ─────────────────────────────────────
+  for (const item of data.items) {
+    const formularyHit = findFormulary(item.drugName);
+    const nameLower = item.drugName.toLowerCase();
+    const genericLower = formularyHit?.genericName?.toLowerCase() ?? '';
+
+    for (const allergy of patient.allergies) {
+      const allergen = allergy.allergen.toLowerCase();
+      const match =
+        allergen.includes(nameLower) ||
+        nameLower.includes(allergen) ||
+        (genericLower && (allergen.includes(genericLower) || genericLower.includes(allergen)));
+      if (!match) continue;
+
+      const severity = allergy.severity === 'life_threatening' || allergy.severity === 'severe' ? 'contraindicated' : 'major';
+      const alert: CdssWarning = {
+        severity,
+        kind: 'allergy',
+        drug: item.drugName,
+        message: `Patient has a documented ${allergy.severity ?? 'allergy'} to ${allergy.allergen}`,
+        detail: allergy.reaction ?? undefined,
+      };
+      // contraindicated = block; major = warn
+      if (severity === 'contraindicated') blockers.push(alert);
+      else warnings.push(alert);
+    }
+
+    if (formularyHit?.isRecalled) {
+      blockers.push({
+        severity: 'contraindicated',
+        kind: 'recall',
+        drug: item.drugName,
+        message: `${item.drugName} is currently recalled in the formulary. Dispensing is blocked.`,
+      });
+    }
+  }
+
+  // ── Drug-drug interactions ────────────────────────────
+  if (data.items.length > 1) {
+    try {
+      const interactionResult = await checkInteractions(tenantId, { drugs: drugNames });
+      for (const pair of interactionResult.pairs) {
+        const alert: CdssWarning = {
+          severity: pair.severity === 'minor' ? 'minor' : pair.severity,
+          kind: 'interaction',
+          pair: pair.drugs,
+          message: `${pair.drugs[0]} + ${pair.drugs[1]}: ${pair.description}`,
+        };
+        if (pair.severity === 'contraindicated') blockers.push(alert);
+        else warnings.push(alert);
+      }
+    } catch (err) {
+      logger.warn({ err }, 'CDSS interaction check failed; continuing without');
+    }
+  }
+
+  // ── Dosage validation ─────────────────────────────────
+  for (const item of data.items) {
+    if (!item.dosage) continue;
+    const limit = findDosageLimit(item.drugName);
+    if (!limit) continue;
+    const doseMg = parseDoseMg(item.dosage);
+    if (doseMg === null) continue;
+    const dosesPerDay = item.frequency ? parseFrequencyToDosesPerDay(item.frequency) : 1;
+    const dailyMg = doseMg * dosesPerDay;
+
+    if (limit.maxPerDoseMg && doseMg > limit.maxPerDoseMg) {
+      warnings.push({
+        severity: 'major',
+        kind: 'dosage',
+        drug: item.drugName,
+        message: `${item.drugName} single dose ${doseMg} mg exceeds recommended max ${limit.maxPerDoseMg} mg`,
+        detail: limit.note,
+      });
+    }
+    if (limit.maxDailyMg && dailyMg > limit.maxDailyMg) {
+      warnings.push({
+        severity: 'major',
+        kind: 'dosage',
+        drug: item.drugName,
+        message: `${item.drugName} daily dose ${dailyMg} mg exceeds recommended max ${limit.maxDailyMg} mg/day`,
+        detail: limit.note,
+      });
+    }
+    if (limit.maxMgPerKgDay && weightKg) {
+      const mgPerKg = dailyMg / weightKg;
+      if (mgPerKg > limit.maxMgPerKgDay) {
+        warnings.push({
+          severity: 'major',
+          kind: 'dosage',
+          drug: item.drugName,
+          message: `${item.drugName} at ${mgPerKg.toFixed(1)} mg/kg/day exceeds recommended max ${limit.maxMgPerKgDay} mg/kg/day (patient ${weightKg} kg)`,
+          detail: limit.note,
+        });
+      }
+    }
+  }
+
+  return { warnings, blockers };
+}
+
+// ============================================================
+// ICD-based order suggestions
+// ============================================================
+
+export function getOrderRecommendations(query: OrderSuggestionsQuery) {
+  const suggestions = getOrderSuggestions(query.icdCode, query.diagnosisName);
+  // Flatten: dedupe labs and imaging across all matches
+  const labs = new Set<string>();
+  const imaging = new Set<string>();
+  const notes: string[] = [];
+  for (const s of suggestions) {
+    s.labs.forEach((l) => labs.add(l));
+    s.imaging.forEach((i) => imaging.add(i));
+    if (s.note) notes.push(s.note);
+  }
+  return {
+    matched: suggestions.length > 0,
+    labs: Array.from(labs),
+    imaging: Array.from(imaging),
+    notes,
+    rules: suggestions,
+  };
+}
+
+// ============================================================
+// Critical lab value evaluation
+// ============================================================
+// Called inline from the lab result-entry path. Creates a Notification for
+// the ordering doctor (and an "all CDSS alerts" feed entry).
+
+export async function evaluateLabResults(
+  tenantId: string,
+  userId: string,
+  data: EvaluateLabResultsInput,
+) {
+  const alerts: Array<{
+    parameterName: string;
+    value: string | number;
+    unit?: string;
+    severity: 'critical';
+    message: string;
+  }> = [];
+
+  for (const r of data.results) {
+    const hit = evaluatePanic(r.parameterName, r.value);
+    if (hit) {
+      alerts.push({
+        parameterName: r.parameterName,
+        value: r.value,
+        unit: r.unit ?? hit.unit,
+        severity: 'critical',
+        message: `${hit.message} (${r.parameterName}=${r.value}${r.unit ? ' ' + r.unit : ''})`,
+      });
+    }
+  }
+
+  if (alerts.length === 0) {
+    return { alerts: [] as typeof alerts, notified: 0 };
+  }
+
+  // Resolve ordering doctor + patient for notification.
+  let doctorUserId: string | null = null;
+  if (data.labOrderId) {
+    const order = await prisma.labOrder.findFirst({
+      where: { id: data.labOrderId, tenantId },
+      select: { orderedBy: true },
+    });
+    doctorUserId = order?.orderedBy ?? null;
+  }
+  // Fallback: patient.user
+  if (!doctorUserId) {
+    const patient = await prisma.patient.findFirst({
+      where: { id: data.patientId, tenantId },
+      select: { userId: true },
+    });
+    doctorUserId = patient?.userId ?? null;
+  }
+
+  let notified = 0;
+  if (doctorUserId) {
+    for (const a of alerts) {
+      try {
+        await prisma.notification.create({
+          data: {
+            tenantId,
+            userId: doctorUserId,
+            title: 'Critical lab value',
+            message: a.message,
+            // CDSS critical-value alerts ride on the existing 'alert' enum
+            // and tag themselves via referenceType='lab_critical' so the
+            // alerts feed can filter precisely without a schema migration.
+            notificationType: 'alert',
+            channel: 'in_app',
+            referenceType: 'lab_critical',
+            referenceId: data.labOrderId,
+          },
+        });
+        notified += 1;
+      } catch (err) {
+        logger.warn({ err }, 'CDSS critical-value notification failed');
+      }
+    }
+  }
+
+  logger.info({ tenantId, alerts: alerts.length, notified }, 'CDSS evaluated lab results');
+  return { alerts, notified };
+}
+
+// ============================================================
+// CDSS Alerts feed — surfaces recent critical-value notifications
+// + abnormal results for the alerts dashboard.
+// ============================================================
+
+export async function getAlertsFeed(tenantId: string, query: AlertsQuery) {
+  const page = query.page;
+  const limit = query.limit;
+  const skip = (page - 1) * limit;
+
+  const where: any = {
+    tenantId,
+    notificationType: 'alert', referenceType: 'lab_critical',
+  };
+  if (query.fromDate) where.createdAt = { ...where.createdAt, gte: new Date(query.fromDate) };
+  if (query.toDate) where.createdAt = { ...where.createdAt, lte: new Date(query.toDate) };
+
+  const [notifications, total, abnormalResults] = await Promise.all([
+    prisma.notification.findMany({
+      where,
+      skip,
+      take: limit,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        user: { select: { id: true, firstName: true, lastName: true } },
+      },
+    }),
+    prisma.notification.count({ where }),
+    // Recent abnormal lab results in the last 7 days for context
+    prisma.labResult.findMany({
+      where: {
+        labOrder: { tenantId, ...(query.patientId ? { patientId: query.patientId } : {}) },
+        isAbnormal: true,
+        enteredAt: {
+          gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+        },
+      },
+      orderBy: { enteredAt: 'desc' },
+      take: 25,
+      include: {
+        patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
+        labOrder: { select: { id: true } },
+      },
+    }),
+  ]);
+
+  return {
+    alerts: notifications,
+    page,
+    limit,
+    total,
+    abnormalResults,
+  };
+}
+
+export async function getAlertsSummary(tenantId: string) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const weekAgo = new Date(today);
+  weekAgo.setDate(weekAgo.getDate() - 7);
+
+  const [criticalToday, criticalWeek, unread] = await Promise.all([
+    prisma.notification.count({
+      where: { tenantId, notificationType: 'alert', referenceType: 'lab_critical', createdAt: { gte: today } },
+    }),
+    prisma.notification.count({
+      where: { tenantId, notificationType: 'alert', referenceType: 'lab_critical', createdAt: { gte: weekAgo } },
+    }),
+    prisma.notification.count({
+      where: { tenantId, notificationType: 'alert', referenceType: 'lab_critical', isRead: false },
+    }),
+  ]);
+
+  return { criticalToday, criticalWeek, unreadCritical: unread };
+}

@@ -11,6 +11,7 @@ import {
   updateItemSchema,
   getItemsQuerySchema,
   getLowStockQuerySchema,
+  getExpiringQuerySchema,
   createStockTransactionSchema,
   getStockTransactionsQuerySchema,
   createPurchaseOrderSchema,
@@ -38,6 +39,8 @@ inventoryRoutes.delete('/suppliers/:id', authenticate, requirePermission('invent
 inventoryRoutes.post('/items', authenticate, requirePermission('inventory', 'create'), validate(createItemSchema), controller.createItem);
 inventoryRoutes.get('/items', authenticate, requirePermission('inventory', 'read'), validate(getItemsQuerySchema), controller.getItems);
 inventoryRoutes.get('/items/low-stock', authenticate, requirePermission('inventory', 'read'), validate(getLowStockQuerySchema), controller.getLowStockItems);
+inventoryRoutes.get('/items/expiring', authenticate, requirePermission('inventory', 'read'), validate(getExpiringQuerySchema), controller.getExpiringInventory);
+inventoryRoutes.post('/items/flag-expired', authenticate, requirePermission('inventory', 'approve'), controller.flagExpiredInventory);
 inventoryRoutes.get('/items/:id', authenticate, requirePermission('inventory', 'read'), validate(idParamSchema), controller.getItemById);
 inventoryRoutes.put('/items/:id', authenticate, requirePermission('inventory', 'update'), validate(updateItemSchema), controller.updateItem);
 inventoryRoutes.delete('/items/:id', authenticate, requirePermission('inventory', 'delete'), validate(idParamSchema), controller.deleteItem);

@@ -22,6 +22,7 @@ import { formsRoutes } from './forms/forms.routes';
 import { prescriptionRoutes } from './prescriptions/prescriptions.routes';
 import { emarRoutes } from './emar/emar.routes';
 import { labRoutes } from './lab/lab.routes';
+import { cdssRoutes } from './cdss/cdss.routes';
 import { imagingRoutes } from './imaging/imaging.routes';
 import { pharmacyRoutes } from './pharmacy/pharmacy.routes';
 import { inventoryRoutes } from './inventory/inventory.routes';
@@ -75,6 +76,10 @@ apiRouter.use('/forms', authenticate, userTierLimiter, subCheck, requireFeature(
 apiRouter.use('/prescriptions', authenticate, userTierLimiter, subCheck, requireFeature('appointments'), prescriptionRoutes);
 apiRouter.use('/emar', authenticate, userTierLimiter, subCheck, requireFeature('ip_management'), emarRoutes);
 apiRouter.use('/lab', authenticate, userTierLimiter, subCheck, requireFeature('lab'), labRoutes);
+// CDSS is cross-module (prescriptions + lab + diagnoses), so we mount it
+// against the prescriptions feature flag since the primary surface is the
+// doctor's prescription pad.
+apiRouter.use('/cdss', authenticate, userTierLimiter, subCheck, requireFeature('appointments'), cdssRoutes);
 apiRouter.use('/imaging', authenticate, userTierLimiter, subCheck, requireFeature('imaging'), imagingRoutes);
 apiRouter.use('/pharmacy', authenticate, userTierLimiter, subCheck, requireFeature('pharmacy'), pharmacyRoutes);
 apiRouter.use('/inventory', authenticate, userTierLimiter, subCheck, requireFeature('inventory'), inventoryRoutes);

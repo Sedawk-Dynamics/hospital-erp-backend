@@ -226,6 +226,58 @@ export const processReturnSchema = z.object({
 });
 
 // ============================================================
+// Recall Management
+// ============================================================
+
+export const recallBatchSchema = z.object({
+  body: z.object({
+    recallReason: z.string().min(1, 'Recall reason is required').max(1000),
+  }),
+  params: z.object({
+    id: z.string().uuid('Invalid batch ID'),
+  }),
+});
+
+export const unrecallBatchSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid batch ID'),
+  }),
+});
+
+export const recallDrugSchema = z.object({
+  body: z.object({
+    recallReason: z.string().min(1, 'Recall reason is required').max(1000),
+  }),
+  params: z.object({
+    id: z.string().uuid('Invalid drug ID'),
+  }),
+});
+
+export const getRecalledItemsQuerySchema = z.object({
+  query: paginationSchema.extend({
+    type: z.enum(['batch', 'drug', 'all']).default('all'),
+  }),
+});
+
+export const recallAffectedPatientsParamSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid batch ID'),
+  }),
+});
+
+// ============================================================
+// GST
+// ============================================================
+
+export const getGstReportQuerySchema = z.object({
+  query: z.object({
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
+    gstRate: z.coerce.number().min(0).max(100).optional(),
+  }),
+});
+
+// ============================================================
 // Type exports
 // ============================================================
 
@@ -243,3 +295,7 @@ export type GetDispenseQuery = z.infer<typeof getDispenseQuerySchema>['query'];
 export type CreateReturnInput = z.infer<typeof createReturnSchema>['body'];
 export type GetReturnsQuery = z.infer<typeof getReturnsQuerySchema>['query'];
 export type ProcessReturnInput = z.infer<typeof processReturnSchema>['body'];
+export type RecallBatchInput = z.infer<typeof recallBatchSchema>['body'];
+export type RecallDrugInput = z.infer<typeof recallDrugSchema>['body'];
+export type GetRecalledItemsQuery = z.infer<typeof getRecalledItemsQuerySchema>['query'];
+export type GetGstReportQuery = z.infer<typeof getGstReportQuerySchema>['query'];

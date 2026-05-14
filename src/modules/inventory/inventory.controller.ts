@@ -72,6 +72,18 @@ export async function getLowStockItems(req: AuthenticatedRequest, res: Response,
     sendResponse({ res, message: 'Low stock items retrieved', data });
   } catch (err) { next(err); }
 }
+export async function getExpiringInventory(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.getExpiringInventory(req.user!.tenantId, req.query as any);
+    sendResponse({ res, message: 'Expiring inventory retrieved', data });
+  } catch (err) { next(err); }
+}
+export async function flagExpiredInventory(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.flagExpiredInventory(req.user!.tenantId, req.user!.userId);
+    sendResponse({ res, message: 'Expired inventory batches flagged', data });
+  } catch (err) { next(err); }
+}
 
 // Stock Transactions
 export async function createStockTransaction(req: AuthenticatedRequest, res: Response, next: NextFunction) {

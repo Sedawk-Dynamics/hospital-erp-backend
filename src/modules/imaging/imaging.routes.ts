@@ -3,6 +3,7 @@ import { authenticate } from '../../middleware/authenticate';
 import { requirePermission } from '../../middleware/authorize';
 import { validate } from '../../middleware/validate';
 import * as controller from './imaging.controller';
+import * as dicomController from './dicom.controller';
 import {
   createImagingRequestSchema,
   getImagingRequestsQuerySchema,
@@ -16,6 +17,13 @@ import {
   addImagingReportSchema,
   verifyImagingResultSchema,
 } from './imaging.validation';
+import {
+  createStudySchema,
+  addInstanceSchema,
+  getStudiesQuerySchema,
+  studyIdParamSchema,
+  worklistQuerySchema,
+} from './dicom.validation';
 
 export const imagingRoutes = Router();
 
@@ -36,3 +44,11 @@ imagingRoutes.get('/results', authenticate, requirePermission('imaging', 'read')
 imagingRoutes.get('/results/:id', authenticate, requirePermission('imaging', 'read'), validate(imagingResultIdParamSchema), controller.getImagingResultById);
 imagingRoutes.post('/results/:id/report', authenticate, requirePermission('imaging', 'create'), validate(addImagingReportSchema), controller.addImagingReport);
 imagingRoutes.patch('/results/:id/verify', authenticate, requirePermission('imaging', 'approve'), validate(verifyImagingResultSchema), controller.verifyImagingResult);
+
+// --- PACS / DICOM ---
+imagingRoutes.get('/dicom/worklist', authenticate, requirePermission('imaging', 'read'), validate(worklistQuerySchema), dicomController.getWorklist);
+imagingRoutes.get('/dicom/studies', authenticate, requirePermission('imaging', 'read'), validate(getStudiesQuerySchema), dicomController.getStudies);
+imagingRoutes.get('/dicom/studies/:id', authenticate, requirePermission('imaging', 'read'), validate(studyIdParamSchema), dicomController.getStudyById);
+imagingRoutes.get('/dicom/patient/:patientId/studies', authenticate, requirePermission('imaging', 'read'), dicomController.getStudiesByPatient);
+imagingRoutes.post('/dicom/studies', authenticate, requirePermission('imaging', 'create'), validate(createStudySchema), dicomController.createStudy);
+imagingRoutes.post('/dicom/studies/:id/instances', authenticate, requirePermission('imaging', 'create'), validate(addInstanceSchema), dicomController.addInstance);

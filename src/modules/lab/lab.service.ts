@@ -1111,6 +1111,26 @@ export async function enterResults(tenantId: string, userId: string, data: Enter
       parameters: data.results.map((r) => r.parameterName),
     },
   });
+
+  // CDSS critical-value hook — best-effort, non-blocking. Late import to
+  // avoid a circular dep between lab and cdss modules.
+  void (async () => {
+    try {
+      const { evaluateLabResults } = await import('../cdss/cdss.service');
+      await evaluateLabResults(tenantId, userId, {
+        labOrderId: data.labOrderId,
+        patientId: data.patientId,
+        results: data.results.map((r) => ({
+          parameterName: r.parameterName,
+          value: r.value ?? '',
+          unit: r.unit,
+        })),
+      });
+    } catch (err) {
+      logger.warn({ err }, 'CDSS critical-value evaluation failed (non-blocking)');
+    }
+  })();
+
   return results;
 }
 
