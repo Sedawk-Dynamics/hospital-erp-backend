@@ -85,6 +85,12 @@ labRoutes.patch('/reports/:id/correct', authenticate, requirePermission('lab_rep
 // --- Investigation History (aggregated per patient) ---
 labRoutes.get('/investigation-history/:patientId', authenticate, requirePermission('lab_reports', 'read'), controller.getInvestigationHistory);
 
+// --- Dashboard (real-time worklist counts + recent activity for lab home) ---
+labRoutes.get('/dashboard', authenticate, requirePermission('lab_orders', 'read'), controller.getLabDashboard);
+
+// --- Extended analytics (per-test TAT, breach counts, daily trend) ---
+labRoutes.get('/reports/analytics-extended', authenticate, requirePermission('lab_reports', 'read'), controller.getLabAnalyticsExtended);
+
 // --- Attachments (PDF reports, microscopy images, scans, raw data) ---
 // Files land on disk under /uploads via multer; metadata row points at the
 // public URL so doctors / nurses / patients all hit the same static path.

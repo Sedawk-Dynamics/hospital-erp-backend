@@ -337,7 +337,13 @@ export async function updateSampleStatus(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const sample = await labService.updateSampleStatus(tenantId, req.params.id as string, req.body);
+    const userId = req.user!.userId;
+    const sample = await labService.updateSampleStatus(
+      tenantId,
+      req.params.id as string,
+      userId,
+      req.body,
+    );
     sendResponse({
       res,
       message: 'Sample status updated successfully',
@@ -355,7 +361,13 @@ export async function rejectSample(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const sample = await labService.rejectSample(tenantId, req.params.id as string, req.body);
+    const userId = req.user!.userId;
+    const sample = await labService.rejectSample(
+      tenantId,
+      req.params.id as string,
+      userId,
+      req.body,
+    );
     sendResponse({
       res,
       message: 'Sample rejected successfully',
@@ -580,6 +592,36 @@ export async function getLabReportAnalytics(
     const toDate = (req.query.toDate as string) || undefined;
     const data = await labService.getLabReportAnalytics(tenantId, { fromDate, toDate });
     sendResponse({ res, message: 'Lab analytics', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getLabAnalyticsExtended(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const fromDate = (req.query.fromDate as string) || undefined;
+    const toDate = (req.query.toDate as string) || undefined;
+    const data = await labService.getLabAnalyticsExtended(tenantId, { fromDate, toDate });
+    sendResponse({ res, message: 'Lab analytics extended', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getLabDashboard(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await labService.getLabDashboard(tenantId);
+    sendResponse({ res, message: 'Lab dashboard', data });
   } catch (err) {
     next(err);
   }

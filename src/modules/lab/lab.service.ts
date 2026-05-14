@@ -2,6 +2,11 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
+import {
+  safeLabAudit,
+  safeLabReportEmail,
+  safeLabReportCorrectedEmail,
+} from './lab.audit';
 import type {
   CreateLabDepartmentInput,
   UpdateLabDepartmentInput,
@@ -461,6 +466,20 @@ export async function createLabOrder(tenantId: string, userId: string, data: Cre
   // Auto-link to draft bill (best-effort, must not fail order creation)
   if (order?.id) {
     void autoLinkLabOrderToBill(tenantId, order.id);
+    void safeLabAudit({
+      tenantId,
+      userId,
+      action: 'create',
+      entityType: 'lab_order',
+      entityId: order.id,
+      description: `Lab order created with ${order.labOrderItems?.length ?? 0} test(s)`,
+      newValues: {
+        urgency: data.urgency,
+        isThirdParty: data.isThirdParty,
+        thirdPartyLabName: data.thirdPartyLabName,
+        items: order.labOrderItems?.map((it) => it.test?.testName ?? it.testId),
+      },
+    });
   }
 
   return order;
@@ -551,7 +570,12 @@ export async function getLabOrders(tenantId: string, query: GetLabOrdersQuery) {
           },
         },
         labSamples: {
-          select: { id: true, status: true, sampleType: true },
+          select: {
+            id: true,
+            status: true,
+            sampleType: true,
+            barcode: true,
+          },
         },
       },
       orderBy: { createdAt: 'desc' },
@@ -708,6 +732,20 @@ export async function acceptLabOrder(
   });
 
   logger.info({ tenantId, orderId: id, assignedToId: data.assignedToId }, 'Lab order accepted');
+  void safeLabAudit({
+    tenantId,
+    userId: acceptorUserId,
+    action: 'update',
+    entityType: 'lab_order',
+    entityId: id,
+    description: 'Lab order accepted by lab',
+    newValues: {
+      assignedToId: updated.assignedToId,
+      assignedDeptId: updated.assignedDeptId,
+      acceptedAt: updated.acceptedAt,
+      status: updated.status,
+    },
+  });
   return updated;
 }
 
@@ -815,6 +853,15 @@ export async function collectSample(tenantId: string, userId: string, data: Coll
   });
 
   logger.info({ tenantId, sampleId: sample.id, orderId: data.labOrderId }, 'Sample collected');
+  void safeLabAudit({
+    tenantId,
+    userId,
+    action: 'create',
+    entityType: 'lab_sample',
+    entityId: sample.id,
+    description: `Sample collected (${data.sampleType})`,
+    newValues: { labOrderId: data.labOrderId, sampleType: data.sampleType, barcode: data.barcode },
+  });
   return sample;
 }
 
@@ -870,6 +917,7 @@ export async function getSamples(tenantId: string, query: GetSamplesQuery) {
 export async function updateSampleStatus(
   tenantId: string,
   id: string,
+  userId: string,
   data: UpdateSampleStatusInput,
 ) {
   const sample = await prisma.labSample.findFirst({
@@ -900,10 +948,24 @@ export async function updateSampleStatus(
   });
 
   logger.info({ tenantId, sampleId: id, status: data.status }, 'Sample status updated');
+  void safeLabAudit({
+    tenantId,
+    userId,
+    action: 'update',
+    entityType: 'lab_sample',
+    entityId: id,
+    description: `Sample status → ${data.status}`,
+    newValues: { status: data.status },
+  });
   return updated;
 }
 
-export async function rejectSample(tenantId: string, id: string, data: RejectSampleInput) {
+export async function rejectSample(
+  tenantId: string,
+  id: string,
+  userId: string,
+  data: RejectSampleInput,
+) {
   const sample = await prisma.labSample.findFirst({
     where: { id, labOrder: { tenantId } },
   });
@@ -930,6 +992,15 @@ export async function rejectSample(tenantId: string, id: string, data: RejectSam
   });
 
   logger.info({ tenantId, sampleId: id }, 'Sample rejected');
+  void safeLabAudit({
+    tenantId,
+    userId,
+    action: 'update',
+    entityType: 'lab_sample',
+    entityId: id,
+    description: `Sample rejected: ${data.rejectionReason}`,
+    newValues: { status: 'rejected', rejectionReason: data.rejectionReason },
+  });
   return updated;
 }
 
@@ -1028,6 +1099,18 @@ export async function enterResults(tenantId: string, userId: string, data: Enter
     { tenantId, orderItemId: data.labOrderItemId, count: results.length },
     'Lab results entered',
   );
+  void safeLabAudit({
+    tenantId,
+    userId,
+    action: 'create',
+    entityType: 'lab_result',
+    entityId: data.labOrderItemId,
+    description: `Entered ${results.length} result(s)`,
+    newValues: {
+      labOrderId: data.labOrderId,
+      parameters: data.results.map((r) => r.parameterName),
+    },
+  });
   return results;
 }
 
@@ -1149,6 +1232,15 @@ export async function verifyResult(
   });
 
   logger.info({ tenantId, resultId: id, action, userId }, 'Lab result review action');
+  void safeLabAudit({
+    tenantId,
+    userId,
+    action: 'update',
+    entityType: 'lab_result',
+    entityId: id,
+    description: action === 'approve' ? 'Result approved by supervisor' : 'Result returned for correction',
+    newValues: { action, correctionNotes: body?.correctionNotes ?? null },
+  });
   return updated.result;
 }
 
@@ -1257,6 +1349,15 @@ export async function generateLabReport(
   });
 
   logger.info({ tenantId, reportId: report.id, orderId, generatedBy: userId }, 'Lab report generated');
+  void safeLabAudit({
+    tenantId,
+    userId,
+    action: 'create',
+    entityType: 'lab_report',
+    entityId: report.id,
+    description: 'Lab report draft generated',
+    newValues: { orderId, version: report.version },
+  });
   return report;
 }
 
@@ -1284,6 +1385,15 @@ export async function signLabReport(tenantId: string, reportId: string, userId: 
   });
 
   logger.info({ tenantId, reportId, userId }, 'Lab report signed');
+  void safeLabAudit({
+    tenantId,
+    userId,
+    action: 'update',
+    entityType: 'lab_report',
+    entityId: reportId,
+    description: 'Lab report signed and approved',
+    newValues: { status: 'approved', signedBy: userId, signedAt: updated.signedAt },
+  });
   return updated;
 }
 
@@ -1356,9 +1466,48 @@ export async function publishLabReport(
         referenceId: reportId,
       });
     }
+
+    // Email the patient (best-effort, only if patient has an email on file).
+    const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } });
+    const order = await prisma.labOrder.findUnique({
+      where: { id: report.labOrderId },
+      include: { labOrderItems: { include: { test: { select: { testName: true } } } } },
+    });
+    const testSummary = order?.labOrderItems.map((it) => it.test.testName).join(', ') || 'Lab test';
+    void safeLabReportEmail({
+      toEmail: patient?.email ?? null,
+      patientName,
+      reportDate: new Date().toLocaleDateString('en-IN'),
+      hospitalName: tenant?.name ?? 'Hospital',
+      testSummary,
+    });
+
+    // Email the ordering doctor too — they often manage results outside the portal.
+    if (report.labOrder.orderedBy) {
+      const doctor = await prisma.user.findUnique({
+        where: { id: report.labOrder.orderedBy },
+        select: { email: true, firstName: true, lastName: true },
+      });
+      void safeLabReportEmail({
+        toEmail: doctor?.email ?? null,
+        patientName: `Dr. ${doctor?.firstName ?? ''} ${doctor?.lastName ?? ''}`.trim(),
+        reportDate: new Date().toLocaleDateString('en-IN'),
+        hospitalName: tenant?.name ?? 'Hospital',
+        testSummary: `${patientName} — ${testSummary}`,
+      });
+    }
   }
 
   logger.info({ tenantId, reportId, userId }, 'Lab report published');
+  void safeLabAudit({
+    tenantId,
+    userId,
+    action: 'update',
+    entityType: 'lab_report',
+    entityId: reportId,
+    description: 'Lab report published to patient EMR',
+    newValues: { status: 'published', publishedAt: updated.publishedAt },
+  });
   return updated;
 }
 
@@ -1414,12 +1563,46 @@ export async function correctLabReport(
         referenceId: reportId,
       });
     }
+
+    // Email patient + ordering doctor that an updated version is available.
+    const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } });
+    const patientName = patient ? `${patient.firstName} ${patient.lastName ?? ''}`.trim() : 'Patient';
+    void safeLabReportCorrectedEmail({
+      toEmail: patient?.email ?? null,
+      patientName,
+      reportDate: new Date().toLocaleDateString('en-IN'),
+      hospitalName: tenant?.name ?? 'Hospital',
+      correctionNotes: data.correctionNotes,
+    });
+    if (report.labOrder.orderedBy) {
+      const doctor = await prisma.user.findUnique({
+        where: { id: report.labOrder.orderedBy },
+        select: { email: true, firstName: true, lastName: true },
+      });
+      void safeLabReportCorrectedEmail({
+        toEmail: doctor?.email ?? null,
+        patientName: `Dr. ${doctor?.firstName ?? ''} ${doctor?.lastName ?? ''}`.trim(),
+        reportDate: new Date().toLocaleDateString('en-IN'),
+        hospitalName: tenant?.name ?? 'Hospital',
+        correctionNotes: `${patientName} — ${data.correctionNotes}`,
+      });
+    }
   }
 
   logger.info(
     { tenantId, reportId, userId, version: updated.version },
     'Lab report corrected; re-sign required',
   );
+  void safeLabAudit({
+    tenantId,
+    userId,
+    action: 'update',
+    entityType: 'lab_report',
+    entityId: reportId,
+    description: `Lab report corrected (v${updated.version})`,
+    oldValues: { version: report.version, status: report.status },
+    newValues: { version: updated.version, status: 'corrected', correctionNotes: data.correctionNotes },
+  });
   return updated;
 }
 
@@ -1713,4 +1896,223 @@ export async function getInvestigationHistory(tenantId: string, patientId: strin
   }
 
   return { orders, abnormalFlat };
+}
+
+// ============================================================
+// Lab Dashboard (real-time worklist counts + recent activity)
+// ============================================================
+// Returns the headline numbers a lab user wants on first paint:
+//   - incoming orders awaiting acceptance
+//   - samples in collection lifecycle
+//   - results awaiting verification
+//   - reports awaiting sign / awaiting publish
+//   - today's published count
+//   - abnormal results pending review (last 24h)
+// Plus: a recent-activity feed of the last ~20 actions (orders + reports).
+export async function getLabDashboard(tenantId: string) {
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+  const [
+    incomingOrders,
+    inProgressOrders,
+    samplesCollected,
+    samplesInTransit,
+    samplesReceived,
+    samplesProcessing,
+    resultsAwaitingVerify,
+    reportsAwaitingSign,
+    reportsAwaitingPublish,
+    publishedToday,
+    correctedReports,
+    abnormalRecent,
+    recentOrders,
+    recentPublishedReports,
+    overdueOrders,
+  ] = await Promise.all([
+    prisma.labOrder.count({ where: { tenantId, status: 'ordered', acceptedAt: null } }),
+    prisma.labOrder.count({ where: { tenantId, status: 'in_progress' } }),
+    prisma.labSample.count({ where: { labOrder: { tenantId }, status: 'collected' } }),
+    prisma.labSample.count({ where: { labOrder: { tenantId }, status: 'in_transit' } }),
+    prisma.labSample.count({ where: { labOrder: { tenantId }, status: 'received' } }),
+    prisma.labSample.count({ where: { labOrder: { tenantId }, status: 'processing' } }),
+    prisma.labResult.count({ where: { labOrder: { tenantId }, status: 'entered' } }),
+    prisma.labReport.count({ where: { labOrder: { tenantId }, status: { in: ['draft', 'review', 'corrected'] }, signedAt: null } }),
+    prisma.labReport.count({ where: { labOrder: { tenantId }, status: 'approved' } }),
+    prisma.labReport.count({
+      where: { labOrder: { tenantId }, status: 'published', publishedAt: { gte: startOfToday } },
+    }),
+    prisma.labReport.count({ where: { labOrder: { tenantId }, status: 'corrected' } }),
+    prisma.labResult.count({
+      where: { labOrder: { tenantId }, isAbnormal: true, enteredAt: { gte: yesterday } },
+    }),
+    prisma.labOrder.findMany({
+      where: { tenantId },
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+      select: {
+        id: true,
+        createdAt: true,
+        status: true,
+        urgency: true,
+        acceptedAt: true,
+        patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+        orderer: { select: { id: true, firstName: true, lastName: true } },
+        labOrderItems: { select: { id: true } },
+      },
+    }),
+    prisma.labReport.findMany({
+      where: { labOrder: { tenantId }, status: 'published' },
+      orderBy: { publishedAt: 'desc' },
+      take: 8,
+      select: {
+        id: true,
+        publishedAt: true,
+        version: true,
+        patient: { select: { firstName: true, lastName: true, mrn: true } },
+        labOrder: { select: { id: true } },
+      },
+    }),
+    // Orders open longer than 24h with no published report — surfaces SLA risks.
+    prisma.labOrder.findMany({
+      where: {
+        tenantId,
+        status: { notIn: ['completed', 'cancelled'] },
+        createdAt: { lt: yesterday },
+      },
+      orderBy: { createdAt: 'asc' },
+      take: 10,
+      select: {
+        id: true,
+        createdAt: true,
+        status: true,
+        urgency: true,
+        patient: { select: { firstName: true, lastName: true, mrn: true } },
+      },
+    }),
+  ]);
+
+  return {
+    summary: {
+      incomingOrders,
+      inProgressOrders,
+      samplesCollected,
+      samplesInTransit,
+      samplesReceived,
+      samplesProcessing,
+      resultsAwaitingVerify,
+      reportsAwaitingSign,
+      reportsAwaitingPublish,
+      publishedToday,
+      correctedReports,
+      abnormalRecent,
+      overdueOrders: overdueOrders.length,
+    },
+    recentOrders,
+    recentPublishedReports,
+    overdueOrders,
+  };
+}
+
+// ============================================================
+// Enriched analytics (per-test TAT, breach counts, daily trend)
+// ============================================================
+// Layered onto getLabReportAnalytics: same date window, but adds the
+// per-test breakdowns + breach counts that supervisors need to manage SLAs.
+export async function getLabAnalyticsExtended(
+  tenantId: string,
+  range: { fromDate?: string; toDate?: string },
+) {
+  const where: any = { tenantId };
+  if (range.fromDate) where.createdAt = { ...where.createdAt, gte: new Date(range.fromDate) };
+  if (range.toDate) where.createdAt = { ...where.createdAt, lte: new Date(range.toDate) };
+
+  const completedOrders = await prisma.labOrder.findMany({
+    where: { ...where, status: 'completed' },
+    select: {
+      id: true,
+      createdAt: true,
+      labReport: { select: { publishedAt: true } },
+      labOrderItems: {
+        select: {
+          test: { select: { id: true, testName: true, turnaroundHours: true } },
+        },
+      },
+    },
+  });
+
+  // TAT per test (in hours) — tracks SLA breach against catalog turnaroundHours.
+  const tatByTest = new Map<string, { name: string; tats: number[]; tatLimitHours: number | null; breaches: number }>();
+  let overallBreaches = 0;
+  for (const order of completedOrders) {
+    const pub = order.labReport?.publishedAt;
+    if (!pub) continue;
+    const tatHours = (pub.getTime() - order.createdAt.getTime()) / (1000 * 60 * 60);
+    for (const item of order.labOrderItems) {
+      const id = item.test.id;
+      const cur = tatByTest.get(id) ?? {
+        name: item.test.testName,
+        tats: [],
+        tatLimitHours: item.test.turnaroundHours ?? null,
+        breaches: 0,
+      };
+      cur.tats.push(tatHours);
+      if (cur.tatLimitHours && tatHours > cur.tatLimitHours) {
+        cur.breaches += 1;
+        overallBreaches += 1;
+      }
+      tatByTest.set(id, cur);
+    }
+  }
+  const perTestTat = Array.from(tatByTest.entries())
+    .map(([testId, v]) => {
+      const sorted = [...v.tats].sort((a, b) => a - b);
+      const avg = sorted.length ? sorted.reduce((a, b) => a + b, 0) / sorted.length : 0;
+      const median = sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0;
+      const p95 = sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] : 0;
+      return {
+        testId,
+        testName: v.name,
+        sampleCount: sorted.length,
+        avgTatHours: Number(avg.toFixed(2)),
+        medianTatHours: Number(median.toFixed(2)),
+        p95TatHours: Number(p95.toFixed(2)),
+        tatLimitHours: v.tatLimitHours,
+        breaches: v.breaches,
+        breachRate: sorted.length ? Number(((v.breaches / sorted.length) * 100).toFixed(1)) : 0,
+      };
+    })
+    .sort((a, b) => b.sampleCount - a.sampleCount);
+
+  // Daily orders trend over the window
+  const dailyOrders = await prisma.labOrder.findMany({
+    where,
+    select: { createdAt: true },
+  });
+  const dayMap = new Map<string, number>();
+  for (const o of dailyOrders) {
+    const day = new Date(o.createdAt);
+    day.setHours(0, 0, 0, 0);
+    const key = day.toISOString().slice(0, 10);
+    dayMap.set(key, (dayMap.get(key) ?? 0) + 1);
+  }
+  const dailyTrend = Array.from(dayMap.entries())
+    .map(([date, count]) => ({ date, count }))
+    .sort((a, b) => (a.date < b.date ? -1 : 1));
+
+  // Abnormal vs total result counts
+  const [abnormalResults, totalResults] = await Promise.all([
+    prisma.labResult.count({ where: { labOrder: { tenantId }, isAbnormal: true } }),
+    prisma.labResult.count({ where: { labOrder: { tenantId } } }),
+  ]);
+
+  return {
+    perTestTat: perTestTat.slice(0, 50),
+    overallBreaches,
+    dailyTrend,
+    abnormalResults,
+    totalResults,
+    abnormalRate: totalResults ? Number(((abnormalResults / totalResults) * 100).toFixed(2)) : 0,
+  };
 }
