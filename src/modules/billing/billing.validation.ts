@@ -202,6 +202,135 @@ export const tariffIdParamSchema = z.object({
   }),
 });
 
+// --- Week 12 schemas ---
+
+export const splitPaymentSchema = z.object({
+  body: z.object({
+    billId: z.string().uuid('Invalid bill ID'),
+    splits: z
+      .array(
+        z.object({
+          amount: z.number().positive('Amount must be > 0'),
+          paymentMethod: z.enum([
+            'cash',
+            'credit_card',
+            'debit_card',
+            'bank_transfer',
+            'upi',
+            'cheque',
+            'insurance',
+            'wallet',
+            'other',
+          ]),
+          referenceNumber: z.string().max(200).optional(),
+          notes: z.string().max(1000).optional(),
+        }),
+      )
+      .min(1, 'At least one split is required'),
+  }),
+});
+
+export const advancePaymentSchema = z.object({
+  body: z.object({
+    patientId: z.string().uuid('Invalid patient ID'),
+    amount: z.number().positive('Amount must be > 0'),
+    paymentMethod: z.enum([
+      'cash',
+      'credit_card',
+      'debit_card',
+      'bank_transfer',
+      'upi',
+      'cheque',
+      'insurance',
+      'wallet',
+      'other',
+    ]),
+    referenceNumber: z.string().max(200).optional(),
+    notes: z.string().max(1000).optional(),
+  }),
+});
+
+export const adjustAdvanceSchema = z.object({
+  body: z.object({
+    patientId: z.string().uuid('Invalid patient ID'),
+    billId: z.string().uuid('Invalid bill ID'),
+    amount: z.number().positive('Amount must be > 0'),
+  }),
+});
+
+export const reversePaymentSchema = z.object({
+  body: z.object({
+    paymentId: z.string().uuid('Invalid payment ID'),
+    reason: z.string().min(3, 'Reason is required').max(1000),
+  }),
+});
+
+export const cancelBillSchema = z.object({
+  body: z.object({
+    reason: z.string().min(3, 'Reason is required').max(1000),
+  }),
+  params: z.object({
+    id: z.string().uuid('Invalid bill ID'),
+  }),
+});
+
+export const rejectRefundSchema = z.object({
+  body: z.object({
+    reason: z.string().min(3, 'Reason is required').max(1000),
+  }),
+  params: z.object({
+    id: z.string().uuid('Invalid refund ID'),
+  }),
+});
+
+export const getRefundsSchema = z.object({
+  query: paginationSchema.extend({
+    status: z.enum(['requested', 'approved', 'processed', 'rejected']).optional(),
+    patientId: z.string().uuid().optional(),
+    billId: z.string().uuid().optional(),
+  }),
+});
+
+export const getReceiptsSchema = z.object({
+  query: paginationSchema.extend({
+    patientId: z.string().uuid().optional(),
+    billId: z.string().uuid().optional(),
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
+  }),
+});
+
+export const receiptIdParamSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid receipt ID'),
+  }),
+});
+
+export const dayEndQuerySchema = z.object({
+  query: z.object({
+    date: z.string().optional(),
+  }),
+});
+
+export const advancePatientParamSchema = z.object({
+  params: z.object({
+    patientId: z.string().uuid('Invalid patient ID'),
+  }),
+});
+
+export const creditSettlementBillsParamSchema = z.object({
+  params: z.object({
+    id: z.string().min(1),
+  }),
+});
+
+export type SplitPaymentInput = z.infer<typeof splitPaymentSchema>['body'];
+export type AdvancePaymentInput = z.infer<typeof advancePaymentSchema>['body'];
+export type AdjustAdvanceInput = z.infer<typeof adjustAdvanceSchema>['body'];
+export type ReversePaymentInput = z.infer<typeof reversePaymentSchema>['body'];
+export type CancelBillInput = z.infer<typeof cancelBillSchema>['body'];
+export type RejectRefundInput = z.infer<typeof rejectRefundSchema>['body'];
+
 export const getChargesQuerySchema = z.object({
   query: z.object({
     patientId: z.string().uuid('Invalid patient ID'),

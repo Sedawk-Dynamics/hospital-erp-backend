@@ -308,13 +308,26 @@ export async function getCollectionSummary(
 
 // --- Credit Settlements ---
 
+/**
+ * Aggregates open A/R into three buckets:
+ *   • insurance — bill has an InsuranceClaim; group by Insurer.name.
+ *   • corporate — bill's claim links to a TpaProvider; group by TPA.name.
+ *     (We treat TPA as the corporate counterparty since the schema has no
+ *     dedicated Corporate table.)
+ *   • patient — no claim; one row per patient with outstanding self-pay.
+ */
 export async function getCreditSettlements(
   tenantId: string,
-  query: { type?: string; status?: string; page?: number; limit?: number },
+  query: {
+    type?: 'insurance' | 'corporate' | 'patient';
+    status?: string;
+    page?: number;
+    limit?: number;
+    search?: string;
+  },
 ) {
   const { skip, take, page, limit } = getPaginationParams(query as any);
 
-  // Aggregate unpaid bills grouped by insurance claims or self-pay
   const unpaidBills = await prisma.bill.findMany({
     where: {
       tenantId,
@@ -322,11 +335,13 @@ export async function getCreditSettlements(
       status: { in: ['pending', 'partially_paid'] },
     },
     include: {
+      patient: { select: { id: true, firstName: true, lastName: true, mrn: true, phone: true } },
       insuranceClaims: {
         include: {
           policy: {
             include: {
               insurer: { select: { id: true, name: true } },
+              tpa: { select: { id: true, name: true } },
             },
           },
         },
@@ -335,54 +350,160 @@ export async function getCreditSettlements(
     },
   });
 
-  // Group by provider
-  const grouped: Record<string, {
-    providerType: string;
+  type Row = {
+    id: string;
+    providerType: 'insurance' | 'corporate' | 'patient';
     providerName: string;
+    providerContact?: string;
     totalAdmissions: number;
     claimAmount: number;
     receivedAmount: number;
     outstandingAmount: number;
-  }> = {};
+    oldestBillDate?: Date;
+  };
+  const grouped: Record<string, Row> = {};
 
-  for (const bill of unpaidBills) {
-    const claim = bill.insuranceClaims?.[0];
-    const provider = claim?.policy?.insurer?.name || 'Self-Pay Patient';
-    const providerType = claim ? 'insurance' : 'patient';
-
-    if (!grouped[provider]) {
-      grouped[provider] = {
-        providerType,
-        providerName: provider,
+  const addToGroup = (key: string, row: Omit<Row, 'totalAdmissions' | 'claimAmount' | 'receivedAmount' | 'outstandingAmount'> & { bill: typeof unpaidBills[number] }) => {
+    if (!grouped[key]) {
+      grouped[key] = {
+        id: row.id,
+        providerType: row.providerType,
+        providerName: row.providerName,
+        providerContact: row.providerContact,
         totalAdmissions: 0,
         claimAmount: 0,
         receivedAmount: 0,
         outstandingAmount: 0,
+        oldestBillDate: row.bill.createdAt,
       };
     }
+    grouped[key].totalAdmissions += 1;
+    grouped[key].claimAmount += toNumber(row.bill.totalAmount);
+    grouped[key].receivedAmount += toNumber(row.bill.amountPaid);
+    grouped[key].outstandingAmount += toNumber(row.bill.balanceDue);
+    if (row.bill.createdAt < (grouped[key].oldestBillDate ?? new Date())) {
+      grouped[key].oldestBillDate = row.bill.createdAt;
+    }
+  };
 
-    grouped[provider].totalAdmissions += 1;
-    grouped[provider].claimAmount += toNumber(bill.totalAmount);
-    grouped[provider].receivedAmount += toNumber(bill.amountPaid);
-    grouped[provider].outstandingAmount += toNumber(bill.balanceDue);
+  for (const bill of unpaidBills) {
+    const claim = bill.insuranceClaims?.[0];
+    if (claim?.policy?.tpa) {
+      // Corporate via TPA
+      const tpa = claim.policy.tpa;
+      addToGroup(`tpa:${tpa.id}`, {
+        id: `tpa:${tpa.id}`,
+        providerType: 'corporate',
+        providerName: tpa.name,
+        bill,
+      });
+    } else if (claim?.policy?.insurer) {
+      const ins = claim.policy.insurer;
+      addToGroup(`ins:${ins.id}`, {
+        id: `ins:${ins.id}`,
+        providerType: 'insurance',
+        providerName: ins.name,
+        bill,
+      });
+    } else {
+      const p = bill.patient;
+      const name = p ? `${p.firstName} ${p.lastName}` : 'Patient';
+      addToGroup(`pat:${bill.patientId}`, {
+        id: `pat:${bill.patientId}`,
+        providerType: 'patient',
+        providerName: name,
+        providerContact: p?.phone ?? undefined,
+        bill,
+      });
+    }
   }
 
-  let settlements = Object.entries(grouped).map(([key, val]) => ({
-    id: key,
-    ...val,
-    tenantId,
-    createdAt: formatDateTimeIST(new Date()),
-    updatedAt: formatDateTimeIST(new Date()),
-  }));
+  let settlements = Object.values(grouped).map((r) => {
+    const ageDays = r.oldestBillDate
+      ? Math.floor((Date.now() - r.oldestBillDate.getTime()) / (1000 * 60 * 60 * 24))
+      : 0;
+    return {
+      ...r,
+      ageDays,
+      tenantId,
+      createdAt: formatDateTimeIST(r.oldestBillDate ?? new Date()),
+      updatedAt: formatDateTimeIST(new Date()),
+    };
+  });
 
-  if (query.type) {
-    settlements = settlements.filter((s) => s.providerType === query.type);
+  if (query.type) settlements = settlements.filter((s) => s.providerType === query.type);
+  if (query.search) {
+    const q = query.search.toLowerCase();
+    settlements = settlements.filter((s) => s.providerName.toLowerCase().includes(q));
   }
+
+  settlements.sort((a, b) => b.outstandingAmount - a.outstandingAmount);
 
   const total = settlements.length;
   const paginated = settlements.slice(skip, skip + take);
 
-  return { settlements: paginated, total, page, limit };
+  const stats = {
+    totalProviders: total,
+    totalClaim: settlements.reduce((s, r) => s + r.claimAmount, 0),
+    totalReceived: settlements.reduce((s, r) => s + r.receivedAmount, 0),
+    totalOutstanding: settlements.reduce((s, r) => s + r.outstandingAmount, 0),
+  };
+
+  return { settlements: paginated, total, page, limit, stats };
+}
+
+/**
+ * Bills behind a single provider/patient bucket — used by the credit
+ * settlement drill-down so the cashier can pick which invoices to clear.
+ */
+export async function getCreditSettlementBills(
+  tenantId: string,
+  providerId: string,
+) {
+  // providerId format: ins:<id> | tpa:<id> | pat:<id>
+  const [kind, id] = providerId.split(':');
+  if (!id) throw AppError.badRequest('Invalid provider key');
+
+  let where: any = {
+    tenantId,
+    balanceDue: { gt: 0 },
+    status: { in: ['pending', 'partially_paid'] },
+  };
+
+  if (kind === 'ins') {
+    where = { ...where, insuranceClaims: { some: { policy: { insurerId: id } } } };
+  } else if (kind === 'tpa') {
+    where = { ...where, insuranceClaims: { some: { policy: { tpaId: id } } } };
+  } else if (kind === 'pat') {
+    where = { ...where, patientId: id, insuranceClaims: { none: {} } };
+  } else {
+    throw AppError.badRequest('Unknown provider kind');
+  }
+
+  const bills = await prisma.bill.findMany({
+    where,
+    include: {
+      patient: { select: { id: true, firstName: true, lastName: true, mrn: true, phone: true } },
+      insuranceClaims: {
+        take: 1,
+        include: { policy: { include: { insurer: true, tpa: true } } },
+      },
+    },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  return bills.map((b) => ({
+    id: b.id,
+    billNumber: b.billNumber,
+    patient: b.patient,
+    totalAmount: toNumber(b.totalAmount),
+    amountPaid: toNumber(b.amountPaid),
+    balanceDue: toNumber(b.balanceDue),
+    createdAt: b.createdAt,
+    ageDays: Math.floor((Date.now() - b.createdAt.getTime()) / (1000 * 60 * 60 * 24)),
+    insurer: b.insuranceClaims[0]?.policy?.insurer?.name ?? null,
+    tpa: b.insuranceClaims[0]?.policy?.tpa?.name ?? null,
+  }));
 }
 
 export async function settleCredit(
@@ -1614,6 +1735,644 @@ export async function setBillDiscount(
 
   logger.info({ tenantId, billId, billDiscountAmt }, 'Bill-level discount applied');
   return updated;
+}
+
+// --- Split Payment (multiple modes against one bill) ---
+
+export async function createSplitPayment(
+  tenantId: string,
+  userId: string,
+  data: {
+    billId: string;
+    splits: Array<{
+      amount: number;
+      paymentMethod: string;
+      referenceNumber?: string;
+      notes?: string;
+    }>;
+  },
+) {
+  const bill = await prisma.bill.findFirst({
+    where: { id: data.billId, tenantId },
+  });
+  if (!bill) throw AppError.notFound('Bill not found');
+  if (bill.status === 'draft') {
+    throw AppError.badRequest('Cannot pay a draft bill — finalize first');
+  }
+  if (bill.status === 'paid') {
+    throw AppError.badRequest('Bill is already fully paid');
+  }
+  if (bill.status === 'cancelled') {
+    throw AppError.badRequest('Cannot pay a cancelled bill');
+  }
+
+  const totalSplit = data.splits.reduce((s, x) => s + x.amount, 0);
+  const balanceDue = toNumber(bill.balanceDue);
+  if (totalSplit <= 0) throw AppError.badRequest('Split total must be > 0');
+  if (totalSplit > balanceDue) {
+    throw AppError.badRequest(
+      `Split total (${totalSplit}) exceeds balance due (${balanceDue})`,
+    );
+  }
+
+  const result = await prisma.$transaction(async (tx) => {
+    const payments = [] as { id: string; receiptId: string; amount: number; method: string }[];
+    for (const split of data.splits) {
+      const receiptNumber = await generateReceiptNumber(tenantId);
+      const payment = await tx.payment.create({
+        data: {
+          tenantId,
+          billId: data.billId,
+          patientId: bill.patientId,
+          amount: split.amount,
+          paymentMethod: mapPaymentMethod(split.paymentMethod) as any,
+          paymentSource: 'frontdesk',
+          paymentType: 'regular',
+          transactionId: split.referenceNumber,
+          notes: split.notes,
+          status: 'completed',
+          paymentDate: new Date(),
+          processedBy: userId,
+        },
+      });
+      const receipt = await tx.receipt.create({
+        data: {
+          tenantId,
+          receiptNumber,
+          paymentId: payment.id,
+          receiptDate: new Date(),
+          amount: split.amount,
+        },
+      });
+      payments.push({ id: payment.id, receiptId: receipt.id, amount: split.amount, method: split.paymentMethod });
+    }
+
+    const newPaid = toNumber(bill.amountPaid) + totalSplit;
+    const total = toNumber(bill.totalAmount);
+    const newBalance = total - newPaid;
+    await tx.bill.update({
+      where: { id: data.billId },
+      data: {
+        amountPaid: newPaid,
+        balanceDue: Math.max(0, newBalance),
+        status: newBalance <= 0 ? 'paid' : 'partially_paid',
+      },
+    });
+
+    return { payments, totalCollected: totalSplit, newBalance: Math.max(0, newBalance) };
+  });
+
+  logger.info({ tenantId, billId: data.billId, totalCollected: totalSplit }, 'Split payment recorded');
+  return result;
+}
+
+// --- Advance Payment + Running Balance ---
+
+/**
+ * Advance: collect money from a patient *before* a bill exists. Stored as a
+ * Payment row with paymentType='advance' against a sentinel "advance" bill
+ * per-tenant so we can use the existing Bill/Receipt machinery for audit.
+ *
+ * The running balance is "advances minus advances-already-adjusted" — we
+ * don't materialize that as a column on the patient; we compute it on the
+ * fly from the Payment ledger.
+ */
+async function ensureAdvanceBucketBill(
+  tx: typeof prisma,
+  tenantId: string,
+  patientId: string,
+) {
+  let bucket = await tx.bill.findFirst({
+    where: {
+      tenantId,
+      patientId,
+      billNumber: { startsWith: 'ADV-' },
+    },
+  });
+  if (!bucket) {
+    const billNumber = `ADV-${patientId.slice(0, 8)}-${Date.now()}`;
+    bucket = await tx.bill.create({
+      data: {
+        tenantId,
+        billNumber,
+        patientId,
+        billDate: new Date(),
+        status: 'pending',
+        subtotal: 0,
+        totalAmount: 0,
+        balanceDue: 0,
+        amountPaid: 0,
+      },
+    });
+  }
+  return bucket;
+}
+
+export async function createAdvancePayment(
+  tenantId: string,
+  userId: string,
+  data: {
+    patientId: string;
+    amount: number;
+    paymentMethod: string;
+    referenceNumber?: string;
+    notes?: string;
+  },
+) {
+  if (data.amount <= 0) throw AppError.badRequest('Amount must be > 0');
+  const patient = await prisma.patient.findFirst({
+    where: { id: data.patientId, tenantId },
+  });
+  if (!patient) throw AppError.notFound('Patient not found');
+
+  const receiptNumber = await generateReceiptNumber(tenantId);
+
+  const result = await prisma.$transaction(async (tx) => {
+    const bucket = await ensureAdvanceBucketBill(tx as any, tenantId, data.patientId);
+    const payment = await tx.payment.create({
+      data: {
+        tenantId,
+        billId: bucket.id,
+        patientId: data.patientId,
+        amount: data.amount,
+        paymentMethod: mapPaymentMethod(data.paymentMethod) as any,
+        paymentSource: 'frontdesk',
+        paymentType: 'advance',
+        transactionId: data.referenceNumber,
+        notes: data.notes ?? 'Advance payment',
+        status: 'completed',
+        paymentDate: new Date(),
+        processedBy: userId,
+      },
+    });
+    const receipt = await tx.receipt.create({
+      data: {
+        tenantId,
+        receiptNumber,
+        paymentId: payment.id,
+        receiptDate: new Date(),
+        amount: data.amount,
+      },
+    });
+
+    // Lift the bucket totals so subsequent advance reads can compute the
+    // running balance from the same row.
+    await tx.bill.update({
+      where: { id: bucket.id },
+      data: {
+        totalAmount: toNumber(bucket.totalAmount) + data.amount,
+        amountPaid: toNumber(bucket.amountPaid) + data.amount,
+      },
+    });
+
+    return { paymentId: payment.id, receiptId: receipt.id, receiptNumber };
+  });
+
+  logger.info({ tenantId, patientId: data.patientId, amount: data.amount }, 'Advance payment recorded');
+  return result;
+}
+
+/**
+ * Adjust an advance against a specific bill — moves money from the advance
+ * bucket to the target bill. Used by the cashier when collecting a new bill
+ * and the patient already has advance on file.
+ */
+export async function adjustAdvanceToBill(
+  tenantId: string,
+  userId: string,
+  data: { patientId: string; billId: string; amount: number },
+) {
+  if (data.amount <= 0) throw AppError.badRequest('Amount must be > 0');
+  const bill = await prisma.bill.findFirst({
+    where: { id: data.billId, tenantId, patientId: data.patientId },
+  });
+  if (!bill) throw AppError.notFound('Bill not found');
+  if (bill.status === 'draft' || bill.status === 'cancelled' || bill.status === 'paid') {
+    throw AppError.badRequest(`Bill cannot accept payment (status: ${bill.status})`);
+  }
+
+  const advance = await getPatientAdvanceBalance(tenantId, data.patientId);
+  if (data.amount > advance.balance) {
+    throw AppError.badRequest(`Advance balance is ${advance.balance}, cannot adjust ${data.amount}`);
+  }
+
+  const result = await prisma.$transaction(async (tx) => {
+    // Mark a "regular" payment on the bill, source=advance via notes, and
+    // contra-entry on the advance bucket as a refund row so the running
+    // balance falls correctly.
+    const receiptNumber = await generateReceiptNumber(tenantId);
+    const payment = await tx.payment.create({
+      data: {
+        tenantId,
+        billId: data.billId,
+        patientId: data.patientId,
+        amount: data.amount,
+        paymentMethod: 'other',
+        paymentSource: 'frontdesk',
+        paymentType: 'regular',
+        notes: 'Adjusted from advance',
+        status: 'completed',
+        paymentDate: new Date(),
+        processedBy: userId,
+      },
+    });
+    await tx.receipt.create({
+      data: {
+        tenantId,
+        receiptNumber,
+        paymentId: payment.id,
+        receiptDate: new Date(),
+        amount: data.amount,
+      },
+    });
+
+    // Lift bill totals
+    const newPaid = toNumber(bill.amountPaid) + data.amount;
+    const newBalance = toNumber(bill.totalAmount) - newPaid;
+    await tx.bill.update({
+      where: { id: data.billId },
+      data: {
+        amountPaid: newPaid,
+        balanceDue: Math.max(0, newBalance),
+        status: newBalance <= 0 ? 'paid' : 'partially_paid',
+      },
+    });
+
+    // Reduce advance bucket
+    const bucket = await tx.bill.findFirst({
+      where: { tenantId, patientId: data.patientId, billNumber: { startsWith: 'ADV-' } },
+    });
+    if (bucket) {
+      await tx.bill.update({
+        where: { id: bucket.id },
+        data: {
+          amountPaid: Math.max(0, toNumber(bucket.amountPaid) - data.amount),
+          totalAmount: Math.max(0, toNumber(bucket.totalAmount) - data.amount),
+        },
+      });
+    }
+
+    return { paymentId: payment.id, receiptNumber, newBalance: Math.max(0, newBalance) };
+  });
+
+  logger.info({ tenantId, patientId: data.patientId, billId: data.billId, amount: data.amount }, 'Advance adjusted to bill');
+  return result;
+}
+
+export async function getPatientAdvanceBalance(tenantId: string, patientId: string) {
+  const advances = await prisma.payment.findMany({
+    where: {
+      tenantId,
+      patientId,
+      paymentType: 'advance' as any,
+      status: 'completed',
+    },
+  });
+  const collected = advances.reduce((s, p) => s + toNumber(p.amount), 0);
+
+  // Money already adjusted from the advance bucket onto real bills
+  const bucket = await prisma.bill.findFirst({
+    where: { tenantId, patientId, billNumber: { startsWith: 'ADV-' } },
+  });
+  const remaining = bucket ? toNumber(bucket.amountPaid) : 0;
+
+  return {
+    totalAdvanceCollected: collected,
+    totalAdvanceAdjusted: collected - remaining,
+    balance: remaining,
+    history: advances.map((p) => ({
+      id: p.id,
+      amount: toNumber(p.amount),
+      method: p.paymentMethod,
+      paymentDate: p.paymentDate,
+      notes: p.notes,
+    })),
+  };
+}
+
+// --- Payment Reversal ---
+
+export async function reversePayment(
+  tenantId: string,
+  userId: string,
+  data: { paymentId: string; reason: string },
+) {
+  const payment = await prisma.payment.findFirst({
+    where: { id: data.paymentId, tenantId },
+    include: { bill: true, receipt: true },
+  });
+  if (!payment) throw AppError.notFound('Payment not found');
+  if (payment.status === 'reversed') {
+    throw AppError.badRequest('Payment already reversed');
+  }
+  if (payment.status !== 'completed') {
+    throw AppError.badRequest('Only completed payments can be reversed');
+  }
+
+  const result = await prisma.$transaction(async (tx) => {
+    await tx.payment.update({
+      where: { id: data.paymentId },
+      data: {
+        status: 'reversed',
+        notes: payment.notes
+          ? `${payment.notes}\n[REVERSED ${new Date().toISOString()} by ${userId}: ${data.reason}]`
+          : `[REVERSED by ${userId}: ${data.reason}]`,
+      },
+    });
+
+    // Adjust bill totals back
+    if (payment.bill) {
+      const newPaid = Math.max(0, toNumber(payment.bill.amountPaid) - toNumber(payment.amount));
+      const total = toNumber(payment.bill.totalAmount);
+      const newBalance = total - newPaid;
+      let newStatus = payment.bill.status as string;
+      if (newPaid <= 0) newStatus = 'pending';
+      else if (newBalance > 0) newStatus = 'partially_paid';
+
+      await tx.bill.update({
+        where: { id: payment.bill.id },
+        data: {
+          amountPaid: newPaid,
+          balanceDue: Math.max(0, newBalance),
+          status: newStatus as any,
+        },
+      });
+    }
+
+    return { reversed: true, paymentId: payment.id };
+  });
+
+  logger.info({ tenantId, paymentId: data.paymentId, by: userId }, 'Payment reversed');
+  return result;
+}
+
+// --- Bill Cancellation ---
+
+export async function cancelBill(
+  tenantId: string,
+  userId: string,
+  billId: string,
+  data: { reason: string },
+) {
+  const bill = await prisma.bill.findFirst({
+    where: { id: billId, tenantId },
+    include: { payments: { where: { status: 'completed' } } },
+  });
+  if (!bill) throw AppError.notFound('Bill not found');
+  if (bill.status === 'cancelled') {
+    throw AppError.badRequest('Bill already cancelled');
+  }
+  if (bill.status === 'refunded') {
+    throw AppError.badRequest('Bill already refunded');
+  }
+
+  // If there are completed payments, the caller must refund them first.
+  const completedPayments = bill.payments.length;
+  if (completedPayments > 0) {
+    throw AppError.badRequest(
+      `Bill has ${completedPayments} completed payment(s) — refund or reverse them first`,
+    );
+  }
+
+  const receiptNumber = await generateReceiptNumber(tenantId);
+
+  const result = await prisma.$transaction(async (tx) => {
+    const cancelled = await tx.bill.update({
+      where: { id: billId },
+      data: {
+        status: 'cancelled',
+        cancelledBy: userId,
+        cancellationReason: data.reason,
+      },
+    });
+
+    // Cancellation receipt — zero amount, just an audit row tied to the bill
+    // via a sentinel payment so downstream receipt listings can show it.
+    const auditPayment = await tx.payment.create({
+      data: {
+        tenantId,
+        billId,
+        patientId: bill.patientId,
+        amount: 0,
+        paymentMethod: 'other',
+        paymentSource: 'frontdesk',
+        paymentType: 'regular',
+        status: 'reversed',
+        paymentDate: new Date(),
+        processedBy: userId,
+        notes: `Bill cancellation receipt — ${data.reason}`,
+      },
+    });
+    await tx.receipt.create({
+      data: {
+        tenantId,
+        receiptNumber,
+        paymentId: auditPayment.id,
+        receiptDate: new Date(),
+        amount: 0,
+      },
+    });
+
+    return { cancelled: true, billId: cancelled.id, cancellationReceiptNumber: receiptNumber };
+  });
+
+  logger.info({ tenantId, billId, by: userId }, 'Bill cancelled');
+  return result;
+}
+
+// --- Refund Reject + List + One ---
+
+export async function rejectRefund(
+  tenantId: string,
+  refundId: string,
+  rejectedBy: string,
+  reason: string,
+) {
+  const refund = await prisma.refund.findFirst({
+    where: { id: refundId, tenantId, status: 'requested' },
+  });
+  if (!refund) throw AppError.notFound('Refund not found or not in pending status');
+
+  const updated = await prisma.refund.update({
+    where: { id: refundId },
+    data: {
+      status: 'rejected',
+      approvedBy: rejectedBy,
+      processedAt: new Date(),
+      reason: `${refund.reason}\n[REJECTED by ${rejectedBy}: ${reason}]`,
+    },
+  });
+  logger.info({ tenantId, refundId, by: rejectedBy }, 'Refund rejected');
+  return updated;
+}
+
+export async function getRefunds(
+  tenantId: string,
+  query: { status?: string; patientId?: string; billId?: string; page?: number; limit?: number },
+) {
+  const { skip, take, page, limit } = getPaginationParams(query as any);
+  const where: any = { tenantId };
+  if (query.status) where.status = query.status;
+  if (query.patientId) where.patientId = query.patientId;
+  if (query.billId) where.billId = query.billId;
+
+  const [refunds, total] = await Promise.all([
+    prisma.refund.findMany({
+      where,
+      skip,
+      take,
+      include: {
+        bill: { select: { id: true, billNumber: true, totalAmount: true } },
+        patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
+        payment: { select: { id: true, paymentMethod: true, paymentDate: true } },
+        requester: { select: { id: true, firstName: true, lastName: true } },
+        approver: { select: { id: true, firstName: true, lastName: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    }),
+    prisma.refund.count({ where }),
+  ]);
+
+  return { refunds, total, page, limit };
+}
+
+// --- Receipts (list + by-id for PDF) ---
+
+export async function listReceipts(
+  tenantId: string,
+  query: { patientId?: string; billId?: string; fromDate?: string; toDate?: string; page?: number; limit?: number; search?: string },
+) {
+  const { skip, take, page, limit } = getPaginationParams(query as any);
+  const where: any = { tenantId };
+  if (query.fromDate) where.receiptDate = { ...where.receiptDate, gte: new Date(query.fromDate) };
+  if (query.toDate) where.receiptDate = { ...where.receiptDate, lte: new Date(query.toDate) };
+
+  // Patient/bill filters require joining via payment
+  const paymentFilter: any = {};
+  if (query.patientId) paymentFilter.patientId = query.patientId;
+  if (query.billId) paymentFilter.billId = query.billId;
+  if (Object.keys(paymentFilter).length) where.payment = paymentFilter;
+
+  if (query.search) {
+    where.OR = [
+      { receiptNumber: { contains: query.search, mode: 'insensitive' } },
+      { payment: { bill: { billNumber: { contains: query.search, mode: 'insensitive' } } } },
+    ];
+  }
+
+  const [receipts, total] = await Promise.all([
+    prisma.receipt.findMany({
+      where,
+      skip,
+      take,
+      include: {
+        payment: {
+          include: {
+            bill: { select: { id: true, billNumber: true, totalAmount: true } },
+            patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
+          },
+        },
+      },
+      orderBy: { receiptDate: 'desc' },
+    }),
+    prisma.receipt.count({ where }),
+  ]);
+
+  return { receipts, total, page, limit };
+}
+
+export async function getReceiptById(tenantId: string, receiptId: string) {
+  const receipt = await prisma.receipt.findFirst({
+    where: { id: receiptId, tenantId },
+    include: {
+      payment: {
+        include: {
+          bill: {
+            include: {
+              patient: { select: { id: true, firstName: true, lastName: true, mrn: true, phone: true } },
+              billItems: true,
+            },
+          },
+        },
+      },
+      tenant: { select: { name: true, address: true, city: true, phone: true, email: true, licenseNumber: true } },
+    },
+  });
+  if (!receipt) throw AppError.notFound('Receipt not found');
+  return receipt;
+}
+
+// --- Day-end snapshot ---
+
+export async function getDayEndReport(tenantId: string, query: { date?: string }) {
+  const dateStr = query.date ?? getISTDateStr();
+  // Convert IST date to UTC bounds — keep it simple by using the day strings
+  const start = new Date(`${dateStr}T00:00:00.000+05:30`);
+  const end = new Date(`${dateStr}T23:59:59.999+05:30`);
+
+  const payments = await prisma.payment.findMany({
+    where: {
+      tenantId,
+      paymentDate: { gte: start, lte: end },
+    },
+    include: {
+      bill: { select: { billNumber: true, patient: { select: { firstName: true, lastName: true } } } },
+    },
+    orderBy: { paymentDate: 'asc' },
+  });
+
+  const billsToday = await prisma.bill.findMany({
+    where: { tenantId, createdAt: { gte: start, lte: end } },
+    select: { id: true, status: true, totalAmount: true, amountPaid: true, balanceDue: true },
+  });
+
+  const byStatusBills = { generated: 0, paid: 0, pending: 0, cancelled: 0 };
+  let billed = 0;
+  for (const b of billsToday) {
+    billed += toNumber(b.totalAmount);
+    byStatusBills.generated += 1;
+    if (b.status === 'paid') byStatusBills.paid += 1;
+    else if (b.status === 'cancelled') byStatusBills.cancelled += 1;
+    else byStatusBills.pending += 1;
+  }
+
+  const byMethod: Record<string, number> = {};
+  const byType: Record<string, number> = { regular: 0, advance: 0, refund: 0 };
+  let collected = 0;
+  let reversed = 0;
+  for (const p of payments) {
+    const amt = toNumber(p.amount);
+    if (p.status === 'completed') {
+      collected += amt;
+      byMethod[p.paymentMethod] = (byMethod[p.paymentMethod] ?? 0) + amt;
+      byType[p.paymentType] = (byType[p.paymentType] ?? 0) + amt;
+    } else if (p.status === 'reversed') {
+      reversed += amt;
+    }
+  }
+
+  return {
+    date: dateStr,
+    collected,
+    reversed,
+    billed,
+    byMethod,
+    byType,
+    byStatusBills,
+    payments: payments.map((p) => ({
+      id: p.id,
+      billNumber: p.bill?.billNumber,
+      patientName: p.bill?.patient
+        ? `${p.bill.patient.firstName} ${p.bill.patient.lastName}`
+        : null,
+      amount: toNumber(p.amount),
+      method: p.paymentMethod,
+      type: p.paymentType,
+      status: p.status,
+      paymentDate: p.paymentDate,
+      transactionId: p.transactionId,
+    })),
+  };
 }
 
 // --- Patient Bills ---

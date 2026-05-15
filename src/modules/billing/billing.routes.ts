@@ -20,6 +20,18 @@ import {
   getChargesQuerySchema,
   pullChargesSchema,
   setBillDiscountSchema,
+  splitPaymentSchema,
+  advancePaymentSchema,
+  adjustAdvanceSchema,
+  reversePaymentSchema,
+  cancelBillSchema,
+  rejectRefundSchema,
+  getRefundsSchema,
+  getReceiptsSchema,
+  receiptIdParamSchema,
+  dayEndQuerySchema,
+  advancePatientParamSchema,
+  creditSettlementBillsParamSchema,
 } from './billing.validation';
 import * as controller from './billing.controller';
 
@@ -69,6 +81,98 @@ billingRoutes.get(
   controller.getCollectionSummary,
 );
 
+// --- Day-End Report (Week 12) ---
+
+billingRoutes.get(
+  '/day-end',
+  authenticate,
+  requirePermission('billing', 'read'),
+  validate(dayEndQuerySchema),
+  controller.getDayEndReport,
+);
+
+// --- Receipts (Week 12) ---
+
+billingRoutes.get(
+  '/receipts',
+  authenticate,
+  requirePermission('billing', 'read'),
+  validate(getReceiptsSchema),
+  controller.listReceipts,
+);
+
+billingRoutes.get(
+  '/receipts/:id/pdf',
+  authenticate,
+  requirePermission('billing', 'read'),
+  validate(receiptIdParamSchema),
+  controller.getReceiptPdf,
+);
+
+// --- Advance payment (Week 12) ---
+
+billingRoutes.post(
+  '/payments/advance',
+  authenticate,
+  requirePermission('payments', 'create'),
+  validate(advancePaymentSchema),
+  controller.createAdvancePayment,
+);
+
+billingRoutes.post(
+  '/payments/advance/adjust',
+  authenticate,
+  requirePermission('payments', 'create'),
+  validate(adjustAdvanceSchema),
+  controller.adjustAdvance,
+);
+
+billingRoutes.get(
+  '/payments/advance/:patientId',
+  authenticate,
+  requirePermission('payments', 'read'),
+  validate(advancePatientParamSchema),
+  controller.getPatientAdvanceBalance,
+);
+
+// --- Split payment (Week 12) ---
+
+billingRoutes.post(
+  '/payments/split',
+  authenticate,
+  requirePermission('payments', 'create'),
+  validate(splitPaymentSchema),
+  controller.createSplitPayment,
+);
+
+// --- Payment reversal (Week 12) ---
+
+billingRoutes.post(
+  '/reversals',
+  authenticate,
+  requirePermission('billing', 'approve'),
+  validate(reversePaymentSchema),
+  controller.reversePayment,
+);
+
+// --- Refunds list + reject (Week 12) ---
+
+billingRoutes.get(
+  '/refunds',
+  authenticate,
+  requirePermission('billing', 'read'),
+  validate(getRefundsSchema),
+  controller.getRefunds,
+);
+
+billingRoutes.patch(
+  '/refunds/:id/reject',
+  authenticate,
+  requirePermission('billing', 'approve'),
+  validate(rejectRefundSchema),
+  controller.rejectRefund,
+);
+
 // --- Credit Settlements ---
 
 billingRoutes.get(
@@ -76,6 +180,14 @@ billingRoutes.get(
   authenticate,
   requirePermission('billing', 'read'),
   controller.getCreditSettlements,
+);
+
+billingRoutes.get(
+  '/credit-settlements/:id/bills',
+  authenticate,
+  requirePermission('billing', 'read'),
+  validate(creditSettlementBillsParamSchema),
+  controller.getCreditSettlementBills,
 );
 
 billingRoutes.post(
@@ -190,6 +302,14 @@ billingRoutes.patch(
   requirePermission('billing', 'approve'),
   validate(billIdParamSchema),
   controller.finalizeBill,
+);
+
+billingRoutes.patch(
+  '/:id/cancel',
+  authenticate,
+  requirePermission('billing', 'approve'),
+  validate(cancelBillSchema),
+  controller.cancelBill,
 );
 
 billingRoutes.post(

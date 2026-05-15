@@ -3,6 +3,215 @@ import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse, sendPaginatedResponse } from '../../shared/apiResponse';
 import * as billingService from './billing.service';
 
+// --- Week 12: Split payment / advance / reversal / cancel / receipts ---
+
+export async function createSplitPayment(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const result = await billingService.createSplitPayment(tenantId, userId, req.body);
+    sendResponse({
+      res,
+      statusCode: 201,
+      message: 'Split payment recorded successfully',
+      data: result,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function createAdvancePayment(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const result = await billingService.createAdvancePayment(tenantId, userId, req.body);
+    sendResponse({
+      res,
+      statusCode: 201,
+      message: 'Advance payment recorded',
+      data: result,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function adjustAdvance(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const result = await billingService.adjustAdvanceToBill(tenantId, userId, req.body);
+    sendResponse({ res, message: 'Advance adjusted', data: result });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getPatientAdvanceBalance(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const balance = await billingService.getPatientAdvanceBalance(
+      tenantId,
+      req.params.patientId as string,
+    );
+    sendResponse({ res, message: 'Advance balance retrieved', data: balance });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function reversePayment(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const result = await billingService.reversePayment(tenantId, userId, req.body);
+    sendResponse({ res, message: 'Payment reversed', data: result });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function cancelBill(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const result = await billingService.cancelBill(
+      tenantId,
+      userId,
+      req.params.id as string,
+      req.body,
+    );
+    sendResponse({ res, message: 'Bill cancelled', data: result });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function rejectRefund(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const rejectedBy = req.user!.userId;
+    const result = await billingService.rejectRefund(
+      tenantId,
+      req.params.id as string,
+      rejectedBy,
+      req.body.reason,
+    );
+    sendResponse({ res, message: 'Refund rejected', data: result });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getRefunds(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const { refunds, total, page, limit } = await billingService.getRefunds(
+      tenantId,
+      req.query as any,
+    );
+    sendPaginatedResponse(res, refunds, total, page, limit, 'Refunds retrieved');
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function listReceipts(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const { receipts, total, page, limit } = await billingService.listReceipts(
+      tenantId,
+      req.query as any,
+    );
+    sendPaginatedResponse(res, receipts, total, page, limit, 'Receipts retrieved');
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getReceiptPdf(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const receipt = await billingService.getReceiptById(tenantId, req.params.id as string);
+    const { streamReceiptPdf } = await import('./billing.receipt-pdf');
+    streamReceiptPdf(res, receipt as any);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getDayEndReport(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const result = await billingService.getDayEndReport(tenantId, req.query as any);
+    sendResponse({ res, message: 'Day-end report retrieved', data: result });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getCreditSettlementBills(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const bills = await billingService.getCreditSettlementBills(
+      tenantId,
+      req.params.id as string,
+    );
+    sendResponse({ res, message: 'Settlement bills retrieved', data: bills });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // --- Charges (auto-pull) ---
 
 export async function getCharges(
@@ -150,11 +359,15 @@ export async function getCreditSettlements(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const { settlements, total, page, limit } = await billingService.getCreditSettlements(
+    const { settlements, total, page, limit, stats } = await billingService.getCreditSettlements(
       tenantId,
       req.query as any,
     );
-    sendPaginatedResponse(res, settlements, total, page, limit, 'Credit settlements retrieved');
+    sendResponse({
+      res,
+      message: 'Credit settlements retrieved',
+      data: { settlements, stats, page, limit, total } as any,
+    });
   } catch (err) {
     next(err);
   }
