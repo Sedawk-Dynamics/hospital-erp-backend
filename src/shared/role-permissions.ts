@@ -229,8 +229,9 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
     ],
 
     insurance_staff: [
-      { module: 'insurance', action: 'read' }, { module: 'insurance', action: 'create' }, { module: 'insurance', action: 'update' }, { module: 'insurance', action: 'approve' },
-      { module: 'billing', action: 'read' }, { module: 'patients', action: 'read' }, { module: 'admissions', action: 'read' },
+      { module: 'insurance', action: 'read' }, { module: 'insurance', action: 'create' }, { module: 'insurance', action: 'update' }, { module: 'insurance', action: 'approve' }, { module: 'insurance', action: 'export' },
+      { module: 'billing', action: 'read' }, { module: 'billing', action: 'update' },
+      { module: 'patients', action: 'read' }, { module: 'admissions', action: 'read' },
     ],
 
     blood_bank_staff: [

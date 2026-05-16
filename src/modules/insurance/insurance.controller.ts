@@ -3,7 +3,9 @@ import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse, sendPaginatedResponse } from '../../shared/apiResponse';
 import * as service from './insurance.service';
 
+// ============================================================
 // Insurers
+// ============================================================
 export async function createInsurer(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const data = await service.createInsurer(req.user!.tenantId, req.body);
@@ -35,7 +37,9 @@ export async function deleteInsurer(req: AuthenticatedRequest, res: Response, ne
   } catch (err) { next(err); }
 }
 
-// TPA
+// ============================================================
+// TPA Providers
+// ============================================================
 export async function createTPA(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const data = await service.createTPA(req.user!.tenantId, req.body);
@@ -67,7 +71,9 @@ export async function deleteTPA(req: AuthenticatedRequest, res: Response, next: 
   } catch (err) { next(err); }
 }
 
+// ============================================================
 // Policies
+// ============================================================
 export async function createPolicy(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const data = await service.createPolicy(req.user!.tenantId, req.body);
@@ -98,8 +104,19 @@ export async function verifyPolicy(req: AuthenticatedRequest, res: Response, nex
     sendResponse({ res, message: 'Policy verified', data });
   } catch (err) { next(err); }
 }
+export async function getPoliciesByPatient(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.getPoliciesByPatient(
+      req.user!.tenantId,
+      req.params.patientId as string,
+    );
+    sendResponse({ res, message: 'Patient policies retrieved', data });
+  } catch (err) { next(err); }
+}
 
+// ============================================================
 // Claims
+// ============================================================
 export async function createClaim(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const data = await service.createClaim(req.user!.tenantId, req.user!.userId, req.body);
@@ -142,8 +159,67 @@ export async function rejectClaim(req: AuthenticatedRequest, res: Response, next
     sendResponse({ res, message: 'Claim rejected', data });
   } catch (err) { next(err); }
 }
+export async function partialApproveClaim(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.partialApproveClaim(
+      req.user!.tenantId,
+      req.params.id as string,
+      req.user!.userId,
+      req.body,
+    );
+    sendResponse({ res, message: 'Claim partially approved', data });
+  } catch (err) { next(err); }
+}
+export async function settleClaim(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.settleClaim(
+      req.user!.tenantId,
+      req.params.id as string,
+      req.user!.userId,
+      req.body,
+    );
+    sendResponse({ res, message: 'Claim settlement recorded', data });
+  } catch (err) { next(err); }
+}
+export async function resubmitClaim(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.resubmitClaim(
+      req.user!.tenantId,
+      req.params.id as string,
+      req.user!.userId,
+      req.body,
+    );
+    sendResponse({ res, statusCode: 201, message: 'Claim resubmitted', data });
+  } catch (err) { next(err); }
+}
+export async function cancelClaim(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.cancelClaim(
+      req.user!.tenantId,
+      req.params.id as string,
+      req.user!.userId,
+      req.body,
+    );
+    sendResponse({ res, message: 'Claim cancelled', data });
+  } catch (err) { next(err); }
+}
+export async function exportClaim(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.exportClaimForTpa(req.user!.tenantId, req.params.id as string);
+    sendResponse({ res, message: 'Claim export prepared', data });
+  } catch (err) { next(err); }
+}
+export async function getExpiringClaims(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const within = req.query.withinDays ? Number(req.query.withinDays) : 7;
+    const data = await service.getExpiringClaims(req.user!.tenantId, within);
+    sendResponse({ res, message: 'Expiring claims', data });
+  } catch (err) { next(err); }
+}
 
-// Pre-Auth
+// ============================================================
+// Pre-Authorization
+// ============================================================
 export async function createPreAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const data = await service.createPreAuth(req.user!.tenantId, req.user!.userId, req.body);
@@ -178,5 +254,95 @@ export async function rejectPreAuth(req: AuthenticatedRequest, res: Response, ne
   try {
     const data = await service.rejectPreAuth(req.user!.tenantId, req.params.id as string, req.body);
     sendResponse({ res, message: 'Pre-auth rejected', data });
+  } catch (err) { next(err); }
+}
+export async function holdPreAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.holdPreAuth(req.user!.tenantId, req.params.id as string, req.body);
+    sendResponse({ res, message: 'Pre-auth put on hold', data });
+  } catch (err) { next(err); }
+}
+export async function releasePreAuthHold(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.releasePreAuthHold(req.user!.tenantId, req.params.id as string);
+    sendResponse({ res, message: 'Pre-auth hold released', data });
+  } catch (err) { next(err); }
+}
+export async function cancelPreAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.cancelPreAuth(req.user!.tenantId, req.params.id as string);
+    sendResponse({ res, message: 'Pre-auth cancelled', data });
+  } catch (err) { next(err); }
+}
+
+// ============================================================
+// TPA logs
+// ============================================================
+export async function createTpaLog(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.createTpaLog(req.user!.tenantId, req.user!.userId, req.body);
+    sendResponse({ res, statusCode: 201, message: 'TPA log recorded', data });
+  } catch (err) { next(err); }
+}
+export async function getTpaLogs(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const result = await service.getTpaLogs(req.user!.tenantId, req.query as any);
+    sendPaginatedResponse(res, result.logs, result.total, result.page, result.limit, 'TPA logs retrieved');
+  } catch (err) { next(err); }
+}
+
+// ============================================================
+// Calc / Bill split
+// ============================================================
+export async function calcResponsibility(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const { policyId, billId } = req.query as { policyId: string; billId: string };
+    const data = await service.calcResponsibility(req.user!.tenantId, policyId, billId);
+    sendResponse({ res, message: 'Responsibility calculated', data });
+  } catch (err) { next(err); }
+}
+export async function splitBill(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.splitBill(
+      req.user!.tenantId,
+      req.params.billId as string,
+      req.body,
+    );
+    sendResponse({ res, message: 'Bill split applied', data });
+  } catch (err) { next(err); }
+}
+
+// ============================================================
+// Dashboard + Reports
+// ============================================================
+export async function getDashboard(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.getDashboard(req.user!.tenantId);
+    sendResponse({ res, message: 'Dashboard retrieved', data });
+  } catch (err) { next(err); }
+}
+
+export async function getClaimsSummaryReport(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.getClaimsSummaryReport(req.user!.tenantId, req.query as any);
+    sendResponse({ res, message: 'Claims summary report', data });
+  } catch (err) { next(err); }
+}
+export async function getApprovalRateReport(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.getApprovalRateReport(req.user!.tenantId, req.query as any);
+    sendResponse({ res, message: 'Approval rate report', data });
+  } catch (err) { next(err); }
+}
+export async function getAgingReport(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.getAgingReport(req.user!.tenantId, req.query as any);
+    sendResponse({ res, message: 'Claims aging report', data });
+  } catch (err) { next(err); }
+}
+export async function getOutstandingReport(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.getOutstandingReport(req.user!.tenantId, req.query as any);
+    sendResponse({ res, message: 'Outstanding claims report', data });
   } catch (err) { next(err); }
 }

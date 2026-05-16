@@ -869,13 +869,17 @@ enum ClaimStatus {
   rejected           @map("rejected")
   resubmitted        @map("resubmitted")
   settled            @map("settled")
+  partially_settled  @map("partially_settled")
+  cancelled          @map("cancelled")
 }
 
 enum PreAuthStatus {
-  pending  @map("pending")
-  approved @map("approved")
-  denied   @map("denied")
-  expired  @map("expired")
+  pending   @map("pending")
+  approved  @map("approved")
+  denied    @map("denied")
+  expired   @map("expired")
+  on_hold   @map("on_hold")
+  cancelled @map("cancelled")
 }
 
 enum CommunicationType {
@@ -4138,25 +4142,34 @@ model InsurancePolicy {
 }
 
 model InsuranceClaim {
-  id              String      @id @default(uuid())
-  tenantId        String      @map("tenant_id")
-  patientId       String      @map("patient_id")
-  policyId        String      @map("policy_id")
-  billId          String      @map("bill_id")
-  claimNumber     String?     @unique @map("claim_number") @db.VarChar(100)
-  claimAmount     Decimal     @map("claim_amount") @db.Decimal(12, 2)
-  approvedAmount  Decimal?    @map("approved_amount") @db.Decimal(12, 2)
-  patientShare    Decimal?    @map("patient_share") @db.Decimal(12, 2)
-  status          ClaimStatus @default(submitted)
-  submissionDate  DateTime    @map("submission_date")
-  approvalDate    DateTime?   @map("approval_date")
-  settlementDate  DateTime?   @map("settlement_date")
-  rejectionReason String?     @map("rejection_reason")
-  documentsUrl    Json?       @map("documents_url")
-  submittedBy     String?     @map("submitted_by")
-  reviewedBy      String?     @map("reviewed_by")
-  createdAt       DateTime    @default(now()) @map("created_at")
-  updatedAt       DateTime    @default(now()) @updatedAt @map("updated_at")
+  id                 String      @id @default(uuid())
+  tenantId           String      @map("tenant_id")
+  patientId          String      @map("patient_id")
+  policyId           String      @map("policy_id")
+  billId             String      @map("bill_id")
+  claimNumber        String?     @unique @map("claim_number") @db.VarChar(100)
+  claimAmount        Decimal     @map("claim_amount") @db.Decimal(12, 2)
+  approvedAmount     Decimal?    @map("approved_amount") @db.Decimal(12, 2)
+  patientShare       Decimal?    @map("patient_share") @db.Decimal(12, 2)
+  copayAmount        Decimal?    @map("copay_amount") @db.Decimal(12, 2)
+  deductibleAmount   Decimal?    @map("deductible_amount") @db.Decimal(12, 2)
+  coveredAmount      Decimal?    @map("covered_amount") @db.Decimal(12, 2)
+  paidAmount         Decimal     @default(0) @map("paid_amount") @db.Decimal(12, 2)
+  outstandingAmount  Decimal?    @map("outstanding_amount") @db.Decimal(12, 2)
+  status             ClaimStatus @default(submitted)
+  submissionDate     DateTime    @map("submission_date")
+  approvalDate       DateTime?   @map("approval_date")
+  settlementDate     DateTime?   @map("settlement_date")
+  expiryDate         DateTime?   @map("expiry_date")
+  rejectionReason    String?     @map("rejection_reason")
+  documentsUrl       Json?       @map("documents_url")
+  notes              String?
+  resubmissionCount  Int         @default(0) @map("resubmission_count")
+  previousClaimId    String?     @map("previous_claim_id")
+  submittedBy        String?     @map("submitted_by")
+  reviewedBy         String?     @map("reviewed_by")
+  createdAt          DateTime    @default(now()) @map("created_at")
+  updatedAt          DateTime    @default(now()) @updatedAt @map("updated_at")
 
   tenant               Tenant                @relation(fields: [tenantId], references: [id])
   patient              Patient               @relation(fields: [patientId], references: [id])
@@ -4164,6 +4177,8 @@ model InsuranceClaim {
   bill                 Bill                  @relation(fields: [billId], references: [id])
   submitter            User?                 @relation("ClaimSubmitter", fields: [submittedBy], references: [id])
   reviewer             User?                 @relation("ClaimReviewer", fields: [reviewedBy], references: [id])
+  previousClaim        InsuranceClaim?       @relation("ClaimResubmission", fields: [previousClaimId], references: [id])
+  resubmittedClaims    InsuranceClaim[]      @relation("ClaimResubmission")
   tpaCommunicationLogs TpaCommunicationLog[]
 
   @@map("insurance_claims")
@@ -4176,10 +4191,12 @@ model PreAuthorizationRequest {
   policyId             String        @map("policy_id")
   procedureDescription String        @map("procedure_description")
   estimatedCost        Decimal?      @map("estimated_cost") @db.Decimal(12, 2)
+  approvedAmount       Decimal?      @map("approved_amount") @db.Decimal(12, 2)
   status               PreAuthStatus @default(pending)
   approvalNumber       String?       @map("approval_number") @db.VarChar(100)
   validFrom            DateTime?     @map("valid_from") @db.Date
   validTo              DateTime?     @map("valid_to") @db.Date
+  holdReason           String?       @map("hold_reason")
   notes                String?
   submittedBy          String?       @map("submitted_by")
   createdAt            DateTime      @default(now()) @map("created_at")
@@ -4187,7 +4204,7 @@ model PreAuthorizationRequest {
 
   tenant    Tenant          @relation(fields: [tenantId], references: [id])
   patient   Patient         @relation(fields: [patientId], references: [id])
-  policy    InsurancePolicy @relation(fields: [policyId], references: [id])
+  policy   InsurancePolicy  @relation(fields: [policyId], references: [id])
   submitter User?           @relation(fields: [submittedBy], references: [id])
 
   @@map("pre_authorization_requests")

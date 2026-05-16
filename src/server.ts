@@ -5,6 +5,7 @@ import { prisma } from './config/database';
 import { redis } from './config/redis';
 import { app } from './app';
 import { runSubscriptionJobs } from './jobs/subscription-reminders';
+import { runInsuranceExpiryJob } from './jobs/insurance-expiry';
 import { archiveStaleOpProgressNotes } from './modules/progress-notes/progress-notes.service';
 import { tickLifecycle as emarTickLifecycle } from './modules/emar/emar.service';
 
@@ -42,6 +43,15 @@ setTimeout(() => {
 setInterval(() => {
   emarTickLifecycle().catch((err) => logger.error({ err }, 'eMAR lifecycle tick failed'));
 }, ONE_MINUTE);
+
+// Insurance expiry sweep + deadline reminders (every 12 hours)
+const TWELVE_HOURS = 12 * 60 * 60 * 1000;
+setTimeout(() => {
+  runInsuranceExpiryJob().catch((err) => logger.error({ err }, 'Insurance expiry job failed on startup'));
+}, 120_000);
+setInterval(() => {
+  runInsuranceExpiryJob().catch((err) => logger.error({ err }, 'Insurance expiry job failed'));
+}, TWELVE_HOURS);
 
 // Graceful shutdown
 const shutdown = async (signal: string) => {

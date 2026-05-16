@@ -134,6 +134,7 @@ export const getPoliciesQuerySchema = z.object({
   query: paginationSchema.extend({
     patientId: z.string().uuid().optional(),
     insurerId: z.string().uuid().optional(),
+    tpaId: z.string().uuid().optional(),
     status: z.enum(['active', 'expired', 'cancelled']).optional(),
   }),
 });
@@ -141,6 +142,12 @@ export const getPoliciesQuerySchema = z.object({
 export const verifyPolicySchema = z.object({
   params: z.object({
     id: z.string().uuid('Invalid policy ID'),
+  }),
+});
+
+export const patientIdParamSchema = z.object({
+  params: z.object({
+    patientId: z.string().uuid('Invalid patient ID'),
   }),
 });
 
@@ -156,6 +163,7 @@ export const createClaimSchema = z.object({
     claimAmount: z.number().positive('Claim amount must be positive'),
     notes: z.string().optional(),
     documentsUrl: z.any().optional(),
+    expiryDays: z.number().int().positive().optional(),
   }),
 });
 
@@ -183,10 +191,13 @@ export const getClaimsQuerySchema = z.object({
         'rejected',
         'resubmitted',
         'settled',
+        'partially_settled',
+        'cancelled',
       ])
       .optional(),
     fromDate: z.string().optional(),
     toDate: z.string().optional(),
+    expiringWithinDays: z.coerce.number().int().positive().optional(),
   }),
 });
 
@@ -210,6 +221,49 @@ export const rejectClaimSchema = z.object({
   }),
 });
 
+export const partialApproveClaimSchema = z.object({
+  body: z.object({
+    approvedAmount: z.number().positive('Approved amount must be positive'),
+    rejectionReason: z.string().optional(),
+    notes: z.string().optional(),
+  }),
+  params: z.object({
+    id: z.string().uuid('Invalid claim ID'),
+  }),
+});
+
+export const settleClaimSchema = z.object({
+  body: z.object({
+    paidAmount: z.number().positive('Paid amount must be positive'),
+    settlementDate: z.string().optional(),
+    notes: z.string().optional(),
+  }),
+  params: z.object({
+    id: z.string().uuid('Invalid claim ID'),
+  }),
+});
+
+export const resubmitClaimSchema = z.object({
+  body: z.object({
+    claimAmount: z.number().positive('Claim amount must be positive').optional(),
+    additionalDocumentsUrl: z.any().optional(),
+    notes: z.string().min(1, 'Resubmission notes are required'),
+    expiryDays: z.number().int().positive().optional(),
+  }),
+  params: z.object({
+    id: z.string().uuid('Invalid claim ID'),
+  }),
+});
+
+export const cancelClaimSchema = z.object({
+  body: z.object({
+    reason: z.string().min(1, 'Cancellation reason is required'),
+  }),
+  params: z.object({
+    id: z.string().uuid('Invalid claim ID'),
+  }),
+});
+
 // ============================================================
 // Pre-Authorization Requests
 // ============================================================
@@ -220,6 +274,8 @@ export const createPreAuthSchema = z.object({
     patientId: z.string().uuid('Invalid patient ID'),
     procedureDescription: z.string().min(1, 'Procedure description is required'),
     estimatedCost: z.number().positive('Estimated cost must be positive').optional(),
+    validFrom: z.string().optional(),
+    validTo: z.string().optional(),
     notes: z.string().optional(),
   }),
 });
@@ -239,13 +295,16 @@ export const getPreAuthsQuerySchema = z.object({
   query: paginationSchema.extend({
     patientId: z.string().uuid().optional(),
     policyId: z.string().uuid().optional(),
-    status: z.enum(['pending', 'approved', 'denied', 'expired']).optional(),
+    status: z
+      .enum(['pending', 'approved', 'denied', 'expired', 'on_hold', 'cancelled'])
+      .optional(),
   }),
 });
 
 export const approvePreAuthSchema = z.object({
   body: z.object({
     approvalNumber: z.string().max(100).optional(),
+    approvedAmount: z.number().positive('Approved amount must be positive').optional(),
     validFrom: z.string().optional(),
     validTo: z.string().optional(),
     notes: z.string().optional(),
@@ -264,6 +323,70 @@ export const rejectPreAuthSchema = z.object({
   }),
 });
 
+export const holdPreAuthSchema = z.object({
+  body: z.object({
+    reason: z.string().min(1, 'Hold reason is required'),
+  }),
+  params: z.object({
+    id: z.string().uuid('Invalid pre-auth request ID'),
+  }),
+});
+
+// ============================================================
+// TPA Communication Logs
+// ============================================================
+
+export const createTpaLogSchema = z.object({
+  body: z.object({
+    tpaId: z.string().uuid('Invalid TPA ID'),
+    claimId: z.string().uuid('Invalid claim ID').optional(),
+    communicationType: z.enum(['email', 'phone', 'portal', 'letter']).optional(),
+    direction: z.enum(['inbound', 'outbound']).optional(),
+    subject: z.string().max(255).optional(),
+    content: z.string().optional(),
+  }),
+});
+
+export const getTpaLogsQuerySchema = z.object({
+  query: paginationSchema.extend({
+    tpaId: z.string().uuid().optional(),
+    claimId: z.string().uuid().optional(),
+    direction: z.enum(['inbound', 'outbound']).optional(),
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
+  }),
+});
+
+// ============================================================
+// Calc / Bill split / Reports
+// ============================================================
+
+export const calcResponsibilitySchema = z.object({
+  query: z.object({
+    policyId: z.string().uuid('Invalid policy ID'),
+    billId: z.string().uuid('Invalid bill ID'),
+  }),
+});
+
+export const splitBillSchema = z.object({
+  body: z.object({
+    policyId: z.string().uuid('Invalid policy ID'),
+    claimAmount: z.number().positive().optional(),
+  }),
+  params: z.object({
+    billId: z.string().uuid('Invalid bill ID'),
+  }),
+});
+
+export const reportsQuerySchema = z.object({
+  query: z.object({
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
+    insurerId: z.string().uuid().optional(),
+    tpaId: z.string().uuid().optional(),
+  }),
+});
+
 // ============================================================
 // Inferred types
 // ============================================================
@@ -278,7 +401,14 @@ export type CreateClaimInput = z.infer<typeof createClaimSchema>['body'];
 export type UpdateClaimInput = z.infer<typeof updateClaimSchema>['body'];
 export type ApproveClaimInput = z.infer<typeof approveClaimSchema>['body'];
 export type RejectClaimInput = z.infer<typeof rejectClaimSchema>['body'];
+export type PartialApproveClaimInput = z.infer<typeof partialApproveClaimSchema>['body'];
+export type SettleClaimInput = z.infer<typeof settleClaimSchema>['body'];
+export type ResubmitClaimInput = z.infer<typeof resubmitClaimSchema>['body'];
+export type CancelClaimInput = z.infer<typeof cancelClaimSchema>['body'];
 export type CreatePreAuthInput = z.infer<typeof createPreAuthSchema>['body'];
 export type UpdatePreAuthInput = z.infer<typeof updatePreAuthSchema>['body'];
 export type ApprovePreAuthInput = z.infer<typeof approvePreAuthSchema>['body'];
 export type RejectPreAuthInput = z.infer<typeof rejectPreAuthSchema>['body'];
+export type HoldPreAuthInput = z.infer<typeof holdPreAuthSchema>['body'];
+export type CreateTpaLogInput = z.infer<typeof createTpaLogSchema>['body'];
+export type SplitBillInput = z.infer<typeof splitBillSchema>['body'];
