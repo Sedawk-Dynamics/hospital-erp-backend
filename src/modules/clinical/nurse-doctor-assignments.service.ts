@@ -258,8 +258,20 @@ export async function getMyPatients(
   let appointments: any[] = [];
   let appointmentsTotal = 0;
   if (type === 'op' || type === 'all') {
-    // Default OPD scope to today; explicit `date` overrides.
-    const targetDate = query.date ? new Date(query.date) : new Date();
+    // Default OPD scope = today in IST (the hospital's wall-clock day).
+    // Using raw `new Date()` would anchor to UTC today, which silently
+    // drops appointments during IST evenings when the server clock has
+    // already rolled into the next UTC day.
+    const istTodayStr = (() => {
+      const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Kolkata',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(new Date());
+      return parts; // yyyy-MM-dd
+    })();
+    const targetDate = new Date(query.date ?? istTodayStr);
     const dayStart = new Date(targetDate);
     dayStart.setUTCHours(0, 0, 0, 0);
     const dayEnd = new Date(targetDate);

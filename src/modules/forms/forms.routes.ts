@@ -63,6 +63,33 @@ formsRoutes.delete(
   controller.deleteTemplate,
 );
 
+// ─── Submissions ──────────────────────────────────────────────
+// Registered BEFORE the generic `/:id` routes so /submissions is
+// not swallowed by Express matching `submissions` against `:id`
+// (which previously rejected with "Invalid uuid").
+//
+// Anyone with `forms:create` can submit (nurse, admin, doctor,
+// super_admin, front_desk per role-permissions). Service layer
+// enforces patient + tenant scoping via resolveVisitContext.
+// Submission list/get is `forms:read` — same audience as patient
+// detail (doctor, nurse, nurse_admin, admin, etc.).
+
+formsRoutes.get(
+  '/submissions',
+  authenticate,
+  requirePermission('forms', 'read'),
+  validate(listSubmissionsQuerySchema),
+  controller.listSubmissions,
+);
+
+formsRoutes.get(
+  '/submissions/:id',
+  authenticate,
+  requirePermission('forms', 'read'),
+  validate(submissionIdParam),
+  controller.getSubmission,
+);
+
 // ─── Hospital forms (admin manages, all clinical staff read) ──
 
 formsRoutes.get(
@@ -73,14 +100,6 @@ formsRoutes.get(
   controller.listHospitalForms,
 );
 
-formsRoutes.get(
-  '/:id',
-  authenticate,
-  requirePermission('forms', 'read'),
-  validate(hospitalFormIdParam),
-  controller.getHospitalForm,
-);
-
 formsRoutes.post(
   '/',
   authenticate,
@@ -89,20 +108,20 @@ formsRoutes.post(
   controller.createHospitalForm,
 );
 
-formsRoutes.put(
-  '/:id',
-  authenticate,
-  requirePermission('forms', 'update'),
-  validate(updateHospitalFormSchema),
-  controller.updateHospitalForm,
-);
-
 formsRoutes.post(
   '/clone-template/:templateId',
   authenticate,
   requirePermission('forms', 'create'),
   validate(cloneTemplateSchema),
   controller.cloneTemplate,
+);
+
+formsRoutes.post(
+  '/:id/submissions',
+  authenticate,
+  requirePermission('forms', 'create'),
+  validate(createSubmissionSchema),
+  controller.createSubmission,
 );
 
 formsRoutes.post(
@@ -121,33 +140,18 @@ formsRoutes.post(
   controller.restoreHospitalForm,
 );
 
-// ─── Submissions ──────────────────────────────────────────────
-// Anyone with `forms:create` can submit (nurse, admin, doctor,
-// super_admin, front_desk per role-permissions). Service layer
-// enforces patient + tenant scoping via resolveVisitContext.
-// Submission list/get is `forms:read` — same audience as patient
-// detail (doctor, nurse, nurse_admin, admin, etc.).
-
-formsRoutes.post(
-  '/:id/submissions',
-  authenticate,
-  requirePermission('forms', 'create'),
-  validate(createSubmissionSchema),
-  controller.createSubmission,
-);
-
 formsRoutes.get(
-  '/submissions',
+  '/:id',
   authenticate,
   requirePermission('forms', 'read'),
-  validate(listSubmissionsQuerySchema),
-  controller.listSubmissions,
+  validate(hospitalFormIdParam),
+  controller.getHospitalForm,
 );
 
-formsRoutes.get(
-  '/submissions/:id',
+formsRoutes.put(
+  '/:id',
   authenticate,
-  requirePermission('forms', 'read'),
-  validate(submissionIdParam),
-  controller.getSubmission,
+  requirePermission('forms', 'update'),
+  validate(updateHospitalFormSchema),
+  controller.updateHospitalForm,
 );
