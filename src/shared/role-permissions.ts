@@ -81,7 +81,7 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       // or correct — corrections are append-only and limited to nursing roles.
       { module: 'vitals', action: 'read' },
       { module: 'diagnoses', action: 'read' }, { module: 'diagnoses', action: 'create' }, { module: 'diagnoses', action: 'update' }, { module: 'diagnoses', action: 'delete' },
-      { module: 'progress_notes', action: 'read' }, { module: 'progress_notes', action: 'create' }, { module: 'progress_notes', action: 'update' },
+      { module: 'progress_notes', action: 'read' }, { module: 'progress_notes', action: 'create' }, { module: 'progress_notes', action: 'update' }, { module: 'progress_notes', action: 'approve' },
       { module: 'prescriptions', action: 'read' }, { module: 'prescriptions', action: 'create' }, { module: 'prescriptions', action: 'update' },
       { module: 'lab_orders', action: 'read' }, { module: 'lab_orders', action: 'create' }, { module: 'lab_reports', action: 'read' },
       { module: 'imaging', action: 'read' }, { module: 'imaging', action: 'create' },
