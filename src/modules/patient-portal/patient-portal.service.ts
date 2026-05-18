@@ -634,6 +634,226 @@ export async function getPatientPrescriptions(
   return { data: prescriptions };
 }
 
+/**
+ * Open lab + imaging orders raised by the doctor against the patient's
+ * visits. Surfaces a unified list so the patient knows which lab tests and
+ * imaging studies they still need to come in for. Completed / cancelled
+ * orders are filtered out — the patient sees results separately under
+ * /patient-portal/lab-reports.
+ */
+export async function getPatientOpenOrders(
+  userId: string,
+  email: string,
+  query: { tenantId?: string; profileId?: string; includeCompleted?: boolean },
+) {
+  const patientIds = await resolvePatientIds(userId, email, query.tenantId, query.profileId);
+  if (patientIds.length === 0) return { data: [] };
+
+  // Orders the patient marked done themselves are still surfaced (with the
+  // "Done — uploaded externally" state) so they can revisit / re-upload the
+  // file — but tenant-internal completed orders (lab signed the report)
+  // are hidden, since those live under /lab-reports.
+  const labStatuses = query.includeCompleted
+    ? undefined
+    : ['ordered', 'sample_collected', 'in_progress'];
+  const imagingStatuses = query.includeCompleted
+    ? undefined
+    : ['requested', 'scheduled', 'in_progress'];
+
+  const [labOrders, imagingOrders] = await Promise.all([
+    prisma.labOrder.findMany({
+      where: {
+        patientId: { in: patientIds },
+        OR: [
+          ...(labStatuses ? [{ status: { in: labStatuses as any } }] : []),
+          { completedExternallyAt: { not: null } },
+        ],
+      },
+      include: {
+        labOrderItems: {
+          select: {
+            id: true,
+            test: { select: { id: true, testName: true, testCode: true, sampleType: true } },
+          },
+        },
+        orderer: { select: { firstName: true, lastName: true } },
+        patient: {
+          select: {
+            id: true,
+            mrn: true,
+            firstName: true,
+            lastName: true,
+            tenant: { select: { id: true, name: true, phone: true, address: true } },
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    }),
+    prisma.imagingRequest.findMany({
+      where: {
+        patientId: { in: patientIds },
+        OR: [
+          ...(imagingStatuses ? [{ status: { in: imagingStatuses as any } }] : []),
+          { completedExternallyAt: { not: null } },
+        ],
+      },
+      include: {
+        orderer: { select: { firstName: true, lastName: true } },
+        patient: {
+          select: {
+            id: true,
+            mrn: true,
+            firstName: true,
+            lastName: true,
+            tenant: { select: { id: true, name: true, phone: true, address: true } },
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    }),
+  ]);
+
+  const labRows = labOrders.map((o) => ({
+    orderType: 'lab' as const,
+    id: o.id,
+    orderNumber: o.id.slice(0, 8).toUpperCase(),
+    status: o.status,
+    urgency: o.urgency,
+    notes: o.notes ?? null,
+    description:
+      o.labOrderItems.map((it) => it.test?.testName).filter(Boolean).join(', ') || 'Lab order',
+    sampleTypes: Array.from(
+      new Set(o.labOrderItems.map((it) => it.test?.sampleType).filter(Boolean)),
+    ) as string[],
+    items: o.labOrderItems.map((it) => ({
+      id: it.id,
+      testName: it.test?.testName ?? 'Test',
+      testCode: it.test?.testCode ?? null,
+    })),
+    orderedBy: o.orderer ? `${o.orderer.firstName} ${o.orderer.lastName ?? ''}`.trim() : null,
+    createdAt: o.createdAt,
+    patient: o.patient,
+    completedExternallyAt: o.completedExternallyAt ?? null,
+    externalReportUrl: o.externalReportUrl ?? null,
+    externalNotes: o.externalNotes ?? null,
+  }));
+
+  const imagingRows = imagingOrders.map((o) => ({
+    orderType: 'imaging' as const,
+    id: o.id,
+    orderNumber: o.id.slice(0, 8).toUpperCase(),
+    status: o.status,
+    urgency: o.urgency,
+    notes: o.notes ?? null,
+    description: `${o.imagingType}${o.bodyPart ? ' — ' + o.bodyPart : ''}`,
+    imagingType: o.imagingType,
+    bodyPart: o.bodyPart ?? null,
+    clinicalIndication: o.clinicalIndication ?? null,
+    scheduledAt: o.scheduledAt ?? null,
+    items: [] as { id: string; testName: string; testCode: string | null }[],
+    sampleTypes: [] as string[],
+    orderedBy: o.orderer ? `${o.orderer.firstName} ${o.orderer.lastName ?? ''}`.trim() : null,
+    createdAt: o.createdAt,
+    patient: o.patient,
+    completedExternallyAt: o.completedExternallyAt ?? null,
+    externalReportUrl: o.externalReportUrl ?? null,
+    externalNotes: o.externalNotes ?? null,
+  }));
+
+  const merged = [...labRows, ...imagingRows].sort(
+    (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
+  );
+
+  return { data: merged };
+}
+
+/**
+ * Patient marks one of their pending lab / imaging orders as "done externally"
+ * — usually because they had the test performed at another facility. The
+ * order's status flips to `completed` so it disappears from the lab /
+ * radiology worklist, but a "completed externally" marker stays on the row
+ * so the doctor + nurse see that the patient handled it (and can open the
+ * uploaded report).
+ *
+ * Bypasses the orderer / clinician permission check because patient
+ * portal users can only touch orders for patient records they own.
+ */
+export async function markPatientOrderDoneExternally(
+  userId: string,
+  email: string,
+  params: {
+    orderType: 'lab' | 'imaging';
+    orderId: string;
+    file?: Express.Multer.File;
+    notes?: string;
+  },
+) {
+  const patientIds = await resolvePatientIds(userId, email);
+  if (patientIds.length === 0) throw AppError.notFound('No patient profile linked to this account');
+
+  const fileUrl = params.file ? `/uploads/${params.file.filename}` : null;
+  const now = new Date();
+
+  if (params.orderType === 'lab') {
+    const order = await prisma.labOrder.findFirst({
+      where: { id: params.orderId, patientId: { in: patientIds } },
+      select: { id: true, status: true },
+    });
+    if (!order) throw AppError.notFound('Lab order not found');
+    if (order.status === 'cancelled') {
+      throw AppError.badRequest('This order has already been cancelled');
+    }
+
+    return prisma.labOrder.update({
+      where: { id: order.id },
+      data: {
+        status: 'completed',
+        completedExternallyAt: now,
+        completedExternallyBy: userId,
+        externalReportUrl: fileUrl ?? undefined,
+        externalNotes: params.notes ?? undefined,
+      },
+      select: {
+        id: true,
+        status: true,
+        completedExternallyAt: true,
+        externalReportUrl: true,
+        externalNotes: true,
+      },
+    });
+  }
+
+  const imaging = await prisma.imagingRequest.findFirst({
+    where: { id: params.orderId, patientId: { in: patientIds } },
+    select: { id: true, status: true },
+  });
+  if (!imaging) throw AppError.notFound('Imaging request not found');
+  if (imaging.status === 'cancelled') {
+    throw AppError.badRequest('This request has already been cancelled');
+  }
+
+  return prisma.imagingRequest.update({
+    where: { id: imaging.id },
+    data: {
+      status: 'completed',
+      completedAt: now,
+      completedExternallyAt: now,
+      completedExternallyBy: userId,
+      externalReportUrl: fileUrl ?? undefined,
+      externalNotes: params.notes ?? undefined,
+    },
+    select: {
+      id: true,
+      status: true,
+      completedExternallyAt: true,
+      externalReportUrl: true,
+      externalNotes: true,
+    },
+  });
+}
+
 // ── Patient-uploaded miscellaneous documents ────────────────
 
 export async function listMyDocuments(userId: string, email: string, tenantId?: string) {

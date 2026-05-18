@@ -119,6 +119,82 @@ export async function createVisit(tenantId: string, data: CreateVisitInput) {
 }
 
 /**
+ * Find or create an OP visit for the given appointment. Used at consultation
+ * start so the doctor can place lab / imaging orders before they finish the
+ * SOAP note (orders need a visitId; the visit was previously created only at
+ * consultation completion). Idempotent: returns the existing active visit
+ * tied to the appointment when one exists.
+ */
+export async function ensureVisitForAppointment(
+  tenantId: string,
+  appointmentId: string,
+) {
+  const appointment = await prisma.appointment.findFirst({
+    where: { id: appointmentId, tenantId },
+    select: {
+      id: true,
+      patientId: true,
+      doctorId: true,
+      reason: true,
+      status: true,
+    },
+  });
+  if (!appointment) throw AppError.notFound('Appointment not found');
+
+  // Prefer a visit already linked to this appointment.
+  const linked = await prisma.visit.findFirst({
+    where: { tenantId, appointmentId, status: 'active' },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (linked) return linked;
+
+  // Fall back to any active visit for this patient with the same doctor — the
+  // legacy consultation flow created visits without backfilling appointmentId
+  // before this endpoint existed.
+  const existing = await prisma.visit.findFirst({
+    where: {
+      tenantId,
+      patientId: appointment.patientId,
+      doctorId: appointment.doctorId,
+      status: 'active',
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (existing) {
+    // Backfill the appointment link so future lookups by appointmentId match.
+    if (!existing.appointmentId) {
+      try {
+        await prisma.visit.update({
+          where: { id: existing.id },
+          data: { appointmentId },
+        });
+      } catch {
+        /* non-fatal */
+      }
+    }
+    return existing;
+  }
+
+  const visit = await prisma.visit.create({
+    data: {
+      tenantId,
+      patientId: appointment.patientId,
+      doctorId: appointment.doctorId,
+      appointmentId: appointment.id,
+      visitType: 'op',
+      visitDate: new Date(),
+      chiefComplaint: appointment.reason ?? undefined,
+      status: 'active',
+    },
+  });
+  logger.info(
+    { tenantId, appointmentId, visitId: visit.id },
+    'Visit auto-created for in-flight consultation',
+  );
+  return visit;
+}
+
+/**
  * Get paginated list of visits with filters.
  */
 export async function getVisits(tenantId: string, query: GetVisitsQuery) {
@@ -2004,24 +2080,43 @@ export interface NurseClinicalOrder {
   doctor: { id: string; user: { firstName: string; lastName: string } | null } | null;
   wardId: string | null;
   ward: { id: string; name: string } | null;
+  // Set when the patient marks the order done from the portal (got it done
+  // elsewhere). UI shows a "Marked done by patient" badge + link to upload.
+  completedExternallyAt: Date | null;
+  externalReportUrl: string | null;
+  externalNotes: string | null;
 }
 
 /**
  * Fetch pending (or filtered) doctor orders across lab + imaging.
  * If `wardId` is provided we scope via the admission bound to the order's visit.
  */
-export async function getClinicalOrders(tenantId: string, query: GetClinicalOrdersQuery) {
+export async function getClinicalOrders(
+  tenantId: string,
+  query: GetClinicalOrdersQuery,
+  userId?: string,
+) {
   const status = query.status ?? 'pending';
   const type = query.type ?? 'all';
   const limit = query.limit ?? 100;
 
   // Lab "pending" = status='ordered'; imaging "pending" = status='requested'.
+  // Patient-completed orders (status='completed' + completedExternallyAt set)
+  // stay in the "pending"/worklist feed so the nurse + doctor still see
+  // them — just with a "Marked done by patient" badge. They are excluded
+  // from the laboratory worklist via /lab/orders?status=ordered separately.
   const labWhere: any = { tenantId };
   const imagingWhere: any = { tenantId };
 
   if (status === 'pending') {
-    labWhere.status = 'ordered';
-    imagingWhere.status = 'requested';
+    labWhere.OR = [
+      { status: 'ordered' },
+      { completedExternallyAt: { not: null } },
+    ];
+    imagingWhere.OR = [
+      { status: 'requested' },
+      { completedExternallyAt: { not: null } },
+    ];
   } else if (status === 'completed') {
     labWhere.status = 'completed';
     imagingWhere.status = 'completed';
@@ -2035,6 +2130,35 @@ export async function getClinicalOrders(tenantId: string, query: GetClinicalOrde
     const admission = { some: { wardId: query.wardId, tenantId } };
     labWhere.visit = { admission };
     imagingWhere.visit = { admission };
+  }
+
+  if (query.patientId) {
+    labWhere.patientId = query.patientId;
+    imagingWhere.patientId = query.patientId;
+  }
+
+  // scope=mine: restrict to doctors currently assigned to the caller via
+  // NurseDoctorAssignment. The orderer (User.id) on a lab/imaging order
+  // belongs to a DoctorProfile, so we map User.id → DoctorProfile.id via
+  // the assignment.doctorId column then back to DoctorProfile.userId for
+  // the orderedBy comparison.
+  if (query.scope === 'mine' && userId) {
+    const assigns = await prisma.nurseDoctorAssignment.findMany({
+      where: { tenantId, nurseId: userId, isActive: true },
+      select: { doctorId: true },
+    });
+    const doctorProfileIds = assigns.map((a) => a.doctorId);
+    if (doctorProfileIds.length === 0) return [] as NurseClinicalOrder[];
+    const doctorUsers = await prisma.doctorProfile.findMany({
+      where: { id: { in: doctorProfileIds }, tenantId },
+      select: { userId: true },
+    });
+    const doctorUserIds: string[] = doctorUsers
+      .map((d) => d.userId)
+      .filter((u): u is string => typeof u === 'string' && u.length > 0);
+    if (doctorUserIds.length === 0) return [] as NurseClinicalOrder[];
+    labWhere.orderedBy = { in: doctorUserIds };
+    imagingWhere.orderedBy = { in: doctorUserIds };
   }
 
   const [labOrders, imagingOrders] = await Promise.all([
@@ -2109,6 +2233,9 @@ export async function getClinicalOrders(tenantId: string, query: GetClinicalOrde
         : null,
       wardId: o.visit?.admission?.wardId ?? null,
       ward: o.visit?.admission?.ward ?? null,
+      completedExternallyAt: o.completedExternallyAt ?? null,
+      externalReportUrl: o.externalReportUrl ?? null,
+      externalNotes: o.externalNotes ?? null,
     });
   }
 
@@ -2128,6 +2255,9 @@ export async function getClinicalOrders(tenantId: string, query: GetClinicalOrde
         : null,
       wardId: o.visit?.admission?.wardId ?? null,
       ward: o.visit?.admission?.ward ?? null,
+      completedExternallyAt: o.completedExternallyAt ?? null,
+      externalReportUrl: o.externalReportUrl ?? null,
+      externalNotes: o.externalNotes ?? null,
     });
   }
 

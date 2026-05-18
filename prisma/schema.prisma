@@ -1434,6 +1434,7 @@ model User {
   labOrdersOrdered               LabOrder[]
   labOrdersAssigned              LabOrder[]                   @relation("LabOrderAssignee")
   labOrdersAccepted              LabOrder[]                   @relation("LabOrderAcceptor")
+  labOrdersExternallyCompleted   LabOrder[]                   @relation("LabOrderExternalCompleter")
   labSamplesCollected            LabSample[]
   labResultsEntered              LabResult[]
   labResultsVerified             LabResult[]                  @relation("LabResultVerifier")
@@ -1443,6 +1444,7 @@ model User {
   labAttachmentsUploaded         LabAttachment[]              @relation("LabAttachmentUploader")
   imagingOrdersOrdered           ImagingRequest[]
   imagingRequestsAssigned        ImagingRequest[]             @relation("ImagingTechnician")
+  imagingRequestsExternallyDone  ImagingRequest[]             @relation("ImagingRequestExternalCompleter")
   imagingResultsRadiologist      ImagingResult[]              @relation("ImagingRadiologist")
   imagingResultsSigned           ImagingResult[]              @relation("ImagingResultSigner")
   dispensingRecords              DispensingRecord[]           @relation("Dispenser")
@@ -3306,35 +3308,44 @@ model LabTestCatalog {
 }
 
 model LabOrder {
-  id                String         @id @default(uuid())
-  tenantId          String         @map("tenant_id")
-  patientId         String         @map("patient_id")
-  visitId           String         @map("visit_id")
-  orderedBy         String         @map("ordered_by")
-  assignedToId      String?        @map("assigned_to_id")
-  assignedDeptId    String?        @map("assigned_dept_id")
-  acceptedAt        DateTime?      @map("accepted_at")
-  acceptedBy        String?        @map("accepted_by")
-  urgency           Urgency        @default(routine)
-  status            LabOrderStatus @default(ordered)
-  isThirdParty      Boolean        @default(false) @map("is_third_party")
-  thirdPartyLabName String?        @map("third_party_lab_name") @db.VarChar(255)
-  notes             String?
-  createdAt         DateTime       @default(now()) @map("created_at")
-  updatedAt         DateTime       @default(now()) @updatedAt @map("updated_at")
+  id                      String         @id @default(uuid())
+  tenantId                String         @map("tenant_id")
+  patientId               String         @map("patient_id")
+  visitId                 String         @map("visit_id")
+  orderedBy               String         @map("ordered_by")
+  assignedToId            String?        @map("assigned_to_id")
+  assignedDeptId          String?        @map("assigned_dept_id")
+  acceptedAt              DateTime?      @map("accepted_at")
+  acceptedBy              String?        @map("accepted_by")
+  urgency                 Urgency        @default(routine)
+  status                  LabOrderStatus @default(ordered)
+  isThirdParty            Boolean        @default(false) @map("is_third_party")
+  thirdPartyLabName       String?        @map("third_party_lab_name") @db.VarChar(255)
+  notes                   String?
+  // Patient marked this order done from outside (got tested elsewhere).
+  // When set, the lab worklist hides the order (status flips to completed)
+  // and the doctor / nurse views show a "Marked done by patient" badge
+  // linking to the uploaded report.
+  completedExternallyAt   DateTime?      @map("completed_externally_at")
+  completedExternallyBy   String?        @map("completed_externally_by")
+  externalReportUrl       String?        @map("external_report_url")
+  externalNotes           String?        @map("external_notes")
+  createdAt               DateTime       @default(now()) @map("created_at")
+  updatedAt               DateTime       @default(now()) @updatedAt @map("updated_at")
 
-  tenant         Tenant          @relation(fields: [tenantId], references: [id])
-  patient        Patient         @relation(fields: [patientId], references: [id])
-  visit          Visit           @relation(fields: [visitId], references: [id])
-  orderer        User            @relation(fields: [orderedBy], references: [id])
-  assignedTo     User?           @relation("LabOrderAssignee", fields: [assignedToId], references: [id])
-  acceptedByUser User?           @relation("LabOrderAcceptor", fields: [acceptedBy], references: [id])
-  assignedDept   LabDepartment?  @relation("LabOrderDept", fields: [assignedDeptId], references: [id])
-  labOrderItems  LabOrderItem[]
-  labSamples     LabSample[]
-  labResults     LabResult[]
-  labReport      LabReport?
-  attachments    LabAttachment[]
+  tenant            Tenant          @relation(fields: [tenantId], references: [id])
+  patient           Patient         @relation(fields: [patientId], references: [id])
+  visit             Visit           @relation(fields: [visitId], references: [id])
+  orderer           User            @relation(fields: [orderedBy], references: [id])
+  assignedTo        User?           @relation("LabOrderAssignee", fields: [assignedToId], references: [id])
+  acceptedByUser    User?           @relation("LabOrderAcceptor", fields: [acceptedBy], references: [id])
+  assignedDept      LabDepartment?  @relation("LabOrderDept", fields: [assignedDeptId], references: [id])
+  externalCompleter User?           @relation("LabOrderExternalCompleter", fields: [completedExternallyBy], references: [id])
+  labOrderItems     LabOrderItem[]
+  labSamples        LabSample[]
+  labResults        LabResult[]
+  labReport         LabReport?
+  attachments       LabAttachment[]
 
   @@map("lab_orders")
 }
@@ -3466,29 +3477,37 @@ model LabAttachment {
 // ============================================================
 
 model ImagingRequest {
-  id                   String               @id @default(uuid())
-  tenantId             String               @map("tenant_id")
-  patientId            String               @map("patient_id")
-  visitId              String               @map("visit_id")
-  orderedBy            String               @map("ordered_by")
-  imagingType          ImagingType          @map("imaging_type")
-  bodyPart             String?              @map("body_part") @db.VarChar(100)
-  urgency              Urgency              @default(routine)
-  clinicalIndication   String?              @map("clinical_indication")
-  status               ImagingRequestStatus @default(requested)
-  scheduledAt          DateTime?            @map("scheduled_at")
-  completedAt          DateTime?            @map("completed_at")
-  assignedTechnicianId String?              @map("assigned_technician_id")
-  room                 String?              @db.VarChar(100)
-  notes                String?
-  createdAt            DateTime             @default(now()) @map("created_at")
-  updatedAt            DateTime             @default(now()) @updatedAt @map("updated_at")
+  id                      String               @id @default(uuid())
+  tenantId                String               @map("tenant_id")
+  patientId               String               @map("patient_id")
+  visitId                 String               @map("visit_id")
+  orderedBy               String               @map("ordered_by")
+  imagingType             ImagingType          @map("imaging_type")
+  bodyPart                String?              @map("body_part") @db.VarChar(100)
+  urgency                 Urgency              @default(routine)
+  clinicalIndication      String?              @map("clinical_indication")
+  status                  ImagingRequestStatus @default(requested)
+  scheduledAt             DateTime?            @map("scheduled_at")
+  completedAt             DateTime?            @map("completed_at")
+  assignedTechnicianId    String?              @map("assigned_technician_id")
+  room                    String?              @db.VarChar(100)
+  notes                   String?
+  // Patient self-completion (scan done at another facility). Hides the
+  // request from the radiology worklist and surfaces a "Marked done by
+  // patient" badge to the doctor + nurse with a link to the upload.
+  completedExternallyAt   DateTime?            @map("completed_externally_at")
+  completedExternallyBy   String?              @map("completed_externally_by")
+  externalReportUrl       String?              @map("external_report_url")
+  externalNotes           String?              @map("external_notes")
+  createdAt               DateTime             @default(now()) @map("created_at")
+  updatedAt               DateTime             @default(now()) @updatedAt @map("updated_at")
 
   tenant             Tenant         @relation(fields: [tenantId], references: [id])
   patient            Patient        @relation(fields: [patientId], references: [id])
   visit              Visit          @relation(fields: [visitId], references: [id])
   orderer            User           @relation(fields: [orderedBy], references: [id])
   assignedTechnician User?          @relation("ImagingTechnician", fields: [assignedTechnicianId], references: [id])
+  externalCompleter  User?          @relation("ImagingRequestExternalCompleter", fields: [completedExternallyBy], references: [id])
   imagingResult      ImagingResult?
 
   @@map("imaging_requests")

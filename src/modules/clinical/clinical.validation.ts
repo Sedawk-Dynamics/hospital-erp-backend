@@ -50,6 +50,12 @@ export const closeVisitSchema = z.object({
   }),
 });
 
+export const ensureVisitForAppointmentSchema = z.object({
+  body: z.object({
+    appointmentId: z.string().uuid('Invalid appointment ID'),
+  }),
+});
+
 // ==================== Admissions ====================
 
 export const createAdmissionSchema = z.object({
@@ -475,6 +481,11 @@ export const getClinicalOrdersQuerySchema = z.object({
     wardId: z.string().uuid().optional(),
     status: z.enum(['pending', 'completed', 'cancelled', 'all']).optional(),
     type: z.enum(['lab', 'imaging', 'all']).optional(),
+    // scope=mine restricts to orders raised by doctors assigned to the
+    // calling nurse (NurseDoctorAssignment). scope=all (default) preserves
+    // the supervisory tenant-wide view.
+    scope: z.enum(['mine', 'all']).optional(),
+    patientId: z.string().uuid().optional(),
     limit: z.coerce.number().int().min(1).max(200).optional(),
   }),
 });

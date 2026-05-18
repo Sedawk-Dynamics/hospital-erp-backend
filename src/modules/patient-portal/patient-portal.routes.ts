@@ -202,6 +202,53 @@ router.get('/appointments', async (req: AuthenticatedRequest, res: Response, nex
   }
 });
 
+// GET /patient-portal/open-orders — pending lab + imaging orders raised by
+// the patient's doctors. The patient uses this to know which department to
+// visit (sample collection, imaging room) for in-flight investigations.
+router.get('/open-orders', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const result = await patientPortalService.getPatientOpenOrders(
+      req.user!.userId,
+      req.user!.email,
+      {
+        tenantId: req.query.tenantId as string | undefined,
+        profileId: req.query.profileId as string | undefined,
+        includeCompleted: req.query.includeCompleted === 'true',
+      },
+    );
+    sendResponse({ res, statusCode: 200, message: 'Patient open orders', data: result.data });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /patient-portal/orders/:type/:id/mark-done — patient self-completes
+// a lab / imaging order (they had it done elsewhere), optionally attaching
+// a report file. The order's status flips to completed so the lab worklist
+// no longer sees it; the doctor + nurse get a "Marked done by patient" badge.
+router.post(
+  '/orders/:type/:id/mark-done',
+  (req: any, res: any, next: any) => uploadSingle('file')(req, res, next),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const { type, id } = req.params as { type: string; id: string };
+      if (type !== 'lab' && type !== 'imaging') {
+        return res.status(400).json({ success: false, message: 'type must be "lab" or "imaging"' });
+      }
+      const file = (req as any).file as Express.Multer.File | undefined;
+      const notes = (req.body?.notes as string | undefined)?.trim() || undefined;
+      const data = await patientPortalService.markPatientOrderDoneExternally(
+        req.user!.userId,
+        req.user!.email,
+        { orderType: type, orderId: id, file, notes },
+      );
+      sendResponse({ res, statusCode: 200, message: 'Order marked as done', data });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 // GET /patient-portal/lab-reports
 router.get('/lab-reports', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {

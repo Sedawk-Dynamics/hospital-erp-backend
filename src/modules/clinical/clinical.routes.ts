@@ -8,6 +8,7 @@ import {
   visitIdParamSchema,
   updateVisitSchema,
   closeVisitSchema,
+  ensureVisitForAppointmentSchema,
   createAdmissionSchema,
   getAdmissionsQuerySchema,
   admissionIdParamSchema,
@@ -75,6 +76,7 @@ export const clinicalRoutes = Router();
 
 // --- Visits ---
 clinicalRoutes.post('/visits', authenticate, requirePermission('visits', 'create'), validate(createVisitSchema), controller.createVisit);
+clinicalRoutes.post('/visits/ensure-for-appointment', authenticate, requirePermission('visits', 'create'), validate(ensureVisitForAppointmentSchema), controller.ensureVisitForAppointment);
 clinicalRoutes.get('/visits', authenticate, requirePermission('visits', 'read'), validate(getVisitsQuerySchema), controller.getVisits);
 clinicalRoutes.get('/visits/:id', authenticate, requirePermission('visits', 'read'), validate(visitIdParamSchema), controller.getVisitById);
 clinicalRoutes.put('/visits/:id', authenticate, requirePermission('visits', 'update'), validate(updateVisitSchema), controller.updateVisit);

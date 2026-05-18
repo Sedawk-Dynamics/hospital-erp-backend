@@ -77,6 +77,25 @@ export async function updateVisit(
   }
 }
 
+export async function ensureVisitForAppointment(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const { appointmentId } = req.body as { appointmentId: string };
+    const visit = await clinicalService.ensureVisitForAppointment(tenantId, appointmentId);
+    sendResponse({
+      res,
+      message: 'Visit ensured for appointment',
+      data: visit,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function closeVisit(
   req: AuthenticatedRequest,
   res: Response,
@@ -673,7 +692,8 @@ export async function getClinicalOrders(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const data = await clinicalService.getClinicalOrders(tenantId, req.query as any);
+    const userId = req.user!.userId;
+    const data = await clinicalService.getClinicalOrders(tenantId, req.query as any, userId);
     sendResponse({
       res,
       message: 'Clinical orders retrieved',
