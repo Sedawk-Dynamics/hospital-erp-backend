@@ -558,6 +558,7 @@ export async function getPatientLabReports(
           labOrderItems: {
             select: {
               id: true,
+              status: true,
               test: { select: { id: true, testName: true, testCode: true } },
               labResults: {
                 where: { status: 'approved' },
@@ -588,6 +589,7 @@ export async function getPatientLabReports(
           sizeBytes: true,
           description: true,
           createdAt: true,
+          labOrderItemId: true,
         },
       },
     },
