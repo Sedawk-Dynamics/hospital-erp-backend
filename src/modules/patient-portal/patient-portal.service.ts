@@ -544,10 +544,11 @@ export async function getPatientLabReports(
   const patientIds = await resolvePatientIds(userId, email, query.tenantId, query.profileId);
   if (patientIds.length === 0) return { data: [] };
 
-  // Patients only see what's been formally published — drafts and
-  // corrections-in-progress are hospital-internal until the lab signs them off.
+  // Patients see published reports plus any corrected versions — the new
+  // upload flow republishes immediately on correction (no re-sign step), so
+  // "corrected" is the patient-visible "amended" state, not a draft.
   const reports = await prisma.labReport.findMany({
-    where: { patientId: { in: patientIds }, status: 'published' },
+    where: { patientId: { in: patientIds }, status: { in: ['published', 'corrected'] } },
     take: query.limit || 50,
     include: {
       labOrder: {

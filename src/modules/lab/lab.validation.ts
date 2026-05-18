@@ -266,6 +266,13 @@ export const getResultsSchema = z.object({
   }),
 });
 
+export const completeLabOrderItemSchema = z.object({
+  params: z.object({
+    orderId: z.string().uuid('Invalid order ID'),
+    itemId: z.string().uuid('Invalid order item ID'),
+  }),
+});
+
 export const verifyResultSchema = z.object({
   params: z.object({
     id: z.string().uuid('Invalid result ID'),

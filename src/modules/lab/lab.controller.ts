@@ -443,6 +443,30 @@ export async function verifyResults(
   }
 }
 
+export async function completeLabOrderItem(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const item = await labService.completeLabOrderItem(
+      tenantId,
+      userId,
+      req.params.orderId as string,
+      req.params.itemId as string,
+    );
+    sendResponse({
+      res,
+      message: 'Test marked done',
+      data: item,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // ============================================================
 // Reports
 // ============================================================

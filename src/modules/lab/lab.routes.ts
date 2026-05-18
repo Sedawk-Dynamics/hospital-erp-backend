@@ -24,6 +24,7 @@ import {
   enterResultsSchema,
   getResultsSchema,
   verifyResultSchema,
+  completeLabOrderItemSchema,
   generateLabReportSchema,
   getLabReportsSchema,
   labReportIdParamSchema,
@@ -67,6 +68,16 @@ labRoutes.get('/orders/:id', authenticate, requirePermission('lab_orders', 'read
 labRoutes.put('/orders/:id', authenticate, requirePermission('lab_orders', 'update'), validate(updateLabOrderSchema), controller.updateLabOrder);
 labRoutes.patch('/orders/:id/cancel', authenticate, requirePermission('lab_orders', 'update'), validate(cancelLabOrderSchema), controller.cancelLabOrder);
 labRoutes.patch('/orders/:id/accept', authenticate, requirePermission('lab_orders', 'update'), validate(acceptLabOrderSchema), controller.acceptLabOrder);
+// Mark a single test on an order as done. The uploaded attachments serve as
+// the report; when every item on the order is done, this endpoint auto-
+// completes the order and publishes a LabReport for downstream readers.
+labRoutes.patch(
+  '/orders/:orderId/items/:itemId/complete',
+  authenticate,
+  requirePermission('lab_reports', 'create'),
+  validate(completeLabOrderItemSchema),
+  controller.completeLabOrderItem,
+);
 
 // --- Samples ---
 labRoutes.post('/samples', authenticate, requirePermission('lab_orders', 'update'), validate(collectSampleSchema), controller.collectSample);
