@@ -577,6 +577,18 @@ export async function getLabOrders(tenantId: string, query: GetLabOrdersQuery) {
             barcode: true,
           },
         },
+        // Pull the lab-signed report so doctor / nurse views can show a
+        // "Lab Report" link when present, distinct from a patient-uploaded
+        // file (handled via the order's externalReportUrl).
+        labReport: {
+          select: {
+            id: true,
+            status: true,
+            pdfUrl: true,
+            publishedAt: true,
+            signedAt: true,
+          },
+        },
       },
       orderBy: { createdAt: 'desc' },
     }),

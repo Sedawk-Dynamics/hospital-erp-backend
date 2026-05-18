@@ -2081,10 +2081,14 @@ export interface NurseClinicalOrder {
   wardId: string | null;
   ward: { id: string; name: string } | null;
   // Set when the patient marks the order done from the portal (got it done
-  // elsewhere). UI shows a "Marked done by patient" badge + link to upload.
+  // elsewhere). UI shows a "Patient Uploaded" link to the upload.
   completedExternallyAt: Date | null;
   externalReportUrl: string | null;
   externalNotes: string | null;
+  // Lab- / radiology-signed report. When present (and no patient upload),
+  // UI shows a "Lab Report" / "Imaging Report" link instead.
+  reportUrl: string | null;
+  reportStatus: string | null;
 }
 
 /**
@@ -2185,6 +2189,9 @@ export async function getClinicalOrders(
             labOrderItems: {
               include: { test: { select: { testName: true } } },
             },
+            labReport: {
+              select: { id: true, status: true, pdfUrl: true, publishedAt: true },
+            },
           },
         }),
     type === 'lab'
@@ -2206,6 +2213,9 @@ export async function getClinicalOrders(
                   },
                 },
               },
+            },
+            imagingResult: {
+              select: { id: true, status: true, pdfReportUrl: true, signedAt: true },
             },
           },
         }),
@@ -2236,6 +2246,8 @@ export async function getClinicalOrders(
       completedExternallyAt: o.completedExternallyAt ?? null,
       externalReportUrl: o.externalReportUrl ?? null,
       externalNotes: o.externalNotes ?? null,
+      reportUrl: o.labReport?.pdfUrl ?? null,
+      reportStatus: o.labReport?.status ?? null,
     });
   }
 
@@ -2258,6 +2270,8 @@ export async function getClinicalOrders(
       completedExternallyAt: o.completedExternallyAt ?? null,
       externalReportUrl: o.externalReportUrl ?? null,
       externalNotes: o.externalNotes ?? null,
+      reportUrl: o.imagingResult?.pdfReportUrl ?? null,
+      reportStatus: o.imagingResult?.status ?? null,
     });
   }
 

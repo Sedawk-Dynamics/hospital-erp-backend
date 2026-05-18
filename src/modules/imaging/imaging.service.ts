@@ -243,7 +243,14 @@ export async function getImagingRequests(tenantId: string, query: GetImagingRequ
         orderer: { select: { id: true, firstName: true, lastName: true } },
         assignedTechnician: { select: { id: true, firstName: true, lastName: true } },
         visit: { select: { id: true, visitType: true } },
-        imagingResult: { select: { id: true, status: true } },
+        imagingResult: {
+          select: {
+            id: true,
+            status: true,
+            pdfReportUrl: true,
+            signedAt: true,
+          },
+        },
       },
       orderBy: { createdAt: query.sortOrder || 'desc' },
     }),

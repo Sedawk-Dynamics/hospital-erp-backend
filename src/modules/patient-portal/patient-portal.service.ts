@@ -686,6 +686,12 @@ export async function getPatientOpenOrders(
             tenant: { select: { id: true, name: true, phone: true, address: true } },
           },
         },
+        // When the lab has signed a report, surface it alongside the order so
+        // the patient can pull the file directly — otherwise show their own
+        // upload (externalReportUrl) when they self-completed.
+        labReport: {
+          select: { id: true, status: true, pdfUrl: true, publishedAt: true },
+        },
       },
       orderBy: { createdAt: 'desc' },
       take: 50,
@@ -708,6 +714,9 @@ export async function getPatientOpenOrders(
             lastName: true,
             tenant: { select: { id: true, name: true, phone: true, address: true } },
           },
+        },
+        imagingResult: {
+          select: { id: true, status: true, pdfReportUrl: true, signedAt: true },
         },
       },
       orderBy: { createdAt: 'desc' },
@@ -738,6 +747,8 @@ export async function getPatientOpenOrders(
     completedExternallyAt: o.completedExternallyAt ?? null,
     externalReportUrl: o.externalReportUrl ?? null,
     externalNotes: o.externalNotes ?? null,
+    reportUrl: (o as any).labReport?.pdfUrl ?? null,
+    reportStatus: (o as any).labReport?.status ?? null,
   }));
 
   const imagingRows = imagingOrders.map((o) => ({
@@ -760,6 +771,8 @@ export async function getPatientOpenOrders(
     completedExternallyAt: o.completedExternallyAt ?? null,
     externalReportUrl: o.externalReportUrl ?? null,
     externalNotes: o.externalNotes ?? null,
+    reportUrl: (o as any).imagingResult?.pdfReportUrl ?? null,
+    reportStatus: (o as any).imagingResult?.status ?? null,
   }));
 
   const merged = [...labRows, ...imagingRows].sort(

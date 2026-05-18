@@ -7,3 +7,4 @@ dist-seed/
 *.log
 coverage/
 .nyc_output/
+uploads
