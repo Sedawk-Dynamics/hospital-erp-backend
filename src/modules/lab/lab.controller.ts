@@ -585,6 +585,31 @@ export async function publishLabReport(
   }
 }
 
+export async function submitLabReport(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const notify = (req.body?.notify ?? true) as boolean;
+    const reportContent = req.body?.reportContent;
+    const hospitalBranding = req.body?.hospitalBranding;
+    const report = await labService.submitLabReport(
+      tenantId,
+      req.params.orderId as string,
+      userId,
+      notify,
+      reportContent,
+      hospitalBranding,
+    );
+    sendResponse({ res, message: 'Lab report submitted', data: report });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function correctLabReport(
   req: AuthenticatedRequest,
   res: Response,

@@ -1550,6 +1550,213 @@ export async function publishLabReport(
   return updated;
 }
 
+// One-shot submit — generate (if needed) + sign + publish in a single
+// transition, gated by `lab_reports.create` so technicians can submit a
+// structured-mode report without a supervisor's signature. Mirrors the
+// auto-publish behaviour of the upload+mark-done path so the two flows
+// stay symmetric (techs don't need an approver in either path).
+export async function submitLabReport(
+  tenantId: string,
+  orderId: string,
+  userId: string,
+  notify = true,
+  reportContent?: string,
+  hospitalBranding?: any,
+) {
+  const order = await prisma.labOrder.findFirst({
+    where: { id: orderId, tenantId },
+    include: {
+      patient: true,
+      labOrderItems: { include: { test: true, labResults: true } },
+    },
+  });
+  if (!order) throw AppError.notFound('Lab order not found');
+
+  const existing = await prisma.labReport.findUnique({ where: { labOrderId: orderId } });
+
+  // Build (or rebuild) the structured snapshot every submit so the published
+  // payload reflects whatever results were entered up to this point. The
+  // upload+mark-done path stores no reportContent — that's fine because the
+  // uploaded files render in patient/clinician views directly.
+  const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } });
+  const branding = {
+    name: hospitalBranding?.name ?? tenant?.name ?? 'Hospital',
+    logoUrl: hospitalBranding?.logoUrl ?? null,
+    address: hospitalBranding?.address ?? null,
+    phone: hospitalBranding?.phone ?? null,
+    accreditation: hospitalBranding?.accreditation ?? null,
+  };
+  const structured = {
+    branding,
+    patient: {
+      id: order.patient.id,
+      mrn: order.patient.mrn,
+      name: `${order.patient.firstName} ${order.patient.lastName ?? ''}`.trim(),
+      dateOfBirth: order.patient.dateOfBirth,
+      gender: order.patient.gender,
+    },
+    items: order.labOrderItems.map((it) => ({
+      testName: it.test.testName,
+      testCode: it.test.testCode,
+      sampleType: it.test.sampleType,
+      results: it.labResults.map((r) => ({
+        parameter: r.parameterName,
+        value: r.value,
+        unit: r.unit,
+        normalRange: r.normalRange,
+        isAbnormal: r.isAbnormal,
+      })),
+    })),
+    notes: reportContent ?? null,
+    generatedAt: new Date().toISOString(),
+  };
+  const qrCodeUrl = existing?.qrCodeUrl ?? `${process.env.PUBLIC_PORTAL_URL ?? ''}/r/lab/${orderId}`;
+
+  const now = new Date();
+  const reportRow = await prisma.$transaction(async (tx) => {
+    // Mark every non-cancelled item completed and the order itself completed
+    // so the header status, worklist filters, and report-tab visibility all
+    // line up. Mirrors the auto-publish behaviour of completeLabOrderItem
+    // so a submitted structured report and a fully-uploaded report end up
+    // in the same terminal state.
+    await tx.labOrderItem.updateMany({
+      where: { labOrderId: orderId, status: { notIn: ['cancelled', 'completed'] } },
+      data: { status: 'completed' },
+    });
+    if (order.status !== 'completed') {
+      await tx.labOrder.update({
+        where: { id: orderId },
+        data: { status: 'completed' },
+      });
+    }
+
+    const row = existing
+      ? await tx.labReport.update({
+          where: { id: existing.id },
+          data: {
+            // Refresh the structured snapshot on every submit so the published
+            // payload reflects whatever results were entered up to this point.
+            reportContent: JSON.stringify(structured),
+            hospitalBranding: branding as any,
+            status: 'published',
+            signedBy: existing.signedBy ?? userId,
+            signedAt: existing.signedAt ?? now,
+            approvedBy: existing.approvedBy ?? userId,
+            approvedAt: existing.approvedAt ?? now,
+            publishedAt: now,
+          },
+        })
+      : await tx.labReport.create({
+          data: {
+            labOrderId: orderId,
+            patientId: order.patientId,
+            reportContent: JSON.stringify(structured),
+            hospitalBranding: branding as any,
+            qrCodeUrl,
+            status: 'published',
+            version: 1,
+            signedBy: userId,
+            signedAt: now,
+            approvedBy: userId,
+            approvedAt: now,
+            publishedAt: now,
+          },
+        });
+
+    // Backfill labReportId on order attachments so the patient portal's
+    // report.attachments relation includes any uploaded files — matches the
+    // upload+mark-done path behaviour.
+    await tx.labAttachment.updateMany({
+      where: { labOrderId: orderId, labReportId: null, deletedAt: null },
+      data: { labReportId: row.id },
+    });
+
+    // Mirror the first report_pdf attachment onto LabReport.pdfUrl so the
+    // doctor's quick "Lab Report" link works without opening the dialog.
+    if (!row.pdfUrl) {
+      const firstPdf = await tx.labAttachment.findFirst({
+        where: { labOrderId: orderId, category: 'report_pdf', deletedAt: null },
+        orderBy: { createdAt: 'asc' },
+        select: { fileUrl: true },
+      });
+      if (firstPdf) {
+        await tx.labReport.update({
+          where: { id: row.id },
+          data: { pdfUrl: firstPdf.fileUrl },
+        });
+      }
+    }
+
+    return row;
+  });
+
+  void autoLinkLabOrderToBill(tenantId, orderId).catch((err) =>
+    logger.warn({ err, orderId }, 'autoLinkLabOrderToBill failed (submit)'),
+  );
+
+  if (notify) {
+    const patientName = `${order.patient.firstName} ${order.patient.lastName ?? ''}`.trim();
+    const message = `Lab report for ${patientName} is ready.`;
+    if (order.orderedBy) {
+      await safeNotify({
+        tenantId,
+        userId: order.orderedBy,
+        title: 'Lab report ready',
+        message,
+        notificationType: 'lab_result',
+        referenceType: 'lab_report',
+        referenceId: reportRow.id,
+      });
+    }
+    const patientUserId = (order.patient as any)?.userId as string | undefined;
+    if (patientUserId) {
+      await safeNotify({
+        tenantId,
+        userId: patientUserId,
+        title: 'Your lab report is ready',
+        message: 'Your lab report has been published. Tap to view.',
+        notificationType: 'lab_result',
+        referenceType: 'lab_report',
+        referenceId: reportRow.id,
+      });
+    }
+    const testSummary = order.labOrderItems.map((it) => it.test.testName).join(', ') || 'Lab test';
+    void safeLabReportEmail({
+      toEmail: order.patient.email ?? null,
+      patientName,
+      reportDate: new Date().toLocaleDateString('en-IN'),
+      hospitalName: tenant?.name ?? 'Hospital',
+      testSummary,
+    });
+    if (order.orderedBy) {
+      const doctor = await prisma.user.findUnique({
+        where: { id: order.orderedBy },
+        select: { email: true, firstName: true, lastName: true },
+      });
+      void safeLabReportEmail({
+        toEmail: doctor?.email ?? null,
+        patientName: `Dr. ${doctor?.firstName ?? ''} ${doctor?.lastName ?? ''}`.trim(),
+        reportDate: new Date().toLocaleDateString('en-IN'),
+        hospitalName: tenant?.name ?? 'Hospital',
+        testSummary: `${patientName} — ${testSummary}`,
+      });
+    }
+  }
+
+  void safeLabAudit({
+    tenantId,
+    userId,
+    action: 'update',
+    entityType: 'lab_report',
+    entityId: reportRow.id,
+    description: existing ? 'Lab report submitted (re-published)' : 'Lab report submitted',
+    newValues: { status: 'published', orderId, submittedBy: userId },
+  });
+
+  logger.info({ tenantId, reportId: reportRow.id, orderId, userId }, 'Lab report submitted');
+  return reportRow;
+}
+
 // Lab order item completion — paired with the per-test "Upload + Mark Done"
 // flow. Files uploaded against the item ARE the report; once every item is
 // marked done, the order auto-completes and a LabReport is created+published

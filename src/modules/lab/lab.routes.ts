@@ -31,6 +31,7 @@ import {
   signLabReportSchema,
   publishLabReportSchema,
   correctLabReportSchema,
+  submitLabReportSchema,
 } from './lab.validation';
 import * as controller from './lab.controller';
 import * as attachmentService from './lab-attachments.service';
@@ -98,6 +99,10 @@ labRoutes.get('/reports/:id', authenticate, requirePermission('lab_reports', 're
 labRoutes.patch('/reports/:id/sign', authenticate, requirePermission('lab_reports', 'approve'), validate(signLabReportSchema), controller.signLabReport);
 labRoutes.patch('/reports/:id/publish', authenticate, requirePermission('lab_reports', 'approve'), validate(publishLabReportSchema), controller.publishLabReport);
 labRoutes.patch('/reports/:id/correct', authenticate, requirePermission('lab_reports', 'update'), validate(correctLabReportSchema), controller.correctLabReport);
+// One-shot Submit (generate + sign + publish). Gated by `lab_reports.create`
+// so technicians can publish a structured-mode report without supervisor
+// sign-off — same trust model as the upload+mark-done auto-publish path.
+labRoutes.post('/reports/:orderId/submit', authenticate, requirePermission('lab_reports', 'create'), validate(submitLabReportSchema), controller.submitLabReport);
 
 // --- Investigation History (aggregated per patient) ---
 labRoutes.get('/investigation-history/:patientId', authenticate, requirePermission('lab_reports', 'read'), controller.getInvestigationHistory);

@@ -338,6 +338,30 @@ export const correctLabReportSchema = z.object({
   }),
 });
 
+// One-shot submit (generate + sign + publish). Mirrors generate's body so
+// callers can optionally pass branding overrides + report notes.
+export const submitLabReportSchema = z.object({
+  params: z.object({
+    orderId: z.string().uuid('Invalid order ID'),
+  }),
+  body: z
+    .object({
+      notify: z.boolean().default(true),
+      reportContent: z.string().optional(),
+      hospitalBranding: z
+        .object({
+          name: z.string().optional(),
+          logoUrl: z.string().optional(),
+          address: z.string().optional(),
+          phone: z.string().optional(),
+          accreditation: z.string().optional(),
+        })
+        .partial()
+        .optional(),
+    })
+    .optional(),
+});
+
 export const getLabReportsSchema = z.object({
   query: paginationSchema.extend({
     patientId: z.string().uuid().optional(),
