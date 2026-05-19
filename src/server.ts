@@ -6,6 +6,7 @@ import { redis } from './config/redis';
 import { app } from './app';
 import { runSubscriptionJobs } from './jobs/subscription-reminders';
 import { runInsuranceExpiryJob } from './jobs/insurance-expiry';
+import { runAppointmentReminderJob } from './jobs/appointment-reminders';
 import { archiveStaleOpProgressNotes } from './modules/progress-notes/progress-notes.service';
 import { tickLifecycle as emarTickLifecycle } from './modules/emar/emar.service';
 
@@ -52,6 +53,16 @@ setTimeout(() => {
 setInterval(() => {
   runInsuranceExpiryJob().catch((err) => logger.error({ err }, 'Insurance expiry job failed'));
 }, TWELVE_HOURS);
+
+// Appointment reminders for next-day appointments (hourly; idempotent via notification lookup)
+setTimeout(() => {
+  runAppointmentReminderJob().catch((err) =>
+    logger.error({ err }, 'Appointment reminder job failed on startup'),
+  );
+}, 150_000);
+setInterval(() => {
+  runAppointmentReminderJob().catch((err) => logger.error({ err }, 'Appointment reminder job failed'));
+}, ONE_HOUR);
 
 // Graceful shutdown
 const shutdown = async (signal: string) => {
