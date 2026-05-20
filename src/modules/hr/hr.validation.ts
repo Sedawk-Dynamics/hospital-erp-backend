@@ -307,6 +307,20 @@ export const payrollIdParamSchema = z.object({
 });
 
 // ============================================================
+// Reports (Week 14)
+// ============================================================
+
+export const hrReportsQuerySchema = z.object({
+  query: z.object({
+    fromDate: dateString.optional(),
+    toDate: dateString.optional(),
+    departmentId: z.string().uuid().optional(),
+  }),
+});
+
+export type HrReportsQuery = z.infer<typeof hrReportsQuerySchema>['query'];
+
+// ============================================================
 // Inferred types
 // ============================================================
 

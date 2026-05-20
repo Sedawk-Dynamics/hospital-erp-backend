@@ -194,3 +194,44 @@ export async function getPayslip(req: AuthenticatedRequest, res: Response, next:
     sendResponse({ res, message: 'Payslip retrieved', data });
   } catch (err) { next(err); }
 }
+
+// Salary Slip PDF (Week 14)
+export async function getSalarySlipPdf(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    await service.streamSalarySlip(req.user!.tenantId, req.params.id as string, res);
+  } catch (err) { next(err); }
+}
+
+// Dashboard (Week 14)
+export async function getHrDashboard(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.getHrDashboard(req.user!.tenantId);
+    sendResponse({ res, message: 'HR dashboard retrieved', data });
+  } catch (err) { next(err); }
+}
+
+// Reports (Week 14)
+export async function getAbsenteeismReport(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.getAbsenteeismReport(req.user!.tenantId, req.query as any);
+    sendResponse({ res, message: 'Absenteeism report retrieved', data });
+  } catch (err) { next(err); }
+}
+export async function getAttritionReport(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.getAttritionReport(req.user!.tenantId, req.query as any);
+    sendResponse({ res, message: 'Attrition report retrieved', data });
+  } catch (err) { next(err); }
+}
+export async function getOvertimeReport(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.getOvertimeReport(req.user!.tenantId, req.query as any);
+    sendResponse({ res, message: 'Overtime report retrieved', data });
+  } catch (err) { next(err); }
+}
+export async function getLeaveUtilizationReport(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.getLeaveUtilizationReport(req.user!.tenantId, req.query as any);
+    sendResponse({ res, message: 'Leave utilization report retrieved', data });
+  } catch (err) { next(err); }
+}

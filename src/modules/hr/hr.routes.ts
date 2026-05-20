@@ -29,9 +29,13 @@ import {
   generatePayrollSchema,
   getPayrollListSchema,
   payrollIdParamSchema,
+  hrReportsQuerySchema,
 } from './hr.validation';
 
 export const hrRoutes = Router();
+
+// --- HR Dashboard (Week 14) ---
+hrRoutes.get('/dashboard', authenticate, requirePermission('hr', 'read'), controller.getHrDashboard);
 
 // --- Staff Profiles ---
 hrRoutes.post('/staff', authenticate, requirePermission('hr', 'create'), validate(createStaffProfileSchema), controller.createStaffProfile);
@@ -77,3 +81,13 @@ hrRoutes.get('/payroll', authenticate, requirePermission('hr', 'read'), validate
 hrRoutes.get('/payroll/:id', authenticate, requirePermission('hr', 'read'), validate(payrollIdParamSchema), controller.getPayrollById);
 hrRoutes.patch('/payroll/:id/approve', authenticate, requirePermission('hr', 'approve'), validate(payrollIdParamSchema), controller.approvePayroll);
 hrRoutes.get('/payroll/:id/payslip', authenticate, requirePermission('hr', 'read'), validate(payrollIdParamSchema), controller.getPayslip);
+
+// --- Salary Slip PDF (Week 14) — payrollId is the SalarySlip handle on the
+// service layer; auto-creates the slip on first access just like /payslip
+hrRoutes.get('/salary-slips/:id/pdf', authenticate, requirePermission('hr', 'read'), validate(payrollIdParamSchema), controller.getSalarySlipPdf);
+
+// --- HR Reports (Week 14) ---
+hrRoutes.get('/reports/absenteeism', authenticate, requirePermission('hr', 'read'), validate(hrReportsQuerySchema), controller.getAbsenteeismReport);
+hrRoutes.get('/reports/attrition', authenticate, requirePermission('hr', 'read'), validate(hrReportsQuerySchema), controller.getAttritionReport);
+hrRoutes.get('/reports/overtime', authenticate, requirePermission('hr', 'read'), validate(hrReportsQuerySchema), controller.getOvertimeReport);
+hrRoutes.get('/reports/leave-utilization', authenticate, requirePermission('hr', 'read'), validate(hrReportsQuerySchema), controller.getLeaveUtilizationReport);

@@ -1,8 +1,11 @@
 import { Prisma } from '@prisma/client';
+import type { Response } from 'express';
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
+import { sendEmail } from '../../services/email.service';
+import { streamSalarySlipPdf } from './hr.salary-slip-pdf';
 import type {
   CreateStaffProfileInput,
   UpdateStaffProfileInput,
@@ -24,6 +27,7 @@ import type {
   GetLeavesQuery,
   GeneratePayrollInput,
   GetPayrollListQuery,
+  HrReportsQuery,
 } from './hr.validation';
 
 // ============================================================
@@ -1092,6 +1096,48 @@ export async function getLeaves(tenantId: string, query: GetLeavesQuery) {
   return { leaves, total, page, limit };
 }
 
+// Internal helper — notify the staff user when their leave outcome changes.
+// Creates an in-app Notification row and best-effort emails the user; failures
+// are swallowed so the lifecycle transition itself never breaks on notify error.
+async function notifyLeaveOutcome(
+  tenantId: string,
+  outcome: 'approved' | 'rejected',
+  leave: Prisma.LeaveRequestGetPayload<{
+    include: { staff: { include: { user: { select: { id: true; firstName: true; lastName: true; email: true } } } } };
+  }>,
+) {
+  try {
+    const user = leave.staff.user;
+    const range = `${new Date(leave.startDate).toLocaleDateString('en-IN')} – ${new Date(leave.endDate).toLocaleDateString('en-IN')}`;
+    const title = `Leave request ${outcome}`;
+    const message = `Your ${leave.leaveType.replace('_', ' ')} leave for ${range} has been ${outcome}.`;
+
+    await prisma.notification.create({
+      data: {
+        tenantId,
+        userId: user.id,
+        title,
+        message,
+        notificationType: 'general',
+        channel: 'in_app',
+        referenceType: 'leave_request',
+        referenceId: leave.id,
+      },
+    });
+
+    if (user.email) {
+      void sendEmail({
+        to: user.email,
+        subject: title,
+        html: `<p>Hi ${user.firstName},</p><p>${message}</p>`,
+        text: message,
+      }).catch((err) => logger.warn({ err, leaveId: leave.id }, 'Leave outcome email failed'));
+    }
+  } catch (err) {
+    logger.warn({ err, leaveId: leave.id }, 'Leave outcome notification failed');
+  }
+}
+
 export async function approveLeave(tenantId: string, id: string, approvedBy: string) {
   const leave = await prisma.leaveRequest.findFirst({
     where: { id, tenantId },
@@ -1112,11 +1158,12 @@ export async function approveLeave(tenantId: string, id: string, approvedBy: str
     },
     include: {
       staff: {
-        include: { user: { select: { firstName: true, lastName: true } } },
+        include: { user: { select: { id: true, firstName: true, lastName: true, email: true } } },
       },
     },
   });
 
+  await notifyLeaveOutcome(tenantId, 'approved', updated);
   logger.info({ tenantId, leaveId: id, approvedBy }, 'Leave request approved');
   return updated;
 }
@@ -1141,11 +1188,12 @@ export async function rejectLeave(tenantId: string, id: string, approvedBy: stri
     },
     include: {
       staff: {
-        include: { user: { select: { firstName: true, lastName: true } } },
+        include: { user: { select: { id: true, firstName: true, lastName: true, email: true } } },
       },
     },
   });
 
+  await notifyLeaveOutcome(tenantId, 'rejected', updated);
   logger.info({ tenantId, leaveId: id, approvedBy }, 'Leave request rejected');
   return updated;
 }
@@ -1408,4 +1456,410 @@ export async function getPayslip(tenantId: string, payrollId: string) {
 
   logger.info({ tenantId, payrollId, slipId: salarySlip.id }, 'Salary slip generated');
   return { payroll, salarySlip };
+}
+
+// ============================================================
+// Salary Slip PDF (Week 14)
+// ============================================================
+
+export async function streamSalarySlip(tenantId: string, payrollId: string, res: Response) {
+  const { payroll, salarySlip } = await getPayslip(tenantId, payrollId);
+
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: tenantId },
+    select: { name: true, address: true, city: true, phone: true, email: true },
+  });
+
+  streamSalarySlipPdf(res, {
+    slipNumber: salarySlip.slipNumber ?? salarySlip.id,
+    generatedAt: salarySlip.generatedAt,
+    payroll: {
+      id: payroll.id,
+      payPeriodStart: payroll.payPeriodStart,
+      payPeriodEnd: payroll.payPeriodEnd,
+      basicSalary: payroll.basicSalary as unknown as number | null,
+      allowances: payroll.allowances as unknown as number,
+      overtimePay: payroll.overtimePay as unknown as number,
+      deductions: payroll.deductions as unknown as number,
+      taxDeduction: payroll.taxDeduction as unknown as number,
+      grossSalary: payroll.grossSalary as unknown as number | null,
+      netSalary: payroll.netSalary as unknown as number | null,
+      status: payroll.status,
+      paidAt: payroll.paidAt,
+      staff: {
+        employeeId: (payroll as any).staff.employeeId ?? null,
+        position: (payroll as any).staff.position ?? null,
+        dateOfJoining: (payroll as any).staff.dateOfJoining ?? null,
+        user: (payroll as any).staff.user,
+        department: (payroll as any).staff.department ?? null,
+      },
+    },
+    tenant,
+  });
+}
+
+// ============================================================
+// HR Dashboard (Week 14)
+// ============================================================
+
+export async function getHrDashboard(tenantId: string) {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const weekStart = new Date(today);
+  weekStart.setDate(today.getDate() - today.getDay()); // Sunday-anchored week
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  const soon = new Date(today);
+  soon.setDate(today.getDate() + 30);
+
+  const [
+    staffTotal,
+    staffActive,
+    staffByDept,
+    todayAttendance,
+    weekAttendance,
+    pendingLeaves,
+    onLeaveToday,
+    payrollMonth,
+    licensesExpiring,
+  ] = await Promise.all([
+    prisma.staffProfile.count({ where: { tenantId } }),
+    prisma.staffProfile.count({ where: { tenantId, status: 'active' } }),
+    prisma.staffProfile.groupBy({
+      by: ['departmentId'],
+      where: { tenantId, status: 'active' },
+      _count: { _all: true },
+    }),
+    prisma.attendance.groupBy({
+      by: ['status'],
+      where: { tenantId, date: today },
+      _count: { _all: true },
+    }),
+    prisma.attendance.groupBy({
+      by: ['status'],
+      where: { tenantId, date: { gte: weekStart, lte: today } },
+      _count: { _all: true },
+    }),
+    prisma.leaveRequest.count({ where: { tenantId, status: 'pending' } }),
+    prisma.leaveRequest.count({
+      where: {
+        tenantId,
+        status: 'approved',
+        startDate: { lte: today },
+        endDate: { gte: today },
+      },
+    }),
+    prisma.payroll.groupBy({
+      by: ['status'],
+      where: { tenantId, payPeriodStart: { gte: monthStart, lte: monthEnd } },
+      _count: { _all: true },
+      _sum: { netSalary: true },
+    }),
+    prisma.staffLicense.count({
+      where: {
+        staff: { tenantId },
+        status: { in: ['active', 'renewal_pending'] },
+        expiryDate: { gte: today, lte: soon },
+      },
+    }),
+  ]);
+
+  // Resolve department names for the by-department breakdown
+  const deptIds = staffByDept.map((d) => d.departmentId).filter(Boolean);
+  const depts = deptIds.length
+    ? await prisma.department.findMany({ where: { id: { in: deptIds } }, select: { id: true, name: true } })
+    : [];
+  const deptName = new Map(depts.map((d) => [d.id, d.name]));
+
+  const totalToday = todayAttendance.reduce((sum, row) => sum + row._count._all, 0);
+  const todayMap = Object.fromEntries(todayAttendance.map((r) => [r.status, r._count._all]));
+  const weekMap = Object.fromEntries(weekAttendance.map((r) => [r.status, r._count._all]));
+  const payrollMap = Object.fromEntries(
+    payrollMonth.map((r) => [r.status, { count: r._count._all, total: Number(r._sum.netSalary ?? 0) }]),
+  );
+
+  return {
+    staff: {
+      total: staffTotal,
+      active: staffActive,
+      byDepartment: staffByDept.map((d) => ({
+        departmentId: d.departmentId,
+        departmentName: deptName.get(d.departmentId) ?? 'Unassigned',
+        count: d._count._all,
+      })),
+    },
+    attendance: {
+      today: {
+        present: todayMap.present ?? 0,
+        absent: todayMap.absent ?? 0,
+        halfDay: todayMap.half_day ?? 0,
+        onLeave: todayMap.on_leave ?? 0,
+        holiday: todayMap.holiday ?? 0,
+        total: totalToday,
+      },
+      thisWeek: {
+        present: weekMap.present ?? 0,
+        absent: weekMap.absent ?? 0,
+        halfDay: weekMap.half_day ?? 0,
+        onLeave: weekMap.on_leave ?? 0,
+        holiday: weekMap.holiday ?? 0,
+      },
+    },
+    leaves: {
+      pending: pendingLeaves,
+      onLeaveToday,
+    },
+    payroll: {
+      month: `${now.toLocaleString('en-IN', { month: 'short', year: 'numeric' })}`,
+      draft: payrollMap.draft ?? { count: 0, total: 0 },
+      processed: payrollMap.processed ?? { count: 0, total: 0 },
+      paid: payrollMap.paid ?? { count: 0, total: 0 },
+    },
+    licenses: {
+      expiringSoon: licensesExpiring,
+    },
+  };
+}
+
+// ============================================================
+// HR Reports (Week 14)
+// ============================================================
+
+function resolveReportRange(query: HrReportsQuery) {
+  const to = query.toDate ? new Date(query.toDate) : new Date();
+  const from = query.fromDate
+    ? new Date(query.fromDate)
+    : new Date(to.getFullYear(), to.getMonth(), 1); // Default: month-to-date
+  return { from, to };
+}
+
+export async function getAbsenteeismReport(tenantId: string, query: HrReportsQuery) {
+  const { from, to } = resolveReportRange(query);
+
+  const staffWhere: Prisma.StaffProfileWhereInput = { tenantId, status: 'active' };
+  if (query.departmentId) staffWhere.departmentId = query.departmentId;
+
+  const staff = await prisma.staffProfile.findMany({
+    where: staffWhere,
+    include: {
+      user: { select: { firstName: true, lastName: true } },
+      department: { select: { id: true, name: true } },
+    },
+  });
+
+  const records = await prisma.attendance.findMany({
+    where: {
+      tenantId,
+      date: { gte: from, lte: to },
+      staffId: { in: staff.map((s) => s.id) },
+    },
+    select: { staffId: true, status: true },
+  });
+
+  const byStaff = new Map<string, { absent: number; halfDay: number; total: number }>();
+  for (const r of records) {
+    const entry = byStaff.get(r.staffId) ?? { absent: 0, halfDay: 0, total: 0 };
+    entry.total += 1;
+    if (r.status === 'absent') entry.absent += 1;
+    if (r.status === 'half_day') entry.halfDay += 1;
+    byStaff.set(r.staffId, entry);
+  }
+
+  // Working-day count is approximated as count of all attendance rows for
+  // that staff in the window — this matches what HR actually scheduled them
+  // for, rather than a calendar-day approximation.
+  const rows = staff.map((s) => {
+    const e = byStaff.get(s.id) ?? { absent: 0, halfDay: 0, total: 0 };
+    const effectiveAbsence = e.absent + e.halfDay * 0.5;
+    const rate = e.total > 0 ? (effectiveAbsence / e.total) * 100 : 0;
+    return {
+      staffId: s.id,
+      employeeId: s.employeeId,
+      name: `${s.user.firstName} ${s.user.lastName ?? ''}`.trim(),
+      department: s.department?.name ?? null,
+      workingDays: e.total,
+      absentDays: e.absent,
+      halfDays: e.halfDay,
+      absenteeismRate: Number(rate.toFixed(2)),
+    };
+  });
+
+  const totalDays = rows.reduce((sum, r) => sum + r.workingDays, 0);
+  const totalAbsent = rows.reduce((sum, r) => sum + r.absentDays + r.halfDays * 0.5, 0);
+
+  return {
+    from: from.toISOString().slice(0, 10),
+    to: to.toISOString().slice(0, 10),
+    overallRate: totalDays > 0 ? Number(((totalAbsent / totalDays) * 100).toFixed(2)) : 0,
+    rows: rows.sort((a, b) => b.absenteeismRate - a.absenteeismRate),
+  };
+}
+
+export async function getAttritionReport(tenantId: string, query: HrReportsQuery) {
+  const { from, to } = resolveReportRange(query);
+
+  const staffWhere: Prisma.StaffProfileWhereInput = { tenantId };
+  if (query.departmentId) staffWhere.departmentId = query.departmentId;
+
+  const [headcount, leavers] = await Promise.all([
+    prisma.staffProfile.count({ where: { ...staffWhere, status: 'active' } }),
+    prisma.staffProfile.findMany({
+      where: {
+        ...staffWhere,
+        status: { in: ['resigned', 'terminated'] },
+        updatedAt: { gte: from, lte: to },
+      },
+      include: {
+        user: { select: { firstName: true, lastName: true } },
+        department: { select: { name: true } },
+      },
+    }),
+  ]);
+
+  const totalLeavers = leavers.length;
+  // Attrition % = leavers / average headcount across window. We approximate
+  // average headcount as current-active + 0.5 * leavers so departures that
+  // happened mid-window are partially counted in the denominator.
+  const avgHeadcount = headcount + totalLeavers * 0.5;
+  const rate = avgHeadcount > 0 ? (totalLeavers / avgHeadcount) * 100 : 0;
+
+  const byReason: Record<string, number> = {};
+  const byDept: Record<string, number> = {};
+  for (const l of leavers) {
+    byReason[l.status] = (byReason[l.status] ?? 0) + 1;
+    const dept = l.department?.name ?? 'Unassigned';
+    byDept[dept] = (byDept[dept] ?? 0) + 1;
+  }
+
+  return {
+    from: from.toISOString().slice(0, 10),
+    to: to.toISOString().slice(0, 10),
+    headcount,
+    totalLeavers,
+    attritionRate: Number(rate.toFixed(2)),
+    byReason,
+    byDepartment: byDept,
+    leavers: leavers.map((l) => ({
+      staffId: l.id,
+      employeeId: l.employeeId,
+      name: `${l.user.firstName} ${l.user.lastName ?? ''}`.trim(),
+      department: l.department?.name ?? null,
+      status: l.status,
+      exitedAt: l.updatedAt,
+    })),
+  };
+}
+
+export async function getOvertimeReport(tenantId: string, query: HrReportsQuery) {
+  const { from, to } = resolveReportRange(query);
+
+  const staffWhere: Prisma.StaffProfileWhereInput = { tenantId, status: 'active' };
+  if (query.departmentId) staffWhere.departmentId = query.departmentId;
+
+  const staff = await prisma.staffProfile.findMany({
+    where: staffWhere,
+    include: {
+      user: { select: { firstName: true, lastName: true } },
+      department: { select: { name: true } },
+    },
+  });
+
+  const overtime = await prisma.attendance.groupBy({
+    by: ['staffId'],
+    where: {
+      tenantId,
+      date: { gte: from, lte: to },
+      staffId: { in: staff.map((s) => s.id) },
+    },
+    _sum: { overtimeHours: true },
+  });
+
+  const otByStaff = new Map(overtime.map((r) => [r.staffId, Number(r._sum.overtimeHours ?? 0)]));
+
+  const rows = staff
+    .map((s) => ({
+      staffId: s.id,
+      employeeId: s.employeeId,
+      name: `${s.user.firstName} ${s.user.lastName ?? ''}`.trim(),
+      department: s.department?.name ?? null,
+      overtimeHours: otByStaff.get(s.id) ?? 0,
+    }))
+    .filter((r) => r.overtimeHours > 0)
+    .sort((a, b) => b.overtimeHours - a.overtimeHours);
+
+  const totalOvertimeHours = rows.reduce((sum, r) => sum + r.overtimeHours, 0);
+
+  return {
+    from: from.toISOString().slice(0, 10),
+    to: to.toISOString().slice(0, 10),
+    totalOvertimeHours: Number(totalOvertimeHours.toFixed(2)),
+    staffWithOvertime: rows.length,
+    rows,
+  };
+}
+
+export async function getLeaveUtilizationReport(tenantId: string, query: HrReportsQuery) {
+  const { from, to } = resolveReportRange(query);
+
+  const staffWhere: Prisma.StaffProfileWhereInput = { tenantId, status: 'active' };
+  if (query.departmentId) staffWhere.departmentId = query.departmentId;
+
+  const staff = await prisma.staffProfile.findMany({
+    where: staffWhere,
+    include: {
+      user: { select: { firstName: true, lastName: true } },
+      department: { select: { name: true } },
+    },
+  });
+
+  const approved = await prisma.leaveRequest.findMany({
+    where: {
+      tenantId,
+      status: 'approved',
+      staffId: { in: staff.map((s) => s.id) },
+      startDate: { lte: to },
+      endDate: { gte: from },
+    },
+    select: { staffId: true, leaveType: true, startDate: true, endDate: true },
+  });
+
+  type LeaveTypeKey = 'vacation' | 'sick' | 'casual' | 'maternity' | 'paternity' | 'unpaid' | 'other';
+  const blank = (): Record<LeaveTypeKey, number> => ({
+    vacation: 0, sick: 0, casual: 0, maternity: 0, paternity: 0, unpaid: 0, other: 0,
+  });
+
+  const byStaff = new Map<string, Record<LeaveTypeKey, number>>();
+  const overall = blank();
+  for (const lv of approved) {
+    const start = new Date(Math.max(lv.startDate.getTime(), from.getTime()));
+    const end = new Date(Math.min(lv.endDate.getTime(), to.getTime()));
+    const days = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1);
+    const entry = byStaff.get(lv.staffId) ?? blank();
+    entry[lv.leaveType as LeaveTypeKey] += days;
+    overall[lv.leaveType as LeaveTypeKey] += days;
+    byStaff.set(lv.staffId, entry);
+  }
+
+  const rows = staff
+    .map((s) => {
+      const e = byStaff.get(s.id) ?? blank();
+      const total = Object.values(e).reduce((sum, n) => sum + n, 0);
+      return {
+        staffId: s.id,
+        employeeId: s.employeeId,
+        name: `${s.user.firstName} ${s.user.lastName ?? ''}`.trim(),
+        department: s.department?.name ?? null,
+        ...e,
+        totalDays: total,
+      };
+    })
+    .sort((a, b) => b.totalDays - a.totalDays);
+
+  return {
+    from: from.toISOString().slice(0, 10),
+    to: to.toISOString().slice(0, 10),
+    byType: overall,
+    totalDays: Object.values(overall).reduce((sum, n) => sum + n, 0),
+    rows,
+  };
 }
