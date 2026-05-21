@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { authenticate } from '../../middleware/authenticate';
-import { requirePermission } from '../../middleware/authorize';
+import { requirePermission, requireRoles } from '../../middleware/authorize';
 import { validate } from '../../middleware/validate';
 import {
   createLabDepartmentSchema,
@@ -11,6 +11,7 @@ import {
   getTestsSchema,
   testIdParamSchema,
   updateTestSchema,
+  updateTestPriceSchema,
   createLabOrderSchema,
   getLabOrdersSchema,
   labOrderIdParamSchema,
@@ -32,6 +33,12 @@ import {
   publishLabReportSchema,
   correctLabReportSchema,
   submitLabReportSchema,
+  createLabTemplateSchema,
+  updateLabTemplateSchema,
+  labTemplateIdParamSchema,
+  listLabTemplatesSchema,
+  cloneOneLabTemplateSchema,
+  cloneAllLabTemplatesSchema,
 } from './lab.validation';
 import * as controller from './lab.controller';
 import * as attachmentService from './lab-attachments.service';
@@ -54,12 +61,30 @@ labRoutes.get('/departments', authenticate, requirePermission('lab_orders', 'rea
 labRoutes.put('/departments/:id', authenticate, requirePermission('lab_orders', 'update'), validate(updateLabDepartmentSchema), controller.updateLabDepartment);
 labRoutes.delete('/departments/:id', authenticate, requirePermission('lab_orders', 'delete'), validate(labDepartmentIdParamSchema), controller.deleteLabDepartment);
 
+// --- Lab Test Templates (platform-wide, super-admin authored) ---
+// Registered BEFORE the generic /tests/:id routes so /templates is not
+// swallowed by Express matching `templates` against `:id`.
+labRoutes.get('/templates', authenticate, validate(listLabTemplatesSchema), controller.listLabTemplates);
+labRoutes.get('/templates/:id', authenticate, validate(labTemplateIdParamSchema), controller.getLabTemplate);
+labRoutes.post('/templates', authenticate, requireRoles('super_admin'), validate(createLabTemplateSchema), controller.createLabTemplate);
+labRoutes.put('/templates/:id', authenticate, requireRoles('super_admin'), validate(updateLabTemplateSchema), controller.updateLabTemplate);
+labRoutes.delete('/templates/:id', authenticate, requireRoles('super_admin'), validate(labTemplateIdParamSchema), controller.deleteLabTemplate);
+// Clone from platform template → tenant LabTestCatalog. Both single + bulk
+// flows; the service guards roles (admin / super_admin only). `clone-all` is
+// the "import everything at once" path the hospital admin onboarding screen
+// uses on first setup.
+labRoutes.post('/templates/clone-all', authenticate, validate(cloneAllLabTemplatesSchema), controller.cloneAllLabTemplates);
+labRoutes.post('/templates/:templateId/clone', authenticate, validate(cloneOneLabTemplateSchema), controller.cloneOneLabTemplate);
+
 // --- Test Catalog ---
 labRoutes.post('/tests', authenticate, requirePermission('lab_orders', 'create'), validate(createTestSchema), controller.createTest);
 labRoutes.get('/tests', authenticate, requirePermission('lab_orders', 'read'), validate(getTestsSchema), controller.getTests);
 labRoutes.get('/test-catalog', authenticate, requirePermission('lab_orders', 'read'), validate(getTestsSchema), controller.getTests);
 labRoutes.get('/tests/:id', authenticate, requirePermission('lab_orders', 'read'), validate(testIdParamSchema), controller.getTestById);
 labRoutes.put('/tests/:id', authenticate, requirePermission('lab_orders', 'update'), validate(updateTestSchema), controller.updateTest);
+// Narrow PATCH for lab_supervisor (and admin) — price + TAT only. Bypasses
+// the admin-only schema-edit guard inside the full updateTest service.
+labRoutes.patch('/tests/:id/price', authenticate, requirePermission('lab_orders', 'update'), validate(updateTestPriceSchema), controller.updateTestPrice);
 labRoutes.delete('/tests/:id', authenticate, requirePermission('lab_orders', 'delete'), validate(testIdParamSchema), controller.deleteTest);
 
 // --- Lab Orders ---

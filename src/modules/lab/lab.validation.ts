@@ -2,6 +2,115 @@ import { z } from 'zod';
 import { paginationSchema } from '../../shared/pagination';
 
 // ============================================================
+// Parameter spec (shared between LabTestTemplate.parameters and
+// LabTestCatalog.parameters). One row per result field in a lab
+// report — e.g. CBC has 22 of these (Hemoglobin, WBC count, ...).
+//
+// `refLow`/`refHigh` are the numeric reference range used for auto-
+// abnormal flagging in result entry; `refRangeText` is a free-text
+// fallback for tests that report categorical results (Blood group,
+// Widal titres, Pap smear classification). Pick one — the seed
+// helpers below set whichever is appropriate.
+// ============================================================
+
+export const parameterSpecSchema = z.object({
+  id: z.string().min(1).max(60),
+  name: z.string().min(1).max(150),
+  code: z.string().max(50).optional().nullable(),
+  unit: z.string().max(50).optional().nullable(),
+  // Numeric reference range — used to flag abnormals when present.
+  refLow: z.number().optional().nullable(),
+  refHigh: z.number().optional().nullable(),
+  // Free-text reference range for non-numeric results (e.g. "Negative",
+  // "A/B/AB/O", "Titre <1:80").
+  refRangeText: z.string().max(200).optional().nullable(),
+  // Display precision for numeric results (decimals).
+  decimals: z.number().int().min(0).max(4).optional().nullable(),
+  // Section label — parameters with the same group render together on the
+  // report (e.g. RBC indices, WBC differential).
+  group: z.string().max(100).optional().nullable(),
+  // Input control. `number` is the default for biochem/hematology; `text`
+  // is used for descriptive results (morphology); `select` is used for
+  // categorical results with a fixed option list.
+  inputType: z.enum(['number', 'text', 'select']).default('number'),
+  options: z
+    .array(z.object({ value: z.string().min(1).max(100), label: z.string().min(1).max(150) }))
+    .optional()
+    .nullable(),
+  // Per-parameter helper text shown under the input (e.g. "Reflex only").
+  notes: z.string().max(500).optional().nullable(),
+});
+
+export type ParameterSpec = z.infer<typeof parameterSpecSchema>;
+
+export const parametersArraySchema = z
+  .array(parameterSpecSchema)
+  .max(100, 'A test cannot have more than 100 parameters');
+
+// ============================================================
+// Lab Test Templates (super-admin only writes; everyone reads)
+// ============================================================
+
+export const createLabTemplateSchema = z.object({
+  body: z.object({
+    name: z.string().min(1).max(255),
+    code: z.string().max(50).optional().nullable(),
+    departmentName: z.string().min(1).max(100),
+    sampleType: z.string().max(50).optional().nullable(),
+    specimen: z.string().max(255).optional().nullable(),
+    instructions: z.string().max(5000).optional().nullable(),
+    description: z.string().max(5000).optional().nullable(),
+    defaultPrice: z.number().nonnegative().optional().nullable(),
+    turnaroundHours: z.number().int().positive().optional().nullable(),
+    parameters: parametersArraySchema.default([]),
+    interpretation: z.string().max(5000).optional().nullable(),
+    isPublished: z.boolean().default(true),
+  }),
+});
+
+export const updateLabTemplateSchema = z.object({
+  params: z.object({ id: z.string().uuid('Invalid template ID') }),
+  body: createLabTemplateSchema.shape.body.partial(),
+});
+
+export const labTemplateIdParamSchema = z.object({
+  params: z.object({ id: z.string().uuid('Invalid template ID') }),
+});
+
+export const listLabTemplatesSchema = z.object({
+  query: paginationSchema.extend({
+    departmentName: z.string().optional(),
+    isPublished: z
+      .string()
+      .transform((val) => val === 'true')
+      .optional(),
+  }),
+});
+
+export const cloneOneLabTemplateSchema = z.object({
+  params: z.object({ templateId: z.string().uuid('Invalid template ID') }),
+  body: z
+    .object({
+      overridePrice: z.number().nonnegative().optional(),
+      overrideTurnaroundHours: z.number().int().positive().optional(),
+    })
+    .default({}),
+});
+
+export const cloneAllLabTemplatesSchema = z.object({
+  body: z
+    .object({
+      // When set, restrict clone-all to a specific super-admin department.
+      departmentName: z.string().optional(),
+      // When true, re-clone templates that already have a catalog clone for
+      // this tenant (snapshot-overwrites the parameters). Default false: skip
+      // already-cloned templates so the hospital admin's edits aren't lost.
+      overwriteExisting: z.boolean().default(false),
+    })
+    .default({}),
+});
+
+// ============================================================
 // Lab Departments
 // ============================================================
 
@@ -52,6 +161,10 @@ export const createTestSchema = z.object({
     price: z.number().positive('Price must be positive').optional(),
     turnaroundHours: z.number().int().positive().optional(),
     sampleType: z.string().max(50).optional(),
+    specimen: z.string().max(255).optional(),
+    instructions: z.string().max(5000).optional(),
+    parameters: parametersArraySchema.optional(),
+    interpretation: z.string().max(5000).optional(),
     isActive: z.boolean().default(true),
   }),
 });
@@ -87,7 +200,26 @@ export const updateTestSchema = z.object({
     price: z.number().positive().optional(),
     turnaroundHours: z.number().int().positive().optional(),
     sampleType: z.string().max(50).optional(),
+    specimen: z.string().max(255).optional(),
+    instructions: z.string().max(5000).optional(),
+    parameters: parametersArraySchema.nullable().optional(),
+    interpretation: z.string().max(5000).optional(),
     isActive: z.boolean().optional(),
+  }),
+});
+
+// Narrow PATCH for lab_supervisor: only price + TAT. Stricter than
+// updateTestSchema so the route can be reused without leaking schema /
+// parameter edits to the supervisor role.
+export const updateTestPriceSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid test ID'),
+  }),
+  body: z.object({
+    price: z.number().positive().optional(),
+    turnaroundHours: z.number().int().positive().optional(),
+  }).refine((b) => b.price != null || b.turnaroundHours != null, {
+    message: 'price or turnaroundHours is required',
   }),
 });
 
@@ -405,3 +537,10 @@ export type GetResultsQuery = z.infer<typeof getResultsSchema>['query'];
 
 export type GetLabReportsQuery = z.infer<typeof getLabReportsSchema>['query'];
 export type CorrectLabReportInput = z.infer<typeof correctLabReportSchema>['body'];
+
+export type CreateLabTemplateInput = z.infer<typeof createLabTemplateSchema>['body'];
+export type UpdateLabTemplateInput = z.infer<typeof updateLabTemplateSchema>['body'];
+export type ListLabTemplatesQuery = z.infer<typeof listLabTemplatesSchema>['query'];
+export type CloneOneLabTemplateInput = z.infer<typeof cloneOneLabTemplateSchema>['body'];
+export type CloneAllLabTemplatesInput = z.infer<typeof cloneAllLabTemplatesSchema>['body'];
+export type UpdateTestPriceInput = z.infer<typeof updateTestPriceSchema>['body'];

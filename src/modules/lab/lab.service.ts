@@ -7,12 +7,14 @@ import {
   safeLabReportEmail,
   safeLabReportCorrectedEmail,
 } from './lab.audit';
+import { Prisma } from '@prisma/client';
 import type {
   CreateLabDepartmentInput,
   UpdateLabDepartmentInput,
   GetLabDepartmentsQuery,
   CreateTestInput,
   UpdateTestInput,
+  UpdateTestPriceInput,
   GetTestsQuery,
   CreateLabOrderInput,
   UpdateLabOrderInput,
@@ -28,6 +30,15 @@ import type {
   GetLabReportsQuery,
   CorrectLabReportInput,
 } from './lab.validation';
+
+// Catalog edit role guard. Full schema edits (parameters, normal range, unit,
+// name, etc.) are an admin/super_admin power; lab_supervisor + lab_technician
+// can only touch price + TAT via the dedicated /price endpoint.
+const FULL_CATALOG_EDITORS = new Set(['admin', 'super_admin']);
+
+function canEditFullCatalog(roles: string[]): boolean {
+  return roles.some((r) => FULL_CATALOG_EDITORS.has(r));
+}
 
 // Helper: send in-app notification (failures must not break the workflow)
 async function safeNotify(params: {
@@ -236,7 +247,13 @@ export async function deleteLabDepartment(tenantId: string, id: string) {
 // Test Catalog
 // ============================================================
 
-export async function createTest(tenantId: string, data: CreateTestInput) {
+export async function createTest(tenantId: string, roles: string[], data: CreateTestInput) {
+  // Catalog authoring is an admin-only action. Lab supervisor/technician roles
+  // get the read-only catalog + price-only PATCH instead.
+  if (!canEditFullCatalog(roles)) {
+    throw AppError.forbidden('Only hospital admins can create lab tests');
+  }
+
   // Verify department exists and belongs to tenant
   const department = await prisma.labDepartment.findFirst({
     where: { id: data.labDepartmentId, tenantId },
@@ -267,6 +284,12 @@ export async function createTest(tenantId: string, data: CreateTestInput) {
       price: data.price,
       turnaroundHours: data.turnaroundHours,
       sampleType: data.sampleType,
+      specimen: data.specimen,
+      instructions: data.instructions,
+      parameters: data.parameters
+        ? (data.parameters as unknown as Prisma.InputJsonValue)
+        : undefined,
+      interpretation: data.interpretation,
       isActive: data.isActive,
     },
     include: {
@@ -333,7 +356,21 @@ export async function getTestById(tenantId: string, id: string) {
   return test;
 }
 
-export async function updateTest(tenantId: string, id: string, data: UpdateTestInput) {
+export async function updateTest(
+  tenantId: string,
+  roles: string[],
+  id: string,
+  data: UpdateTestInput,
+) {
+  // Full catalog edits (name / department / parameters / unit / range /
+  // interpretation) are admin-only. Lab supervisor / technician must use
+  // updateTestPrice for price + TAT updates.
+  if (!canEditFullCatalog(roles)) {
+    throw AppError.forbidden(
+      'Only hospital admins can edit a lab test. Lab supervisors can update price + TAT via the price endpoint.',
+    );
+  }
+
   const test = await prisma.labTestCatalog.findFirst({
     where: { id, tenantId },
   });
@@ -362,13 +399,55 @@ export async function updateTest(tenantId: string, id: string, data: UpdateTestI
 
   const updated = await prisma.labTestCatalog.update({
     where: { id },
-    data,
+    data: {
+      labDepartmentId: data.labDepartmentId,
+      testName: data.testName,
+      testCode: data.testCode,
+      description: data.description,
+      normalRange: data.normalRange,
+      unit: data.unit,
+      price: data.price,
+      turnaroundHours: data.turnaroundHours,
+      sampleType: data.sampleType,
+      specimen: data.specimen,
+      instructions: data.instructions,
+      parameters:
+        data.parameters === undefined
+          ? undefined
+          : data.parameters === null
+            ? Prisma.JsonNull
+            : (data.parameters as unknown as Prisma.InputJsonValue),
+      interpretation: data.interpretation,
+      isActive: data.isActive,
+    },
     include: {
       labDepartment: { select: { id: true, name: true } },
     },
   });
 
   logger.info({ tenantId, testId: id }, 'Lab test updated');
+  return updated;
+}
+
+// Narrow PATCH for lab_supervisor: price + TAT only. Hospital admins can use
+// this too, but they have the full updateTest above for everything else.
+export async function updateTestPrice(
+  tenantId: string,
+  id: string,
+  data: UpdateTestPriceInput,
+) {
+  const test = await prisma.labTestCatalog.findFirst({ where: { id, tenantId } });
+  if (!test) throw AppError.notFound('Lab test not found');
+
+  const updated = await prisma.labTestCatalog.update({
+    where: { id },
+    data: {
+      price: data.price,
+      turnaroundHours: data.turnaroundHours,
+    },
+    include: { labDepartment: { select: { id: true, name: true } } },
+  });
+  logger.info({ tenantId, testId: id }, 'Lab test price/TAT updated');
   return updated;
 }
 
@@ -633,6 +712,12 @@ export async function getLabOrderById(tenantId: string, id: string) {
               sampleType: true,
               normalRange: true,
               unit: true,
+              // Structured parameter schema — drives the lab UI's result-
+              // entry grid in structured mode.
+              parameters: true,
+              interpretation: true,
+              specimen: true,
+              instructions: true,
             },
           },
           labResults: true,

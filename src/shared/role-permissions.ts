@@ -54,7 +54,13 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'progress_notes', action: 'read' },
       { module: 'nursing_notes', action: 'read' },
       { module: 'prescriptions', action: 'read' },
-      { module: 'lab_orders', action: 'read' }, { module: 'lab_orders', action: 'approve' },
+      // Hospital admin manages the lab test catalog end-to-end (clone from
+      // platform templates, edit parameters, archive). Lab supervisor keeps
+      // the same `update` perm too, but the service-layer guard restricts
+      // supervisors to the /price endpoint so they cannot mutate parameters.
+      { module: 'lab_orders', action: 'read' }, { module: 'lab_orders', action: 'create' },
+      { module: 'lab_orders', action: 'update' }, { module: 'lab_orders', action: 'delete' },
+      { module: 'lab_orders', action: 'approve' },
       { module: 'lab_reports', action: 'read' }, { module: 'lab_reports', action: 'approve' }, { module: 'lab_reports', action: 'export' },
       { module: 'imaging', action: 'read' }, { module: 'imaging', action: 'approve' },
       { module: 'pharmacy', action: 'read' }, { module: 'pharmacy', action: 'update' }, { module: 'pharmacy', action: 'approve' },

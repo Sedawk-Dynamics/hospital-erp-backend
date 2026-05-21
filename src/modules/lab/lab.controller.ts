@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse, sendPaginatedResponse } from '../../shared/apiResponse';
 import * as labService from './lab.service';
+import * as labTemplates from './lab-templates.service';
 
 // ============================================================
 // Lab Departments
@@ -90,7 +91,8 @@ export async function createTest(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const test = await labService.createTest(tenantId, req.body);
+    const roles = req.user!.roles ?? [];
+    const test = await labService.createTest(tenantId, roles, req.body);
     sendResponse({
       res,
       statusCode: 201,
@@ -141,12 +143,29 @@ export async function updateTest(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const test = await labService.updateTest(tenantId, req.params.id as string, req.body);
+    const roles = req.user!.roles ?? [];
+    const test = await labService.updateTest(tenantId, roles, req.params.id as string, req.body);
     sendResponse({
       res,
       message: 'Lab test updated successfully',
       data: test,
     });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Narrow PATCH used by lab_supervisor (and admin) to update price + TAT only
+// without touching catalog schema.
+export async function updateTestPrice(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const test = await labService.updateTestPrice(tenantId, req.params.id as string, req.body);
+    sendResponse({ res, message: 'Lab test price updated', data: test });
   } catch (err) {
     next(err);
   }
@@ -689,6 +708,122 @@ export async function getPublicLabReportSummary(
       return;
     }
     sendResponse({ res, message: 'Report verification', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ============================================================
+// Lab Test Templates (platform-wide; super-admin authors, hospital
+// admin clones into LabTestCatalog).
+// ============================================================
+
+export async function listLabTemplates(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const { items, total, page, limit } = await labTemplates.listLabTemplates(req.query as never);
+    sendPaginatedResponse(res, items, total, page, limit, 'Lab test templates retrieved');
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getLabTemplate(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tpl = await labTemplates.getLabTemplate(req.params.id as string);
+    sendResponse({ res, message: 'Lab test template retrieved', data: tpl });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function createLabTemplate(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tpl = await labTemplates.createLabTemplate(
+      req.user!.userId,
+      req.user!.roles ?? [],
+      req.body,
+    );
+    sendResponse({ res, statusCode: 201, message: 'Lab test template created', data: tpl });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function updateLabTemplate(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tpl = await labTemplates.updateLabTemplate(
+      req.user!.roles ?? [],
+      req.params.id as string,
+      req.body,
+    );
+    sendResponse({ res, message: 'Lab test template updated', data: tpl });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function deleteLabTemplate(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const out = await labTemplates.deleteLabTemplate(
+      req.user!.roles ?? [],
+      req.params.id as string,
+    );
+    sendResponse({ res, message: 'Lab test template deleted', data: out });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function cloneOneLabTemplate(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const out = await labTemplates.cloneOneLabTemplate(
+      req.user!.tenantId,
+      req.user!.roles ?? [],
+      req.params.templateId as string,
+      req.body,
+    );
+    sendResponse({ res, statusCode: 201, message: 'Template cloned', data: out });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function cloneAllLabTemplates(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const out = await labTemplates.cloneAllLabTemplates(
+      req.user!.tenantId,
+      req.user!.roles ?? [],
+      req.body,
+    );
+    sendResponse({ res, message: 'Templates cloned', data: out });
   } catch (err) {
     next(err);
   }
