@@ -18,6 +18,11 @@ export const parameterSpecSchema = z.object({
   name: z.string().min(1).max(150),
   code: z.string().max(50).optional().nullable(),
   unit: z.string().max(50).optional().nullable(),
+  // Unit group code (e.g. "concentration_mass", "hematology_counts"). Lets
+  // the parameter builder filter the unit picker to the relevant units and
+  // — eventually — enables unit conversion. Optional for backwards-compat
+  // with templates seeded before the unit-groups migration.
+  unitGroupCode: z.string().max(80).optional().nullable(),
   // Numeric reference range — used to flag abnormals when present.
   refLow: z.number().optional().nullable(),
   refHigh: z.number().optional().nullable(),
@@ -51,6 +56,11 @@ export const parametersArraySchema = z
 // Lab Test Templates (super-admin only writes; everyone reads)
 // ============================================================
 
+// Aliases / tags — capped so the searchTokens column stays a sane size.
+// Both arrays are deduplicated + lowercased by the service before persist.
+const aliasesField = z.array(z.string().min(1).max(120)).max(25).default([]);
+const tagsField = z.array(z.string().min(1).max(60)).max(40).default([]);
+
 export const createLabTemplateSchema = z.object({
   body: z.object({
     name: z.string().min(1).max(255),
@@ -64,6 +74,8 @@ export const createLabTemplateSchema = z.object({
     turnaroundHours: z.number().int().positive().optional().nullable(),
     parameters: parametersArraySchema.default([]),
     interpretation: z.string().max(5000).optional().nullable(),
+    aliases: aliasesField,
+    tags: tagsField,
     isPublished: z.boolean().default(true),
   }),
 });
@@ -165,6 +177,12 @@ export const createTestSchema = z.object({
     instructions: z.string().max(5000).optional(),
     parameters: parametersArraySchema.optional(),
     interpretation: z.string().max(5000).optional(),
+    aliases: aliasesField.optional(),
+    tags: tagsField.optional(),
+    // `true` when the hospital is authoring a custom test from scratch
+    // (no platform template). The service force-sets templateId to null
+    // for these so re-clone-all skips them.
+    isCustom: z.boolean().optional(),
     isActive: z.boolean().default(true),
   }),
 });
@@ -204,6 +222,8 @@ export const updateTestSchema = z.object({
     instructions: z.string().max(5000).optional(),
     parameters: parametersArraySchema.nullable().optional(),
     interpretation: z.string().max(5000).optional(),
+    aliases: aliasesField.optional(),
+    tags: tagsField.optional(),
     isActive: z.boolean().optional(),
   }),
 });
@@ -544,3 +564,63 @@ export type ListLabTemplatesQuery = z.infer<typeof listLabTemplatesSchema>['quer
 export type CloneOneLabTemplateInput = z.infer<typeof cloneOneLabTemplateSchema>['body'];
 export type CloneAllLabTemplatesInput = z.infer<typeof cloneAllLabTemplatesSchema>['body'];
 export type UpdateTestPriceInput = z.infer<typeof updateTestPriceSchema>['body'];
+
+// ============================================================
+// Lab Unit Groups + Units
+// ============================================================
+
+export const createUnitGroupSchema = z.object({
+  body: z.object({
+    code: z.string().min(1).max(80),
+    name: z.string().min(1).max(120),
+    description: z.string().max(1000).optional().nullable(),
+    sortOrder: z.number().int().optional(),
+    // super_admin only — adds to the platform-wide catalogue. Hospital
+    // admins always create local groups regardless of this flag.
+    isGlobal: z.boolean().optional(),
+  }),
+});
+
+export const updateUnitGroupSchema = z.object({
+  params: z.object({ id: z.string().uuid('Invalid unit group ID') }),
+  body: z.object({
+    name: z.string().min(1).max(120).optional(),
+    description: z.string().max(1000).optional().nullable(),
+    sortOrder: z.number().int().optional(),
+  }),
+});
+
+export const unitGroupIdParamSchema = z.object({
+  params: z.object({ id: z.string().uuid('Invalid unit group ID') }),
+});
+
+export const createUnitSchema = z.object({
+  body: z.object({
+    unitGroupId: z.string().uuid('Invalid unit group ID'),
+    symbol: z.string().min(1).max(60),
+    name: z.string().max(120).optional().nullable(),
+    conversionFactor: z.number().positive().optional().nullable(),
+    isBase: z.boolean().optional(),
+    sortOrder: z.number().int().optional(),
+  }),
+});
+
+export const updateUnitSchema = z.object({
+  params: z.object({ id: z.string().uuid('Invalid unit ID') }),
+  body: z.object({
+    symbol: z.string().min(1).max(60).optional(),
+    name: z.string().max(120).optional().nullable(),
+    conversionFactor: z.number().positive().optional().nullable(),
+    isBase: z.boolean().optional(),
+    sortOrder: z.number().int().optional(),
+  }),
+});
+
+export const unitIdParamSchema = z.object({
+  params: z.object({ id: z.string().uuid('Invalid unit ID') }),
+});
+
+export type CreateUnitGroupInput = z.infer<typeof createUnitGroupSchema>['body'];
+export type UpdateUnitGroupInput = z.infer<typeof updateUnitGroupSchema>['body'];
+export type CreateUnitInput = z.infer<typeof createUnitSchema>['body'];
+export type UpdateUnitInput = z.infer<typeof updateUnitSchema>['body'];

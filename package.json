@@ -12,6 +12,7 @@
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
     "db:seed:physical-observations": "tsx prisma/seed-physical-observations.ts",
+    "db:seed:lab-units": "tsx prisma/seed-lab-units.ts",
     "db:seed:lab-templates": "tsx prisma/seed-lab-test-templates.ts",
     "db:seed:form-templates": "tsx prisma/seed-form-templates.ts",
     "db:seed:nurse-roles": "tsx prisma/scripts/backfill-nurse-roles.ts",

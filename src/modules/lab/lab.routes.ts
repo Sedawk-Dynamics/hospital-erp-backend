@@ -39,6 +39,12 @@ import {
   listLabTemplatesSchema,
   cloneOneLabTemplateSchema,
   cloneAllLabTemplatesSchema,
+  createUnitGroupSchema,
+  updateUnitGroupSchema,
+  unitGroupIdParamSchema,
+  createUnitSchema,
+  updateUnitSchema,
+  unitIdParamSchema,
 } from './lab.validation';
 import * as controller from './lab.controller';
 import * as attachmentService from './lab-attachments.service';
@@ -60,6 +66,17 @@ labRoutes.post('/departments', authenticate, requirePermission('lab_orders', 'cr
 labRoutes.get('/departments', authenticate, requirePermission('lab_orders', 'read'), validate(getLabDepartmentsSchema), controller.getLabDepartments);
 labRoutes.put('/departments/:id', authenticate, requirePermission('lab_orders', 'update'), validate(updateLabDepartmentSchema), controller.updateLabDepartment);
 labRoutes.delete('/departments/:id', authenticate, requirePermission('lab_orders', 'delete'), validate(labDepartmentIdParamSchema), controller.deleteLabDepartment);
+
+// --- Lab Unit Groups + Units (super-admin authors global; admin can add tenant-local) ---
+// Reads are open to any authenticated user (parameter builder uses them).
+// Writes are gated inside the service layer per role + scope (global vs tenant).
+labRoutes.get('/unit-groups', authenticate, controller.listLabUnitGroups);
+labRoutes.post('/unit-groups', authenticate, validate(createUnitGroupSchema), controller.createLabUnitGroup);
+labRoutes.put('/unit-groups/:id', authenticate, validate(updateUnitGroupSchema), controller.updateLabUnitGroup);
+labRoutes.delete('/unit-groups/:id', authenticate, validate(unitGroupIdParamSchema), controller.deleteLabUnitGroup);
+labRoutes.post('/units', authenticate, validate(createUnitSchema), controller.createLabUnit);
+labRoutes.put('/units/:id', authenticate, validate(updateUnitSchema), controller.updateLabUnit);
+labRoutes.delete('/units/:id', authenticate, validate(unitIdParamSchema), controller.deleteLabUnit);
 
 // --- Lab Test Templates (platform-wide, super-admin authored) ---
 // Registered BEFORE the generic /tests/:id routes so /templates is not

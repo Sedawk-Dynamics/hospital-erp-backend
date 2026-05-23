@@ -9,7 +9,80 @@ import type {
   ListLabTemplatesQuery,
   CloneOneLabTemplateInput,
   CloneAllLabTemplatesInput,
+  ParameterSpec,
 } from './lab.validation';
+
+// ─────────────────────────────────────────────────────────────
+// Search tokens
+// ─────────────────────────────────────────────────────────────
+// Single lowercase string that concatenates everything searchable about a
+// test: name, code, aliases, tags, parameter names + codes, department,
+// sample type. Persisted on LabTestTemplate.searchTokens and
+// LabTestCatalog.searchTokens so the dynamic-search endpoint can match
+// "hemoglobin" → CBC even though "hemoglobin" only appears inside the
+// parameter list.
+//
+// Exported so the catalog (lab.service.ts) can reuse the same shape — keep
+// these two columns in sync.
+export function buildSearchTokens(input: {
+  name?: string | null;
+  code?: string | null;
+  departmentName?: string | null;
+  sampleType?: string | null;
+  aliases?: string[] | null;
+  tags?: string[] | null;
+  parameters?: ParameterSpec[] | null;
+}): string {
+  const tokens: string[] = [];
+  const push = (s: string | null | undefined) => {
+    if (!s) return;
+    tokens.push(String(s).toLowerCase().trim());
+  };
+  push(input.name);
+  push(input.code);
+  push(input.departmentName);
+  push(input.sampleType);
+  (input.aliases ?? []).forEach(push);
+  (input.tags ?? []).forEach(push);
+  (input.parameters ?? []).forEach((p) => {
+    push(p.name);
+    push(p.code);
+    push(p.group);
+  });
+  // Dedupe + collapse whitespace; pipe-separator keeps tokens distinct so a
+  // search for "blood" doesn't accidentally match "bloodgroup".
+  return Array.from(new Set(tokens.filter(Boolean))).join(' | ');
+}
+
+// Normalise the alias/tag arrays the same way for both templates + catalogs.
+export function normaliseAliases(aliases?: string[] | null): string[] {
+  if (!aliases?.length) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of aliases) {
+    const v = String(raw).trim();
+    if (!v) continue;
+    const key = v.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(v);
+  }
+  return out;
+}
+
+export function normaliseTags(tags?: string[] | null): string[] {
+  if (!tags?.length) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of tags) {
+    const v = String(raw).trim().toLowerCase();
+    if (!v) continue;
+    if (seen.has(v)) continue;
+    seen.add(v);
+    out.push(v);
+  }
+  return out;
+}
 
 // ─────────────────────────────────────────────────────────────
 // Role guards
@@ -42,10 +115,17 @@ export async function listLabTemplates(query: ListLabTemplatesQuery) {
   if (query.departmentName) where.departmentName = query.departmentName;
   if (query.isPublished !== undefined) where.isPublished = query.isPublished;
   if (query.search) {
+    const q = query.search;
+    // Match name/code/department directly AND the denormalised searchTokens
+    // column so a search for "FBC" or "hemoglobin" hits the right test
+    // even when those strings only live in aliases/tags/parameter names.
     where.OR = [
-      { name: { contains: query.search, mode: 'insensitive' } },
-      { code: { contains: query.search, mode: 'insensitive' } },
-      { departmentName: { contains: query.search, mode: 'insensitive' } },
+      { name: { contains: q, mode: 'insensitive' } },
+      { code: { contains: q, mode: 'insensitive' } },
+      { departmentName: { contains: q, mode: 'insensitive' } },
+      { searchTokens: { contains: q.toLowerCase() } },
+      { aliases: { has: q } },
+      { tags: { has: q.toLowerCase() } },
     ];
   }
 
@@ -90,6 +170,18 @@ export async function createLabTemplate(
   const dup = await prisma.labTestTemplate.findUnique({ where: { name: data.name } });
   if (dup) throw AppError.conflict('A template with that name already exists');
 
+  const aliases = normaliseAliases(data.aliases);
+  const tags = normaliseTags(data.tags);
+  const searchTokens = buildSearchTokens({
+    name: data.name,
+    code: data.code,
+    departmentName: data.departmentName,
+    sampleType: data.sampleType,
+    aliases,
+    tags,
+    parameters: data.parameters,
+  });
+
   const tpl = await prisma.labTestTemplate.create({
     data: {
       name: data.name,
@@ -103,6 +195,9 @@ export async function createLabTemplate(
       turnaroundHours: data.turnaroundHours ?? null,
       parameters: data.parameters as unknown as Prisma.InputJsonValue,
       interpretation: data.interpretation ?? null,
+      aliases,
+      tags,
+      searchTokens,
       isPublished: data.isPublished,
       version: 1,
       createdById: userId,
@@ -137,6 +232,25 @@ export async function updateLabTemplate(
   // surface that later.
   const schemaChanged = data.parameters !== undefined || data.interpretation !== undefined;
 
+  // searchTokens recompute whenever any field that contributes to it
+  // changes. Fall back to the existing row's values for fields the caller
+  // didn't supply so we don't accidentally blow away the alias/tag list.
+  const fullExisting = await prisma.labTestTemplate.findUnique({ where: { id } });
+  const aliases =
+    data.aliases !== undefined ? normaliseAliases(data.aliases) : fullExisting?.aliases ?? [];
+  const tags = data.tags !== undefined ? normaliseTags(data.tags) : fullExisting?.tags ?? [];
+  const nextParameters =
+    data.parameters !== undefined ? data.parameters : (fullExisting?.parameters as ParameterSpec[] | null);
+  const searchTokens = buildSearchTokens({
+    name: data.name ?? fullExisting?.name ?? null,
+    code: data.code ?? fullExisting?.code ?? null,
+    departmentName: data.departmentName ?? fullExisting?.departmentName ?? null,
+    sampleType: data.sampleType ?? fullExisting?.sampleType ?? null,
+    aliases,
+    tags,
+    parameters: nextParameters,
+  });
+
   const tpl = await prisma.labTestTemplate.update({
     where: { id },
     data: {
@@ -154,6 +268,9 @@ export async function updateLabTemplate(
           ? (data.parameters as unknown as Prisma.InputJsonValue)
           : undefined,
       interpretation: data.interpretation,
+      aliases: data.aliases !== undefined ? aliases : undefined,
+      tags: data.tags !== undefined ? tags : undefined,
+      searchTokens,
       isPublished: data.isPublished,
       version: schemaChanged ? existing.version + 1 : undefined,
     },
@@ -197,6 +314,9 @@ function buildCatalogDataFromTemplate(
   overrideTurnaroundHours?: number,
 ) {
   if (!template) throw new Error('template required');
+  const aliases = template.aliases ?? [];
+  const tags = template.tags ?? [];
+  const params = template.parameters as unknown as ParameterSpec[] | null;
   return {
     tenantId,
     labDepartmentId: departmentId,
@@ -216,6 +336,18 @@ function buildCatalogDataFromTemplate(
     instructions: template.instructions,
     parameters: template.parameters as Prisma.InputJsonValue,
     interpretation: template.interpretation,
+    aliases,
+    tags,
+    searchTokens: buildSearchTokens({
+      name: template.name,
+      code: template.code,
+      departmentName: template.departmentName,
+      sampleType: template.sampleType,
+      aliases,
+      tags,
+      parameters: params,
+    }),
+    isCustom: false,
     isActive: true,
   };
 }
@@ -315,6 +447,9 @@ export async function cloneAllLabTemplates(
         skipped += 1;
         continue;
       }
+      const aliases = tpl.aliases ?? [];
+      const tags = tpl.tags ?? [];
+      const params = tpl.parameters as unknown as ParameterSpec[] | null;
       await prisma.labTestCatalog.update({
         where: { id: existingId },
         data: {
@@ -328,6 +463,17 @@ export async function cloneAllLabTemplates(
           parameters: tpl.parameters as Prisma.InputJsonValue,
           interpretation: tpl.interpretation,
           turnaroundHours: tpl.turnaroundHours ?? undefined,
+          aliases,
+          tags,
+          searchTokens: buildSearchTokens({
+            name: tpl.name,
+            code: tpl.code,
+            departmentName: tpl.departmentName,
+            sampleType: tpl.sampleType,
+            aliases,
+            tags,
+            parameters: params,
+          }),
         },
       });
       updated += 1;

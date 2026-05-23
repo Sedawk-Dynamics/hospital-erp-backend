@@ -1215,6 +1215,8 @@ model Tenant {
   labTestCatalog             LabTestCatalog[]
   labOrders                  LabOrder[]
   labAttachments             LabAttachment[]
+  labUnitGroups              LabUnitGroup[]
+  labUnits                   LabUnit[]
   imagingRequests            ImagingRequest[]
   drugCategories             DrugCategory[]
   drugFormulary              DrugFormulary[]
@@ -3318,6 +3320,22 @@ model LabTestCatalog {
   // Free-text interpretation / clinical-significance notes printed at the
   // bottom of the branded report.
   interpretation  String?
+  // Synonyms (e.g. "FBC", "Hemogram", "Full Body Blood Count") + tags
+  // (e.g. "hemoglobin", "wbc"). Power the dynamic-search layer so a doctor
+  // typing "hemoglobin" surfaces CBC even though that string is not in the
+  // canonical test name. Hospital admins can edit both freely without
+  // touching the platform template.
+  aliases         String[] @default([])
+  tags            String[] @default([])
+  // Denormalised lowercase index of name + code + aliases + tags + parameter
+  // names — used for fast substring match (illike) in the dynamic-search
+  // endpoint. Recomputed by the service on every create/update.
+  searchTokens    String?  @map("search_tokens")
+  // `true` when this row was authored locally (no platform template) — the
+  // hospital admin built it from scratch via the Create Custom Test surface.
+  // Custom rows live independently of master data; a future re-clone-all
+  // never touches them because templateId is null.
+  isCustom        Boolean  @default(false) @map("is_custom")
   isActive        Boolean  @default(true) @map("is_active")
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
@@ -3328,6 +3346,7 @@ model LabTestCatalog {
   labOrderItems LabOrderItem[]
 
   @@index([tenantId, templateId])
+  @@index([tenantId, isActive])
   @@map("lab_test_catalog")
 }
 
@@ -3351,6 +3370,16 @@ model LabTestTemplate {
   turnaroundHours Int?     @map("turnaround_hours")
   parameters      Json     // ParameterSpec[]
   interpretation  String?
+  // Synonyms + tags drive the dynamic-search layer. Aliases are alternative
+  // test names a hospital might use ("FBC" -> CBC); tags are loose keywords
+  // (parameter names, anatomy, indication keywords) that surface the test
+  // when searched. Hospitals can extend both on their cloned catalog row
+  // without touching the master template.
+  aliases         String[] @default([])
+  tags            String[] @default([])
+  // Denormalised lowercase index of name + code + aliases + tags + parameter
+  // names — recomputed by the service on every create/update.
+  searchTokens    String?  @map("search_tokens")
   isPublished     Boolean  @default(true) @map("is_published")
   version         Int      @default(1)
   createdById     String   @map("created_by_id")
@@ -3361,6 +3390,68 @@ model LabTestTemplate {
   catalogs  LabTestCatalog[]
 
   @@map("lab_test_templates")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Lab Unit Groups + Units
+// ─────────────────────────────────────────────────────────────
+// Two-tier hierarchy (parameter → unit_group → unit) finalised in the
+// 2026-05-23 meeting. Examples:
+//   "concentration_mass"   → mg/dL (base), g/dL, µg/dL, ng/dL, mg/L, …
+//   "concentration_molar"  → mmol/L (base), µmol/L, nmol/L, pmol/L, mEq/L
+//   "hematology_counts"    → 10^3/µL (base), 10^6/µL, 10^9/L, 10^12/L, …
+// The structure prepares the system for future automated conversion (the
+// meeting deliberately deferred the conversion *logic* but kept the *data
+// hierarchy* so it can be added later without a schema migration).
+//
+// `tenantId` is nullable: NULL = platform-wide group (managed by super-
+// admin), non-NULL = hospital-local group/unit. Hospitals can create their
+// own groups + units without polluting the global catalog (matches the
+// dynamic-forms architecture). `isSystem` flags rows seeded from
+// `LAB_UNIT_GROUPS` constants — UI hides delete on them.
+model LabUnitGroup {
+  id          String   @id @default(uuid())
+  tenantId    String?  @map("tenant_id")
+  code        String   @db.VarChar(80)
+  name        String   @db.VarChar(120)
+  description String?
+  isSystem    Boolean  @default(false) @map("is_system")
+  sortOrder   Int      @default(0) @map("sort_order")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant Tenant?    @relation(fields: [tenantId], references: [id])
+  units  LabUnit[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@map("lab_unit_groups")
+}
+
+model LabUnit {
+  id               String   @id @default(uuid())
+  tenantId         String?  @map("tenant_id")
+  unitGroupId      String   @map("unit_group_id")
+  symbol           String   @db.VarChar(60)
+  name             String?  @db.VarChar(120)
+  // conversionFactor + isBase prepare for future unit-conversion logic
+  // (deferred per the meeting). isBase = true for the canonical unit of the
+  // group (e.g. mg/dL for concentration_mass); conversionFactor = ratio
+  // to that base unit. Nullable today because we ship factors only for
+  // simple linear pairs.
+  conversionFactor Decimal? @map("conversion_factor") @db.Decimal(20, 10)
+  isBase           Boolean  @default(false) @map("is_base")
+  isSystem         Boolean  @default(false) @map("is_system")
+  sortOrder        Int      @default(0) @map("sort_order")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant    Tenant?      @relation(fields: [tenantId], references: [id])
+  unitGroup LabUnitGroup @relation(fields: [unitGroupId], references: [id], onDelete: Cascade)
+
+  @@unique([unitGroupId, symbol])
+  @@index([tenantId, unitGroupId])
+  @@map("lab_units")
 }
 
 model LabOrder {

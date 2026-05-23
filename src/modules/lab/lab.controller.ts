@@ -3,6 +3,7 @@ import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse, sendPaginatedResponse } from '../../shared/apiResponse';
 import * as labService from './lab.service';
 import * as labTemplates from './lab-templates.service';
+import * as labUnits from './lab-units.service';
 
 // ============================================================
 // Lab Departments
@@ -824,6 +825,127 @@ export async function cloneAllLabTemplates(
       req.body,
     );
     sendResponse({ res, message: 'Templates cloned', data: out });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ============================================================
+// Lab Unit Groups + Units
+// ============================================================
+
+export async function listLabUnitGroups(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const groups = await labUnits.listUnitGroups(req.user!.tenantId);
+    sendResponse({ res, message: 'Unit groups retrieved', data: groups });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function createLabUnitGroup(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const group = await labUnits.createUnitGroup(
+      req.user!.tenantId,
+      req.user!.roles ?? [],
+      req.body,
+    );
+    sendResponse({ res, statusCode: 201, message: 'Unit group created', data: group });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function updateLabUnitGroup(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const group = await labUnits.updateUnitGroup(
+      req.user!.tenantId,
+      req.user!.roles ?? [],
+      req.params.id as string,
+      req.body,
+    );
+    sendResponse({ res, message: 'Unit group updated', data: group });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function deleteLabUnitGroup(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const out = await labUnits.deleteUnitGroup(
+      req.user!.tenantId,
+      req.user!.roles ?? [],
+      req.params.id as string,
+    );
+    sendResponse({ res, message: 'Unit group deleted', data: out });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function createLabUnit(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const unit = await labUnits.createUnit(
+      req.user!.tenantId,
+      req.user!.roles ?? [],
+      req.body,
+    );
+    sendResponse({ res, statusCode: 201, message: 'Unit created', data: unit });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function updateLabUnit(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const unit = await labUnits.updateUnit(
+      req.user!.tenantId,
+      req.user!.roles ?? [],
+      req.params.id as string,
+      req.body,
+    );
+    sendResponse({ res, message: 'Unit updated', data: unit });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function deleteLabUnit(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const out = await labUnits.deleteUnit(
+      req.user!.tenantId,
+      req.user!.roles ?? [],
+      req.params.id as string,
+    );
+    sendResponse({ res, message: 'Unit deleted', data: out });
   } catch (err) {
     next(err);
   }

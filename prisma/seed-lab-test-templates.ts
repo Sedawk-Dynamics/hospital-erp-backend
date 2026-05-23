@@ -4,6 +4,11 @@ import {
   parametersArraySchema,
   type ParameterSpec,
 } from '../src/modules/lab/lab.validation';
+import {
+  buildSearchTokens,
+  normaliseAliases,
+  normaliseTags,
+} from '../src/modules/lab/lab-templates.service';
 
 const prisma = new PrismaClient();
 
@@ -42,16 +47,74 @@ type NumOpts = {
   refRangeText?: string;
   decimals?: number;
   unit?: string;
+  unitGroupCode?: string;
   group?: string;
   code?: string;
   notes?: string;
 };
+// Map common units → their seeded unit-group code so the seeded templates
+// pre-fill unitGroupCode without having to spell it out on every parameter.
+const UNIT_TO_GROUP: Record<string, string> = {
+  'mg/dL': 'concentration_mass',
+  'g/dL': 'concentration_mass',
+  'µg/dL': 'concentration_mass',
+  'ng/dL': 'concentration_mass',
+  'mg/L': 'concentration_mass',
+  'g/L': 'concentration_mass',
+  'µg/L': 'concentration_mass',
+  'ng/mL': 'concentration_mass',
+  'pg/mL': 'concentration_mass',
+  'mg%': 'concentration_mass',
+  'mmol/L': 'concentration_molar',
+  'µmol/L': 'concentration_molar',
+  'nmol/L': 'concentration_molar',
+  'pmol/L': 'concentration_molar',
+  'mEq/L': 'concentration_molar',
+  '10^3/µL': 'hematology_counts',
+  '10^6/µL': 'hematology_counts',
+  '10^9/L': 'hematology_counts',
+  '10^12/L': 'hematology_counts',
+  'cells/µL': 'hematology_counts',
+  'cells/HPF': 'hematology_counts',
+  'cells/LPF': 'hematology_counts',
+  '/cumm': 'hematology_counts',
+  'fL': 'rbc_indices',
+  'pg': 'rbc_indices',
+  '%': 'percentages_ratios',
+  'ratio': 'percentages_ratios',
+  'index': 'percentages_ratios',
+  'U/L': 'enzymes_activity',
+  'IU/L': 'enzymes_activity',
+  'IU/mL': 'enzymes_activity',
+  'mIU/L': 'enzymes_activity',
+  'µIU/mL': 'enzymes_activity',
+  'kU/L': 'enzymes_activity',
+  'seconds': 'coagulation_rates',
+  'mm/hr': 'coagulation_rates',
+  'ng/mL FEU': 'coagulation_rates',
+  'µg/mL FEU': 'coagulation_rates',
+  'mL/min': 'renal_egfr',
+  'mL/min/1.73m²': 'renal_egfr',
+  'SG': 'sg_ph',
+  'pH': 'sg_ph',
+  'mmHg': 'pressure_gas',
+  'kPa': 'pressure_gas',
+  'mL': 'volume',
+  'L': 'volume',
+  'mL/24h': 'volume',
+  'titre': 'titres_serology',
+  'COI': 'titres_serology',
+  'S/CO': 'titres_serology',
+  'AU/mL': 'titres_serology',
+};
 function num(name: string, opts: NumOpts = {}): ParameterSpec {
+  const unitGroupCode = opts.unitGroupCode ?? (opts.unit ? UNIT_TO_GROUP[opts.unit] : null) ?? null;
   return {
     id: pid(),
     name,
     code: opts.code ?? null,
     unit: opts.unit ?? null,
+    unitGroupCode,
     refLow: opts.refLow ?? null,
     refHigh: opts.refHigh ?? null,
     refRangeText: opts.refRangeText ?? null,
@@ -70,6 +133,7 @@ function text(name: string, opts: TextOpts = {}): ParameterSpec {
     name,
     code: opts.code ?? null,
     unit: null,
+    unitGroupCode: null,
     refLow: null,
     refHigh: null,
     refRangeText: opts.refRangeText ?? null,
@@ -92,6 +156,7 @@ function sel(
     name,
     code: opts.code ?? null,
     unit: null,
+    unitGroupCode: null,
     refLow: null,
     refHigh: null,
     refRangeText: opts.refRangeText ?? null,
@@ -120,6 +185,13 @@ type TemplateSeed = {
   instructions?: string;
   description?: string;
   interpretation?: string;
+  // Synonyms for the dynamic-search layer — e.g. CBC also matches "FBC" /
+  // "Hemogram" / "Full Blood Count". Hospital admins can extend these on
+  // their cloned catalog row without touching the master template.
+  aliases?: string[];
+  // Loose keywords (parameter names, anatomy, indication) that surface the
+  // test in dynamic search — e.g. searching "hemoglobin" surfaces CBC.
+  tags?: string[];
   parameters: () => ParameterSpec[];
 };
 
@@ -135,6 +207,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '3 mL EDTA whole blood (purple top)',
     defaultPrice: 350,
     turnaroundHours: 4,
+    aliases: ['FBC', 'Full Blood Count', 'Hemogram', 'Haemogram', 'CBC with Differential', 'CBP', 'Complete Blood Picture'],
+    tags: ['hemoglobin', 'hgb', 'wbc', 'rbc', 'platelet', 'mcv', 'mch', 'mchc', 'hematocrit', 'pcv', 'differential', 'anemia', 'infection', 'leukocyte'],
     description:
       'Full automated blood count — RBC indices, total + differential WBC count, platelet indices. Screens for anemia, infection, leukemia, marrow disorders and thrombocyte abnormalities.',
     interpretation:
@@ -183,6 +257,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '2 mL EDTA whole blood',
     defaultPrice: 100,
     turnaroundHours: 3,
+    aliases: ['Sed Rate', 'Westergren ESR', 'BSR', 'Blood Sedimentation Rate'],
+    tags: ['inflammation', 'sedimentation', 'westergren', 'rate'],
     description: 'Non-specific marker of inflammation (Westergren method).',
     parameters: () => [
       num('ESR (1 hour)', { unit: 'mm/hr', refLow: 0, refHigh: 20, decimals: 0, notes: 'Male 0-15, Female 0-20' }),
@@ -197,6 +273,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '2 mL EDTA whole blood',
     defaultPrice: 200,
     turnaroundHours: 6,
+    aliases: ['Peripheral Smear', 'PS', 'Blood Film', 'PBF', 'Peripheral Blood Film'],
+    tags: ['morphology', 'smear', 'microscopy', 'film', 'rbc morphology'],
     description: 'Microscopic examination of stained blood smear.',
     parameters: () => [
       text('RBC Morphology', { group: 'Morphology', refRangeText: 'Normocytic, normochromic' }),
@@ -215,6 +293,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '2.7 mL sodium citrate (blue top), 9:1 ratio',
     defaultPrice: 350,
     turnaroundHours: 4,
+    aliases: ['PT', 'PT/INR', 'Prothrombin Time', 'INR', 'Warfarin Monitoring'],
+    tags: ['coagulation', 'pt', 'inr', 'warfarin', 'bleeding', 'clotting'],
     description: 'Extrinsic + common pathway screen; used to monitor warfarin therapy.',
     parameters: () => [
       num('PT (Test)', { unit: 'seconds', refLow: 11, refHigh: 13.5, decimals: 1, group: 'PT' }),
@@ -231,6 +311,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '2.7 mL sodium citrate (blue top)',
     defaultPrice: 350,
     turnaroundHours: 4,
+    aliases: ['aPTT', 'PTT', 'Partial Thromboplastin Time', 'Heparin Monitoring'],
+    tags: ['coagulation', 'aptt', 'ptt', 'heparin', 'clotting'],
     description: 'Intrinsic + common pathway screen; monitors heparin therapy.',
     parameters: () => [
       num('APTT (Test)', { unit: 'seconds', refLow: 25, refHigh: 35, decimals: 1 }),
@@ -247,6 +329,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '2.7 mL sodium citrate',
     defaultPrice: 950,
     turnaroundHours: 4,
+    aliases: ['D Dimer', 'DD', 'Fibrin D-Dimer'],
+    tags: ['vte', 'dvt', 'pe', 'thrombosis', 'fibrin', 'embolism'],
     description: 'Fibrin degradation product — sensitive for venous thromboembolism rule-out.',
     parameters: () => [
       num('D-Dimer', { unit: 'ng/mL FEU', refLow: 0, refHigh: 500, decimals: 0, notes: 'Age-adjusted cutoff for >50y: age × 10 ng/mL' }),
@@ -261,6 +345,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '2 mL EDTA whole blood',
     defaultPrice: 150,
     turnaroundHours: 2,
+    aliases: ['Blood Group', 'ABO Group', 'ABO Rh', 'BG', 'Blood Type', 'Rh Typing'],
+    tags: ['blood group', 'abo', 'rh', 'rhesus', 'typing', 'transfusion'],
     description: 'ABO and Rhesus blood group determination.',
     parameters: () => [
       sel('ABO Group', [opt('A'), opt('B'), opt('AB'), opt('O')], { group: 'Blood Group' }),
@@ -279,6 +365,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '2 mL fluoride (grey top)',
     defaultPrice: 120,
     turnaroundHours: 2,
+    aliases: ['Fasting Glucose', 'FBG', 'Fasting Sugar', 'Fasting Plasma Glucose', 'FPG'],
+    tags: ['glucose', 'sugar', 'diabetes', 'fasting', 'fbs'],
     instructions: 'Patient must fast for 8-12 hours. Water permitted.',
     parameters: () => [
       num('Glucose (Fasting)', { unit: 'mg/dL', refLow: 70, refHigh: 100, decimals: 0, notes: '100-125 = impaired fasting glucose, ≥126 = diabetes' }),
@@ -293,6 +381,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '2 mL fluoride (grey top)',
     defaultPrice: 150,
     turnaroundHours: 2,
+    aliases: ['PP Glucose', 'PPG', '2-Hour Glucose', 'PP Sugar', 'Postprandial Glucose'],
+    tags: ['glucose', 'sugar', 'diabetes', 'postprandial', 'ppbs', 'ogtt'],
     instructions: 'Sample to be collected exactly 2 hours after a standard meal.',
     parameters: () => [
       num('Glucose (Postprandial)', { unit: 'mg/dL', refLow: 70, refHigh: 140, decimals: 0, notes: '140-199 = impaired tolerance, ≥200 = diabetes' }),
@@ -307,6 +397,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '2 mL fluoride (grey top)',
     defaultPrice: 100,
     turnaroundHours: 2,
+    aliases: ['Random Glucose', 'RBG', 'Random Sugar'],
+    tags: ['glucose', 'sugar', 'diabetes', 'random', 'rbs'],
     parameters: () => [
       num('Glucose (Random)', { unit: 'mg/dL', refLow: 70, refHigh: 140, decimals: 0 }),
     ],
@@ -320,6 +412,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '2 mL EDTA whole blood',
     defaultPrice: 550,
     turnaroundHours: 6,
+    aliases: ['HbA1c', 'A1c', 'Glycohemoglobin', 'Glycated Hb', 'Hemoglobin A1c', 'GHb', 'HbA1C'],
+    tags: ['diabetes', 'hba1c', 'a1c', 'glycemic control', 'sugar control', 'three month'],
     description: 'Reflects average glycaemic control over ~3 months.',
     interpretation:
       '<5.7% Normal | 5.7-6.4% Prediabetes | ≥6.5% Diabetes | <7% Target on therapy for most adults.',
@@ -337,6 +431,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '3 mL serum (gold/red top)',
     defaultPrice: 700,
     turnaroundHours: 6,
+    aliases: ['Lipid Panel', 'Cholesterol Panel', 'Cholesterol Profile', 'Fasting Lipid Profile', 'FLP'],
+    tags: ['cholesterol', 'hdl', 'ldl', 'triglycerides', 'vldl', 'lipid', 'cardiac risk', 'cvd'],
     instructions: '9-12 hour fast required (water only). Hold lipid-lowering drugs only if specifically advised.',
     description: 'Cardiovascular risk stratification: TC, HDL, LDL, VLDL, TG and computed ratios.',
     interpretation:
@@ -361,6 +457,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '3 mL serum',
     defaultPrice: 650,
     turnaroundHours: 6,
+    aliases: ['Liver Profile', 'LFTs', 'Liver Panel', 'Hepatic Panel', 'Hepatic Function Panel'],
+    tags: ['liver', 'bilirubin', 'sgot', 'sgpt', 'ast', 'alt', 'alp', 'ggt', 'albumin', 'globulin', 'jaundice', 'hepatitis'],
     description: 'Hepatocellular + cholestatic + synthetic-function panel.',
     interpretation:
       'ALT > AST pattern → hepatocellular (viral hepatitis, NAFLD, drug-induced). AST > ALT (ratio > 2) → alcoholic. Disproportionate ALP rise with GGT → cholestasis. Hypoalbuminaemia suggests chronic liver disease.',
@@ -387,6 +485,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '3 mL serum',
     defaultPrice: 600,
     turnaroundHours: 6,
+    aliases: ['Renal Function Test', 'RFT', 'KFT', 'Renal Panel', 'Kidney Panel', 'Renal Profile'],
+    tags: ['kidney', 'renal', 'creatinine', 'urea', 'bun', 'uric acid', 'sodium', 'potassium', 'chloride', 'electrolytes', 'egfr', 'ckd'],
     description: 'Renal + electrolyte panel.',
     interpretation:
       'BUN/Creatinine ratio > 20:1 suggests pre-renal azotaemia. eGFR < 60 mL/min for ≥3 months defines CKD. Hyperkalaemia >6.0 mEq/L needs urgent management.',
@@ -412,6 +512,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '2 mL serum',
     defaultPrice: 400,
     turnaroundHours: 4,
+    aliases: ['Electrolytes', 'Na K Cl', 'Serum Lytes', 'BMP Electrolytes'],
+    tags: ['sodium', 'potassium', 'chloride', 'bicarbonate', 'electrolytes', 'na', 'k', 'cl'],
     parameters: () => [
       num('Sodium', { unit: 'mEq/L', refLow: 135, refHigh: 145, decimals: 0 }),
       num('Potassium', { unit: 'mEq/L', refLow: 3.5, refHigh: 5.1, decimals: 1 }),
@@ -428,6 +530,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '2 mL serum',
     defaultPrice: 200,
     turnaroundHours: 4,
+    aliases: ['Calcium', 'Total Calcium', 'Ca'],
+    tags: ['calcium', 'ca', 'bone', 'parathyroid', 'mineral'],
     parameters: () => [
       num('Total Calcium', { unit: 'mg/dL', refLow: 8.5, refHigh: 10.5, decimals: 1 }),
       num('Ionised Calcium', { unit: 'mg/dL', refLow: 4.5, refHigh: 5.6, decimals: 2, notes: 'Optional' }),
@@ -442,6 +546,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '3 mL serum (fasting morning sample)',
     defaultPrice: 900,
     turnaroundHours: 12,
+    aliases: ['Iron Panel', 'Iron Profile', 'Anemia Workup', 'Ferritin Profile'],
+    tags: ['iron', 'ferritin', 'tibc', 'transferrin', 'anemia', 'iron deficiency'],
     instructions: 'Fasting morning sample preferred. Hold iron supplements ≥24 hours.',
     description: 'Iron / TIBC / Transferrin saturation / Ferritin — comprehensive iron-status panel.',
     interpretation:
@@ -463,6 +569,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '2 mL serum',
     defaultPrice: 1200,
     turnaroundHours: 24,
+    aliases: ['Vitamin D', '25(OH)D', '25 Hydroxy Vitamin D', 'Vit D', 'D3', 'Calcidiol'],
+    tags: ['vitamin d', 'vit d', 'd3', '25 oh', 'bone', 'calcium'],
     interpretation: '<20 Deficient | 20-29 Insufficient | 30-100 Sufficient | >100 Potential toxicity',
     parameters: () => [
       num('25-Hydroxy Vitamin D', { unit: 'ng/mL', refLow: 30, refHigh: 100, decimals: 1 }),
@@ -477,6 +585,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '2 mL serum',
     defaultPrice: 850,
     turnaroundHours: 12,
+    aliases: ['B12', 'Cobalamin', 'Cyanocobalamin', 'Vit B12'],
+    tags: ['vitamin b12', 'b12', 'cobalamin', 'pernicious anemia', 'megaloblastic'],
     parameters: () => [
       num('Vitamin B12', { unit: 'pg/mL', refLow: 200, refHigh: 900, decimals: 0 }),
     ],
@@ -490,6 +600,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '2 mL serum',
     defaultPrice: 400,
     turnaroundHours: 6,
+    aliases: ['CRP', 'hs-CRP', 'High Sensitivity CRP', 'C Reactive Protein'],
+    tags: ['crp', 'inflammation', 'sepsis', 'infection', 'acute phase'],
     description: 'Acute-phase reactant; non-specific marker of inflammation.',
     parameters: () => [
       num('CRP (Quantitative)', { unit: 'mg/L', refLow: 0, refHigh: 10, decimals: 1, notes: '>40 strongly suggests bacterial infection in adults' }),
@@ -504,6 +616,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '2 mL serum',
     defaultPrice: 800,
     turnaroundHours: 2,
+    aliases: ['Trop I', 'cTnI', 'Cardiac Troponin', 'Troponin', 'hs-Trop I', 'High Sensitivity Troponin'],
+    tags: ['troponin', 'cardiac', 'mi', 'myocardial infarction', 'heart attack', 'acs', 'chest pain'],
     description: 'Cardiac-specific marker of myocardial injury. Repeat at 3-6 hours if first sample negative but suspicion high.',
     parameters: () => [
       num('Troponin I', { unit: 'ng/mL', refLow: 0, refHigh: 0.04, decimals: 3, notes: '>0.04 elevated; >0.5 suggests MI in correct clinical context' }),
@@ -521,6 +635,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '3 mL serum',
     defaultPrice: 750,
     turnaroundHours: 8,
+    aliases: ['Thyroid Function Test', 'TFT', 'T3 T4 TSH', 'Thyroid Panel'],
+    tags: ['thyroid', 't3', 't4', 'tsh', 'hypothyroid', 'hyperthyroid', 'goitre'],
     description: 'Primary thyroid screen.',
     interpretation:
       'Primary hypothyroidism: ↑TSH ↓T4. Primary hyperthyroidism: ↓TSH ↑T4/T3. Subclinical hypothyroid: ↑TSH normal T4. Pregnancy / pituitary disease alters interpretation.',
@@ -539,6 +655,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '3 mL serum',
     defaultPrice: 900,
     turnaroundHours: 8,
+    aliases: ['Free T3 T4 TSH', 'Free Thyroid Profile', 'FT3 FT4 TSH', 'Free Thyroid Panel'],
+    tags: ['thyroid', 'ft3', 'ft4', 'tsh', 'free t3', 'free t4', 'hyperthyroid', 'hypothyroid'],
     parameters: () => [
       num('Free T3 (FT3)', { unit: 'pg/mL', refLow: 2.0, refHigh: 4.4, decimals: 2 }),
       num('Free T4 (FT4)', { unit: 'ng/dL', refLow: 0.8, refHigh: 1.8, decimals: 2 }),
@@ -557,6 +675,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '10 mL mid-stream urine',
     defaultPrice: 200,
     turnaroundHours: 4,
+    aliases: ['Urinalysis', 'UA', 'Urine R/M', 'Urine Routine', 'Urine Examination', 'URE'],
+    tags: ['urine', 'urinalysis', 'microscopy', 'dipstick', 'protein', 'sugar', 'ketones', 'wbc', 'rbc', 'uti'],
     instructions: 'Mid-stream urine collected in a clean, dry container. Reach lab within 1 hour of collection.',
     description: 'Physical, chemical and microscopic urinalysis.',
     parameters: () => [
@@ -595,6 +715,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '10 mL mid-stream urine in sterile container',
     defaultPrice: 600,
     turnaroundHours: 72,
+    aliases: ['Urine C/S', 'Urine Culture', 'UTI Culture', 'Urine C&S'],
+    tags: ['urine', 'culture', 'sensitivity', 'uti', 'antibiotic', 'antibiogram', 'organism', 'cfu'],
     description: 'Aerobic culture with colony count and antimicrobial susceptibility.',
     parameters: () => [
       sel('Growth', [opt('no_growth', 'No growth at 48 hrs'), opt('insignificant', 'Insignificant growth'), opt('significant', 'Significant growth'), opt('mixed_flora', 'Mixed flora — repeat collection')], { group: 'Culture' }),
@@ -612,6 +734,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: 'Fresh stool sample in clean container',
     defaultPrice: 200,
     turnaroundHours: 4,
+    aliases: ['Stool R/M', 'Stool Examination', 'Stool Routine', 'Stool R&M'],
+    tags: ['stool', 'feces', 'parasites', 'ova', 'cysts', 'diarrhea', 'occult blood'],
     parameters: () => [
       sel('Colour', [opt('brown', 'Brown'), opt('pale', 'Pale'), opt('black', 'Black / Melaena'), opt('green', 'Green'), opt('red', 'Red / Bloody')], { group: 'Physical', refRangeText: 'Brown' }),
       sel('Consistency', [opt('formed', 'Formed'), opt('semi_formed', 'Semi-formed'), opt('loose', 'Loose'), opt('watery', 'Watery'), opt('hard', 'Hard')], { group: 'Physical', refRangeText: 'Formed' }),
@@ -632,6 +756,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: 'Early morning sputum, 2-3 mL, in sterile leak-proof container',
     defaultPrice: 250,
     turnaroundHours: 24,
+    aliases: ['AFB Smear', 'ZN Stain', 'Ziehl Neelsen', 'TB Smear', 'AFB Sputum'],
+    tags: ['afb', 'tuberculosis', 'tb', 'sputum', 'mycobacterium', 'ziehl neelsen', 'cough'],
     instructions: 'Collect three early-morning specimens on consecutive days for screening.',
     parameters: () => [
       sel('AFB Smear Grading', [
@@ -656,6 +782,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '2 mL serum',
     defaultPrice: 250,
     turnaroundHours: 4,
+    aliases: ['Widal', 'Typhi Dot', 'Typhoid Serology'],
+    tags: ['typhoid', 'salmonella', 'typhi', 'paratyphi', 'widal', 'enteric fever'],
     description: 'Tube agglutination titres for S. typhi and S. paratyphi.',
     interpretation:
       'Titre ≥1:160 of O antigen, or rising titre on paired samples, suggests typhoid. Single high titre may persist after past infection or vaccination.',
@@ -675,6 +803,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '2 mL serum',
     defaultPrice: 1100,
     turnaroundHours: 6,
+    aliases: ['Dengue Panel', 'Dengue Serology', 'Dengue NS1', 'Dengue IgG IgM', 'Dengue Combo'],
+    tags: ['dengue', 'ns1', 'igg', 'igm', 'fever', 'vector borne', 'arbovirus'],
     description: 'NS1 detects current infection (days 1-7); IgM rises after day 4; IgG indicates past / secondary infection.',
     parameters: () => [
       sel('NS1 Antigen', REACTIVE_OPTS, { group: 'Dengue Panel', refRangeText: 'Non-reactive' }),
@@ -691,6 +821,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '2 mL EDTA whole blood',
     defaultPrice: 350,
     turnaroundHours: 3,
+    aliases: ['Malarial Parasite', 'MP Smear', 'MP Antigen', 'Malaria Smear', 'MP RDT'],
+    tags: ['malaria', 'mp', 'falciparum', 'vivax', 'parasite', 'fever', 'vector borne'],
     parameters: () => [
       sel('P. falciparum Antigen', POSITIVE_OPTS, { group: 'Antigen', refRangeText: 'Negative' }),
       sel('P. vivax Antigen', POSITIVE_OPTS, { group: 'Antigen', refRangeText: 'Negative' }),
@@ -708,6 +840,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '2 mL serum',
     defaultPrice: 500,
     turnaroundHours: 8,
+    aliases: ['HIV', 'HIV Test', 'AIDS Test', 'HIV 1/2', 'HIV Antibody', 'HIV Screening'],
+    tags: ['hiv', 'aids', 'antibody', 'screening', 'sti', 'std'],
     instructions: 'Pre-test counselling per ICTC/NACO protocol where applicable.',
     parameters: () => [
       sel('HIV-1 Antibody', REACTIVE_OPTS, { refRangeText: 'Non-reactive' }),
@@ -724,6 +858,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '2 mL serum',
     defaultPrice: 350,
     turnaroundHours: 8,
+    aliases: ['HBsAg', 'Hep B', 'Australia Antigen', 'HBV', 'Hepatitis B'],
+    tags: ['hbsag', 'hepatitis b', 'hep b', 'hbv', 'australia antigen', 'liver', 'serology'],
     parameters: () => [
       sel('HBsAg', REACTIVE_OPTS, { refRangeText: 'Non-reactive' }),
     ],
@@ -737,6 +873,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: '2 mL serum',
     defaultPrice: 450,
     turnaroundHours: 8,
+    aliases: ['Anti-HCV', 'HCV Antibody', 'Hep C', 'HCV', 'Hepatitis C'],
+    tags: ['hcv', 'hepatitis c', 'hep c', 'anti hcv', 'liver', 'serology'],
     parameters: () => [
       sel('Anti-HCV Antibody', REACTIVE_OPTS, { refRangeText: 'Non-reactive' }),
     ],
@@ -750,6 +888,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: 'NP + OP swab in viral transport medium',
     defaultPrice: 1200,
     turnaroundHours: 12,
+    aliases: ['COVID PCR', 'SARS-CoV-2 PCR', 'Coronavirus PCR', 'COVID', 'COVID-19 RTPCR'],
+    tags: ['covid', 'sars cov 2', 'corona', 'pcr', 'respiratory virus'],
     parameters: () => [
       sel('SARS-CoV-2 RT-PCR', POSITIVE_OPTS, { group: 'Result', refRangeText: 'Negative' }),
       text('CT Value (N / ORF1ab / E gene)', { group: 'Result', refRangeText: '>40 (Negative)' }),
@@ -768,6 +908,8 @@ const TEMPLATES: TemplateSeed[] = [
     specimen: 'Cervical scrape on slide, fixed in 95% alcohol',
     defaultPrice: 700,
     turnaroundHours: 48,
+    aliases: ['Pap Test', 'Cervical Cytology', 'Cervical Smear', 'PAP'],
+    tags: ['pap', 'cervical cancer', 'cytology', 'screening', 'bethesda', 'hpv', 'women'],
     description: 'Cervical cytology — Bethesda 2014 classification.',
     parameters: () => [
       sel('Specimen Adequacy', [opt('satisfactory', 'Satisfactory'), opt('unsatisfactory', 'Unsatisfactory')], { group: 'Adequacy' }),
@@ -821,6 +963,18 @@ async function seed() {
       select: { id: true, version: true },
     });
 
+    const aliases = normaliseAliases(tpl.aliases ?? []);
+    const tags = normaliseTags(tpl.tags ?? []);
+    const searchTokens = buildSearchTokens({
+      name: tpl.name,
+      code: tpl.code,
+      departmentName: tpl.departmentName,
+      sampleType: tpl.sampleType,
+      aliases,
+      tags,
+      parameters: parsed,
+    });
+
     const data = {
       name: tpl.name,
       code: tpl.code,
@@ -833,6 +987,9 @@ async function seed() {
       turnaroundHours: tpl.turnaroundHours,
       parameters: parsed as unknown as Prisma.InputJsonValue,
       interpretation: tpl.interpretation ?? null,
+      aliases,
+      tags,
+      searchTokens,
       isPublished: true,
     };
 

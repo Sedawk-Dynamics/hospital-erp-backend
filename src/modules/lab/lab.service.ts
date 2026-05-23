@@ -8,6 +8,8 @@ import {
   safeLabReportCorrectedEmail,
 } from './lab.audit';
 import { Prisma } from '@prisma/client';
+import { buildSearchTokens, normaliseAliases, normaliseTags } from './lab-templates.service';
+import type { ParameterSpec } from './lab.validation';
 import type {
   CreateLabDepartmentInput,
   UpdateLabDepartmentInput,
@@ -272,6 +274,19 @@ export async function createTest(tenantId: string, roles: string[], data: Create
     }
   }
 
+  const aliases = normaliseAliases(data.aliases ?? []);
+  const tags = normaliseTags(data.tags ?? []);
+  const params = (data.parameters as ParameterSpec[] | undefined) ?? null;
+  const searchTokens = buildSearchTokens({
+    name: data.testName,
+    code: data.testCode,
+    departmentName: department.name,
+    sampleType: data.sampleType,
+    aliases,
+    tags,
+    parameters: params,
+  });
+
   const test = await prisma.labTestCatalog.create({
     data: {
       tenantId,
@@ -290,6 +305,13 @@ export async function createTest(tenantId: string, roles: string[], data: Create
         ? (data.parameters as unknown as Prisma.InputJsonValue)
         : undefined,
       interpretation: data.interpretation,
+      aliases,
+      tags,
+      searchTokens,
+      // Custom rows live independently of master data — they have no
+      // templateId and are skipped by re-clone-all. Hospital-authored
+      // tests default to isCustom = true even if the caller forgot to set it.
+      isCustom: data.isCustom ?? true,
       isActive: data.isActive,
     },
     include: {
@@ -297,7 +319,7 @@ export async function createTest(tenantId: string, roles: string[], data: Create
     },
   });
 
-  logger.info({ tenantId, testId: test.id }, 'Lab test created');
+  logger.info({ tenantId, testId: test.id, isCustom: test.isCustom }, 'Lab test created');
   return test;
 }
 
@@ -319,9 +341,17 @@ export async function getTests(tenantId: string, query: GetTestsQuery) {
   }
 
   if (query.search) {
+    const q = query.search;
+    // Dynamic search: match the canonical test name/code AND the
+    // denormalised searchTokens column (aliases / tags / parameter names).
+    // Hospitals using "FBC" or "Hemogram" for what we call "Complete Blood
+    // Count (CBC)" hit the right row.
     where.OR = [
-      { testName: { contains: query.search, mode: 'insensitive' } },
-      { testCode: { contains: query.search, mode: 'insensitive' } },
+      { testName: { contains: q, mode: 'insensitive' } },
+      { testCode: { contains: q, mode: 'insensitive' } },
+      { searchTokens: { contains: q.toLowerCase() } },
+      { aliases: { has: q } },
+      { tags: { has: q.toLowerCase() } },
     ];
   }
 
@@ -397,6 +427,28 @@ export async function updateTest(
     }
   }
 
+  // Recompute searchTokens from the merged state so a single-field edit
+  // (e.g. just adding an alias) keeps the index consistent.
+  const aliases = data.aliases !== undefined ? normaliseAliases(data.aliases) : test.aliases ?? [];
+  const tags = data.tags !== undefined ? normaliseTags(data.tags) : test.tags ?? [];
+  const nextParameters =
+    data.parameters !== undefined
+      ? (data.parameters as ParameterSpec[] | null)
+      : (test.parameters as unknown as ParameterSpec[] | null);
+  const nextDepartmentName =
+    data.labDepartmentId
+      ? (await prisma.labDepartment.findUnique({ where: { id: data.labDepartmentId } }))?.name ?? null
+      : (await prisma.labDepartment.findUnique({ where: { id: test.labDepartmentId } }))?.name ?? null;
+  const searchTokens = buildSearchTokens({
+    name: data.testName ?? test.testName,
+    code: data.testCode ?? test.testCode,
+    departmentName: nextDepartmentName,
+    sampleType: data.sampleType ?? test.sampleType,
+    aliases,
+    tags,
+    parameters: nextParameters,
+  });
+
   const updated = await prisma.labTestCatalog.update({
     where: { id },
     data: {
@@ -418,6 +470,9 @@ export async function updateTest(
             ? Prisma.JsonNull
             : (data.parameters as unknown as Prisma.InputJsonValue),
       interpretation: data.interpretation,
+      aliases: data.aliases !== undefined ? aliases : undefined,
+      tags: data.tags !== undefined ? tags : undefined,
+      searchTokens,
       isActive: data.isActive,
     },
     include: {
