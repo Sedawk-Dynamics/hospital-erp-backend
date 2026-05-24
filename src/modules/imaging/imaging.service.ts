@@ -566,6 +566,13 @@ export async function getImagingResultById(tenantId: string, id: string) {
       },
       radiologist: { select: { id: true, firstName: true, lastName: true, email: true } },
       signer: { select: { id: true, firstName: true, lastName: true } },
+      attachments: {
+        where: { deletedAt: null },
+        orderBy: { createdAt: 'desc' },
+        include: {
+          uploader: { select: { id: true, firstName: true, lastName: true } },
+        },
+      },
     },
   });
 
@@ -574,6 +581,50 @@ export async function getImagingResultById(tenantId: string, id: string) {
   }
 
   return result;
+}
+
+// Edit a draft / finalized imaging result before sign-off. Lets the
+// radiologist correct findings, impression, or swap the mirrored PDF URL.
+// Published results stay locked — corrections go through verifyImagingResult
+// + a fresh draft per audit policy.
+export async function editImagingResult(
+  tenantId: string,
+  id: string,
+  data: {
+    findings?: string;
+    impression?: string;
+    pacsReferenceId?: string;
+    pdfReportUrl?: string;
+  },
+) {
+  const result = await prisma.imagingResult.findFirst({
+    where: { id, imagingRequest: { tenantId } },
+  });
+
+  if (!result) throw AppError.notFound('Imaging result not found');
+  if (result.status === 'published') {
+    throw AppError.badRequest('Cannot edit a published imaging result');
+  }
+
+  const updated = await prisma.imagingResult.update({
+    where: { id },
+    data: {
+      findings: data.findings ?? result.findings,
+      impression: data.impression ?? result.impression,
+      pacsReferenceId: data.pacsReferenceId ?? result.pacsReferenceId,
+      pdfReportUrl: data.pdfReportUrl ?? result.pdfReportUrl,
+    },
+    include: {
+      imagingRequest: {
+        select: { id: true, imagingType: true, bodyPart: true },
+      },
+      patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+      radiologist: { select: { id: true, firstName: true, lastName: true } },
+    },
+  });
+
+  logger.info({ tenantId, imagingResultId: id }, 'Imaging result edited');
+  return updated;
 }
 
 export async function addImagingReport(

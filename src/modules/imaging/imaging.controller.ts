@@ -114,6 +114,16 @@ export async function addImagingReport(req: AuthenticatedRequest, res: Response,
   }
 }
 
+export async function editImagingResult(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const result = await imagingService.editImagingResult(tenantId, req.params.id as string, req.body);
+    sendResponse({ res, message: 'Imaging result updated successfully', data: result });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function verifyImagingResult(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const tenantId = req.user!.tenantId;

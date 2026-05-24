@@ -33,8 +33,31 @@ const ALLOWED_EXTENSIONS = [
   '.pdf', '.doc', '.docx',
 ];
 
+// Radiology allows everything the generic uploader does plus DICOM modality
+// output and video loops (USG/echo). Browsers don't have a canonical mime
+// for .dcm so the extension check is what gates it through.
+const ALLOWED_IMAGING_MIME_TYPES = [
+  ...ALLOWED_TYPES,
+  'image/bmp',
+  'image/tiff',
+  'video/mp4',
+  'video/webm',
+  'video/quicktime',
+  'application/dicom',
+  'application/octet-stream', // .dcm often arrives as octet-stream
+];
+
+const ALLOWED_IMAGING_EXTENSIONS = [
+  ...ALLOWED_EXTENSIONS,
+  '.bmp', '.tif', '.tiff',
+  '.mp4', '.webm', '.mov',
+  '.dcm', '.dicom',
+];
+
 // Max file size: 10MB
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
+// Radiology files (esp. DICOM series / video loops) are bigger than lab PDFs.
+const MAX_IMAGING_FILE_SIZE = 100 * 1024 * 1024;
 
 /**
  * Configure multer disk storage
@@ -84,6 +107,48 @@ const upload = multer({
  */
 export function uploadSingle(fieldName: string) {
   return upload.single(fieldName);
+}
+
+// Radiology-specific multer: bigger size limit + DICOM/video allowlist. Kept
+// as its own instance so a relaxed allowlist doesn't leak into lab/general
+// upload paths.
+function imagingFileFilter(_req: Request, file: Express.Multer.File, cb: FileFilterCallback) {
+  const ext = path.extname(file.originalname).toLowerCase();
+
+  if (!ALLOWED_IMAGING_EXTENSIONS.includes(ext)) {
+    return cb(
+      new Error(
+        `File extension '${ext}' is not allowed for imaging. Allowed: ${ALLOWED_IMAGING_EXTENSIONS.join(', ')}.`,
+      ),
+    );
+  }
+
+  // .dcm files commonly come through as application/octet-stream — accept on
+  // extension match for those. For other types still require a known MIME.
+  const isDicomExt = ext === '.dcm' || ext === '.dicom';
+  if (!isDicomExt && !ALLOWED_IMAGING_MIME_TYPES.includes(file.mimetype)) {
+    return cb(
+      new Error(
+        `File type '${file.mimetype}' is not allowed for imaging.`,
+      ),
+    );
+  }
+
+  cb(null, true);
+}
+
+const imagingUpload = multer({
+  storage,
+  limits: { fileSize: MAX_IMAGING_FILE_SIZE },
+  fileFilter: imagingFileFilter,
+});
+
+export function uploadImagingSingle(fieldName: string) {
+  return imagingUpload.single(fieldName);
+}
+
+export function uploadImagingMultiple(fieldName: string, maxCount = 10) {
+  return imagingUpload.array(fieldName, maxCount);
 }
 
 /**

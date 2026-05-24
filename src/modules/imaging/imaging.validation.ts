@@ -123,6 +123,22 @@ export const addImagingReportSchema = z.object({
   }),
 });
 
+// Used by the radiologist "Edit" button on a draft / finalized result. Any
+// subset of these fields can be sent. URL is allowed to be an `/uploads/...`
+// relative path (set by the attachment mirror) so the strict url() check is
+// relaxed to a string.
+export const editImagingResultSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid imaging result ID'),
+  }),
+  body: z.object({
+    findings: z.string().optional(),
+    impression: z.string().optional(),
+    pacsReferenceId: z.string().max(255).optional(),
+    pdfReportUrl: z.string().max(2048).optional(),
+  }),
+});
+
 export const verifyImagingResultSchema = z.object({
   params: z.object({
     id: z.string().uuid('Invalid imaging result ID'),

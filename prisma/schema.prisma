@@ -677,6 +677,19 @@ enum LabAttachmentCategory {
   other      @map("other")
 }
 
+// Imaging-side counterpart to LabAttachmentCategory. Same five top-level
+// buckets plus DICOM (modality output) and video (USG/echo loops) which
+// are radiology-only.
+enum ImagingAttachmentCategory {
+  report_pdf @map("report_pdf")
+  image      @map("image")
+  dicom      @map("dicom")
+  video      @map("video")
+  scan       @map("scan")
+  raw_data   @map("raw_data")
+  other      @map("other")
+}
+
 enum ImagingType {
   xray       @map("xray")
   mri        @map("mri")
@@ -1218,6 +1231,7 @@ model Tenant {
   labUnitGroups              LabUnitGroup[]
   labUnits                   LabUnit[]
   imagingRequests            ImagingRequest[]
+  imagingAttachments         ImagingAttachment[]
   drugCategories             DrugCategory[]
   drugFormulary              DrugFormulary[]
   drugBatches                DrugBatch[]
@@ -1449,6 +1463,7 @@ model User {
   imagingRequestsExternallyDone  ImagingRequest[]             @relation("ImagingRequestExternalCompleter")
   imagingResultsRadiologist      ImagingResult[]              @relation("ImagingRadiologist")
   imagingResultsSigned           ImagingResult[]              @relation("ImagingResultSigner")
+  imagingAttachmentsUploaded     ImagingAttachment[]          @relation("ImagingAttachmentUploader")
   dispensingRecords              DispensingRecord[]           @relation("Dispenser")
   dispensingVerifications        DispensingRecord[]           @relation("DispensingVerifier")
   drugReturnsProcessed           DrugReturn[]
@@ -3656,6 +3671,7 @@ model ImagingRequest {
   assignedTechnician User?          @relation("ImagingTechnician", fields: [assignedTechnicianId], references: [id])
   externalCompleter  User?          @relation("ImagingRequestExternalCompleter", fields: [completedExternallyBy], references: [id])
   imagingResult      ImagingResult?
+  attachments        ImagingAttachment[]
 
   @@map("imaging_requests")
 }
@@ -3681,8 +3697,41 @@ model ImagingResult {
   radiologist    User?          @relation("ImagingRadiologist", fields: [radiologistId], references: [id])
   signer         User?          @relation("ImagingResultSigner", fields: [signedBy], references: [id])
   dicomStudies   DicomStudy[]
+  attachments    ImagingAttachment[]
 
   @@map("imaging_results")
+}
+
+// ImagingAttachment — files attached to a radiology order or its result.
+// Mirrors LabAttachment in spirit but accepts a broader allowlist (DICOM
+// .dcm files from modality output, video loops from USG/echo, JPEG/PNG
+// snapshots, scanned PDF reports). Same on-disk storage as lab uploads
+// (multer → /uploads/...) so doctors, nurses and patients all read the
+// same file via the public static handler.
+model ImagingAttachment {
+  id               String                    @id @default(uuid())
+  tenantId         String                    @map("tenant_id")
+  imagingRequestId String                    @map("imaging_request_id")
+  imagingResultId  String?                   @map("imaging_result_id")
+  category         ImagingAttachmentCategory @default(image)
+  fileName         String                    @map("file_name") @db.VarChar(255)
+  fileUrl          String                    @map("file_url")
+  mimeType         String                    @map("mime_type") @db.VarChar(100)
+  sizeBytes        Int                       @map("size_bytes")
+  description      String?
+  uploadedBy       String                    @map("uploaded_by")
+  createdAt        DateTime                  @default(now()) @map("created_at")
+  updatedAt        DateTime                  @default(now()) @updatedAt @map("updated_at")
+  deletedAt        DateTime?                 @map("deleted_at")
+
+  tenant         Tenant         @relation(fields: [tenantId], references: [id])
+  imagingRequest ImagingRequest @relation(fields: [imagingRequestId], references: [id])
+  imagingResult  ImagingResult? @relation(fields: [imagingResultId], references: [id])
+  uploader       User           @relation("ImagingAttachmentUploader", fields: [uploadedBy], references: [id])
+
+  @@index([tenantId, imagingRequestId])
+  @@index([tenantId, imagingResultId])
+  @@map("imaging_attachments")
 }
 
 // ============================================================
