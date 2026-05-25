@@ -77,7 +77,7 @@ export async function safeLabReportCorrectedEmail(params: {
       <p>If you have questions, please consult your doctor.</p>
       <br/>
       <p>Best regards,</p>
-      <p><strong>${params.hospitalName} Lab Department</strong></p>
+      <p><strong>${params.hospitalName} Laboratory</strong></p>
     </div>
   `;
   try {

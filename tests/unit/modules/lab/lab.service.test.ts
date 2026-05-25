@@ -1,10 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { prisma } from '../../../../src/config/database';
-import { AppError } from '../../../../src/shared/appError';
 
 import {
-  createLabDepartment,
-  getLabDepartments,
   createTest,
   getTests,
   createLabOrder,
@@ -13,7 +10,6 @@ import {
   generateLabReport,
   getLabReports,
   cancelLabOrder,
-  updateLabDepartment,
   rejectSample,
 } from '../../../../src/modules/lab/lab.service';
 
@@ -54,85 +50,11 @@ describe('Lab Service', () => {
   });
 
   // ============================================================
-  // Lab Departments
-  // ============================================================
-  describe('createLabDepartment', () => {
-    it('should create a lab department successfully', async () => {
-      const input = { name: 'Hematology', isActive: true };
-      const expected = { id: 'dept-1', tenantId: TENANT_ID, ...input, createdAt: new Date() };
-
-      (prisma.labDepartment.findFirst as any).mockResolvedValue(null);
-      (prisma.labDepartment.create as any).mockResolvedValue(expected);
-
-      const result = await createLabDepartment(TENANT_ID, input);
-
-      expect(prisma.labDepartment.findFirst).toHaveBeenCalledWith({
-        where: { tenantId: TENANT_ID, name: 'Hematology' },
-      });
-      expect(prisma.labDepartment.create).toHaveBeenCalledWith({
-        data: { tenantId: TENANT_ID, name: 'Hematology', isActive: true },
-      });
-      expect(result).toEqual(expected);
-    });
-
-    it('should throw conflict error when department name already exists', async () => {
-      const input = { name: 'Hematology', isActive: true };
-      (prisma.labDepartment.findFirst as any).mockResolvedValue({ id: 'existing-dept' });
-
-      await expect(createLabDepartment(TENANT_ID, input)).rejects.toThrow(AppError);
-      await expect(createLabDepartment(TENANT_ID, input)).rejects.toThrow(
-        'A lab department with this name already exists',
-      );
-      expect(prisma.labDepartment.create).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('getLabDepartments', () => {
-    it('should return paginated lab departments', async () => {
-      const departments = [
-        { id: 'dept-1', name: 'Hematology', tenantId: TENANT_ID },
-        { id: 'dept-2', name: 'Microbiology', tenantId: TENANT_ID },
-      ];
-
-      (prisma.labDepartment.findMany as any).mockResolvedValue(departments);
-      (prisma.labDepartment.count as any).mockResolvedValue(2);
-
-      const result = await getLabDepartments(TENANT_ID, { page: 1, limit: 20 } as any);
-
-      expect(result.departments).toEqual(departments);
-      expect(result.total).toBe(2);
-      expect(result.page).toBe(1);
-      expect(result.limit).toBe(20);
-    });
-
-    it('should filter departments by search term', async () => {
-      (prisma.labDepartment.findMany as any).mockResolvedValue([]);
-      (prisma.labDepartment.count as any).mockResolvedValue(0);
-
-      await getLabDepartments(TENANT_ID, { page: 1, limit: 20, search: 'hema' } as any);
-
-      const findManyCall = (prisma.labDepartment.findMany as any).mock.calls[0][0];
-      expect(findManyCall.where.name).toEqual({ contains: 'hema', mode: 'insensitive' });
-    });
-
-    it('should filter departments by isActive flag', async () => {
-      (prisma.labDepartment.findMany as any).mockResolvedValue([]);
-      (prisma.labDepartment.count as any).mockResolvedValue(0);
-
-      await getLabDepartments(TENANT_ID, { page: 1, limit: 20, isActive: true } as any);
-
-      const findManyCall = (prisma.labDepartment.findMany as any).mock.calls[0][0];
-      expect(findManyCall.where.isActive).toBe(true);
-    });
-  });
-
-  // ============================================================
   // Test Catalog
   // ============================================================
   describe('createTest', () => {
     it('should create a lab test successfully', async () => {
       const input = {
-        labDepartmentId: 'dept-1',
         testName: 'Complete Blood Count',
         testCode: 'CBC-001',
         sampleType: 'Blood',
@@ -145,49 +67,33 @@ describe('Lab Service', () => {
         id: 'test-1',
         tenantId: TENANT_ID,
         ...input,
-        labDepartment: { id: 'dept-1', name: 'Hematology' },
       };
 
-      (prisma.labDepartment.findFirst as any).mockResolvedValue({ id: 'dept-1', tenantId: TENANT_ID });
       (prisma.labTestCatalog.findFirst as any).mockResolvedValue(null);
       (prisma.labTestCatalog.create as any).mockResolvedValue(createdTest);
 
-      const result = await createTest(TENANT_ID, input as any);
+      const result = await createTest(TENANT_ID, ['admin'], input as any);
 
-      expect(prisma.labDepartment.findFirst).toHaveBeenCalledWith({
-        where: { id: 'dept-1', tenantId: TENANT_ID },
-      });
       expect(result.testName).toBe('Complete Blood Count');
-      expect(result.labDepartment.name).toBe('Hematology');
-    });
-
-    it('should throw not found if department does not exist', async () => {
-      const input = { labDepartmentId: 'nonexistent', testName: 'Test' };
-      (prisma.labDepartment.findFirst as any).mockResolvedValue(null);
-
-      await expect(createTest(TENANT_ID, input as any)).rejects.toThrow('Lab department not found');
     });
 
     it('should throw conflict if test code already exists', async () => {
-      const input = { labDepartmentId: 'dept-1', testName: 'Test', testCode: 'DUP-001' };
-
-      (prisma.labDepartment.findFirst as any).mockResolvedValue({ id: 'dept-1', tenantId: TENANT_ID });
+      const input = { testName: 'Test', testCode: 'DUP-001' };
       (prisma.labTestCatalog.findFirst as any).mockResolvedValue({ id: 'existing-test' });
 
-      await expect(createTest(TENANT_ID, input as any)).rejects.toThrow(
+      await expect(createTest(TENANT_ID, ['admin'], input as any)).rejects.toThrow(
         'A test with this code already exists',
       );
     });
   });
 
   describe('getTests', () => {
-    it('should return paginated lab tests with department info', async () => {
+    it('should return paginated lab tests', async () => {
       const tests = [
         {
           id: 'test-1',
           testName: 'CBC',
           testCode: 'CBC-001',
-          labDepartment: { id: 'dept-1', name: 'Hematology' },
         },
       ];
 
@@ -628,32 +534,6 @@ describe('Lab Service', () => {
       await expect(cancelLabOrder(TENANT_ID, 'order-1')).rejects.toThrow(
         'Order is already cancelled',
       );
-    });
-  });
-
-  // ============================================================
-  // Update Lab Department
-  // ============================================================
-  describe('updateLabDepartment', () => {
-    it('should update a lab department name', async () => {
-      (prisma.labDepartment.findFirst as any)
-        .mockResolvedValueOnce({ id: 'dept-1', name: 'Old Name', tenantId: TENANT_ID })
-        .mockResolvedValueOnce(null); // no duplicate
-
-      const updated = { id: 'dept-1', name: 'New Name', tenantId: TENANT_ID };
-      (prisma.labDepartment.update as any).mockResolvedValue(updated);
-
-      const result = await updateLabDepartment(TENANT_ID, 'dept-1', { name: 'New Name' } as any);
-
-      expect(result.name).toBe('New Name');
-    });
-
-    it('should throw not found when department does not exist', async () => {
-      (prisma.labDepartment.findFirst as any).mockResolvedValue(null);
-
-      await expect(
-        updateLabDepartment(TENANT_ID, 'nonexistent', { name: 'Test' } as any),
-      ).rejects.toThrow('Lab department not found');
     });
   });
 

@@ -16,18 +16,16 @@ import type {
 // Search tokens
 // ─────────────────────────────────────────────────────────────
 // Single lowercase string that concatenates everything searchable about a
-// test: name, code, aliases, tags, parameter names + codes, department,
-// sample type. Persisted on LabTestTemplate.searchTokens and
-// LabTestCatalog.searchTokens so the dynamic-search endpoint can match
-// "hemoglobin" → CBC even though "hemoglobin" only appears inside the
-// parameter list.
+// test: name, code, aliases, tags, parameter names + codes, sample type.
+// Persisted on LabTestTemplate.searchTokens and LabTestCatalog.searchTokens
+// so the dynamic-search endpoint can match "hemoglobin" → CBC even though
+// "hemoglobin" only appears inside the parameter list.
 //
 // Exported so the catalog (lab.service.ts) can reuse the same shape — keep
 // these two columns in sync.
 export function buildSearchTokens(input: {
   name?: string | null;
   code?: string | null;
-  departmentName?: string | null;
   sampleType?: string | null;
   aliases?: string[] | null;
   tags?: string[] | null;
@@ -40,7 +38,6 @@ export function buildSearchTokens(input: {
   };
   push(input.name);
   push(input.code);
-  push(input.departmentName);
   push(input.sampleType);
   (input.aliases ?? []).forEach(push);
   (input.tags ?? []).forEach(push);
@@ -112,17 +109,15 @@ export async function listLabTemplates(query: ListLabTemplatesQuery) {
   const { skip, take, page, limit } = getPaginationParams(query);
 
   const where: Record<string, unknown> = {};
-  if (query.departmentName) where.departmentName = query.departmentName;
   if (query.isPublished !== undefined) where.isPublished = query.isPublished;
   if (query.search) {
     const q = query.search;
-    // Match name/code/department directly AND the denormalised searchTokens
-    // column so a search for "FBC" or "hemoglobin" hits the right test
-    // even when those strings only live in aliases/tags/parameter names.
+    // Match name/code directly AND the denormalised searchTokens column so
+    // a search for "FBC" or "hemoglobin" hits the right test even when
+    // those strings only live in aliases/tags/parameter names.
     where.OR = [
       { name: { contains: q, mode: 'insensitive' } },
       { code: { contains: q, mode: 'insensitive' } },
-      { departmentName: { contains: q, mode: 'insensitive' } },
       { searchTokens: { contains: q.toLowerCase() } },
       { aliases: { has: q } },
       { tags: { has: q.toLowerCase() } },
@@ -175,7 +170,6 @@ export async function createLabTemplate(
   const searchTokens = buildSearchTokens({
     name: data.name,
     code: data.code,
-    departmentName: data.departmentName,
     sampleType: data.sampleType,
     aliases,
     tags,
@@ -186,7 +180,6 @@ export async function createLabTemplate(
     data: {
       name: data.name,
       code: data.code ?? null,
-      departmentName: data.departmentName,
       sampleType: data.sampleType ?? null,
       specimen: data.specimen ?? null,
       instructions: data.instructions ?? null,
@@ -244,7 +237,6 @@ export async function updateLabTemplate(
   const searchTokens = buildSearchTokens({
     name: data.name ?? fullExisting?.name ?? null,
     code: data.code ?? fullExisting?.code ?? null,
-    departmentName: data.departmentName ?? fullExisting?.departmentName ?? null,
     sampleType: data.sampleType ?? fullExisting?.sampleType ?? null,
     aliases,
     tags,
@@ -256,7 +248,6 @@ export async function updateLabTemplate(
     data: {
       name: data.name,
       code: data.code,
-      departmentName: data.departmentName,
       sampleType: data.sampleType,
       specimen: data.specimen,
       instructions: data.instructions,
@@ -295,21 +286,10 @@ export async function deleteLabTemplate(roles: string[], id: string) {
 // Clone helpers — used by both single-clone and clone-all flows
 // ─────────────────────────────────────────────────────────────
 
-async function ensureTenantDepartment(tenantId: string, departmentName: string) {
-  const existing = await prisma.labDepartment.findFirst({
-    where: { tenantId, name: departmentName },
-  });
-  if (existing) return existing;
-  return prisma.labDepartment.create({
-    data: { tenantId, name: departmentName, isActive: true },
-  });
-}
-
-// Build the LabTestCatalog payload from a template + tenant department.
+// Build the LabTestCatalog payload from a template.
 function buildCatalogDataFromTemplate(
   tenantId: string,
   template: Awaited<ReturnType<typeof prisma.labTestTemplate.findUnique>>,
-  departmentId: string,
   overridePrice?: number,
   overrideTurnaroundHours?: number,
 ) {
@@ -319,7 +299,6 @@ function buildCatalogDataFromTemplate(
   const params = template.parameters as unknown as ParameterSpec[] | null;
   return {
     tenantId,
-    labDepartmentId: departmentId,
     templateId: template.id,
     testName: template.name,
     testCode: template.code,
@@ -341,7 +320,6 @@ function buildCatalogDataFromTemplate(
     searchTokens: buildSearchTokens({
       name: template.name,
       code: template.code,
-      departmentName: template.departmentName,
       sampleType: template.sampleType,
       aliases,
       tags,
@@ -374,21 +352,16 @@ export async function cloneOneLabTemplate(
   // overwriteExisting=true.
   const existing = await prisma.labTestCatalog.findFirst({
     where: { tenantId, templateId: template.id },
-    include: { labDepartment: { select: { id: true, name: true } } },
   });
   if (existing) return { catalog: existing, status: 'already_cloned' as const };
-
-  const department = await ensureTenantDepartment(tenantId, template.departmentName);
 
   const catalog = await prisma.labTestCatalog.create({
     data: buildCatalogDataFromTemplate(
       tenantId,
       template,
-      department.id,
       body.overridePrice,
       body.overrideTurnaroundHours,
     ),
-    include: { labDepartment: { select: { id: true, name: true } } },
   });
 
   logger.info({ tenantId, templateId, catalogId: catalog.id }, 'Lab template cloned (single)');
@@ -409,7 +382,6 @@ export async function cloneAllLabTemplates(
   const templates = await prisma.labTestTemplate.findMany({
     where: {
       isPublished: true,
-      ...(body.departmentName ? { departmentName: body.departmentName } : {}),
     },
     orderBy: { name: 'asc' },
   });
@@ -425,22 +397,11 @@ export async function cloneAllLabTemplates(
   });
   const existingByTemplateId = new Map(existingClones.map((c) => [c.templateId, c.id]));
 
-  // Cache per-tenant department lookups to avoid hammering the DB.
-  const deptCache = new Map<string, string>();
-  async function deptFor(name: string) {
-    const cached = deptCache.get(name);
-    if (cached) return cached;
-    const dept = await ensureTenantDepartment(tenantId, name);
-    deptCache.set(name, dept.id);
-    return dept.id;
-  }
-
   let created = 0;
   let updated = 0;
   let skipped = 0;
 
   for (const tpl of templates) {
-    const departmentId = await deptFor(tpl.departmentName);
     const existingId = existingByTemplateId.get(tpl.id);
     if (existingId) {
       if (!body.overwriteExisting) {
@@ -456,7 +417,6 @@ export async function cloneAllLabTemplates(
           // Re-snapshot the template's schema but leave price untouched —
           // hospitals frequently customise pricing locally and a re-clone
           // shouldn't reset it.
-          labDepartmentId: departmentId,
           sampleType: tpl.sampleType,
           specimen: tpl.specimen,
           instructions: tpl.instructions,
@@ -468,7 +428,6 @@ export async function cloneAllLabTemplates(
           searchTokens: buildSearchTokens({
             name: tpl.name,
             code: tpl.code,
-            departmentName: tpl.departmentName,
             sampleType: tpl.sampleType,
             aliases,
             tags,
@@ -479,7 +438,7 @@ export async function cloneAllLabTemplates(
       updated += 1;
     } else {
       await prisma.labTestCatalog.create({
-        data: buildCatalogDataFromTemplate(tenantId, tpl, departmentId),
+        data: buildCatalogDataFromTemplate(tenantId, tpl),
       });
       created += 1;
     }

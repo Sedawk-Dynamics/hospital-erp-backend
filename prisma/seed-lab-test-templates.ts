@@ -177,7 +177,6 @@ const POSITIVE_OPTS = [opt('negative', 'Negative'), opt('positive', 'Positive')]
 type TemplateSeed = {
   name: string;
   code: string;
-  departmentName: string;
   sampleType: string;
   specimen?: string;
   defaultPrice: number;
@@ -202,7 +201,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Complete Blood Count (CBC)',
     code: 'CBC',
-    departmentName: 'Hematology',
     sampleType: 'Blood',
     specimen: '3 mL EDTA whole blood (purple top)',
     defaultPrice: 350,
@@ -252,7 +250,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Erythrocyte Sedimentation Rate (ESR)',
     code: 'ESR',
-    departmentName: 'Hematology',
     sampleType: 'Blood',
     specimen: '2 mL EDTA whole blood',
     defaultPrice: 100,
@@ -268,7 +265,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Peripheral Blood Smear',
     code: 'PBS',
-    departmentName: 'Hematology',
     sampleType: 'Blood',
     specimen: '2 mL EDTA whole blood',
     defaultPrice: 200,
@@ -288,7 +284,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Prothrombin Time with INR',
     code: 'PT-INR',
-    departmentName: 'Hematology',
     sampleType: 'Blood',
     specimen: '2.7 mL sodium citrate (blue top), 9:1 ratio',
     defaultPrice: 350,
@@ -306,7 +301,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Activated Partial Thromboplastin Time (APTT)',
     code: 'APTT',
-    departmentName: 'Hematology',
     sampleType: 'Blood',
     specimen: '2.7 mL sodium citrate (blue top)',
     defaultPrice: 350,
@@ -324,7 +318,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'D-Dimer',
     code: 'DDIMER',
-    departmentName: 'Hematology',
     sampleType: 'Blood',
     specimen: '2.7 mL sodium citrate',
     defaultPrice: 950,
@@ -340,7 +333,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Blood Grouping & Rh Typing',
     code: 'BG-RH',
-    departmentName: 'Hematology',
     sampleType: 'Blood',
     specimen: '2 mL EDTA whole blood',
     defaultPrice: 150,
@@ -360,7 +352,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Fasting Blood Sugar (FBS)',
     code: 'FBS',
-    departmentName: 'Biochemistry',
     sampleType: 'Blood',
     specimen: '2 mL fluoride (grey top)',
     defaultPrice: 120,
@@ -376,7 +367,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Postprandial Blood Sugar (PPBS)',
     code: 'PPBS',
-    departmentName: 'Biochemistry',
     sampleType: 'Blood',
     specimen: '2 mL fluoride (grey top)',
     defaultPrice: 150,
@@ -392,7 +382,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Random Blood Sugar (RBS)',
     code: 'RBS',
-    departmentName: 'Biochemistry',
     sampleType: 'Blood',
     specimen: '2 mL fluoride (grey top)',
     defaultPrice: 100,
@@ -407,7 +396,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Glycated Hemoglobin (HbA1c)',
     code: 'HBA1C',
-    departmentName: 'Biochemistry',
     sampleType: 'Blood',
     specimen: '2 mL EDTA whole blood',
     defaultPrice: 550,
@@ -426,7 +414,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Lipid Profile',
     code: 'LIPID',
-    departmentName: 'Biochemistry',
     sampleType: 'Blood',
     specimen: '3 mL serum (gold/red top)',
     defaultPrice: 700,
@@ -452,7 +439,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Liver Function Test (LFT)',
     code: 'LFT',
-    departmentName: 'Biochemistry',
     sampleType: 'Blood',
     specimen: '3 mL serum',
     defaultPrice: 650,
@@ -480,7 +466,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Kidney Function Test (KFT / RFT)',
     code: 'KFT',
-    departmentName: 'Biochemistry',
     sampleType: 'Blood',
     specimen: '3 mL serum',
     defaultPrice: 600,
@@ -507,7 +492,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Serum Electrolytes',
     code: 'ELEC',
-    departmentName: 'Biochemistry',
     sampleType: 'Blood',
     specimen: '2 mL serum',
     defaultPrice: 400,
@@ -525,7 +509,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Serum Calcium',
     code: 'CA',
-    departmentName: 'Biochemistry',
     sampleType: 'Blood',
     specimen: '2 mL serum',
     defaultPrice: 200,
@@ -541,7 +524,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Iron Studies',
     code: 'IRON',
-    departmentName: 'Biochemistry',
     sampleType: 'Blood',
     specimen: '3 mL serum (fasting morning sample)',
     defaultPrice: 900,
@@ -564,7 +546,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Vitamin D (25-OH)',
     code: 'VITD',
-    departmentName: 'Biochemistry',
     sampleType: 'Blood',
     specimen: '2 mL serum',
     defaultPrice: 1200,
@@ -580,7 +561,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Vitamin B12',
     code: 'VITB12',
-    departmentName: 'Biochemistry',
     sampleType: 'Blood',
     specimen: '2 mL serum',
     defaultPrice: 850,
@@ -595,7 +575,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'C-Reactive Protein (CRP)',
     code: 'CRP',
-    departmentName: 'Biochemistry',
     sampleType: 'Blood',
     specimen: '2 mL serum',
     defaultPrice: 400,
@@ -611,7 +590,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Troponin I (Cardiac)',
     code: 'TROP-I',
-    departmentName: 'Cardiac Markers',
     sampleType: 'Blood',
     specimen: '2 mL serum',
     defaultPrice: 800,
@@ -630,7 +608,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Thyroid Profile (T3, T4, TSH)',
     code: 'TFT',
-    departmentName: 'Endocrinology',
     sampleType: 'Blood',
     specimen: '3 mL serum',
     defaultPrice: 750,
@@ -650,7 +627,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Free Thyroid Profile (FT3, FT4, TSH)',
     code: 'FTFT',
-    departmentName: 'Endocrinology',
     sampleType: 'Blood',
     specimen: '3 mL serum',
     defaultPrice: 900,
@@ -670,7 +646,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Urine Routine & Microscopy',
     code: 'URM',
-    departmentName: 'Microbiology',
     sampleType: 'Urine',
     specimen: '10 mL mid-stream urine',
     defaultPrice: 200,
@@ -710,7 +685,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Urine Culture & Sensitivity',
     code: 'UR-CS',
-    departmentName: 'Microbiology',
     sampleType: 'Urine',
     specimen: '10 mL mid-stream urine in sterile container',
     defaultPrice: 600,
@@ -729,7 +703,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Stool Routine & Microscopy',
     code: 'STOOL-RM',
-    departmentName: 'Microbiology',
     sampleType: 'Stool',
     specimen: 'Fresh stool sample in clean container',
     defaultPrice: 200,
@@ -751,7 +724,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Sputum AFB Smear (Ziehl-Neelsen)',
     code: 'AFB',
-    departmentName: 'Microbiology',
     sampleType: 'Sputum',
     specimen: 'Early morning sputum, 2-3 mL, in sterile leak-proof container',
     defaultPrice: 250,
@@ -777,7 +749,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Widal Test',
     code: 'WIDAL',
-    departmentName: 'Serology',
     sampleType: 'Blood',
     specimen: '2 mL serum',
     defaultPrice: 250,
@@ -798,7 +769,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Dengue NS1 Antigen & IgG/IgM',
     code: 'DEN',
-    departmentName: 'Serology',
     sampleType: 'Blood',
     specimen: '2 mL serum',
     defaultPrice: 1100,
@@ -816,7 +786,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Malaria Antigen + Smear',
     code: 'MP',
-    departmentName: 'Microbiology',
     sampleType: 'Blood',
     specimen: '2 mL EDTA whole blood',
     defaultPrice: 350,
@@ -835,7 +804,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'HIV 1 & 2 Antibody',
     code: 'HIV',
-    departmentName: 'Serology',
     sampleType: 'Blood',
     specimen: '2 mL serum',
     defaultPrice: 500,
@@ -853,7 +821,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Hepatitis B Surface Antigen (HBsAg)',
     code: 'HBSAG',
-    departmentName: 'Serology',
     sampleType: 'Blood',
     specimen: '2 mL serum',
     defaultPrice: 350,
@@ -868,7 +835,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Hepatitis C Antibody (Anti-HCV)',
     code: 'HCV',
-    departmentName: 'Serology',
     sampleType: 'Blood',
     specimen: '2 mL serum',
     defaultPrice: 450,
@@ -883,7 +849,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'COVID-19 RT-PCR',
     code: 'COVID-PCR',
-    departmentName: 'Microbiology',
     sampleType: 'Nasopharyngeal Swab',
     specimen: 'NP + OP swab in viral transport medium',
     defaultPrice: 1200,
@@ -903,7 +868,6 @@ const TEMPLATES: TemplateSeed[] = [
   {
     name: 'Pap Smear (Conventional)',
     code: 'PAP',
-    departmentName: 'Cytology',
     sampleType: 'Cervical Swab',
     specimen: 'Cervical scrape on slide, fixed in 95% alcohol',
     defaultPrice: 700,
@@ -968,7 +932,6 @@ async function seed() {
     const searchTokens = buildSearchTokens({
       name: tpl.name,
       code: tpl.code,
-      departmentName: tpl.departmentName,
       sampleType: tpl.sampleType,
       aliases,
       tags,
@@ -978,7 +941,6 @@ async function seed() {
     const data = {
       name: tpl.name,
       code: tpl.code,
-      departmentName: tpl.departmentName,
       sampleType: tpl.sampleType,
       specimen: tpl.specimen ?? null,
       instructions: tpl.instructions ?? null,

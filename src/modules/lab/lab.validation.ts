@@ -65,7 +65,6 @@ export const createLabTemplateSchema = z.object({
   body: z.object({
     name: z.string().min(1).max(255),
     code: z.string().max(50).optional().nullable(),
-    departmentName: z.string().min(1).max(100),
     sampleType: z.string().max(50).optional().nullable(),
     specimen: z.string().max(255).optional().nullable(),
     instructions: z.string().max(5000).optional().nullable(),
@@ -91,7 +90,6 @@ export const labTemplateIdParamSchema = z.object({
 
 export const listLabTemplatesSchema = z.object({
   query: paginationSchema.extend({
-    departmentName: z.string().optional(),
     isPublished: z
       .string()
       .transform((val) => val === 'true')
@@ -112,8 +110,6 @@ export const cloneOneLabTemplateSchema = z.object({
 export const cloneAllLabTemplatesSchema = z.object({
   body: z
     .object({
-      // When set, restrict clone-all to a specific super-admin department.
-      departmentName: z.string().optional(),
       // When true, re-clone templates that already have a catalog clone for
       // this tenant (snapshot-overwrites the parameters). Default false: skip
       // already-cloned templates so the hospital admin's edits aren't lost.
@@ -123,48 +119,11 @@ export const cloneAllLabTemplatesSchema = z.object({
 });
 
 // ============================================================
-// Lab Departments
-// ============================================================
-
-export const createLabDepartmentSchema = z.object({
-  body: z.object({
-    name: z.string().min(1, 'Department name is required').max(100),
-    isActive: z.boolean().default(true),
-  }),
-});
-
-export const getLabDepartmentsSchema = z.object({
-  query: paginationSchema.extend({
-    isActive: z
-      .string()
-      .transform((val) => val === 'true')
-      .optional(),
-  }),
-});
-
-export const updateLabDepartmentSchema = z.object({
-  params: z.object({
-    id: z.string().uuid('Invalid department ID'),
-  }),
-  body: z.object({
-    name: z.string().min(1).max(100).optional(),
-    isActive: z.boolean().optional(),
-  }),
-});
-
-export const labDepartmentIdParamSchema = z.object({
-  params: z.object({
-    id: z.string().uuid('Invalid department ID'),
-  }),
-});
-
-// ============================================================
 // Test Catalog
 // ============================================================
 
 export const createTestSchema = z.object({
   body: z.object({
-    labDepartmentId: z.string().uuid('Invalid department ID'),
     testName: z.string().min(1, 'Test name is required').max(255),
     testCode: z.string().max(50).optional(),
     description: z.string().optional(),
@@ -189,7 +148,6 @@ export const createTestSchema = z.object({
 
 export const getTestsSchema = z.object({
   query: paginationSchema.extend({
-    labDepartmentId: z.string().uuid().optional(),
     isActive: z
       .string()
       .transform((val) => val === 'true')
@@ -209,7 +167,6 @@ export const updateTestSchema = z.object({
     id: z.string().uuid('Invalid test ID'),
   }),
   body: z.object({
-    labDepartmentId: z.string().uuid().optional(),
     testName: z.string().min(1).max(255).optional(),
     testCode: z.string().max(50).optional(),
     description: z.string().optional(),
@@ -283,7 +240,6 @@ export const getLabOrdersSchema = z.object({
     fromDate: z.string().optional(),
     toDate: z.string().optional(),
     assignedTo: z.string().optional(),
-    assignedDeptId: z.string().uuid().optional(),
     outsourced: z
       .string()
       .transform((val) => val === 'true')
@@ -342,7 +298,6 @@ export const acceptLabOrderSchema = z.object({
   }),
   body: z.object({
     assignedToId: z.string().uuid('Invalid technician user ID').optional(),
-    assignedDeptId: z.string().uuid('Invalid department ID').optional(),
     notes: z.string().max(500).optional(),
   }),
 });
@@ -532,10 +487,6 @@ export const labReportIdParamSchema = z.object({
 // ============================================================
 // Inferred types
 // ============================================================
-
-export type CreateLabDepartmentInput = z.infer<typeof createLabDepartmentSchema>['body'];
-export type UpdateLabDepartmentInput = z.infer<typeof updateLabDepartmentSchema>['body'];
-export type GetLabDepartmentsQuery = z.infer<typeof getLabDepartmentsSchema>['query'];
 
 export type CreateTestInput = z.infer<typeof createTestSchema>['body'];
 export type UpdateTestInput = z.infer<typeof updateTestSchema>['body'];

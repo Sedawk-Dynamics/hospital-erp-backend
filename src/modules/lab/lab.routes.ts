@@ -3,10 +3,6 @@ import { authenticate } from '../../middleware/authenticate';
 import { requirePermission, requireRoles } from '../../middleware/authorize';
 import { validate } from '../../middleware/validate';
 import {
-  createLabDepartmentSchema,
-  getLabDepartmentsSchema,
-  updateLabDepartmentSchema,
-  labDepartmentIdParamSchema,
   createTestSchema,
   getTestsSchema,
   testIdParamSchema,
@@ -60,12 +56,6 @@ export const labRoutes = Router();
 // authenticity summary so any third party scanning the code can confirm the
 // report is genuine.
 labRoutes.get('/public/verify/:orderId', controller.getPublicLabReportSummary);
-
-// --- Lab Departments ---
-labRoutes.post('/departments', authenticate, requirePermission('lab_orders', 'create'), validate(createLabDepartmentSchema), controller.createLabDepartment);
-labRoutes.get('/departments', authenticate, requirePermission('lab_orders', 'read'), validate(getLabDepartmentsSchema), controller.getLabDepartments);
-labRoutes.put('/departments/:id', authenticate, requirePermission('lab_orders', 'update'), validate(updateLabDepartmentSchema), controller.updateLabDepartment);
-labRoutes.delete('/departments/:id', authenticate, requirePermission('lab_orders', 'delete'), validate(labDepartmentIdParamSchema), controller.deleteLabDepartment);
 
 // --- Lab Unit Groups + Units (super-admin authors global; admin can add tenant-local) ---
 // Reads are open to any authenticated user (parameter builder uses them).

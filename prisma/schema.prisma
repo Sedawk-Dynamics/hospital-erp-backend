@@ -1224,7 +1224,6 @@ model Tenant {
   admissions                 Admission[]
   patientTransfers           PatientTransfer[]
   prescriptions              Prescription[]
-  labDepartments             LabDepartment[]
   labTestCatalog             LabTestCatalog[]
   labOrders                  LabOrder[]
   labAttachments             LabAttachment[]
@@ -3289,20 +3288,6 @@ model EmarAuditLog {
 // 9. LAB & IMAGING
 // ============================================================
 
-model LabDepartment {
-  id        String   @id @default(uuid())
-  tenantId  String   @map("tenant_id")
-  name      String   @db.VarChar(100)
-  isActive  Boolean  @default(true) @map("is_active")
-  createdAt DateTime @default(now()) @map("created_at")
-
-  tenant         Tenant           @relation(fields: [tenantId], references: [id])
-  labTestCatalog LabTestCatalog[]
-  labOrders      LabOrder[]       @relation("LabOrderDept")
-
-  @@map("lab_departments")
-}
-
 // Per-tenant lab test definition. `parameters` (when set) is the structured
 // list of result fields a technician/supervisor fills in when entering
 // results — e.g. CBC ships 22 parameters (Hemoglobin, WBC, ...) with their
@@ -3317,7 +3302,6 @@ model LabDepartment {
 model LabTestCatalog {
   id              String   @id @default(uuid())
   tenantId        String   @map("tenant_id")
-  labDepartmentId String   @map("lab_department_id")
   templateId      String?  @map("template_id")
   testName        String   @map("test_name") @db.VarChar(255)
   testCode        String?  @map("test_code") @db.VarChar(50)
@@ -3356,7 +3340,6 @@ model LabTestCatalog {
   updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
 
   tenant        Tenant           @relation(fields: [tenantId], references: [id])
-  labDepartment LabDepartment    @relation(fields: [labDepartmentId], references: [id])
   template      LabTestTemplate? @relation(fields: [templateId], references: [id])
   labOrderItems LabOrderItem[]
 
@@ -3369,14 +3352,11 @@ model LabTestCatalog {
 // by hospital admins into their own LabTestCatalog. Hospitals can re-clone
 // later to pick up new parameters, but `LabTestCatalog.parameters` is a
 // snapshot — edits to a template never retroactively mutate existing
-// catalogs. Department is matched-by-name on clone (created if missing).
+// catalogs.
 model LabTestTemplate {
   id              String   @id @default(uuid())
   name            String   @unique @db.VarChar(255)
   code            String?  @db.VarChar(50)
-  // Department name (free-text). On clone, the hospital's LabDepartment with
-  // matching name is reused, or a new one created.
-  departmentName  String   @map("department_name") @db.VarChar(100)
   sampleType      String?  @map("sample_type") @db.VarChar(50)
   specimen        String?  @db.VarChar(255)
   instructions    String?
@@ -3476,7 +3456,6 @@ model LabOrder {
   visitId                 String         @map("visit_id")
   orderedBy               String         @map("ordered_by")
   assignedToId            String?        @map("assigned_to_id")
-  assignedDeptId          String?        @map("assigned_dept_id")
   acceptedAt              DateTime?      @map("accepted_at")
   acceptedBy              String?        @map("accepted_by")
   urgency                 Urgency        @default(routine)
@@ -3501,7 +3480,6 @@ model LabOrder {
   orderer           User            @relation(fields: [orderedBy], references: [id])
   assignedTo        User?           @relation("LabOrderAssignee", fields: [assignedToId], references: [id])
   acceptedByUser    User?           @relation("LabOrderAcceptor", fields: [acceptedBy], references: [id])
-  assignedDept      LabDepartment?  @relation("LabOrderDept", fields: [assignedDeptId], references: [id])
   externalCompleter User?           @relation("LabOrderExternalCompleter", fields: [completedExternallyBy], references: [id])
   labOrderItems     LabOrderItem[]
   labSamples        LabSample[]

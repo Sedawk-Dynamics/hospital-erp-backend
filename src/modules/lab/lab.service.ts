@@ -11,9 +11,6 @@ import { Prisma } from '@prisma/client';
 import { buildSearchTokens, normaliseAliases, normaliseTags } from './lab-templates.service';
 import type { ParameterSpec } from './lab.validation';
 import type {
-  CreateLabDepartmentInput,
-  UpdateLabDepartmentInput,
-  GetLabDepartmentsQuery,
   CreateTestInput,
   UpdateTestInput,
   UpdateTestPriceInput,
@@ -145,107 +142,6 @@ export async function autoLinkLabOrderToBill(tenantId: string, labOrderId: strin
 }
 
 // ============================================================
-// Lab Departments
-// ============================================================
-
-export async function createLabDepartment(tenantId: string, data: CreateLabDepartmentInput) {
-  const existing = await prisma.labDepartment.findFirst({
-    where: { tenantId, name: data.name },
-  });
-
-  if (existing) {
-    throw AppError.conflict('A lab department with this name already exists');
-  }
-
-  const department = await prisma.labDepartment.create({
-    data: {
-      tenantId,
-      name: data.name,
-      isActive: data.isActive,
-    },
-  });
-
-  logger.info({ tenantId, departmentId: department.id }, 'Lab department created');
-  return department;
-}
-
-export async function getLabDepartments(tenantId: string, query: GetLabDepartmentsQuery) {
-  const { skip, take, page, limit } = getPaginationParams(query);
-
-  const where: any = { tenantId };
-
-  if (query.isActive !== undefined) {
-    where.isActive = query.isActive;
-  }
-
-  if (query.search) {
-    where.name = { contains: query.search, mode: 'insensitive' };
-  }
-
-  const [departments, total] = await Promise.all([
-    prisma.labDepartment.findMany({
-      where,
-      skip,
-      take,
-      orderBy: { createdAt: 'desc' },
-    }),
-    prisma.labDepartment.count({ where }),
-  ]);
-
-  return { departments, total, page, limit };
-}
-
-export async function updateLabDepartment(
-  tenantId: string,
-  id: string,
-  data: UpdateLabDepartmentInput,
-) {
-  const department = await prisma.labDepartment.findFirst({
-    where: { id, tenantId },
-  });
-
-  if (!department) {
-    throw AppError.notFound('Lab department not found');
-  }
-
-  if (data.name && data.name !== department.name) {
-    const duplicate = await prisma.labDepartment.findFirst({
-      where: { tenantId, name: data.name, id: { not: id } },
-    });
-    if (duplicate) {
-      throw AppError.conflict('A lab department with this name already exists');
-    }
-  }
-
-  const updated = await prisma.labDepartment.update({
-    where: { id },
-    data,
-  });
-
-  logger.info({ tenantId, departmentId: id }, 'Lab department updated');
-  return updated;
-}
-
-export async function deleteLabDepartment(tenantId: string, id: string) {
-  const department = await prisma.labDepartment.findFirst({
-    where: { id, tenantId },
-  });
-
-  if (!department) {
-    throw AppError.notFound('Lab department not found');
-  }
-
-  // Soft-delete by deactivating
-  const updated = await prisma.labDepartment.update({
-    where: { id },
-    data: { isActive: false },
-  });
-
-  logger.info({ tenantId, departmentId: id }, 'Lab department deactivated');
-  return updated;
-}
-
-// ============================================================
 // Test Catalog
 // ============================================================
 
@@ -254,15 +150,6 @@ export async function createTest(tenantId: string, roles: string[], data: Create
   // get the read-only catalog + price-only PATCH instead.
   if (!canEditFullCatalog(roles)) {
     throw AppError.forbidden('Only hospital admins can create lab tests');
-  }
-
-  // Verify department exists and belongs to tenant
-  const department = await prisma.labDepartment.findFirst({
-    where: { id: data.labDepartmentId, tenantId },
-  });
-
-  if (!department) {
-    throw AppError.notFound('Lab department not found');
   }
 
   if (data.testCode) {
@@ -280,7 +167,6 @@ export async function createTest(tenantId: string, roles: string[], data: Create
   const searchTokens = buildSearchTokens({
     name: data.testName,
     code: data.testCode,
-    departmentName: department.name,
     sampleType: data.sampleType,
     aliases,
     tags,
@@ -290,7 +176,6 @@ export async function createTest(tenantId: string, roles: string[], data: Create
   const test = await prisma.labTestCatalog.create({
     data: {
       tenantId,
-      labDepartmentId: data.labDepartmentId,
       testName: data.testName,
       testCode: data.testCode,
       description: data.description,
@@ -314,9 +199,6 @@ export async function createTest(tenantId: string, roles: string[], data: Create
       isCustom: data.isCustom ?? true,
       isActive: data.isActive,
     },
-    include: {
-      labDepartment: { select: { id: true, name: true } },
-    },
   });
 
   logger.info({ tenantId, testId: test.id, isCustom: test.isCustom }, 'Lab test created');
@@ -327,10 +209,6 @@ export async function getTests(tenantId: string, query: GetTestsQuery) {
   const { skip, take, page, limit } = getPaginationParams(query);
 
   const where: any = { tenantId };
-
-  if (query.labDepartmentId) {
-    where.labDepartmentId = query.labDepartmentId;
-  }
 
   if (query.isActive !== undefined) {
     where.isActive = query.isActive;
@@ -360,9 +238,6 @@ export async function getTests(tenantId: string, query: GetTestsQuery) {
       where,
       skip,
       take,
-      include: {
-        labDepartment: { select: { id: true, name: true } },
-      },
       orderBy: { createdAt: 'desc' },
     }),
     prisma.labTestCatalog.count({ where }),
@@ -374,9 +249,6 @@ export async function getTests(tenantId: string, query: GetTestsQuery) {
 export async function getTestById(tenantId: string, id: string) {
   const test = await prisma.labTestCatalog.findFirst({
     where: { id, tenantId },
-    include: {
-      labDepartment: { select: { id: true, name: true } },
-    },
   });
 
   if (!test) {
@@ -392,9 +264,9 @@ export async function updateTest(
   id: string,
   data: UpdateTestInput,
 ) {
-  // Full catalog edits (name / department / parameters / unit / range /
-  // interpretation) are admin-only. Lab supervisor / technician must use
-  // updateTestPrice for price + TAT updates.
+  // Full catalog edits (name / parameters / unit / range / interpretation)
+  // are admin-only. Lab supervisor / technician must use updateTestPrice for
+  // price + TAT updates.
   if (!canEditFullCatalog(roles)) {
     throw AppError.forbidden(
       'Only hospital admins can edit a lab test. Lab supervisors can update price + TAT via the price endpoint.',
@@ -407,15 +279,6 @@ export async function updateTest(
 
   if (!test) {
     throw AppError.notFound('Lab test not found');
-  }
-
-  if (data.labDepartmentId) {
-    const department = await prisma.labDepartment.findFirst({
-      where: { id: data.labDepartmentId, tenantId },
-    });
-    if (!department) {
-      throw AppError.notFound('Lab department not found');
-    }
   }
 
   if (data.testCode && data.testCode !== test.testCode) {
@@ -435,14 +298,9 @@ export async function updateTest(
     data.parameters !== undefined
       ? (data.parameters as ParameterSpec[] | null)
       : (test.parameters as unknown as ParameterSpec[] | null);
-  const nextDepartmentName =
-    data.labDepartmentId
-      ? (await prisma.labDepartment.findUnique({ where: { id: data.labDepartmentId } }))?.name ?? null
-      : (await prisma.labDepartment.findUnique({ where: { id: test.labDepartmentId } }))?.name ?? null;
   const searchTokens = buildSearchTokens({
     name: data.testName ?? test.testName,
     code: data.testCode ?? test.testCode,
-    departmentName: nextDepartmentName,
     sampleType: data.sampleType ?? test.sampleType,
     aliases,
     tags,
@@ -452,7 +310,6 @@ export async function updateTest(
   const updated = await prisma.labTestCatalog.update({
     where: { id },
     data: {
-      labDepartmentId: data.labDepartmentId,
       testName: data.testName,
       testCode: data.testCode,
       description: data.description,
@@ -474,9 +331,6 @@ export async function updateTest(
       tags: data.tags !== undefined ? tags : undefined,
       searchTokens,
       isActive: data.isActive,
-    },
-    include: {
-      labDepartment: { select: { id: true, name: true } },
     },
   });
 
@@ -500,7 +354,6 @@ export async function updateTestPrice(
       price: data.price,
       turnaroundHours: data.turnaroundHours,
     },
-    include: { labDepartment: { select: { id: true, name: true } } },
   });
   logger.info({ tenantId, testId: id }, 'Lab test price/TAT updated');
   return updated;
@@ -640,10 +493,6 @@ export async function getLabOrders(tenantId: string, query: GetLabOrdersQuery) {
     where.assignedToId = query.assignedTo;
   }
 
-  if (query.assignedDeptId) {
-    where.assignedDeptId = query.assignedDeptId;
-  }
-
   // Outsourced filter (alias for isThirdParty)
   if (query.outsourced !== undefined) {
     where.isThirdParty = query.outsourced;
@@ -694,9 +543,6 @@ export async function getLabOrders(tenantId: string, query: GetLabOrdersQuery) {
         },
         assignedTo: {
           select: { id: true, firstName: true, lastName: true },
-        },
-        assignedDept: {
-          select: { id: true, name: true },
         },
         labOrderItems: {
           include: {
@@ -859,18 +705,10 @@ export async function acceptLabOrder(
     if (!tech) throw AppError.badRequest('Assigned user not found in tenant');
   }
 
-  if (data.assignedDeptId) {
-    const dept = await prisma.labDepartment.findFirst({
-      where: { id: data.assignedDeptId, tenantId },
-    });
-    if (!dept) throw AppError.notFound('Lab department not found');
-  }
-
   const updated = await prisma.labOrder.update({
     where: { id },
     data: {
       assignedToId: data.assignedToId ?? order.assignedToId,
-      assignedDeptId: data.assignedDeptId ?? order.assignedDeptId,
       acceptedAt: new Date(),
       acceptedBy: acceptorUserId,
       // Move ordered → received once accepted (sample may already be in transit)
@@ -881,7 +719,6 @@ export async function acceptLabOrder(
       patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
       orderer: { select: { id: true, firstName: true, lastName: true } },
       assignedTo: { select: { id: true, firstName: true, lastName: true } },
-      assignedDept: { select: { id: true, name: true } },
       labOrderItems: {
         include: {
           test: { select: { id: true, testName: true, testCode: true } },
@@ -900,7 +737,6 @@ export async function acceptLabOrder(
     description: 'Lab order accepted by lab',
     newValues: {
       assignedToId: updated.assignedToId,
-      assignedDeptId: updated.assignedDeptId,
       acceptedAt: updated.acceptedAt,
       status: updated.status,
     },
@@ -2235,7 +2071,6 @@ export async function getLabReportAnalytics(
         id: true,
         createdAt: true,
         status: true,
-        assignedDeptId: true,
         labOrderItems: { select: { id: true, testId: true } },
       },
     }),
@@ -2258,30 +2093,15 @@ export async function getLabReportAnalytics(
   }
   const tests = await prisma.labTestCatalog.findMany({
     where: { tenantId, id: { in: Array.from(volumeMap.keys()) } },
-    select: { id: true, testName: true, labDepartmentId: true },
+    select: { id: true, testName: true },
   });
   const testVolume = tests
     .map((t) => ({
       testId: t.id,
       testName: t.testName,
       count: volumeMap.get(t.id) ?? 0,
-      labDepartmentId: t.labDepartmentId,
     }))
     .sort((a, b) => b.count - a.count);
-
-  // Department workload
-  const deptMap = new Map<string, number>();
-  for (const t of testVolume) {
-    deptMap.set(t.labDepartmentId, (deptMap.get(t.labDepartmentId) ?? 0) + t.count);
-  }
-  const departments = await prisma.labDepartment.findMany({
-    where: { tenantId, id: { in: Array.from(deptMap.keys()) } },
-  });
-  const departmentWorkload = departments.map((d) => ({
-    departmentId: d.id,
-    departmentName: d.name,
-    count: deptMap.get(d.id) ?? 0,
-  }));
 
   // TAT (in hours) order createdAt → labReport.publishedAt
   const tats: number[] = [];
@@ -2306,7 +2126,6 @@ export async function getLabReportAnalytics(
       medianTatHours: Number(medianTatHours.toFixed(2)),
     },
     testVolume: testVolume.slice(0, 50),
-    departmentWorkload,
   };
 }
 
@@ -2497,7 +2316,7 @@ export async function getInvestigationHistory(tenantId: string, patientId: strin
       visit: { select: { id: true, visitType: true, visitDate: true } },
       labOrderItems: {
         include: {
-          test: { select: { id: true, testName: true, testCode: true, labDepartment: { select: { name: true } } } },
+          test: { select: { id: true, testName: true, testCode: true } },
           labResults: {
             orderBy: { enteredAt: 'desc' },
           },
