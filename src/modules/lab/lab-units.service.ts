@@ -142,8 +142,9 @@ export async function deleteUnitGroup(tenantId: string, roles: string[], id: str
   if (!existing) throw AppError.notFound('Unit group not found');
 
   if (existing.tenantId === null) {
+    // Platform-global rows: super_admin only. The isSystem flag is provenance
+    // (seeded vs hand-authored) — it does NOT lock the row from its owner.
     if (!canWriteGlobal(roles)) throw AppError.forbidden('Only super admins can delete global unit groups');
-    if (existing.isSystem) throw AppError.badRequest('Cannot delete a system-seeded unit group');
   } else {
     if (existing.tenantId !== tenantId) throw AppError.forbidden('Cannot delete another tenant\'s unit group');
     if (!canWriteLocal(roles)) throw AppError.forbidden('Not permitted to delete unit groups');
@@ -274,8 +275,8 @@ export async function deleteUnit(tenantId: string, roles: string[], id: string) 
   if (!existing) throw AppError.notFound('Unit not found');
 
   if (existing.unitGroup.tenantId === null) {
+    // Platform-global rows: super_admin only. isSystem is informational.
     if (!canWriteGlobal(roles)) throw AppError.forbidden('Only super admins can delete a global unit');
-    if (existing.isSystem) throw AppError.badRequest('Cannot delete a system-seeded unit');
   } else {
     if (existing.unitGroup.tenantId !== tenantId) throw AppError.forbidden('Cannot delete another tenant\'s unit');
     if (!canWriteLocal(roles)) throw AppError.forbidden('Not permitted to delete units');
