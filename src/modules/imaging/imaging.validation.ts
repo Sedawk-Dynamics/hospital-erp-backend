@@ -92,7 +92,6 @@ export const uploadImagingResultSchema = z.object({
   body: z.object({
     imagingRequestId: z.string().uuid('Invalid imaging request ID'),
     patientId: z.string().uuid('Invalid patient ID'),
-    findings: z.string().optional(),
     impression: z.string().optional(),
     imageUrls: z.array(z.string().url('Invalid image URL')).optional(),
     pacsReferenceId: z.string().max(255).optional(),
@@ -116,7 +115,6 @@ export const addImagingReportSchema = z.object({
     id: z.string().uuid('Invalid imaging result ID'),
   }),
   body: z.object({
-    findings: z.string().min(1, 'Findings are required'),
     impression: z.string().optional(),
     recommendation: z.string().optional(),
     pdfReportUrl: z.string().url('Invalid report URL').optional(),
@@ -132,7 +130,6 @@ export const editImagingResultSchema = z.object({
     id: z.string().uuid('Invalid imaging result ID'),
   }),
   body: z.object({
-    findings: z.string().optional(),
     impression: z.string().optional(),
     pacsReferenceId: z.string().max(255).optional(),
     pdfReportUrl: z.string().max(2048).optional(),

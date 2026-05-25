@@ -3658,7 +3658,6 @@ model ImagingResult {
   id               String              @id @default(uuid())
   imagingRequestId String              @unique @map("imaging_request_id")
   patientId        String              @map("patient_id")
-  findings         String?
   impression       String?
   radiologistId    String?             @map("radiologist_id")
   imageUrls        Json?               @map("image_urls")

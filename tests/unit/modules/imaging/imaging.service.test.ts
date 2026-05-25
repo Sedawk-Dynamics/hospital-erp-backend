@@ -87,7 +87,7 @@ describe('Imaging Service', () => {
               id: 'img-res-1',
               imagingRequestId: 'img-req-1',
               status: 'draft',
-              findings: 'Normal',
+              impression: 'No abnormalities',
             }),
           },
           imagingRequest: {
@@ -101,12 +101,11 @@ describe('Imaging Service', () => {
       const result = await uploadImagingResult(TENANT_ID, USER_ID, {
         imagingRequestId: 'img-req-1',
         patientId: 'pat-1',
-        findings: 'Normal',
         impression: 'No abnormalities',
       } as any);
 
       expect(result.status).toBe('draft');
-      expect(result.findings).toBe('Normal');
+      expect(result.impression).toBe('No abnormalities');
     });
 
     it('should throw conflict when a result already exists for the request', async () => {
@@ -122,7 +121,6 @@ describe('Imaging Service', () => {
         uploadImagingResult(TENANT_ID, USER_ID, {
           imagingRequestId: 'img-req-1',
           patientId: 'pat-1',
-          findings: 'Normal',
         } as any),
       ).rejects.toThrow('A result already exists for this imaging request');
     });

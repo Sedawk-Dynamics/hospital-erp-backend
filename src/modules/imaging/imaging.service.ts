@@ -455,7 +455,6 @@ export async function uploadImagingResult(
         imagingRequestId: data.imagingRequestId,
         patientId: data.patientId,
         radiologistId: userId,
-        findings: data.findings,
         impression: data.impression,
         imageUrls: data.imageUrls,
         pacsReferenceId: data.pacsReferenceId,
@@ -511,7 +510,6 @@ export async function getImagingResults(tenantId: string, query: GetImagingResul
 
   if (query.search) {
     where.OR = [
-      { findings: { contains: query.search, mode: 'insensitive' } },
       { impression: { contains: query.search, mode: 'insensitive' } },
       { patient: { firstName: { contains: query.search, mode: 'insensitive' } } },
       { patient: { lastName: { contains: query.search, mode: 'insensitive' } } },
@@ -584,14 +582,13 @@ export async function getImagingResultById(tenantId: string, id: string) {
 }
 
 // Edit a draft / finalized imaging result before sign-off. Lets the
-// radiologist correct findings, impression, or swap the mirrored PDF URL.
+// radiologist correct impression or swap the mirrored PDF URL.
 // Published results stay locked — corrections go through verifyImagingResult
 // + a fresh draft per audit policy.
 export async function editImagingResult(
   tenantId: string,
   id: string,
   data: {
-    findings?: string;
     impression?: string;
     pacsReferenceId?: string;
     pdfReportUrl?: string;
@@ -609,7 +606,6 @@ export async function editImagingResult(
   const updated = await prisma.imagingResult.update({
     where: { id },
     data: {
-      findings: data.findings ?? result.findings,
       impression: data.impression ?? result.impression,
       pacsReferenceId: data.pacsReferenceId ?? result.pacsReferenceId,
       pdfReportUrl: data.pdfReportUrl ?? result.pdfReportUrl,
@@ -648,7 +644,6 @@ export async function addImagingReport(
   const updated = await prisma.imagingResult.update({
     where: { id },
     data: {
-      findings: data.findings,
       impression: data.impression,
       pdfReportUrl: data.pdfReportUrl,
       radiologistId: userId,
