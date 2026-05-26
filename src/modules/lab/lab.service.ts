@@ -68,6 +68,43 @@ async function safeNotify(params: {
   }
 }
 
+// Notify every lab_supervisor in the tenant. Used when a technician submits
+// a lab report for approval so the supervisor sees a pending-review item on
+// their dashboard / notifications.
+async function notifyLabSupervisors(
+  tenantId: string,
+  title: string,
+  message: string,
+  referenceType: string,
+  referenceId: string,
+) {
+  try {
+    const supervisors = await prisma.user.findMany({
+      where: {
+        tenantId,
+        isActive: true,
+        userRoles: { some: { role: { name: 'lab_supervisor' } } },
+      },
+      select: { id: true },
+    });
+    await Promise.all(
+      supervisors.map((s) =>
+        safeNotify({
+          tenantId,
+          userId: s.id,
+          title,
+          message,
+          notificationType: 'lab_result',
+          referenceType,
+          referenceId,
+        }),
+      ),
+    );
+  } catch (err) {
+    logger.warn({ err, tenantId }, 'Failed to notify lab supervisors');
+  }
+}
+
 // Helper: auto-link lab order tests to a draft bill on the patient's visit
 export async function autoLinkLabOrderToBill(tenantId: string, labOrderId: string) {
   try {
@@ -1425,18 +1462,23 @@ export async function publishLabReport(
     },
   });
   if (!report) throw AppError.notFound('Lab report not found');
-  if (!report.signedAt) {
-    throw AppError.badRequest('Report must be signed before publishing');
-  }
   if (report.status === 'published') {
     throw AppError.badRequest('Report is already published');
   }
 
+  // Supervisor approval = sign + approve + publish in one action. We stamp
+  // signedBy/signedAt and approvedBy/approvedAt if they aren't already set
+  // (the legacy two-step sign-then-publish path may have stamped them).
+  const now = new Date();
   const updated = await prisma.labReport.update({
     where: { id: reportId },
     data: {
       status: 'published',
-      publishedAt: new Date(),
+      signedBy: report.signedBy ?? userId,
+      signedAt: report.signedAt ?? now,
+      approvedBy: report.approvedBy ?? userId,
+      approvedAt: report.approvedAt ?? now,
+      publishedAt: now,
     },
     include: {
       labOrder: {
@@ -1526,11 +1568,13 @@ export async function publishLabReport(
   return updated;
 }
 
-// One-shot submit — generate (if needed) + sign + publish in a single
-// transition, gated by `lab_reports.create` so technicians can submit a
-// structured-mode report without a supervisor's signature. Mirrors the
-// auto-publish behaviour of the upload+mark-done path so the two flows
-// stay symmetric (techs don't need an approver in either path).
+// One-shot submit — generate (if needed) and queue the report for supervisor
+// approval (status='review'). Gated by `lab_reports.create` so technicians
+// can submit. The patient portal stays gated by status='published'|'corrected'
+// so the report is invisible to the patient until a supervisor approves and
+// publishes it via publishLabReport. The `notify` arg is reused: when true
+// we ping the lab supervisor(s); patient + ordering doctor notifications now
+// fire from publishLabReport instead.
 export async function submitLabReport(
   tenantId: string,
   orderId: string,
@@ -1588,13 +1632,10 @@ export async function submitLabReport(
   };
   const qrCodeUrl = existing?.qrCodeUrl ?? `${process.env.PUBLIC_PORTAL_URL ?? ''}/r/lab/${orderId}`;
 
-  const now = new Date();
   const reportRow = await prisma.$transaction(async (tx) => {
     // Mark every non-cancelled item completed and the order itself completed
     // so the header status, worklist filters, and report-tab visibility all
-    // line up. Mirrors the auto-publish behaviour of completeLabOrderItem
-    // so a submitted structured report and a fully-uploaded report end up
-    // in the same terminal state.
+    // line up. Mirrors the upload+mark-done flow.
     await tx.labOrderItem.updateMany({
       where: { labOrderId: orderId, status: { notIn: ['cancelled', 'completed'] } },
       data: { status: 'completed' },
@@ -1606,20 +1647,25 @@ export async function submitLabReport(
       });
     }
 
+    // Re-submit (e.g. tech edited results after supervisor sent it back) is
+    // allowed only when the existing report is still in a tech-editable
+    // state. Published / approved / corrected reports must be amended via
+    // the dedicated correctLabReport flow.
+    if (existing && existing.status !== 'draft' && existing.status !== 'review') {
+      throw AppError.badRequest(
+        `Report is already ${existing.status} — use the correction flow to amend it.`,
+      );
+    }
+
     const row = existing
       ? await tx.labReport.update({
           where: { id: existing.id },
           data: {
-            // Refresh the structured snapshot on every submit so the published
+            // Refresh the structured snapshot on every submit so the queued
             // payload reflects whatever results were entered up to this point.
             reportContent: JSON.stringify(structured),
             hospitalBranding: branding as any,
-            status: 'published',
-            signedBy: existing.signedBy ?? userId,
-            signedAt: existing.signedAt ?? now,
-            approvedBy: existing.approvedBy ?? userId,
-            approvedAt: existing.approvedAt ?? now,
-            publishedAt: now,
+            status: 'review',
           },
         })
       : await tx.labReport.create({
@@ -1629,26 +1675,21 @@ export async function submitLabReport(
             reportContent: JSON.stringify(structured),
             hospitalBranding: branding as any,
             qrCodeUrl,
-            status: 'published',
+            status: 'review',
             version: 1,
-            signedBy: userId,
-            signedAt: now,
-            approvedBy: userId,
-            approvedAt: now,
-            publishedAt: now,
           },
         });
 
-    // Backfill labReportId on order attachments so the patient portal's
-    // report.attachments relation includes any uploaded files — matches the
-    // upload+mark-done path behaviour.
+    // Backfill labReportId on order attachments so the supervisor's review
+    // surface includes any uploaded files. Patient portal still filters by
+    // status='published'|'corrected' so these stay hidden until approval.
     await tx.labAttachment.updateMany({
       where: { labOrderId: orderId, labReportId: null, deletedAt: null },
       data: { labReportId: row.id },
     });
 
     // Mirror the first report_pdf attachment onto LabReport.pdfUrl so the
-    // doctor's quick "Lab Report" link works without opening the dialog.
+    // supervisor preview / branded print can fall back to it during review.
     if (!row.pdfUrl) {
       const firstPdf = await tx.labAttachment.findFirst({
         where: { labOrderId: orderId, category: 'report_pdf', deletedAt: null },
@@ -1666,57 +1707,21 @@ export async function submitLabReport(
     return row;
   });
 
+  // Bill auto-link happens whether or not the supervisor has approved —
+  // patient owes for the test once it's been performed.
   void autoLinkLabOrderToBill(tenantId, orderId).catch((err) =>
     logger.warn({ err, orderId }, 'autoLinkLabOrderToBill failed (submit)'),
   );
 
   if (notify) {
     const patientName = `${order.patient.firstName} ${order.patient.lastName ?? ''}`.trim();
-    const message = `Lab report for ${patientName} is ready.`;
-    if (order.orderedBy) {
-      await safeNotify({
-        tenantId,
-        userId: order.orderedBy,
-        title: 'Lab report ready',
-        message,
-        notificationType: 'lab_result',
-        referenceType: 'lab_report',
-        referenceId: reportRow.id,
-      });
-    }
-    const patientUserId = (order.patient as any)?.userId as string | undefined;
-    if (patientUserId) {
-      await safeNotify({
-        tenantId,
-        userId: patientUserId,
-        title: 'Your lab report is ready',
-        message: 'Your lab report has been published. Tap to view.',
-        notificationType: 'lab_result',
-        referenceType: 'lab_report',
-        referenceId: reportRow.id,
-      });
-    }
-    const testSummary = order.labOrderItems.map((it) => it.test.testName).join(', ') || 'Lab test';
-    void safeLabReportEmail({
-      toEmail: order.patient.email ?? null,
-      patientName,
-      reportDate: new Date().toLocaleDateString('en-IN'),
-      hospitalName: tenant?.name ?? 'Hospital',
-      testSummary,
-    });
-    if (order.orderedBy) {
-      const doctor = await prisma.user.findUnique({
-        where: { id: order.orderedBy },
-        select: { email: true, firstName: true, lastName: true },
-      });
-      void safeLabReportEmail({
-        toEmail: doctor?.email ?? null,
-        patientName: `Dr. ${doctor?.firstName ?? ''} ${doctor?.lastName ?? ''}`.trim(),
-        reportDate: new Date().toLocaleDateString('en-IN'),
-        hospitalName: tenant?.name ?? 'Hospital',
-        testSummary: `${patientName} — ${testSummary}`,
-      });
-    }
+    void notifyLabSupervisors(
+      tenantId,
+      'Lab report awaiting approval',
+      `Report for ${patientName} (${order.patient.mrn ?? ''}) is ready for review.`,
+      'lab_report',
+      reportRow.id,
+    );
   }
 
   void safeLabAudit({
@@ -1725,19 +1730,19 @@ export async function submitLabReport(
     action: 'update',
     entityType: 'lab_report',
     entityId: reportRow.id,
-    description: existing ? 'Lab report submitted (re-published)' : 'Lab report submitted',
-    newValues: { status: 'published', orderId, submittedBy: userId },
+    description: existing ? 'Lab report re-submitted for approval' : 'Lab report submitted for approval',
+    newValues: { status: 'review', orderId, submittedBy: userId },
   });
 
-  logger.info({ tenantId, reportId: reportRow.id, orderId, userId }, 'Lab report submitted');
+  logger.info({ tenantId, reportId: reportRow.id, orderId, userId }, 'Lab report submitted for review');
   return reportRow;
 }
 
 // Lab order item completion — paired with the per-test "Upload + Mark Done"
-// flow. Files uploaded against the item ARE the report; once every item is
-// marked done, the order auto-completes and a LabReport is created+published
-// in one shot so downstream readers (patient portal filters status=published)
-// light up without a separate generate/sign/publish three-step.
+// flow. Files uploaded against the item ARE the report. Once every item is
+// marked done, the order auto-completes and a LabReport is created in
+// `review` state (awaiting supervisor approval). The report becomes visible
+// to the patient ONLY when a supervisor publishes it via publishLabReport.
 export async function completeLabOrderItem(
   tenantId: string,
   userId: string,
@@ -1756,7 +1761,7 @@ export async function completeLabOrderItem(
   }
 
   // Require at least one attachment on this item — the upload IS the report,
-  // so a "done" with no file would publish an empty report to the patient.
+  // so a "done" with no file would queue an empty report for the supervisor.
   const attachmentCount = await prisma.labAttachment.count({
     where: { labOrderItemId: itemId, deletedAt: null },
   });
@@ -1764,7 +1769,7 @@ export async function completeLabOrderItem(
     throw AppError.badRequest('Upload a report file before marking this test done');
   }
 
-  const { order, report, justPublished } = await prisma.$transaction(async (tx) => {
+  const { order, report, justSubmitted } = await prisma.$transaction(async (tx) => {
     if (item.status !== 'completed') {
       await tx.labOrderItem.update({
         where: { id: itemId },
@@ -1778,7 +1783,7 @@ export async function completeLabOrderItem(
 
     let orderState = item.labOrder;
     let reportRow: Awaited<ReturnType<typeof tx.labReport.findUnique>> | null = null;
-    let published = false;
+    let submitted = false;
 
     if (remaining === 0) {
       if (item.labOrder.status !== 'completed') {
@@ -1789,26 +1794,20 @@ export async function completeLabOrderItem(
         orderState = { ...item.labOrder, status: 'completed' };
       }
 
-      // Create-or-publish the report in a single transition. Patient portal
-      // surfaces files via `labReport.attachments`, so once the report exists
-      // we backfill the labReportId on every attachment of this order — the
-      // uploads ARE the report content.
+      // Create-or-update the report in `review` state — supervisor must
+      // publish before the patient sees anything. Do NOT stamp signedAt /
+      // approvedAt / publishedAt: those mark supervisor sign-off and happen
+      // in publishLabReport.
       const existing = await tx.labReport.findUnique({ where: { labOrderId: orderId } });
       if (existing) {
-        if (existing.status !== 'published') {
+        if (existing.status === 'draft' || existing.status === 'review') {
           reportRow = await tx.labReport.update({
             where: { id: existing.id },
-            data: {
-              status: 'published',
-              signedBy: existing.signedBy ?? userId,
-              signedAt: existing.signedAt ?? new Date(),
-              approvedBy: existing.approvedBy ?? userId,
-              approvedAt: existing.approvedAt ?? new Date(),
-              publishedAt: new Date(),
-            },
+            data: { status: 'review' },
           });
-          published = true;
+          submitted = existing.status !== 'review';
         } else {
+          // Already approved/published/corrected — leave as-is.
           reportRow = existing;
         }
       } else {
@@ -1816,31 +1815,27 @@ export async function completeLabOrderItem(
           data: {
             labOrderId: orderId,
             patientId: item.labOrder.patientId,
-            status: 'published',
+            status: 'review',
             version: 1,
-            signedBy: userId,
-            signedAt: new Date(),
-            approvedBy: userId,
-            approvedAt: new Date(),
-            publishedAt: new Date(),
             qrCodeUrl: `${process.env.PUBLIC_PORTAL_URL ?? ''}/r/lab/${orderId}`,
           },
         });
-        published = true;
+        submitted = true;
       }
 
       // Backfill labReportId on every order attachment that doesn't already
-      // point at a report, so the patient portal's `report.attachments`
-      // relation includes the uploaded files.
+      // point at a report. Lets the supervisor see uploaded files when
+      // reviewing the report; the patient portal still filters by
+      // status='published'|'corrected' so they stay hidden until approval.
       if (reportRow) {
         await tx.labAttachment.updateMany({
           where: { labOrderId: orderId, labReportId: null, deletedAt: null },
           data: { labReportId: reportRow.id },
         });
 
-        // Mirror the first report_pdf attachment onto LabReport.pdfUrl so the
-        // doctor's Lab Orders panel "Lab Report" quick link lights up without
-        // having to open the order detail dialog.
+        // Mirror the first report_pdf attachment onto LabReport.pdfUrl. The
+        // supervisor preview / branded print uses this field as a fallback;
+        // the patient won't see it until publish.
         if (!reportRow.pdfUrl) {
           const firstPdf = await tx.labAttachment.findFirst({
             where: {
@@ -1861,7 +1856,7 @@ export async function completeLabOrderItem(
       }
     }
 
-    return { order: orderState, report: reportRow, justPublished: published };
+    return { order: orderState, report: reportRow, justSubmitted: submitted };
   });
 
   void safeLabAudit({
@@ -1870,8 +1865,13 @@ export async function completeLabOrderItem(
     action: 'update',
     entityType: 'lab_order_item',
     entityId: itemId,
-    description: 'Lab order item marked done via upload flow',
-    newValues: { orderId, status: 'completed', orderCompleted: order.status === 'completed' },
+    description: 'Lab order item marked done — report queued for supervisor approval',
+    newValues: {
+      orderId,
+      status: 'completed',
+      orderCompleted: order.status === 'completed',
+      reportStatus: report?.status,
+    },
   });
 
   // Re-link to bill once order completes (idempotent inside the helper).
@@ -1881,69 +1881,27 @@ export async function completeLabOrderItem(
     );
   }
 
-  // Fire publish-side notifications + emails when we just promoted the report
-  // — mirrors the messaging from the legacy publishLabReport path.
-  if (justPublished && report) {
+  // When the technician just queued the report for review, ping the lab
+  // supervisor(s) so they know there's something to approve.
+  if (justSubmitted && report) {
     void (async () => {
       try {
-        const patient = await prisma.patient.findUnique({ where: { id: item.labOrder.patientId } });
-        const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } });
-        const orderDetail = await prisma.labOrder.findUnique({
-          where: { id: orderId },
-          include: { labOrderItems: { include: { test: { select: { testName: true } } } } },
+        const patient = await prisma.patient.findUnique({
+          where: { id: item.labOrder.patientId },
+          select: { firstName: true, lastName: true, mrn: true },
         });
         const patientName = patient
           ? `${patient.firstName} ${patient.lastName ?? ''}`.trim()
           : 'Patient';
-        const testSummary =
-          orderDetail?.labOrderItems.map((it) => it.test.testName).join(', ') || 'Lab test';
-        const message = `Lab report for ${patientName} is ready.`;
-
-        if (item.labOrder.orderedBy) {
-          await safeNotify({
-            tenantId,
-            userId: item.labOrder.orderedBy,
-            title: 'Lab report ready',
-            message,
-            notificationType: 'lab_result',
-            referenceType: 'lab_report',
-            referenceId: report.id,
-          });
-        }
-        const patientUserId = (patient as any)?.userId as string | undefined;
-        if (patientUserId) {
-          await safeNotify({
-            tenantId,
-            userId: patientUserId,
-            title: 'Your lab report is ready',
-            message: 'Your lab report has been published. Tap to view.',
-            notificationType: 'lab_result',
-            referenceType: 'lab_report',
-            referenceId: report.id,
-          });
-        }
-        void safeLabReportEmail({
-          toEmail: patient?.email ?? null,
-          patientName,
-          reportDate: new Date().toLocaleDateString('en-IN'),
-          hospitalName: tenant?.name ?? 'Hospital',
-          testSummary,
-        });
-        if (item.labOrder.orderedBy) {
-          const doctor = await prisma.user.findUnique({
-            where: { id: item.labOrder.orderedBy },
-            select: { email: true, firstName: true, lastName: true },
-          });
-          void safeLabReportEmail({
-            toEmail: doctor?.email ?? null,
-            patientName: `Dr. ${doctor?.firstName ?? ''} ${doctor?.lastName ?? ''}`.trim(),
-            reportDate: new Date().toLocaleDateString('en-IN'),
-            hospitalName: tenant?.name ?? 'Hospital',
-            testSummary: `${patientName} — ${testSummary}`,
-          });
-        }
+        await notifyLabSupervisors(
+          tenantId,
+          'Lab report awaiting approval',
+          `Report for ${patientName} (${patient?.mrn ?? ''}) is ready for review.`,
+          'lab_report',
+          report.id,
+        );
       } catch (err) {
-        logger.warn({ err, orderId }, 'Post-publish notify chain failed (non-blocking)');
+        logger.warn({ err, orderId }, 'Supervisor notification failed (non-blocking)');
       }
     })();
   }
