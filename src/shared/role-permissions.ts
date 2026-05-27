@@ -194,12 +194,15 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'patients', action: 'read' },
     ],
 
-    // Radiologist (clinical role): receives orders, schedules slots, performs the
-    // study, drafts the report, signs/publishes. Mirrors lab_technician+supervisor
-    // combined for imaging — Approve stays on so they can sign their own reports.
+    // Radiologist (clinical role): receives orders that the radiology_admin
+    // has already payment-verified, schedules slots, performs the study,
+    // drafts the report, marks it complete (status=finalized). Cannot
+    // publish — admin re-approves the finalized report and only then
+    // is it visible to the patient. So `imaging:approve` lives on
+    // radiology_admin/admin, NOT on radiologist (2026-05-27 flow change).
     radiologist: [
       { module: 'imaging', action: 'read' }, { module: 'imaging', action: 'create' },
-      { module: 'imaging', action: 'update' }, { module: 'imaging', action: 'approve' },
+      { module: 'imaging', action: 'update' },
       { module: 'patients', action: 'read' },
       // Read-through on linked modules so the radiologist UI can show the
       // ordering doctor, ward, visit context without separate fetch errors.

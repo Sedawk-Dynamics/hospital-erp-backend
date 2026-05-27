@@ -18,6 +18,7 @@
     "db:seed:nurse-roles": "tsx prisma/scripts/backfill-nurse-roles.ts",
     "db:seed:floor-permissions": "tsx prisma/scripts/backfill-floor-permissions.ts",
     "db:seed:resync-permissions": "tsx prisma/scripts/resync-role-permissions.ts",
+    "db:seed:cleanup-radiologist-approve": "tsx prisma/scripts/cleanup-radiologist-approve-perm.ts",
     "db:seed:nurse-users": "tsx prisma/scripts/seed-nurse-users.ts",
     "db:seed:prod": "node dist-seed/prisma/seed.js",
     "db:studio": "prisma studio",

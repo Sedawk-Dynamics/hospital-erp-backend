@@ -207,6 +207,12 @@ export async function getImagingRequests(tenantId: string, query: GetImagingRequ
     where.assignedTechnicianId = query.assignedTechnicianId;
   }
 
+  // Payment-verify gate (2026-05-27 flow). The radiology_admin queue passes
+  // paymentVerified=false; the radiologist queue passes paymentVerified=true.
+  if (typeof (query as any).paymentVerified === 'boolean') {
+    where.paymentVerified = (query as any).paymentVerified;
+  }
+
   if (query.date) {
     const start = new Date(query.date);
     if (!isNaN(start.getTime())) {
@@ -242,6 +248,7 @@ export async function getImagingRequests(tenantId: string, query: GetImagingRequ
         patient: { select: { id: true, mrn: true, firstName: true, lastName: true, phone: true } },
         orderer: { select: { id: true, firstName: true, lastName: true } },
         assignedTechnician: { select: { id: true, firstName: true, lastName: true } },
+        paymentVerifier: { select: { id: true, firstName: true, lastName: true } },
         visit: { select: { id: true, visitType: true } },
         imagingResult: {
           select: {
@@ -257,7 +264,59 @@ export async function getImagingRequests(tenantId: string, query: GetImagingRequ
     prisma.imagingRequest.count({ where }),
   ]);
 
-  return { requests, total, page, limit };
+  // Decorate each request with the linked bill status so the admin can
+  // decide whether to verify payment. The auto-link writes a BillItem with
+  // referenceType='imaging_request', so look up the parent Bill from that.
+  const requestIds = requests.map((r) => r.id);
+  const billItems = requestIds.length
+    ? await prisma.billItem.findMany({
+        where: {
+          referenceType: 'imaging_request',
+          referenceId: { in: requestIds },
+          bill: { tenantId },
+        },
+        select: {
+          referenceId: true,
+          totalAmount: true,
+          bill: {
+            select: {
+              id: true,
+              billNumber: true,
+              status: true,
+              amountPaid: true,
+              totalAmount: true,
+              balanceDue: true,
+            },
+          },
+        },
+      })
+    : [];
+  const billByRequestId = new Map<string, (typeof billItems)[number]>();
+  for (const bi of billItems) {
+    // Multiple bill items per request shouldn't happen (autoLinkImagingToBill
+    // is idempotent on referenceType+referenceId), but keep the latest just
+    // in case.
+    billByRequestId.set(bi.referenceId!, bi);
+  }
+  const decorated = requests.map((r) => {
+    const bi = billByRequestId.get(r.id);
+    return {
+      ...r,
+      linkedBill: bi
+        ? {
+            id: bi.bill?.id,
+            billNumber: bi.bill?.billNumber,
+            status: bi.bill?.status,
+            amountPaid: bi.bill?.amountPaid,
+            totalAmount: bi.bill?.totalAmount,
+            balanceDue: bi.bill?.balanceDue,
+            chargeAmount: bi.totalAmount,
+          }
+        : null,
+    };
+  });
+
+  return { requests: decorated, total, page, limit };
 }
 
 export async function getImagingRequestById(tenantId: string, id: string) {
@@ -382,6 +441,15 @@ export async function scheduleImaging(tenantId: string, id: string, data: Schedu
     throw AppError.badRequest(`Cannot schedule a ${request.status} imaging request`);
   }
 
+  // Gate: payment must be verified by radiology_admin before the radiologist
+  // can schedule the slot. Doctors can still create requests freely; the
+  // gate is only at the scheduling boundary.
+  if (!request.paymentVerified) {
+    throw AppError.badRequest(
+      'Payment for this imaging request has not been verified yet. The radiology admin must verify payment before scheduling.',
+    );
+  }
+
   if (data.assignedTechnicianId) {
     const tech = await prisma.user.findFirst({
       where: { id: data.assignedTechnicianId, tenantId, isActive: true },
@@ -422,6 +490,65 @@ export async function scheduleImaging(tenantId: string, id: string, data: Schedu
   return updated;
 }
 
+// Radiology admin marks payment as verified. Once flipped, the request
+// becomes visible to the radiologist queue (paymentVerified=true) and is
+// eligible for scheduleImaging. Idempotent: calling on an already-verified
+// request is a no-op (we don't overwrite the verifier/at).
+export async function verifyImagingPayment(tenantId: string, id: string, userId: string) {
+  const request = await prisma.imagingRequest.findFirst({
+    where: { id, tenantId },
+  });
+  if (!request) throw AppError.notFound('Imaging request not found');
+
+  if (request.status === 'cancelled') {
+    throw AppError.badRequest('Cannot verify payment on a cancelled request');
+  }
+
+  if (request.paymentVerified) {
+    return request;
+  }
+
+  const updated = await prisma.imagingRequest.update({
+    where: { id },
+    data: {
+      paymentVerified: true,
+      paymentVerifiedBy: userId,
+      paymentVerifiedAt: new Date(),
+    },
+    include: {
+      patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+      orderer: { select: { id: true, firstName: true, lastName: true } },
+      paymentVerifier: { select: { id: true, firstName: true, lastName: true } },
+    },
+  });
+
+  // Notify the ordering doctor + any radiologist currently assigned so the
+  // study lands on their worklist without a refresh.
+  await safeNotify({
+    tenantId,
+    userId: updated.orderedBy,
+    title: 'Imaging payment verified',
+    message: `Payment cleared for ${updated.imagingType.toUpperCase()}${updated.bodyPart ? ' — ' + updated.bodyPart : ''}. Patient may proceed to scan.`,
+    notificationType: 'general',
+    referenceType: 'imaging_request',
+    referenceId: id,
+  });
+  if (updated.assignedTechnicianId) {
+    await safeNotify({
+      tenantId,
+      userId: updated.assignedTechnicianId,
+      title: 'New imaging study cleared',
+      message: 'Payment verified — study is now in your worklist.',
+      notificationType: 'general',
+      referenceType: 'imaging_request',
+      referenceId: id,
+    });
+  }
+
+  logger.info({ tenantId, imagingRequestId: id, verifiedBy: userId }, 'Imaging payment verified');
+  return updated;
+}
+
 // ============================================================
 // Imaging Results
 // ============================================================
@@ -438,6 +565,14 @@ export async function uploadImagingResult(
 
   if (!request) {
     throw AppError.notFound('Imaging request not found');
+  }
+
+  // Same payment gate as schedule — radiologist cannot upload results on a
+  // request that hasn't been payment-verified by the admin.
+  if (!request.paymentVerified) {
+    throw AppError.badRequest(
+      'Payment for this imaging request has not been verified. Ask the radiology admin to verify payment before uploading results.',
+    );
   }
 
   // Check if a result already exists
@@ -949,18 +1084,28 @@ export async function getImagingDashboard(tenantId: string) {
 
   // Counts (all-time, by status)
   const [
+    awaitingPaymentVerifyCount,
     pendingCount,
     scheduledCount,
     inProgressCount,
     completedTodayCount,
     statTodayCount,
-    awaitingVerifyCount,
+    awaitingApprovalCount,
     publishedTodayCount,
     cancelledTodayCount,
     totalRequestsToday,
     overdueScheduledCount,
   ] = await Promise.all([
-    prisma.imagingRequest.count({ where: { tenantId, status: 'requested' } }),
+    // New requests sitting in the radiology_admin queue waiting for payment
+    // verification before they reach the radiologist.
+    prisma.imagingRequest.count({
+      where: { tenantId, paymentVerified: false, status: { notIn: ['cancelled', 'completed'] } },
+    }),
+    // Requests cleared on payment but not yet scheduled — i.e. radiologist's
+    // immediate to-do.
+    prisma.imagingRequest.count({
+      where: { tenantId, paymentVerified: true, status: 'requested' },
+    }),
     prisma.imagingRequest.count({ where: { tenantId, status: 'scheduled' } }),
     prisma.imagingRequest.count({ where: { tenantId, status: 'in_progress' } }),
     prisma.imagingRequest.count({
@@ -969,11 +1114,12 @@ export async function getImagingDashboard(tenantId: string) {
     prisma.imagingRequest.count({
       where: { tenantId, urgency: 'stat', createdAt: { gte: todayStart, lt: tomorrowStart } },
     }),
-    // A result is "awaiting verify" while it is draft or finalized but not yet
-    // published. The radiology_admin needs a clear queue of these so reports
-    // don't pile up at the sign-off step.
+    // Awaiting admin approval = radiologist marked complete (status=finalized)
+    // but admin hasn't published yet. This is the radiology_admin's "pending
+    // sign-off" queue. Drafts in progress are NOT counted here so the admin
+    // only sees what's actually ready to publish.
     prisma.imagingResult.count({
-      where: { imagingRequest: { tenantId }, status: { in: ['draft', 'finalized'] } },
+      where: { imagingRequest: { tenantId }, status: 'finalized' },
     }),
     prisma.imagingResult.count({
       where: {
@@ -1034,12 +1180,15 @@ export async function getImagingDashboard(tenantId: string) {
 
   return {
     counts: {
+      awaitingPaymentVerify: awaitingPaymentVerifyCount,
       pending: pendingCount,
       scheduled: scheduledCount,
       inProgress: inProgressCount,
       completedToday: completedTodayCount,
       statToday: statTodayCount,
-      awaitingVerify: awaitingVerifyCount,
+      awaitingApproval: awaitingApprovalCount,
+      // Backward-compat alias for older clients that read `awaitingVerify`.
+      awaitingVerify: awaitingApprovalCount,
       publishedToday: publishedTodayCount,
       cancelledToday: cancelledTodayCount,
       totalRequestsToday,

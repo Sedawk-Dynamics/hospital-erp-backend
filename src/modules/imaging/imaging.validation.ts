@@ -41,6 +41,13 @@ export const getImagingRequestsQuerySchema = z.object({
     fromDate: z.string().optional(),
     toDate: z.string().optional(),
     date: z.string().optional(),
+    // 'true'/'false' query string — the radiology_admin queue filters
+    // to paymentVerified=false (need to verify), the radiologist queue
+    // filters to paymentVerified=true (cleared to start).
+    paymentVerified: z
+      .string()
+      .transform((v) => v === 'true')
+      .optional(),
   }),
 });
 
@@ -66,6 +73,12 @@ export const updateImagingRequestSchema = z.object({
 });
 
 export const cancelImagingRequestSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid imaging request ID'),
+  }),
+});
+
+export const verifyImagingPaymentSchema = z.object({
   params: z.object({
     id: z.string().uuid('Invalid imaging request ID'),
   }),

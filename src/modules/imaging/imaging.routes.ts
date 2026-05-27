@@ -16,6 +16,7 @@ import {
   updateImagingRequestSchema,
   cancelImagingRequestSchema,
   scheduleImagingSchema,
+  verifyImagingPaymentSchema,
   uploadImagingResultSchema,
   getImagingResultsQuerySchema,
   imagingResultIdParamSchema,
@@ -40,6 +41,17 @@ imagingRoutes.get('/requests/:id', authenticate, requirePermission('imaging', 'c
 imagingRoutes.put('/requests/:id', authenticate, requirePermission('imaging', 'create'), validate(updateImagingRequestSchema), controller.updateImagingRequest);
 imagingRoutes.patch('/requests/:id/cancel', authenticate, requirePermission('imaging', 'create'), validate(cancelImagingRequestSchema), controller.cancelImagingRequest);
 imagingRoutes.patch('/requests/:id/schedule', authenticate, requirePermission('imaging', 'update'), validate(scheduleImagingSchema), controller.scheduleImaging);
+
+// Payment-verify gate (2026-05-27 flow). Gated on `billing:update` so only
+// radiology_admin / admin / billing-side roles pass — radiologists cannot
+// self-clear payment because they don't have billing:update.
+imagingRoutes.patch(
+  '/requests/:id/verify-payment',
+  authenticate,
+  requirePermission('billing', 'update'),
+  validate(verifyImagingPaymentSchema),
+  controller.verifyImagingPayment,
+);
 
 // --- Imaging Analytics (TAT, volume by modality, status mix, technician load) ---
 imagingRoutes.get('/analytics', authenticate, requirePermission('imaging', 'read'), controller.getImagingAnalytics);

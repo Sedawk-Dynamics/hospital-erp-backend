@@ -1460,6 +1460,7 @@ model User {
   imagingOrdersOrdered           ImagingRequest[]
   imagingRequestsAssigned        ImagingRequest[]             @relation("ImagingTechnician")
   imagingRequestsExternallyDone  ImagingRequest[]             @relation("ImagingRequestExternalCompleter")
+  imagingPaymentsVerified        ImagingRequest[]             @relation("ImagingPaymentVerifier")
   imagingResultsRadiologist      ImagingResult[]              @relation("ImagingRadiologist")
   imagingResultsSigned           ImagingResult[]              @relation("ImagingResultSigner")
   imagingAttachmentsUploaded     ImagingAttachment[]          @relation("ImagingAttachmentUploader")
@@ -3639,6 +3640,14 @@ model ImagingRequest {
   completedExternallyBy   String?              @map("completed_externally_by")
   externalReportUrl       String?              @map("external_report_url")
   externalNotes           String?              @map("external_notes")
+  // Payment-verify gate (2026-05-27). The doctor's request lands in the
+  // radiology_admin queue first; the admin clicks "Verify Payment" once the
+  // patient has paid the imaging charge at the cash counter. Only then does
+  // the radiologist see the request in their worklist. Keeps clinical staff
+  // out of payment workflows.
+  paymentVerified         Boolean              @default(false) @map("payment_verified")
+  paymentVerifiedBy       String?              @map("payment_verified_by")
+  paymentVerifiedAt       DateTime?            @map("payment_verified_at")
   createdAt               DateTime             @default(now()) @map("created_at")
   updatedAt               DateTime             @default(now()) @updatedAt @map("updated_at")
 
@@ -3648,6 +3657,7 @@ model ImagingRequest {
   orderer            User           @relation(fields: [orderedBy], references: [id])
   assignedTechnician User?          @relation("ImagingTechnician", fields: [assignedTechnicianId], references: [id])
   externalCompleter  User?          @relation("ImagingRequestExternalCompleter", fields: [completedExternallyBy], references: [id])
+  paymentVerifier    User?          @relation("ImagingPaymentVerifier", fields: [paymentVerifiedBy], references: [id])
   imagingResult      ImagingResult?
   attachments        ImagingAttachment[]
 

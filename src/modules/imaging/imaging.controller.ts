@@ -68,6 +68,17 @@ export async function scheduleImaging(req: AuthenticatedRequest, res: Response, 
   }
 }
 
+export async function verifyImagingPayment(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const request = await imagingService.verifyImagingPayment(tenantId, req.params.id as string, userId);
+    sendResponse({ res, message: 'Imaging payment verified', data: request });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // ============================================================
 // Imaging Results
 // ============================================================
