@@ -56,10 +56,25 @@ async function resync() {
 
   for (const tenant of tenants) {
     for (const [roleName, defs] of Object.entries(desired)) {
-      const role = await prisma.role.findFirst({
+      // super_admin is platform-only; never replicate per tenant
+      if (roleName === 'super_admin') continue;
+
+      // Idempotent: create the role if a new system role was added since this
+      // tenant was bootstrapped (e.g. radiology_admin in 2026-05-27 update).
+      let role = await prisma.role.findFirst({
         where: { tenantId: tenant.id, name: roleName },
       });
-      if (!role) continue;
+      if (!role) {
+        role = await prisma.role.create({
+          data: {
+            tenantId: tenant.id,
+            name: roleName,
+            description: `System role: ${roleName.replace(/_/g, ' ')}`,
+            isSystemRole: true,
+          },
+        });
+        console.log(`[tenant:${tenant.name}] created missing role: ${roleName}`);
+      }
 
       const rows = defs
         .map((d) => permIdBy.get(`${d.module}|${d.action}`))

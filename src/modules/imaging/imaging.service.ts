@@ -846,3 +846,206 @@ export async function getImagingAnalytics(
     technicianWorkload,
   };
 }
+
+// ============================================================
+// Dashboard (worklist counts + recent activity)
+// ============================================================
+// Mirrors the lab dashboard contract — radiology admin lands here and gets a
+// real-time snapshot of pending vs scheduled vs in-progress vs awaiting verify
+// vs published today, plus the latest few audit-worthy events.
+
+// Radiology billing roll-up — sum of auto-linked imaging BillItems grouped
+// by bill status. Drives the radiology_admin Billing page so they don't need
+// to leave the module to see "how much have we billed today / what's open".
+export async function getImagingBillingSummary(
+  tenantId: string,
+  range: { fromDate?: string; toDate?: string },
+) {
+  const where: any = {
+    bill: { tenantId },
+    referenceType: 'imaging_request',
+  };
+  if (range.fromDate || range.toDate) {
+    where.createdAt = {};
+    if (range.fromDate) where.createdAt.gte = new Date(range.fromDate);
+    if (range.toDate) where.createdAt.lte = new Date(range.toDate);
+  }
+
+  const items = await prisma.billItem.findMany({
+    where,
+    select: {
+      id: true,
+      description: true,
+      totalAmount: true,
+      createdAt: true,
+      referenceId: true,
+      bill: {
+        select: {
+          id: true,
+          billNumber: true,
+          status: true,
+          amountPaid: true,
+          totalAmount: true,
+          balanceDue: true,
+          patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+        },
+      },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 200,
+  });
+
+  const billStatusBuckets: Record<string, number> = {
+    draft: 0,
+    pending: 0,
+    partially_paid: 0,
+    paid: 0,
+    overdue: 0,
+    cancelled: 0,
+  };
+
+  let totalBilled = 0;
+  let totalPaid = 0;
+  let totalOutstanding = 0;
+
+  for (const it of items) {
+    const amount = Number(it.totalAmount ?? 0);
+    totalBilled += amount;
+    const status = it.bill?.status ?? 'pending';
+    billStatusBuckets[status] = (billStatusBuckets[status] ?? 0) + amount;
+    if (it.bill) {
+      // We can't perfectly split a multi-item bill across line-items, so use a
+      // proportional share based on totalAmount of the bill. Good enough for a
+      // summary view; the canonical numbers live in /billing.
+      const billTotal = Number(it.bill.totalAmount ?? 0);
+      if (billTotal > 0) {
+        const share = amount / billTotal;
+        totalPaid += Number(it.bill.amountPaid ?? 0) * share;
+        totalOutstanding += Number(it.bill.balanceDue ?? 0) * share;
+      }
+    }
+  }
+
+  return {
+    summary: {
+      totalBilled: Number(totalBilled.toFixed(2)),
+      totalPaid: Number(totalPaid.toFixed(2)),
+      totalOutstanding: Number(totalOutstanding.toFixed(2)),
+      itemCount: items.length,
+    },
+    statusMix: billStatusBuckets,
+    recent: items.slice(0, 50),
+  };
+}
+
+export async function getImagingDashboard(tenantId: string) {
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const tomorrowStart = new Date(todayStart);
+  tomorrowStart.setDate(tomorrowStart.getDate() + 1);
+
+  const last24h = new Date();
+  last24h.setHours(last24h.getHours() - 24);
+
+  // Counts (all-time, by status)
+  const [
+    pendingCount,
+    scheduledCount,
+    inProgressCount,
+    completedTodayCount,
+    statTodayCount,
+    awaitingVerifyCount,
+    publishedTodayCount,
+    cancelledTodayCount,
+    totalRequestsToday,
+    overdueScheduledCount,
+  ] = await Promise.all([
+    prisma.imagingRequest.count({ where: { tenantId, status: 'requested' } }),
+    prisma.imagingRequest.count({ where: { tenantId, status: 'scheduled' } }),
+    prisma.imagingRequest.count({ where: { tenantId, status: 'in_progress' } }),
+    prisma.imagingRequest.count({
+      where: { tenantId, status: 'completed', completedAt: { gte: todayStart, lt: tomorrowStart } },
+    }),
+    prisma.imagingRequest.count({
+      where: { tenantId, urgency: 'stat', createdAt: { gte: todayStart, lt: tomorrowStart } },
+    }),
+    // A result is "awaiting verify" while it is draft or finalized but not yet
+    // published. The radiology_admin needs a clear queue of these so reports
+    // don't pile up at the sign-off step.
+    prisma.imagingResult.count({
+      where: { imagingRequest: { tenantId }, status: { in: ['draft', 'finalized'] } },
+    }),
+    prisma.imagingResult.count({
+      where: {
+        imagingRequest: { tenantId },
+        status: 'published',
+        signedAt: { gte: todayStart, lt: tomorrowStart },
+      },
+    }),
+    prisma.imagingRequest.count({
+      where: { tenantId, status: 'cancelled', updatedAt: { gte: todayStart, lt: tomorrowStart } },
+    }),
+    prisma.imagingRequest.count({
+      where: { tenantId, createdAt: { gte: todayStart, lt: tomorrowStart } },
+    }),
+    // Scheduled requests whose slot has already passed but were never started
+    prisma.imagingRequest.count({
+      where: {
+        tenantId,
+        status: 'scheduled',
+        scheduledAt: { lt: new Date() },
+      },
+    }),
+  ]);
+
+  // Recent activity feed (latest 8 events — newly created requests, scheduled,
+  // results awaiting verify, published reports). All from imaging tables; we
+  // intentionally don't tap audit_logs here to keep this snappy.
+  const [latestRequests, latestResults] = await Promise.all([
+    prisma.imagingRequest.findMany({
+      where: { tenantId, createdAt: { gte: last24h } },
+      orderBy: { createdAt: 'desc' },
+      take: 8,
+      select: {
+        id: true,
+        status: true,
+        imagingType: true,
+        bodyPart: true,
+        urgency: true,
+        createdAt: true,
+        scheduledAt: true,
+        patient: { select: { firstName: true, lastName: true, mrn: true } },
+      },
+    }),
+    prisma.imagingResult.findMany({
+      where: { imagingRequest: { tenantId }, updatedAt: { gte: last24h } },
+      orderBy: { updatedAt: 'desc' },
+      take: 8,
+      select: {
+        id: true,
+        status: true,
+        updatedAt: true,
+        signedAt: true,
+        imagingRequest: { select: { imagingType: true, bodyPart: true } },
+        patient: { select: { firstName: true, lastName: true, mrn: true } },
+      },
+    }),
+  ]);
+
+  return {
+    counts: {
+      pending: pendingCount,
+      scheduled: scheduledCount,
+      inProgress: inProgressCount,
+      completedToday: completedTodayCount,
+      statToday: statTodayCount,
+      awaitingVerify: awaitingVerifyCount,
+      publishedToday: publishedTodayCount,
+      cancelledToday: cancelledTodayCount,
+      totalRequestsToday,
+      overdueScheduled: overdueScheduledCount,
+    },
+    recentRequests: latestRequests,
+    recentResults: latestResults,
+  };
+}

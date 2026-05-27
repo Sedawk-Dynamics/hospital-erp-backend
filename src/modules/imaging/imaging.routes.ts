@@ -44,6 +44,12 @@ imagingRoutes.patch('/requests/:id/schedule', authenticate, requirePermission('i
 // --- Imaging Analytics (TAT, volume by modality, status mix, technician load) ---
 imagingRoutes.get('/analytics', authenticate, requirePermission('imaging', 'read'), controller.getImagingAnalytics);
 
+// --- Imaging Dashboard (worklist counts + recent activity for radiology admin landing) ---
+imagingRoutes.get('/dashboard', authenticate, requirePermission('imaging', 'read'), controller.getImagingDashboard);
+
+// --- Imaging Billing Summary (auto-linked BillItems aggregate for radiology admin) ---
+imagingRoutes.get('/billing-summary', authenticate, requirePermission('imaging', 'read'), controller.getImagingBillingSummary);
+
 // --- Imaging Results ---
 imagingRoutes.post('/results', authenticate, requirePermission('imaging', 'create'), validate(uploadImagingResultSchema), controller.uploadImagingResult);
 imagingRoutes.get('/results', authenticate, requirePermission('imaging', 'read'), validate(getImagingResultsQuerySchema), controller.getImagingResults);

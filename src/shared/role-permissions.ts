@@ -6,7 +6,7 @@
 
 export const SYSTEM_ROLE_NAMES = [
   'super_admin', 'admin', 'doctor', 'patient', 'nurse', 'nurse_admin',
-  'front_desk', 'lab_technician', 'lab_supervisor', 'radiologist', 'pharmacist',
+  'front_desk', 'lab_technician', 'lab_supervisor', 'radiology_admin', 'radiologist', 'pharmacist',
   'pharmacy_technician', 'pharmacy_admin', 'inventory_manager',
   'billing_admin', 'cashier', 'insurance_staff', 'blood_bank_staff', 'hr_staff',
 ] as const;
@@ -194,9 +194,45 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'patients', action: 'read' },
     ],
 
+    // Radiologist (clinical role): receives orders, schedules slots, performs the
+    // study, drafts the report, signs/publishes. Mirrors lab_technician+supervisor
+    // combined for imaging — Approve stays on so they can sign their own reports.
     radiologist: [
-      { module: 'imaging', action: 'read' }, { module: 'imaging', action: 'create' }, { module: 'imaging', action: 'update' }, { module: 'imaging', action: 'approve' },
+      { module: 'imaging', action: 'read' }, { module: 'imaging', action: 'create' },
+      { module: 'imaging', action: 'update' }, { module: 'imaging', action: 'approve' },
       { module: 'patients', action: 'read' },
+      // Read-through on linked modules so the radiologist UI can show the
+      // ordering doctor, ward, visit context without separate fetch errors.
+      { module: 'visits', action: 'read' },
+      { module: 'appointments', action: 'read' },
+      { module: 'lab_reports', action: 'read' },
+      { module: 'reports', action: 'read' },
+    ],
+
+    // Radiology Admin (operational role): owns the whole radiology surface —
+    // modality catalog, tariffs, scheduling, vendor purchases, billing
+    // reconciliation, team workload, analytics. Mirrors the lab_supervisor
+    // posture inside the radiology module. Does NOT replace the radiologist
+    // (clinical sign-off stays with them).
+    radiology_admin: [
+      { module: 'imaging', action: 'create' }, { module: 'imaging', action: 'read' },
+      { module: 'imaging', action: 'update' }, { module: 'imaging', action: 'delete' },
+      { module: 'imaging', action: 'approve' }, { module: 'imaging', action: 'export' },
+      { module: 'patients', action: 'read' },
+      { module: 'visits', action: 'read' },
+      { module: 'appointments', action: 'read' },
+      { module: 'lab_orders', action: 'read' }, { module: 'lab_reports', action: 'read' },
+      // Radiology-side billing review + inventory of contrast media / film
+      { module: 'billing', action: 'read' }, { module: 'billing', action: 'update' },
+      { module: 'payments', action: 'read' },
+      { module: 'inventory', action: 'read' }, { module: 'inventory', action: 'create' },
+      { module: 'inventory', action: 'update' }, { module: 'inventory', action: 'approve' },
+      { module: 'inventory', action: 'export' },
+      { module: 'users', action: 'read' },
+      { module: 'hr', action: 'read' },
+      { module: 'audit_logs', action: 'read' },
+      { module: 'reports', action: 'read' }, { module: 'reports', action: 'create' }, { module: 'reports', action: 'export' },
+      { module: 'notifications', action: 'read' },
     ],
 
     pharmacist: [

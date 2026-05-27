@@ -147,3 +147,26 @@ export async function getImagingAnalytics(req: AuthenticatedRequest, res: Respon
     next(err);
   }
 }
+
+export async function getImagingDashboard(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await imagingService.getImagingDashboard(tenantId);
+    sendResponse({ res, message: 'Imaging dashboard retrieved successfully', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getImagingBillingSummary(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await imagingService.getImagingBillingSummary(tenantId, {
+      fromDate: req.query.fromDate as string | undefined,
+      toDate: req.query.toDate as string | undefined,
+    });
+    sendResponse({ res, message: 'Imaging billing summary retrieved successfully', data });
+  } catch (err) {
+    next(err);
+  }
+}
