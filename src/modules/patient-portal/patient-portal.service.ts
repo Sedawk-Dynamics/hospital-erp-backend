@@ -599,6 +599,64 @@ export async function getPatientLabReports(
   return { data: reports };
 }
 
+export async function getPatientImagingReports(
+  userId: string,
+  email: string,
+  query: { limit?: number; tenantId?: string; profileId?: string },
+) {
+  const patientIds = await resolvePatientIds(userId, email, query.tenantId, query.profileId);
+  if (patientIds.length === 0) return { data: [] };
+
+  // Patients only see published radiology reports — the radiology-admin-approved
+  // final state. Draft / finalized results are still inside the radiology
+  // review loop and stay hidden, mirroring how lab gates on published.
+  const results = await prisma.imagingResult.findMany({
+    where: { patientId: { in: patientIds }, status: 'published' },
+    take: query.limit || 50,
+    include: {
+      imagingRequest: {
+        select: {
+          id: true,
+          imagingType: true,
+          bodyPart: true,
+          urgency: true,
+          clinicalIndication: true,
+          scheduledAt: true,
+          // Attachments are linked to the request (the canonical link the
+          // doctor viewer also reads), so the patient sees the same files.
+          attachments: {
+            where: { deletedAt: null },
+            orderBy: { createdAt: 'desc' },
+            select: {
+              id: true,
+              category: true,
+              fileName: true,
+              fileUrl: true,
+              mimeType: true,
+              sizeBytes: true,
+              description: true,
+              createdAt: true,
+            },
+          },
+        },
+      },
+      patient: {
+        select: {
+          id: true,
+          mrn: true,
+          firstName: true,
+          lastName: true,
+          tenant: { select: { id: true, name: true } },
+        },
+      },
+      radiologist: { select: { id: true, firstName: true, lastName: true } },
+    },
+    orderBy: { signedAt: 'desc' },
+  });
+
+  return { data: results };
+}
+
 export async function getPatientPrescriptions(
   userId: string,
   email: string,

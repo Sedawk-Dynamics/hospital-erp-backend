@@ -263,6 +263,20 @@ router.get('/lab-reports', async (req: AuthenticatedRequest, res: Response, next
   }
 });
 
+// GET /patient-portal/imaging-reports
+router.get('/imaging-reports', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const result = await patientPortalService.getPatientImagingReports(req.user!.userId, req.user!.email, {
+      limit: req.query.limit ? parseInt(req.query.limit as string, 10) : undefined,
+      tenantId: req.query.tenantId as string | undefined,
+      profileId: req.query.profileId as string | undefined,
+    });
+    sendResponse({ res, statusCode: 200, message: 'Patient imaging reports', data: result.data });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /patient-portal/prescriptions
 router.get('/prescriptions', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
