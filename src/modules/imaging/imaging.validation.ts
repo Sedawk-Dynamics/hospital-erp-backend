@@ -48,6 +48,13 @@ export const getImagingRequestsQuerySchema = z.object({
       .string()
       .transform((v) => v === 'true')
       .optional(),
+    // Radiology module surfaces pass this to hide cancelled requests from
+    // their lists/dashboard. Other callers (e.g. doctor order panels) omit it
+    // and still see the full set.
+    excludeCancelled: z
+      .string()
+      .transform((v) => v === 'true')
+      .optional(),
   }),
 });
 

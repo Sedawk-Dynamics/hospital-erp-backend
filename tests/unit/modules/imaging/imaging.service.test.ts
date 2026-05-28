@@ -77,6 +77,7 @@ describe('Imaging Service', () => {
       vi.mocked(prisma.imagingRequest.findFirst).mockResolvedValueOnce({
         id: 'img-req-1',
         tenantId: TENANT_ID,
+        paymentVerified: true,
       } as any);
       vi.mocked(prisma.imagingResult.findUnique).mockResolvedValueOnce(null);
 
@@ -112,6 +113,7 @@ describe('Imaging Service', () => {
       vi.mocked(prisma.imagingRequest.findFirst).mockResolvedValueOnce({
         id: 'img-req-1',
         tenantId: TENANT_ID,
+        paymentVerified: true,
       } as any);
       vi.mocked(prisma.imagingResult.findUnique).mockResolvedValueOnce({
         id: 'existing',
@@ -127,14 +129,16 @@ describe('Imaging Service', () => {
   });
 
   describe('getImagingRequests', () => {
-    it('should return paginated imaging requests', async () => {
+    it('should return paginated imaging requests decorated with the linked bill', async () => {
       const requests = [{ id: 'img-req-1', imagingType: 'xray' }];
       vi.mocked(prisma.imagingRequest.findMany).mockResolvedValueOnce(requests as any);
       vi.mocked(prisma.imagingRequest.count).mockResolvedValueOnce(1);
+      // No linked bill for this request → decoration attaches linkedBill: null.
+      vi.mocked(prisma.billItem.findMany).mockResolvedValueOnce([] as any);
 
       const result = await getImagingRequests(TENANT_ID, { page: 1, limit: 20, sortOrder: 'desc' } as any);
 
-      expect(result.requests).toEqual(requests);
+      expect(result.requests).toEqual([{ ...requests[0], linkedBill: null }]);
       expect(result.total).toBe(1);
     });
   });

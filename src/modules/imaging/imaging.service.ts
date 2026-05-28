@@ -40,20 +40,45 @@ async function safeNotify(params: {
   }
 }
 
-// Resolve a tariff price for a given imaging type (best-effort lookup against ServiceTariff)
+// Resolve a tariff price for a given imaging type (best-effort lookup against ServiceTariff).
+// Resolution order, most specific first:
+//   1. A study-specific tariff whose name matches the body part (e.g. "MRI Brain").
+//   2. The per-modality base price the admin set in Radiology → Settings, keyed
+//      by serviceCode = the imaging type (e.g. serviceCode='ct_scan').
+//   3. A loose name-contains match on the modality.
 async function lookupImagingPrice(tenantId: string, imagingType: string, bodyPart?: string | null) {
   try {
-    const tariff = await prisma.serviceTariff.findFirst({
+    if (bodyPart) {
+      const specific = await prisma.serviceTariff.findFirst({
+        where: {
+          tenantId,
+          category: 'radiology',
+          isActive: true,
+          serviceName: { contains: bodyPart, mode: 'insensitive' },
+        },
+      });
+      if (specific) return { id: specific.id, price: Number(specific.basePrice ?? 0) };
+    }
+
+    const byModality = await prisma.serviceTariff.findFirst({
       where: {
         tenantId,
         category: 'radiology',
-        OR: [
-          { serviceName: { contains: bodyPart || imagingType, mode: 'insensitive' } },
-          { serviceName: { contains: imagingType, mode: 'insensitive' } },
-        ],
+        isActive: true,
+        serviceCode: { equals: imagingType, mode: 'insensitive' },
       },
     });
-    if (tariff) return { id: tariff.id, price: Number(tariff.basePrice ?? 0) };
+    if (byModality) return { id: byModality.id, price: Number(byModality.basePrice ?? 0) };
+
+    const byName = await prisma.serviceTariff.findFirst({
+      where: {
+        tenantId,
+        category: 'radiology',
+        isActive: true,
+        serviceName: { contains: imagingType, mode: 'insensitive' },
+      },
+    });
+    if (byName) return { id: byName.id, price: Number(byName.basePrice ?? 0) };
   } catch {}
   return { id: null as string | null, price: 0 };
 }
@@ -189,6 +214,9 @@ export async function getImagingRequests(tenantId: string, query: GetImagingRequ
 
   if (query.status) {
     where.status = query.status;
+  } else if ((query as any).excludeCancelled) {
+    // Radiology module hides cancelled requests from its queues/dashboard.
+    where.status = { not: 'cancelled' };
   }
 
   if (query.imagingType) {
@@ -286,6 +314,13 @@ export async function getImagingRequests(tenantId: string, query: GetImagingRequ
               amountPaid: true,
               totalAmount: true,
               balanceDue: true,
+              // Surface how the patient paid so the admin can confirm the mode
+              // at the verify-payment step.
+              payments: {
+                where: { status: 'completed' },
+                select: { paymentMethod: true, amount: true, paymentDate: true },
+                orderBy: { paymentDate: 'desc' },
+              },
             },
           },
         },
@@ -311,6 +346,11 @@ export async function getImagingRequests(tenantId: string, query: GetImagingRequ
             totalAmount: bi.bill?.totalAmount,
             balanceDue: bi.bill?.balanceDue,
             chargeAmount: bi.totalAmount,
+            payments: (bi.bill?.payments ?? []).map((p) => ({
+              paymentMethod: p.paymentMethod,
+              amount: p.amount,
+              paymentDate: p.paymentDate,
+            })),
           }
         : null,
     };
