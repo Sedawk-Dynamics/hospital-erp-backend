@@ -4,6 +4,8 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { UPLOAD_DIR, getFileUrl, deleteFile } from '../../services/upload.service';
+import { syncAttachmentToPacs } from './dicom.service';
+import { pacsSupportsArchive } from './pacs';
 
 // ── ImagingAttachment service ──────────────────────────────────────────────
 // File storage for anything a radiology role needs to attach to a request or
@@ -110,6 +112,20 @@ export async function createImagingAttachment(
             'Failed to mirror pdfReportUrl onto ImagingResult',
           ),
         );
+    }
+  }
+
+  // When a real PACS is configured, archive DICOM uploads to it and mirror the
+  // study/series/instance records. Best-effort: a PACS outage must not fail the
+  // upload — the file already lives in /uploads and the in-house viewer reads it.
+  if (category === 'dicom' && pacsSupportsArchive()) {
+    try {
+      await syncAttachmentToPacs(tenantId, attachment.id);
+    } catch (err) {
+      logger.warn(
+        { err, attachmentId: attachment.id },
+        'PACS sync failed; file kept in /uploads as fallback',
+      );
     }
   }
 

@@ -1,0 +1,35 @@
+{
+  "Name": "HospitalERP-PACS",
+
+  "// storage": "DICOM blobs + index live on the mounted volume",
+  "StorageDirectory": "/var/lib/orthanc/db",
+  "IndexDirectory": "/var/lib/orthanc/db",
+
+  "// http": "REST API + DICOMweb + OHIF are all served on port 8042",
+  "HttpServerEnabled": true,
+  "HttpPort": 8042,
+  "RemoteAccessAllowed": true,
+  "HttpCompressionEnabled": true,
+
+  "// dimse": "Classic DICOM (DIMSE) so CT/MR/X-ray modalities can C-STORE to us",
+  "DicomServerEnabled": true,
+  "DicomAet": "HOSPITALERP",
+  "DicomPort": 4242,
+  "DicomCheckCalledAet": false,
+  "DicomAlwaysAllowStore": true,
+
+  "// dicomweb": "QIDO-RS / WADO-RS / STOW-RS used by OHIF and our backend",
+  "DicomWeb": {
+    "Enable": true,
+    "Root": "/dicom-web/",
+    "EnableWado": true,
+    "WadoRoot": "/wado",
+    "Ssl": false
+  },
+
+  "// ohif": "Bundled OHIF viewer served at /ohif/, reading via DICOMweb",
+  "OHIF": {
+    "DataSource": "dicom-web",
+    "RouterBasename": "/ohif/"
+  }
+}

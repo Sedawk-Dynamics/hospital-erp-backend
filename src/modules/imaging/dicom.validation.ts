@@ -54,6 +54,10 @@ export const studyIdParamSchema = z.object({
   params: z.object({ id: z.string().uuid() }),
 });
 
+export const syncAttachmentParamSchema = z.object({
+  params: z.object({ attachmentId: z.string().uuid() }),
+});
+
 export const worklistQuerySchema = z.object({
   query: z.object({
     fromDate: z.string().optional(),

@@ -31,6 +31,25 @@ services:
       timeout: 5s
       retries: 5
 
+  # Orthanc DICOM server (PACS) + bundled OHIF web viewer.
+  # Enabled when the backend sets PACS_PROVIDER=orthanc. Pin the image tag for
+  # production reproducibility (e.g. orthancteam/orthanc:25.6.2).
+  orthanc:
+    image: orthancteam/orthanc:latest
+    container_name: hospital-erp-orthanc
+    restart: unless-stopped
+    ports:
+      - "8042:8042"   # HTTP — REST API, DICOMweb, OHIF viewer
+      - "4242:4242"   # DICOM protocol (DIMSE) for modality C-STORE
+    environment:
+      DICOM_WEB_PLUGIN_ENABLED: "true"
+      OHIF_PLUGIN_ENABLED: "true"
+      ORTHANC__AUTHENTICATION_ENABLED: "true"
+      ORTHANC__REGISTERED_USERS: '{"${ORTHANC_USERNAME:-hospital}": "${ORTHANC_PASSWORD:-change-me}"}'
+    volumes:
+      - ./orthanc/orthanc.json:/etc/orthanc/orthanc.json:ro
+      - orthanc_data:/var/lib/orthanc/db
+
   api:
     build:
       context: .
@@ -49,6 +68,15 @@ services:
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
       CORS_ORIGINS: ${CORS_ORIGINS:-https://trms.webelio.org}
       BCRYPT_SALT_ROUNDS: 12
+      # PACS / DICOM — default 'none' keeps the in-house viewer. Set to
+      # 'orthanc' to archive + view through the Orthanc service above.
+      PACS_PROVIDER: ${PACS_PROVIDER:-none}
+      ORTHANC_URL: ${ORTHANC_URL:-http://orthanc:8042}
+      ORTHANC_PUBLIC_URL: ${ORTHANC_PUBLIC_URL:-http://localhost:8042}
+      ORTHANC_USERNAME: ${ORTHANC_USERNAME:-hospital}
+      ORTHANC_PASSWORD: ${ORTHANC_PASSWORD:-change-me}
+      ORTHANC_OHIF_PATH: ${ORTHANC_OHIF_PATH:-/ohif/viewer}
+      POSTDICOM_VIEWER_URL: ${POSTDICOM_VIEWER_URL:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -58,3 +86,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  orthanc_data:

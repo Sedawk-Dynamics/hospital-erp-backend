@@ -61,3 +61,36 @@ export async function getWorklist(
     sendResponse({ res, message: 'DICOM worklist retrieved', data });
   } catch (err) { next(err); }
 }
+
+export async function getPacsConfig(
+  _req: AuthenticatedRequest, res: Response, next: NextFunction,
+) {
+  try {
+    const data = service.getPacsConfig();
+    sendResponse({ res, message: 'PACS config retrieved', data });
+  } catch (err) { next(err); }
+}
+
+export async function syncAttachment(
+  req: AuthenticatedRequest, res: Response, next: NextFunction,
+) {
+  try {
+    const data = await service.syncAttachmentToPacs(
+      req.user!.tenantId,
+      req.params.attachmentId as string,
+    );
+    sendResponse({ res, message: 'DICOM attachment sync processed', data });
+  } catch (err) { next(err); }
+}
+
+export async function resolveAttachmentViewer(
+  req: AuthenticatedRequest, res: Response, next: NextFunction,
+) {
+  try {
+    const data = await service.resolveAttachmentViewer(
+      req.user!.tenantId,
+      req.params.attachmentId as string,
+    );
+    sendResponse({ res, message: 'Viewer resolved', data });
+  } catch (err) { next(err); }
+}

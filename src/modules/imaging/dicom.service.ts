@@ -1,7 +1,16 @@
+import path from 'path';
+import fs from 'fs';
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
+import { UPLOAD_DIR } from '../../services/upload.service';
+import {
+  getPacsProvider,
+  getPacsConfigSummary,
+  pacsSupportsArchive,
+  PacsArchiveUnsupportedError,
+} from './pacs';
 import type {
   CreateStudyInput,
   AddInstanceInput,
@@ -286,4 +295,202 @@ export async function getWorklist(tenantId: string, query: WorklistQuery) {
     },
     referringPhysician: r.orderer ? `${r.orderer.firstName}^${r.orderer.lastName}` : null,
   }));
+}
+
+// ============================================================
+// PACS integration (Orthanc / PostDICOM)
+// ============================================================
+
+/** Frontend-facing summary of how DICOM is archived + viewed. */
+export function getPacsConfig() {
+  return getPacsConfigSummary();
+}
+
+/** Resolve the on-disk path for an attachment whose fileUrl is /uploads/<name>. */
+function resolveUploadPath(fileUrl: string): string | null {
+  const fileName = fileUrl.replace(/^\/uploads\//, '');
+  // Guard against path traversal — uploads are flat filenames only.
+  if (!fileName || fileName.includes('..') || fileName.includes('/')) return null;
+  const full = path.join(UPLOAD_DIR, fileName);
+  return fs.existsSync(full) ? full : null;
+}
+
+export interface SyncAttachmentResult {
+  synced: boolean;
+  reason?: string;
+  studyId?: string;
+  studyInstanceUid?: string;
+  viewerUrl?: string;
+}
+
+/**
+ * Push a DICOM attachment to the active PACS provider, then mirror the
+ * archive's Study/Series/Instance UIDs into our tables and stamp the viewer
+ * URL. Idempotent: createStudy/addInstance upsert by UID, so re-syncing the
+ * same file is safe. Best-effort by design — the caller treats failures as
+ * non-fatal because the file already lives in /uploads as a fallback.
+ */
+export async function syncAttachmentToPacs(
+  tenantId: string,
+  attachmentId: string,
+): Promise<SyncAttachmentResult> {
+  const provider = getPacsProvider();
+  if (!provider || !provider.isConfigured()) {
+    return { synced: false, reason: 'pacs-disabled' };
+  }
+
+  const attachment = await prisma.imagingAttachment.findFirst({
+    where: { id: attachmentId, tenantId, deletedAt: null },
+    include: {
+      imagingRequest: {
+        select: {
+          id: true,
+          patientId: true,
+          bodyPart: true,
+          imagingType: true,
+          patient: { select: { mrn: true, firstName: true, lastName: true } },
+        },
+      },
+    },
+  });
+  if (!attachment) throw AppError.notFound('Attachment not found');
+  if (attachment.category !== 'dicom') {
+    return { synced: false, reason: 'not-dicom' };
+  }
+  if (!provider.embeddable || !pacsSupportsArchive()) {
+    // Embed-only providers (PostDICOM) don't archive server-side.
+    return { synced: false, reason: 'archive-unsupported' };
+  }
+
+  const filePath = resolveUploadPath(attachment.fileUrl);
+  if (!filePath) return { synced: false, reason: 'file-missing' };
+
+  const req = attachment.imagingRequest;
+  const patientName = req?.patient
+    ? `${req.patient.firstName} ${req.patient.lastName ?? ''}`.trim()
+    : undefined;
+
+  let stored;
+  try {
+    const buffer = await fs.promises.readFile(filePath);
+    stored = await provider.storeInstance({
+      buffer,
+      fileName: attachment.fileName,
+      patientMrn: req?.patient?.mrn,
+      patientName,
+    });
+  } catch (err) {
+    if (err instanceof PacsArchiveUnsupportedError) {
+      return { synced: false, reason: 'archive-unsupported' };
+    }
+    logger.error({ err, attachmentId }, 'PACS storeInstance failed');
+    throw err;
+  }
+
+  const viewerUrl = provider.buildViewerUrl(stored.studyInstanceUid) ?? undefined;
+
+  // Mirror into our PACS tables (idempotent upserts by UID).
+  const study = await createStudy(tenantId, {
+    patientId: req!.patientId,
+    imagingRequestId: attachment.imagingRequestId,
+    imagingResultId: attachment.imagingResultId ?? undefined,
+    studyInstanceUid: stored.studyInstanceUid,
+    accessionNumber: stored.accessionNumber,
+    studyDate: stored.studyDate,
+    studyDescription: stored.studyDescription,
+    modality: stored.modality,
+    patientName: stored.patientName,
+    patientDicomId: stored.patientDicomId,
+    referringPhysician: stored.referringPhysician,
+    viewerUrl,
+  });
+
+  // Stamp the archive's internal study id for traceability.
+  if (stored.externalStudyId && study.storagePath !== stored.externalStudyId) {
+    await prisma.dicomStudy.update({
+      where: { id: study.id },
+      data: { storagePath: stored.externalStudyId },
+    });
+  }
+
+  await addInstance(tenantId, study.id, {
+    seriesInstanceUid: stored.seriesInstanceUid,
+    seriesDescription: stored.seriesDescription,
+    seriesNumber: stored.seriesNumber,
+    seriesModality: stored.modality,
+    bodyPart: stored.bodyPart ?? req?.bodyPart ?? undefined,
+    sopInstanceUid: stored.sopInstanceUid,
+    instanceNumber: stored.instanceNumber,
+    // Keep the local /uploads URL so the in-house viewer remains a fallback;
+    // OHIF reads pixels from the archive via DICOMweb using the study UID.
+    fileUrl: attachment.fileUrl,
+    fileSizeBytes: attachment.sizeBytes ?? undefined,
+    mimeType: attachment.mimeType ?? 'application/dicom',
+    rows: stored.rows,
+    columns: stored.columns,
+  });
+
+  logger.info(
+    { tenantId, attachmentId, studyInstanceUid: stored.studyInstanceUid, provider: provider.name },
+    'DICOM attachment synced to PACS',
+  );
+
+  return {
+    synced: true,
+    studyId: study.id,
+    studyInstanceUid: stored.studyInstanceUid,
+    viewerUrl,
+  };
+}
+
+export interface ResolveViewerResult {
+  viewerUrl: string | null;
+  studyInstanceUid?: string;
+  reason?: string;
+}
+
+/**
+ * Resolve the embeddable viewer URL for a DICOM attachment — used by the
+ * "detailed view" (fullscreen) on clinical surfaces. Returns the existing
+ * archived study's viewer URL when the file is already in the PACS; otherwise,
+ * for archive-capable providers (Orthanc), lazily pushes it first (covers files
+ * uploaded before PACS was enabled). Returns `{ viewerUrl: null }` when the
+ * file can't be served from a PACS, so the caller falls back to the in-house
+ * viewer.
+ */
+export async function resolveAttachmentViewer(
+  tenantId: string,
+  attachmentId: string,
+): Promise<ResolveViewerResult> {
+  const provider = getPacsProvider();
+  if (!provider || !provider.isConfigured() || !provider.embeddable) {
+    return { viewerUrl: null, reason: 'pacs-disabled' };
+  }
+
+  const att = await prisma.imagingAttachment.findFirst({
+    where: { id: attachmentId, tenantId, deletedAt: null },
+    select: { id: true, category: true, fileUrl: true },
+  });
+  if (!att) throw AppError.notFound('Attachment not found');
+  if (att.category !== 'dicom') return { viewerUrl: null, reason: 'not-dicom' };
+
+  // Already mirrored? Match the instance pushed from this exact file.
+  const inst = await prisma.dicomInstance.findFirst({
+    where: { tenantId, fileUrl: att.fileUrl },
+    select: { study: { select: { studyInstanceUid: true, viewerUrl: true } } },
+  });
+  if (inst?.study?.viewerUrl) {
+    return { viewerUrl: inst.study.viewerUrl, studyInstanceUid: inst.study.studyInstanceUid };
+  }
+
+  // Lazy archive (idempotent) for providers that can store server-side.
+  if (pacsSupportsArchive()) {
+    const r = await syncAttachmentToPacs(tenantId, attachmentId);
+    if (r.synced && r.viewerUrl) {
+      return { viewerUrl: r.viewerUrl, studyInstanceUid: r.studyInstanceUid };
+    }
+    return { viewerUrl: null, reason: r.reason ?? 'unresolved' };
+  }
+
+  return { viewerUrl: null, reason: 'archive-unsupported' };
 }

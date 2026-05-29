@@ -24,6 +24,26 @@ services:
     volumes:
       - redis_dev_data:/data
 
+  # Orthanc DICOM server (PACS) + bundled OHIF viewer for local development.
+  # Auth is disabled here for convenience (trusted local network). To use it:
+  #   1) docker compose -f docker-compose.dev.yml up -d orthanc
+  #   2) in backend/.env set PACS_PROVIDER=orthanc,
+  #      ORTHANC_URL=http://localhost:8042, ORTHANC_PUBLIC_URL=http://localhost:8042
+  orthanc:
+    image: orthancteam/orthanc:latest
+    container_name: hospital-erp-orthanc-dev
+    ports:
+      - "8042:8042"   # HTTP — REST API, DICOMweb, OHIF viewer
+      - "4242:4242"   # DICOM protocol (DIMSE) for modality C-STORE
+    environment:
+      DICOM_WEB_PLUGIN_ENABLED: "true"
+      OHIF_PLUGIN_ENABLED: "true"
+      ORTHANC__AUTHENTICATION_ENABLED: "false"
+    volumes:
+      - ./orthanc/orthanc.json:/etc/orthanc/orthanc.json:ro
+      - orthanc_dev_data:/var/lib/orthanc/db
+
 volumes:
   postgres_dev_data:
   redis_dev_data:
+  orthanc_dev_data:
