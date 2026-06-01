@@ -1,5 +1,13 @@
 import { z } from 'zod';
 
+// Env vars are strings. z.coerce.boolean() is unsafe here — Boolean("false")
+// is true — so parse the literal "true"/"1" tokens instead.
+const boolFromEnv = (def: boolean) =>
+  z
+    .string()
+    .optional()
+    .transform((v) => (v == null || v === '' ? def : v === 'true' || v === '1'));
+
 const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().default('redis://localhost:6379'),
@@ -39,6 +47,29 @@ const envSchema = z.object({
   POSTDICOM_ACCOUNT_KEY: z.string().default(''),
   POSTDICOM_API_KEY: z.string().default(''),
   POSTDICOM_VIEWER_URL: z.string().default(''),
+
+  // ── PACS auth gateway (reverse proxy) ───────────────────────────────────
+  // When enabled, browsers never touch Orthanc directly: OHIF + DICOMweb are
+  // served through /api/v1/pacs/o/* on this backend, gated by a short-lived
+  // cookie minted from the user's JWT and scoped to the user's tenant.
+  // Production-safe; keep Orthanc OFF the public network and point only this
+  // proxy at it.
+  PACS_PROXY_ENABLED: boolFromEnv(false),
+  // Browser-facing base URL of THIS backend (where the proxy is reachable),
+  // e.g. http://localhost:4000 in dev or https://api.example.com in prod.
+  PACS_PROXY_PUBLIC_URL: z.string().default('http://localhost:4000'),
+  // Cookie attributes. Local (http, same-site): lax + insecure. Prod (https,
+  // cross-domain iframe): 'none' + secure=true (required for the iframe to
+  // send the cookie).
+  PACS_COOKIE_SAMESITE: z.enum(['lax', 'strict', 'none']).default('lax'),
+  PACS_COOKIE_SECURE: boolFromEnv(false),
+  PACS_SESSION_TTL_MIN: z.coerce.number().default(30),
+
+  // Single source of truth: when true, delete the local /uploads copy of a
+  // DICOM after it is successfully archived to Orthanc (S3). Download + the
+  // in-house fallback viewer then stream the bytes back from the PACS through
+  // an authenticated retrieve endpoint. Default false (keep the local copy).
+  PACS_DROP_LOCAL: boolFromEnv(false),
 });
 
 const parsed = envSchema.safeParse(process.env);

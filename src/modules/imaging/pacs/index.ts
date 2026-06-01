@@ -5,6 +5,12 @@ import type { PacsProvider, PacsConfigSummary } from './pacs.types';
 
 export type { PacsProvider, PacsStoreInput, PacsStoreResult, PacsConfigSummary } from './pacs.types';
 export { PacsArchiveUnsupportedError };
+export { buildPacsRouter, buildProxiedViewerUrl, pacsProxyOhifBase, buildRetrieveUrl } from './pacs-proxy';
+
+/** True when browser access to Orthanc is routed through the auth gateway. */
+export function isPacsProxyEnabled(): boolean {
+  return env.PACS_PROXY_ENABLED && env.PACS_PROVIDER === 'orthanc';
+}
 
 /** The provider selected by PACS_PROVIDER, or null when integration is off. */
 export function getPacsProvider(): PacsProvider | null {
@@ -34,12 +40,13 @@ export function pacsSupportsArchive(): boolean {
 export function getPacsConfigSummary(): PacsConfigSummary {
   const p = getPacsProvider();
   if (!p) {
-    return { provider: 'none', configured: false, embeddable: false, label: 'In-house viewer' };
+    return { provider: 'none', configured: false, embeddable: false, label: 'In-house viewer', proxy: false };
   }
   return {
     provider: p.name,
     configured: p.isConfigured(),
     embeddable: p.embeddable,
     label: p.label,
+    proxy: isPacsProxyEnabled(),
   };
 }

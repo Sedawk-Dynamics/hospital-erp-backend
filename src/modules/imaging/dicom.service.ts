@@ -2,6 +2,7 @@ import path from 'path';
 import fs from 'fs';
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
+import { env } from '../../config/env';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
 import { UPLOAD_DIR } from '../../services/upload.service';
@@ -9,6 +10,7 @@ import {
   getPacsProvider,
   getPacsConfigSummary,
   pacsSupportsArchive,
+  buildRetrieveUrl,
   PacsArchiveUnsupportedError,
 } from './pacs';
 import type {
@@ -429,6 +431,26 @@ export async function syncAttachmentToPacs(
     rows: stored.rows,
     columns: stored.columns,
   });
+
+  // Single source of truth: once the bytes are safely in the PACS (S3), drop
+  // the local /uploads copy and repoint download/fallback to an authenticated
+  // retrieve endpoint that streams from Orthanc.
+  if (env.PACS_DROP_LOCAL && filePath) {
+    const retrieveUrl = buildRetrieveUrl(stored.sopInstanceUid);
+    await prisma.imagingAttachment.update({
+      where: { id: attachmentId },
+      data: { fileUrl: retrieveUrl },
+    });
+    await prisma.dicomInstance.updateMany({
+      where: { tenantId, sopInstanceUid: stored.sopInstanceUid },
+      data: { fileUrl: retrieveUrl },
+    });
+    try {
+      await fs.promises.unlink(filePath);
+    } catch (err) {
+      logger.warn({ err, filePath }, 'PACS_DROP_LOCAL: failed to delete local DICOM copy');
+    }
+  }
 
   logger.info(
     { tenantId, attachmentId, studyInstanceUid: stored.studyInstanceUid, provider: provider.name },

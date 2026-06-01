@@ -73,4 +73,6 @@ export interface PacsConfigSummary {
   configured: boolean;
   embeddable: boolean;
   label: string;
+  /** Viewer traffic is routed through the authenticating PACS proxy. */
+  proxy: boolean;
 }

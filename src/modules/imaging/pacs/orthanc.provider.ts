@@ -1,5 +1,6 @@
 import { env } from '../../../config/env';
 import { logger } from '../../../config/logger';
+import { buildProxiedViewerUrl } from './pacs-proxy';
 import type { PacsProvider, PacsStoreInput, PacsStoreResult } from './pacs.types';
 
 // ── Orthanc provider ─────────────────────────────────────────────────────────
@@ -118,6 +119,12 @@ export const orthancProvider: PacsProvider = {
   },
 
   buildViewerUrl(studyInstanceUid: string): string {
+    // Production: route the viewer through the authenticating, tenant-scoped
+    // PACS proxy so the browser never touches Orthanc directly.
+    if (env.PACS_PROXY_ENABLED) {
+      return buildProxiedViewerUrl(studyInstanceUid);
+    }
+    // Direct mode (dev / trusted network): hit Orthanc's bundled OHIF.
     const path = env.ORTHANC_OHIF_PATH.startsWith('/')
       ? env.ORTHANC_OHIF_PATH
       : `/${env.ORTHANC_OHIF_PATH}`;

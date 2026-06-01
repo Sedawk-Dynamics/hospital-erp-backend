@@ -24,26 +24,106 @@ services:
     volumes:
       - redis_dev_data:/data
 
+  # ── PACS storage backends (production-grade, runs locally too) ──────────────
+  # Orthanc keeps its INDEX in PostgreSQL and its DICOM BLOBS in S3 (MinIO here,
+  # any S3 in prod). This mirrors the production topology so what you test
+  # locally is what ships.
+
+  # Dedicated Postgres for Orthanc's index (kept separate from the app DB).
+  orthanc-postgres:
+    image: postgres:16-alpine
+    container_name: hospital-erp-orthanc-db-dev
+    environment:
+      POSTGRES_DB: orthanc
+      POSTGRES_USER: orthanc
+      POSTGRES_PASSWORD: orthanc_pass
+    volumes:
+      - orthanc_pg_dev_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orthanc -d orthanc"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MinIO — S3-compatible object store for DICOM blobs. Console at :9001.
+  minio:
+    image: minio/minio:latest
+    container_name: hospital-erp-minio-dev
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console (login: minioadmin / minioadmin)
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_dev_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || exit 0"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # One-shot: create the DICOM bucket once MinIO is up.
+  minio-init:
+    image: minio/mc:latest
+    container_name: hospital-erp-minio-init-dev
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until /usr/bin/mc alias set local http://minio:9000 minioadmin minioadmin; do echo 'waiting for minio...'; sleep 2; done;
+      /usr/bin/mc mb --ignore-existing local/orthanc;
+      echo 'bucket ready'; exit 0;
+      "
+
   # Orthanc DICOM server (PACS) + bundled OHIF viewer for local development.
-  # Auth is disabled here for convenience (trusted local network). To use it:
-  #   1) docker compose -f docker-compose.dev.yml up -d orthanc
-  #   2) in backend/.env set PACS_PROVIDER=orthanc,
-  #      ORTHANC_URL=http://localhost:8042, ORTHANC_PUBLIC_URL=http://localhost:8042
+  # Index → orthanc-postgres, blobs → MinIO bucket 'orthanc'. Auth is disabled
+  # here for convenience; in production it sits behind the app's authenticating
+  # PACS proxy. To use it:
+  #   1) docker compose -f docker-compose.dev.yml up -d
+  #   2) in backend/.env set PACS_PROVIDER=orthanc + ORTHANC_URL/ORTHANC_PUBLIC_URL
   orthanc:
     image: orthancteam/orthanc:latest
     container_name: hospital-erp-orthanc-dev
+    depends_on:
+      orthanc-postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     ports:
       - "8042:8042"   # HTTP — REST API, DICOMweb, OHIF viewer
       - "4242:4242"   # DICOM protocol (DIMSE) for modality C-STORE
     environment:
       DICOM_WEB_PLUGIN_ENABLED: "true"
       OHIF_PLUGIN_ENABLED: "true"
+      POSTGRESQL_PLUGIN_ENABLED: "true"
+      AWS_S3_STORAGE_PLUGIN_ENABLED: "true"
       ORTHANC__AUTHENTICATION_ENABLED: "false"
+      # OHIF served behind the backend PACS proxy → its router basename must be
+      # the proxied path so the SPA's relative asset + DICOMweb URLs resolve.
+      # (If you run the viewer WITHOUT the proxy, set this back to "/ohif/".)
+      ORTHANC__OHIF__ROUTER_BASENAME: "/api/v1/pacs/o/ohif/"
+      # Index in PostgreSQL (storage handled by S3, so EnableStorage=false).
+      ORTHANC__POSTGRESQL__ENABLE_INDEX: "true"
+      ORTHANC__POSTGRESQL__ENABLE_STORAGE: "false"
+      ORTHANC__POSTGRESQL__HOST: "orthanc-postgres"
+      ORTHANC__POSTGRESQL__PORT: "5432"
+      ORTHANC__POSTGRESQL__DATABASE: "orthanc"
+      ORTHANC__POSTGRESQL__USERNAME: "orthanc"
+      ORTHANC__POSTGRESQL__PASSWORD: "orthanc_pass"
+      # DICOM blobs in MinIO (path-style → VIRTUAL_ADDRESSING=false).
+      ORTHANC__AWS_S3_STORAGE__BUCKET_NAME: "orthanc"
+      ORTHANC__AWS_S3_STORAGE__REGION: "us-east-1"
+      ORTHANC__AWS_S3_STORAGE__ENDPOINT: "http://minio:9000"
+      ORTHANC__AWS_S3_STORAGE__ACCESS_KEY: "minioadmin"
+      ORTHANC__AWS_S3_STORAGE__SECRET_KEY: "minioadmin"
+      ORTHANC__AWS_S3_STORAGE__VIRTUAL_ADDRESSING: "false"
     volumes:
       - ./orthanc/orthanc.json:/etc/orthanc/orthanc.json:ro
-      - orthanc_dev_data:/var/lib/orthanc/db
 
 volumes:
   postgres_dev_data:
   redis_dev_data:
-  orthanc_dev_data:
+  orthanc_pg_dev_data:
+  minio_dev_data:

@@ -24,6 +24,7 @@ import { emarRoutes } from './emar/emar.routes';
 import { labRoutes } from './lab/lab.routes';
 import { cdssRoutes } from './cdss/cdss.routes';
 import { imagingRoutes } from './imaging/imaging.routes';
+import { buildPacsRouter } from './imaging/pacs';
 import { pharmacyRoutes } from './pharmacy/pharmacy.routes';
 import { inventoryRoutes } from './inventory/inventory.routes';
 import { insuranceRoutes } from './insurance/insurance.routes';
@@ -63,6 +64,11 @@ apiRouter.use('/patients', authenticate, userTierLimiter, patientRoutes);
 apiRouter.use('/dashboard', authenticate, userTierLimiter, dashboardRoutes);
 apiRouter.use('/infrastructure', authenticate, userTierLimiter, infrastructureRoutes);
 apiRouter.use('/communication', authenticate, userTierLimiter, communicationRoutes);
+
+// PACS auth gateway. Mounted WITHOUT the global `authenticate` because its
+// /o/* proxy authenticates via the pacs_session cookie (the OHIF iframe can't
+// send a Bearer token); /session itself is Bearer-authed internally.
+apiRouter.use('/pacs', buildPacsRouter());
 
 // --- Feature-gated modules ---
 // authenticate → user-tier limiter → subscription check → feature check → route handlers

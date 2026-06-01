@@ -31,24 +31,98 @@ services:
       timeout: 5s
       retries: 5
 
-  # Orthanc DICOM server (PACS) + bundled OHIF web viewer.
-  # Enabled when the backend sets PACS_PROVIDER=orthanc. Pin the image tag for
-  # production reproducibility (e.g. orthancteam/orthanc:25.6.2).
+  # ── PACS storage backends ───────────────────────────────────────────────
+  # Orthanc keeps its index in PostgreSQL and DICOM blobs in S3. In real
+  # production, point the api/orthanc env at a MANAGED Postgres + S3 and you can
+  # drop the orthanc-postgres + minio services below.
+
+  orthanc-postgres:
+    image: postgres:16-alpine
+    container_name: hospital-erp-orthanc-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${ORTHANC_PG_DATABASE:-orthanc}
+      POSTGRES_USER: ${ORTHANC_PG_USERNAME:-orthanc}
+      POSTGRES_PASSWORD: ${ORTHANC_PG_PASSWORD:-orthanc_pass}
+    volumes:
+      - orthanc_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${ORTHANC_PG_USERNAME:-orthanc} -d ${ORTHANC_PG_DATABASE:-orthanc}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: hospital-erp-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    # Console on 9001 for ops; the S3 API (9000) need not be public.
+    ports:
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-minioadmin}
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || exit 0"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until /usr/bin/mc alias set local http://minio:9000 ${S3_ACCESS_KEY:-minioadmin} ${S3_SECRET_KEY:-minioadmin}; do echo 'waiting for minio...'; sleep 2; done;
+      /usr/bin/mc mb --ignore-existing local/${S3_BUCKET:-orthanc};
+      echo 'bucket ready'; exit 0;
+      "
+
+  # Orthanc DICOM server (PACS) + bundled OHIF. NOT exposed publicly: browsers
+  # reach it only through the backend's authenticating /api/v1/pacs proxy.
+  # DIMSE 4242 is published for modality C-STORE (restrict at the firewall).
+  # Pin the image tag for production reproducibility (e.g. orthancteam/orthanc:25.6.2).
   orthanc:
     image: orthancteam/orthanc:latest
     container_name: hospital-erp-orthanc
     restart: unless-stopped
+    depends_on:
+      orthanc-postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     ports:
-      - "8042:8042"   # HTTP — REST API, DICOMweb, OHIF viewer
       - "4242:4242"   # DICOM protocol (DIMSE) for modality C-STORE
     environment:
       DICOM_WEB_PLUGIN_ENABLED: "true"
       OHIF_PLUGIN_ENABLED: "true"
+      POSTGRESQL_PLUGIN_ENABLED: "true"
+      AWS_S3_STORAGE_PLUGIN_ENABLED: "true"
       ORTHANC__AUTHENTICATION_ENABLED: "true"
       ORTHANC__REGISTERED_USERS: '{"${ORTHANC_USERNAME:-hospital}": "${ORTHANC_PASSWORD:-change-me}"}'
+      # OHIF served behind the backend PACS proxy.
+      ORTHANC__OHIF__ROUTER_BASENAME: "/api/v1/pacs/o/ohif/"
+      # Index in PostgreSQL.
+      ORTHANC__POSTGRESQL__ENABLE_INDEX: "true"
+      ORTHANC__POSTGRESQL__ENABLE_STORAGE: "false"
+      ORTHANC__POSTGRESQL__HOST: ${ORTHANC_PG_HOST:-orthanc-postgres}
+      ORTHANC__POSTGRESQL__PORT: ${ORTHANC_PG_PORT:-5432}
+      ORTHANC__POSTGRESQL__DATABASE: ${ORTHANC_PG_DATABASE:-orthanc}
+      ORTHANC__POSTGRESQL__USERNAME: ${ORTHANC_PG_USERNAME:-orthanc}
+      ORTHANC__POSTGRESQL__PASSWORD: ${ORTHANC_PG_PASSWORD:-orthanc_pass}
+      # Blobs in S3 (MinIO by default; point at managed S3 in prod).
+      ORTHANC__AWS_S3_STORAGE__BUCKET_NAME: ${S3_BUCKET:-orthanc}
+      ORTHANC__AWS_S3_STORAGE__REGION: ${S3_REGION:-us-east-1}
+      ORTHANC__AWS_S3_STORAGE__ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
+      ORTHANC__AWS_S3_STORAGE__ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+      ORTHANC__AWS_S3_STORAGE__SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
+      ORTHANC__AWS_S3_STORAGE__VIRTUAL_ADDRESSING: ${S3_VIRTUAL_ADDRESSING:-false}
     volumes:
       - ./orthanc/orthanc.json:/etc/orthanc/orthanc.json:ro
-      - orthanc_data:/var/lib/orthanc/db
 
   api:
     build:
@@ -72,18 +146,30 @@ services:
       # 'orthanc' to archive + view through the Orthanc service above.
       PACS_PROVIDER: ${PACS_PROVIDER:-none}
       ORTHANC_URL: ${ORTHANC_URL:-http://orthanc:8042}
-      ORTHANC_PUBLIC_URL: ${ORTHANC_PUBLIC_URL:-http://localhost:8042}
       ORTHANC_USERNAME: ${ORTHANC_USERNAME:-hospital}
       ORTHANC_PASSWORD: ${ORTHANC_PASSWORD:-change-me}
       ORTHANC_OHIF_PATH: ${ORTHANC_OHIF_PATH:-/ohif/viewer}
+      # PACS auth gateway — recommended ON in production. Browsers reach the
+      # viewer at PACS_PROXY_PUBLIC_URL/api/v1/pacs/o/... (set it to the public
+      # backend URL). Cross-domain iframe → SAMESITE=none + SECURE=true.
+      PACS_PROXY_ENABLED: ${PACS_PROXY_ENABLED:-true}
+      PACS_PROXY_PUBLIC_URL: ${PACS_PROXY_PUBLIC_URL:-http://localhost:4000}
+      PACS_COOKIE_SAMESITE: ${PACS_COOKIE_SAMESITE:-lax}
+      PACS_COOKIE_SECURE: ${PACS_COOKIE_SECURE:-false}
+      PACS_SESSION_TTL_MIN: ${PACS_SESSION_TTL_MIN:-30}
+      PACS_DROP_LOCAL: ${PACS_DROP_LOCAL:-false}
       POSTDICOM_VIEWER_URL: ${POSTDICOM_VIEWER_URL:-}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    volumes:
+      - api_uploads:/app/uploads
 
 volumes:
-  postgres_data:
+  postgres_data_erp:
   redis_data:
-  orthanc_data:
+  orthanc_pg_data:
+  minio_data:
+  api_uploads:
