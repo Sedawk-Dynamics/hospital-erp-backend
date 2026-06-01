@@ -51,9 +51,22 @@ export async function createImagingAttachment(
   // Tenant ownership check — same shape as the lab variant.
   const request = await prisma.imagingRequest.findFirst({
     where: { id: imagingRequestId, tenantId },
-    select: { id: true, imagingResult: { select: { id: true } } },
+    select: {
+      id: true,
+      status: true,
+      patientId: true,
+      imagingResult: { select: { id: true, status: true } },
+    },
   });
   if (!request) throw AppError.notFound('Imaging request not found');
+
+  // Once the report is published it is locked — nobody (radiologist or admin)
+  // can add, change, or remove its files.
+  if (request.imagingResult?.status === 'published') {
+    throw AppError.badRequest(
+      'This report is published and locked — its files can no longer be changed.',
+    );
+  }
 
   if (options.imagingResultId) {
     const result = await prisma.imagingResult.findFirst({
@@ -68,11 +81,40 @@ export async function createImagingAttachment(
 
   const category = inferCategory(file.mimetype, file.originalname, options.category);
 
-  // If a result already exists on this request, attach to it by default so
-  // the doctor's "report ready" surface sees the file. Caller can override
-  // by passing imagingResultId explicitly.
-  const resolvedResultId =
+  // Resolve (and lazily create) the result row this file hangs off of.
+  // The radiologist's "Upload Result" dialog NO LONGER pre-creates a draft on
+  // open — that left an empty result behind whenever they opened and closed
+  // without uploading, which then tripped a "result already exists" conflict
+  // on the next open. Instead the result is created here, on the FIRST actual
+  // file upload. Opening + closing the dialog with no file now changes nothing.
+  let resolvedResultId =
     options.imagingResultId ?? request.imagingResult?.id ?? null;
+  if (!resolvedResultId) {
+    try {
+      const createdResult = await prisma.imagingResult.create({
+        data: {
+          imagingRequestId,
+          patientId: request.patientId,
+          radiologistId: uploaderId,
+          status: 'draft',
+        },
+        select: { id: true },
+      });
+      resolvedResultId = createdResult.id;
+    } catch (err) {
+      // imagingRequestId is unique on ImagingResult — a concurrent upload may
+      // have created it first. Reuse whatever exists rather than failing.
+      const existing = await prisma.imagingResult.findUnique({
+        where: { imagingRequestId },
+        select: { id: true },
+      });
+      if (existing) {
+        resolvedResultId = existing.id;
+      } else {
+        throw err;
+      }
+    }
+  }
 
   const attachment = await prisma.imagingAttachment.create({
     data: {
@@ -91,6 +133,25 @@ export async function createImagingAttachment(
       uploader: { select: { id: true, firstName: true, lastName: true } },
     },
   });
+
+  // Now that a real file is attached, the study has actually been performed —
+  // advance the request to `completed`. This is the ONLY place a request gets
+  // completed (the draft-result create no longer does it), so a request can
+  // never show completed without a file. Skip terminal states (already
+  // completed, or admin-closed as cancelled/no_show).
+  if (!['completed', 'cancelled', 'no_show'].includes(request.status)) {
+    await prisma.imagingRequest
+      .update({
+        where: { id: imagingRequestId },
+        data: { status: 'completed', completedAt: new Date() },
+      })
+      .catch((err) =>
+        logger.warn(
+          { err, imagingRequestId },
+          'Failed to mark imaging request completed after attachment upload',
+        ),
+      );
+  }
 
   // Mirror the first PDF upload onto ImagingResult.pdfReportUrl so existing
   // readers (doctor orders panel, patient portal) light up without needing
@@ -134,6 +195,21 @@ export async function createImagingAttachment(
     'Imaging attachment uploaded',
   );
   return attachment;
+}
+
+// A published report is immutable. Throws if the request behind an attachment
+// already has a published result — used by update/delete so locked files can't
+// be edited or removed by anyone.
+async function assertNotPublished(imagingRequestId: string) {
+  const result = await prisma.imagingResult.findUnique({
+    where: { imagingRequestId },
+    select: { status: true },
+  });
+  if (result?.status === 'published') {
+    throw AppError.badRequest(
+      'This report is published and locked — its files can no longer be changed.',
+    );
+  }
 }
 
 export async function listImagingAttachmentsForRequest(
@@ -180,6 +256,8 @@ export async function deleteImagingAttachment(tenantId: string, id: string) {
   });
   if (!att) throw AppError.notFound('Attachment not found');
 
+  await assertNotPublished(att.imagingRequestId);
+
   await prisma.imagingAttachment.update({
     where: { id },
     data: { deletedAt: new Date() },
@@ -208,6 +286,8 @@ export async function updateImagingAttachment(
     where: { id, tenantId, deletedAt: null },
   });
   if (!att) throw AppError.notFound('Attachment not found');
+
+  await assertNotPublished(att.imagingRequestId);
 
   return prisma.imagingAttachment.update({
     where: { id },

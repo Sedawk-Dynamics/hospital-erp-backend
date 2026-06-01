@@ -58,6 +58,28 @@ export async function cancelImagingRequest(req: AuthenticatedRequest, res: Respo
   }
 }
 
+export async function closeImagingRequest(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const request = await imagingService.closeImagingRequest(tenantId, req.params.id as string, userId, req.body);
+    sendResponse({ res, message: 'Imaging request closed', data: request });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function reopenImagingRequest(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const request = await imagingService.reopenImagingRequest(tenantId, req.params.id as string, userId);
+    sendResponse({ res, message: 'Imaging request reopened', data: request });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function scheduleImaging(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const tenantId = req.user!.tenantId;

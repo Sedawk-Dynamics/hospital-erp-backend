@@ -7,6 +7,7 @@ import type {
   UpdateImagingRequestInput,
   GetImagingRequestsQuery,
   ScheduleImagingInput,
+  CloseImagingRequestInput,
   UploadImagingResultInput,
   GetImagingResultsQuery,
   AddImagingReportInput,
@@ -212,11 +213,19 @@ export async function getImagingRequests(tenantId: string, query: GetImagingRequ
 
   const where: any = { tenantId };
 
-  if (query.status) {
+  if ((query as any).closed) {
+    // Closed / No-show tab: terminal admin-closed requests in one call.
+    where.status = { in: ['cancelled', 'no_show'] };
+  } else if (query.status) {
     where.status = query.status;
-  } else if ((query as any).excludeCancelled) {
-    // Radiology module hides cancelled requests from its queues/dashboard.
-    where.status = { not: 'cancelled' };
+  } else {
+    // Radiology module hides cancelled + no-show requests from its active
+    // queues/dashboard (they live in the dedicated Closed tab). The Pending
+    // worklist additionally excludes completed so it shows only the to-do set.
+    const excluded: string[] = [];
+    if ((query as any).excludeCancelled) excluded.push('cancelled', 'no_show');
+    if ((query as any).excludeCompleted) excluded.push('completed');
+    if (excluded.length) where.status = { notIn: excluded };
   }
 
   if (query.imagingType) {
@@ -242,11 +251,13 @@ export async function getImagingRequests(tenantId: string, query: GetImagingRequ
   }
 
   if (query.date) {
+    // Scheduling was removed, so this filters by ORDER date (createdAt) — the
+    // radiology dashboard's "show me this day's orders" control.
     const start = new Date(query.date);
     if (!isNaN(start.getTime())) {
       const end = new Date(start);
       end.setDate(end.getDate() + 1);
-      where.scheduledAt = { gte: start, lt: end };
+      where.createdAt = { gte: start, lt: end };
     }
   }
 
@@ -277,6 +288,7 @@ export async function getImagingRequests(tenantId: string, query: GetImagingRequ
         orderer: { select: { id: true, firstName: true, lastName: true } },
         assignedTechnician: { select: { id: true, firstName: true, lastName: true } },
         paymentVerifier: { select: { id: true, firstName: true, lastName: true } },
+        closer: { select: { id: true, firstName: true, lastName: true } },
         visit: { select: { id: true, visitType: true } },
         imagingResult: {
           select: {
@@ -468,6 +480,138 @@ export async function cancelImagingRequest(tenantId: string, id: string) {
   return updated;
 }
 
+// Human-readable closure reason labels (notifications + logs).
+const CLOSURE_REASON_LABELS: Record<string, string> = {
+  patient_no_show: 'Patient no-show',
+  patient_refused: 'Patient refused the procedure',
+  patient_cancelled: 'Cancelled by patient',
+  done_externally: 'Done at another facility',
+  not_required: 'No longer required',
+  equipment_unavailable: 'Equipment unavailable',
+  duplicate_order: 'Duplicate order',
+  other: 'Other',
+};
+
+// Radiology admin closes a request that will never produce a report file.
+// `patient_no_show` lands the request on the dedicated `no_show` status (a
+// standard radiology KPI); every other reason maps to `cancelled` while the
+// closureReason column preserves WHY. Records who/when and notifies the
+// ordering doctor so they know the study won't be coming back.
+export async function closeImagingRequest(
+  tenantId: string,
+  id: string,
+  userId: string,
+  data: CloseImagingRequestInput,
+) {
+  const request = await prisma.imagingRequest.findFirst({
+    where: { id, tenantId },
+  });
+
+  if (!request) {
+    throw AppError.notFound('Imaging request not found');
+  }
+
+  if (request.status === 'completed') {
+    throw AppError.badRequest(
+      'This study is already completed — close is only for requests with no report file.',
+    );
+  }
+  if (request.status === 'cancelled' || request.status === 'no_show') {
+    throw AppError.badRequest(`Imaging request is already closed (${request.status}).`);
+  }
+  // A draft/finalized result means a file is already attached — don't strand it.
+  const existingResult = await prisma.imagingResult.findUnique({
+    where: { imagingRequestId: id },
+    select: { id: true },
+  });
+  if (existingResult) {
+    throw AppError.badRequest(
+      'A result has already been uploaded for this request. Cancel/withdraw the result instead of closing the request.',
+    );
+  }
+
+  const newStatus = data.reason === 'patient_no_show' ? 'no_show' : 'cancelled';
+
+  const updated = await prisma.imagingRequest.update({
+    where: { id },
+    data: {
+      status: newStatus,
+      closureReason: data.reason,
+      closureNote: data.note,
+      closedBy: userId,
+      closedAt: new Date(),
+    },
+    include: {
+      patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+      orderer: { select: { id: true, firstName: true, lastName: true } },
+      closer: { select: { id: true, firstName: true, lastName: true } },
+    },
+  });
+
+  const reasonLabel = CLOSURE_REASON_LABELS[data.reason] ?? data.reason;
+  await safeNotify({
+    tenantId,
+    userId: updated.orderedBy,
+    title: 'Imaging request closed',
+    message: `${updated.imagingType.toUpperCase()}${updated.bodyPart ? ' — ' + updated.bodyPart : ''} was closed by the radiology desk. Reason: ${reasonLabel}.${data.note ? ' Note: ' + data.note : ''}`,
+    notificationType: 'general',
+    referenceType: 'imaging_request',
+    referenceId: id,
+  });
+
+  logger.info(
+    { tenantId, imagingRequestId: id, reason: data.reason, status: newStatus, closedBy: userId },
+    'Imaging request closed',
+  );
+  return updated;
+}
+
+// Re-activate a closed/no-show request when the patient comes back. Resets it
+// to `requested` and clears the closure metadata; paymentVerified is left as
+// it was so a previously-paid request goes straight back to the radiologist
+// queue without a second payment check.
+export async function reopenImagingRequest(tenantId: string, id: string, userId: string) {
+  const request = await prisma.imagingRequest.findFirst({
+    where: { id, tenantId },
+  });
+
+  if (!request) {
+    throw AppError.notFound('Imaging request not found');
+  }
+
+  if (request.status !== 'cancelled' && request.status !== 'no_show') {
+    throw AppError.badRequest('Only a closed or no-show request can be reopened.');
+  }
+
+  const updated = await prisma.imagingRequest.update({
+    where: { id },
+    data: {
+      status: 'requested',
+      closureReason: null,
+      closureNote: null,
+      closedBy: null,
+      closedAt: null,
+    },
+    include: {
+      patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+      orderer: { select: { id: true, firstName: true, lastName: true } },
+    },
+  });
+
+  await safeNotify({
+    tenantId,
+    userId: updated.orderedBy,
+    title: 'Imaging request reopened',
+    message: `${updated.imagingType.toUpperCase()}${updated.bodyPart ? ' — ' + updated.bodyPart : ''} has been reopened and is back in the radiology worklist.`,
+    notificationType: 'general',
+    referenceType: 'imaging_request',
+    referenceId: id,
+  });
+
+  logger.info({ tenantId, imagingRequestId: id, reopenedBy: userId }, 'Imaging request reopened');
+  return updated;
+}
+
 export async function scheduleImaging(tenantId: string, id: string, data: ScheduleImagingInput) {
   const request = await prisma.imagingRequest.findFirst({
     where: { id, tenantId },
@@ -480,6 +624,9 @@ export async function scheduleImaging(tenantId: string, id: string, data: Schedu
   if (request.status === 'completed' || request.status === 'cancelled') {
     throw AppError.badRequest(`Cannot schedule a ${request.status} imaging request`);
   }
+
+  // A no-show can be rescheduled directly (patient returned for the scan) —
+  // scheduling clears the earlier closure metadata below.
 
   // Gate: payment must be verified by radiology_admin before the radiologist
   // can schedule the slot. Doctors can still create requests freely; the
@@ -504,6 +651,11 @@ export async function scheduleImaging(tenantId: string, id: string, data: Schedu
       assignedTechnicianId: data.assignedTechnicianId,
       room: data.room,
       status: 'scheduled',
+      // Rescheduling a previously closed/no-show request clears the closure.
+      closureReason: null,
+      closureNote: null,
+      closedBy: null,
+      closedAt: null,
     },
     include: {
       patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
@@ -624,36 +776,33 @@ export async function uploadImagingResult(
     throw AppError.conflict('A result already exists for this imaging request');
   }
 
-  const result = await prisma.$transaction(async (tx) => {
-    const newResult = await tx.imagingResult.create({
-      data: {
-        imagingRequestId: data.imagingRequestId,
-        patientId: data.patientId,
-        radiologistId: userId,
-        impression: data.impression,
-        imageUrls: data.imageUrls,
-        pacsReferenceId: data.pacsReferenceId,
-        status: 'draft',
+  // NOTE: creating the draft result does NOT complete the request. The UI
+  // opens this draft the moment the radiologist clicks "Upload Result" so the
+  // attachments panel has a resultId to bind to — but if they close without
+  // attaching a file, the request must stay in its queue, not flip to
+  // completed. The request is marked `completed` only when an actual file is
+  // attached (see createImagingAttachment). This enforces the rule
+  // "without a file it will not be marked completed".
+  const result = await prisma.imagingResult.create({
+    data: {
+      imagingRequestId: data.imagingRequestId,
+      patientId: data.patientId,
+      radiologistId: userId,
+      impression: data.impression,
+      imageUrls: data.imageUrls,
+      pacsReferenceId: data.pacsReferenceId,
+      status: 'draft',
+    },
+    include: {
+      imagingRequest: {
+        select: { id: true, imagingType: true, bodyPart: true, status: true },
       },
-      include: {
-        imagingRequest: {
-          select: { id: true, imagingType: true, bodyPart: true, status: true },
-        },
-        patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
-        radiologist: { select: { id: true, firstName: true, lastName: true } },
-      },
-    });
-
-    // Update request status to completed
-    await tx.imagingRequest.update({
-      where: { id: data.imagingRequestId },
-      data: { status: 'completed', completedAt: new Date() },
-    });
-
-    return newResult;
+      patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+      radiologist: { select: { id: true, firstName: true, lastName: true } },
+    },
   });
 
-  logger.info({ tenantId, imagingResultId: result.id }, 'Imaging result uploaded');
+  logger.info({ tenantId, imagingResultId: result.id }, 'Imaging draft result created (not completed until a file is attached)');
   return result;
 }
 
@@ -664,7 +813,12 @@ export async function getImagingResults(tenantId: string, query: GetImagingResul
     imagingRequest: { tenantId },
   };
 
-  if (query.status) {
+  if ((query as any).pendingApproval) {
+    // Admin "Awaiting Approval" queue: a file has been uploaded (request
+    // completed) but the report isn't published yet.
+    where.imagingRequest = { tenantId, status: 'completed' };
+    where.status = { not: 'published' };
+  } else if (query.status) {
     where.status = query.status;
   }
 
@@ -850,8 +1004,16 @@ export async function verifyImagingResult(tenantId: string, id: string, userId: 
     throw AppError.badRequest('Imaging result is already verified and published');
   }
 
-  if (result.status === 'draft') {
-    throw AppError.badRequest('Cannot verify a draft result. Please finalize the report first.');
+  // The radiologist finalize step was removed — the radiology admin approves &
+  // publishes the uploaded study directly. Guard that an actual file exists so
+  // an empty result can never be published.
+  const attachmentCount = await prisma.imagingAttachment.count({
+    where: { imagingRequestId: result.imagingRequestId, deletedAt: null },
+  });
+  if (attachmentCount === 0) {
+    throw AppError.badRequest(
+      'Cannot publish — no file has been uploaded for this study yet.',
+    );
   }
 
   const updated = await prisma.imagingResult.update({
@@ -1135,6 +1297,8 @@ export async function getImagingDashboard(tenantId: string) {
     cancelledTodayCount,
     totalRequestsToday,
     overdueScheduledCount,
+    noShowCount,
+    closedTodayCount,
   ] = await Promise.all([
     // New requests sitting in the radiology_admin queue waiting for payment
     // verification before they reach the radiologist.
@@ -1154,12 +1318,16 @@ export async function getImagingDashboard(tenantId: string) {
     prisma.imagingRequest.count({
       where: { tenantId, urgency: 'stat', createdAt: { gte: todayStart, lt: tomorrowStart } },
     }),
-    // Awaiting admin approval = radiologist marked complete (status=finalized)
-    // but admin hasn't published yet. This is the radiology_admin's "pending
-    // sign-off" queue. Drafts in progress are NOT counted here so the admin
-    // only sees what's actually ready to publish.
+    // Awaiting admin approval = a file has been uploaded (request is completed)
+    // but the report isn't published yet. The radiologist finalize step was
+    // removed, so this is simply the not-yet-published results on completed
+    // studies — the radiology_admin's "pending sign-off" queue. Empty drafts
+    // (no file → request not completed) are excluded by the request filter.
     prisma.imagingResult.count({
-      where: { imagingRequest: { tenantId }, status: 'finalized' },
+      where: {
+        imagingRequest: { tenantId, status: 'completed' },
+        status: { not: 'published' },
+      },
     }),
     prisma.imagingResult.count({
       where: {
@@ -1180,6 +1348,15 @@ export async function getImagingDashboard(tenantId: string) {
         tenantId,
         status: 'scheduled',
         scheduledAt: { lt: new Date() },
+      },
+    }),
+    // All-time no-show requests not yet reopened/rescheduled.
+    prisma.imagingRequest.count({ where: { tenantId, status: 'no_show' } }),
+    // Anything the admin closed today (no-show + reasoned cancellations).
+    prisma.imagingRequest.count({
+      where: {
+        tenantId,
+        closedAt: { gte: todayStart, lt: tomorrowStart },
       },
     }),
   ]);
@@ -1233,6 +1410,8 @@ export async function getImagingDashboard(tenantId: string) {
       cancelledToday: cancelledTodayCount,
       totalRequestsToday,
       overdueScheduled: overdueScheduledCount,
+      noShow: noShowCount,
+      closedToday: closedTodayCount,
     },
     recentRequests: latestRequests,
     recentResults: latestResults,

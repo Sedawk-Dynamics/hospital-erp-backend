@@ -705,7 +705,24 @@ enum ImagingRequestStatus {
   scheduled   @map("scheduled")
   in_progress @map("in_progress")
   completed   @map("completed")
+  no_show     @map("no_show")
   cancelled   @map("cancelled")
+}
+
+// Reason a radiology_admin closed out an imaging request without producing a
+// report file. Covers the "patient never came / no scan will ever happen"
+// cases that the normal upload→complete flow can't terminate. `patient_no_show`
+// maps the request status to `no_show`; every other reason maps it to
+// `cancelled` while recording WHY for departmental reporting.
+enum ImagingClosureReason {
+  patient_no_show       @map("patient_no_show")
+  patient_refused       @map("patient_refused")
+  patient_cancelled     @map("patient_cancelled")
+  done_externally       @map("done_externally")
+  not_required          @map("not_required")
+  equipment_unavailable @map("equipment_unavailable")
+  duplicate_order       @map("duplicate_order")
+  other                 @map("other")
 }
 
 enum ImagingResultStatus {
@@ -1461,6 +1478,7 @@ model User {
   imagingRequestsAssigned        ImagingRequest[]             @relation("ImagingTechnician")
   imagingRequestsExternallyDone  ImagingRequest[]             @relation("ImagingRequestExternalCompleter")
   imagingPaymentsVerified        ImagingRequest[]             @relation("ImagingPaymentVerifier")
+  imagingRequestsClosed          ImagingRequest[]             @relation("ImagingRequestCloser")
   imagingResultsRadiologist      ImagingResult[]              @relation("ImagingRadiologist")
   imagingResultsSigned           ImagingResult[]              @relation("ImagingResultSigner")
   imagingAttachmentsUploaded     ImagingAttachment[]          @relation("ImagingAttachmentUploader")
@@ -3648,6 +3666,13 @@ model ImagingRequest {
   paymentVerified         Boolean              @default(false) @map("payment_verified")
   paymentVerifiedBy       String?              @map("payment_verified_by")
   paymentVerifiedAt       DateTime?            @map("payment_verified_at")
+  // Admin closure (2026-06-01). Captures requests that end without a report
+  // file — patient no-show, refused, done elsewhere, not required, etc. The
+  // status lands on `no_show` or `cancelled`; this preserves the reason.
+  closureReason           ImagingClosureReason? @map("closure_reason")
+  closureNote             String?              @map("closure_note")
+  closedBy                String?              @map("closed_by")
+  closedAt                DateTime?            @map("closed_at")
   createdAt               DateTime             @default(now()) @map("created_at")
   updatedAt               DateTime             @default(now()) @updatedAt @map("updated_at")
 
@@ -3658,6 +3683,7 @@ model ImagingRequest {
   assignedTechnician User?          @relation("ImagingTechnician", fields: [assignedTechnicianId], references: [id])
   externalCompleter  User?          @relation("ImagingRequestExternalCompleter", fields: [completedExternallyBy], references: [id])
   paymentVerifier    User?          @relation("ImagingPaymentVerifier", fields: [paymentVerifiedBy], references: [id])
+  closer             User?          @relation("ImagingRequestCloser", fields: [closedBy], references: [id])
   imagingResult      ImagingResult?
   attachments        ImagingAttachment[]
 

@@ -15,6 +15,8 @@ import {
   imagingRequestIdParamSchema,
   updateImagingRequestSchema,
   cancelImagingRequestSchema,
+  closeImagingRequestSchema,
+  reopenImagingRequestSchema,
   scheduleImagingSchema,
   verifyImagingPaymentSchema,
   uploadImagingResultSchema,
@@ -41,6 +43,14 @@ imagingRoutes.get('/requests', authenticate, requirePermission('imaging', 'creat
 imagingRoutes.get('/requests/:id', authenticate, requirePermission('imaging', 'create'), validate(imagingRequestIdParamSchema), controller.getImagingRequestById);
 imagingRoutes.put('/requests/:id', authenticate, requirePermission('imaging', 'create'), validate(updateImagingRequestSchema), controller.updateImagingRequest);
 imagingRoutes.patch('/requests/:id/cancel', authenticate, requirePermission('imaging', 'create'), validate(cancelImagingRequestSchema), controller.cancelImagingRequest);
+
+// Admin closure (2026-06-01): close out a request that won't produce a report
+// file (no-show, refused, done elsewhere, not required, …) or reopen one when
+// the patient returns. Gated on imaging:update — radiology_admin/admin pass;
+// it's surfaced on the admin queues in the UI.
+imagingRoutes.patch('/requests/:id/close', authenticate, requirePermission('imaging', 'update'), validate(closeImagingRequestSchema), controller.closeImagingRequest);
+imagingRoutes.patch('/requests/:id/reopen', authenticate, requirePermission('imaging', 'update'), validate(reopenImagingRequestSchema), controller.reopenImagingRequest);
+
 imagingRoutes.patch('/requests/:id/schedule', authenticate, requirePermission('imaging', 'update'), validate(scheduleImagingSchema), controller.scheduleImaging);
 
 // Payment-verify gate (2026-05-27 flow). Gated on `billing:update` so only

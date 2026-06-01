@@ -33,7 +33,9 @@ export const createImagingRequestSchema = z.object({
 
 export const getImagingRequestsQuerySchema = z.object({
   query: paginationSchema.extend({
-    status: z.enum(['requested', 'scheduled', 'in_progress', 'completed', 'cancelled']).optional(),
+    status: z
+      .enum(['requested', 'scheduled', 'in_progress', 'completed', 'no_show', 'cancelled'])
+      .optional(),
     imagingType: z.enum(['xray', 'mri', 'ct_scan', 'ultrasound', 'ecg', 'echo', 'other']).optional(),
     urgency: z.enum(['routine', 'urgent', 'stat']).optional(),
     patientId: z.string().uuid().optional(),
@@ -52,6 +54,19 @@ export const getImagingRequestsQuerySchema = z.object({
     // their lists/dashboard. Other callers (e.g. doctor order panels) omit it
     // and still see the full set.
     excludeCancelled: z
+      .string()
+      .transform((v) => v === 'true')
+      .optional(),
+    // The Pending worklist passes this (with excludeCancelled) to show only
+    // the active to-do set — i.e. everything except completed/cancelled/no_show.
+    excludeCompleted: z
+      .string()
+      .transform((v) => v === 'true')
+      .optional(),
+    // The radiology "Closed / No-show" tab passes this to fetch the terminal
+    // admin-closed set (status in cancelled + no_show) in one call instead of
+    // filtering by a single status.
+    closed: z
       .string()
       .transform((v) => v === 'true')
       .optional(),
@@ -80,6 +95,36 @@ export const updateImagingRequestSchema = z.object({
 });
 
 export const cancelImagingRequestSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid imaging request ID'),
+  }),
+});
+
+// Radiology admin closes a request that won't produce a report file. The
+// reason drives the resulting status (patient_no_show → no_show, everything
+// else → cancelled) and is preserved for departmental reporting.
+export const IMAGING_CLOSURE_REASONS = [
+  'patient_no_show',
+  'patient_refused',
+  'patient_cancelled',
+  'done_externally',
+  'not_required',
+  'equipment_unavailable',
+  'duplicate_order',
+  'other',
+] as const;
+
+export const closeImagingRequestSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid imaging request ID'),
+  }),
+  body: z.object({
+    reason: z.enum(IMAGING_CLOSURE_REASONS),
+    note: z.string().max(1000).optional(),
+  }),
+});
+
+export const reopenImagingRequestSchema = z.object({
   params: z.object({
     id: z.string().uuid('Invalid imaging request ID'),
   }),
@@ -125,6 +170,12 @@ export const getImagingResultsQuerySchema = z.object({
     patientId: z.string().uuid().optional(),
     fromDate: z.string().optional(),
     toDate: z.string().optional(),
+    // Admin "Awaiting Approval" queue: not-yet-published results on completed
+    // studies (i.e. a file has been uploaded but the report isn't published).
+    pendingApproval: z
+      .string()
+      .transform((v) => v === 'true')
+      .optional(),
   }),
 });
 
@@ -182,6 +233,7 @@ export type UpdateImagingRequestInput = z.infer<typeof updateImagingRequestSchem
 export type GetImagingRequestsQuery = z.infer<typeof getImagingRequestsQuerySchema>['query'];
 export type ScheduleImagingInput = z.infer<typeof scheduleImagingSchema>['body'];
 
+export type CloseImagingRequestInput = z.infer<typeof closeImagingRequestSchema>['body'];
 export type UploadImagingResultInput = z.infer<typeof uploadImagingResultSchema>['body'];
 export type GetImagingResultsQuery = z.infer<typeof getImagingResultsQuerySchema>['query'];
 export type AddImagingReportInput = z.infer<typeof addImagingReportSchema>['body'];
