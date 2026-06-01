@@ -225,8 +225,10 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'visits', action: 'read' },
       { module: 'appointments', action: 'read' },
       { module: 'lab_orders', action: 'read' }, { module: 'lab_reports', action: 'read' },
-      // Radiology-side billing review + inventory of contrast media / film
-      { module: 'billing', action: 'read' }, { module: 'billing', action: 'update' },
+      // Radiology-side billing review + inventory of contrast media / film.
+      // `billing:create` lets the admin add imaging service tariffs in Settings.
+      { module: 'billing', action: 'read' }, { module: 'billing', action: 'create' },
+      { module: 'billing', action: 'update' },
       { module: 'payments', action: 'read' },
       { module: 'inventory', action: 'read' }, { module: 'inventory', action: 'create' },
       { module: 'inventory', action: 'update' }, { module: 'inventory', action: 'approve' },

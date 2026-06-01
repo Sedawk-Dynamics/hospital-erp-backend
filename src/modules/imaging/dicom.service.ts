@@ -21,6 +21,88 @@ import type {
 } from './dicom.validation';
 
 // ============================================================
+// Imaging-attachment → study bridge
+// ============================================================
+// When no external PACS is configured, modality output is uploaded as
+// ImagingAttachment files (DICOM / images / video) rather than archived into a
+// PACS. To keep the Studies surface useful in that (default) mode, we expose
+// each imaging request that has viewable files as a synthesized "study" backed
+// by its attachments. Real PACS-archived DicomStudy rows take precedence and
+// are deduped by imagingRequestId so a request never shows twice.
+
+// Attachment categories that count as image/instance data for a study.
+// `report_pdf` is excluded — a PDF report lives on the Results surface, not as
+// an imaging study.
+const STUDY_INSTANCE_CATEGORIES = ['image', 'dicom', 'video', 'scan', 'raw_data'] as const;
+
+// Map our ImagingType enum to a short DICOM-style modality code for display.
+const MODALITY_CODE: Record<string, string> = {
+  xray: 'XR',
+  ct_scan: 'CT',
+  mri: 'MR',
+  ultrasound: 'US',
+  ecg: 'ECG',
+  echo: 'US',
+  other: 'OT',
+};
+
+function mapAttachmentToInstance(
+  att: { id: string; instanceNumber?: number; fileUrl: string; sizeBytes: number | null; mimeType: string | null },
+  index: number,
+) {
+  return {
+    id: att.id,
+    sopInstanceUid: `local-${att.id}`,
+    instanceNumber: att.instanceNumber ?? index + 1,
+    fileUrl: att.fileUrl,
+    fileSizeBytes: att.sizeBytes ?? null,
+    mimeType: att.mimeType ?? null,
+    rows: null as number | null,
+    columns: null as number | null,
+  };
+}
+
+// Build a DicomStudy-shaped object from an imaging request + its attachments.
+function buildSynthesizedStudy(req: any, instanceCount: number) {
+  const ordererName = req.orderer
+    ? `${req.orderer.firstName} ${req.orderer.lastName ?? ''}`.trim()
+    : null;
+  return {
+    id: req.id,
+    tenantId: req.tenantId,
+    patientId: req.patientId,
+    imagingRequestId: req.id,
+    imagingResultId: req.imagingResult?.id ?? null,
+    studyInstanceUid: `local-${req.id}`,
+    accessionNumber: `ACC-${String(req.id).slice(0, 12).toUpperCase()}`,
+    studyDate: req.completedAt ?? req.createdAt ?? null,
+    studyDescription: req.bodyPart || req.imagingType?.replace(/_/g, ' ') || 'Imaging study',
+    modality: MODALITY_CODE[req.imagingType] ?? (req.imagingType?.toUpperCase() ?? null),
+    numberOfSeries: instanceCount > 0 ? 1 : 0,
+    numberOfInstances: instanceCount,
+    patientName: req.patient
+      ? `${req.patient.firstName} ${req.patient.lastName ?? ''}`.trim()
+      : null,
+    patientDicomId: req.patient?.mrn ?? null,
+    referringPhysician: ordererName,
+    storagePath: null,
+    viewerUrl: null,
+    createdAt: req.createdAt,
+    synthesized: true as const,
+    patient: req.patient
+      ? {
+          id: req.patient.id,
+          mrn: req.patient.mrn,
+          firstName: req.patient.firstName,
+          lastName: req.patient.lastName,
+          dateOfBirth: req.patient.dateOfBirth,
+          gender: req.patient.gender,
+        }
+      : undefined,
+  };
+}
+
+// ============================================================
 // Studies
 // ============================================================
 
@@ -173,15 +255,16 @@ export async function addInstance(tenantId: string, studyId: string, data: AddIn
 
 export async function getStudies(tenantId: string, query: GetStudiesQuery) {
   const { skip, take, page, limit } = getPaginationParams(query);
-  const where: any = { tenantId };
-  if (query.patientId) where.patientId = query.patientId;
-  if (query.imagingRequestId) where.imagingRequestId = query.imagingRequestId;
-  if (query.modality) where.modality = query.modality;
-  if (query.fromDate) where.studyDate = { ...where.studyDate, gte: new Date(query.fromDate) };
-  if (query.toDate) where.studyDate = { ...where.studyDate, lte: new Date(query.toDate) };
 
+  // 1) Real PACS-archived studies.
+  const realWhere: any = { tenantId };
+  if (query.patientId) realWhere.patientId = query.patientId;
+  if (query.imagingRequestId) realWhere.imagingRequestId = query.imagingRequestId;
+  if (query.modality) realWhere.modality = query.modality;
+  if (query.fromDate) realWhere.studyDate = { ...realWhere.studyDate, gte: new Date(query.fromDate) };
+  if (query.toDate) realWhere.studyDate = { ...realWhere.studyDate, lte: new Date(query.toDate) };
   if (query.search) {
-    where.OR = [
+    realWhere.OR = [
       { studyDescription: { contains: query.search, mode: 'insensitive' } },
       { accessionNumber: { contains: query.search, mode: 'insensitive' } },
       { patientName: { contains: query.search, mode: 'insensitive' } },
@@ -189,19 +272,82 @@ export async function getStudies(tenantId: string, query: GetStudiesQuery) {
     ];
   }
 
-  const [studies, total] = await Promise.all([
-    prisma.dicomStudy.findMany({
-      where,
-      skip,
-      take,
-      orderBy: { studyDate: 'desc' },
-      include: {
-        patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
-      },
-    }),
-    prisma.dicomStudy.count({ where }),
-  ]);
+  const realStudies = await prisma.dicomStudy.findMany({
+    where: realWhere,
+    orderBy: { studyDate: 'desc' },
+    include: {
+      patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+    },
+  });
+  const coveredRequestIds = new Set(
+    realStudies.map((s) => s.imagingRequestId).filter(Boolean) as string[],
+  );
 
+  // 2) Synthesized studies from imaging requests that have viewable files but
+  //    aren't already archived in a PACS.
+  const reqWhere: any = {
+    tenantId,
+    attachments: {
+      some: { deletedAt: null, category: { in: STUDY_INSTANCE_CATEGORIES as any } },
+    },
+  };
+  if (query.patientId) reqWhere.patientId = query.patientId;
+  if (query.imagingRequestId) reqWhere.id = query.imagingRequestId;
+  if (query.modality) {
+    // Reverse-map the modality code back to ImagingType values.
+    const types = Object.entries(MODALITY_CODE)
+      .filter(([, code]) => code === query.modality)
+      .map(([t]) => t);
+    if (types.length) reqWhere.imagingType = { in: types };
+    else reqWhere.imagingType = '__none__';
+  }
+
+  const requests = await prisma.imagingRequest.findMany({
+    where: reqWhere,
+    orderBy: { createdAt: 'desc' },
+    include: {
+      patient: {
+        select: {
+          id: true, mrn: true, firstName: true, lastName: true,
+          dateOfBirth: true, gender: true,
+        },
+      },
+      orderer: { select: { id: true, firstName: true, lastName: true } },
+      imagingResult: { select: { id: true } },
+      attachments: {
+        where: { deletedAt: null, category: { in: STUDY_INSTANCE_CATEGORIES as any } },
+        select: { id: true },
+      },
+    },
+  });
+
+  let synthesized = requests
+    .filter((r) => !coveredRequestIds.has(r.id))
+    .map((r) => buildSynthesizedStudy(r, r.attachments.length));
+
+  // Apply the free-text search to synthesized rows in-memory.
+  if (query.search) {
+    const q = query.search.toLowerCase();
+    synthesized = synthesized.filter(
+      (s) =>
+        (s.studyDescription ?? '').toLowerCase().includes(q) ||
+        (s.accessionNumber ?? '').toLowerCase().includes(q) ||
+        (s.patientName ?? '').toLowerCase().includes(q) ||
+        (s.patient ? `${s.patient.firstName} ${s.patient.lastName ?? ''}`.toLowerCase().includes(q) : false) ||
+        (s.patient?.mrn ?? '').toLowerCase().includes(q),
+    );
+  }
+
+  // 3) Merge, sort by date desc, paginate in-memory.
+  const combined = [...realStudies.map((s) => ({ ...s, synthesized: false })), ...synthesized];
+  combined.sort((a, b) => {
+    const da = a.studyDate ? new Date(a.studyDate).getTime() : 0;
+    const db = b.studyDate ? new Date(b.studyDate).getTime() : 0;
+    return db - da;
+  });
+
+  const total = combined.length;
+  const studies = combined.slice(skip, skip + take);
   return { studies, total, page, limit };
 }
 
@@ -232,8 +378,40 @@ export async function getStudyById(tenantId: string, id: string) {
       },
     },
   });
-  if (!study) throw AppError.notFound('DICOM study not found');
-  return study;
+  if (study) return study;
+
+  // Not a real PACS study — try a synthesized study backed by an imaging
+  // request's uploaded files.
+  const req = await prisma.imagingRequest.findFirst({
+    where: { id, tenantId },
+    include: {
+      patient: {
+        select: {
+          id: true, mrn: true, firstName: true, lastName: true,
+          dateOfBirth: true, gender: true,
+        },
+      },
+      orderer: { select: { id: true, firstName: true, lastName: true } },
+      imagingResult: { select: { id: true } },
+      attachments: {
+        where: { deletedAt: null, category: { in: STUDY_INSTANCE_CATEGORIES as any } },
+        orderBy: { createdAt: 'asc' },
+        select: { id: true, fileUrl: true, sizeBytes: true, mimeType: true, fileName: true },
+      },
+    },
+  });
+
+  if (!req) throw AppError.notFound('DICOM study not found');
+
+  const base = buildSynthesizedStudy(req, req.attachments.length);
+  return {
+    ...base,
+    series: [],
+    // All files hang off the study directly (no series grouping for synthesized).
+    instances: req.attachments.map((att, i) =>
+      mapAttachmentToInstance({ ...att, instanceNumber: undefined }, i),
+    ),
+  };
 }
 
 export async function getStudiesByPatient(tenantId: string, patientId: string) {
@@ -262,7 +440,7 @@ export async function getWorklist(tenantId: string, query: WorklistQuery) {
 
   const requests = await prisma.imagingRequest.findMany({
     where,
-    orderBy: { scheduledAt: 'asc' },
+    orderBy: { createdAt: 'desc' },
     include: {
       patient: {
         select: {
