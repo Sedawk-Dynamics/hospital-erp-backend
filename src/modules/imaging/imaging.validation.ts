@@ -28,6 +28,17 @@ export const createImagingRequestSchema = z.object({
       .string()
       .refine((val) => !isNaN(Date.parse(val)), { message: 'Invalid scheduled date' })
       .optional(),
+    // Set when the doctor picked a study from the imaging catalog — used to
+    // price the auto-linked bill item exactly off that tariff.
+    serviceTariffId: z.string().uuid('Invalid service tariff ID').optional(),
+  }),
+});
+
+export const imagingCatalogQuerySchema = z.object({
+  query: z.object({
+    search: z.string().optional(),
+    modality: z.enum(['xray', 'mri', 'ct_scan', 'ultrasound', 'ecg', 'echo', 'other']).optional(),
+    limit: z.coerce.number().int().positive().max(100).optional(),
   }),
 });
 

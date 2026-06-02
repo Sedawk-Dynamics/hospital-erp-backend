@@ -17,6 +17,7 @@ import {
   cancelImagingRequestSchema,
   closeImagingRequestSchema,
   reopenImagingRequestSchema,
+  imagingCatalogQuerySchema,
   scheduleImagingSchema,
   verifyImagingPaymentSchema,
   uploadImagingResultSchema,
@@ -36,6 +37,10 @@ import {
 } from './dicom.validation';
 
 export const imagingRoutes = Router();
+
+// --- Imaging service catalog (admin-maintained tariffs, searched by doctors
+// when ordering). Gated on imaging:read so doctors/radiology staff can read it. ---
+imagingRoutes.get('/catalog', authenticate, requirePermission('imaging', 'read'), validate(imagingCatalogQuerySchema), controller.getImagingCatalog);
 
 // --- Imaging Requests ---
 imagingRoutes.post('/requests', authenticate, requirePermission('imaging', 'create'), validate(createImagingRequestSchema), controller.createImagingRequest);

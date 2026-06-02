@@ -330,6 +330,23 @@ export async function updateServiceTariff(
   }
 }
 
+export async function deleteServiceTariff(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    await billingService.deleteServiceTariff(tenantId, req.params.id as string);
+    sendResponse({
+      res,
+      message: 'Service tariff deleted successfully',
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // --- Collection Summary ---
 
 export async function getCollectionSummary(

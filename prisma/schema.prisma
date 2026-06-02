@@ -4141,6 +4141,10 @@ model ServiceTariff {
   category       ServiceTariffCategory
   basePrice      Decimal               @map("base_price") @db.Decimal(12, 2)
   gstRatePercent Decimal               @default(0) @map("gst_rate_percent") @db.Decimal(4, 2)
+  // For imaging (category=radiology) tariffs: which modality this study runs on,
+  // so the doctor's catalog search can route a picked study to the right
+  // ImagingType when ordering. Null for non-imaging categories.
+  modality       ImagingType?          @map("modality")
   isActive       Boolean               @default(true) @map("is_active")
   createdAt      DateTime              @default(now()) @map("created_at")
   updatedAt      DateTime              @default(now()) @updatedAt @map("updated_at")

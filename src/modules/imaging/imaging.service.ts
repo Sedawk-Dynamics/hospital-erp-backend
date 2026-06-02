@@ -84,8 +84,51 @@ async function lookupImagingPrice(tenantId: string, imagingType: string, bodyPar
   return { id: null as string | null, price: 0 };
 }
 
-// Auto-add a radiology line item to the patient's draft bill
-export async function autoLinkImagingToBill(tenantId: string, requestId: string) {
+// Imaging service catalog — the imaging (category=radiology) tariffs the
+// radiology admin maintains in Settings, surfaced as a searchable catalog for
+// the doctor's order dialog (mirrors the lab test catalog). Returns active
+// services with their modality so a pick routes to the right ImagingType.
+export async function getImagingCatalog(
+  tenantId: string,
+  query: { search?: string; modality?: string; limit?: number },
+) {
+  const where: any = { tenantId, category: 'radiology', isActive: true };
+  if (query.modality) where.modality = query.modality;
+  if (query.search) {
+    where.OR = [
+      { serviceName: { contains: query.search, mode: 'insensitive' } },
+      { serviceCode: { contains: query.search, mode: 'insensitive' } },
+    ];
+  }
+  const items = await prisma.serviceTariff.findMany({
+    where,
+    orderBy: { serviceName: 'asc' },
+    take: Math.min(query.limit ?? 30, 100),
+    select: {
+      id: true,
+      serviceName: true,
+      serviceCode: true,
+      basePrice: true,
+      gstRatePercent: true,
+      modality: true,
+      isActive: true,
+    },
+  });
+  return items.map((i) => ({
+    ...i,
+    basePrice: Number(i.basePrice ?? 0),
+    gstRatePercent: Number(i.gstRatePercent ?? 0),
+  }));
+}
+
+// Auto-add a radiology line item to the patient's draft bill. When the order
+// was placed from a catalog study, `preferredTariffId` prices it exactly off
+// that tariff; otherwise we fall back to the modality/body-part lookup.
+export async function autoLinkImagingToBill(
+  tenantId: string,
+  requestId: string,
+  preferredTariffId?: string | null,
+) {
   try {
     const request = await prisma.imagingRequest.findFirst({
       where: { id: requestId, tenantId },
@@ -118,11 +161,23 @@ export async function autoLinkImagingToBill(tenantId: string, requestId: string)
     });
     if (existing) return;
 
-    const { id: serviceTariffId, price } = await lookupImagingPrice(
-      tenantId,
-      request.imagingType,
-      request.bodyPart,
-    );
+    // Exact price from the picked catalog study, else resolve by modality/body part.
+    let serviceTariffId: string | null = null;
+    let price = 0;
+    if (preferredTariffId) {
+      const picked = await prisma.serviceTariff.findFirst({
+        where: { id: preferredTariffId, tenantId, category: 'radiology', isActive: true },
+      });
+      if (picked) {
+        serviceTariffId = picked.id;
+        price = Number(picked.basePrice ?? 0);
+      }
+    }
+    if (!serviceTariffId) {
+      const resolved = await lookupImagingPrice(tenantId, request.imagingType, request.bodyPart);
+      serviceTariffId = resolved.id;
+      price = resolved.price;
+    }
 
     await prisma.billItem.create({
       data: {
@@ -202,8 +257,9 @@ export async function createImagingRequest(
 
   logger.info({ tenantId, imagingRequestId: request.id }, 'Imaging request created');
 
-  // Auto-link to draft bill (best effort)
-  void autoLinkImagingToBill(tenantId, request.id);
+  // Auto-link to draft bill (best effort). When the doctor picked a catalog
+  // study, price it exactly off that tariff.
+  void autoLinkImagingToBill(tenantId, request.id, (data as any).serviceTariffId ?? null);
 
   return request;
 }

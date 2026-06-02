@@ -21,6 +21,12 @@ export const createServiceTariffSchema = z.object({
     taxRate: z.number().min(0).max(100).default(0),
     isActive: z.boolean().default(true),
     departmentId: z.string().uuid('Invalid department ID').optional(),
+    // Imaging tariffs carry the modality so the doctor's order catalog can
+    // route a picked study to the right ImagingType.
+    modality: z
+      .enum(['xray', 'mri', 'ct_scan', 'ultrasound', 'ecg', 'echo', 'other'])
+      .optional()
+      .nullable(),
   }),
 });
 
@@ -46,6 +52,10 @@ export const updateServiceTariffSchema = z.object({
     taxRate: z.number().min(0).max(100).optional(),
     isActive: z.boolean().optional(),
     departmentId: z.string().uuid().optional().nullable(),
+    modality: z
+      .enum(['xray', 'mri', 'ct_scan', 'ultrasound', 'ecg', 'echo', 'other'])
+      .optional()
+      .nullable(),
   }),
   params: z.object({
     id: z.string().uuid('Invalid tariff ID'),

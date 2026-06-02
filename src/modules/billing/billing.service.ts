@@ -37,6 +37,22 @@ function mapToServiceTariffCategory(cat: string): string {
 }
 
 /**
+ * Best-effort map an imaging modality/service name to the ImagingType enum so
+ * radiology admins can add a modality by name (e.g. "MRI", "PET-CT") without
+ * picking an enum. Falls back to 'other' for anything unrecognized.
+ */
+function deriveImagingModality(name: string): string {
+  const n = (name || '').toLowerCase();
+  if (/\becg\b|electrocardiogram/.test(n)) return 'ecg';
+  if (/\becho\b|echocardiogram|2d ?echo/.test(n)) return 'echo';
+  if (/\bmri\b|magnetic resonance/.test(n)) return 'mri';
+  if (/\bct\b|cat scan|computed tomograph/.test(n)) return 'ct_scan';
+  if (/x-?ray|radiograph/.test(n)) return 'xray';
+  if (/ultrasound|\busg\b|sonograph|doppler/.test(n)) return 'ultrasound';
+  return 'other';
+}
+
+/**
  * Map validation payment method to PaymentMethod enum.
  * Validation allows 'bank_transfer' and 'wallet' which don't exist in schema.
  */
@@ -598,6 +614,11 @@ export async function createServiceTariff(tenantId: string, data: CreateServiceT
       category: mapToServiceTariffCategory(data.category) as any,
       basePrice: data.basePrice,
       gstRatePercent: data.taxRate ?? 0,
+      modality:
+        (data as any).modality ??
+        (mapToServiceTariffCategory(data.category) === 'radiology'
+          ? deriveImagingModality(data.name)
+          : null),
       isActive: data.isActive ?? true,
     },
   });
@@ -664,6 +685,12 @@ export async function updateServiceTariff(
   if (data.basePrice !== undefined) updateData.basePrice = data.basePrice;
   if (data.taxRate !== undefined) updateData.gstRatePercent = data.taxRate;
   if (data.isActive !== undefined) updateData.isActive = data.isActive;
+  if ((data as any).modality !== undefined) {
+    updateData.modality = (data as any).modality;
+  } else if (data.name !== undefined && existing.category === ('radiology' as any)) {
+    // Re-derive the modality when a radiology service is renamed.
+    updateData.modality = deriveImagingModality(data.name) as any;
+  }
 
   const tariff = await prisma.serviceTariff.update({
     where: { id },
@@ -672,6 +699,24 @@ export async function updateServiceTariff(
 
   logger.info({ tenantId, tariffId: id }, 'Service tariff updated');
   return tariff;
+}
+
+export async function deleteServiceTariff(tenantId: string, id: string) {
+  const existing = await prisma.serviceTariff.findFirst({
+    where: { id, tenantId },
+  });
+
+  if (!existing) {
+    throw AppError.notFound('Service tariff not found');
+  }
+
+  // The BillItem → ServiceTariff relation is optional (onDelete: SetNull), so
+  // removing a tariff keeps historical bill lines intact (they just lose the
+  // catalog link). Hard-delete so it disappears from the modality catalog.
+  await prisma.serviceTariff.delete({ where: { id } });
+
+  logger.info({ tenantId, tariffId: id }, 'Service tariff deleted');
+  return { id };
 }
 
 // --- Bills ---

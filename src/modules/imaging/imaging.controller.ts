@@ -18,6 +18,20 @@ export async function createImagingRequest(req: AuthenticatedRequest, res: Respo
   }
 }
 
+export async function getImagingCatalog(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await imagingService.getImagingCatalog(tenantId, {
+      search: req.query.search as string | undefined,
+      modality: req.query.modality as string | undefined,
+      limit: req.query.limit ? Number(req.query.limit) : undefined,
+    });
+    sendResponse({ res, message: 'Imaging catalog retrieved', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getImagingRequests(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const tenantId = req.user!.tenantId;

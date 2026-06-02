@@ -72,6 +72,13 @@ billingRoutes.put(
   controller.updateServiceTariff,
 );
 
+billingRoutes.delete(
+  '/tariffs/:id',
+  authenticate,
+  requirePermission('billing', 'delete'),
+  controller.deleteServiceTariff,
+);
+
 // --- Collection Summary ---
 
 billingRoutes.get(
