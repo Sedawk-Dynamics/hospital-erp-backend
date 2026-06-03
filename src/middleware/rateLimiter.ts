@@ -67,7 +67,6 @@ const ROLE_TIER: Record<string, keyof typeof TIERS> = {
   lab_technician: 'HIGH',
   lab_supervisor: 'HIGH',
   pharmacist: 'HIGH',
-  pharmacy_technician: 'HIGH',
   billing_admin: 'HIGH',
   cashier: 'HIGH',
 

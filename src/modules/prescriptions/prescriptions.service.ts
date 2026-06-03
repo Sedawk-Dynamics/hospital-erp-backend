@@ -840,7 +840,9 @@ export async function checkAllergy(tenantId: string, query: AllergyCheckQuery) {
 export async function searchFormulary(tenantId: string, query: FormularySearchQuery) {
   const { search } = query;
 
-  const drugs = await prisma.drugFormulary.findMany({
+  // 1. The hospital's own formulary (drugs it stocks) — these carry an `id`
+  //    usable as PrescriptionItem.drugId.
+  const formulary = await prisma.drugFormulary.findMany({
     where: {
       tenantId,
       isActive: true,
@@ -858,12 +860,75 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
       strength: true,
       manufacturer: true,
       price: true,
+      drugMasterId: true,
     },
     take: 20,
     orderBy: { drugName: 'asc' },
   });
 
-  return drugs;
+  const formularyResults = formulary.map((f) => ({ ...f, source: 'formulary' as const }));
+
+  // 2. Fill the remaining slots with platform-catalog matches the hospital has
+  //    NOT yet imported, so a doctor can still pick (and later stock) a drug
+  //    that isn't in the local formulary. These carry no `id` (drugId stays
+  //    null → free-text path) but expose `drugMasterId` for one-click import.
+  const remaining = 20 - formularyResults.length;
+  let masterResults: Array<{
+    id: null;
+    drugMasterId: string;
+    drugName: string;
+    genericName: string | null;
+    dosageForm: any;
+    strength: string | null;
+    manufacturer: string | null;
+    price: any;
+    source: 'master';
+  }> = [];
+
+  if (remaining > 0) {
+    const importedMasterIds = formulary
+      .map((f) => f.drugMasterId)
+      .filter((v): v is string => Boolean(v));
+    const terms = search
+      .toLowerCase()
+      .split(/\s+/)
+      .map((t) => t.trim())
+      .filter(Boolean);
+
+    const masters = await prisma.drugMaster.findMany({
+      where: {
+        isPublished: true,
+        isDiscontinued: false,
+        ...(importedMasterIds.length ? { id: { notIn: importedMasterIds } } : {}),
+        AND: terms.map((t) => ({ searchTokens: { contains: t, mode: 'insensitive' as const } })),
+      },
+      select: {
+        id: true,
+        name: true,
+        genericName: true,
+        dosageForm: true,
+        strength: true,
+        manufacturer: true,
+        mrp: true,
+      },
+      take: remaining,
+      orderBy: { name: 'asc' },
+    });
+
+    masterResults = masters.map((m) => ({
+      id: null,
+      drugMasterId: m.id,
+      drugName: m.name,
+      genericName: m.genericName,
+      dosageForm: m.dosageForm,
+      strength: m.strength,
+      manufacturer: m.manufacturer,
+      price: m.mrp,
+      source: 'master' as const,
+    }));
+  }
+
+  return [...formularyResults, ...masterResults];
 }
 
 // ============================================================

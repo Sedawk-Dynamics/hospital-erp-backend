@@ -7,6 +7,7 @@ import type {
   UpdateCategoryInput,
   CreateFormularyInput,
   UpdateFormularyInput,
+  ImportFormularyInput,
   GetFormularyQuery,
   CreateBatchInput,
   UpdateBatchInput,
@@ -24,10 +25,30 @@ import type {
 } from './pharmacy.validation';
 
 // ============================================================
+// Role guard — master/stock management is pharmacy_admin only
+// ============================================================
+// pharmacist holds pharmacy:create/update so it can DISPENSE and take patient
+// RETURNS, but those same perms must not let it manage the formulary, drug
+// categories or stock batches. This service-level guard enforces the 2-role
+// split (mirrors lab's assertCanCloneTemplates). admin/super_admin always pass.
+const PHARMACY_ADMIN_ROLES = new Set(['super_admin', 'admin', 'pharmacy_admin']);
+
+function assertPharmacyAdmin(roles: string[], action = 'manage pharmacy master data'): void {
+  if (!roles.some((r) => PHARMACY_ADMIN_ROLES.has(r))) {
+    throw AppError.forbidden(`Only a pharmacy admin can ${action}.`);
+  }
+}
+
+// ============================================================
 // Drug Categories
 // ============================================================
 
-export async function createDrugCategory(tenantId: string, data: CreateCategoryInput) {
+export async function createDrugCategory(
+  tenantId: string,
+  roles: string[],
+  data: CreateCategoryInput,
+) {
+  assertPharmacyAdmin(roles, 'create drug categories');
   const existing = await prisma.drugCategory.findFirst({
     where: { tenantId, name: data.name },
   });
@@ -73,7 +94,13 @@ export async function getDrugCategories(tenantId: string, query: any) {
   return { categories, total, page, limit };
 }
 
-export async function updateDrugCategory(tenantId: string, id: string, data: UpdateCategoryInput) {
+export async function updateDrugCategory(
+  tenantId: string,
+  roles: string[],
+  id: string,
+  data: UpdateCategoryInput,
+) {
+  assertPharmacyAdmin(roles, 'edit drug categories');
   const existing = await prisma.drugCategory.findFirst({
     where: { id, tenantId },
   });
@@ -133,7 +160,12 @@ export async function deleteDrugCategory(tenantId: string, id: string) {
 // Formulary
 // ============================================================
 
-export async function createFormularyItem(tenantId: string, data: CreateFormularyInput) {
+export async function createFormularyItem(
+  tenantId: string,
+  roles: string[],
+  data: CreateFormularyInput,
+) {
+  assertPharmacyAdmin(roles, 'add formulary drugs');
   // Validate category exists if provided
   if (data.categoryId) {
     const category = await prisma.drugCategory.findFirst({
@@ -166,6 +198,123 @@ export async function createFormularyItem(tenantId: string, data: CreateFormular
 
   logger.info({ tenantId, formularyId: formularyItem.id }, 'Formulary item created');
   return formularyItem;
+}
+
+/**
+ * NPPA / DPCO price-control watch (READ-ONLY). Lists the scheduled
+ * (price-controlled) drugs THIS hospital stocks and compares the hospital's own
+ * per-unit price (active batch selling price, else formulary price) against the
+ * official NPPA ceiling. Never writes anything — the hospital decides whether to
+ * re-price. The ceiling lives on the shared DrugMaster; each tenant's own price
+ * is independent.
+ */
+export async function getPriceControlWatch(tenantId: string) {
+  const rows = await prisma.drugFormulary.findMany({
+    where: { tenantId, drugMaster: { isScheduled: true } },
+    select: {
+      id: true,
+      drugName: true,
+      genericName: true,
+      price: true,
+      drugMaster: {
+        select: {
+          ceilingPrice: true,
+          ceilingUnit: true,
+          nppaNotification: true,
+          ceilingEffectiveDate: true,
+        },
+      },
+      drugBatches: {
+        where: { isExpired: false, isRecalled: false, quantityInStock: { gt: 0 } },
+        select: { sellingPrice: true },
+        orderBy: { expiryDate: 'asc' },
+        take: 1,
+      },
+    },
+    orderBy: { drugName: 'asc' },
+  });
+
+  const items = rows.map((r) => {
+    const batchPrice = r.drugBatches[0]?.sellingPrice;
+    const hospitalPrice =
+      batchPrice != null ? Number(batchPrice) : r.price != null ? Number(r.price) : null;
+    const ceiling = r.drugMaster?.ceilingPrice != null ? Number(r.drugMaster.ceilingPrice) : null;
+    const isOverCeiling = hospitalPrice != null && ceiling != null && hospitalPrice > ceiling;
+    return {
+      formularyId: r.id,
+      drugName: r.drugName,
+      genericName: r.genericName,
+      hospitalPrice,
+      priceSource: batchPrice != null ? 'batch' : r.price != null ? 'formulary' : null,
+      ceilingPrice: ceiling,
+      ceilingUnit: r.drugMaster?.ceilingUnit ?? null,
+      nppaNotification: r.drugMaster?.nppaNotification ?? null,
+      ceilingEffectiveDate: r.drugMaster?.ceilingEffectiveDate ?? null,
+      isOverCeiling,
+    };
+  });
+
+  return {
+    items,
+    total: items.length,
+    overCeilingCount: items.filter((i) => i.isOverCeiling).length,
+  };
+}
+
+/**
+ * Import a drug from the platform-wide DrugMaster catalog into this tenant's
+ * formulary (the "clone" step — mirrors lab template -> catalog cloning). If
+ * the tenant already imported the same catalog entry, the existing formulary
+ * row is returned instead of creating a duplicate.
+ */
+export async function importFormularyItem(
+  tenantId: string,
+  roles: string[],
+  data: ImportFormularyInput,
+) {
+  assertPharmacyAdmin(roles, 'import drugs into the formulary');
+  const master = await prisma.drugMaster.findUnique({ where: { id: data.drugMasterId } });
+  if (!master) throw AppError.notFound('Drug not found in catalog');
+  if (!master.isPublished) throw AppError.badRequest('Drug is not published in the catalog');
+
+  if (data.categoryId) {
+    const category = await prisma.drugCategory.findFirst({
+      where: { id: data.categoryId, tenantId },
+    });
+    if (!category) throw AppError.notFound('Drug category not found');
+  }
+
+  // Dedupe: a tenant should only have one formulary row per catalog entry.
+  const existing = await prisma.drugFormulary.findFirst({
+    where: { tenantId, drugMasterId: master.id },
+    include: { category: { select: { id: true, name: true } } },
+  });
+  if (existing) return { item: existing, status: 'already_imported' as const };
+
+  const item = await prisma.drugFormulary.create({
+    data: {
+      tenantId,
+      drugMasterId: master.id,
+      drugName: master.name,
+      genericName: master.genericName,
+      categoryId: data.categoryId ?? null,
+      manufacturer: master.manufacturer,
+      dosageForm: master.dosageForm,
+      strength: master.strength,
+      unitOfMeasurement: master.packSizeLabel,
+      // Default selling price from the catalog MRP; the hospital can override
+      // at import time or edit later.
+      price: data.price ?? master.mrp ?? undefined,
+      isActive: true,
+    },
+    include: { category: { select: { id: true, name: true } } },
+  });
+
+  logger.info(
+    { tenantId, formularyId: item.id, drugMasterId: master.id },
+    'Formulary item imported from catalog',
+  );
+  return { item, status: 'created' as const };
 }
 
 export async function getFormulary(tenantId: string, query: GetFormularyQuery) {
@@ -229,9 +378,11 @@ export async function getFormularyItemById(tenantId: string, id: string) {
 
 export async function updateFormularyItem(
   tenantId: string,
+  roles: string[],
   id: string,
   data: UpdateFormularyInput,
 ) {
+  assertPharmacyAdmin(roles, 'edit formulary drugs');
   const existing = await prisma.drugFormulary.findFirst({
     where: { id, tenantId },
   });
@@ -305,7 +456,8 @@ export async function deleteFormularyItem(tenantId: string, id: string) {
 // Batches
 // ============================================================
 
-export async function createBatch(tenantId: string, data: CreateBatchInput) {
+export async function createBatch(tenantId: string, roles: string[], data: CreateBatchInput) {
+  assertPharmacyAdmin(roles, 'add stock batches');
   // Validate drug exists
   const drug = await prisma.drugFormulary.findFirst({
     where: { id: data.drugId, tenantId },
@@ -411,7 +563,13 @@ export async function getBatchById(tenantId: string, id: string) {
   return batch;
 }
 
-export async function updateBatch(tenantId: string, id: string, data: UpdateBatchInput) {
+export async function updateBatch(
+  tenantId: string,
+  roles: string[],
+  id: string,
+  data: UpdateBatchInput,
+) {
+  assertPharmacyAdmin(roles, 'edit stock batches');
   const existing = await prisma.drugBatch.findFirst({
     where: { id, tenantId },
   });
@@ -577,10 +735,20 @@ async function recomputePrescriptionStatus(
   return { nextStatus, prev: rx.status };
 }
 
-// Resolves the supplier-specified selling price for a batch — used by the
-// auto-bill so the patient gets charged the batch-level price actually used.
-function pickDispenseUnitPrice(batch: { sellingPrice: any; purchasePrice: any }) {
-  return Number(batch.sellingPrice ?? batch.purchasePrice ?? 0);
+// Resolves the unit price to bill for a dispense. Strictly the HOSPITAL's own
+// price — never the platform catalog MRP. Preference order, all tenant-owned:
+//   1. the batch's selling price (the real price for the stock actually used),
+//   2. the hospital's formulary default price,
+//   3. the batch purchase price (cost) as a last resort.
+// This keeps every hospital's pricing independent (1000+ tenants can each price
+// the same drug differently) and unaffected by catalog refreshes.
+function pickDispenseUnitPrice(batch: {
+  sellingPrice: any;
+  purchasePrice: any;
+  drug?: { price?: any } | null;
+}) {
+  const formularyPrice = batch.drug?.price;
+  return Number(batch.sellingPrice ?? formularyPrice ?? batch.purchasePrice ?? 0);
 }
 
 // Auto-link a dispense to the patient's draft bill on the same visit. Idempotent
@@ -596,7 +764,12 @@ export async function autoLinkDispenseToBill(
       include: {
         prescription: { select: { visitId: true } },
         drugBatch: {
-          select: { drug: { select: { drugName: true } }, sellingPrice: true, purchasePrice: true, batchNumber: true },
+          select: {
+            drug: { select: { drugName: true, price: true } },
+            sellingPrice: true,
+            purchasePrice: true,
+            batchNumber: true,
+          },
         },
       },
     });
@@ -664,10 +837,74 @@ export async function autoLinkDispenseToBill(
   }
 }
 
+/**
+ * Pre-flight NPPA price check for a cart of batches. The POS calls this before
+ * dispensing so it can collect a single override authorisation up front (rather
+ * than failing mid-loop). Returns the scheduled drugs whose hospital per-unit
+ * price exceeds the ceiling. Read-only.
+ */
+export async function checkDispensePricing(
+  tenantId: string,
+  items: Array<{ drugBatchId: string }>,
+) {
+  const batchIds = Array.from(new Set(items.map((i) => i.drugBatchId)));
+  const batches = await prisma.drugBatch.findMany({
+    where: { id: { in: batchIds }, tenantId },
+    select: {
+      id: true,
+      sellingPrice: true,
+      drug: {
+        select: {
+          drugName: true,
+          price: true,
+          drugMaster: { select: { isScheduled: true, ceilingPrice: true, ceilingUnit: true } },
+        },
+      },
+    },
+  });
+
+  const violations = batches
+    .map((b) => {
+      const m = b.drug?.drugMaster;
+      const ceiling = m?.ceilingPrice != null ? Number(m.ceilingPrice) : null;
+      const unitPrice =
+        b.sellingPrice != null
+          ? Number(b.sellingPrice)
+          : b.drug?.price != null
+            ? Number(b.drug.price)
+            : null;
+      const isOver = !!m?.isScheduled && ceiling != null && unitPrice != null && unitPrice > ceiling;
+      return isOver
+        ? {
+            drugBatchId: b.id,
+            drugName: b.drug?.drugName ?? 'Drug',
+            unitPrice,
+            ceilingPrice: ceiling,
+            ceilingUnit: m?.ceilingUnit ?? null,
+          }
+        : null;
+    })
+    .filter(Boolean);
+
+  return { violations, hasViolations: violations.length > 0 };
+}
+
 export async function createDispense(tenantId: string, userId: string, data: CreateDispenseInput) {
-  // Validate the drug batch exists and has enough stock
+  // Validate the drug batch exists and has enough stock. Pull the linked
+  // formulary drug + its platform NPPA ceiling so we can enforce price control.
   const drugBatch = await prisma.drugBatch.findFirst({
     where: { id: data.drugBatchId, tenantId },
+    include: {
+      drug: {
+        select: {
+          drugName: true,
+          price: true,
+          drugMaster: {
+            select: { isScheduled: true, ceilingPrice: true, ceilingUnit: true },
+          },
+        },
+      },
+    },
   });
 
   if (!drugBatch) {
@@ -681,6 +918,13 @@ export async function createDispense(tenantId: string, userId: string, data: Cre
   if (drugBatch.isRecalled) {
     throw AppError.badRequest('Cannot dispense from a recalled batch');
   }
+
+  // NPPA / DPCO price control is ADVISORY here — the hospital dispenses at its
+  // own price (operational truth). The ceiling is never enforced or used for
+  // billing; it only surfaces as guidance (POS warning + Price Control watch)
+  // for hospitals that choose to follow it. If the pharmacist recorded a note
+  // about pricing above the ceiling, we keep it on the record for audit.
+  const priceOverrideReason: string | undefined = data.overrideReason?.trim() || undefined;
 
   if (drugBatch.quantityInStock < data.quantityDispensed) {
     throw AppError.badRequest(
@@ -711,6 +955,7 @@ export async function createDispense(tenantId: string, userId: string, data: Cre
         quantityDispensed: data.quantityDispensed,
         dispensedBy: userId,
         notes: data.notes,
+        priceOverrideReason,
       },
       include: {
         patient: { select: { id: true, firstName: true, lastName: true } },
@@ -896,7 +1141,14 @@ export async function verifyDispense(tenantId: string, id: string, verifiedBy: s
 // Returns
 // ============================================================
 
-export async function createReturn(tenantId: string, data: CreateReturnInput) {
+export async function createReturn(tenantId: string, roles: string[], data: CreateReturnInput) {
+  // Patient returns are an everyday counter task (pharmacist). Vendor returns
+  // (damaged/unsold stock back to the supplier) are a stock-management action,
+  // so they're restricted to pharmacy_admin.
+  if (data.returnType === 'vendor_return') {
+    assertPharmacyAdmin(roles, 'record vendor returns');
+  }
+
   // Validate drug batch exists
   const drugBatch = await prisma.drugBatch.findFirst({
     where: { id: data.drugBatchId, tenantId },

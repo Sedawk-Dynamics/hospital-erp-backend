@@ -14,7 +14,7 @@ export async function createDrugCategory(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const category = await pharmacyService.createDrugCategory(tenantId, req.body);
+    const category = await pharmacyService.createDrugCategory(tenantId, req.user!.roles ?? [], req.body);
     sendResponse({
       res,
       statusCode: 201,
@@ -52,6 +52,7 @@ export async function updateDrugCategory(
     const tenantId = req.user!.tenantId;
     const category = await pharmacyService.updateDrugCategory(
       tenantId,
+      req.user!.roles ?? [],
       req.params.id as string,
       req.body,
     );
@@ -93,12 +94,62 @@ export async function createFormularyItem(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const item = await pharmacyService.createFormularyItem(tenantId, req.body);
+    const item = await pharmacyService.createFormularyItem(tenantId, req.user!.roles ?? [], req.body);
     sendResponse({
       res,
       statusCode: 201,
       message: 'Formulary item created successfully',
       data: item,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getPriceControlWatch(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await pharmacyService.getPriceControlWatch(tenantId);
+    sendResponse({ res, message: 'NPPA price-control watch', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function checkDispensePricing(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await pharmacyService.checkDispensePricing(tenantId, req.body.items);
+    sendResponse({ res, message: 'Dispense price check', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function importFormularyItem(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const result = await pharmacyService.importFormularyItem(tenantId, req.user!.roles ?? [], req.body);
+    sendResponse({
+      res,
+      statusCode: result.status === 'created' ? 201 : 200,
+      message:
+        result.status === 'created'
+          ? 'Drug imported into formulary'
+          : 'Drug already in formulary',
+      data: result.item,
     });
   } catch (err) {
     next(err);
@@ -149,6 +200,7 @@ export async function updateFormularyItem(
     const tenantId = req.user!.tenantId;
     const item = await pharmacyService.updateFormularyItem(
       tenantId,
+      req.user!.roles ?? [],
       req.params.id as string,
       req.body,
     );
@@ -190,7 +242,7 @@ export async function createBatch(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const batch = await pharmacyService.createBatch(tenantId, req.body);
+    const batch = await pharmacyService.createBatch(tenantId, req.user!.roles ?? [], req.body);
     sendResponse({
       res,
       statusCode: 201,
@@ -244,7 +296,7 @@ export async function updateBatch(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const batch = await pharmacyService.updateBatch(tenantId, req.params.id as string, req.body);
+    const batch = await pharmacyService.updateBatch(tenantId, req.user!.roles ?? [], req.params.id as string, req.body);
     sendResponse({
       res,
       message: 'Drug batch updated successfully',
@@ -361,7 +413,7 @@ export async function createReturn(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const drugReturn = await pharmacyService.createReturn(tenantId, req.body);
+    const drugReturn = await pharmacyService.createReturn(tenantId, req.user!.roles ?? [], req.body);
     sendResponse({
       res,
       statusCode: 201,

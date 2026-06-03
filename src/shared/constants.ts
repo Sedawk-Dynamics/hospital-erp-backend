@@ -9,7 +9,6 @@ export const SYSTEM_ROLES = [
   'lab_supervisor',
   'radiologist',
   'pharmacist',
-  'pharmacy_technician',
   'pharmacy_admin',
   'inventory_manager',
   'billing_admin',

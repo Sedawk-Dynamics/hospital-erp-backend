@@ -787,12 +787,12 @@ enum SupplyUrgency {
 }
 
 enum StockTransferStatus {
-  pending     @map("pending")
-  approved    @map("approved")
-  dispatched  @map("dispatched")
-  received    @map("received")
-  rejected    @map("rejected")
-  cancelled   @map("cancelled")
+  pending    @map("pending")
+  approved   @map("approved")
+  dispatched @map("dispatched")
+  received   @map("received")
+  rejected   @map("rejected")
+  cancelled  @map("cancelled")
 }
 
 enum ReturnType {
@@ -1696,19 +1696,19 @@ model Department {
   isActive    Boolean  @default(true) @map("is_active")
   createdAt   DateTime @default(now()) @map("created_at")
 
-  tenant            Tenant             @relation(fields: [tenantId], references: [id])
-  headUser          User?              @relation(fields: [headUserId], references: [id])
-  wards             Ward[]
-  hospitalResources HospitalResource[]
-  stockTransactions StockTransaction[]
-  supplyRequests    SupplyRequest[]
-  dutyRosters       DutyRoster[]
-  staffProfiles     StaffProfile[]
-  tickets           Ticket[]
-  feedback          Feedback[]
-  doctorProfiles    DoctorProfile[]
-  stockTransfersFrom StockTransfer[] @relation("StockTransferFromDept")
-  stockTransfersTo   StockTransfer[] @relation("StockTransferToDept")
+  tenant             Tenant             @relation(fields: [tenantId], references: [id])
+  headUser           User?              @relation(fields: [headUserId], references: [id])
+  wards              Ward[]
+  hospitalResources  HospitalResource[]
+  stockTransactions  StockTransaction[]
+  supplyRequests     SupplyRequest[]
+  dutyRosters        DutyRoster[]
+  staffProfiles      StaffProfile[]
+  tickets            Ticket[]
+  feedback           Feedback[]
+  doctorProfiles     DoctorProfile[]
+  stockTransfersFrom StockTransfer[]    @relation("StockTransferFromDept")
+  stockTransfersTo   StockTransfer[]    @relation("StockTransferToDept")
 
   @@map("departments")
 }
@@ -2118,30 +2118,30 @@ model DoctorProfile {
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
 
-  user                  User                     @relation(fields: [userId], references: [id])
-  tenant                Tenant                   @relation(fields: [tenantId], references: [id])
-  department            Department               @relation(fields: [departmentId], references: [id])
-  schedules             DoctorSchedule[]
-  scheduleOverrides     DoctorScheduleOverride[]
-  leaves                DoctorLeave[]
-  appointments          Appointment[]
-  queueTokens           QueueToken[]
-  visits                Visit[]
-  admissions            Admission[]
-  patientTransfersFrom  PatientTransfer[]        @relation("TransferFromDoctor")
-  patientTransfersTo    PatientTransfer[]        @relation("TransferToDoctor")
-  progressNotes         ProgressNote[]
-  progressNoteTemplates ProgressNoteTemplate[]
-  dischargeSummaries    DischargeSummary[]
-  prescriptions         Prescription[]
-  otRequests            OtRequest[]
-  otRequestsAsSurgeon     OtRequest[]            @relation("OtSurgeon")
-  otRequestsAsAnaesthetist OtRequest[]            @relation("OtAnaesthetist")
-  feedback              Feedback[]
-  reservations          Reservation[]
-  estimations           Estimation[]
-  admissionRequests     AdmissionRequest[]
-  nurseAssignments      NurseDoctorAssignment[]
+  user                     User                     @relation(fields: [userId], references: [id])
+  tenant                   Tenant                   @relation(fields: [tenantId], references: [id])
+  department               Department               @relation(fields: [departmentId], references: [id])
+  schedules                DoctorSchedule[]
+  scheduleOverrides        DoctorScheduleOverride[]
+  leaves                   DoctorLeave[]
+  appointments             Appointment[]
+  queueTokens              QueueToken[]
+  visits                   Visit[]
+  admissions               Admission[]
+  patientTransfersFrom     PatientTransfer[]        @relation("TransferFromDoctor")
+  patientTransfersTo       PatientTransfer[]        @relation("TransferToDoctor")
+  progressNotes            ProgressNote[]
+  progressNoteTemplates    ProgressNoteTemplate[]
+  dischargeSummaries       DischargeSummary[]
+  prescriptions            Prescription[]
+  otRequests               OtRequest[]
+  otRequestsAsSurgeon      OtRequest[]              @relation("OtSurgeon")
+  otRequestsAsAnaesthetist OtRequest[]              @relation("OtAnaesthetist")
+  feedback                 Feedback[]
+  reservations             Reservation[]
+  estimations              Estimation[]
+  admissionRequests        AdmissionRequest[]
+  nurseAssignments         NurseDoctorAssignment[]
 
   @@map("doctor_profiles")
 }
@@ -3382,7 +3382,7 @@ model LabTestTemplate {
   description     String?
   defaultPrice    Decimal? @map("default_price") @db.Decimal(10, 2)
   turnaroundHours Int?     @map("turnaround_hours")
-  parameters      Json     // ParameterSpec[]
+  parameters      Json // ParameterSpec[]
   interpretation  String?
   // Synonyms + tags drive the dynamic-search layer. Aliases are alternative
   // test names a hospital might use ("FBC" -> CBC); tags are loose keywords
@@ -3434,7 +3434,7 @@ model LabUnitGroup {
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
 
-  tenant Tenant?    @relation(fields: [tenantId], references: [id])
+  tenant Tenant?   @relation(fields: [tenantId], references: [id])
   units  LabUnit[]
 
   @@unique([tenantId, code])
@@ -3469,29 +3469,29 @@ model LabUnit {
 }
 
 model LabOrder {
-  id                      String         @id @default(uuid())
-  tenantId                String         @map("tenant_id")
-  patientId               String         @map("patient_id")
-  visitId                 String         @map("visit_id")
-  orderedBy               String         @map("ordered_by")
-  assignedToId            String?        @map("assigned_to_id")
-  acceptedAt              DateTime?      @map("accepted_at")
-  acceptedBy              String?        @map("accepted_by")
-  urgency                 Urgency        @default(routine)
-  status                  LabOrderStatus @default(ordered)
-  isThirdParty            Boolean        @default(false) @map("is_third_party")
-  thirdPartyLabName       String?        @map("third_party_lab_name") @db.VarChar(255)
-  notes                   String?
+  id                    String         @id @default(uuid())
+  tenantId              String         @map("tenant_id")
+  patientId             String         @map("patient_id")
+  visitId               String         @map("visit_id")
+  orderedBy             String         @map("ordered_by")
+  assignedToId          String?        @map("assigned_to_id")
+  acceptedAt            DateTime?      @map("accepted_at")
+  acceptedBy            String?        @map("accepted_by")
+  urgency               Urgency        @default(routine)
+  status                LabOrderStatus @default(ordered)
+  isThirdParty          Boolean        @default(false) @map("is_third_party")
+  thirdPartyLabName     String?        @map("third_party_lab_name") @db.VarChar(255)
+  notes                 String?
   // Patient marked this order done from outside (got tested elsewhere).
   // When set, the lab worklist hides the order (status flips to completed)
   // and the doctor / nurse views show a "Marked done by patient" badge
   // linking to the uploaded report.
-  completedExternallyAt   DateTime?      @map("completed_externally_at")
-  completedExternallyBy   String?        @map("completed_externally_by")
-  externalReportUrl       String?        @map("external_report_url")
-  externalNotes           String?        @map("external_notes")
-  createdAt               DateTime       @default(now()) @map("created_at")
-  updatedAt               DateTime       @default(now()) @updatedAt @map("updated_at")
+  completedExternallyAt DateTime?      @map("completed_externally_at")
+  completedExternallyBy String?        @map("completed_externally_by")
+  externalReportUrl     String?        @map("external_report_url")
+  externalNotes         String?        @map("external_notes")
+  createdAt             DateTime       @default(now()) @map("created_at")
+  updatedAt             DateTime       @default(now()) @updatedAt @map("updated_at")
 
   tenant            Tenant          @relation(fields: [tenantId], references: [id])
   patient           Patient         @relation(fields: [patientId], references: [id])
@@ -3636,54 +3636,54 @@ model LabAttachment {
 // ============================================================
 
 model ImagingRequest {
-  id                      String               @id @default(uuid())
-  tenantId                String               @map("tenant_id")
-  patientId               String               @map("patient_id")
-  visitId                 String               @map("visit_id")
-  orderedBy               String               @map("ordered_by")
-  imagingType             ImagingType          @map("imaging_type")
-  bodyPart                String?              @map("body_part") @db.VarChar(100)
-  urgency                 Urgency              @default(routine)
-  clinicalIndication      String?              @map("clinical_indication")
-  status                  ImagingRequestStatus @default(requested)
-  scheduledAt             DateTime?            @map("scheduled_at")
-  completedAt             DateTime?            @map("completed_at")
-  assignedTechnicianId    String?              @map("assigned_technician_id")
-  room                    String?              @db.VarChar(100)
-  notes                   String?
+  id                    String                @id @default(uuid())
+  tenantId              String                @map("tenant_id")
+  patientId             String                @map("patient_id")
+  visitId               String                @map("visit_id")
+  orderedBy             String                @map("ordered_by")
+  imagingType           ImagingType           @map("imaging_type")
+  bodyPart              String?               @map("body_part") @db.VarChar(100)
+  urgency               Urgency               @default(routine)
+  clinicalIndication    String?               @map("clinical_indication")
+  status                ImagingRequestStatus  @default(requested)
+  scheduledAt           DateTime?             @map("scheduled_at")
+  completedAt           DateTime?             @map("completed_at")
+  assignedTechnicianId  String?               @map("assigned_technician_id")
+  room                  String?               @db.VarChar(100)
+  notes                 String?
   // Patient self-completion (scan done at another facility). Hides the
   // request from the radiology worklist and surfaces a "Marked done by
   // patient" badge to the doctor + nurse with a link to the upload.
-  completedExternallyAt   DateTime?            @map("completed_externally_at")
-  completedExternallyBy   String?              @map("completed_externally_by")
-  externalReportUrl       String?              @map("external_report_url")
-  externalNotes           String?              @map("external_notes")
+  completedExternallyAt DateTime?             @map("completed_externally_at")
+  completedExternallyBy String?               @map("completed_externally_by")
+  externalReportUrl     String?               @map("external_report_url")
+  externalNotes         String?               @map("external_notes")
   // Payment-verify gate (2026-05-27). The doctor's request lands in the
   // radiology_admin queue first; the admin clicks "Verify Payment" once the
   // patient has paid the imaging charge at the cash counter. Only then does
   // the radiologist see the request in their worklist. Keeps clinical staff
   // out of payment workflows.
-  paymentVerified         Boolean              @default(false) @map("payment_verified")
-  paymentVerifiedBy       String?              @map("payment_verified_by")
-  paymentVerifiedAt       DateTime?            @map("payment_verified_at")
+  paymentVerified       Boolean               @default(false) @map("payment_verified")
+  paymentVerifiedBy     String?               @map("payment_verified_by")
+  paymentVerifiedAt     DateTime?             @map("payment_verified_at")
   // Admin closure (2026-06-01). Captures requests that end without a report
   // file — patient no-show, refused, done elsewhere, not required, etc. The
   // status lands on `no_show` or `cancelled`; this preserves the reason.
-  closureReason           ImagingClosureReason? @map("closure_reason")
-  closureNote             String?              @map("closure_note")
-  closedBy                String?              @map("closed_by")
-  closedAt                DateTime?            @map("closed_at")
-  createdAt               DateTime             @default(now()) @map("created_at")
-  updatedAt               DateTime             @default(now()) @updatedAt @map("updated_at")
+  closureReason         ImagingClosureReason? @map("closure_reason")
+  closureNote           String?               @map("closure_note")
+  closedBy              String?               @map("closed_by")
+  closedAt              DateTime?             @map("closed_at")
+  createdAt             DateTime              @default(now()) @map("created_at")
+  updatedAt             DateTime              @default(now()) @updatedAt @map("updated_at")
 
-  tenant             Tenant         @relation(fields: [tenantId], references: [id])
-  patient            Patient        @relation(fields: [patientId], references: [id])
-  visit              Visit          @relation(fields: [visitId], references: [id])
-  orderer            User           @relation(fields: [orderedBy], references: [id])
-  assignedTechnician User?          @relation("ImagingTechnician", fields: [assignedTechnicianId], references: [id])
-  externalCompleter  User?          @relation("ImagingRequestExternalCompleter", fields: [completedExternallyBy], references: [id])
-  paymentVerifier    User?          @relation("ImagingPaymentVerifier", fields: [paymentVerifiedBy], references: [id])
-  closer             User?          @relation("ImagingRequestCloser", fields: [closedBy], references: [id])
+  tenant             Tenant              @relation(fields: [tenantId], references: [id])
+  patient            Patient             @relation(fields: [patientId], references: [id])
+  visit              Visit               @relation(fields: [visitId], references: [id])
+  orderer            User                @relation(fields: [orderedBy], references: [id])
+  assignedTechnician User?               @relation("ImagingTechnician", fields: [assignedTechnicianId], references: [id])
+  externalCompleter  User?               @relation("ImagingRequestExternalCompleter", fields: [completedExternallyBy], references: [id])
+  paymentVerifier    User?               @relation("ImagingPaymentVerifier", fields: [paymentVerifiedBy], references: [id])
+  closer             User?               @relation("ImagingRequestCloser", fields: [closedBy], references: [id])
   imagingResult      ImagingResult?
   attachments        ImagingAttachment[]
 
@@ -3705,10 +3705,10 @@ model ImagingResult {
   createdAt        DateTime            @default(now()) @map("created_at")
   updatedAt        DateTime            @default(now()) @updatedAt @map("updated_at")
 
-  imagingRequest ImagingRequest @relation(fields: [imagingRequestId], references: [id])
-  patient        Patient        @relation(fields: [patientId], references: [id])
-  radiologist    User?          @relation("ImagingRadiologist", fields: [radiologistId], references: [id])
-  signer         User?          @relation("ImagingResultSigner", fields: [signedBy], references: [id])
+  imagingRequest ImagingRequest      @relation(fields: [imagingRequestId], references: [id])
+  patient        Patient             @relation(fields: [patientId], references: [id])
+  radiologist    User?               @relation("ImagingRadiologist", fields: [radiologistId], references: [id])
+  signer         User?               @relation("ImagingResultSigner", fields: [signedBy], references: [id])
   dicomStudies   DicomStudy[]
   attachments    ImagingAttachment[]
 
@@ -3759,28 +3759,28 @@ model ImagingAttachment {
 // process to POST DicomInstance rows here on receipt.
 
 model DicomStudy {
-  id                 String   @id @default(uuid())
-  tenantId           String   @map("tenant_id")
-  imagingResultId    String?  @map("imaging_result_id")
-  imagingRequestId   String?  @map("imaging_request_id")
-  patientId          String   @map("patient_id")
-  studyInstanceUid   String   @unique @map("study_instance_uid") @db.VarChar(255)
-  accessionNumber    String?  @map("accession_number") @db.VarChar(64)
+  id                 String    @id @default(uuid())
+  tenantId           String    @map("tenant_id")
+  imagingResultId    String?   @map("imaging_result_id")
+  imagingRequestId   String?   @map("imaging_request_id")
+  patientId          String    @map("patient_id")
+  studyInstanceUid   String    @unique @map("study_instance_uid") @db.VarChar(255)
+  accessionNumber    String?   @map("accession_number") @db.VarChar(64)
   studyDate          DateTime? @map("study_date")
-  studyDescription   String?  @map("study_description") @db.VarChar(255)
-  modality           String?  @db.VarChar(20)
-  numberOfSeries     Int?     @map("number_of_series")
-  numberOfInstances  Int?     @map("number_of_instances")
-  patientName        String?  @map("patient_name") @db.VarChar(255)
-  patientDicomId     String?  @map("patient_dicom_id") @db.VarChar(64)
-  referringPhysician String?  @map("referring_physician") @db.VarChar(255)
-  storagePath        String?  @map("storage_path")
-  viewerUrl          String?  @map("viewer_url")
-  createdAt          DateTime @default(now()) @map("created_at")
+  studyDescription   String?   @map("study_description") @db.VarChar(255)
+  modality           String?   @db.VarChar(20)
+  numberOfSeries     Int?      @map("number_of_series")
+  numberOfInstances  Int?      @map("number_of_instances")
+  patientName        String?   @map("patient_name") @db.VarChar(255)
+  patientDicomId     String?   @map("patient_dicom_id") @db.VarChar(64)
+  referringPhysician String?   @map("referring_physician") @db.VarChar(255)
+  storagePath        String?   @map("storage_path")
+  viewerUrl          String?   @map("viewer_url")
+  createdAt          DateTime  @default(now()) @map("created_at")
 
-  tenant        Tenant         @relation(fields: [tenantId], references: [id])
-  imagingResult ImagingResult? @relation(fields: [imagingResultId], references: [id])
-  patient       Patient        @relation(fields: [patientId], references: [id])
+  tenant        Tenant          @relation(fields: [tenantId], references: [id])
+  imagingResult ImagingResult?  @relation(fields: [imagingResultId], references: [id])
+  patient       Patient         @relation(fields: [patientId], references: [id])
   series        DicomSeries[]
   instances     DicomInstance[]
 
@@ -3809,19 +3809,19 @@ model DicomSeries {
 }
 
 model DicomInstance {
-  id                  String   @id @default(uuid())
-  tenantId            String   @map("tenant_id")
-  studyId             String   @map("study_id")
-  seriesId            String?  @map("series_id")
-  sopInstanceUid      String   @unique @map("sop_instance_uid") @db.VarChar(255)
-  sopClassUid         String?  @map("sop_class_uid") @db.VarChar(255)
-  instanceNumber      Int?     @map("instance_number")
-  fileUrl             String   @map("file_url")
-  fileSizeBytes       BigInt?  @map("file_size_bytes")
-  mimeType            String?  @map("mime_type") @db.VarChar(100)
-  rows                Int?
-  columns             Int?
-  createdAt           DateTime @default(now()) @map("created_at")
+  id             String   @id @default(uuid())
+  tenantId       String   @map("tenant_id")
+  studyId        String   @map("study_id")
+  seriesId       String?  @map("series_id")
+  sopInstanceUid String   @unique @map("sop_instance_uid") @db.VarChar(255)
+  sopClassUid    String?  @map("sop_class_uid") @db.VarChar(255)
+  instanceNumber Int?     @map("instance_number")
+  fileUrl        String   @map("file_url")
+  fileSizeBytes  BigInt?  @map("file_size_bytes")
+  mimeType       String?  @map("mime_type") @db.VarChar(100)
+  rows           Int?
+  columns        Int?
+  createdAt      DateTime @default(now()) @map("created_at")
 
   tenant Tenant       @relation(fields: [tenantId], references: [id])
   study  DicomStudy   @relation(fields: [studyId], references: [id], onDelete: Cascade)
@@ -3834,6 +3834,78 @@ model DicomInstance {
 // ============================================================
 // 11. PHARMACY
 // ============================================================
+
+// Global reference catalogue seeded from the open Indian medicine dataset
+// (~254K brands). Tenant-agnostic: no tenantId. Hospitals SEARCH this and
+// "add to formulary" only the drugs they actually stock — the cloned row
+// lands in DrugFormulary with drugMasterId set (mirrors LabTestTemplate ->
+// LabTestCatalog). Doctors can still free-text any drug not present here.
+model DrugMaster {
+  id             String      @id @default(uuid())
+  name           String      @db.VarChar(255)
+  genericName    String?     @map("generic_name") @db.VarChar(500)
+  manufacturer   String?     @db.VarChar(255)
+  type           String?     @db.VarChar(50)
+  dosageForm     DosageForm? @map("dosage_form")
+  strength       String?     @db.VarChar(100)
+  packSizeLabel  String?     @map("pack_size_label") @db.VarChar(255)
+  mrp            Decimal?    @db.Decimal(10, 2)
+  isDiscontinued Boolean     @default(false) @map("is_discontinued")
+  schedule       String?     @db.VarChar(10)
+  aliases        String[]    @default([])
+  tags           String[]    @default([])
+  // Rich clinical detail (populated from the richer dataset / future provider
+  // feeds). Reference data shared by all hospitals.
+  saltComposition  String? @map("salt_composition")
+  description      String? // uses / "about" text
+  sideEffects      String? @map("side_effects")
+  drugInteractions Json?   @map("drug_interactions") // { drug[], brand[], effect[] }
+  // Denormalised lowercase index of name + generic + manufacturer, recomputed
+  // on every create/update — drives the catalog search endpoint.
+  searchTokens   String?     @map("search_tokens")
+  isPublished    Boolean     @default(true) @map("is_published")
+  // NPPA / DPCO price control (official, platform-wide). Set by the NPPA
+  // importer when a drug's salt+strength matches a published ceiling price.
+  // REFERENCE values shared by all hospitals — they never drive billing and
+  // never alter any hospital's own formulary/batch price.
+  isScheduled          Boolean   @default(false) @map("is_scheduled")
+  ceilingPrice         Decimal?  @map("ceiling_price") @db.Decimal(10, 2)
+  ceilingUnit          String?   @map("ceiling_unit") @db.VarChar(40)
+  nppaNotification     String?   @map("nppa_notification") @db.VarChar(120)
+  ceilingEffectiveDate DateTime? @map("ceiling_effective_date") @db.Date
+  createdById    String?     @map("created_by_id")
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @default(now()) @updatedAt @map("updated_at")
+
+  formularyItems DrugFormulary[]
+
+  @@index([name])
+  @@index([isScheduled])
+  @@map("drug_master")
+}
+
+// Official NPPA / DPCO ceiling prices (the free, authoritative government price
+// source). Platform-wide reference data — uploaded by super-admin from the NPPA
+// published list, matched onto DrugMaster by salt + strength. Per-unit ceiling
+// (e.g. per tablet) so it compares directly to the per-unit prices hospitals
+// charge. Never tenant-scoped.
+model NppaCeilingPrice {
+  id            String    @id @default(uuid())
+  formulation   String    @db.VarChar(300)
+  strength      String?   @db.VarChar(100)
+  dosageForm    String?   @map("dosage_form") @db.VarChar(50)
+  unit          String?   @db.VarChar(40)
+  ceilingPrice  Decimal   @map("ceiling_price") @db.Decimal(10, 2)
+  notification  String?   @db.VarChar(120)
+  effectiveDate DateTime? @map("effective_date") @db.Date
+  // Normalised salt|strength used to match against DrugMaster. Unique so the
+  // importer upserts (a new NPPA list updates the same row).
+  matchKey      String    @unique @map("match_key") @db.VarChar(300)
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@map("nppa_ceiling_prices")
+}
 
 model DrugCategory {
   id          String   @id @default(uuid())
@@ -3863,11 +3935,15 @@ model DrugFormulary {
   contraindications String?
   isActive          Boolean     @default(true) @map("is_active")
   isRecalled        Boolean     @default(false) @map("is_recalled")
+  // Provenance: set when this formulary row was imported from the platform
+  // DrugMaster catalog (vs. hospital-authored). Drives import dedupe.
+  drugMasterId      String?     @map("drug_master_id")
   createdAt         DateTime    @default(now()) @map("created_at")
   updatedAt         DateTime    @default(now()) @updatedAt @map("updated_at")
 
   tenant            Tenant             @relation(fields: [tenantId], references: [id])
   category          DrugCategory?      @relation(fields: [categoryId], references: [id])
+  drugMaster        DrugMaster?        @relation(fields: [drugMasterId], references: [id])
   drugBatches       DrugBatch[]
   prescriptionItems PrescriptionItem[]
 
@@ -3913,6 +3989,9 @@ model DispensingRecord {
   dispensedAt        DateTime @default(now()) @map("dispensed_at")
   verifiedBy         String?  @map("verified_by")
   notes              String?
+  // Recorded when a pharmacist bills a scheduled (NPPA price-controlled) drug
+  // above its ceiling — the authorised override justification (audit trail).
+  priceOverrideReason String? @map("price_override_reason")
 
   tenant           Tenant           @relation(fields: [tenantId], references: [id])
   prescription     Prescription     @relation(fields: [prescriptionId], references: [id])
@@ -4374,34 +4453,34 @@ model InsurancePolicy {
 }
 
 model InsuranceClaim {
-  id                 String      @id @default(uuid())
-  tenantId           String      @map("tenant_id")
-  patientId          String      @map("patient_id")
-  policyId           String      @map("policy_id")
-  billId             String      @map("bill_id")
-  claimNumber        String?     @unique @map("claim_number") @db.VarChar(100)
-  claimAmount        Decimal     @map("claim_amount") @db.Decimal(12, 2)
-  approvedAmount     Decimal?    @map("approved_amount") @db.Decimal(12, 2)
-  patientShare       Decimal?    @map("patient_share") @db.Decimal(12, 2)
-  copayAmount        Decimal?    @map("copay_amount") @db.Decimal(12, 2)
-  deductibleAmount   Decimal?    @map("deductible_amount") @db.Decimal(12, 2)
-  coveredAmount      Decimal?    @map("covered_amount") @db.Decimal(12, 2)
-  paidAmount         Decimal     @default(0) @map("paid_amount") @db.Decimal(12, 2)
-  outstandingAmount  Decimal?    @map("outstanding_amount") @db.Decimal(12, 2)
-  status             ClaimStatus @default(submitted)
-  submissionDate     DateTime    @map("submission_date")
-  approvalDate       DateTime?   @map("approval_date")
-  settlementDate     DateTime?   @map("settlement_date")
-  expiryDate         DateTime?   @map("expiry_date")
-  rejectionReason    String?     @map("rejection_reason")
-  documentsUrl       Json?       @map("documents_url")
-  notes              String?
-  resubmissionCount  Int         @default(0) @map("resubmission_count")
-  previousClaimId    String?     @map("previous_claim_id")
-  submittedBy        String?     @map("submitted_by")
-  reviewedBy         String?     @map("reviewed_by")
-  createdAt          DateTime    @default(now()) @map("created_at")
-  updatedAt          DateTime    @default(now()) @updatedAt @map("updated_at")
+  id                String      @id @default(uuid())
+  tenantId          String      @map("tenant_id")
+  patientId         String      @map("patient_id")
+  policyId          String      @map("policy_id")
+  billId            String      @map("bill_id")
+  claimNumber       String?     @unique @map("claim_number") @db.VarChar(100)
+  claimAmount       Decimal     @map("claim_amount") @db.Decimal(12, 2)
+  approvedAmount    Decimal?    @map("approved_amount") @db.Decimal(12, 2)
+  patientShare      Decimal?    @map("patient_share") @db.Decimal(12, 2)
+  copayAmount       Decimal?    @map("copay_amount") @db.Decimal(12, 2)
+  deductibleAmount  Decimal?    @map("deductible_amount") @db.Decimal(12, 2)
+  coveredAmount     Decimal?    @map("covered_amount") @db.Decimal(12, 2)
+  paidAmount        Decimal     @default(0) @map("paid_amount") @db.Decimal(12, 2)
+  outstandingAmount Decimal?    @map("outstanding_amount") @db.Decimal(12, 2)
+  status            ClaimStatus @default(submitted)
+  submissionDate    DateTime    @map("submission_date")
+  approvalDate      DateTime?   @map("approval_date")
+  settlementDate    DateTime?   @map("settlement_date")
+  expiryDate        DateTime?   @map("expiry_date")
+  rejectionReason   String?     @map("rejection_reason")
+  documentsUrl      Json?       @map("documents_url")
+  notes             String?
+  resubmissionCount Int         @default(0) @map("resubmission_count")
+  previousClaimId   String?     @map("previous_claim_id")
+  submittedBy       String?     @map("submitted_by")
+  reviewedBy        String?     @map("reviewed_by")
+  createdAt         DateTime    @default(now()) @map("created_at")
+  updatedAt         DateTime    @default(now()) @updatedAt @map("updated_at")
 
   tenant               Tenant                @relation(fields: [tenantId], references: [id])
   patient              Patient               @relation(fields: [patientId], references: [id])
@@ -4436,7 +4515,7 @@ model PreAuthorizationRequest {
 
   tenant    Tenant          @relation(fields: [tenantId], references: [id])
   patient   Patient         @relation(fields: [patientId], references: [id])
-  policy   InsurancePolicy  @relation(fields: [policyId], references: [id])
+  policy    InsurancePolicy @relation(fields: [policyId], references: [id])
   submitter User?           @relation(fields: [submittedBy], references: [id])
 
   @@map("pre_authorization_requests")
@@ -4984,39 +5063,39 @@ model ComplianceDocument {
 }
 
 model OtRequest {
-  id                  String           @id @default(uuid())
-  tenantId            String           @map("tenant_id")
-  patientId           String           @map("patient_id")
-  visitId             String           @map("visit_id")
-  doctorId            String           @map("doctor_id")
-  surgeonId           String?          @map("surgeon_id")
-  anaesthetistId      String?          @map("anaesthetist_id")
-  otId                String?          @map("ot_id")
-  procedureName       String           @map("procedure_name") @db.VarChar(255)
-  procedureDetails    String?          @map("procedure_details")
-  surgeryType         String?          @map("surgery_type") @db.VarChar(50)
-  speciality          String?          @db.VarChar(100)
-  urgency             OtRequestUrgency @default(elective)
-  preferredDate       DateTime?        @map("preferred_date") @db.Date
-  preferredTime       DateTime?        @map("preferred_time") @db.Time()
-  scheduledDate       DateTime?        @map("scheduled_date") @db.Date
-  scheduledTime       DateTime?        @map("scheduled_time") @db.Time()
-  scheduledStartTime  String?          @map("scheduled_start_time") @db.VarChar(10)
-  scheduledEndTime    String?          @map("scheduled_end_time") @db.VarChar(10)
-  actualStartTime     DateTime?        @map("actual_start_time")
-  actualEndTime       DateTime?        @map("actual_end_time")
-  durationMinutes     Int?             @map("duration_minutes")
-  requiredEquipment   Json?            @map("required_equipment")
-  preOpChecklist      Json?            @map("pre_op_checklist")
-  preOpDiagnosis      String?          @map("pre_op_diagnosis")
-  postOpDiagnosis     String?          @map("post_op_diagnosis")
-  notes               String?
-  billingAmount       Decimal?         @map("billing_amount") @db.Decimal(12, 2)
-  billingStatus       String?          @map("billing_status") @db.VarChar(20)
-  cancellationReason  String?          @map("cancellation_reason")
-  status              OtRequestStatus  @default(requested)
-  createdAt           DateTime         @default(now()) @map("created_at")
-  updatedAt           DateTime         @default(now()) @updatedAt @map("updated_at")
+  id                 String           @id @default(uuid())
+  tenantId           String           @map("tenant_id")
+  patientId          String           @map("patient_id")
+  visitId            String           @map("visit_id")
+  doctorId           String           @map("doctor_id")
+  surgeonId          String?          @map("surgeon_id")
+  anaesthetistId     String?          @map("anaesthetist_id")
+  otId               String?          @map("ot_id")
+  procedureName      String           @map("procedure_name") @db.VarChar(255)
+  procedureDetails   String?          @map("procedure_details")
+  surgeryType        String?          @map("surgery_type") @db.VarChar(50)
+  speciality         String?          @db.VarChar(100)
+  urgency            OtRequestUrgency @default(elective)
+  preferredDate      DateTime?        @map("preferred_date") @db.Date
+  preferredTime      DateTime?        @map("preferred_time") @db.Time()
+  scheduledDate      DateTime?        @map("scheduled_date") @db.Date
+  scheduledTime      DateTime?        @map("scheduled_time") @db.Time()
+  scheduledStartTime String?          @map("scheduled_start_time") @db.VarChar(10)
+  scheduledEndTime   String?          @map("scheduled_end_time") @db.VarChar(10)
+  actualStartTime    DateTime?        @map("actual_start_time")
+  actualEndTime      DateTime?        @map("actual_end_time")
+  durationMinutes    Int?             @map("duration_minutes")
+  requiredEquipment  Json?            @map("required_equipment")
+  preOpChecklist     Json?            @map("pre_op_checklist")
+  preOpDiagnosis     String?          @map("pre_op_diagnosis")
+  postOpDiagnosis    String?          @map("post_op_diagnosis")
+  notes              String?
+  billingAmount      Decimal?         @map("billing_amount") @db.Decimal(12, 2)
+  billingStatus      String?          @map("billing_status") @db.VarChar(20)
+  cancellationReason String?          @map("cancellation_reason")
+  status             OtRequestStatus  @default(requested)
+  createdAt          DateTime         @default(now()) @map("created_at")
+  updatedAt          DateTime         @default(now()) @updatedAt @map("updated_at")
 
   tenant       Tenant            @relation(fields: [tenantId], references: [id])
   patient      Patient           @relation(fields: [patientId], references: [id])

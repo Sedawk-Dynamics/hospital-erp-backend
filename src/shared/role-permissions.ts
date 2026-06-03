@@ -4,10 +4,14 @@
  * to bootstrap RBAC for every tenant.
  */
 
+// Pharmacy has exactly TWO roles: `pharmacist` (operational counter — dispense,
+// patient returns) and `pharmacy_admin` (full management — formulary, batches,
+// recalls, purchase, reports, inventory). The legacy `pharmacy_technician` was
+// folded into `pharmacist` (see backfill-pharmacy-roles.ts).
 export const SYSTEM_ROLE_NAMES = [
   'super_admin', 'admin', 'doctor', 'patient', 'nurse', 'nurse_admin',
   'front_desk', 'lab_technician', 'lab_supervisor', 'radiology_admin', 'radiologist', 'pharmacist',
-  'pharmacy_technician', 'pharmacy_admin', 'inventory_manager',
+  'pharmacy_admin', 'inventory_manager',
   'billing_admin', 'cashier', 'insurance_staff', 'blood_bank_staff', 'hr_staff',
 ] as const;
 
@@ -241,22 +245,25 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'notifications', action: 'read' },
     ],
 
+    // Operational counter: dispense (pharmacy:create), patient returns, and read
+    // formulary/batches/prescriptions. NO approve (verify/recall/process-return/
+    // flag-expired) and NO delete — those are pharmacy_admin only. Master/stock
+    // management (formulary, categories, batches) is further blocked by the
+    // assertPharmacyAdmin service guard even though create/update are granted
+    // (create/update are needed for dispense + patient returns).
     pharmacist: [
-      { module: 'pharmacy', action: 'read' }, { module: 'pharmacy', action: 'create' }, { module: 'pharmacy', action: 'update' }, { module: 'pharmacy', action: 'approve' },
+      { module: 'pharmacy', action: 'read' }, { module: 'pharmacy', action: 'create' }, { module: 'pharmacy', action: 'update' },
       { module: 'prescriptions', action: 'read' }, { module: 'prescriptions', action: 'update' },
       { module: 'inventory', action: 'read' }, { module: 'patients', action: 'read' },
     ],
 
-    pharmacy_technician: [
-      { module: 'pharmacy', action: 'read' }, { module: 'pharmacy', action: 'create' }, { module: 'pharmacy', action: 'update' },
-      { module: 'prescriptions', action: 'read' }, { module: 'inventory', action: 'read' }, { module: 'patients', action: 'read' },
-    ],
-
+    // Full pharmacy management + the inventory module (suppliers, purchase
+    // orders, stock, transfers, reports).
     pharmacy_admin: [
-      { module: 'pharmacy', action: 'read' }, { module: 'pharmacy', action: 'create' }, { module: 'pharmacy', action: 'update' }, { module: 'pharmacy', action: 'delete' }, { module: 'pharmacy', action: 'approve' },
+      { module: 'pharmacy', action: 'read' }, { module: 'pharmacy', action: 'create' }, { module: 'pharmacy', action: 'update' }, { module: 'pharmacy', action: 'delete' }, { module: 'pharmacy', action: 'approve' }, { module: 'pharmacy', action: 'export' },
       { module: 'prescriptions', action: 'read' }, { module: 'prescriptions', action: 'update' },
-      { module: 'inventory', action: 'read' }, { module: 'inventory', action: 'create' }, { module: 'inventory', action: 'update' },
-      { module: 'patients', action: 'read' }, { module: 'reports', action: 'read' },
+      { module: 'inventory', action: 'read' }, { module: 'inventory', action: 'create' }, { module: 'inventory', action: 'update' }, { module: 'inventory', action: 'delete' }, { module: 'inventory', action: 'approve' }, { module: 'inventory', action: 'export' },
+      { module: 'patients', action: 'read' }, { module: 'reports', action: 'read' }, { module: 'reports', action: 'export' },
     ],
 
     inventory_manager: [

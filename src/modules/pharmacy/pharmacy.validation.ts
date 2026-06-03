@@ -83,6 +83,17 @@ export const formularyIdParamSchema = z.object({
   }),
 });
 
+// Import a drug from the platform DrugMaster catalog into this tenant's
+// formulary. Optional overrides let the hospital set its own selling price /
+// category at import time.
+export const importFormularySchema = z.object({
+  body: z.object({
+    drugMasterId: z.string().uuid('Invalid drug catalog ID'),
+    categoryId: z.string().uuid('Invalid category ID').optional(),
+    price: z.number().nonnegative('Price must be non-negative').optional(),
+  }),
+});
+
 export const getFormularyQuerySchema = z.object({
   query: paginationSchema.extend({
     categoryId: z.string().uuid().optional(),
@@ -171,6 +182,17 @@ export const createDispenseSchema = z.object({
     drugBatchId: z.string().uuid('Invalid drug batch ID'),
     quantityDispensed: z.number().int().positive('Quantity dispensed must be positive'),
     notes: z.string().max(1000).optional(),
+    // NPPA price-control: set when authorising a sale above the DPCO ceiling.
+    overrideCeiling: z.boolean().optional(),
+    overrideReason: z.string().max(500).optional(),
+  }),
+});
+
+export const dispensePriceCheckSchema = z.object({
+  body: z.object({
+    items: z
+      .array(z.object({ drugBatchId: z.string().uuid('Invalid drug batch ID') }))
+      .min(1, 'At least one item is required'),
   }),
 });
 
@@ -285,6 +307,7 @@ export type CreateCategoryInput = z.infer<typeof createCategorySchema>['body'];
 export type UpdateCategoryInput = z.infer<typeof updateCategorySchema>['body'];
 export type CreateFormularyInput = z.infer<typeof createFormularySchema>['body'];
 export type UpdateFormularyInput = z.infer<typeof updateFormularySchema>['body'];
+export type ImportFormularyInput = z.infer<typeof importFormularySchema>['body'];
 export type GetFormularyQuery = z.infer<typeof getFormularyQuerySchema>['query'];
 export type CreateBatchInput = z.infer<typeof createBatchSchema>['body'];
 export type UpdateBatchInput = z.infer<typeof updateBatchSchema>['body'];

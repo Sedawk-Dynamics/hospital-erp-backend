@@ -44,6 +44,7 @@ import { commissionRoutes } from './commission/commission.routes';
 import { bankLinkingRoutes } from './bank-linking/bank-linking.routes';
 import { onlinePaymentsRoutes } from './online-payments/online-payments.routes';
 import { demoRequestRoutes } from './demo-requests/demo-requests.routes';
+import { drugMasterRoutes } from './drug-master/drug-master.routes';
 
 const apiRouter = Router();
 
@@ -64,6 +65,10 @@ apiRouter.use('/patients', authenticate, userTierLimiter, patientRoutes);
 apiRouter.use('/dashboard', authenticate, userTierLimiter, dashboardRoutes);
 apiRouter.use('/infrastructure', authenticate, userTierLimiter, infrastructureRoutes);
 apiRouter.use('/communication', authenticate, userTierLimiter, communicationRoutes);
+// Platform-wide Indian drug catalog (reference data, like ICD codes). No
+// feature gate: super-admin manages it; any clinical/pharmacy user searches it
+// to pick a drug or import it into the hospital formulary.
+apiRouter.use('/drug-master', authenticate, userTierLimiter, drugMasterRoutes);
 
 // PACS auth gateway. Mounted WITHOUT the global `authenticate` because its
 // /o/* proxy authenticates via the pacs_session cookie (the OHIF iframe can't
