@@ -1066,6 +1066,23 @@ export function evaluateAbnormal(value: string | undefined, normalRange: string 
   return null;
 }
 
+// A report a lab supervisor has finalized (signed/approved/published, or
+// corrected) is locked: its underlying results and attachments may no longer
+// be edited in place. Amendments must go through the explicit correction flow
+// (correctLabReport), never silent edits. Only `draft` / `review` reports —
+// and orders with no report yet — are editable. Throws if locked.
+export async function assertOrderReportEditable(tenantId: string, labOrderId: string) {
+  const report = await prisma.labReport.findFirst({
+    where: { labOrderId, labOrder: { tenantId } },
+    select: { status: true },
+  });
+  if (report && report.status !== 'draft' && report.status !== 'review') {
+    throw AppError.badRequest(
+      `Report is already ${report.status} and locked by the lab supervisor — use the correction flow to amend it.`,
+    );
+  }
+}
+
 export async function enterResults(tenantId: string, userId: string, data: EnterResultsInput) {
   // Verify the order item exists and belongs to tenant
   const orderItem = await prisma.labOrderItem.findFirst({
@@ -1083,6 +1100,9 @@ export async function enterResults(tenantId: string, userId: string, data: Enter
   if (orderItem.status === 'cancelled') {
     throw AppError.badRequest('Cannot enter results for a cancelled order item');
   }
+
+  // Block in-place edits once the supervisor has finalized the report.
+  await assertOrderReportEditable(tenantId, data.labOrderId);
 
   const results = await prisma.$transaction(async (tx) => {
     const created = await Promise.all(

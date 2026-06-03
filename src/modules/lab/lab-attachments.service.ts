@@ -14,6 +14,21 @@ import { UPLOAD_DIR, getFileUrl, deleteFile } from '../../services/upload.servic
 
 type AllowedCategory = 'report_pdf' | 'image' | 'scan' | 'raw_data' | 'other';
 
+// A report a lab supervisor has finalized (anything past draft/review) is
+// locked — no new files may be attached to the order and existing files may
+// not be removed. Amendments go through the correction flow. Throws if locked.
+async function assertOrderReportEditable(tenantId: string, labOrderId: string) {
+  const report = await prisma.labReport.findFirst({
+    where: { labOrderId, labOrder: { tenantId } },
+    select: { status: true },
+  });
+  if (report && report.status !== 'draft' && report.status !== 'review') {
+    throw AppError.badRequest(
+      `Report is already ${report.status} and locked by the lab supervisor — use the correction flow to amend it.`,
+    );
+  }
+}
+
 function inferCategory(mimeType: string, hint?: AllowedCategory): AllowedCategory {
   if (hint) return hint;
   if (mimeType.startsWith('image/')) return 'image';
@@ -40,6 +55,9 @@ export async function createLabAttachment(
     select: { id: true },
   });
   if (!order) throw AppError.notFound('Lab order not found');
+
+  // Cannot attach files once the supervisor has finalized the report.
+  await assertOrderReportEditable(tenantId, labOrderId);
 
   if (options.labReportId) {
     const report = await prisma.labReport.findFirst({
@@ -131,6 +149,9 @@ export async function deleteLabAttachment(tenantId: string, id: string) {
     where: { id, tenantId, deletedAt: null },
   });
   if (!att) throw AppError.notFound('Attachment not found');
+
+  // Cannot remove files once the supervisor has finalized the report.
+  await assertOrderReportEditable(tenantId, att.labOrderId);
 
   await prisma.labAttachment.update({
     where: { id },
