@@ -13,6 +13,7 @@ import {
   getLowStockQuerySchema,
   getExpiringQuerySchema,
   createStockTransactionSchema,
+  stockMovementSchema,
   getStockTransactionsQuerySchema,
   createPurchaseOrderSchema,
   updatePurchaseOrderSchema,
@@ -62,6 +63,9 @@ inventoryRoutes.delete('/items/:id', authenticate, requirePermission('inventory'
 
 // --- Stock Transactions ---
 inventoryRoutes.post('/transactions', authenticate, requirePermission('inventory', 'create'), validate(createStockTransactionSchema), controller.createStockTransaction);
+// SOW-literal aliases: stock-in (add) / stock-out (deduct).
+inventoryRoutes.post('/stock-in', authenticate, requirePermission('inventory', 'create'), validate(stockMovementSchema), controller.stockIn);
+inventoryRoutes.post('/stock-out', authenticate, requirePermission('inventory', 'create'), validate(stockMovementSchema), controller.stockOut);
 inventoryRoutes.get('/transactions', authenticate, requirePermission('inventory', 'read'), validate(getStockTransactionsQuerySchema), controller.getStockTransactions);
 inventoryRoutes.get('/transactions/:id', authenticate, requirePermission('inventory', 'read'), validate(idParamSchema), controller.getStockTransactionById);
 

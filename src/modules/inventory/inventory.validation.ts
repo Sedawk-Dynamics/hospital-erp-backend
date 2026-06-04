@@ -134,6 +134,23 @@ export const createStockTransactionSchema = z.object({
   }),
 });
 
+// SOW-literal POST /inventory/stock-in and /stock-out — same body WITHOUT
+// transactionType (the route fixes the direction; controller injects it).
+export const stockMovementSchema = z.object({
+  body: z.object({
+    inventoryItemId: z.string().uuid('Invalid inventory item ID'),
+    quantity: z.number().int().positive('Quantity must be positive'),
+    batchNumber: z.string().max(100).optional(),
+    expiryDate: z.string().datetime({ offset: true }).optional().or(z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()),
+    supplierId: z.string().uuid('Invalid supplier ID').optional(),
+    referenceType: z.string().max(50).optional(),
+    referenceId: z.string().uuid().optional(),
+    unitCost: z.number().min(0).optional(),
+    departmentId: z.string().uuid('Invalid department ID').optional(),
+    notes: z.string().max(2000).optional(),
+  }),
+});
+
 export const getStockTransactionsQuerySchema = z.object({
   query: paginationSchema.extend({
     inventoryItemId: z.string().uuid().optional(),

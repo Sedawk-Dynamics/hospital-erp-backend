@@ -23,6 +23,7 @@ import {
   getDispenseQuerySchema,
   dispenseIdParamSchema,
   createReturnSchema,
+  createVendorReturnSchema,
   getReturnsQuerySchema,
   processReturnSchema,
   recallBatchSchema,
@@ -63,6 +64,8 @@ pharmacyRoutes.put('/batches/:id', authenticate, requirePermission('pharmacy', '
 // --- Dispensing ---
 pharmacyRoutes.post('/dispense/price-check', authenticate, requirePermission('pharmacy', 'create'), validate(dispensePriceCheckSchema), controller.checkDispensePricing);
 pharmacyRoutes.post('/dispensing', authenticate, requirePermission('pharmacy', 'create'), validate(createDispenseSchema), controller.createDispense);
+// SOW-literal alias: POST /pharmacy/dispense (same as /dispensing).
+pharmacyRoutes.post('/dispense', authenticate, requirePermission('pharmacy', 'create'), validate(createDispenseSchema), controller.createDispense);
 pharmacyRoutes.get('/dispensing', authenticate, requirePermission('pharmacy', 'create'), validate(getDispenseQuerySchema), controller.getDispenseRecords);
 pharmacyRoutes.get('/dispensing/:id', authenticate, requirePermission('pharmacy', 'read'), validate(dispenseIdParamSchema), controller.getDispenseById);
 pharmacyRoutes.patch('/dispensing/:id/verify', authenticate, requirePermission('pharmacy', 'approve'), validate(dispenseIdParamSchema), controller.verifyDispense);
@@ -72,6 +75,8 @@ pharmacyRoutes.get('/analytics', authenticate, requirePermission('pharmacy', 're
 
 // --- Returns ---
 pharmacyRoutes.post('/returns', authenticate, requirePermission('pharmacy', 'create'), validate(createReturnSchema), controller.createReturn);
+// SOW-literal alias: POST /pharmacy/vendor-returns (vendor return; admin-only).
+pharmacyRoutes.post('/vendor-returns', authenticate, requirePermission('pharmacy', 'create'), validate(createVendorReturnSchema), controller.createVendorReturn);
 pharmacyRoutes.get('/returns', authenticate, requirePermission('pharmacy', 'read'), validate(getReturnsQuerySchema), controller.getReturns);
 pharmacyRoutes.patch('/returns/:id/process', authenticate, requirePermission('pharmacy', 'approve'), validate(processReturnSchema), controller.processReturn);
 

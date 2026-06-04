@@ -92,6 +92,28 @@ export async function createStockTransaction(req: AuthenticatedRequest, res: Res
     sendResponse({ res, statusCode: 201, message: 'Stock transaction recorded', data });
   } catch (err) { next(err); }
 }
+
+// SOW-literal: POST /inventory/stock-in — adds stock (transactionType fixed).
+export async function stockIn(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.createStockTransaction(req.user!.tenantId, req.user!.userId, {
+      ...req.body,
+      transactionType: 'stock_in',
+    });
+    sendResponse({ res, statusCode: 201, message: 'Stock added', data });
+  } catch (err) { next(err); }
+}
+
+// SOW-literal: POST /inventory/stock-out — deducts stock (transactionType fixed).
+export async function stockOut(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.createStockTransaction(req.user!.tenantId, req.user!.userId, {
+      ...req.body,
+      transactionType: 'stock_out',
+    });
+    sendResponse({ res, statusCode: 201, message: 'Stock deducted', data });
+  } catch (err) { next(err); }
+}
 export async function getStockTransactions(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const result = await service.getStockTransactions(req.user!.tenantId, req.query as any);

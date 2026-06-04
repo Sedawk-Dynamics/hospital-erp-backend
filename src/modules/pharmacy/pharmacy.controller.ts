@@ -425,6 +425,29 @@ export async function createReturn(
   }
 }
 
+// SOW-literal: POST /pharmacy/vendor-returns — injects returnType=vendor_return.
+export async function createVendorReturn(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const drugReturn = await pharmacyService.createReturn(tenantId, req.user!.roles ?? [], {
+      ...req.body,
+      returnType: 'vendor_return',
+    });
+    sendResponse({
+      res,
+      statusCode: 201,
+      message: 'Vendor return logged successfully',
+      data: drugReturn,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getReturns(
   req: AuthenticatedRequest,
   res: Response,

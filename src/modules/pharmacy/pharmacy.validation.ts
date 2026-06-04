@@ -225,6 +225,17 @@ export const createReturnSchema = z.object({
   }),
 });
 
+// SOW-literal vendor-return endpoint (POST /pharmacy/vendor-returns): returnType
+// is implied, supplier required. The controller injects returnType.
+export const createVendorReturnSchema = z.object({
+  body: z.object({
+    drugBatchId: z.string().uuid('Invalid drug batch ID'),
+    supplierId: z.string().uuid('Supplier is required for vendor returns'),
+    quantity: z.number().int().positive('Quantity must be positive'),
+    reason: z.string().max(1000).optional(),
+  }),
+});
+
 export const returnIdParamSchema = z.object({
   params: z.object({
     id: z.string().uuid('Invalid return ID'),
