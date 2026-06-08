@@ -39,48 +39,18 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
     }
   }
 
+  // Hospital admin = full control of every module in their hospital (every
+  // action on every module). Only platform-level `tenants` management is left to
+  // super_admin — and those routes are role-gated anyway, so excluding it here
+  // just keeps intent clear. Granting the whole set also means new modules are
+  // covered automatically (no more per-feature permission gaps).
+  const adminPermissions = allPermissions.filter((p) => p.module !== 'tenants');
+
   return {
     super_admin: allPermissions,
 
-    admin: [
-      { module: 'users', action: 'create' }, { module: 'users', action: 'read' }, { module: 'users', action: 'update' }, { module: 'users', action: 'delete' }, { module: 'users', action: 'export' },
-      { module: 'roles', action: 'create' }, { module: 'roles', action: 'read' }, { module: 'roles', action: 'update' }, { module: 'roles', action: 'delete' },
-      { module: 'departments', action: 'create' }, { module: 'departments', action: 'read' }, { module: 'departments', action: 'update' }, { module: 'departments', action: 'delete' },
-      { module: 'floors', action: 'create' }, { module: 'floors', action: 'read' }, { module: 'floors', action: 'update' }, { module: 'floors', action: 'delete' },
-      { module: 'wards', action: 'create' }, { module: 'wards', action: 'read' }, { module: 'wards', action: 'update' }, { module: 'wards', action: 'delete' },
-      { module: 'beds', action: 'create' }, { module: 'beds', action: 'read' }, { module: 'beds', action: 'update' }, { module: 'beds', action: 'delete' },
-      { module: 'patients', action: 'create' }, { module: 'patients', action: 'read' }, { module: 'patients', action: 'update' }, { module: 'patients', action: 'export' },
-      { module: 'appointments', action: 'create' }, { module: 'appointments', action: 'read' }, { module: 'appointments', action: 'update' }, { module: 'appointments', action: 'delete' }, { module: 'appointments', action: 'export' },
-      { module: 'visits', action: 'read' }, { module: 'visits', action: 'update' },
-      { module: 'admissions', action: 'read' }, { module: 'admissions', action: 'update' }, { module: 'admissions', action: 'approve' },
-      { module: 'vitals', action: 'read' },
-      { module: 'diagnoses', action: 'read' },
-      { module: 'progress_notes', action: 'read' },
-      { module: 'nursing_notes', action: 'read' },
-      { module: 'prescriptions', action: 'read' },
-      // Hospital admin manages the lab test catalog end-to-end (clone from
-      // platform templates, edit parameters, archive). Lab supervisor keeps
-      // the same `update` perm too, but the service-layer guard restricts
-      // supervisors to the /price endpoint so they cannot mutate parameters.
-      { module: 'lab_orders', action: 'read' }, { module: 'lab_orders', action: 'create' },
-      { module: 'lab_orders', action: 'update' }, { module: 'lab_orders', action: 'delete' },
-      { module: 'lab_orders', action: 'approve' },
-      { module: 'lab_reports', action: 'read' }, { module: 'lab_reports', action: 'approve' }, { module: 'lab_reports', action: 'export' },
-      { module: 'imaging', action: 'read' }, { module: 'imaging', action: 'approve' },
-      { module: 'pharmacy', action: 'read' }, { module: 'pharmacy', action: 'update' }, { module: 'pharmacy', action: 'approve' },
-      { module: 'inventory', action: 'create' }, { module: 'inventory', action: 'read' }, { module: 'inventory', action: 'update' }, { module: 'inventory', action: 'delete' }, { module: 'inventory', action: 'approve' }, { module: 'inventory', action: 'export' },
-      { module: 'forms', action: 'create' }, { module: 'forms', action: 'read' }, { module: 'forms', action: 'update' }, { module: 'forms', action: 'approve' }, { module: 'forms', action: 'export' },
-      { module: 'billing', action: 'create' }, { module: 'billing', action: 'read' }, { module: 'billing', action: 'update' }, { module: 'billing', action: 'delete' }, { module: 'billing', action: 'approve' }, { module: 'billing', action: 'export' },
-      { module: 'payments', action: 'create' }, { module: 'payments', action: 'read' }, { module: 'payments', action: 'update' }, { module: 'payments', action: 'approve' },
-      { module: 'insurance', action: 'create' }, { module: 'insurance', action: 'read' }, { module: 'insurance', action: 'update' }, { module: 'insurance', action: 'approve' }, { module: 'insurance', action: 'export' },
-      { module: 'blood_bank', action: 'read' }, { module: 'blood_bank', action: 'update' }, { module: 'blood_bank', action: 'approve' },
-      { module: 'hr', action: 'create' }, { module: 'hr', action: 'read' }, { module: 'hr', action: 'update' }, { module: 'hr', action: 'approve' }, { module: 'hr', action: 'export' },
-      { module: 'notifications', action: 'create' }, { module: 'notifications', action: 'read' }, { module: 'notifications', action: 'update' }, { module: 'notifications', action: 'delete' },
-      { module: 'tickets', action: 'create' }, { module: 'tickets', action: 'read' }, { module: 'tickets', action: 'update' }, { module: 'tickets', action: 'approve' },
-      { module: 'compliance', action: 'create' }, { module: 'compliance', action: 'read' }, { module: 'compliance', action: 'update' }, { module: 'compliance', action: 'approve' },
-      { module: 'reports', action: 'create' }, { module: 'reports', action: 'read' }, { module: 'reports', action: 'export' },
-      { module: 'audit_logs', action: 'read' }, { module: 'audit_logs', action: 'export' },
-    ],
+    // Full control of every hospital module (see adminPermissions above).
+    admin: adminPermissions,
 
     doctor: [
       { module: 'patients', action: 'read' }, { module: 'patients', action: 'create' }, { module: 'patients', action: 'update' },
