@@ -14,6 +14,7 @@ import type {
   GetBatchesQuery,
   GetExpiringBatchesQuery,
   CreateDispenseInput,
+  CreatePharmacySaleInput,
   GetDispenseQuery,
   CreateReturnInput,
   GetReturnsQuery,
@@ -187,6 +188,9 @@ export async function createFormularyItem(
       strength: data.strength,
       unitOfMeasurement: data.unitOfMeasurement,
       price: data.price,
+      packSize: data.packSize,
+      looseUnitLabel: data.looseUnitLabel,
+      taxPercent: data.taxPercent,
       indications: data.indications,
       contraindications: data.contraindications,
       isActive: data.isActive ?? true,
@@ -296,12 +300,14 @@ export async function importFormularyItem(
       tenantId,
       drugMasterId: master.id,
       drugName: master.name,
-      genericName: master.genericName,
+      // Catalog columns are wider than the formulary's — clamp to the formulary
+      // column widths (genericName 255, unitOfMeasurement 20) to avoid overflow.
+      genericName: master.genericName?.slice(0, 255) ?? null,
       categoryId: data.categoryId ?? null,
       manufacturer: master.manufacturer,
       dosageForm: master.dosageForm,
       strength: master.strength,
-      unitOfMeasurement: master.packSizeLabel,
+      unitOfMeasurement: master.packSizeLabel?.slice(0, 20) ?? null,
       // Default selling price from the catalog MRP; the hospital can override
       // at import time or edit later.
       price: data.price ?? master.mrp ?? undefined,
@@ -317,6 +323,137 @@ export async function importFormularyItem(
   return { item, status: 'created' as const };
 }
 
+/**
+ * Bulk import — copy many catalog drugs into the tenant formulary in one call.
+ * Dedupes against already-imported entries (by drugMasterId) so re-running is
+ * safe. MRP becomes the default selling price; the hospital edits prices after.
+ */
+export async function importFormularyItemsBulk(
+  tenantId: string,
+  roles: string[],
+  data: { drugMasterIds: string[]; categoryId?: string },
+) {
+  assertPharmacyAdmin(roles, 'import drugs into the formulary');
+  const ids = Array.from(new Set(data.drugMasterIds));
+
+  if (data.categoryId) {
+    const category = await prisma.drugCategory.findFirst({
+      where: { id: data.categoryId, tenantId },
+    });
+    if (!category) throw AppError.notFound('Drug category not found');
+  }
+
+  const [masters, already] = await Promise.all([
+    prisma.drugMaster.findMany({ where: { id: { in: ids }, isPublished: true } }),
+    prisma.drugFormulary.findMany({
+      where: { tenantId, drugMasterId: { in: ids } },
+      select: { drugMasterId: true },
+    }),
+  ]);
+
+  const importedSet = new Set(already.map((a) => a.drugMasterId));
+  const toCreate = masters.filter((m) => !importedSet.has(m.id));
+
+  if (toCreate.length) {
+    await prisma.drugFormulary.createMany({
+      data: toCreate.map((m) => ({
+        tenantId,
+        drugMasterId: m.id,
+        drugName: m.name,
+        // Clamp to the formulary column widths (catalog columns are wider):
+        // genericName 255 (catalog 500), unitOfMeasurement 20 (packSizeLabel 255).
+        genericName: m.genericName?.slice(0, 255) ?? null,
+        categoryId: data.categoryId ?? null,
+        manufacturer: m.manufacturer,
+        dosageForm: m.dosageForm,
+        strength: m.strength,
+        unitOfMeasurement: m.packSizeLabel?.slice(0, 20) ?? null,
+        price: m.mrp ?? undefined,
+        isActive: true,
+      })),
+    });
+  }
+
+  logger.info(
+    { tenantId, requested: ids.length, created: toCreate.length },
+    'Bulk formulary import from catalog',
+  );
+  return {
+    requested: ids.length,
+    created: toCreate.length,
+    skipped: ids.length - toCreate.length,
+  };
+}
+
+/**
+ * Tenant-facing catalog browse — paginated view of the platform DrugMaster with
+ * an `imported` flag per row (and the tenant formularyId when already copied), so
+ * a hospital can browse the full catalog and see what it has / hasn't imported.
+ * Supports text search, dosage-form / schedule filters, and an imported filter.
+ */
+export async function getTenantCatalog(tenantId: string, query: any) {
+  const { skip, take, page, limit } = getPaginationParams(query);
+
+  // The tenant's already-imported catalog ids → drives the flag + filter.
+  const importedRows = await prisma.drugFormulary.findMany({
+    where: { tenantId, drugMasterId: { not: null } },
+    select: { id: true, drugMasterId: true },
+  });
+  const importedMap = new Map<string, string>(); // drugMasterId → formularyId
+  for (const r of importedRows) if (r.drugMasterId) importedMap.set(r.drugMasterId, r.id);
+  const importedIds = [...importedMap.keys()];
+
+  const where: any = { isPublished: true, isDiscontinued: false };
+  if (query.search) {
+    const terms = String(query.search)
+      .toLowerCase()
+      .split(/\s+/)
+      .map((t: string) => t.trim())
+      .filter(Boolean);
+    where.AND = terms.map((term: string) => ({
+      searchTokens: { contains: term, mode: 'insensitive' as const },
+    }));
+  }
+  if (query.dosageForm) where.dosageForm = query.dosageForm;
+  if (query.schedule) where.schedule = query.schedule;
+  if (query.imported === 'yes') {
+    where.id = { in: importedIds }; // empty → no rows, which is correct
+  } else if (query.imported === 'no' && importedIds.length) {
+    where.id = { notIn: importedIds };
+  }
+
+  const [rows, total] = await Promise.all([
+    prisma.drugMaster.findMany({
+      where,
+      skip,
+      take,
+      orderBy: { name: 'asc' },
+      select: {
+        id: true,
+        name: true,
+        genericName: true,
+        manufacturer: true,
+        dosageForm: true,
+        strength: true,
+        packSizeLabel: true,
+        mrp: true,
+        schedule: true,
+        isScheduled: true,
+        ceilingPrice: true,
+      },
+    }),
+    prisma.drugMaster.count({ where }),
+  ]);
+
+  const items = rows.map((r) => ({
+    ...r,
+    imported: importedMap.has(r.id),
+    formularyId: importedMap.get(r.id) ?? null,
+  }));
+
+  return { items, total, page, limit };
+}
+
 export async function getFormulary(tenantId: string, query: GetFormularyQuery) {
   const { skip, take, page, limit } = getPaginationParams(query);
 
@@ -325,6 +462,19 @@ export async function getFormulary(tenantId: string, query: GetFormularyQuery) {
   if (query.categoryId) where.categoryId = query.categoryId;
   if (query.dosageForm) where.dosageForm = query.dosageForm;
   if (query.isActive !== undefined) where.isActive = query.isActive;
+
+  // Stock filter — derived from available (non-expired, non-recalled, qty>0)
+  // batches via a relation filter so the pharmacy can see what is / isn't stocked.
+  const availableBatchFilter = {
+    isExpired: false,
+    isRecalled: false,
+    quantityInStock: { gt: 0 },
+  };
+  if ((query as any).stockStatus === 'in') {
+    where.drugBatches = { some: availableBatchFilter };
+  } else if ((query as any).stockStatus === 'out') {
+    where.drugBatches = { none: availableBatchFilter };
+  }
 
   if (query.search) {
     where.OR = [
@@ -341,13 +491,37 @@ export async function getFormulary(tenantId: string, query: GetFormularyQuery) {
       take,
       include: {
         category: { select: { id: true, name: true } },
+        // Only the in-stock batches — drives the per-row stock summary.
+        drugBatches: {
+          where: availableBatchFilter,
+          select: { quantityInStock: true, expiryDate: true },
+        },
       },
       orderBy: { drugName: 'asc' },
     }),
     prisma.drugFormulary.count({ where }),
   ]);
 
-  return { items, total, page, limit };
+  // Roll batch rows up into a stock summary so the formulary list can show
+  // In Stock (qty) / Out of Stock without a second round-trip.
+  const shaped = items.map((it) => {
+    const { drugBatches, ...rest } = it;
+    const totalStock = drugBatches.reduce((s, b) => s + b.quantityInStock, 0);
+    const nearestExpiry = drugBatches.length
+      ? drugBatches
+          .map((b) => b.expiryDate)
+          .reduce((min, d) => (d < min ? d : min))
+      : null;
+    return {
+      ...rest,
+      totalStock,
+      batchCount: drugBatches.length,
+      inStock: totalStock > 0,
+      nearestExpiry,
+    };
+  });
+
+  return { items: shaped, total, page, limit };
 }
 
 export async function getFormularyItemById(tenantId: string, id: string) {
@@ -410,6 +584,9 @@ export async function updateFormularyItem(
   if (data.strength !== undefined) updateData.strength = data.strength;
   if (data.unitOfMeasurement !== undefined) updateData.unitOfMeasurement = data.unitOfMeasurement;
   if (data.price !== undefined) updateData.price = data.price;
+  if (data.packSize !== undefined) updateData.packSize = data.packSize;
+  if (data.looseUnitLabel !== undefined) updateData.looseUnitLabel = data.looseUnitLabel;
+  if (data.taxPercent !== undefined) updateData.taxPercent = data.taxPercent;
   if (data.indications !== undefined) updateData.indications = data.indications;
   if (data.contraindications !== undefined) updateData.contraindications = data.contraindications;
   if (data.isActive !== undefined) updateData.isActive = data.isActive;
@@ -536,7 +713,18 @@ export async function getBatches(tenantId: string, query: GetBatchesQuery) {
       skip,
       take,
       include: {
-        drug: { select: { id: true, drugName: true, genericName: true } },
+        drug: {
+          select: {
+            id: true,
+            drugName: true,
+            genericName: true,
+            dosageForm: true,
+            strength: true,
+            packSize: true,
+            looseUnitLabel: true,
+            taxPercent: true,
+          },
+        },
         supplier: { select: { id: true, name: true } },
       },
       orderBy: { createdAt: 'desc' },
@@ -1025,6 +1213,325 @@ export async function createDispense(tenantId: string, userId: string, data: Cre
     'Drug dispensed',
   );
   return result;
+}
+
+// ============================================================
+// Counter billing (POS sale) — the "proper" pharmacy bill
+// ============================================================
+// Bills an entire cart as ONE invoice (Bill + BillItems + Payment) inside a
+// single transaction. Supports:
+//   • partial-of-prescription (sell fewer units than ordered),
+//   • loose / sub-unit sales (break a strip — saleUnit='loose'),
+//   • walk-in / OTC (no prescriptionId),
+//   • free-typed quantities,
+//   • GST-inclusive pricing with a per-item tax breakup,
+//   • payment capture (amount tendered → change/balance).
+// Stock and price are tracked per BASE unit; packSize converts packs→base units.
+
+const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
+
+// Human-friendly, collision-free pharmacy invoice number: PH-YYYYMMDD-#### per
+// tenant per day. Counter throughput is low enough that a count+1 is safe.
+async function nextPharmacyInvoiceNumber(tx: typeof prisma, tenantId: string) {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  const prefix = `PH-${y}${m}${d}-`;
+  const todays = await tx.bill.count({
+    where: { tenantId, billNumber: { startsWith: prefix } },
+  });
+  return `${prefix}${String(todays + 1).padStart(4, '0')}`;
+}
+
+// Reusable per-tenant "Walk-in" customer so OTC sales (no patient selected)
+// still attach to a Bill. Idempotent on the (tenantId, mrn) unique key.
+const WALK_IN_MRN = 'WALK-IN';
+async function getOrCreateWalkInPatient(tenantId: string): Promise<string> {
+  const existing = await prisma.patient.findFirst({
+    where: { tenantId, mrn: WALK_IN_MRN },
+    select: { id: true },
+  });
+  if (existing) return existing.id;
+  try {
+    const created = await prisma.patient.create({
+      data: { tenantId, mrn: WALK_IN_MRN, firstName: 'Walk-in', lastName: 'Customer', isNew: false },
+      select: { id: true },
+    });
+    return created.id;
+  } catch {
+    // Lost a race on the unique key — re-read the row the other request created.
+    const again = await prisma.patient.findFirst({
+      where: { tenantId, mrn: WALK_IN_MRN },
+      select: { id: true },
+    });
+    if (again) return again.id;
+    throw AppError.badRequest('Could not resolve a walk-in customer for this sale');
+  }
+}
+
+export async function createPharmacySale(
+  tenantId: string,
+  userId: string,
+  data: CreatePharmacySaleInput,
+) {
+  // Resolve the patient. A Bill is always patient-scoped, so a walk-in / OTC
+  // sale (no patientId) is billed against the tenant's reusable "Walk-in" patient.
+  let patientId: string;
+  if (data.patientId) {
+    const patient = await prisma.patient.findFirst({
+      where: { id: data.patientId, tenantId },
+      select: { id: true },
+    });
+    if (!patient) throw AppError.notFound('Patient not found');
+    patientId = patient.id;
+  } else {
+    patientId = await getOrCreateWalkInPatient(tenantId);
+  }
+
+  if (data.prescriptionId) {
+    const rx = await prisma.prescription.findFirst({
+      where: { id: data.prescriptionId, tenantId },
+      select: { id: true },
+    });
+    if (!rx) throw AppError.notFound('Prescription not found');
+  }
+
+  const billId = await prisma.$transaction(async (tx) => {
+    // 1. Validate every line and pre-compute its economics.
+    const lines = [] as Array<{
+      batchId: string;
+      batchNumber: string;
+      drugName: string;
+      prescriptionItemId: string | null;
+      saleUnit: 'pack' | 'loose';
+      baseQty: number;
+      unitPrice: number;
+      discPct: number;
+      discAmt: number;
+      net: number;
+      taxPct: number;
+      taxAmt: number;
+    }>;
+
+    for (const item of data.items) {
+      const batch = await tx.drugBatch.findFirst({
+        where: { id: item.drugBatchId, tenantId },
+        include: {
+          drug: {
+            select: {
+              drugName: true,
+              price: true,
+              packSize: true,
+              looseUnitLabel: true,
+              taxPercent: true,
+            },
+          },
+        },
+      });
+      if (!batch) throw AppError.notFound(`Drug batch ${item.drugBatchId} not found`);
+      if (batch.isExpired) throw AppError.badRequest('Cannot sell from an expired batch');
+      if (batch.isRecalled) throw AppError.badRequest('Cannot sell from a recalled batch');
+
+      const packSize = batch.drug?.packSize && batch.drug.packSize > 0 ? batch.drug.packSize : 1;
+      const saleUnit = item.saleUnit ?? 'pack';
+      // Loose sales must be whole sub-units; pack sales convert packs→base units.
+      const baseQty = saleUnit === 'loose'
+        ? Math.round(item.quantity)
+        : Math.round(item.quantity) * packSize;
+      if (baseQty <= 0) throw AppError.badRequest('Quantity must be at least one unit');
+      if (batch.quantityInStock < baseQty) {
+        throw AppError.badRequest(
+          `Insufficient stock for ${batch.drug?.drugName ?? 'drug'}. Available: ${batch.quantityInStock}, requested: ${baseQty}`,
+        );
+      }
+
+      const unitPrice = item.unitPrice != null
+        ? item.unitPrice
+        : pickDispenseUnitPrice(batch as any);
+      const gross = round2(unitPrice * baseQty);
+      const discPct = item.discountPercent ?? 0;
+      const discAmt = round2(gross * (discPct / 100));
+      const net = round2(gross - discAmt);
+      // Prices are MRP (tax-inclusive) → derive the embedded GST for the breakup.
+      const taxPct = batch.drug?.taxPercent != null ? Number(batch.drug.taxPercent) : 12;
+      const taxAmt = round2(net - net / (1 + taxPct / 100));
+
+      lines.push({
+        batchId: batch.id,
+        batchNumber: batch.batchNumber,
+        drugName: batch.drug?.drugName ?? 'Medication',
+        prescriptionItemId: item.prescriptionItemId ?? null,
+        saleUnit,
+        baseQty,
+        unitPrice,
+        discPct,
+        discAmt,
+        net,
+        taxPct,
+        taxAmt,
+      });
+    }
+
+    // 2. Roll up the invoice totals.
+    const subtotal = round2(lines.reduce((s, l) => s + l.unitPrice * l.baseQty, 0));
+    const discountAmount = round2(lines.reduce((s, l) => s + l.discAmt, 0));
+    const taxAmount = round2(lines.reduce((s, l) => s + l.taxAmt, 0));
+    const totalAmount = round2(lines.reduce((s, l) => s + l.net, 0));
+
+    // Default to paid-in-full at the counter unless an explicit amount is given.
+    const applied = data.amountPaid != null
+      ? round2(Math.min(data.amountPaid, totalAmount))
+      : totalAmount;
+    const balanceDue = round2(totalAmount - applied);
+    const status: any = balanceDue <= 0 ? 'paid' : applied > 0 ? 'partially_paid' : 'pending';
+
+    let visitId: string | null = null;
+    if (data.prescriptionId) {
+      const rx = await tx.prescription.findUnique({
+        where: { id: data.prescriptionId },
+        select: { visitId: true },
+      });
+      visitId = rx?.visitId ?? null;
+    }
+
+    const billNumber = await nextPharmacyInvoiceNumber(tx as any, tenantId);
+    const bill = await tx.bill.create({
+      data: {
+        tenantId,
+        billNumber,
+        patientId,
+        visitId,
+        billDate: new Date(),
+        subtotal,
+        discountAmount,
+        taxAmount,
+        totalAmount,
+        patientPayableAmount: totalAmount,
+        amountPaid: applied,
+        balanceDue,
+        status,
+        generatedBy: userId,
+      },
+    });
+
+    // 3. One DispensingRecord + BillItem per line; decrement stock.
+    const overrideReason = data.overrideReason?.trim() || undefined;
+    for (const l of lines) {
+      const rec = await tx.dispensingRecord.create({
+        data: {
+          tenantId,
+          prescriptionId: data.prescriptionId ?? null,
+          prescriptionItemId: l.prescriptionItemId,
+          patientId,
+          drugBatchId: l.batchId,
+          quantityDispensed: l.baseQty,
+          dispensedBy: userId,
+          notes: data.notes,
+          saleUnit: l.saleUnit,
+          unitPrice: l.unitPrice,
+          discountPercent: l.discPct,
+          taxPercent: l.taxPct,
+          lineTotal: l.net,
+          billId: bill.id,
+          priceOverrideReason: overrideReason,
+        },
+      });
+
+      await tx.drugBatch.update({
+        where: { id: l.batchId },
+        data: { quantityInStock: { decrement: l.baseQty } },
+      });
+
+      await tx.billItem.create({
+        data: {
+          billId: bill.id,
+          description: `${l.drugName} (Batch ${l.batchNumber})${l.saleUnit === 'loose' ? ' — loose' : ''}`,
+          category: 'pharmacy',
+          quantity: l.baseQty,
+          unitPrice: l.unitPrice,
+          discountPercent: l.discPct,
+          discountAmount: l.discAmt,
+          taxPercent: l.taxPct,
+          taxAmount: l.taxAmt,
+          totalAmount: l.net,
+          referenceType: 'dispensing_record',
+          referenceId: rec.id,
+          isAutoPulled: true,
+        },
+      });
+    }
+
+    // 4. Record the payment taken at the counter.
+    if (applied > 0) {
+      await tx.payment.create({
+        data: {
+          tenantId,
+          billId: bill.id,
+          patientId,
+          paymentDate: new Date(),
+          amount: applied,
+          paymentMethod: (data.paymentMethod ?? 'cash') as any,
+          paymentSource: 'frontdesk',
+          status: 'completed',
+          processedBy: userId,
+          notes: 'Pharmacy counter sale',
+        },
+      });
+    }
+
+    // 5. Keep the prescription queue coherent for Rx-linked sales.
+    if (data.prescriptionId) {
+      await recomputePrescriptionStatus(tx as any, data.prescriptionId);
+    }
+
+    return bill.id;
+  });
+
+  logger.info({ tenantId, billId, items: data.items.length }, 'Pharmacy counter sale billed');
+  return getPharmacySale(tenantId, billId);
+}
+
+// Full invoice payload for the POS receipt / reprint.
+export async function getPharmacySale(tenantId: string, billId: string) {
+  const bill = await prisma.bill.findFirst({
+    where: { id: billId, tenantId },
+    include: {
+      patient: {
+        select: {
+          id: true,
+          mrn: true,
+          firstName: true,
+          lastName: true,
+          gender: true,
+          dateOfBirth: true,
+          phone: true,
+        },
+      },
+      billItems: { orderBy: { createdAt: 'asc' } },
+      payments: {
+        select: { id: true, amount: true, paymentMethod: true, paymentDate: true },
+        orderBy: { paymentDate: 'asc' },
+      },
+      generator: { select: { id: true, firstName: true, lastName: true } },
+    },
+  });
+  if (!bill) throw AppError.notFound('Bill not found');
+
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: tenantId },
+    select: {
+      name: true,
+      logoUrl: true,
+      address: true,
+      city: true,
+      state: true,
+      phone: true,
+      email: true,
+    },
+  });
+
+  return { bill, hospital: tenant };
 }
 
 export async function getDispenseRecords(tenantId: string, query: GetDispenseQuery) {
@@ -1665,7 +2172,7 @@ export async function getRecallAffectedPatients(tenantId: string, batchId: strin
     phone: string | null;
     email: string | null;
     totalQuantity: number;
-    dispenses: { dispensedAt: Date; quantity: number; prescriptionId: string; doctorName: string | null }[];
+    dispenses: { dispensedAt: Date; quantity: number; prescriptionId: string | null; doctorName: string | null }[];
   }>();
 
   for (const r of records) {

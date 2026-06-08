@@ -13,12 +13,16 @@ import {
   formularyIdParamSchema,
   updateFormularySchema,
   importFormularySchema,
+  importFormularyBulkSchema,
+  getCatalogQuerySchema,
   createBatchSchema,
   getBatchesQuerySchema,
   getExpiringBatchesQuerySchema,
   batchIdParamSchema,
   updateBatchSchema,
   createDispenseSchema,
+  createPharmacySaleSchema,
+  saleIdParamSchema,
   dispensePriceCheckSchema,
   getDispenseQuerySchema,
   dispenseIdParamSchema,
@@ -42,11 +46,16 @@ pharmacyRoutes.get('/categories', authenticate, requirePermission('pharmacy', 'r
 pharmacyRoutes.put('/categories/:id', authenticate, requirePermission('pharmacy', 'update'), validate(updateCategorySchema), controller.updateDrugCategory);
 pharmacyRoutes.delete('/categories/:id', authenticate, requirePermission('pharmacy', 'delete'), validate(categoryIdParamSchema), controller.deleteDrugCategory);
 
+// --- Drug catalog (tenant-facing browse of the platform DrugMaster) ---
+pharmacyRoutes.get('/catalog', authenticate, requirePermission('pharmacy', 'read'), validate(getCatalogQuerySchema), controller.getTenantCatalog);
+
 // --- Formulary ---
 pharmacyRoutes.post('/formulary', authenticate, requirePermission('pharmacy', 'create'), validate(createFormularySchema), controller.createFormularyItem);
 // Import from the platform drug catalog. Declared before '/formulary/:id' so
 // "import" isn't captured as an :id.
 pharmacyRoutes.post('/formulary/import', authenticate, requirePermission('pharmacy', 'create'), validate(importFormularySchema), controller.importFormularyItem);
+// Bulk copy many catalog drugs at once. Declared before '/formulary/:id'.
+pharmacyRoutes.post('/formulary/import-bulk', authenticate, requirePermission('pharmacy', 'create'), validate(importFormularyBulkSchema), controller.importFormularyItemsBulk);
 // NPPA / DPCO price-control watch (read-only compliance view).
 pharmacyRoutes.get('/price-control-watch', authenticate, requirePermission('pharmacy', 'read'), controller.getPriceControlWatch);
 pharmacyRoutes.get('/formulary', authenticate, requirePermission('pharmacy', 'read'), validate(getFormularyQuerySchema), controller.getFormulary);
@@ -60,6 +69,10 @@ pharmacyRoutes.get('/batches', authenticate, requirePermission('pharmacy', 'read
 pharmacyRoutes.get('/batches/expiring', authenticate, requirePermission('pharmacy', 'read'), validate(getExpiringBatchesQuerySchema), controller.getExpiringBatches);
 pharmacyRoutes.get('/batches/:id', authenticate, requirePermission('pharmacy', 'read'), validate(batchIdParamSchema), controller.getBatchById);
 pharmacyRoutes.put('/batches/:id', authenticate, requirePermission('pharmacy', 'update'), validate(updateBatchSchema), controller.updateBatch);
+
+// --- Counter billing (POS sale: partial / loose / walk-in, one invoice) ---
+pharmacyRoutes.post('/sales', authenticate, requirePermission('pharmacy', 'create'), validate(createPharmacySaleSchema), controller.createPharmacySale);
+pharmacyRoutes.get('/sales/:id', authenticate, requirePermission('pharmacy', 'read'), validate(saleIdParamSchema), controller.getPharmacySale);
 
 // --- Dispensing ---
 pharmacyRoutes.post('/dispense/price-check', authenticate, requirePermission('pharmacy', 'create'), validate(dispensePriceCheckSchema), controller.checkDispensePricing);

@@ -48,6 +48,9 @@ export const createFormularySchema = z.object({
     strength: z.string().max(100).optional(),
     unitOfMeasurement: z.string().max(20).optional(),
     price: z.number().nonnegative('Price must be non-negative').optional(),
+    packSize: z.number().int().positive().optional(),
+    looseUnitLabel: z.string().max(40).optional(),
+    taxPercent: z.number().min(0).max(100).optional(),
     indications: z.string().optional(),
     contraindications: z.string().optional(),
     isActive: z.boolean().default(true),
@@ -67,6 +70,9 @@ export const updateFormularySchema = z.object({
     strength: z.string().max(100).optional().nullable(),
     unitOfMeasurement: z.string().max(20).optional().nullable(),
     price: z.number().nonnegative().optional().nullable(),
+    packSize: z.number().int().positive().optional().nullable(),
+    looseUnitLabel: z.string().max(40).optional().nullable(),
+    taxPercent: z.number().min(0).max(100).optional().nullable(),
     indications: z.string().optional().nullable(),
     contraindications: z.string().optional().nullable(),
     isActive: z.boolean().optional(),
@@ -94,6 +100,28 @@ export const importFormularySchema = z.object({
   }),
 });
 
+// Tenant-facing catalog browse (platform DrugMaster + imported flag).
+export const getCatalogQuerySchema = z.object({
+  query: paginationSchema.extend({
+    dosageForm: z
+      .enum(['tablet', 'capsule', 'syrup', 'injection', 'cream', 'drops', 'inhaler', 'other'])
+      .optional(),
+    schedule: z.string().max(10).optional(),
+    imported: z.enum(['yes', 'no']).optional(),
+  }),
+});
+
+// Bulk import many catalog drugs into the tenant formulary at once.
+export const importFormularyBulkSchema = z.object({
+  body: z.object({
+    drugMasterIds: z
+      .array(z.string().uuid('Invalid drug catalog ID'))
+      .min(1, 'Select at least one drug')
+      .max(1000, 'Import at most 1000 drugs at a time'),
+    categoryId: z.string().uuid('Invalid category ID').optional(),
+  }),
+});
+
 export const getFormularyQuerySchema = z.object({
   query: paginationSchema.extend({
     categoryId: z.string().uuid().optional(),
@@ -104,6 +132,8 @@ export const getFormularyQuerySchema = z.object({
       .string()
       .transform((val) => val === 'true')
       .optional(),
+    // Filter by live stock derived from available batches.
+    stockStatus: z.enum(['in', 'out']).optional(),
   }),
 });
 
@@ -185,6 +215,43 @@ export const createDispenseSchema = z.object({
     // NPPA price-control: set when authorising a sale above the DPCO ceiling.
     overrideCeiling: z.boolean().optional(),
     overrideReason: z.string().max(500).optional(),
+  }),
+});
+
+// Counter billing / POS sale — bills a whole cart in one invoice. Supports
+// partial-of-prescription, loose (sub-unit) sales, walk-in/OTC (no prescription)
+// and free-typed quantities. prescriptionId is optional (walk-in => omitted).
+export const createPharmacySaleSchema = z.object({
+  body: z.object({
+    // Optional — omit for a walk-in / OTC counter sale (no patient selected).
+    patientId: z.string().uuid('Invalid patient ID').optional(),
+    prescriptionId: z.string().uuid('Invalid prescription ID').optional(),
+    items: z
+      .array(
+        z.object({
+          drugBatchId: z.string().uuid('Invalid drug batch ID'),
+          prescriptionItemId: z.string().uuid('Invalid prescription item ID').optional(),
+          // Quantity is in the chosen unit: packs (default) or loose sub-units.
+          quantity: z.number().positive('Quantity must be positive'),
+          saleUnit: z.enum(['pack', 'loose']).default('pack'),
+          discountPercent: z.number().min(0).max(100).optional(),
+          // Optional per-base-unit price override (e.g. negotiated price).
+          unitPrice: z.number().nonnegative().optional(),
+        }),
+      )
+      .min(1, 'At least one item is required'),
+    paymentMethod: z
+      .enum(['cash', 'credit_card', 'debit_card', 'upi', 'net_banking', 'cheque', 'other'])
+      .optional(),
+    amountPaid: z.number().nonnegative().optional(),
+    notes: z.string().max(1000).optional(),
+    overrideReason: z.string().max(500).optional(),
+  }),
+});
+
+export const saleIdParamSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid bill ID'),
   }),
 });
 
@@ -319,12 +386,14 @@ export type UpdateCategoryInput = z.infer<typeof updateCategorySchema>['body'];
 export type CreateFormularyInput = z.infer<typeof createFormularySchema>['body'];
 export type UpdateFormularyInput = z.infer<typeof updateFormularySchema>['body'];
 export type ImportFormularyInput = z.infer<typeof importFormularySchema>['body'];
+export type ImportFormularyBulkInput = z.infer<typeof importFormularyBulkSchema>['body'];
 export type GetFormularyQuery = z.infer<typeof getFormularyQuerySchema>['query'];
 export type CreateBatchInput = z.infer<typeof createBatchSchema>['body'];
 export type UpdateBatchInput = z.infer<typeof updateBatchSchema>['body'];
 export type GetBatchesQuery = z.infer<typeof getBatchesQuerySchema>['query'];
 export type GetExpiringBatchesQuery = z.infer<typeof getExpiringBatchesQuerySchema>['query'];
 export type CreateDispenseInput = z.infer<typeof createDispenseSchema>['body'];
+export type CreatePharmacySaleInput = z.infer<typeof createPharmacySaleSchema>['body'];
 export type GetDispenseQuery = z.infer<typeof getDispenseQuerySchema>['query'];
 export type CreateReturnInput = z.infer<typeof createReturnSchema>['body'];
 export type GetReturnsQuery = z.infer<typeof getReturnsQuerySchema>['query'];

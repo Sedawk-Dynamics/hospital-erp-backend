@@ -3931,6 +3931,15 @@ model DrugFormulary {
   strength          String?     @db.VarChar(100)
   unitOfMeasurement String?     @map("unit_of_measurement") @db.VarChar(20)
   price             Decimal?    @db.Decimal(10, 2)
+  // Loose / sub-unit sale support. packSize = number of base (loose) units in a
+  // full pack/strip (e.g. 10 tablets per strip). looseUnitLabel = the sellable
+  // sub-unit name shown on the POS (e.g. "Tablet"). When packSize is null/1 the
+  // drug is only sold as a single unit. Stock + price are always per BASE unit.
+  packSize          Int?        @map("pack_size")
+  looseUnitLabel    String?     @map("loose_unit_label") @db.VarChar(40)
+  // GST rate applied to this drug (India medicine = 0/5/12/18%). Prices are MRP
+  // (tax-inclusive), so the bill shows the GST breakup rather than adding on top.
+  taxPercent        Decimal?    @map("tax_percent") @db.Decimal(5, 2)
   indications       String?
   contraindications String?
   isActive          Boolean     @default(true) @map("is_active")
@@ -3980,8 +3989,10 @@ model DrugBatch {
 model DispensingRecord {
   id                 String   @id @default(uuid())
   tenantId           String   @map("tenant_id")
-  prescriptionId     String   @map("prescription_id")
-  prescriptionItemId String   @map("prescription_item_id")
+  // Nullable so the POS can record a walk-in / OTC counter sale that is NOT
+  // tied to any doctor prescription. When present, the Rx status is recomputed.
+  prescriptionId     String?  @map("prescription_id")
+  prescriptionItemId String?  @map("prescription_item_id")
   patientId          String   @map("patient_id")
   drugBatchId        String   @map("drug_batch_id")
   quantityDispensed  Int      @map("quantity_dispensed")
@@ -3992,11 +4003,22 @@ model DispensingRecord {
   // Recorded when a pharmacist bills a scheduled (NPPA price-controlled) drug
   // above its ceiling — the authorised override justification (audit trail).
   priceOverrideReason String? @map("price_override_reason")
+  // Sale economics captured at dispense time so the cash counter, receipt and
+  // GST report read the true billed figures (not a re-derived batch price).
+  // sold = pack | loose (loose = sub-unit broken out of a strip/pack).
+  saleUnit        String?  @default("pack") @map("sale_unit") @db.VarChar(10)
+  unitPrice       Decimal? @map("unit_price") @db.Decimal(12, 2)
+  discountPercent Decimal? @default(0) @map("discount_percent") @db.Decimal(5, 2)
+  taxPercent      Decimal? @default(0) @map("tax_percent") @db.Decimal(5, 2)
+  lineTotal       Decimal? @map("line_total") @db.Decimal(12, 2)
+  // Invoice this line was billed on (the pharmacy Bill). Plain column — the
+  // canonical link is BillItem.referenceId; this is a convenience back-pointer.
+  billId          String?  @map("bill_id")
 
-  tenant           Tenant           @relation(fields: [tenantId], references: [id])
-  prescription     Prescription     @relation(fields: [prescriptionId], references: [id])
-  prescriptionItem PrescriptionItem @relation(fields: [prescriptionItemId], references: [id])
-  patient          Patient          @relation(fields: [patientId], references: [id])
+  tenant           Tenant            @relation(fields: [tenantId], references: [id])
+  prescription     Prescription?     @relation(fields: [prescriptionId], references: [id])
+  prescriptionItem PrescriptionItem? @relation(fields: [prescriptionItemId], references: [id])
+  patient          Patient           @relation(fields: [patientId], references: [id])
   drugBatch        DrugBatch        @relation(fields: [drugBatchId], references: [id])
   dispenser        User             @relation("Dispenser", fields: [dispensedBy], references: [id])
   verifier         User?            @relation("DispensingVerifier", fields: [verifiedBy], references: [id])

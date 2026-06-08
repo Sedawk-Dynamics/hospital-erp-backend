@@ -156,6 +156,46 @@ export async function importFormularyItem(
   }
 }
 
+export async function getTenantCatalog(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const { items, total, page, limit } = await pharmacyService.getTenantCatalog(
+      tenantId,
+      req.query as any,
+    );
+    sendPaginatedResponse(res, items, total, page, limit, 'Drug catalog retrieved');
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function importFormularyItemsBulk(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const result = await pharmacyService.importFormularyItemsBulk(
+      tenantId,
+      req.user!.roles ?? [],
+      req.body,
+    );
+    sendResponse({
+      res,
+      statusCode: 201,
+      message: `Imported ${result.created} drug(s)${result.skipped ? `, ${result.skipped} already in formulary` : ''}`,
+      data: result,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getFormulary(
   req: AuthenticatedRequest,
   res: Response,
@@ -343,6 +383,41 @@ export async function createDispense(
       message: 'Drug dispensed successfully',
       data: record,
     });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Counter billing — bill a whole cart as one invoice (partial / loose / walk-in).
+export async function createPharmacySale(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const sale = await pharmacyService.createPharmacySale(tenantId, userId, req.body);
+    sendResponse({
+      res,
+      statusCode: 201,
+      message: 'Pharmacy bill created successfully',
+      data: sale,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getPharmacySale(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const sale = await pharmacyService.getPharmacySale(tenantId, req.params.id as string);
+    sendResponse({ res, message: 'Pharmacy bill retrieved successfully', data: sale });
   } catch (err) {
     next(err);
   }
