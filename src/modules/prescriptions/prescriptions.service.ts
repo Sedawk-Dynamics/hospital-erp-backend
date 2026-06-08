@@ -862,7 +862,7 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
       price: true,
       drugMasterId: true,
     },
-    take: 20,
+    take: 30,
     orderBy: { drugName: 'asc' },
   });
 
@@ -872,7 +872,7 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
   //    NOT yet imported, so a doctor can still pick (and later stock) a drug
   //    that isn't in the local formulary. These carry no `id` (drugId stays
   //    null → free-text path) but expose `drugMasterId` for one-click import.
-  const remaining = 20 - formularyResults.length;
+  const remaining = 30 - formularyResults.length;
   let masterResults: Array<{
     id: null;
     drugMasterId: string;
@@ -895,27 +895,58 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
       .map((t) => t.trim())
       .filter(Boolean);
 
-    const masters = await prisma.drugMaster.findMany({
+    const select = {
+      id: true,
+      name: true,
+      genericName: true,
+      dosageForm: true,
+      strength: true,
+      manufacturer: true,
+      mrp: true,
+    } as const;
+    const baseWhere = {
+      isPublished: true,
+      isDiscontinued: false,
+      ...(importedMasterIds.length ? { id: { notIn: importedMasterIds } } : {}),
+    };
+
+    // PASS 1 — brand / generic PREFIX matches first so a half-typed name (e.g.
+    // "para") surfaces "Paracetamol…" brands at the top, not a flat A-Z list.
+    const prefixMatches = await prisma.drugMaster.findMany({
       where: {
-        isPublished: true,
-        isDiscontinued: false,
-        ...(importedMasterIds.length ? { id: { notIn: importedMasterIds } } : {}),
-        AND: terms.map((t) => ({ searchTokens: { contains: t, mode: 'insensitive' as const } })),
+        ...baseWhere,
+        OR: [
+          { name: { startsWith: search, mode: 'insensitive' as const } },
+          { genericName: { startsWith: search, mode: 'insensitive' as const } },
+        ],
       },
-      select: {
-        id: true,
-        name: true,
-        genericName: true,
-        dosageForm: true,
-        strength: true,
-        manufacturer: true,
-        mrp: true,
-      },
+      select,
       take: remaining,
       orderBy: { name: 'asc' },
     });
 
-    masterResults = masters.map((m) => ({
+    // PASS 2 — fill any remaining slots with broader partial / token matches
+    // (handles "para 500", "amox cap", or a term that appears mid-name).
+    const seen = new Set(prefixMatches.map((m) => m.id));
+    let extra: typeof prefixMatches = [];
+    if (prefixMatches.length < remaining) {
+      extra = await prisma.drugMaster.findMany({
+        where: {
+          ...baseWhere,
+          id: { notIn: [...importedMasterIds, ...seen] },
+          OR: [
+            { AND: terms.map((t) => ({ searchTokens: { contains: t, mode: 'insensitive' as const } })) },
+            { name: { contains: search, mode: 'insensitive' as const } },
+            { genericName: { contains: search, mode: 'insensitive' as const } },
+          ],
+        },
+        select,
+        take: remaining - prefixMatches.length,
+        orderBy: { name: 'asc' },
+      });
+    }
+
+    masterResults = [...prefixMatches, ...extra].map((m) => ({
       id: null,
       drugMasterId: m.id,
       drugName: m.name,
