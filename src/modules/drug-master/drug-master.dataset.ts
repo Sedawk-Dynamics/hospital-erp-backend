@@ -70,6 +70,58 @@ export function inferDosageForm(name: string, pack: string): DosageForm | null {
   return 'other';
 }
 
+/**
+ * Best-effort count of individually sellable BASE units in a pack/strip, parsed
+ * from a free-text pack label (e.g. "strip of 10 tablets" → 10, "10's" → 10,
+ * "1*10" → 10, "packet of 4 capsules" → 4). Returns null when the label
+ * describes a single indivisible container (a 100 ml bottle, a 30 gm tube, a
+ * vial) where breaking into loose sub-units doesn't apply. Drives the numeric
+ * DrugFormulary.packSize so a strip can be split into loose tablets at the
+ * counter — stock + price are always tracked per base unit.
+ */
+export function parsePackSize(label?: string | null): number | null {
+  const raw = String(label ?? '').toLowerCase().trim();
+  if (!raw) return null;
+
+  // "1*10", "10x1", "2 x 15" → strip layout; multiply the two factors.
+  const mult = raw.match(/(\d+)\s*[*x×]\s*(\d+)/);
+  if (mult) {
+    const n = Number(mult[1]) * Number(mult[2]);
+    return Number.isFinite(n) && n > 1 ? n : null;
+  }
+
+  // "<N> <countable-unit>" e.g. "strip of 10 tablets", "10 capsules", "10's".
+  const countable = raw.match(
+    /(\d+)\s*(?:'?s\b|tablets?|capsules?|caps?\b|tabs?\b|dt\b|chewables?|lozenges?|sachets?|suppositor\w*|pieces?|pcs?\b|softgels?|pills?)/,
+  );
+  if (countable) {
+    const n = Number(countable[1]);
+    return Number.isFinite(n) && n > 1 ? n : null;
+  }
+
+  return null;
+}
+
+/**
+ * Human label for a single sellable sub-unit broken out of a pack (shown on the
+ * POS loose-sale control), inferred from the dosage form / brand name. Returns
+ * null for forms that aren't sold loose (liquids, creams, injections) so only
+ * countable solids get a loose-unit option.
+ */
+export function inferLooseUnitLabel(
+  dosageForm?: DosageForm | string | null,
+  name?: string | null,
+): string | null {
+  const hay = `${String(dosageForm ?? '').toLowerCase()} ${String(name ?? '').toLowerCase()}`;
+  if (/\bsoftgel/.test(hay)) return 'Softgel';
+  if (/\bcapsule|\bcap\b/.test(hay)) return 'Capsule';
+  if (/\bsachet/.test(hay)) return 'Sachet';
+  if (/\blozenge/.test(hay)) return 'Lozenge';
+  if (/\bsuppositor/.test(hay)) return 'Suppository';
+  if (/\btablet|\btab\b|\bdt\b|\bchewable|\bpill/.test(hay)) return 'Tablet';
+  return null;
+}
+
 export function cleanComposition(a: string, b: string): string | null {
   const join = [a, b]
     .map((s) => s.replace(/\s+/g, ' ').trim())

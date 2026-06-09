@@ -2,6 +2,7 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
+import { parsePackSize, inferLooseUnitLabel } from '../drug-master/drug-master.dataset';
 import type {
   CreateCategoryInput,
   UpdateCategoryInput,
@@ -234,6 +235,13 @@ export async function importFormularyItem(
   });
   if (existing) return { item: existing, status: 'already_imported' as const };
 
+  // Derive the numeric pack size (base units per strip/pack) + a loose-unit
+  // label from the catalog's free-text pack label so the drug is sellable as
+  // loose sub-units (e.g. 3 tablets out of a strip of 10) right after import.
+  const packSize = parsePackSize(master.packSizeLabel);
+  const looseUnitLabel =
+    packSize && packSize > 1 ? inferLooseUnitLabel(master.dosageForm, master.name) : null;
+
   const item = await prisma.drugFormulary.create({
     data: {
       tenantId,
@@ -247,6 +255,8 @@ export async function importFormularyItem(
       dosageForm: master.dosageForm,
       strength: master.strength,
       unitOfMeasurement: master.packSizeLabel?.slice(0, 20) ?? null,
+      packSize: packSize ?? undefined,
+      looseUnitLabel: looseUnitLabel ?? undefined,
       // Default selling price from the catalog MRP; the hospital can override
       // at import time or edit later.
       price: data.price ?? master.mrp ?? undefined,
@@ -295,21 +305,30 @@ export async function importFormularyItemsBulk(
 
   if (toCreate.length) {
     await prisma.drugFormulary.createMany({
-      data: toCreate.map((m) => ({
-        tenantId,
-        drugMasterId: m.id,
-        drugName: m.name,
-        // Clamp to the formulary column widths (catalog columns are wider):
-        // genericName 255 (catalog 500), unitOfMeasurement 20 (packSizeLabel 255).
-        genericName: m.genericName?.slice(0, 255) ?? null,
-        categoryId: data.categoryId ?? null,
-        manufacturer: m.manufacturer,
-        dosageForm: m.dosageForm,
-        strength: m.strength,
-        unitOfMeasurement: m.packSizeLabel?.slice(0, 20) ?? null,
-        price: m.mrp ?? undefined,
-        isActive: true,
-      })),
+      data: toCreate.map((m) => {
+        // Numeric pack size + loose-unit label so imported strips are sellable
+        // as loose sub-units straight away (see importFormularyItem).
+        const packSize = parsePackSize(m.packSizeLabel);
+        const looseUnitLabel =
+          packSize && packSize > 1 ? inferLooseUnitLabel(m.dosageForm, m.name) : null;
+        return {
+          tenantId,
+          drugMasterId: m.id,
+          drugName: m.name,
+          // Clamp to the formulary column widths (catalog columns are wider):
+          // genericName 255 (catalog 500), unitOfMeasurement 20 (packSizeLabel 255).
+          genericName: m.genericName?.slice(0, 255) ?? null,
+          categoryId: data.categoryId ?? null,
+          manufacturer: m.manufacturer,
+          dosageForm: m.dosageForm,
+          strength: m.strength,
+          unitOfMeasurement: m.packSizeLabel?.slice(0, 20) ?? null,
+          packSize: packSize ?? undefined,
+          looseUnitLabel: looseUnitLabel ?? undefined,
+          price: m.mrp ?? undefined,
+          isActive: true,
+        };
+      }),
     });
   }
 
