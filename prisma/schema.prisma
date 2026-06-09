@@ -3864,15 +3864,6 @@ model DrugMaster {
   // on every create/update — drives the catalog search endpoint.
   searchTokens   String?     @map("search_tokens")
   isPublished    Boolean     @default(true) @map("is_published")
-  // NPPA / DPCO price control (official, platform-wide). Set by the NPPA
-  // importer when a drug's salt+strength matches a published ceiling price.
-  // REFERENCE values shared by all hospitals — they never drive billing and
-  // never alter any hospital's own formulary/batch price.
-  isScheduled          Boolean   @default(false) @map("is_scheduled")
-  ceilingPrice         Decimal?  @map("ceiling_price") @db.Decimal(10, 2)
-  ceilingUnit          String?   @map("ceiling_unit") @db.VarChar(40)
-  nppaNotification     String?   @map("nppa_notification") @db.VarChar(120)
-  ceilingEffectiveDate DateTime? @map("ceiling_effective_date") @db.Date
   createdById    String?     @map("created_by_id")
   createdAt      DateTime    @default(now()) @map("created_at")
   updatedAt      DateTime    @default(now()) @updatedAt @map("updated_at")
@@ -3880,31 +3871,7 @@ model DrugMaster {
   formularyItems DrugFormulary[]
 
   @@index([name])
-  @@index([isScheduled])
   @@map("drug_master")
-}
-
-// Official NPPA / DPCO ceiling prices (the free, authoritative government price
-// source). Platform-wide reference data — uploaded by super-admin from the NPPA
-// published list, matched onto DrugMaster by salt + strength. Per-unit ceiling
-// (e.g. per tablet) so it compares directly to the per-unit prices hospitals
-// charge. Never tenant-scoped.
-model NppaCeilingPrice {
-  id            String    @id @default(uuid())
-  formulation   String    @db.VarChar(300)
-  strength      String?   @db.VarChar(100)
-  dosageForm    String?   @map("dosage_form") @db.VarChar(50)
-  unit          String?   @db.VarChar(40)
-  ceilingPrice  Decimal   @map("ceiling_price") @db.Decimal(10, 2)
-  notification  String?   @db.VarChar(120)
-  effectiveDate DateTime? @map("effective_date") @db.Date
-  // Normalised salt|strength used to match against DrugMaster. Unique so the
-  // importer upserts (a new NPPA list updates the same row).
-  matchKey      String    @unique @map("match_key") @db.VarChar(300)
-  createdAt     DateTime  @default(now()) @map("created_at")
-  updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at")
-
-  @@map("nppa_ceiling_prices")
 }
 
 model DrugCategory {
@@ -4000,9 +3967,6 @@ model DispensingRecord {
   dispensedAt        DateTime @default(now()) @map("dispensed_at")
   verifiedBy         String?  @map("verified_by")
   notes              String?
-  // Recorded when a pharmacist bills a scheduled (NPPA price-controlled) drug
-  // above its ceiling — the authorised override justification (audit trail).
-  priceOverrideReason String? @map("price_override_reason")
   // Sale economics captured at dispense time so the cash counter, receipt and
   // GST report read the true billed figures (not a re-derived batch price).
   // sold = pack | loose (loose = sub-unit broken out of a strip/pack).

@@ -106,34 +106,6 @@ export async function createFormularyItem(
   }
 }
 
-export async function getPriceControlWatch(
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction,
-) {
-  try {
-    const tenantId = req.user!.tenantId;
-    const data = await pharmacyService.getPriceControlWatch(tenantId);
-    sendResponse({ res, message: 'NPPA price-control watch', data });
-  } catch (err) {
-    next(err);
-  }
-}
-
-export async function checkDispensePricing(
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction,
-) {
-  try {
-    const tenantId = req.user!.tenantId;
-    const data = await pharmacyService.checkDispensePricing(tenantId, req.body.items);
-    sendResponse({ res, message: 'Dispense price check', data });
-  } catch (err) {
-    next(err);
-  }
-}
-
 export async function importFormularyItem(
   req: AuthenticatedRequest,
   res: Response,

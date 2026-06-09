@@ -212,9 +212,6 @@ export const createDispenseSchema = z.object({
     drugBatchId: z.string().uuid('Invalid drug batch ID'),
     quantityDispensed: z.number().int().positive('Quantity dispensed must be positive'),
     notes: z.string().max(1000).optional(),
-    // NPPA price-control: set when authorising a sale above the DPCO ceiling.
-    overrideCeiling: z.boolean().optional(),
-    overrideReason: z.string().max(500).optional(),
   }),
 });
 
@@ -245,21 +242,12 @@ export const createPharmacySaleSchema = z.object({
       .optional(),
     amountPaid: z.number().nonnegative().optional(),
     notes: z.string().max(1000).optional(),
-    overrideReason: z.string().max(500).optional(),
   }),
 });
 
 export const saleIdParamSchema = z.object({
   params: z.object({
     id: z.string().uuid('Invalid bill ID'),
-  }),
-});
-
-export const dispensePriceCheckSchema = z.object({
-  body: z.object({
-    items: z
-      .array(z.object({ drugBatchId: z.string().uuid('Invalid drug batch ID') }))
-      .min(1, 'At least one item is required'),
   }),
 });
 

@@ -51,21 +51,6 @@ drugMasterRoutes.get(
   controller.refreshStatus,
 );
 
-// --- Super-admin NPPA / DPCO ceiling-price import (official price overlay) ---
-drugMasterRoutes.post(
-  '/nppa/import',
-  authenticate,
-  requireRoles('super_admin'),
-  csvUpload.single('file'),
-  controller.importNppa,
-);
-drugMasterRoutes.get(
-  '/nppa/status',
-  authenticate,
-  requireRoles('super_admin'),
-  controller.nppaStatus,
-);
-
 // --- Super-admin management ---
 drugMasterRoutes.get(
   '/',

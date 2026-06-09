@@ -4,7 +4,6 @@ import { sendResponse, sendPaginatedResponse } from '../../shared/apiResponse';
 import { AppError } from '../../shared/appError';
 import * as service from './drug-master.service';
 import * as refresh from './drug-master.refresh';
-import * as nppa from './drug-master.nppa';
 import { listProviders } from './drug-master.providers';
 
 export async function searchDrugMaster(
@@ -138,40 +137,6 @@ export async function refreshStatus(
 ) {
   try {
     sendResponse({ res, message: 'Refresh status', data: refresh.getRefreshStatus() });
-  } catch (err) {
-    next(err);
-  }
-}
-
-// Import official NPPA / DPCO ceiling prices from an uploaded CSV (multipart
-// field "file"). Background job; poll nppaStatus.
-export async function importNppa(
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction,
-) {
-  try {
-    const file = (req as unknown as { file?: { buffer: Buffer; originalname: string } }).file;
-    if (!file?.buffer) {
-      throw AppError.badRequest('A CSV file is required for NPPA import');
-    }
-    const st = nppa.startNppaImport({
-      csvText: file.buffer.toString('utf-8'),
-      sourceLabel: `upload:${file.originalname}`,
-    });
-    sendResponse({ res, statusCode: 202, message: 'NPPA import started', data: st });
-  } catch (err) {
-    next(err);
-  }
-}
-
-export async function nppaStatus(
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction,
-) {
-  try {
-    sendResponse({ res, message: 'NPPA import status', data: nppa.getNppaStatus() });
   } catch (err) {
     next(err);
   }

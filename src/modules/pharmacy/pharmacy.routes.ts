@@ -23,7 +23,6 @@ import {
   createDispenseSchema,
   createPharmacySaleSchema,
   saleIdParamSchema,
-  dispensePriceCheckSchema,
   getDispenseQuerySchema,
   dispenseIdParamSchema,
   createReturnSchema,
@@ -56,8 +55,6 @@ pharmacyRoutes.post('/formulary', authenticate, requirePermission('pharmacy', 'c
 pharmacyRoutes.post('/formulary/import', authenticate, requirePermission('pharmacy', 'create'), validate(importFormularySchema), controller.importFormularyItem);
 // Bulk copy many catalog drugs at once. Declared before '/formulary/:id'.
 pharmacyRoutes.post('/formulary/import-bulk', authenticate, requirePermission('pharmacy', 'create'), validate(importFormularyBulkSchema), controller.importFormularyItemsBulk);
-// NPPA / DPCO price-control watch (read-only compliance view).
-pharmacyRoutes.get('/price-control-watch', authenticate, requirePermission('pharmacy', 'read'), controller.getPriceControlWatch);
 pharmacyRoutes.get('/formulary', authenticate, requirePermission('pharmacy', 'read'), validate(getFormularyQuerySchema), controller.getFormulary);
 pharmacyRoutes.get('/formulary/:id', authenticate, requirePermission('pharmacy', 'read'), validate(formularyIdParamSchema), controller.getFormularyItemById);
 pharmacyRoutes.put('/formulary/:id', authenticate, requirePermission('pharmacy', 'update'), validate(updateFormularySchema), controller.updateFormularyItem);
@@ -75,7 +72,6 @@ pharmacyRoutes.post('/sales', authenticate, requirePermission('pharmacy', 'creat
 pharmacyRoutes.get('/sales/:id', authenticate, requirePermission('pharmacy', 'read'), validate(saleIdParamSchema), controller.getPharmacySale);
 
 // --- Dispensing ---
-pharmacyRoutes.post('/dispense/price-check', authenticate, requirePermission('pharmacy', 'create'), validate(dispensePriceCheckSchema), controller.checkDispensePricing);
 pharmacyRoutes.post('/dispensing', authenticate, requirePermission('pharmacy', 'create'), validate(createDispenseSchema), controller.createDispense);
 // SOW-literal alias: POST /pharmacy/dispense (same as /dispensing).
 pharmacyRoutes.post('/dispense', authenticate, requirePermission('pharmacy', 'create'), validate(createDispenseSchema), controller.createDispense);

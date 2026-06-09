@@ -205,67 +205,6 @@ export async function createFormularyItem(
 }
 
 /**
- * NPPA / DPCO price-control watch (READ-ONLY). Lists the scheduled
- * (price-controlled) drugs THIS hospital stocks and compares the hospital's own
- * per-unit price (active batch selling price, else formulary price) against the
- * official NPPA ceiling. Never writes anything — the hospital decides whether to
- * re-price. The ceiling lives on the shared DrugMaster; each tenant's own price
- * is independent.
- */
-export async function getPriceControlWatch(tenantId: string) {
-  const rows = await prisma.drugFormulary.findMany({
-    where: { tenantId, drugMaster: { isScheduled: true } },
-    select: {
-      id: true,
-      drugName: true,
-      genericName: true,
-      price: true,
-      drugMaster: {
-        select: {
-          ceilingPrice: true,
-          ceilingUnit: true,
-          nppaNotification: true,
-          ceilingEffectiveDate: true,
-        },
-      },
-      drugBatches: {
-        where: { isExpired: false, isRecalled: false, quantityInStock: { gt: 0 } },
-        select: { sellingPrice: true },
-        orderBy: { expiryDate: 'asc' },
-        take: 1,
-      },
-    },
-    orderBy: { drugName: 'asc' },
-  });
-
-  const items = rows.map((r) => {
-    const batchPrice = r.drugBatches[0]?.sellingPrice;
-    const hospitalPrice =
-      batchPrice != null ? Number(batchPrice) : r.price != null ? Number(r.price) : null;
-    const ceiling = r.drugMaster?.ceilingPrice != null ? Number(r.drugMaster.ceilingPrice) : null;
-    const isOverCeiling = hospitalPrice != null && ceiling != null && hospitalPrice > ceiling;
-    return {
-      formularyId: r.id,
-      drugName: r.drugName,
-      genericName: r.genericName,
-      hospitalPrice,
-      priceSource: batchPrice != null ? 'batch' : r.price != null ? 'formulary' : null,
-      ceilingPrice: ceiling,
-      ceilingUnit: r.drugMaster?.ceilingUnit ?? null,
-      nppaNotification: r.drugMaster?.nppaNotification ?? null,
-      ceilingEffectiveDate: r.drugMaster?.ceilingEffectiveDate ?? null,
-      isOverCeiling,
-    };
-  });
-
-  return {
-    items,
-    total: items.length,
-    overCeilingCount: items.filter((i) => i.isOverCeiling).length,
-  };
-}
-
-/**
  * Import a drug from the platform-wide DrugMaster catalog into this tenant's
  * formulary (the "clone" step — mirrors lab template -> catalog cloning). If
  * the tenant already imported the same catalog entry, the existing formulary
@@ -438,8 +377,6 @@ export async function getTenantCatalog(tenantId: string, query: any) {
         packSizeLabel: true,
         mrp: true,
         schedule: true,
-        isScheduled: true,
-        ceilingPrice: true,
       },
     }),
     prisma.drugMaster.count({ where }),
@@ -1025,61 +962,8 @@ export async function autoLinkDispenseToBill(
   }
 }
 
-/**
- * Pre-flight NPPA price check for a cart of batches. The POS calls this before
- * dispensing so it can collect a single override authorisation up front (rather
- * than failing mid-loop). Returns the scheduled drugs whose hospital per-unit
- * price exceeds the ceiling. Read-only.
- */
-export async function checkDispensePricing(
-  tenantId: string,
-  items: Array<{ drugBatchId: string }>,
-) {
-  const batchIds = Array.from(new Set(items.map((i) => i.drugBatchId)));
-  const batches = await prisma.drugBatch.findMany({
-    where: { id: { in: batchIds }, tenantId },
-    select: {
-      id: true,
-      sellingPrice: true,
-      drug: {
-        select: {
-          drugName: true,
-          price: true,
-          drugMaster: { select: { isScheduled: true, ceilingPrice: true, ceilingUnit: true } },
-        },
-      },
-    },
-  });
-
-  const violations = batches
-    .map((b) => {
-      const m = b.drug?.drugMaster;
-      const ceiling = m?.ceilingPrice != null ? Number(m.ceilingPrice) : null;
-      const unitPrice =
-        b.sellingPrice != null
-          ? Number(b.sellingPrice)
-          : b.drug?.price != null
-            ? Number(b.drug.price)
-            : null;
-      const isOver = !!m?.isScheduled && ceiling != null && unitPrice != null && unitPrice > ceiling;
-      return isOver
-        ? {
-            drugBatchId: b.id,
-            drugName: b.drug?.drugName ?? 'Drug',
-            unitPrice,
-            ceilingPrice: ceiling,
-            ceilingUnit: m?.ceilingUnit ?? null,
-          }
-        : null;
-    })
-    .filter(Boolean);
-
-  return { violations, hasViolations: violations.length > 0 };
-}
-
 export async function createDispense(tenantId: string, userId: string, data: CreateDispenseInput) {
-  // Validate the drug batch exists and has enough stock. Pull the linked
-  // formulary drug + its platform NPPA ceiling so we can enforce price control.
+  // Validate the drug batch exists and has enough stock.
   const drugBatch = await prisma.drugBatch.findFirst({
     where: { id: data.drugBatchId, tenantId },
     include: {
@@ -1087,9 +971,6 @@ export async function createDispense(tenantId: string, userId: string, data: Cre
         select: {
           drugName: true,
           price: true,
-          drugMaster: {
-            select: { isScheduled: true, ceilingPrice: true, ceilingUnit: true },
-          },
         },
       },
     },
@@ -1107,13 +988,7 @@ export async function createDispense(tenantId: string, userId: string, data: Cre
     throw AppError.badRequest('Cannot dispense from a recalled batch');
   }
 
-  // NPPA / DPCO price control is ADVISORY here — the hospital dispenses at its
-  // own price (operational truth). The ceiling is never enforced or used for
-  // billing; it only surfaces as guidance (POS warning + Price Control watch)
-  // for hospitals that choose to follow it. If the pharmacist recorded a note
-  // about pricing above the ceiling, we keep it on the record for audit.
-  const priceOverrideReason: string | undefined = data.overrideReason?.trim() || undefined;
-
+  // The hospital dispenses at its own price (operational truth).
   if (drugBatch.quantityInStock < data.quantityDispensed) {
     throw AppError.badRequest(
       `Insufficient stock. Available: ${drugBatch.quantityInStock}, Requested: ${data.quantityDispensed}`,
@@ -1143,7 +1018,6 @@ export async function createDispense(tenantId: string, userId: string, data: Cre
         quantityDispensed: data.quantityDispensed,
         dispensedBy: userId,
         notes: data.notes,
-        priceOverrideReason,
       },
       include: {
         patient: { select: { id: true, firstName: true, lastName: true } },
@@ -1416,7 +1290,6 @@ export async function createPharmacySale(
     });
 
     // 3. One DispensingRecord + BillItem per line; decrement stock.
-    const overrideReason = data.overrideReason?.trim() || undefined;
     for (const l of lines) {
       const rec = await tx.dispensingRecord.create({
         data: {
@@ -1434,7 +1307,6 @@ export async function createPharmacySale(
           taxPercent: l.taxPct,
           lineTotal: l.net,
           billId: bill.id,
-          priceOverrideReason: overrideReason,
         },
       });
 
