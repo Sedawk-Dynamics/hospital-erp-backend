@@ -270,14 +270,24 @@ export const getDispenseQuerySchema = z.object({
 // ============================================================
 
 export const createReturnSchema = z.object({
-  body: z.object({
-    returnType: z.enum(['patient_return', 'vendor_return']),
-    drugBatchId: z.string().uuid('Invalid drug batch ID'),
-    patientId: z.string().uuid('Invalid patient ID').optional(),
-    supplierId: z.string().uuid('Invalid supplier ID').optional(),
-    quantity: z.number().int().positive('Quantity must be positive'),
-    reason: z.string().max(1000).optional(),
-  }),
+  body: z
+    .object({
+      returnType: z.enum(['patient_return', 'vendor_return']),
+      // Optional when dispensingRecordId is given — the batch is taken from the
+      // original sale line in that case.
+      drugBatchId: z.string().uuid('Invalid drug batch ID').optional(),
+      // Anchor a patient return to the original sale line so the refund is
+      // computed from what was billed and bounded by what was dispensed.
+      dispensingRecordId: z.string().uuid('Invalid dispensing record ID').optional(),
+      patientId: z.string().uuid('Invalid patient ID').optional(),
+      supplierId: z.string().uuid('Invalid supplier ID').optional(),
+      quantity: z.number().int().positive('Quantity must be positive'),
+      reason: z.string().max(1000).optional(),
+    })
+    .refine((b) => !!b.drugBatchId || !!b.dispensingRecordId, {
+      message: 'Either drugBatchId or dispensingRecordId is required',
+      path: ['drugBatchId'],
+    }),
 });
 
 // SOW-literal vendor-return endpoint (POST /pharmacy/vendor-returns): returnType

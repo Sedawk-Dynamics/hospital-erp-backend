@@ -1547,9 +1547,59 @@ export async function createReturn(tenantId: string, roles: string[], data: Crea
     assertPharmacyAdmin(roles, 'record vendor returns');
   }
 
+  // Patient returns can be anchored to the original sale line. When they are,
+  // the batch + patient are taken from that record, the quantity is bounded by
+  // what is still returnable, and a refund amount is computed from the billed
+  // price so approving the return pays the patient back the right money.
+  let batchId = data.drugBatchId;
+  let patientId = data.patientId ?? null;
+  let dispensingRecordId: string | null = null;
+  let billId: string | null = null;
+  let saleUnit: string | null = null;
+  let unitPrice: number | null = null;
+  let refundAmount: number | null = null;
+
+  if (data.returnType === 'patient_return' && data.dispensingRecordId) {
+    const record = await prisma.dispensingRecord.findFirst({
+      where: { id: data.dispensingRecordId, tenantId },
+    });
+    if (!record) throw AppError.notFound('Original dispensing record not found');
+
+    dispensingRecordId = record.id;
+    batchId = record.drugBatchId;
+    patientId = record.patientId;
+    billId = record.billId ?? null;
+    saleUnit = record.saleUnit ?? 'pack';
+
+    // Non-rejected returns already booked against this sale line cap the return.
+    const prior = await prisma.drugReturn.aggregate({
+      where: { dispensingRecordId: record.id, status: { not: 'rejected' } },
+      _sum: { quantity: true },
+    });
+    const alreadyReturned = prior._sum.quantity ?? 0;
+    const remaining = record.quantityDispensed - alreadyReturned;
+    if (data.quantity > remaining) {
+      throw AppError.badRequest(
+        `Cannot return ${data.quantity} unit(s) — only ${Math.max(0, remaining)} of ${record.quantityDispensed} dispensed are still returnable`,
+      );
+    }
+
+    // unitPrice on the record is per BASE unit and MRP (tax-inclusive); refund
+    // the returned quantity net of the line discount that was applied at sale.
+    unitPrice = record.unitPrice != null ? Number(record.unitPrice) : null;
+    const discPct = record.discountPercent != null ? Number(record.discountPercent) : 0;
+    if (unitPrice != null) {
+      refundAmount = round2(unitPrice * data.quantity * (1 - discPct / 100));
+    }
+  }
+
+  if (!batchId) {
+    throw AppError.badRequest('A drug batch or dispensing record is required');
+  }
+
   // Validate drug batch exists
   const drugBatch = await prisma.drugBatch.findFirst({
-    where: { id: data.drugBatchId, tenantId },
+    where: { id: batchId, tenantId },
   });
 
   if (!drugBatch) {
@@ -1558,11 +1608,11 @@ export async function createReturn(tenantId: string, roles: string[], data: Crea
 
   // Validate patient if patient return
   if (data.returnType === 'patient_return') {
-    if (!data.patientId) {
+    if (!patientId) {
       throw AppError.badRequest('Patient ID is required for patient returns');
     }
     const patient = await prisma.patient.findFirst({
-      where: { id: data.patientId, tenantId },
+      where: { id: patientId, tenantId },
     });
     if (!patient) {
       throw AppError.notFound('Patient not found');
@@ -1586,12 +1636,17 @@ export async function createReturn(tenantId: string, roles: string[], data: Crea
     data: {
       tenantId,
       returnType: data.returnType as any,
-      drugBatchId: data.drugBatchId,
-      patientId: data.patientId,
+      drugBatchId: batchId,
+      patientId,
       supplierId: data.supplierId,
       quantity: data.quantity,
       reason: data.reason,
       status: 'pending',
+      dispensingRecordId,
+      billId,
+      saleUnit,
+      unitPrice,
+      refundAmount,
     },
     include: {
       drugBatch: {
@@ -1607,7 +1662,7 @@ export async function createReturn(tenantId: string, roles: string[], data: Crea
   });
 
   logger.info(
-    { tenantId, returnId: drugReturn.id, returnType: data.returnType },
+    { tenantId, returnId: drugReturn.id, returnType: data.returnType, refundAmount },
     'Drug return created',
   );
   return drugReturn;
@@ -1645,6 +1700,7 @@ export async function getReturns(tenantId: string, query: GetReturnsQuery) {
         patient: { select: { id: true, firstName: true, lastName: true } },
         supplier: { select: { id: true, name: true } },
         processor: { select: { id: true, firstName: true, lastName: true } },
+        refund: { select: { id: true, amount: true, status: true } },
       },
       orderBy: { createdAt: 'desc' },
     }),
@@ -1672,15 +1728,68 @@ export async function processReturn(
     throw AppError.badRequest('Only pending returns can be processed');
   }
 
-  // If approving (processed), add stock back to batch
+  // If approving (processed): restock and, for billing-linked patient returns,
+  // pay the patient back by creating a Refund against the original sale's
+  // payment and reducing the bill — mirroring billing.approveRefund.
   if (data.status === 'processed') {
     const result = await prisma.$transaction(async (tx) => {
-      const updated = await tx.drugReturn.update({
+      await tx.drugReturn.update({
         where: { id },
-        data: {
-          status: 'processed',
-          processedBy: userId,
-        },
+        data: { status: 'processed', processedBy: userId },
+      });
+
+      // Restock the returned quantity
+      await tx.drugBatch.update({
+        where: { id: drugReturn.drugBatchId },
+        data: { quantityInStock: { increment: drugReturn.quantity } },
+      });
+
+      const refundDue =
+        drugReturn.refundAmount != null ? Number(drugReturn.refundAmount) : 0;
+      if (
+        drugReturn.returnType === 'patient_return' &&
+        drugReturn.billId &&
+        drugReturn.patientId &&
+        refundDue > 0
+      ) {
+        const payment = await tx.payment.findFirst({
+          where: { billId: drugReturn.billId, tenantId, status: 'completed' },
+          orderBy: { paymentDate: 'desc' },
+          include: { bill: true },
+        });
+        if (payment?.bill) {
+          const refund = await tx.refund.create({
+            data: {
+              tenantId,
+              billId: drugReturn.billId,
+              paymentId: payment.id,
+              patientId: drugReturn.patientId,
+              amount: refundDue,
+              reason: `Drug return${drugReturn.reason ? `: ${drugReturn.reason}` : ''}`,
+              status: 'approved',
+              requestedBy: userId,
+              approvedBy: userId,
+              processedAt: new Date(),
+            },
+          });
+
+          // Reduce what the bill counts as collected (same maths as a billing
+          // refund approval) so the cash counter / receipts stay accurate.
+          const newPaid = Number(payment.bill.amountPaid) - refundDue;
+          const newBalance = Number(payment.bill.totalAmount) - newPaid;
+          const newStatus =
+            newPaid <= 0 ? 'refunded' : newBalance > 0 ? 'partially_paid' : payment.bill.status;
+          await tx.bill.update({
+            where: { id: payment.bill.id },
+            data: { amountPaid: newPaid, balanceDue: newBalance, status: newStatus as any },
+          });
+
+          await tx.drugReturn.update({ where: { id }, data: { refundId: refund.id } });
+        }
+      }
+
+      return tx.drugReturn.findUnique({
+        where: { id },
         include: {
           drugBatch: {
             select: {
@@ -1692,19 +1801,32 @@ export async function processReturn(
           patient: { select: { id: true, firstName: true, lastName: true } },
           supplier: { select: { id: true, name: true } },
           processor: { select: { id: true, firstName: true, lastName: true } },
+          refund: { select: { id: true, amount: true, status: true } },
         },
       });
-
-      // Restock the returned quantity
-      await tx.drugBatch.update({
-        where: { id: drugReturn.drugBatchId },
-        data: {
-          quantityInStock: { increment: drugReturn.quantity },
-        },
-      });
-
-      return updated;
     });
+
+    // Post-commit: tell the patient their refund is on the way.
+    try {
+      if (result?.patientId && result.refundId && result.patient) {
+        const patient = await prisma.patient.findUnique({
+          where: { id: result.patientId },
+          select: { userId: true },
+        });
+        if (patient?.userId) {
+          void safePharmacyNotify({
+            tenantId,
+            userId: patient.userId,
+            title: 'Medicine return refund processed',
+            message: `Your return of ${result.drugBatch?.drug?.drugName ?? 'medication'} has been accepted and ₹${Number(result.refund?.amount ?? 0).toFixed(2)} refunded.`,
+            referenceType: 'drug_return',
+            referenceId: result.id,
+          });
+        }
+      }
+    } catch (err) {
+      logger.warn({ err, returnId: id }, 'Pharmacy return refund notify failed');
+    }
 
     logger.info({ tenantId, returnId: id, status: 'processed', processedBy: userId }, 'Drug return processed');
     return result;
