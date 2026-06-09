@@ -314,6 +314,13 @@ export const getReturnsQuerySchema = z.object({
   }),
 });
 
+// Returnable counter-sale lines for a patient (drives the patient-return picker).
+export const returnableQuerySchema = z.object({
+  query: z.object({
+    patientId: z.string().uuid('A valid patient ID is required'),
+  }),
+});
+
 export const processReturnSchema = z.object({
   body: z.object({
     status: z.enum(['processed', 'rejected']),

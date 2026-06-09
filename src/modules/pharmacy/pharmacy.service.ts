@@ -1710,6 +1710,72 @@ export async function getReturns(tenantId: string, query: GetReturnsQuery) {
   return { returns, total, page, limit };
 }
 
+/**
+ * Counter-sale lines for a patient that still have units eligible for return —
+ * powers the "pick the original sale" step of a patient return. Only sales
+ * billed at the counter (billId set) in the recent past are offered; each line's
+ * remaining qty is the dispensed amount minus what has already been returned
+ * (excluding rejected returns).
+ */
+export async function getReturnableDispenses(tenantId: string, patientId: string) {
+  const since = new Date();
+  since.setDate(since.getDate() - 120);
+
+  const records = await prisma.dispensingRecord.findMany({
+    where: {
+      tenantId,
+      patientId,
+      billId: { not: null },
+      dispensedAt: { gte: since },
+    },
+    include: {
+      drugBatch: {
+        select: {
+          batchNumber: true,
+          drug: { select: { drugName: true, looseUnitLabel: true } },
+        },
+      },
+      drugReturns: { where: { status: { not: 'rejected' } }, select: { quantity: true } },
+    },
+    orderBy: { dispensedAt: 'desc' },
+  });
+
+  // billId on DispensingRecord is a plain back-pointer (no relation) — resolve
+  // the invoice numbers in one extra query.
+  const billIds = Array.from(
+    new Set(records.map((r) => r.billId).filter((b): b is string => !!b)),
+  );
+  const bills = billIds.length
+    ? await prisma.bill.findMany({
+        where: { id: { in: billIds }, tenantId },
+        select: { id: true, billNumber: true },
+      })
+    : [];
+  const billNumberById = new Map(bills.map((b) => [b.id, b.billNumber]));
+
+  const items = records
+    .map((r) => {
+      const returned = r.drugReturns.reduce((s, x) => s + x.quantity, 0);
+      const remaining = r.quantityDispensed - returned;
+      return {
+        id: r.id,
+        drugName: r.drugBatch?.drug?.drugName ?? 'Medication',
+        looseUnitLabel: r.drugBatch?.drug?.looseUnitLabel ?? null,
+        batchNumber: r.drugBatch?.batchNumber ?? null,
+        billId: r.billId,
+        billNumber: r.billId ? billNumberById.get(r.billId) ?? null : null,
+        saleUnit: r.saleUnit ?? 'pack',
+        unitPrice: r.unitPrice != null ? Number(r.unitPrice) : null,
+        quantityDispensed: r.quantityDispensed,
+        remaining,
+        dispensedAt: r.dispensedAt,
+      };
+    })
+    .filter((i) => i.remaining > 0);
+
+  return { items, total: items.length };
+}
+
 export async function processReturn(
   tenantId: string,
   id: string,

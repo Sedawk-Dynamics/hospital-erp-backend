@@ -28,6 +28,7 @@ import {
   createReturnSchema,
   createVendorReturnSchema,
   getReturnsQuerySchema,
+  returnableQuerySchema,
   processReturnSchema,
   recallBatchSchema,
   unrecallBatchSchema,
@@ -87,6 +88,8 @@ pharmacyRoutes.post('/returns', authenticate, requirePermission('pharmacy', 'cre
 // SOW-literal alias: POST /pharmacy/vendor-returns (vendor return; admin-only).
 pharmacyRoutes.post('/vendor-returns', authenticate, requirePermission('pharmacy', 'create'), validate(createVendorReturnSchema), controller.createVendorReturn);
 pharmacyRoutes.get('/returns', authenticate, requirePermission('pharmacy', 'read'), validate(getReturnsQuerySchema), controller.getReturns);
+// Returnable counter-sale lines for a patient (patient-return picker).
+pharmacyRoutes.get('/returnable', authenticate, requirePermission('pharmacy', 'read'), validate(returnableQuerySchema), controller.getReturnableDispenses);
 pharmacyRoutes.patch('/returns/:id/process', authenticate, requirePermission('pharmacy', 'approve'), validate(processReturnSchema), controller.processReturn);
 
 // --- Recall Management ---

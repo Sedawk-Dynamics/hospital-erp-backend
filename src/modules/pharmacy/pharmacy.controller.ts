@@ -512,6 +512,23 @@ export async function getReturns(
   }
 }
 
+export async function getReturnableDispenses(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await pharmacyService.getReturnableDispenses(
+      tenantId,
+      req.query.patientId as string,
+    );
+    sendResponse({ res, message: 'Returnable sale lines retrieved', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function processReturn(
   req: AuthenticatedRequest,
   res: Response,
