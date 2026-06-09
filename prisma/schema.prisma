@@ -3986,6 +3986,7 @@ model DispensingRecord {
   drugBatch        DrugBatch        @relation(fields: [drugBatchId], references: [id])
   dispenser        User             @relation("Dispenser", fields: [dispensedBy], references: [id])
   verifier         User?            @relation("DispensingVerifier", fields: [verifiedBy], references: [id])
+  drugReturns      DrugReturn[]
 
   @@map("dispensing_records")
 }
@@ -4001,13 +4002,28 @@ model DrugReturn {
   reason      String?
   processedBy String?          @map("processed_by")
   status      DrugReturnStatus @default(pending)
+  // Billing linkage for patient returns. dispensingRecordId points at the
+  // original sale line so the return is bounded by what was dispensed; billId
+  // is the invoice it was sold on. saleUnit/unitPrice mirror the sale economics
+  // (per BASE unit) so refundAmount is the money actually returned to the
+  // patient (qty * unitPrice net of the line discount, GST-inclusive). refundId
+  // is the Refund row created when the return is approved.
+  dispensingRecordId String?  @map("dispensing_record_id")
+  billId             String?  @map("bill_id")
+  saleUnit           String?  @map("sale_unit") @db.VarChar(10)
+  unitPrice          Decimal? @map("unit_price") @db.Decimal(12, 2)
+  refundAmount       Decimal? @map("refund_amount") @db.Decimal(12, 2)
+  refundId           String?  @unique @map("refund_id")
   createdAt   DateTime         @default(now()) @map("created_at")
 
-  tenant    Tenant    @relation(fields: [tenantId], references: [id])
-  drugBatch DrugBatch @relation(fields: [drugBatchId], references: [id])
-  patient   Patient?  @relation(fields: [patientId], references: [id])
-  supplier  Supplier? @relation(fields: [supplierId], references: [id])
-  processor User?     @relation(fields: [processedBy], references: [id])
+  tenant           Tenant            @relation(fields: [tenantId], references: [id])
+  drugBatch        DrugBatch         @relation(fields: [drugBatchId], references: [id])
+  patient          Patient?          @relation(fields: [patientId], references: [id])
+  supplier         Supplier?         @relation(fields: [supplierId], references: [id])
+  processor        User?             @relation(fields: [processedBy], references: [id])
+  dispensingRecord DispensingRecord? @relation(fields: [dispensingRecordId], references: [id])
+  bill             Bill?             @relation(fields: [billId], references: [id])
+  refund           Refund?           @relation(fields: [refundId], references: [id])
 
   @@map("drug_returns")
 }
@@ -4257,6 +4273,7 @@ model Bill {
   refunds         Refund[]
   discounts       Discount[]
   insuranceClaims InsuranceClaim[]
+  drugReturns     DrugReturn[]
 
   @@map("bills")
 }
@@ -4350,6 +4367,7 @@ model Refund {
   patient   Patient @relation(fields: [patientId], references: [id])
   requester User?   @relation("RefundRequester", fields: [requestedBy], references: [id])
   approver  User?   @relation("RefundApprover", fields: [approvedBy], references: [id])
+  drugReturn DrugReturn?
 
   @@map("refunds")
 }
