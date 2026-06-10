@@ -164,6 +164,148 @@ export const INTERACTION_PAIRS: InteractionPairDef[] = [
     severity: 'major',
     description: 'Reduced lithium clearance → toxicity. Monitor lithium levels.',
   },
+
+  // ── Nitrates + PDE5 inhibitors ──────────────────────────
+  {
+    a: ['nitroglycerin', 'nitrate', 'isosorbide', 'sorbitrate'],
+    b: ['sildenafil', 'tadalafil', 'vardenafil'],
+    severity: 'contraindicated',
+    description: 'Profound refractory hypotension — contraindicated. Separate by 24–48 hours.',
+  },
+
+  // ── Anti-tubercular (rifampicin is a potent CYP inducer) ─
+  {
+    a: ['rifampicin', 'rifampin'],
+    b: ['warfarin'],
+    severity: 'major',
+    description: 'Rifampicin induces warfarin metabolism → loss of anticoagulation. Monitor INR closely.',
+  },
+  {
+    a: ['rifampicin', 'rifampin'],
+    b: ['oral contraceptive', 'ethinyl estradiol', 'levonorgestrel', 'norethisterone'],
+    severity: 'major',
+    description: 'Rifampicin reduces contraceptive efficacy — advise alternative/barrier contraception.',
+  },
+  {
+    a: ['rifampicin', 'rifampin'],
+    b: ['glimepiride', 'glipizide', 'glibenclamide', 'sulfonylurea', 'pioglitazone'],
+    severity: 'moderate',
+    description: 'Rifampicin lowers sulfonylurea levels → loss of glycemic control.',
+  },
+  {
+    a: ['isoniazid', 'inh'],
+    b: ['phenytoin', 'carbamazepine'],
+    severity: 'major',
+    description: 'Isoniazid inhibits anticonvulsant metabolism → toxicity (ataxia, nystagmus). Monitor levels.',
+  },
+
+  // ── Immunosuppressants / chemo ──────────────────────────
+  {
+    a: ['allopurinol', 'febuxostat'],
+    b: ['azathioprine', 'mercaptopurine', '6-mp'],
+    severity: 'contraindicated',
+    description: 'Xanthine-oxidase inhibition → fatal myelosuppression. Reduce thiopurine to 25% if unavoidable.',
+  },
+  {
+    a: ['methotrexate'],
+    b: ['nsaid', 'ibuprofen', 'naproxen', 'diclofenac', 'aspirin'],
+    severity: 'major',
+    description: 'NSAIDs reduce methotrexate clearance → marrow + hepatic toxicity, esp. high-dose MTX.',
+  },
+  {
+    a: ['tacrolimus', 'cyclosporine', 'ciclosporin'],
+    b: ['fluconazole', 'ketoconazole', 'itraconazole', 'voriconazole', 'clarithromycin', 'erythromycin'],
+    severity: 'major',
+    description: 'CYP3A4 inhibition elevates immunosuppressant levels → nephrotoxicity. Monitor trough levels.',
+  },
+
+  // ── Anticonvulsants ─────────────────────────────────────
+  {
+    a: ['valproate', 'valproic', 'sodium valproate', 'divalproex'],
+    b: ['meropenem', 'imipenem', 'ertapenem', 'carbapenem'],
+    severity: 'major',
+    description: 'Carbapenems drop valproate levels up to 90% within days → seizure breakthrough.',
+  },
+  {
+    a: ['carbamazepine'],
+    b: ['clarithromycin', 'erythromycin', 'fluconazole', 'isoniazid'],
+    severity: 'major',
+    description: 'CYP3A4 inhibition → carbamazepine toxicity (diplopia, ataxia, arrhythmia).',
+  },
+  {
+    a: ['phenytoin'],
+    b: ['fluconazole', 'omeprazole', 'amiodarone'],
+    severity: 'moderate',
+    description: 'Raised phenytoin levels — narrow therapeutic index. Monitor levels and toxicity signs.',
+  },
+
+  // ── DOACs ───────────────────────────────────────────────
+  {
+    a: ['rivaroxaban', 'apixaban', 'dabigatran', 'edoxaban'],
+    b: ['nsaid', 'ibuprofen', 'naproxen', 'diclofenac', 'aspirin', 'clopidogrel', 'ticagrelor'],
+    severity: 'major',
+    description: 'DOAC + antiplatelet/NSAID markedly increases GI and intracranial bleeding risk.',
+  },
+  {
+    a: ['rivaroxaban', 'apixaban'],
+    b: ['ketoconazole', 'itraconazole', 'ritonavir'],
+    severity: 'major',
+    description: 'Strong CYP3A4/P-gp inhibition raises DOAC exposure → bleeding. Avoid combination.',
+  },
+
+  // ── Antimalarials / QT (regional relevance) ─────────────
+  {
+    a: ['chloroquine', 'hydroxychloroquine', 'quinine'],
+    b: ['azithromycin', 'moxifloxacin', 'amiodarone', 'sotalol', 'haloperidol', 'ondansetron'],
+    severity: 'major',
+    description: 'Additive QT prolongation — torsades risk. ECG monitoring advised.',
+  },
+
+  // ── Theophylline (still common in Indian respiratory Rx) ─
+  {
+    a: ['theophylline', 'deriphyllin', 'aminophylline'],
+    b: ['ciprofloxacin', 'erythromycin', 'clarithromycin'],
+    severity: 'major',
+    description: 'CYP1A2 inhibition → theophylline toxicity (seizures, arrhythmias). Narrow index — monitor levels.',
+  },
+
+  // ── Colchicine ──────────────────────────────────────────
+  {
+    a: ['colchicine'],
+    b: ['clarithromycin', 'erythromycin', 'ketoconazole', 'itraconazole', 'cyclosporine'],
+    severity: 'contraindicated',
+    description: 'Fatal colchicine toxicity reported with CYP3A4/P-gp inhibitors, esp. in renal impairment.',
+  },
+
+  // ── Endocrine / oncology ────────────────────────────────
+  {
+    a: ['tamoxifen'],
+    b: ['paroxetine', 'fluoxetine', 'bupropion'],
+    severity: 'major',
+    description: 'Strong CYP2D6 inhibition blocks tamoxifen activation → reduced breast-cancer efficacy. Prefer venlafaxine/escitalopram.',
+  },
+  {
+    a: ['levothyroxine', 'thyroxine'],
+    b: ['calcium carbonate', 'ferrous', 'iron', 'sucralfate'],
+    severity: 'moderate',
+    description: 'Chelation reduces levothyroxine absorption — separate doses by ≥ 4 hours.',
+  },
+
+  // ── Metformin + alcohol ─────────────────────────────────
+  {
+    a: ['metformin'],
+    b: ['alcohol', 'ethanol'],
+    severity: 'moderate',
+    description: 'Alcohol potentiates lactic acidosis risk with metformin, esp. binge use or hepatic disease.',
+  },
+
+  // ── Antiplatelet duplication ────────────────────────────
+  {
+    a: ['clopidogrel', 'ticagrelor', 'prasugrel'],
+    b: ['nsaid', 'ibuprofen', 'naproxen', 'diclofenac', 'ketorolac'],
+    severity: 'moderate',
+    description: 'Additive GI bleeding risk; co-prescribe PPI if combination is necessary.',
+  },
 ];
 
 /** Normalise a drug string for fuzzy substring matching. */
