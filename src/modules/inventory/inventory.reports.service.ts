@@ -248,6 +248,59 @@ export async function getDepartmentConsumptionReport(tenantId: string, query: De
     items: Array.from(row.items.values()).sort((a, b) => b.quantity - a.quantity),
   }));
 
+  // ── Pharmacy sub-store consumption ──────────────────────
+  // The pharmacy tracks its own stock (DrugBatch/DispensingRecord), so its
+  // outflow never shows up as StockTransaction rows. Aggregate dispenses in
+  // the window into a synthetic "Pharmacy" department so the hospital-wide
+  // consumption report covers drug stock too. Cost basis = batch purchase
+  // price (consumption cost, not the billed MRP).
+  if (!query.departmentId && !query.inventoryItemId) {
+    const dispenses = await prisma.dispensingRecord.findMany({
+      where: { tenantId, dispensedAt: { gte: fromDate, lte: toDate } },
+      include: {
+        drugBatch: {
+          select: {
+            purchasePrice: true,
+            drug: { select: { id: true, drugName: true, unitOfMeasurement: true } },
+          },
+        },
+      },
+    });
+
+    if (dispenses.length > 0) {
+      const drugRows = new Map<string, { itemId: string; itemName: string; itemCode: string | null; category: string; unit: string | null; quantity: number; totalCost: number }>();
+      let pharmacyQty = 0;
+      let pharmacyCost = 0;
+      for (const d of dispenses) {
+        const drug = d.drugBatch.drug;
+        const row = drugRows.get(drug.id) ?? {
+          itemId: drug.id,
+          itemName: drug.drugName,
+          itemCode: null,
+          category: 'medication',
+          unit: drug.unitOfMeasurement ?? null,
+          quantity: 0,
+          totalCost: 0,
+        };
+        const cost = d.drugBatch.purchasePrice
+          ? Number(d.drugBatch.purchasePrice) * d.quantityDispensed
+          : 0;
+        row.quantity += d.quantityDispensed;
+        row.totalCost += cost;
+        drugRows.set(drug.id, row);
+        pharmacyQty += d.quantityDispensed;
+        pharmacyCost += cost;
+      }
+      departments.push({
+        departmentId: 'pharmacy',
+        departmentName: 'Pharmacy (drug sub-store)',
+        totalQuantity: pharmacyQty,
+        totalCost: pharmacyCost,
+        items: Array.from(drugRows.values()).sort((a, b) => b.quantity - a.quantity),
+      });
+    }
+  }
+
   return {
     fromDate: fromDate.toISOString(),
     toDate: toDate.toISOString(),
