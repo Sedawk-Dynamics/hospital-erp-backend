@@ -254,7 +254,7 @@ export async function createBatch(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const batch = await pharmacyService.createBatch(tenantId, req.user!.roles ?? [], req.body);
+    const batch = await pharmacyService.createBatch(tenantId, req.user!.userId, req.user!.roles ?? [], req.body);
     sendResponse({
       res,
       statusCode: 201,
@@ -460,7 +460,7 @@ export async function createReturn(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const drugReturn = await pharmacyService.createReturn(tenantId, req.user!.roles ?? [], req.body);
+    const drugReturn = await pharmacyService.createReturn(tenantId, req.user!.userId, req.user!.roles ?? [], req.body);
     sendResponse({
       res,
       statusCode: 201,
@@ -480,7 +480,7 @@ export async function createVendorReturn(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const drugReturn = await pharmacyService.createReturn(tenantId, req.user!.roles ?? [], {
+    const drugReturn = await pharmacyService.createReturn(tenantId, req.user!.userId, req.user!.roles ?? [], {
       ...req.body,
       returnType: 'vendor_return',
     });

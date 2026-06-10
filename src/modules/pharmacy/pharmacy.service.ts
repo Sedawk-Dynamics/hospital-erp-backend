@@ -3,6 +3,7 @@ import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
 import { parsePackSize, inferLooseUnitLabel } from '../drug-master/drug-master.dataset';
+import { safePharmacyAudit } from './pharmacy.audit';
 import type {
   CreateCategoryInput,
   UpdateCategoryInput,
@@ -589,7 +590,7 @@ export async function deleteFormularyItem(tenantId: string, id: string) {
 // Batches
 // ============================================================
 
-export async function createBatch(tenantId: string, roles: string[], data: CreateBatchInput) {
+export async function createBatch(tenantId: string, userId: string, roles: string[], data: CreateBatchInput) {
   assertPharmacyAdmin(roles, 'add stock batches');
   // Validate drug exists
   const drug = await prisma.drugFormulary.findFirst({
@@ -635,6 +636,20 @@ export async function createBatch(tenantId: string, roles: string[], data: Creat
     include: {
       drug: { select: { id: true, drugName: true, genericName: true } },
       supplier: { select: { id: true, name: true } },
+    },
+  });
+
+  void safePharmacyAudit({
+    tenantId,
+    userId,
+    action: 'create',
+    entityType: 'drug_batch',
+    entityId: batch.id,
+    description: `Stock in: ${data.quantityReceived} base unit(s) of ${drug.drugName} (batch ${data.batchNumber})`,
+    newValues: {
+      quantityReceived: data.quantityReceived,
+      expiryDate: data.expiryDate,
+      supplierId: data.supplierId ?? null,
     },
   });
 
@@ -1101,6 +1116,16 @@ export async function createDispense(tenantId: string, userId: string, data: Cre
     logger.warn({ err, dispensingId: result.id }, 'Pharmacy post-dispense notify failed');
   }
 
+  void safePharmacyAudit({
+    tenantId,
+    userId,
+    action: 'create',
+    entityType: 'dispensing_record',
+    entityId: result.id,
+    description: `Dispensed ${data.quantityDispensed} × ${drugBatch.drug.drugName} (batch ${drugBatch.batchNumber})`,
+    newValues: { quantityDispensed: data.quantityDispensed, drugBatchId: data.drugBatchId },
+  });
+
   logger.info(
     { tenantId, dispensingId: result.id, drugBatchId: data.drugBatchId, quantity: data.quantityDispensed },
     'Drug dispensed',
@@ -1379,6 +1404,16 @@ export async function createPharmacySale(
     return bill.id;
   });
 
+  void safePharmacyAudit({
+    tenantId,
+    userId,
+    action: 'create',
+    entityType: 'pharmacy_sale',
+    entityId: billId,
+    description: `Counter sale: ${data.items.length} line item(s) billed`,
+    newValues: { items: data.items.map((i) => ({ drugBatchId: i.drugBatchId, quantity: i.quantity })) },
+  });
+
   logger.info({ tenantId, billId, items: data.items.length }, 'Pharmacy counter sale billed');
   return getPharmacySale(tenantId, billId);
 }
@@ -1539,7 +1574,7 @@ export async function verifyDispense(tenantId: string, id: string, verifiedBy: s
 // Returns
 // ============================================================
 
-export async function createReturn(tenantId: string, roles: string[], data: CreateReturnInput) {
+export async function createReturn(tenantId: string, userId: string, roles: string[], data: CreateReturnInput) {
   // Patient returns are an everyday counter task (pharmacist). Vendor returns
   // (damaged/unsold stock back to the supplier) are a stock-management action,
   // so they're restricted to pharmacy_admin.
@@ -1659,6 +1694,16 @@ export async function createReturn(tenantId: string, roles: string[], data: Crea
       patient: { select: { id: true, firstName: true, lastName: true } },
       supplier: { select: { id: true, name: true } },
     },
+  });
+
+  void safePharmacyAudit({
+    tenantId,
+    userId,
+    action: 'create',
+    entityType: 'drug_return',
+    entityId: drugReturn.id,
+    description: `${data.returnType === 'vendor_return' ? 'Vendor' : 'Patient'} return recorded: ${data.quantity} × ${drugReturn.drugBatch?.drug?.drugName ?? 'drug'} (batch ${drugReturn.drugBatch?.batchNumber ?? '-'})`,
+    newValues: { quantity: data.quantity, returnType: data.returnType, refundAmount },
   });
 
   logger.info(
@@ -1894,6 +1939,17 @@ export async function processReturn(
       logger.warn({ err, returnId: id }, 'Pharmacy return refund notify failed');
     }
 
+    void safePharmacyAudit({
+      tenantId,
+      userId,
+      action: 'update',
+      entityType: 'drug_return',
+      entityId: id,
+      description: `Return approved — restocked ${drugReturn.quantity} unit(s) to batch ${result?.drugBatch?.batchNumber ?? '-'}`,
+      oldValues: { status: 'pending' },
+      newValues: { status: 'processed', restockedQuantity: drugReturn.quantity },
+    });
+
     logger.info({ tenantId, returnId: id, status: 'processed', processedBy: userId }, 'Drug return processed');
     return result;
   }
@@ -1917,6 +1973,17 @@ export async function processReturn(
       supplier: { select: { id: true, name: true } },
       processor: { select: { id: true, firstName: true, lastName: true } },
     },
+  });
+
+  void safePharmacyAudit({
+    tenantId,
+    userId,
+    action: 'update',
+    entityType: 'drug_return',
+    entityId: id,
+    description: 'Return rejected — no stock adjustment',
+    oldValues: { status: 'pending' },
+    newValues: { status: 'rejected' },
   });
 
   logger.info({ tenantId, returnId: id, status: 'rejected', processedBy: userId }, 'Drug return rejected');

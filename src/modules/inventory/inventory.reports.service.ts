@@ -495,6 +495,12 @@ const INVENTORY_ENTITY_TYPES = [
   'purchase_order',
   'supply_request',
   'stock_transfer',
+  // Pharmacy sub-store stock actions (written by pharmacy.audit.ts) appear
+  // in the same register so the hospital has one audit trail for all stock.
+  'drug_batch',
+  'dispensing_record',
+  'pharmacy_sale',
+  'drug_return',
 ];
 
 export async function getInventoryAuditLogs(tenantId: string, query: InventoryAuditQuery) {
