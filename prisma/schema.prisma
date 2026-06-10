@@ -1284,6 +1284,7 @@ model Tenant {
   leaveRequests              LeaveRequest[]
   payroll                    Payroll[]
   notifications              Notification[]
+  cdssAlerts                 CdssAlert[]
   messages                   Message[]
   shiftHandoverNotes         ShiftHandoverNote[]
   tickets                    Ticket[]
@@ -1512,6 +1513,7 @@ model User {
   doctorLeavesApproved           DoctorLeave[]                @relation("DoctorLeaveApprover")
   payrollProcessed               Payroll[]
   notifications                  Notification[]
+  cdssAlertsAcknowledged         CdssAlert[]                  @relation("CdssAlertAcknowledger")
   messagesSent                   Message[]                    @relation("MessageSender")
   messagesReceived               Message[]                    @relation("MessageReceiver")
   shiftHandoverFrom              ShiftHandoverNote[]          @relation("HandoverFrom")
@@ -1917,6 +1919,7 @@ model Patient {
   feedback                  Feedback[]
   incidentReports           IncidentReport[]
   otRequests                OtRequest[]
+  cdssAlerts                CdssAlert[]
   hospitalConnection        PatientHospitalConnection?
   mrdRequests               MrdRequest[]
   reservations              Reservation[]
@@ -4919,6 +4922,59 @@ model Notification {
   user   User   @relation(fields: [userId], references: [id])
 
   @@map("notifications")
+}
+
+// ============================================================
+// CDSS — persisted clinical decision-support alerts
+// ============================================================
+
+enum CdssAlertType {
+  drug_interaction
+  allergy
+  dosage
+  recall
+  critical_value
+}
+
+enum CdssAlertStatus {
+  active
+  acknowledged
+  overridden
+}
+
+model CdssAlert {
+  id               String          @id @default(uuid())
+  tenantId         String          @map("tenant_id")
+  patientId        String?         @map("patient_id")
+  alertType        CdssAlertType   @map("alert_type")
+  /** info | minor | moderate | major | contraindicated | critical */
+  severity         String          @db.VarChar(20)
+  message          String
+  detail           String?
+  drugName         String?         @map("drug_name") @db.VarChar(255)
+  parameterName    String?         @map("parameter_name") @db.VarChar(255)
+  parameterValue   String?         @map("parameter_value") @db.VarChar(100)
+  /** What triggered this alert: prescription | lab_order */
+  referenceType    String?         @map("reference_type") @db.VarChar(50)
+  referenceId      String?         @map("reference_id")
+  notifiedUserId   String?         @map("notified_user_id")
+  status           CdssAlertStatus @default(active)
+  acknowledgedById String?         @map("acknowledged_by_id")
+  acknowledgedAt   DateTime?       @map("acknowledged_at")
+  acknowledgeNote  String?         @map("acknowledge_note")
+  /** Required when status=overridden — the clinical justification. */
+  overrideReason   String?         @map("override_reason")
+  createdAt        DateTime        @default(now()) @map("created_at")
+  updatedAt        DateTime        @updatedAt @map("updated_at")
+
+  tenant         Tenant   @relation(fields: [tenantId], references: [id])
+  patient        Patient? @relation(fields: [patientId], references: [id])
+  acknowledgedBy User?    @relation("CdssAlertAcknowledger", fields: [acknowledgedById], references: [id])
+
+  @@index([tenantId, status, createdAt])
+  @@index([tenantId, alertType, createdAt])
+  @@index([tenantId, patientId])
+  @@map("cdss_alerts")
 }
 
 model Message {
