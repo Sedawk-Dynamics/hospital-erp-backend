@@ -43,10 +43,23 @@ export const alertsQuerySchema = z.object({
   query: z.object({
     page: z.coerce.number().int().positive().default(1),
     limit: z.coerce.number().int().positive().max(100).default(25),
-    type: z.enum(['critical_value', 'drug_interaction', 'allergy', 'dosage', 'all']).default('all'),
+    type: z.enum(['critical_value', 'drug_interaction', 'allergy', 'dosage', 'recall', 'all']).default('all'),
+    status: z.enum(['active', 'acknowledged', 'overridden', 'all']).default('all'),
     patientId: z.string().uuid().optional(),
     fromDate: z.string().optional(),
     toDate: z.string().optional(),
+  }),
+});
+
+export const acknowledgeAlertSchema = z.object({
+  params: z.object({ id: z.string().uuid('Invalid alert ID') }),
+  body: z.object({ note: z.string().max(1000).optional() }),
+});
+
+export const overrideAlertSchema = z.object({
+  params: z.object({ id: z.string().uuid('Invalid alert ID') }),
+  body: z.object({
+    reason: z.string().min(5, 'Override reason must be at least 5 characters').max(1000),
   }),
 });
 

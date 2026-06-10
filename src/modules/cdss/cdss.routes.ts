@@ -8,6 +8,8 @@ import {
   orderSuggestionsSchema,
   evaluateLabResultsSchema,
   alertsQuerySchema,
+  acknowledgeAlertSchema,
+  overrideAlertSchema,
 } from './cdss.validation';
 
 export const cdssRoutes = Router();
@@ -52,4 +54,22 @@ cdssRoutes.get(
   authenticate,
   requirePermission('lab_reports', 'read'),
   controller.getAlertsSummary,
+);
+
+// Review workflow: acknowledging/overriding is a clinical action — doctors
+// and nurses hold `prescriptions:read`, which is the closest existing perm.
+cdssRoutes.patch(
+  '/alerts/:id/acknowledge',
+  authenticate,
+  requirePermission('prescriptions', 'read'),
+  validate(acknowledgeAlertSchema),
+  controller.acknowledgeAlert,
+);
+
+cdssRoutes.patch(
+  '/alerts/:id/override',
+  authenticate,
+  requirePermission('prescriptions', 'read'),
+  validate(overrideAlertSchema),
+  controller.overrideAlert,
 );

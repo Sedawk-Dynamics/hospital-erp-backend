@@ -321,28 +321,48 @@ export async function evaluateLabResults(
   }
 
   let notified = 0;
-  if (doctorUserId) {
-    for (const a of alerts) {
-      try {
-        await prisma.notification.create({
-          data: {
-            tenantId,
-            userId: doctorUserId,
-            title: 'Critical lab value',
-            message: a.message,
-            // CDSS critical-value alerts ride on the existing 'alert' enum
-            // and tag themselves via referenceType='lab_critical' so the
-            // alerts feed can filter precisely without a schema migration.
-            notificationType: 'alert',
-            channel: 'in_app',
-            referenceType: 'lab_critical',
-            referenceId: data.labOrderId,
-          },
-        });
-        notified += 1;
-      } catch (err) {
-        logger.warn({ err }, 'CDSS critical-value notification failed');
-      }
+  for (const a of alerts) {
+    // Persist the alert for the review dashboard regardless of whether a
+    // doctor could be resolved for notification.
+    try {
+      await prisma.cdssAlert.create({
+        data: {
+          tenantId,
+          patientId: data.patientId,
+          alertType: 'critical_value',
+          severity: 'critical',
+          message: a.message,
+          parameterName: a.parameterName,
+          parameterValue: String(a.value),
+          referenceType: 'lab_order',
+          referenceId: data.labOrderId,
+          notifiedUserId: doctorUserId,
+        },
+      });
+    } catch (err) {
+      logger.warn({ err }, 'CDSS critical-value alert persistence failed');
+    }
+
+    if (!doctorUserId) continue;
+    try {
+      await prisma.notification.create({
+        data: {
+          tenantId,
+          userId: doctorUserId,
+          title: 'Critical lab value',
+          message: a.message,
+          // CDSS critical-value alerts ride on the existing 'alert' enum
+          // and tag themselves via referenceType='lab_critical' so the
+          // alerts feed can filter precisely without a schema migration.
+          notificationType: 'alert',
+          channel: 'in_app',
+          referenceType: 'lab_critical',
+          referenceId: data.labOrderId,
+        },
+      });
+      notified += 1;
+    } catch (err) {
+      logger.warn({ err }, 'CDSS critical-value notification failed');
     }
   }
 
@@ -351,8 +371,8 @@ export async function evaluateLabResults(
 }
 
 // ============================================================
-// CDSS Alerts feed — surfaces recent critical-value notifications
-// + abnormal results for the alerts dashboard.
+// CDSS Alerts feed — persisted CdssAlert rows (all alert types)
+// + recent abnormal results for the alerts dashboard.
 // ============================================================
 
 export async function getAlertsFeed(tenantId: string, query: AlertsQuery) {
@@ -360,24 +380,27 @@ export async function getAlertsFeed(tenantId: string, query: AlertsQuery) {
   const limit = query.limit;
   const skip = (page - 1) * limit;
 
-  const where: any = {
-    tenantId,
-    notificationType: 'alert', referenceType: 'lab_critical',
-  };
+  const where: any = { tenantId };
+  if (query.type && query.type !== 'all') {
+    where.alertType = query.type === 'critical_value' ? 'critical_value' : query.type;
+  }
+  if (query.status && query.status !== 'all') where.status = query.status;
+  if (query.patientId) where.patientId = query.patientId;
   if (query.fromDate) where.createdAt = { ...where.createdAt, gte: new Date(query.fromDate) };
   if (query.toDate) where.createdAt = { ...where.createdAt, lte: new Date(query.toDate) };
 
-  const [notifications, total, abnormalResults] = await Promise.all([
-    prisma.notification.findMany({
+  const [alerts, total, abnormalResults] = await Promise.all([
+    prisma.cdssAlert.findMany({
       where,
       skip,
       take: limit,
       orderBy: { createdAt: 'desc' },
       include: {
-        user: { select: { id: true, firstName: true, lastName: true } },
+        patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
+        acknowledgedBy: { select: { id: true, firstName: true, lastName: true } },
       },
     }),
-    prisma.notification.count({ where }),
+    prisma.cdssAlert.count({ where }),
     // Recent abnormal lab results in the last 7 days for context
     prisma.labResult.findMany({
       where: {
@@ -397,7 +420,7 @@ export async function getAlertsFeed(tenantId: string, query: AlertsQuery) {
   ]);
 
   return {
-    alerts: notifications,
+    alerts,
     page,
     limit,
     total,
@@ -411,17 +434,84 @@ export async function getAlertsSummary(tenantId: string) {
   const weekAgo = new Date(today);
   weekAgo.setDate(weekAgo.getDate() - 7);
 
-  const [criticalToday, criticalWeek, unread] = await Promise.all([
-    prisma.notification.count({
-      where: { tenantId, notificationType: 'alert', referenceType: 'lab_critical', createdAt: { gte: today } },
+  const [criticalToday, criticalWeek, activeTotal, byTypeRaw] = await Promise.all([
+    prisma.cdssAlert.count({
+      where: { tenantId, alertType: 'critical_value', createdAt: { gte: today } },
     }),
-    prisma.notification.count({
-      where: { tenantId, notificationType: 'alert', referenceType: 'lab_critical', createdAt: { gte: weekAgo } },
+    prisma.cdssAlert.count({
+      where: { tenantId, alertType: 'critical_value', createdAt: { gte: weekAgo } },
     }),
-    prisma.notification.count({
-      where: { tenantId, notificationType: 'alert', referenceType: 'lab_critical', isRead: false },
+    prisma.cdssAlert.count({ where: { tenantId, status: 'active' } }),
+    prisma.cdssAlert.groupBy({
+      by: ['alertType'],
+      where: { tenantId, status: 'active' },
+      _count: { _all: true },
     }),
   ]);
 
-  return { criticalToday, criticalWeek, unreadCritical: unread };
+  const byType: Record<string, number> = {};
+  for (const row of byTypeRaw) byType[row.alertType] = row._count._all;
+
+  return {
+    criticalToday,
+    criticalWeek,
+    activeTotal,
+    byType,
+    // Back-compat alias for the previous notification-based summary shape.
+    unreadCritical: byType['critical_value'] ?? 0,
+  };
+}
+
+// ============================================================
+// Alert review workflow — acknowledge / override with reason
+// ============================================================
+
+export async function acknowledgeAlert(
+  tenantId: string,
+  userId: string,
+  alertId: string,
+  note?: string,
+) {
+  const alert = await prisma.cdssAlert.findFirst({ where: { id: alertId, tenantId } });
+  if (!alert) throw AppError.notFound('Alert not found');
+  if (alert.status !== 'active') throw AppError.badRequest(`Alert is already ${alert.status}`);
+
+  return prisma.cdssAlert.update({
+    where: { id: alertId },
+    data: {
+      status: 'acknowledged',
+      acknowledgedById: userId,
+      acknowledgedAt: new Date(),
+      acknowledgeNote: note ?? null,
+    },
+    include: {
+      patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
+      acknowledgedBy: { select: { id: true, firstName: true, lastName: true } },
+    },
+  });
+}
+
+export async function overrideAlert(
+  tenantId: string,
+  userId: string,
+  alertId: string,
+  reason: string,
+) {
+  const alert = await prisma.cdssAlert.findFirst({ where: { id: alertId, tenantId } });
+  if (!alert) throw AppError.notFound('Alert not found');
+  if (alert.status === 'overridden') throw AppError.badRequest('Alert is already overridden');
+
+  return prisma.cdssAlert.update({
+    where: { id: alertId },
+    data: {
+      status: 'overridden',
+      acknowledgedById: userId,
+      acknowledgedAt: new Date(),
+      overrideReason: reason,
+    },
+    include: {
+      patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
+      acknowledgedBy: { select: { id: true, firstName: true, lastName: true } },
+    },
+  });
 }

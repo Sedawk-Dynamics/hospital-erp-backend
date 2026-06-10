@@ -51,3 +51,31 @@ export async function getAlertsSummary(
     sendResponse({ res, message: 'CDSS summary retrieved', data });
   } catch (err) { next(err); }
 }
+
+export async function acknowledgeAlert(
+  req: AuthenticatedRequest, res: Response, next: NextFunction,
+) {
+  try {
+    const data = await service.acknowledgeAlert(
+      req.user!.tenantId,
+      req.user!.userId,
+      req.params.id as string,
+      req.body?.note,
+    );
+    sendResponse({ res, message: 'Alert acknowledged', data });
+  } catch (err) { next(err); }
+}
+
+export async function overrideAlert(
+  req: AuthenticatedRequest, res: Response, next: NextFunction,
+) {
+  try {
+    const data = await service.overrideAlert(
+      req.user!.tenantId,
+      req.user!.userId,
+      req.params.id as string,
+      req.body.reason,
+    );
+    sendResponse({ res, message: 'Alert overridden', data });
+  } catch (err) { next(err); }
+}
