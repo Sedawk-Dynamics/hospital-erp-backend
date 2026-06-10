@@ -38,7 +38,32 @@ export const PANIC_RANGES: PanicRange[] = [
   { parameter: 'ph', low: 7.2, high: 7.6, message: 'Critical pH — acidosis / alkalosis' },
   { parameter: 'magnesium', unit: 'mg/dL', low: 1.0, high: 4.9, message: 'Critical magnesium — arrhythmia risk' },
   { parameter: 'phosphate', unit: 'mg/dL', low: 1.0, high: 8.0, message: 'Critical phosphate — refeeding / cardiac risk' },
+  { parameter: 'urea', unit: 'mg/dL', low: null, high: 150, message: 'Critical urea — uremia / dialysis evaluation' },
+  { parameter: 'ammonia', unit: 'µmol/L', low: null, high: 100, message: 'Critical ammonia — hepatic encephalopathy risk' },
+  { parameter: 'bicarbonate', unit: 'mmol/L', low: 10, high: 40, message: 'Critical bicarbonate — severe acid-base disturbance' },
+  { parameter: 'hco3', unit: 'mmol/L', low: 10, high: 40, message: 'Critical bicarbonate — severe acid-base disturbance' },
+  { parameter: 'po2', unit: 'mmHg', low: 40, high: null, message: 'Critical pO2 — severe hypoxemia' },
+  { parameter: 'pco2', unit: 'mmHg', low: 20, high: 70, message: 'Critical pCO2 — ventilatory failure risk' },
+  { parameter: 'aptt', unit: 's', low: null, high: 100, message: 'Critical aPTT — major bleeding risk' },
+  { parameter: 'fibrinogen', unit: 'mg/dL', low: 100, high: null, message: 'Critical low fibrinogen — DIC / bleeding risk' },
+  { parameter: 'neutrophil', unit: '/uL', low: 500, high: null, message: 'Critical neutropenia — infection precautions' },
+  { parameter: 'anc', unit: '/uL', low: 500, high: null, message: 'Critical neutropenia — infection precautions' },
+  { parameter: 'lipase', unit: 'U/L', low: null, high: 1000, message: 'Critical lipase — acute pancreatitis' },
+  { parameter: 'digoxin', unit: 'ng/mL', low: null, high: 2.0, message: 'Critical digoxin level — toxicity' },
+  { parameter: 'lithium', unit: 'mmol/L', low: null, high: 2.0, message: 'Critical lithium level — toxicity' },
+  { parameter: 'phenytoin', unit: 'µg/mL', low: null, high: 40, message: 'Critical phenytoin level — toxicity' },
 ];
+
+/**
+ * Short keys ("ph", "anc", "wbc") must match as whole tokens, otherwise
+ * "ph" substring-matches "phosphate" and fires false pH panics.
+ */
+function panicKeyMatches(param: string, key: string): boolean {
+  if (key.length <= 4) {
+    return new RegExp(`(^|[^a-z0-9])${key}([^a-z0-9]|$)`).test(param);
+  }
+  return param.includes(key);
+}
 
 /**
  * Evaluate a single result. Returns the matching panic range or null.
@@ -53,7 +78,7 @@ export function evaluatePanic(
 
   const param = parameterName.toLowerCase();
   for (const range of PANIC_RANGES) {
-    if (!param.includes(range.parameter)) continue;
+    if (!panicKeyMatches(param, range.parameter)) continue;
     if (range.low !== null && num < range.low) return range;
     if (range.high !== null && num > range.high) return range;
   }
