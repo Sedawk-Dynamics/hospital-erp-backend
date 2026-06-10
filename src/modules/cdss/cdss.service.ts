@@ -10,6 +10,7 @@ import {
   parseFrequencyToDosesPerDay,
   getOrderSuggestions,
 } from './cdss.data';
+import { findAllergyClassRules, drugInAllergyClass } from './allergy-classes.data';
 import type {
   ValidatePrescriptionInput,
   OrderSuggestionsQuery,
@@ -82,23 +83,48 @@ export async function validatePrescription(
 
     for (const allergy of patient.allergies) {
       const allergen = allergy.allergen.toLowerCase();
-      const match =
+      const directMatch =
         allergen.includes(nameLower) ||
         nameLower.includes(allergen) ||
         (genericLower && (allergen.includes(genericLower) || genericLower.includes(allergen)));
-      if (!match) continue;
 
-      const severity = allergy.severity === 'life_threatening' || allergy.severity === 'severe' ? 'contraindicated' : 'major';
-      const alert: CdssWarning = {
-        severity,
-        kind: 'allergy',
-        drug: item.drugName,
-        message: `Patient has a documented ${allergy.severity ?? 'allergy'} to ${allergy.allergen}`,
-        detail: allergy.reaction ?? undefined,
-      };
-      // contraindicated = block; major = warn
-      if (severity === 'contraindicated') blockers.push(alert);
-      else warnings.push(alert);
+      if (directMatch) {
+        const severity = allergy.severity === 'life_threatening' || allergy.severity === 'severe' ? 'contraindicated' : 'major';
+        const alert: CdssWarning = {
+          severity,
+          kind: 'allergy',
+          drug: item.drugName,
+          message: `Patient has a documented ${allergy.severity ?? 'allergy'} to ${allergy.allergen}`,
+          detail: allergy.reaction ?? undefined,
+        };
+        // contraindicated = block; major = warn
+        if (severity === 'contraindicated') blockers.push(alert);
+        else warnings.push(alert);
+        continue;
+      }
+
+      // Class-based check: allergen identifies a drug class the prescribed
+      // drug belongs to (or cross-reacts with), even with no name overlap —
+      // e.g. "penicillin" allergy vs amoxicillin, or vs ceftriaxone (cross).
+      for (const rule of findAllergyClassRules(allergy.allergen)) {
+        if (!drugInAllergyClass(rule, item.drugName, formularyHit?.genericName)) continue;
+
+        const severeAllergy = allergy.severity === 'life_threatening' || allergy.severity === 'severe';
+        // Cross-class reactivity is a caution, never an auto-block.
+        const severity = !rule.crossReactivity && severeAllergy ? 'contraindicated' : 'major';
+        const alert: CdssWarning = {
+          severity,
+          kind: 'allergy',
+          drug: item.drugName,
+          message: rule.crossReactivity
+            ? `${item.drugName} may cross-react with documented ${allergy.allergen} allergy (${rule.className})`
+            : `${item.drugName} is in the same class as documented ${allergy.severity ?? ''} allergy to ${allergy.allergen} (${rule.className})`.replace(/\s+/g, ' '),
+          detail: [rule.note, allergy.reaction].filter(Boolean).join(' Reaction history: '),
+        };
+        if (severity === 'contraindicated') blockers.push(alert);
+        else warnings.push(alert);
+        break; // one class alert per allergy+drug is enough
+      }
     }
 
     if (formularyHit?.isRecalled) {
