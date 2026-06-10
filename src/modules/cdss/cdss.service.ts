@@ -5,6 +5,7 @@ import { checkInteractions } from '../prescriptions/prescriptions.service';
 import {
   evaluatePanic,
   findDosageLimit,
+  resolveDosageLimit,
   parseDoseMg,
   parseFrequencyToDosesPerDay,
   getOrderSuggestions,
@@ -46,6 +47,11 @@ export async function validatePrescription(
     select: { weightKg: true },
   });
   const weightKg = latestVital?.weightKg ? Number(latestVital.weightKg) : null;
+
+  // Age (years) for age-band dosage limits and pediatric contraindications.
+  const ageYears = patient.dateOfBirth
+    ? Math.floor((Date.now() - new Date(patient.dateOfBirth).getTime()) / (365.25 * 24 * 60 * 60 * 1000))
+    : null;
 
   // Resolve drug names to formulary entries so we know generic + active-recall state.
   const drugNames = data.items.map((i) => i.drugName);
@@ -125,44 +131,85 @@ export async function validatePrescription(
   }
 
   // ── Dosage validation ─────────────────────────────────
+  // Cumulative daily mg per generic so two items of the same drug
+  // (e.g. paracetamol tablet + syrup) are checked together.
+  const cumulativeByGeneric = new Map<string, { dailyMg: number; drugs: string[] }>();
+
   for (const item of data.items) {
     if (!item.dosage) continue;
     const limit = findDosageLimit(item.drugName);
     if (!limit) continue;
+
+    // Pediatric / age contraindication regardless of dose.
+    if (limit.minAgeYearsAllowed && ageYears !== null && ageYears < limit.minAgeYearsAllowed) {
+      warnings.push({
+        severity: 'major',
+        kind: 'dosage',
+        drug: item.drugName,
+        message: `${item.drugName} is not recommended under ${limit.minAgeYearsAllowed} years (patient is ${ageYears})`,
+        detail: limit.note,
+      });
+    }
+
     const doseMg = parseDoseMg(item.dosage);
     if (doseMg === null) continue;
     const dosesPerDay = item.frequency ? parseFrequencyToDosesPerDay(item.frequency) : 1;
     const dailyMg = doseMg * dosesPerDay;
+    const effective = resolveDosageLimit(limit, ageYears);
+    const ageLabel = ageYears !== null ? ` (patient age ${ageYears})` : '';
 
-    if (limit.maxPerDoseMg && doseMg > limit.maxPerDoseMg) {
+    const generic = (findFormulary(item.drugName)?.genericName ?? limit.drug).toLowerCase();
+    const cum = cumulativeByGeneric.get(generic) ?? { dailyMg: 0, drugs: [] };
+    cum.dailyMg += dailyMg;
+    cum.drugs.push(item.drugName);
+    cumulativeByGeneric.set(generic, cum);
+
+    if (effective.maxPerDoseMg && doseMg > effective.maxPerDoseMg) {
       warnings.push({
         severity: 'major',
         kind: 'dosage',
         drug: item.drugName,
-        message: `${item.drugName} single dose ${doseMg} mg exceeds recommended max ${limit.maxPerDoseMg} mg`,
-        detail: limit.note,
+        message: `${item.drugName} single dose ${doseMg} mg exceeds recommended max ${effective.maxPerDoseMg} mg${ageLabel}`,
+        detail: effective.note,
       });
     }
-    if (limit.maxDailyMg && dailyMg > limit.maxDailyMg) {
+    if (effective.maxDailyMg && dailyMg > effective.maxDailyMg) {
       warnings.push({
         severity: 'major',
         kind: 'dosage',
         drug: item.drugName,
-        message: `${item.drugName} daily dose ${dailyMg} mg exceeds recommended max ${limit.maxDailyMg} mg/day`,
-        detail: limit.note,
+        message: `${item.drugName} daily dose ${dailyMg} mg exceeds recommended max ${effective.maxDailyMg} mg/day${ageLabel}`,
+        detail: effective.note,
       });
     }
-    if (limit.maxMgPerKgDay && weightKg) {
+    if (effective.maxMgPerKgDay && weightKg) {
       const mgPerKg = dailyMg / weightKg;
-      if (mgPerKg > limit.maxMgPerKgDay) {
+      if (mgPerKg > effective.maxMgPerKgDay) {
         warnings.push({
           severity: 'major',
           kind: 'dosage',
           drug: item.drugName,
-          message: `${item.drugName} at ${mgPerKg.toFixed(1)} mg/kg/day exceeds recommended max ${limit.maxMgPerKgDay} mg/kg/day (patient ${weightKg} kg)`,
-          detail: limit.note,
+          message: `${item.drugName} at ${mgPerKg.toFixed(1)} mg/kg/day exceeds recommended max ${effective.maxMgPerKgDay} mg/kg/day (patient ${weightKg} kg)`,
+          detail: effective.note,
         });
       }
+    }
+  }
+
+  // Cumulative check: same generic prescribed as multiple items.
+  for (const [generic, cum] of cumulativeByGeneric) {
+    if (cum.drugs.length < 2) continue;
+    const limit = findDosageLimit(generic) ?? findDosageLimit(cum.drugs[0]);
+    if (!limit) continue;
+    const effective = resolveDosageLimit(limit, ageYears);
+    if (effective.maxDailyMg && cum.dailyMg > effective.maxDailyMg) {
+      warnings.push({
+        severity: 'major',
+        kind: 'dosage',
+        drug: cum.drugs.join(' + '),
+        message: `Combined daily dose of ${generic} across ${cum.drugs.length} items is ${cum.dailyMg} mg — exceeds max ${effective.maxDailyMg} mg/day`,
+        detail: effective.note,
+      });
     }
   }
 

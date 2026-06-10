@@ -66,28 +66,141 @@ export function evaluatePanic(
 // that exceed safe limits.
 // ---------------------------------------------------------------
 
+export interface AgeBandLimit {
+  /** Band applies when minAgeYears <= age < maxAgeYears (null = open-ended). */
+  minAgeYears: number;
+  maxAgeYears: number | null;
+  maxDailyMg?: number;
+  maxPerDoseMg?: number;
+  maxMgPerKgDay?: number;
+  note?: string;
+}
+
 export interface DosageLimit {
   drug: string; // lowercased substring match
   maxDailyMg?: number;
   maxPerDoseMg?: number;
   /** Weight-based: max mg/kg/day */
   maxMgPerKgDay?: number;
+  /** Drug should not be prescribed below this age at all (hard warning). */
+  minAgeYearsAllowed?: number;
+  /** Age-specific caps; the first matching band overrides the adult defaults. */
+  ageBands?: AgeBandLimit[];
   note: string;
 }
 
 export const DOSAGE_LIMITS: DosageLimit[] = [
-  { drug: 'paracetamol', maxDailyMg: 4000, maxPerDoseMg: 1000, maxMgPerKgDay: 75, note: 'Hepatotoxicity risk above 4g/day adult / 75 mg/kg/day pediatric.' },
-  { drug: 'acetaminophen', maxDailyMg: 4000, maxPerDoseMg: 1000, maxMgPerKgDay: 75, note: 'Hepatotoxicity risk above 4g/day adult.' },
-  { drug: 'ibuprofen', maxDailyMg: 2400, maxPerDoseMg: 800, maxMgPerKgDay: 40, note: 'GI/renal risk; cap at 2.4g/day adult, 40 mg/kg/day pediatric.' },
-  { drug: 'aspirin', maxDailyMg: 4000, note: 'Reye risk in children; antiplatelet dose 75–150 mg/day.' },
-  { drug: 'metformin', maxDailyMg: 2550, note: 'Max 2.55 g/day adult; lactic acidosis risk if renal impairment.' },
+  {
+    drug: 'paracetamol', maxDailyMg: 4000, maxPerDoseMg: 1000, maxMgPerKgDay: 75,
+    ageBands: [
+      { minAgeYears: 0, maxAgeYears: 12, maxMgPerKgDay: 60, maxPerDoseMg: 500, note: 'Pediatric: 15 mg/kg/dose, max 60 mg/kg/day.' },
+      { minAgeYears: 65, maxAgeYears: null, maxDailyMg: 3000, note: 'Elderly / low body weight: cap at 3 g/day.' },
+    ],
+    note: 'Hepatotoxicity risk above 4g/day adult / 75 mg/kg/day pediatric.',
+  },
+  {
+    drug: 'acetaminophen', maxDailyMg: 4000, maxPerDoseMg: 1000, maxMgPerKgDay: 75,
+    ageBands: [
+      { minAgeYears: 0, maxAgeYears: 12, maxMgPerKgDay: 60, maxPerDoseMg: 500 },
+      { minAgeYears: 65, maxAgeYears: null, maxDailyMg: 3000, note: 'Elderly: cap at 3 g/day.' },
+    ],
+    note: 'Hepatotoxicity risk above 4g/day adult.',
+  },
+  {
+    drug: 'ibuprofen', maxDailyMg: 2400, maxPerDoseMg: 800, maxMgPerKgDay: 40,
+    ageBands: [
+      { minAgeYears: 0, maxAgeYears: 12, maxMgPerKgDay: 30, maxPerDoseMg: 400, note: 'Pediatric: 10 mg/kg/dose q6-8h, max 30 mg/kg/day.' },
+    ],
+    note: 'GI/renal risk; cap at 2.4g/day adult, 40 mg/kg/day pediatric.',
+  },
+  { drug: 'aspirin', maxDailyMg: 4000, minAgeYearsAllowed: 16, note: 'Reye syndrome risk under 16y; antiplatelet dose 75–150 mg/day.' },
+  { drug: 'diclofenac', maxDailyMg: 150, maxPerDoseMg: 75, maxMgPerKgDay: 3, note: 'GI/CV risk; max 150 mg/day adult, 3 mg/kg/day pediatric.' },
+  { drug: 'naproxen', maxDailyMg: 1000, maxPerDoseMg: 500, note: 'Max 1 g/day maintenance; GI/renal risk.' },
+  { drug: 'metformin', maxDailyMg: 2550, maxPerDoseMg: 1000, note: 'Max 2.55 g/day adult; lactic acidosis risk if renal impairment.' },
+  { drug: 'glimepiride', maxDailyMg: 8, note: 'Max 8 mg/day; hypoglycemia risk in elderly/renal impairment.' },
   { drug: 'warfarin', maxPerDoseMg: 15, note: 'Use INR-guided dosing; rarely > 10 mg/day.' },
-  { drug: 'morphine', maxPerDoseMg: 30, note: 'Respiratory depression; opioid-naive patients start ≤ 5 mg.' },
-  { drug: 'tramadol', maxDailyMg: 400, note: 'Seizure risk above 400 mg/day.' },
+  {
+    drug: 'morphine', maxPerDoseMg: 30,
+    ageBands: [{ minAgeYears: 65, maxAgeYears: null, maxPerDoseMg: 15, note: 'Elderly: start at half adult dose.' }],
+    note: 'Respiratory depression; opioid-naive patients start ≤ 5 mg.',
+  },
+  {
+    drug: 'tramadol', maxDailyMg: 400, minAgeYearsAllowed: 12,
+    ageBands: [{ minAgeYears: 75, maxAgeYears: null, maxDailyMg: 300, note: 'Over 75y: cap at 300 mg/day.' }],
+    note: 'Seizure risk above 400 mg/day; contraindicated under 12y.',
+  },
+  { drug: 'codeine', maxDailyMg: 240, minAgeYearsAllowed: 12, note: 'Respiratory depression in ultra-rapid CYP2D6 metabolizers; contraindicated under 12y.' },
   { drug: 'amoxicillin', maxDailyMg: 4000, maxMgPerKgDay: 90, note: 'High-dose for resistant infection; otherwise 1.5g/day adult.' },
-  { drug: 'amitriptyline', maxDailyMg: 300, note: 'Cardiotoxicity in OD; elderly start low.' },
+  { drug: 'azithromycin', maxDailyMg: 500, maxMgPerKgDay: 12, note: 'Typical 500 mg OD; QT prolongation risk.' },
+  { drug: 'ciprofloxacin', maxDailyMg: 1500, maxPerDoseMg: 750, minAgeYearsAllowed: 18, note: 'Fluoroquinolone — tendinopathy; avoid in children unless no alternative.' },
+  { drug: 'levofloxacin', maxDailyMg: 750, minAgeYearsAllowed: 18, note: 'Fluoroquinolone — QT + tendinopathy risk.' },
+  { drug: 'ceftriaxone', maxDailyMg: 4000, maxMgPerKgDay: 100, note: 'Max 4 g/day adult, 100 mg/kg/day pediatric.' },
+  { drug: 'cefixime', maxDailyMg: 400, maxMgPerKgDay: 8, note: 'Max 400 mg/day adult, 8 mg/kg/day pediatric.' },
+  {
+    drug: 'ondansetron', maxDailyMg: 24, maxPerDoseMg: 8,
+    note: 'QT prolongation above 16 mg single IV dose; max 24 mg/day oral.',
+  },
+  { drug: 'domperidone', maxDailyMg: 30, note: 'QT risk; max 10 mg TDS, lowest effective dose.' },
+  { drug: 'metoclopramide', maxDailyMg: 30, maxMgPerKgDay: 0.5, note: 'Extrapyramidal risk, esp. children; max 0.5 mg/kg/day.' },
+  { drug: 'pantoprazole', maxDailyMg: 80, note: 'Max 80 mg/day; review long-term use.' },
+  { drug: 'omeprazole', maxDailyMg: 80, note: 'Max 80 mg/day; CYP2C19 interactions (clopidogrel).' },
+  { drug: 'amlodipine', maxDailyMg: 10, note: 'Max 10 mg/day; pedal edema dose-related.' },
+  { drug: 'atenolol', maxDailyMg: 100, note: 'Max 100 mg/day; renally cleared — reduce in CKD.' },
+  { drug: 'metoprolol', maxDailyMg: 400, note: 'Max 400 mg/day immediate-release.' },
+  { drug: 'atorvastatin', maxDailyMg: 80, note: 'Max 80 mg/day; myopathy risk with CYP3A4 inhibitors.' },
+  { drug: 'rosuvastatin', maxDailyMg: 40, note: 'Max 40 mg/day; start 5 mg in Asian patients.' },
+  { drug: 'gabapentin', maxDailyMg: 3600, note: 'Max 3.6 g/day; reduce in renal impairment.' },
+  { drug: 'pregabalin', maxDailyMg: 600, note: 'Max 600 mg/day; sedation, dependence potential.' },
+  {
+    drug: 'cetirizine', maxDailyMg: 10,
+    ageBands: [{ minAgeYears: 2, maxAgeYears: 6, maxDailyMg: 5, note: '2–6y: max 5 mg/day.' }],
+    note: 'Max 10 mg/day adult.',
+  },
+  {
+    drug: 'amitriptyline', maxDailyMg: 300,
+    ageBands: [{ minAgeYears: 65, maxAgeYears: null, maxDailyMg: 75, note: 'Elderly: anticholinergic burden — keep ≤ 75 mg/day.' }],
+    note: 'Cardiotoxicity in OD; elderly start low.',
+  },
   { drug: 'sertraline', maxDailyMg: 200, note: 'Max 200 mg/day; titrate from 50.' },
+  {
+    drug: 'diazepam', maxDailyMg: 40, maxPerDoseMg: 10,
+    ageBands: [{ minAgeYears: 65, maxAgeYears: null, maxDailyMg: 10, maxPerDoseMg: 5, note: 'Elderly: falls/sedation — halve doses.' }],
+    note: 'Sedation, dependence; avoid with opioids.',
+  },
+  {
+    drug: 'digoxin', maxDailyMg: 0.25,
+    ageBands: [{ minAgeYears: 65, maxAgeYears: null, maxDailyMg: 0.125, note: 'Elderly: 0.125 mg/day; narrow therapeutic index.' }],
+    note: 'Narrow therapeutic index; monitor levels + potassium.',
+  },
+  { drug: 'albendazole', maxDailyMg: 400, note: 'Single 400 mg dose for routine deworming.' },
 ];
+
+/**
+ * Resolve the effective caps for a patient's age. Age bands override the
+ * adult defaults field-by-field; null age returns the defaults unchanged.
+ */
+export function resolveDosageLimit(
+  limit: DosageLimit,
+  ageYears: number | null,
+): Pick<DosageLimit, 'maxDailyMg' | 'maxPerDoseMg' | 'maxMgPerKgDay'> & { note: string } {
+  const base = {
+    maxDailyMg: limit.maxDailyMg,
+    maxPerDoseMg: limit.maxPerDoseMg,
+    maxMgPerKgDay: limit.maxMgPerKgDay,
+    note: limit.note,
+  };
+  if (ageYears === null || !limit.ageBands) return base;
+  const band = limit.ageBands.find(
+    (b) => ageYears >= b.minAgeYears && (b.maxAgeYears === null || ageYears < b.maxAgeYears),
+  );
+  if (!band) return base;
+  return {
+    maxDailyMg: band.maxDailyMg ?? base.maxDailyMg,
+    maxPerDoseMg: band.maxPerDoseMg ?? base.maxPerDoseMg,
+    maxMgPerKgDay: band.maxMgPerKgDay ?? base.maxMgPerKgDay,
+    note: band.note ? `${base.note} ${band.note}` : base.note,
+  };
+}
 
 /**
  * Extract milligrams from a free-text dosage string.
