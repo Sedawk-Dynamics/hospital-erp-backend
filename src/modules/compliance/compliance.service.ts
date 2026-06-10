@@ -22,6 +22,7 @@ import type {
   UpdateOtRequestInput,
   CreateOtInput,
   UpdateOtInput,
+  UpdateOtSettingsInput,
   ReportIncidentInput,
   UpdateIncidentInput,
   InvestigateIncidentInput,
@@ -1099,6 +1100,37 @@ export async function deleteOperatingTheater(tenantId: string, id: string) {
     throw AppError.badRequest('Cannot delete theater while active OT requests reference it');
   }
   await prisma.operatingTheater.delete({ where: { id } });
+}
+
+// ============================================================
+// OT scheduling preferences (one row per tenant)
+// ============================================================
+
+const OT_SETTINGS_DEFAULTS = {
+  defaultDurationMinutes: 60,
+  bufferMinutes: 30,
+  maxSurgeriesPerDay: 10,
+  dayStartTime: null as string | null,
+  dayEndTime: null as string | null,
+};
+
+export async function getOtSchedulingSettings(tenantId: string) {
+  const settings = await prisma.otSchedulingSetting.findUnique({ where: { tenantId } });
+  // No row yet — return the defaults without creating one.
+  return settings ?? { tenantId, ...OT_SETTINGS_DEFAULTS };
+}
+
+export async function updateOtSchedulingSettings(
+  tenantId: string,
+  data: UpdateOtSettingsInput,
+) {
+  const settings = await prisma.otSchedulingSetting.upsert({
+    where: { tenantId },
+    create: { tenantId, ...OT_SETTINGS_DEFAULTS, ...data },
+    update: data,
+  });
+  logger.info({ tenantId }, 'OT scheduling settings updated');
+  return settings;
 }
 
 // ============================================================

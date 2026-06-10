@@ -362,6 +362,18 @@ export type UpdateOtRequestInput = z.infer<typeof updateOtRequestSchema>['body']
 export type CreateOtInput = z.infer<typeof createOtSchema>['body'];
 export type UpdateOtInput = z.infer<typeof updateOtSchema>['body'];
 
+export const updateOtSettingsSchema = z.object({
+  body: z.object({
+    defaultDurationMinutes: z.number().int().min(5).max(1440).optional(),
+    bufferMinutes: z.number().int().min(0).max(240).optional(),
+    maxSurgeriesPerDay: z.number().int().min(1).max(100).optional(),
+    dayStartTime: z.string().regex(/^\d{2}:\d{2}$/, 'Use HH:mm').nullable().optional(),
+    dayEndTime: z.string().regex(/^\d{2}:\d{2}$/, 'Use HH:mm').nullable().optional(),
+  }),
+});
+
+export type UpdateOtSettingsInput = z.infer<typeof updateOtSettingsSchema>['body'];
+
 // ============================================================
 // Incidents
 // ============================================================

@@ -1285,6 +1285,7 @@ model Tenant {
   payroll                    Payroll[]
   notifications              Notification[]
   cdssAlerts                 CdssAlert[]
+  otSchedulingSetting        OtSchedulingSetting?
   messages                   Message[]
   shiftHandoverNotes         ShiftHandoverNote[]
   tickets                    Ticket[]
@@ -1796,6 +1797,24 @@ model OperatingTheater {
   otRequests OtRequest[]
 
   @@map("operating_theaters")
+}
+
+/// Per-tenant OT scheduling preferences (one row per hospital).
+model OtSchedulingSetting {
+  id                     String   @id @default(uuid())
+  tenantId               String   @unique @map("tenant_id")
+  defaultDurationMinutes Int      @default(60) @map("default_duration_minutes")
+  bufferMinutes          Int      @default(30) @map("buffer_minutes")
+  maxSurgeriesPerDay     Int      @default(10) @map("max_surgeries_per_day")
+  /// "HH:mm" — operating-day window used by the scheduler UI
+  dayStartTime           String?  @map("day_start_time") @db.VarChar(5)
+  dayEndTime             String?  @map("day_end_time") @db.VarChar(5)
+  createdAt              DateTime @default(now()) @map("created_at")
+  updatedAt              DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@map("ot_scheduling_settings")
 }
 
 model HospitalResource {

@@ -30,6 +30,7 @@ import {
   otAnalyticsQuerySchema,
   createOtSchema,
   updateOtSchema,
+  updateOtSettingsSchema,
   otIdParamSchema,
   reportIncidentSchema,
   getIncidentsQuerySchema,
@@ -77,6 +78,10 @@ complianceRoutes.get('/ot-requests/:id', authenticate, validate(otRequestIdParam
 complianceRoutes.patch('/ot-requests/:id', authenticate, validate(updateOtRequestSchema), controller.updateOTRequest);
 complianceRoutes.patch('/ot-requests/:id/approve', authenticate, validate(approveOtRequestSchema), controller.approveOTRequest);
 complianceRoutes.patch('/ot-requests/:id/schedule', authenticate, validate(scheduleOtSchema), controller.scheduleOT);
+
+// --- OT scheduling preferences (per tenant) ---
+complianceRoutes.get('/ot-settings', authenticate, controller.getOtSchedulingSettings);
+complianceRoutes.put('/ot-settings', authenticate, validate(updateOtSettingsSchema), controller.updateOtSchedulingSettings);
 
 // --- Operating Theaters (rooms) CRUD ---
 complianceRoutes.get('/operating-theaters', authenticate, controller.listOperatingTheaters);

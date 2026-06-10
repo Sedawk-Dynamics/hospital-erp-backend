@@ -331,6 +331,24 @@ export async function deleteOperatingTheater(req: AuthenticatedRequest, res: Res
   }
 }
 
+export async function getOtSchedulingSettings(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await complianceService.getOtSchedulingSettings(req.user!.tenantId);
+    sendResponse({ res, message: 'OT scheduling settings', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function updateOtSchedulingSettings(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await complianceService.updateOtSchedulingSettings(req.user!.tenantId, req.body);
+    sendResponse({ res, message: 'OT scheduling settings updated', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // ============================================================
 // Incidents
 // ============================================================
