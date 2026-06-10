@@ -25,6 +25,7 @@ import type {
   RecallDrugInput,
   GetRecalledItemsQuery,
   GetGstReportQuery,
+  GetStockLedgerQuery,
 } from './pharmacy.validation';
 
 // ============================================================
@@ -1988,6 +1989,129 @@ export async function processReturn(
 
   logger.info({ tenantId, returnId: id, status: 'rejected', processedBy: userId }, 'Drug return rejected');
   return updated;
+}
+
+// ============================================================
+// Stock ledger — batch-wise movement register
+// ============================================================
+// The register Indian pharmacies keep for drug-license inspections: every
+// inflow (batch receipt, approved return) and outflow (dispense / counter
+// sale) in the window, batch-wise, newest first, with window totals and the
+// live closing stock.
+
+export interface StockLedgerEntry {
+  date: Date;
+  movementType: 'receipt' | 'dispense' | 'patient_return' | 'vendor_return';
+  drugId: string;
+  drugName: string;
+  batchNumber: string;
+  quantityIn: number;
+  quantityOut: number;
+  party: string | null;
+  referenceId: string;
+}
+
+export async function getStockLedger(tenantId: string, query: GetStockLedgerQuery) {
+  const toDate = query.toDate ? new Date(query.toDate) : new Date();
+  const fromDate = query.fromDate
+    ? new Date(query.fromDate)
+    : (() => {
+        const d = new Date(toDate);
+        d.setDate(d.getDate() - 30);
+        return d;
+      })();
+  const page = query.page ?? 1;
+  const limit = query.limit ?? 50;
+
+  const window = { gte: fromDate, lte: toDate };
+  const batchDrugFilter = query.drugId ? { drugBatch: { drugId: query.drugId } } : {};
+
+  const [batches, dispenses, returns, stockAgg] = await Promise.all([
+    prisma.drugBatch.findMany({
+      where: { tenantId, createdAt: window, ...(query.drugId ? { drugId: query.drugId } : {}) },
+      include: {
+        drug: { select: { id: true, drugName: true } },
+        supplier: { select: { name: true } },
+      },
+    }),
+    prisma.dispensingRecord.findMany({
+      where: { tenantId, dispensedAt: window, ...batchDrugFilter },
+      include: {
+        drugBatch: { select: { batchNumber: true, drug: { select: { id: true, drugName: true } } } },
+        patient: { select: { firstName: true, lastName: true, mrn: true } },
+      },
+    }),
+    // DrugReturn has no processedAt; createdAt is close enough for a
+    // window-bounded register (returns are processed within days).
+    prisma.drugReturn.findMany({
+      where: { tenantId, status: 'processed', createdAt: window, ...batchDrugFilter },
+      include: {
+        drugBatch: { select: { batchNumber: true, drug: { select: { id: true, drugName: true } } } },
+        supplier: { select: { name: true } },
+      },
+    }),
+    prisma.drugBatch.aggregate({
+      where: { tenantId, isExpired: false, ...(query.drugId ? { drugId: query.drugId } : {}) },
+      _sum: { quantityInStock: true },
+    }),
+  ]);
+
+  const entries: StockLedgerEntry[] = [
+    ...batches.map((b): StockLedgerEntry => ({
+      date: b.createdAt,
+      movementType: 'receipt',
+      drugId: b.drug.id,
+      drugName: b.drug.drugName,
+      batchNumber: b.batchNumber,
+      quantityIn: b.quantityReceived,
+      quantityOut: 0,
+      party: b.supplier?.name ?? null,
+      referenceId: b.id,
+    })),
+    ...dispenses.map((d): StockLedgerEntry => ({
+      date: d.dispensedAt,
+      movementType: 'dispense',
+      drugId: d.drugBatch.drug.id,
+      drugName: d.drugBatch.drug.drugName,
+      batchNumber: d.drugBatch.batchNumber,
+      quantityIn: 0,
+      quantityOut: d.quantityDispensed,
+      party: d.patient ? `${d.patient.firstName} ${d.patient.lastName} (${d.patient.mrn})` : null,
+      referenceId: d.id,
+    })),
+    ...returns.map((r): StockLedgerEntry => ({
+      date: r.createdAt,
+      movementType: r.returnType === 'vendor_return' ? 'vendor_return' : 'patient_return',
+      drugId: r.drugBatch.drug.id,
+      drugName: r.drugBatch.drug.drugName,
+      batchNumber: r.drugBatch.batchNumber,
+      quantityIn: r.quantity,
+      quantityOut: 0,
+      party: r.supplier?.name ?? null,
+      referenceId: r.id,
+    })),
+  ].sort((a, b) => b.date.getTime() - a.date.getTime());
+
+  const totalIn = entries.reduce((s, e) => s + e.quantityIn, 0);
+  const totalOut = entries.reduce((s, e) => s + e.quantityOut, 0);
+
+  return {
+    fromDate: fromDate.toISOString(),
+    toDate: toDate.toISOString(),
+    entries: entries.slice((page - 1) * limit, page * limit),
+    page,
+    limit,
+    total: entries.length,
+    summary: {
+      totalReceived: batches.reduce((s, b) => s + b.quantityReceived, 0),
+      totalDispensed: dispenses.reduce((s, d) => s + d.quantityDispensed, 0),
+      totalReturned: returns.reduce((s, r) => s + r.quantity, 0),
+      totalIn,
+      totalOut,
+      netChange: totalIn - totalOut,
+      closingStock: stockAgg._sum.quantityInStock ?? 0,
+    },
+  };
 }
 
 // ============================================================

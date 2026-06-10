@@ -383,6 +383,20 @@ export const getGstReportQuerySchema = z.object({
 });
 
 // ============================================================
+// Stock ledger (batch-wise movement register)
+// ============================================================
+
+export const getStockLedgerQuerySchema = z.object({
+  query: z.object({
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
+    drugId: z.string().uuid().optional(),
+    page: z.coerce.number().int().positive().optional(),
+    limit: z.coerce.number().int().positive().max(200).optional(),
+  }),
+});
+
+// ============================================================
 // Type exports
 // ============================================================
 
@@ -407,3 +421,4 @@ export type RecallBatchInput = z.infer<typeof recallBatchSchema>['body'];
 export type RecallDrugInput = z.infer<typeof recallDrugSchema>['body'];
 export type GetRecalledItemsQuery = z.infer<typeof getRecalledItemsQuerySchema>['query'];
 export type GetGstReportQuery = z.infer<typeof getGstReportQuerySchema>['query'];
+export type GetStockLedgerQuery = z.infer<typeof getStockLedgerQuerySchema>['query'];

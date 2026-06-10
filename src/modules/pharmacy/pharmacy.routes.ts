@@ -36,6 +36,7 @@ import {
   recallAffectedPatientsParamSchema,
   getRecalledItemsQuerySchema,
   getGstReportQuerySchema,
+  getStockLedgerQuerySchema,
 } from './pharmacy.validation';
 
 export const pharmacyRoutes = Router();
@@ -82,6 +83,9 @@ pharmacyRoutes.patch('/dispensing/:id/verify', authenticate, requirePermission('
 
 // --- Analytics (sales / expiry / stock usage / batch summary for the Reports page) ---
 pharmacyRoutes.get('/analytics', authenticate, requirePermission('pharmacy', 'read'), controller.getPharmacyAnalytics);
+
+// --- Stock ledger (batch-wise movement register: receipts / dispenses / returns) ---
+pharmacyRoutes.get('/stock-ledger', authenticate, requirePermission('pharmacy', 'read'), validate(getStockLedgerQuerySchema), controller.getStockLedger);
 
 // --- Returns ---
 pharmacyRoutes.post('/returns', authenticate, requirePermission('pharmacy', 'create'), validate(createReturnSchema), controller.createReturn);

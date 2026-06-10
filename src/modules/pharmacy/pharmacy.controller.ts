@@ -553,6 +553,20 @@ export async function processReturn(
   }
 }
 
+export async function getStockLedger(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await pharmacyService.getStockLedger(tenantId, req.query as any);
+    sendResponse({ res, message: 'Stock ledger retrieved successfully', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getPharmacyAnalytics(
   req: AuthenticatedRequest,
   res: Response,
