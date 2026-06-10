@@ -29,12 +29,19 @@ export interface CdssWarning {
   pair?: [string, string];
   message: string;
   detail?: string;
+  /**
+   * Whether a doctor may override this blocker with a documented reason.
+   * Interaction contraindications are overridable (clinical judgement);
+   * severe allergies and recalled drugs are never overridable.
+   */
+  overridable?: boolean;
 }
 
 export async function validatePrescription(
   tenantId: string,
+  userId: string,
   data: ValidatePrescriptionInput,
-): Promise<{ warnings: CdssWarning[]; blockers: CdssWarning[] }> {
+): Promise<{ warnings: CdssWarning[]; blockers: CdssWarning[]; overridden: CdssWarning[] }> {
   const patient = await prisma.patient.findFirst({
     where: { id: data.patientId, tenantId },
     include: { allergies: true },
@@ -147,6 +154,7 @@ export async function validatePrescription(
           kind: 'interaction',
           pair: pair.drugs,
           message: `${pair.drugs[0]} + ${pair.drugs[1]}: ${pair.description}`,
+          overridable: pair.severity === 'contraindicated',
         };
         if (pair.severity === 'contraindicated') blockers.push(alert);
         else warnings.push(alert);
@@ -239,7 +247,57 @@ export async function validatePrescription(
     }
   }
 
-  return { warnings, blockers };
+  // ── Override + persistence ────────────────────────────
+  // With a documented reason, overridable blockers (interaction
+  // contraindications) are cleared; severe allergies and recalls stay.
+  let overridden: CdssWarning[] = [];
+  let remainingBlockers = blockers;
+  if (data.overrideReason) {
+    overridden = blockers.filter((b) => b.overridable);
+    remainingBlockers = blockers.filter((b) => !b.overridable);
+  }
+
+  // Sign-time persistence: store major+ findings for the review dashboard.
+  if (data.persist) {
+    const toAlertType = (kind: CdssWarning['kind']) =>
+      kind === 'interaction' ? 'drug_interaction' : kind;
+    const rows = [
+      ...warnings.filter((w) => w.severity === 'major' || w.severity === 'contraindicated')
+        .map((w) => ({ w, status: 'active' as const })),
+      ...remainingBlockers.map((w) => ({ w, status: 'active' as const })),
+      ...overridden.map((w) => ({ w, status: 'overridden' as const })),
+    ];
+    for (const { w, status } of rows) {
+      try {
+        await prisma.cdssAlert.create({
+          data: {
+            tenantId,
+            patientId: data.patientId,
+            alertType: toAlertType(w.kind),
+            severity: w.severity,
+            message: w.message,
+            detail: w.detail ?? null,
+            drugName: w.drug ?? w.pair?.join(' + ') ?? null,
+            referenceType: 'prescription',
+            referenceId: data.prescriptionId ?? null,
+            notifiedUserId: userId,
+            status,
+            ...(status === 'overridden'
+              ? {
+                  acknowledgedById: userId,
+                  acknowledgedAt: new Date(),
+                  overrideReason: data.overrideReason,
+                }
+              : {}),
+          },
+        });
+      } catch (err) {
+        logger.warn({ err }, 'CDSS prescription alert persistence failed');
+      }
+    }
+  }
+
+  return { warnings, blockers: remainingBlockers, overridden };
 }
 
 // ============================================================

@@ -13,6 +13,11 @@ export const validatePrescriptionSchema = z.object({
         }),
       )
       .min(1, 'At least one item required'),
+    /** Persist major+ findings as CdssAlert rows (sign-time call). */
+    persist: z.boolean().optional(),
+    prescriptionId: z.string().uuid().optional(),
+    /** Clinical justification to override overridable blockers (interactions). */
+    overrideReason: z.string().min(5).max(1000).optional(),
   }),
 });
 

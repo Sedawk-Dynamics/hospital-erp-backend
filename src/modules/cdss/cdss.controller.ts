@@ -7,7 +7,7 @@ export async function validatePrescription(
   req: AuthenticatedRequest, res: Response, next: NextFunction,
 ) {
   try {
-    const data = await service.validatePrescription(req.user!.tenantId, req.body);
+    const data = await service.validatePrescription(req.user!.tenantId, req.user!.userId, req.body);
     sendResponse({ res, message: 'Prescription validated', data });
   } catch (err) { next(err); }
 }
