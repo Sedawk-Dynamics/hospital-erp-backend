@@ -22,6 +22,8 @@ import {
   updateBatchSchema,
   createDispenseSchema,
   createPharmacySaleSchema,
+  getPharmacySalesQuerySchema,
+  cancelSaleSchema,
   saleIdParamSchema,
   getDispenseQuerySchema,
   dispenseIdParamSchema,
@@ -71,6 +73,10 @@ pharmacyRoutes.put('/batches/:id', authenticate, requirePermission('pharmacy', '
 
 // --- Counter billing (POS sale: partial / loose / walk-in, one invoice) ---
 pharmacyRoutes.post('/sales', authenticate, requirePermission('pharmacy', 'create'), validate(createPharmacySaleSchema), controller.createPharmacySale);
+// List counter-sale invoices (+ period summary) for the Transactions page.
+pharmacyRoutes.get('/sales', authenticate, requirePermission('pharmacy', 'read'), validate(getPharmacySalesQuerySchema), controller.getPharmacySales);
+// Void a counter sale: restore stock + reverse payment (pharmacy_admin only).
+pharmacyRoutes.patch('/sales/:id/cancel', authenticate, requirePermission('pharmacy', 'approve'), validate(cancelSaleSchema), controller.cancelPharmacySale);
 pharmacyRoutes.get('/sales/:id', authenticate, requirePermission('pharmacy', 'read'), validate(saleIdParamSchema), controller.getPharmacySale);
 
 // --- Dispensing ---

@@ -395,6 +395,55 @@ export async function getPharmacySale(
   }
 }
 
+export async function getPharmacySales(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const { bills, total, page, limit, summary } = await pharmacyService.getPharmacySales(
+      tenantId,
+      req.query as any,
+    );
+    // Pagination meta + a period summary the Transactions page renders as cards.
+    sendResponse({
+      res,
+      message: 'Pharmacy sales retrieved',
+      data: bills,
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+        summary,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function cancelPharmacySale(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const sale = await pharmacyService.cancelPharmacySale(
+      tenantId,
+      userId,
+      req.params.id as string,
+      req.body,
+    );
+    sendResponse({ res, message: 'Pharmacy bill cancelled successfully', data: sale });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getDispenseRecords(
   req: AuthenticatedRequest,
   res: Response,
