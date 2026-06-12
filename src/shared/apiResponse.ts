@@ -13,7 +13,9 @@ interface ApiResponseOptions<T> {
   success?: boolean;
   message?: string;
   data?: T;
-  meta?: PaginationMeta;
+  // `summary` is an optional, endpoint-specific roll-up (e.g. the pharmacy
+  // Transactions page's period totals) carried alongside pagination.
+  meta?: PaginationMeta & { summary?: unknown };
 }
 
 export function sendResponse<T>({

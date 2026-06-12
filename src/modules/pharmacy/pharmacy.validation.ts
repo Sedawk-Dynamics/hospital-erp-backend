@@ -251,6 +251,25 @@ export const saleIdParamSchema = z.object({
   }),
 });
 
+// List of pharmacy counter-sale bills (PH- invoices) for the Transactions page.
+export const getPharmacySalesQuerySchema = z.object({
+  query: paginationSchema.extend({
+    status: z.enum(['paid', 'partially_paid', 'pending', 'cancelled']).optional(),
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
+  }),
+});
+
+// Void a pharmacy counter sale — restores stock, reverses the counter payment.
+export const cancelSaleSchema = z.object({
+  body: z.object({
+    reason: z.string().min(1, 'Cancellation reason is required').max(500),
+  }),
+  params: z.object({
+    id: z.string().uuid('Invalid bill ID'),
+  }),
+});
+
 export const dispenseIdParamSchema = z.object({
   params: z.object({
     id: z.string().uuid('Invalid dispensing record ID'),
@@ -413,6 +432,8 @@ export type GetBatchesQuery = z.infer<typeof getBatchesQuerySchema>['query'];
 export type GetExpiringBatchesQuery = z.infer<typeof getExpiringBatchesQuerySchema>['query'];
 export type CreateDispenseInput = z.infer<typeof createDispenseSchema>['body'];
 export type CreatePharmacySaleInput = z.infer<typeof createPharmacySaleSchema>['body'];
+export type GetPharmacySalesQuery = z.infer<typeof getPharmacySalesQuerySchema>['query'];
+export type CancelSaleInput = z.infer<typeof cancelSaleSchema>['body'];
 export type GetDispenseQuery = z.infer<typeof getDispenseQuerySchema>['query'];
 export type CreateReturnInput = z.infer<typeof createReturnSchema>['body'];
 export type GetReturnsQuery = z.infer<typeof getReturnsQuerySchema>['query'];

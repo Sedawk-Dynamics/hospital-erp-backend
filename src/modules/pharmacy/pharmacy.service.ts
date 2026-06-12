@@ -17,6 +17,8 @@ import type {
   GetExpiringBatchesQuery,
   CreateDispenseInput,
   CreatePharmacySaleInput,
+  GetPharmacySalesQuery,
+  CancelSaleInput,
   GetDispenseQuery,
   CreateReturnInput,
   GetReturnsQuery,
@@ -1459,6 +1461,141 @@ export async function getPharmacySale(tenantId: string, billId: string) {
   });
 
   return { bill, hospital: tenant };
+}
+
+// Paginated list of pharmacy counter-sale bills (PH- invoices) for the
+// Transactions page, plus a period summary (sales total / paid / cancelled).
+export async function getPharmacySales(tenantId: string, query: GetPharmacySalesQuery) {
+  const { skip, take, page, limit } = getPaginationParams(query);
+
+  // Base filter: this tenant's pharmacy invoices in the date / search window.
+  // Status is applied to the LIST only, so the summary cards stay stable as the
+  // user flips between the Sales / Cancelled tabs.
+  const baseWhere: any = { tenantId, billNumber: { startsWith: 'PH-' } };
+  if (query.fromDate) baseWhere.billDate = { ...baseWhere.billDate, gte: new Date(query.fromDate) };
+  if (query.toDate) baseWhere.billDate = { ...baseWhere.billDate, lte: new Date(query.toDate) };
+  if (query.search) {
+    baseWhere.OR = [
+      { billNumber: { contains: query.search, mode: 'insensitive' } },
+      { patient: { firstName: { contains: query.search, mode: 'insensitive' } } },
+      { patient: { lastName: { contains: query.search, mode: 'insensitive' } } },
+      { patient: { mrn: { contains: query.search, mode: 'insensitive' } } },
+    ];
+  }
+
+  const listWhere: any = { ...baseWhere };
+  if (query.status) listWhere.status = query.status;
+
+  const [bills, total, salesAgg, cancelledCount, grandTotal] = await Promise.all([
+    prisma.bill.findMany({
+      where: listWhere,
+      skip,
+      take,
+      include: {
+        patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+        generator: { select: { id: true, firstName: true, lastName: true } },
+        _count: { select: { billItems: true } },
+      },
+      orderBy: { billDate: query.sortOrder || 'desc' },
+    }),
+    prisma.bill.count({ where: listWhere }),
+    prisma.bill.aggregate({
+      where: { ...baseWhere, status: { not: 'cancelled' } },
+      _sum: { totalAmount: true, amountPaid: true },
+      _count: true,
+    }),
+    prisma.bill.count({ where: { ...baseWhere, status: 'cancelled' } }),
+    prisma.bill.count({ where: baseWhere }),
+  ]);
+
+  const summary = {
+    totalBills: grandTotal,
+    salesCount: salesAgg._count,
+    totalAmount: Number(salesAgg._sum.totalAmount ?? 0),
+    totalPaid: Number(salesAgg._sum.amountPaid ?? 0),
+    cancelledCount,
+  };
+
+  return { bills, total, page, limit, summary };
+}
+
+// Void a pharmacy counter sale: restore the dispensed stock, drop the dispense
+// + bill-item lines (so reports / cash-counter totals exclude the void), reverse
+// the counter payment, and revert the linked prescription's queue status. The
+// Bill row is kept as the cancelled audit record.
+export async function cancelPharmacySale(
+  tenantId: string,
+  userId: string,
+  billId: string,
+  data: CancelSaleInput,
+) {
+  const bill = await prisma.bill.findFirst({
+    where: { id: billId, tenantId, billNumber: { startsWith: 'PH-' } },
+    select: { id: true, status: true },
+  });
+  if (!bill) throw AppError.notFound('Pharmacy bill not found');
+  if (bill.status === 'cancelled') throw AppError.badRequest('Bill is already cancelled');
+
+  // Returns recorded against this sale already adjusted stock / refunds — a void
+  // on top would double-count, so block it.
+  const returnCount = await prisma.drugReturn.count({ where: { billId } });
+  if (returnCount > 0) {
+    throw AppError.badRequest(
+      'This bill has returns recorded against it. Reverse the returns before cancelling.',
+    );
+  }
+
+  const records = await prisma.dispensingRecord.findMany({
+    where: { billId, tenantId },
+    select: { id: true, drugBatchId: true, quantityDispensed: true, prescriptionId: true },
+  });
+  const rxIds = [...new Set(records.map((r) => r.prescriptionId).filter((v): v is string => !!v))];
+
+  await prisma.$transaction(async (tx) => {
+    // 1. Put the dispensed units back into their batches.
+    for (const rec of records) {
+      await tx.drugBatch.update({
+        where: { id: rec.drugBatchId },
+        data: { quantityInStock: { increment: rec.quantityDispensed } },
+      });
+    }
+    // 2. Drop the sale lines (keep the Bill as the cancelled record).
+    await tx.dispensingRecord.deleteMany({ where: { billId } });
+    await tx.billItem.deleteMany({ where: { billId } });
+    // 3. Reverse the counter payment (cash handed back).
+    await tx.payment.updateMany({
+      where: { billId, status: 'completed' },
+      data: { status: 'reversed' },
+    });
+    // 4. Mark the bill cancelled.
+    await tx.bill.update({
+      where: { id: billId },
+      data: {
+        status: 'cancelled',
+        cancelledBy: userId,
+        cancellationReason: data.reason,
+        amountPaid: 0,
+        balanceDue: 0,
+      },
+    });
+    // 5. Revert any Rx-linked prescription back toward active.
+    for (const rxId of rxIds) {
+      await recomputePrescriptionStatus(tx as any, rxId);
+    }
+  });
+
+  void safePharmacyAudit({
+    tenantId,
+    userId,
+    action: 'delete',
+    entityType: 'pharmacy_sale',
+    entityId: billId,
+    description: `Counter sale cancelled — ${data.reason}`,
+    newValues: { reason: data.reason, restoredLines: records.length },
+  });
+
+  logger.info({ tenantId, billId, lines: records.length }, 'Pharmacy counter sale cancelled');
+  return getPharmacySale(tenantId, billId);
 }
 
 export async function getDispenseRecords(tenantId: string, query: GetDispenseQuery) {
