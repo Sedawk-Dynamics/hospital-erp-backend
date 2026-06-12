@@ -45,6 +45,17 @@ function assertPharmacyAdmin(roles: string[], action = 'manage pharmacy master d
   }
 }
 
+// A batch counts as expired if explicitly flagged OR its expiry date has
+// already passed. The live date check means a freshly-expired batch is blocked
+// from dispensing/sale even before the maintenance sweep flips `isExpired`
+// (matches flagExpiredBatches' "expiryDate < start-of-today" semantics).
+function isBatchExpired(batch: { isExpired: boolean; expiryDate: Date | string }): boolean {
+  if (batch.isExpired) return true;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return new Date(batch.expiryDate) < today;
+}
+
 // ============================================================
 // Drug Categories
 // ============================================================
@@ -1017,7 +1028,7 @@ export async function createDispense(tenantId: string, userId: string, data: Cre
     throw AppError.notFound('Drug batch not found');
   }
 
-  if (drugBatch.isExpired) {
+  if (isBatchExpired(drugBatch)) {
     throw AppError.badRequest('Cannot dispense from an expired batch');
   }
 
@@ -1251,7 +1262,7 @@ export async function createPharmacySale(
         },
       });
       if (!batch) throw AppError.notFound(`Drug batch ${item.drugBatchId} not found`);
-      if (batch.isExpired) throw AppError.badRequest('Cannot sell from an expired batch');
+      if (isBatchExpired(batch)) throw AppError.badRequest('Cannot sell from an expired batch');
       if (batch.isRecalled) throw AppError.badRequest('Cannot sell from a recalled batch');
 
       const packSize = batch.drug?.packSize && batch.drug.packSize > 0 ? batch.drug.packSize : 1;
