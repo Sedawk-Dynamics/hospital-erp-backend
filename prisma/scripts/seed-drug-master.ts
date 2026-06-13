@@ -77,6 +77,7 @@ async function main() {
         type: d.type,
         dosageForm: d.dosageForm as any,
         packSizeLabel: d.packSizeLabel,
+        packSize: d.packSize ?? undefined,
         mrp: d.mrp != null ? new Prisma.Decimal(d.mrp) : null,
         isDiscontinued: d.isDiscontinued,
         saltComposition: d.saltComposition,
