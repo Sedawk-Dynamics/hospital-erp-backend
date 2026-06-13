@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   parseFrequencyPerDay,
   parseDurationDays,
+  parseDoseMultiplier,
   calcDispenseQuantity,
 } from '../../../../src/modules/prescriptions/dosage-calc';
 
@@ -63,6 +64,25 @@ describe('dosage-calc', () => {
     });
   });
 
+  describe('parseDoseMultiplier', () => {
+    it('defaults to 1 for missing / blank / invalid input', () => {
+      expect(parseDoseMultiplier(undefined)).toBe(1);
+      expect(parseDoseMultiplier(null)).toBe(1);
+      expect(parseDoseMultiplier('')).toBe(1);
+      expect(parseDoseMultiplier('abc')).toBe(1);
+    });
+
+    it('defaults to 1 for zero / negative doses', () => {
+      expect(parseDoseMultiplier(0)).toBe(1);
+      expect(parseDoseMultiplier(-2)).toBe(1);
+    });
+
+    it('passes through positive numbers and numeric strings', () => {
+      expect(parseDoseMultiplier(2)).toBe(2);
+      expect(parseDoseMultiplier('1.5')).toBe(1.5);
+    });
+  });
+
   describe('calcDispenseQuantity', () => {
     it('computes the headline example: 1-1-1 for 3 days = 9', () => {
       expect(calcDispenseQuantity('1-1-1', '3 days')).toBe(9);
@@ -79,6 +99,26 @@ describe('dosage-calc', () => {
 
     it('works with the encoded frequency string from the UI', () => {
       expect(calcDispenseQuantity('1-1-1 - After Meal', '3 days')).toBe(9);
+    });
+
+    it('defaults the per-intake dose to 1', () => {
+      expect(calcDispenseQuantity('1-1-1', '3 days')).toBe(9);
+      expect(calcDispenseQuantity('1-1-1', '3 days', undefined)).toBe(9);
+    });
+
+    it('multiplies by the per-intake dose when supplied', () => {
+      expect(calcDispenseQuantity('1-1-1', '3 days', 2)).toBe(18); // 3 × 3 × 2
+      expect(calcDispenseQuantity('0-0-1', '5 days', 2)).toBe(10); // 1 × 5 × 2
+      expect(calcDispenseQuantity('1-0-1', '1 week', '2')).toBe(28); // 2 × 7 × 2
+    });
+
+    it('treats a zero / negative dose as the default 1', () => {
+      expect(calcDispenseQuantity('1-1-1', '3 days', 0)).toBe(9);
+      expect(calcDispenseQuantity('1-1-1', '3 days', -5)).toBe(9);
+    });
+
+    it('rounds up fractional per-intake doses', () => {
+      expect(calcDispenseQuantity('1-0-0', '3 days', 1.5)).toBe(5); // 1 × 3 × 1.5 = 4.5 → 5
     });
 
     it('returns null when it cannot be derived (PRN, no duration)', () => {

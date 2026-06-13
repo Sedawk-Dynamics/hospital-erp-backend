@@ -7,6 +7,11 @@
  * needs to finish the course — `(1+1+1) × 3 = 9 tablets` — which is exactly the
  * quantity the pharmacist must dispense and bill.
  *
+ * A per-intake **dose** multiplier scales this further: it is how many units the
+ * patient takes at each occasion (default `1`). So `1-1-1` for `3 days` with a
+ * dose of `2` is `(1+1+1) × 3 × 2 = 18 tablets`. The doctor leaves it at 1 for
+ * the common single-unit case and bumps it when an intake is more than one unit.
+ *
  * The same logic also runs on the frontend (`frontend/src/lib/dosage-calc.ts`);
  * keep the two in sync. We compute server-side as well so the stored
  * `PrescriptionItem.quantity` is always populated even for prescriptions created
@@ -91,8 +96,22 @@ export function parseDurationDays(duration?: string | null): number | null {
 }
 
 /**
+ * Normalise a per-intake dose multiplier. Anything missing, non-numeric, or
+ * ≤ 0 falls back to `1` (the default single-unit dose) so the calculation never
+ * collapses to zero or NaN when the field is left blank.
+ */
+export function parseDoseMultiplier(dose?: number | string | null): number {
+  if (dose === null || dose === undefined || dose === '') return 1;
+  const n = typeof dose === 'string' ? Number(dose) : dose;
+  if (!Number.isFinite(n) || n <= 0) return 1;
+  return n;
+}
+
+/**
  * Total units to dispense for a course, or `null` when it can't be derived
  * (PRN frequency, non-numeric pattern, or missing/zero duration).
+ *
+ * `dose` is the per-intake multiplier (default 1) — see the file header.
  *
  * Rounds *up* — a patient must have enough to finish the course, and you can't
  * dispense a fraction of a tablet.
@@ -100,10 +119,11 @@ export function parseDurationDays(duration?: string | null): number | null {
 export function calcDispenseQuantity(
   frequency?: string | null,
   duration?: string | null,
+  dose?: number | string | null,
 ): number | null {
   const perDay = parseFrequencyPerDay(frequency);
   const days = parseDurationDays(duration);
   if (perDay === null || days === null) return null;
-  const total = Math.ceil(perDay * days);
+  const total = Math.ceil(perDay * days * parseDoseMultiplier(dose));
   return total > 0 ? total : null;
 }
