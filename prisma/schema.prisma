@@ -3875,6 +3875,10 @@ model DrugMaster {
   dosageForm     DosageForm? @map("dosage_form")
   strength       String?     @db.VarChar(100)
   packSizeLabel  String?     @map("pack_size_label") @db.VarChar(255)
+  // Numeric base units per pack/strip (e.g. 10), resolved from the label. Copied
+  // straight into DrugFormulary.packSize on import so a strip sells as loose
+  // units. Null = indivisible container (bottle/vial/tube).
+  packSize       Int?        @map("pack_size")
   mrp            Decimal?    @db.Decimal(10, 2)
   isDiscontinued Boolean     @default(false) @map("is_discontinued")
   schedule       String?     @db.VarChar(10)
