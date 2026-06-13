@@ -2,7 +2,7 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
-import { parsePackSize, inferLooseUnitLabel } from '../drug-master/drug-master.dataset';
+import { resolvePackSize, inferLooseUnitLabel } from '../drug-master/drug-master.dataset';
 import { safePharmacyAudit } from './pharmacy.audit';
 import type {
   CreateCategoryInput,
@@ -250,10 +250,11 @@ export async function importFormularyItem(
   });
   if (existing) return { item: existing, status: 'already_imported' as const };
 
-  // Derive the numeric pack size (base units per strip/pack) + a loose-unit
-  // label from the catalog's free-text pack label so the drug is sellable as
-  // loose sub-units (e.g. 3 tablets out of a strip of 10) right after import.
-  const packSize = parsePackSize(master.packSizeLabel);
+  // Prefer the catalog's stored numeric pack size; fall back to resolving it
+  // from the free-text label (with a sensible strip default for solids) so the
+  // drug is sellable as loose sub-units (e.g. 3 tablets out of a strip of 10)
+  // right after import.
+  const packSize = master.packSize ?? resolvePackSize(master.dosageForm, master.packSizeLabel);
   const looseUnitLabel =
     packSize && packSize > 1 ? inferLooseUnitLabel(master.dosageForm, master.name) : null;
 
@@ -322,8 +323,9 @@ export async function importFormularyItemsBulk(
     await prisma.drugFormulary.createMany({
       data: toCreate.map((m) => {
         // Numeric pack size + loose-unit label so imported strips are sellable
-        // as loose sub-units straight away (see importFormularyItem).
-        const packSize = parsePackSize(m.packSizeLabel);
+        // as loose sub-units straight away (see importFormularyItem). Prefer the
+        // stored numeric size; fall back to resolving from the label.
+        const packSize = m.packSize ?? resolvePackSize(m.dosageForm, m.packSizeLabel);
         const looseUnitLabel =
           packSize && packSize > 1 ? inferLooseUnitLabel(m.dosageForm, m.name) : null;
         return {
@@ -409,6 +411,7 @@ export async function getTenantCatalog(tenantId: string, query: any) {
         dosageForm: true,
         strength: true,
         packSizeLabel: true,
+        packSize: true,
         mrp: true,
         schedule: true,
       },
