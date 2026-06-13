@@ -16,6 +16,7 @@
     "db:seed:lab-templates": "tsx prisma/seed-lab-test-templates.ts",
     "db:seed:drug-master": "tsx prisma/scripts/seed-drug-master.ts",
     "db:seed:pack-sizes": "tsx prisma/scripts/seed-pack-sizes.ts",
+    "db:seed:pack-prices": "tsx prisma/scripts/backfill-pack-prices.ts",
     "db:seed:form-templates": "tsx prisma/seed-form-templates.ts",
     "db:seed:nurse-roles": "tsx prisma/scripts/backfill-nurse-roles.ts",
     "db:seed:pharmacy-roles": "tsx prisma/scripts/backfill-pharmacy-roles.ts",
