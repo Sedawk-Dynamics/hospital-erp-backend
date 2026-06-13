@@ -1238,6 +1238,8 @@ export async function createPharmacySale(
       prescriptionItemId: string | null;
       saleUnit: 'pack' | 'loose';
       baseQty: number;
+      packSize: number;
+      looseUnit: string;
       unitPrice: number;
       discPct: number;
       discAmt: number;
@@ -1256,6 +1258,7 @@ export async function createPharmacySale(
               price: true,
               packSize: true,
               looseUnitLabel: true,
+              dosageForm: true,
               taxPercent: true,
             },
           },
@@ -1296,6 +1299,11 @@ export async function createPharmacySale(
         prescriptionItemId: item.prescriptionItemId ?? null,
         saleUnit,
         baseQty,
+        packSize,
+        looseUnit:
+          batch.drug?.looseUnitLabel?.trim() ||
+          inferLooseUnitLabel(batch.drug?.dosageForm, batch.drug?.drugName) ||
+          'unit',
         unitPrice,
         discPct,
         discAmt,
@@ -1373,10 +1381,19 @@ export async function createPharmacySale(
         data: { quantityInStock: { decrement: l.baseQty } },
       });
 
+      // Spell out what the count means on the invoice: loose lines bill the
+      // exact number of base units (e.g. "10 tablet, loose"); pack lines note
+      // how many packs of N were sold. `quantity` itself is always base units.
+      const unitDetail =
+        l.saleUnit === 'loose'
+          ? `${l.baseQty} ${l.looseUnit}, loose`
+          : l.packSize > 1
+            ? `${l.baseQty / l.packSize} pack of ${l.packSize} ${l.looseUnit}`
+            : `${l.baseQty} ${l.looseUnit}`;
       await tx.billItem.create({
         data: {
           billId: bill.id,
-          description: `${l.drugName} (Batch ${l.batchNumber})${l.saleUnit === 'loose' ? ' — loose' : ''}`,
+          description: `${l.drugName} (Batch ${l.batchNumber}) — ${unitDetail}`,
           category: 'pharmacy',
           quantity: l.baseQty,
           unitPrice: l.unitPrice,
