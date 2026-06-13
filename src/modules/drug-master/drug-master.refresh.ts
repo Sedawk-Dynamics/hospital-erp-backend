@@ -59,6 +59,7 @@ export async function refreshDrugMasterFromRows(parsed: ParsedDrug[]): Promise<R
       name: true,
       manufacturer: true,
       packSizeLabel: true,
+      packSize: true,
       mrp: true,
       isDiscontinued: true,
       genericName: true,
@@ -87,7 +88,9 @@ export async function refreshDrugMasterFromRows(parsed: ParsedDrug[]): Promise<R
       existing.isDiscontinued !== d.isDiscontinued ||
       (existing.genericName ?? null) !== d.genericName ||
       // Backfill rich detail onto rows that don't have it yet.
-      (existing.description == null && d.description != null);
+      (existing.description == null && d.description != null) ||
+      // Backfill the numeric pack size onto rows predating the column.
+      (existing.packSize == null && d.packSize != null);
     if (changed) updates.push({ id: existing.id, row: d });
     else unchanged += 1;
   }
@@ -99,6 +102,7 @@ export async function refreshDrugMasterFromRows(parsed: ParsedDrug[]): Promise<R
     type: d.type,
     dosageForm: d.dosageForm as any,
     packSizeLabel: d.packSizeLabel,
+    packSize: d.packSize ?? undefined,
     mrp: d.mrp ?? undefined,
     isDiscontinued: d.isDiscontinued,
     saltComposition: d.saltComposition,
@@ -129,6 +133,7 @@ export async function refreshDrugMasterFromRows(parsed: ParsedDrug[]): Promise<R
             searchTokens: u.row.searchTokens,
             type: u.row.type,
             dosageForm: u.row.dosageForm as any,
+            packSize: u.row.packSize ?? undefined,
             saltComposition: u.row.saltComposition,
             description: u.row.description,
             sideEffects: u.row.sideEffects,
