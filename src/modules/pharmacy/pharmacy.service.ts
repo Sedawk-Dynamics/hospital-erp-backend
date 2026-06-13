@@ -221,6 +221,24 @@ export async function createFormularyItem(
 }
 
 /**
+ * Convert a catalog MRP into the tenant's per-BASE-UNIT price. Catalog MRP is
+ * the price of the whole pack/strip (e.g. ₹30 for a strip of 10), but stock and
+ * billing are tracked per base unit, so a strip of 10 @ ₹30 is ₹3.00 / tablet.
+ * packSize ≤ 1 (or null) → the MRP already is the unit price. Hoisted function
+ * declaration so it's usable by the import paths above the `round2` const.
+ */
+function perBaseUnitPrice(
+  mrp: number | string | { toString(): string } | null | undefined,
+  packSize?: number | null,
+): number | undefined {
+  if (mrp == null) return undefined;
+  const m = Number(mrp);
+  if (!Number.isFinite(m)) return undefined;
+  const ps = packSize && packSize > 1 ? packSize : 1;
+  return Math.round((m / ps + Number.EPSILON) * 100) / 100;
+}
+
+/**
  * Import a drug from the platform-wide DrugMaster catalog into this tenant's
  * formulary (the "clone" step — mirrors lab template -> catalog cloning). If
  * the tenant already imported the same catalog entry, the existing formulary
@@ -273,9 +291,10 @@ export async function importFormularyItem(
       unitOfMeasurement: master.packSizeLabel?.slice(0, 20) ?? null,
       packSize: packSize ?? undefined,
       looseUnitLabel: looseUnitLabel ?? undefined,
-      // Default selling price from the catalog MRP; the hospital can override
-      // at import time or edit later.
-      price: data.price ?? master.mrp ?? undefined,
+      // Default selling price from the catalog MRP, converted to PER BASE UNIT
+      // (MRP ÷ packSize) so a strip-of-10 @ ₹30 stores ₹3/tablet. An explicit
+      // import price is taken as-is (already per unit). Hospital can edit later.
+      price: data.price ?? perBaseUnitPrice(master.mrp, packSize),
       isActive: true,
     },
     include: { category: { select: { id: true, name: true } } },
@@ -342,7 +361,8 @@ export async function importFormularyItemsBulk(
           unitOfMeasurement: m.packSizeLabel?.slice(0, 20) ?? null,
           packSize: packSize ?? undefined,
           looseUnitLabel: looseUnitLabel ?? undefined,
-          price: m.mrp ?? undefined,
+          // Per BASE UNIT (MRP ÷ packSize) — see importFormularyItem.
+          price: perBaseUnitPrice(m.mrp, packSize),
           isActive: true,
         };
       }),
