@@ -102,6 +102,33 @@ export function parsePackSize(label?: string | null): number | null {
   return null;
 }
 
+/** Forms that ship as a strip of countable, loosely-sellable pieces. */
+const COUNTABLE_SOLID_FORMS = new Set<string>(['tablet', 'capsule']);
+
+/** Typical Indian strip size — the fallback pack for a countable solid whose
+ *  free-text label doesn't state a number. */
+export const DEFAULT_SOLID_PACK_SIZE = 10;
+
+/**
+ * Resolve the numeric pack size to STORE on a drug. Prefers the count parsed
+ * from the free-text label (`parsePackSize`); when that can't be derived but the
+ * drug is a countable solid (tablet/capsule), falls back to a typical strip of
+ * {@link DEFAULT_SOLID_PACK_SIZE} so it is always sellable as loose units rather
+ * than collapsing to a single "pack". Liquids / injections / creams stay null —
+ * they're dispensed as one indivisible container.
+ */
+export function resolvePackSize(
+  dosageForm?: DosageForm | string | null,
+  packSizeLabel?: string | null,
+): number | null {
+  const parsed = parsePackSize(packSizeLabel);
+  if (parsed != null) return parsed;
+  if (COUNTABLE_SOLID_FORMS.has(String(dosageForm ?? '').toLowerCase())) {
+    return DEFAULT_SOLID_PACK_SIZE;
+  }
+  return null;
+}
+
 /**
  * Human label for a single sellable sub-unit broken out of a pack (shown on the
  * POS loose-sale control), inferred from the dosage form / brand name. Returns
@@ -179,6 +206,9 @@ export interface ParsedDrug {
   type: string | null;
   dosageForm: DosageForm | null;
   packSizeLabel: string | null;
+  // Numeric base units per pack/strip (e.g. 10), resolved from the label with a
+  // sensible fallback for countable solids. Null = indivisible container.
+  packSize: number | null;
   mrp: number | null;
   isDiscontinued: boolean;
   // Rich clinical detail (present in the richer dataset / provider feeds).
@@ -213,13 +243,15 @@ export function buildParsedDrug(input: {
   const genericName = input.genericName ?? null;
   const manufacturer = input.manufacturer ?? null;
   const pack = input.packSizeLabel ?? null;
+  const dosageForm = input.dosageForm ?? inferDosageForm(name, pack ?? '');
   return {
     name,
     genericName,
     manufacturer,
     type: input.type ?? null,
-    dosageForm: input.dosageForm ?? inferDosageForm(name, pack ?? ''),
+    dosageForm,
     packSizeLabel: pack,
+    packSize: resolvePackSize(dosageForm, pack),
     mrp: input.mrp ?? null,
     isDiscontinued: input.isDiscontinued ?? false,
     saltComposition: input.saltComposition ?? genericName,
@@ -277,13 +309,15 @@ export function parseDrugCsv(text: string): ParsedDrug[] {
       }
     }
 
+    const dosageForm = inferDosageForm(name, pack ?? '');
     out.push({
       name,
       genericName,
       manufacturer,
       type,
-      dosageForm: inferDosageForm(name, pack ?? ''),
+      dosageForm,
       packSizeLabel: pack,
+      packSize: resolvePackSize(dosageForm, pack),
       mrp,
       isDiscontinued,
       saltComposition: val(r, cSalt) || genericName,
