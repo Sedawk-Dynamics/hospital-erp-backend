@@ -169,6 +169,9 @@ export async function getConsultationFormData(tenantId: string, id: string) {
             duration: it.duration || '',
             route: it.route || 'oral',
             instructions: it.instructions || '',
+            // Per-intake dose multiplier — round-trips so the edit form shows
+            // what the doctor originally entered (default 1 for older rows).
+            doseQuantity: it.doseQuantity != null ? Number(it.doseQuantity) : 1,
             isPrn: isPrn || it.isPrn,
             quantity: it.quantity ?? undefined,
           };
