@@ -27,6 +27,7 @@ export const createPrescriptionSchema = z.object({
             .enum(['oral', 'iv', 'im', 'topical', 'sublingual', 'inhalation', 'other'])
             .default('oral'),
           instructions: z.string().max(1000).optional(),
+          doseQuantity: z.number().positive().max(9999).optional(),
           quantity: z.number().int().positive().optional(),
           isPrn: z.boolean().default(false),
         }),
@@ -47,6 +48,7 @@ const prescriptionItemReplaceSchema = z.object({
     .enum(['oral', 'iv', 'im', 'topical', 'sublingual', 'inhalation', 'other'])
     .default('oral'),
   instructions: z.string().max(1000).optional(),
+  doseQuantity: z.number().positive().max(9999).optional(),
   quantity: z.number().int().positive().optional(),
   isPrn: z.boolean().default(false),
 });
@@ -128,6 +130,7 @@ export const addPrescriptionItemSchema = z.object({
       .enum(['oral', 'iv', 'im', 'topical', 'sublingual', 'inhalation', 'other'])
       .default('oral'),
     instructions: z.string().max(1000).optional(),
+    doseQuantity: z.number().positive().max(9999).optional(),
     quantity: z.number().int().positive().optional(),
     isPrn: z.boolean().default(false),
   }),
@@ -148,6 +151,7 @@ export const updatePrescriptionItemSchema = z.object({
       .enum(['oral', 'iv', 'im', 'topical', 'sublingual', 'inhalation', 'other'])
       .optional(),
     instructions: z.string().max(1000).optional().nullable(),
+    doseQuantity: z.number().positive().max(9999).optional().nullable(),
     quantity: z.number().int().positive().optional().nullable(),
     isPrn: z.boolean().optional(),
   }),

@@ -31,15 +31,17 @@ import { calcDispenseQuantity } from './dosage-calc';
 /**
  * Resolve the quantity to store for a prescription item. The doctor may type an
  * explicit quantity; when they don't, derive it from the dose pattern + duration
- * (e.g. "1-1-1" for "3 days" → 9) so the pharmacy always has a billable count.
+ * × per-intake dose (e.g. "1-1-1" for "3 days" with dose 2 → 18) so the pharmacy
+ * always has a billable count.
  */
 function resolveItemQuantity(item: {
   quantity?: number | null;
   frequency?: string | null;
   duration?: string | null;
+  doseQuantity?: number | string | null;
 }): number | null {
   if (typeof item.quantity === 'number' && item.quantity > 0) return item.quantity;
-  return calcDispenseQuantity(item.frequency, item.duration);
+  return calcDispenseQuantity(item.frequency, item.duration, item.doseQuantity);
 }
 
 // ============================================================
@@ -99,6 +101,7 @@ export async function createPrescription(
                 duration: item.duration,
                 route: item.route,
                 instructions: item.instructions,
+                doseQuantity: item.doseQuantity ?? 1,
                 quantity: resolveItemQuantity(item),
                 isPrn: item.isPrn,
               })),
@@ -321,6 +324,7 @@ export async function updatePrescription(
             duration: it.duration ?? null,
             route: it.route as any,
             instructions: it.instructions ?? null,
+            doseQuantity: it.doseQuantity ?? 1,
             quantity: resolveItemQuantity(it),
             isPrn: it.isPrn ?? false,
           })),
@@ -453,6 +457,7 @@ export async function addPrescriptionItem(
       duration: data.duration,
       route: data.route,
       instructions: data.instructions,
+      doseQuantity: data.doseQuantity ?? 1,
       quantity: resolveItemQuantity(data),
       isPrn: data.isPrn,
     },
@@ -505,16 +510,22 @@ export async function updatePrescriptionItem(
   if (data.duration !== undefined) updateData.duration = data.duration;
   if (data.route !== undefined) updateData.route = data.route;
   if (data.instructions !== undefined) updateData.instructions = data.instructions;
+  if (data.doseQuantity !== undefined) updateData.doseQuantity = data.doseQuantity ?? 1;
   if (data.quantity !== undefined) updateData.quantity = data.quantity;
   if (data.isPrn !== undefined) updateData.isPrn = data.isPrn;
 
-  // When the dose pattern or duration is edited without an explicit quantity,
-  // re-derive the dispense count from the new effective values so it never
-  // goes stale (e.g. doctor bumps "3 days" → "5 days").
-  if (data.quantity === undefined && (data.frequency !== undefined || data.duration !== undefined)) {
+  // When the dose pattern, duration, or per-intake dose is edited without an
+  // explicit quantity, re-derive the dispense count from the new effective
+  // values so it never goes stale (e.g. doctor bumps "3 days" → "5 days", or
+  // the dose 1 → 2).
+  if (
+    data.quantity === undefined &&
+    (data.frequency !== undefined || data.duration !== undefined || data.doseQuantity !== undefined)
+  ) {
     const recalculated = calcDispenseQuantity(
       data.frequency ?? item.frequency,
       data.duration ?? item.duration,
+      data.doseQuantity ?? (item.doseQuantity != null ? Number(item.doseQuantity) : 1),
     );
     if (recalculated !== null) updateData.quantity = recalculated;
   }
