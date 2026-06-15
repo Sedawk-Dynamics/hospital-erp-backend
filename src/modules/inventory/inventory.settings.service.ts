@@ -59,11 +59,12 @@ export async function getInventorySettings(tenantId: string) {
  */
 export async function getInventorySettingsSafe(tenantId: string): Promise<InventorySettingsShape> {
   try {
-    return (await getInventorySettings(tenantId)) as InventorySettingsShape;
+    const settings = await getInventorySettings(tenantId);
+    if (settings) return settings as InventorySettingsShape;
   } catch (err) {
     logger.warn({ err, tenantId }, 'Falling back to default inventory settings');
-    return { id: 'default', tenantId, lastAlertRunAt: null, ...DEFAULTS };
   }
+  return { id: 'default', tenantId, lastAlertRunAt: null, ...DEFAULTS };
 }
 
 export async function updateInventorySettings(
