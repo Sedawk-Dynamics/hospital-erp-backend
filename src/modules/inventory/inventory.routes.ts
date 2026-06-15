@@ -59,6 +59,9 @@ inventoryRoutes.post('/items', authenticate, requirePermission('inventory', 'cre
 inventoryRoutes.get('/items', authenticate, requirePermission('inventory', 'read'), validate(getItemsQuerySchema), controller.getItems);
 inventoryRoutes.get('/items/low-stock', authenticate, requirePermission('inventory', 'read'), validate(getLowStockQuerySchema), controller.getLowStockItems);
 inventoryRoutes.get('/items/expiring', authenticate, requirePermission('inventory', 'read'), validate(getExpiringQuerySchema), controller.getExpiringInventory);
+// SOW-literal aliases: GET /inventory/low-stock and GET /inventory/expiring.
+inventoryRoutes.get('/low-stock', authenticate, requirePermission('inventory', 'read'), validate(getLowStockQuerySchema), controller.getLowStockItems);
+inventoryRoutes.get('/expiring', authenticate, requirePermission('inventory', 'read'), validate(getExpiringQuerySchema), controller.getExpiringInventory);
 inventoryRoutes.post('/items/flag-expired', authenticate, requirePermission('inventory', 'approve'), controller.flagExpiredInventory);
 inventoryRoutes.get('/items/:id', authenticate, requirePermission('inventory', 'read'), validate(idParamSchema), controller.getItemById);
 inventoryRoutes.put('/items/:id', authenticate, requirePermission('inventory', 'update'), validate(updateItemSchema), controller.updateItem);
