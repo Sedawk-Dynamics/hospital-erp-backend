@@ -67,7 +67,8 @@ export const createItemSchema = z.object({
     category: z.enum(['drug', 'consumable', 'surgical_supply', 'equipment', 'other']),
     description: z.string().max(2000).optional(),
     unitOfMeasurement: z.string().max(20).optional(),
-    minimumStockThreshold: z.number().int().min(0).default(10),
+    // Omitted → falls back to the tenant's configured default threshold.
+    minimumStockThreshold: z.number().int().min(0).optional(),
     currentStock: z.number().int().min(0).default(0),
     costPerUnit: z.number().min(0).optional(),
     sellingPricePerUnit: z.number().min(0).optional(),
@@ -276,6 +277,45 @@ export const fulfillSupplyRequestSchema = z.object({
   }),
 });
 
+export const cancelPurchaseOrderSchema = z.object({
+  body: z
+    .object({
+      reason: z.string().max(500).optional(),
+    })
+    .optional()
+    .default({}),
+  params: z.object({
+    id: z.string().uuid('Invalid purchase order ID'),
+  }),
+});
+
+// ============================================================
+// Inventory Settings (per-tenant module configuration)
+// ============================================================
+
+export const updateInventorySettingsSchema = z.object({
+  body: z.object({
+    defaultLowStockThreshold: z.number().int().min(0).max(100000).optional(),
+    expiryAlertMonths: z.number().int().min(1).max(36).optional(),
+    lowStockAlertEnabled: z.boolean().optional(),
+    expiryAlertEnabled: z.boolean().optional(),
+    autoFlagExpired: z.boolean().optional(),
+    preventExpiredUse: z.boolean().optional(),
+    reorderNotifyEnabled: z.boolean().optional(),
+    // Normalised role slugs (snake_case). Empty array = use built-in defaults.
+    alertRecipientRoles: z.array(z.string().max(50)).max(30).optional(),
+  }),
+});
+
+export const runInventoryAlertsSchema = z.object({
+  body: z
+    .object({
+      autoFlagExpired: z.boolean().optional(),
+    })
+    .optional()
+    .default({}),
+});
+
 // ============================================================
 // Exported types
 // ============================================================
@@ -301,3 +341,7 @@ export type CreateSupplyRequestInput = z.infer<typeof createSupplyRequestSchema>
 export type GetSupplyRequestsQuery = z.infer<typeof getSupplyRequestsQuerySchema>['query'];
 export type ApproveSupplyRequestInput = z.infer<typeof approveSupplyRequestSchema>['body'];
 export type FulfillSupplyRequestInput = z.infer<typeof fulfillSupplyRequestSchema>['body'];
+
+export type CancelPurchaseOrderInput = z.infer<typeof cancelPurchaseOrderSchema>['body'];
+export type UpdateInventorySettingsInput = z.infer<typeof updateInventorySettingsSchema>['body'];
+export type RunInventoryAlertsInput = z.infer<typeof runInventoryAlertsSchema>['body'];

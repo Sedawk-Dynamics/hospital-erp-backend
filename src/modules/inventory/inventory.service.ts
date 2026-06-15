@@ -4,6 +4,8 @@ import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
 import { safeInventoryAudit } from './inventory.audit';
+import { getInventorySettings, getInventorySettingsSafe } from './inventory.settings.service';
+import { notifyInventoryRecipients, hasOpenInventoryAlert } from './inventory.notify';
 import type {
   CreateSupplierInput,
   UpdateSupplierInput,
@@ -22,6 +24,8 @@ import type {
   ApproveSupplyRequestInput,
   FulfillSupplyRequestInput,
   GetExpiringQuery,
+  CancelPurchaseOrderInput,
+  RunInventoryAlertsInput,
 } from './inventory.validation';
 
 // ============================================================
@@ -203,6 +207,10 @@ export async function createItem(tenantId: string, data: CreateItemInput) {
     }
   }
 
+  // Fall back to the tenant's configured default threshold when none is given.
+  const settings = await getInventorySettingsSafe(tenantId);
+  const minimumStockThreshold = data.minimumStockThreshold ?? settings.defaultLowStockThreshold;
+
   const item = await prisma.inventoryItem.create({
     data: {
       tenantId,
@@ -211,7 +219,7 @@ export async function createItem(tenantId: string, data: CreateItemInput) {
       category: data.category as any,
       description: data.description,
       unitOfMeasurement: data.unitOfMeasurement,
-      minimumStockThreshold: data.minimumStockThreshold ?? 10,
+      minimumStockThreshold,
       currentStock: data.currentStock ?? 0,
       costPerUnit: data.costPerUnit,
       sellingPricePerUnit: data.sellingPricePerUnit,
@@ -528,6 +536,32 @@ export async function createStockTransaction(
     }
   }
 
+  const settings = await getInventorySettingsSafe(tenantId);
+
+  // Prevent use of expired stock: a stock-out naming a batch whose latest
+  // stock-in carries an expiry date in the past is blocked when the tenant
+  // has the guard enabled. Equipment / batchless items are unaffected.
+  if (settings.preventExpiredUse && data.transactionType === 'stock_out' && data.batchNumber) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const batchIn = await prisma.stockTransaction.findFirst({
+      where: {
+        tenantId,
+        inventoryItemId: data.inventoryItemId,
+        batchNumber: data.batchNumber,
+        transactionType: 'stock_in',
+        expiryDate: { not: null },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { expiryDate: true },
+    });
+    if (batchIn?.expiryDate && batchIn.expiryDate < today) {
+      throw AppError.badRequest(
+        `Batch ${data.batchNumber} expired on ${batchIn.expiryDate.toISOString().slice(0, 10)} and cannot be dispensed. Flag and remove it via expiry tracking.`,
+      );
+    }
+  }
+
   // Calculate new stock level
   let stockDelta: number;
   switch (data.transactionType) {
@@ -608,6 +642,25 @@ export async function createStockTransaction(
       departmentId: data.departmentId ?? null,
     },
   });
+
+  // Reorder alert: fire once when a stock-reducing movement drops the item to
+  // or below its threshold (i.e. it just crossed). Skip if it was already low.
+  if (
+    settings.lowStockAlertEnabled &&
+    settings.reorderNotifyEnabled &&
+    stockDelta < 0 &&
+    newStock <= item.minimumStockThreshold &&
+    item.currentStock > item.minimumStockThreshold
+  ) {
+    void notifyInventoryRecipients({
+      tenantId,
+      recipientRoles: settings.alertRecipientRoles,
+      title: 'Low stock — reorder needed',
+      message: `${item.itemName}${item.itemCode ? ` (${item.itemCode})` : ''} dropped to ${newStock} ${item.unitOfMeasurement ?? 'units'} (threshold ${item.minimumStockThreshold}). Raise a purchase order.`,
+      referenceType: 'inventory_low_stock',
+      referenceId: item.id,
+    });
+  }
 
   return result;
 }
@@ -1093,6 +1146,59 @@ export async function receivePurchaseOrder(
   return result;
 }
 
+export async function cancelPurchaseOrder(
+  tenantId: string,
+  id: string,
+  userId: string,
+  data: CancelPurchaseOrderInput,
+) {
+  const order = await prisma.purchaseOrder.findFirst({
+    where: { id, tenantId },
+  });
+
+  if (!order) {
+    throw AppError.notFound('Purchase order not found');
+  }
+
+  // Once goods start flowing in, cancellation is no longer safe — stock has
+  // already been received against the order.
+  if (!['draft', 'submitted', 'approved'].includes(order.status)) {
+    throw AppError.badRequest(`A ${order.status.replace('_', ' ')} purchase order cannot be cancelled`);
+  }
+
+  const reasonNote = data?.reason ? `Cancelled: ${data.reason}` : 'Cancelled';
+  const updated = await prisma.purchaseOrder.update({
+    where: { id },
+    data: {
+      status: 'cancelled',
+      notes: order.notes ? `${order.notes}\n${reasonNote}` : reasonNote,
+    },
+    include: {
+      supplier: { select: { id: true, name: true } },
+      items: {
+        include: {
+          inventoryItem: { select: { id: true, itemName: true, itemCode: true } },
+        },
+      },
+    },
+  });
+
+  logger.info({ tenantId, purchaseOrderId: id, userId }, 'Purchase order cancelled');
+
+  void safeInventoryAudit({
+    tenantId,
+    userId,
+    action: 'update',
+    entityType: 'purchase_order',
+    entityId: id,
+    description: `Purchase order ${order.orderNumber} cancelled${data?.reason ? ` — ${data.reason}` : ''}`,
+    oldValues: { status: order.status },
+    newValues: { status: 'cancelled' },
+  });
+
+  return updated;
+}
+
 // ============================================================
 // Supply Requests
 // ============================================================
@@ -1363,4 +1469,91 @@ export async function fulfillSupplyRequest(
     'Supply request fulfilled',
   );
   return result;
+}
+
+// ============================================================
+// Alert run — "alert inventory manager"
+// ============================================================
+
+/**
+ * Scan low-stock items and soon-to-expire batches and notify the configured
+ * recipient roles. Optionally auto-flags fully expired batches first. Used by
+ * the on-demand "Run alerts now" action and the daily scheduled job.
+ *
+ * Alerts are de-duplicated against existing unread notifications so repeated
+ * runs don't spam managers about the same item / batch.
+ */
+export async function runInventoryAlerts(
+  tenantId: string,
+  userId: string,
+  opts: RunInventoryAlertsInput = {},
+) {
+  const settings = await getInventorySettings(tenantId);
+
+  let expiredFlagged = 0;
+  let lowStockAlerts = 0;
+  let expiryAlerts = 0;
+
+  // 1. Optionally remove fully-expired batches before alerting.
+  if (opts?.autoFlagExpired ?? settings.autoFlagExpired) {
+    const flaggedResult = await flagExpiredInventory(tenantId, userId);
+    expiredFlagged = flaggedResult.flagged;
+  }
+
+  // 2. Low-stock / reorder alerts.
+  if (settings.lowStockAlertEnabled) {
+    const { items } = await getLowStockItems(tenantId, { page: 1, limit: 1000 });
+    for (const it of items as Array<{ id: string; item_name?: string; itemName?: string; item_code?: string; itemCode?: string; current_stock?: number; currentStock?: number; minimum_stock_threshold?: number; minimumStockThreshold?: number; unit_of_measurement?: string; unitOfMeasurement?: string }>) {
+      // getLowStockItems uses a raw query → snake_case columns; tolerate both.
+      const itemId = it.id;
+      const itemName = it.itemName ?? it.item_name ?? 'Item';
+      const itemCode = it.itemCode ?? it.item_code ?? null;
+      const current = it.currentStock ?? it.current_stock ?? 0;
+      const threshold = it.minimumStockThreshold ?? it.minimum_stock_threshold ?? 0;
+      const unit = it.unitOfMeasurement ?? it.unit_of_measurement ?? 'units';
+
+      if (await hasOpenInventoryAlert(tenantId, 'inventory_low_stock', itemId)) continue;
+
+      const sent = await notifyInventoryRecipients({
+        tenantId,
+        recipientRoles: settings.alertRecipientRoles,
+        title: 'Low stock — reorder needed',
+        message: `${itemName}${itemCode ? ` (${itemCode})` : ''} is at ${current} ${unit} (threshold ${threshold}). Raise a purchase order.`,
+        referenceType: 'inventory_low_stock',
+        referenceId: itemId,
+      });
+      if (sent > 0) lowStockAlerts += 1;
+    }
+  }
+
+  // 3. Expiry alerts within the configured look-ahead window.
+  if (settings.expiryAlertEnabled) {
+    const { items } = await getExpiringInventory(tenantId, { months: settings.expiryAlertMonths } as GetExpiringQuery);
+    for (const row of items) {
+      if (await hasOpenInventoryAlert(tenantId, 'inventory_expiry', row.transactionId)) continue;
+
+      const expiry = row.expiryDate ? new Date(row.expiryDate).toISOString().slice(0, 10) : 'soon';
+      const sent = await notifyInventoryRecipients({
+        tenantId,
+        recipientRoles: settings.alertRecipientRoles,
+        title: 'Stock expiring soon',
+        message: `${row.item.itemName}${row.batchNumber ? ` batch ${row.batchNumber}` : ''} — ${row.remainingQuantity} ${row.item.unitOfMeasurement ?? 'units'} expiring on ${expiry}.`,
+        referenceType: 'inventory_expiry',
+        referenceId: row.transactionId,
+      });
+      if (sent > 0) expiryAlerts += 1;
+    }
+  }
+
+  await prisma.inventorySetting.update({
+    where: { tenantId },
+    data: { lastAlertRunAt: new Date() },
+  });
+
+  logger.info(
+    { tenantId, lowStockAlerts, expiryAlerts, expiredFlagged },
+    'Inventory alert run complete',
+  );
+
+  return { lowStockAlerts, expiryAlerts, expiredFlagged, ranAt: new Date().toISOString() };
 }
