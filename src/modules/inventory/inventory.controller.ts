@@ -2,6 +2,7 @@ import { Response, NextFunction } from 'express';
 import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse, sendPaginatedResponse } from '../../shared/apiResponse';
 import * as service from './inventory.service';
+import * as settingsService from './inventory.settings.service';
 
 // Suppliers
 export async function createSupplier(req: AuthenticatedRequest, res: Response, next: NextFunction) {
@@ -162,6 +163,32 @@ export async function receivePurchaseOrder(req: AuthenticatedRequest, res: Respo
   try {
     const data = await service.receivePurchaseOrder(req.user!.tenantId, req.params.id as string, req.user!.userId, req.body);
     sendResponse({ res, message: 'Purchase order received', data });
+  } catch (err) { next(err); }
+}
+export async function cancelPurchaseOrder(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.cancelPurchaseOrder(req.user!.tenantId, req.params.id as string, req.user!.userId, req.body);
+    sendResponse({ res, message: 'Purchase order cancelled', data });
+  } catch (err) { next(err); }
+}
+
+// Settings & Alerts
+export async function getInventorySettings(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await settingsService.getInventorySettings(req.user!.tenantId);
+    sendResponse({ res, message: 'Inventory settings retrieved', data });
+  } catch (err) { next(err); }
+}
+export async function updateInventorySettings(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await settingsService.updateInventorySettings(req.user!.tenantId, req.user!.userId, req.body);
+    sendResponse({ res, message: 'Inventory settings updated', data });
+  } catch (err) { next(err); }
+}
+export async function runInventoryAlerts(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.runInventoryAlerts(req.user!.tenantId, req.user!.userId, req.body);
+    sendResponse({ res, message: 'Inventory alerts processed', data });
   } catch (err) { next(err); }
 }
 

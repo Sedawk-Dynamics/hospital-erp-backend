@@ -24,6 +24,9 @@ import {
   getSupplyRequestsQuerySchema,
   approveSupplyRequestSchema,
   fulfillSupplyRequestSchema,
+  cancelPurchaseOrderSchema,
+  updateInventorySettingsSchema,
+  runInventoryAlertsSchema,
 } from './inventory.validation';
 import * as controller from './inventory.controller';
 import * as reportsController from './inventory.reports.controller';
@@ -76,6 +79,12 @@ inventoryRoutes.get('/purchase-orders/:id', authenticate, requirePermission('inv
 inventoryRoutes.put('/purchase-orders/:id', authenticate, requirePermission('inventory', 'update'), validate(updatePurchaseOrderSchema), controller.updatePurchaseOrder);
 inventoryRoutes.patch('/purchase-orders/:id/approve', authenticate, requirePermission('inventory', 'approve'), validate(approvePurchaseOrderSchema), controller.approvePurchaseOrder);
 inventoryRoutes.patch('/purchase-orders/:id/receive', authenticate, requirePermission('inventory', 'update'), validate(receivePurchaseOrderSchema), controller.receivePurchaseOrder);
+inventoryRoutes.patch('/purchase-orders/:id/cancel', authenticate, requirePermission('inventory', 'update'), validate(cancelPurchaseOrderSchema), controller.cancelPurchaseOrder);
+
+// --- Settings & Alerts (per-tenant module config + "alert inventory manager") ---
+inventoryRoutes.get('/settings', authenticate, requirePermission('inventory', 'read'), controller.getInventorySettings);
+inventoryRoutes.put('/settings', authenticate, requirePermission('inventory', 'update'), validate(updateInventorySettingsSchema), controller.updateInventorySettings);
+inventoryRoutes.post('/alerts/run', authenticate, requirePermission('inventory', 'update'), validate(runInventoryAlertsSchema), controller.runInventoryAlerts);
 
 // --- Reports (Week 10) ---
 // Stock balance / dept consumption / reorder history / expiry-waste / audit logs.

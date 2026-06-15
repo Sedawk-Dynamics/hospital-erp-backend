@@ -7,6 +7,7 @@ import { app } from './app';
 import { runSubscriptionJobs } from './jobs/subscription-reminders';
 import { runInsuranceExpiryJob } from './jobs/insurance-expiry';
 import { runAppointmentReminderJob } from './jobs/appointment-reminders';
+import { runInventoryAlertsJob } from './jobs/inventory-alerts';
 import { archiveStaleOpProgressNotes } from './modules/progress-notes/progress-notes.service';
 import { tickLifecycle as emarTickLifecycle } from './modules/emar/emar.service';
 
@@ -63,6 +64,14 @@ setTimeout(() => {
 setInterval(() => {
   runAppointmentReminderJob().catch((err) => logger.error({ err }, 'Appointment reminder job failed'));
 }, ONE_HOUR);
+
+// Inventory low-stock / expiry alerts across tenants (every 12h; deduped via notification lookup)
+setTimeout(() => {
+  runInventoryAlertsJob().catch((err) => logger.error({ err }, 'Inventory alerts job failed on startup'));
+}, 180_000);
+setInterval(() => {
+  runInventoryAlertsJob().catch((err) => logger.error({ err }, 'Inventory alerts job failed'));
+}, TWELVE_HOURS);
 
 // Graceful shutdown
 const shutdown = async (signal: string) => {
