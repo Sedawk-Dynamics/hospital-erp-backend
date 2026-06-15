@@ -1259,6 +1259,7 @@ model Tenant {
   purchaseOrders             PurchaseOrder[]
   supplyRequests             SupplyRequest[]
   stockTransfers             StockTransfer[]
+  inventorySetting           InventorySetting?
   serviceTariffs             ServiceTariff[]
   bills                      Bill[]
   payments                   Payment[]
@@ -4238,6 +4239,39 @@ model StockTransfer {
   @@index([tenantId, status])
   @@index([tenantId, inventoryItemId])
   @@map("stock_transfers")
+}
+
+/// Per-tenant inventory module configuration. One row per tenant (singleton);
+/// created lazily with defaults on first read. Drives configurable reorder
+/// thresholds, expiry-alert window, the auto-flag / prevent-expired-use guards,
+/// and which roles receive low-stock / expiry notifications ("alert inventory
+/// manager"). See inventory.settings.service.ts.
+model InventorySetting {
+  id                       String    @id @default(uuid())
+  tenantId                 String    @unique @map("tenant_id")
+  /// Default minimum-stock threshold applied to new items when none is given.
+  defaultLowStockThreshold Int       @default(10) @map("default_low_stock_threshold")
+  /// Look-ahead window (months) used by expiry tracking + expiry alerts.
+  expiryAlertMonths        Int       @default(3) @map("expiry_alert_months")
+  /// Master switches for the two alert categories.
+  lowStockAlertEnabled     Boolean   @default(true) @map("low_stock_alert_enabled")
+  expiryAlertEnabled       Boolean   @default(true) @map("expiry_alert_enabled")
+  /// When true, the alert run also auto-flags fully-expired batches (removes them).
+  autoFlagExpired          Boolean   @default(false) @map("auto_flag_expired")
+  /// When true, a stock-out that names an expired batch is rejected.
+  preventExpiredUse        Boolean   @default(true) @map("prevent_expired_use")
+  /// Fire a reorder notification the moment an item crosses its threshold.
+  reorderNotifyEnabled     Boolean   @default(true) @map("reorder_notify_enabled")
+  /// Normalised role slugs that receive inventory notifications. Empty = fall
+  /// back to inventory_manager / pharmacy_admin / admin.
+  alertRecipientRoles      String[]  @default([]) @map("alert_recipient_roles")
+  lastAlertRunAt           DateTime? @map("last_alert_run_at")
+  createdAt                DateTime  @default(now()) @map("created_at")
+  updatedAt                DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@map("inventory_settings")
 }
 
 // ============================================================
