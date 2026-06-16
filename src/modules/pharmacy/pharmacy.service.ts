@@ -707,6 +707,10 @@ export async function getBatches(tenantId: string, query: GetBatchesQuery) {
   } else if (query.isExpired !== undefined) {
     where.isExpired = query.isExpired;
   }
+  // Recall filter (independent of expiry) — drives the "Recalled" view.
+  if (!(query as any).availableOnly && (query as any).isRecalled !== undefined) {
+    where.isRecalled = (query as any).isRecalled;
+  }
 
   if (query.search) {
     where.OR = [

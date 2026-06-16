@@ -185,6 +185,12 @@ export const getBatchesQuerySchema = z.object({
       .string()
       .transform((val) => val === 'true')
       .optional(),
+    // Filter to recalled (or explicitly not-recalled) batches — powers the
+    // "Recalled" view on the batches page (recall management lives there now).
+    isRecalled: z
+      .string()
+      .transform((val) => val === 'true')
+      .optional(),
     // Convenience filter for the POS picker: only batches that are not
     // expired, not recalled, and have stock > 0. Trumps `isExpired`.
     availableOnly: z
