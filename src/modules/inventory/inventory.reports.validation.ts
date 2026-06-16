@@ -57,7 +57,9 @@ export const auditLogsReportSchema = z.object({
 export const createStockTransferSchema = z.object({
   body: z
     .object({
-      inventoryItemId: z.string().uuid('Invalid inventory item ID'),
+      // Exactly one of inventoryItemId / drugBatchId (drug batch = pharmacy stock).
+      inventoryItemId: z.string().uuid('Invalid inventory item ID').optional(),
+      drugBatchId: z.string().uuid('Invalid drug batch ID').optional(),
       fromDepartmentId: z.string().uuid().optional(),
       toDepartmentId: z.string().uuid().optional(),
       fromLocation: z.string().max(100).optional(),
@@ -66,6 +68,10 @@ export const createStockTransferSchema = z.object({
       batchNumber: z.string().max(100).optional(),
       reason: z.string().max(500).optional(),
       notes: z.string().max(2000).optional(),
+    })
+    .refine((d) => !!d.inventoryItemId !== !!d.drugBatchId, {
+      message: 'Provide either an inventory item or a drug batch (not both)',
+      path: ['inventoryItemId'],
     })
     .refine((d) => d.fromDepartmentId || d.fromLocation, {
       message: 'Either fromDepartmentId or fromLocation is required',

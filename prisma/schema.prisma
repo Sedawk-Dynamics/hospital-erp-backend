@@ -3985,6 +3985,7 @@ model DrugBatch {
   supplier          Supplier?          @relation(fields: [supplierId], references: [id])
   dispensingRecords DispensingRecord[]
   drugReturns       DrugReturn[]
+  stockTransfers    StockTransfer[]
 
   @@map("drug_batches")
 }
@@ -4220,7 +4221,11 @@ model StockTransfer {
   id                  String              @id @default(uuid())
   tenantId            String              @map("tenant_id")
   transferNumber      String              @unique @map("transfer_number") @db.VarChar(50)
-  inventoryItemId     String              @map("inventory_item_id")
+  // A transfer moves EITHER a generic inventory item OR a pharmacy drug batch
+  // (exactly one is set). drugBatchId is used when issuing drug stock from the
+  // pharmacy to a department/ward.
+  inventoryItemId     String?             @map("inventory_item_id")
+  drugBatchId         String?             @map("drug_batch_id")
   fromDepartmentId    String?             @map("from_department_id")
   toDepartmentId      String?             @map("to_department_id")
   fromLocation        String?             @map("from_location") @db.VarChar(100)
@@ -4242,9 +4247,10 @@ model StockTransfer {
   createdAt           DateTime            @default(now()) @map("created_at")
   updatedAt           DateTime            @default(now()) @updatedAt @map("updated_at")
 
-  tenant         Tenant        @relation(fields: [tenantId], references: [id])
-  inventoryItem  InventoryItem @relation(fields: [inventoryItemId], references: [id])
-  fromDepartment Department?   @relation("StockTransferFromDept", fields: [fromDepartmentId], references: [id])
+  tenant         Tenant         @relation(fields: [tenantId], references: [id])
+  inventoryItem  InventoryItem? @relation(fields: [inventoryItemId], references: [id])
+  drugBatch      DrugBatch?     @relation(fields: [drugBatchId], references: [id])
+  fromDepartment Department?    @relation("StockTransferFromDept", fields: [fromDepartmentId], references: [id])
   toDepartment   Department?   @relation("StockTransferToDept", fields: [toDepartmentId], references: [id])
   requester      User          @relation("StockTransferRequester", fields: [requestedBy], references: [id])
   approver       User?         @relation("StockTransferApprover", fields: [approvedBy], references: [id])

@@ -41,7 +41,10 @@ async function generateTransferNumber(tenantId: string): Promise<string> {
 }
 
 export interface CreateStockTransferInput {
-  inventoryItemId: string;
+  // Exactly one of inventoryItemId / drugBatchId. drugBatchId issues pharmacy
+  // drug stock from the pharmacy to a department/ward.
+  inventoryItemId?: string;
+  drugBatchId?: string;
   fromDepartmentId?: string;
   toDepartmentId?: string;
   fromLocation?: string;
@@ -66,11 +69,32 @@ export async function createStockTransfer(
   if (data.fromDepartmentId && data.toDepartmentId && data.fromDepartmentId === data.toDepartmentId) {
     throw AppError.badRequest('From and to departments cannot be the same');
   }
+  if (!data.inventoryItemId && !data.drugBatchId) {
+    throw AppError.badRequest('Pick an inventory item or a pharmacy drug batch to transfer');
+  }
+  if (data.inventoryItemId && data.drugBatchId) {
+    throw AppError.badRequest('A transfer is for either an inventory item or a drug batch, not both');
+  }
 
-  const item = await prisma.inventoryItem.findFirst({
-    where: { id: data.inventoryItemId, tenantId, isActive: true },
-  });
-  if (!item) throw AppError.notFound('Inventory item not found or inactive');
+  // Resolve the item being transferred (generic inventory item or a drug batch)
+  // for validation + a human label in the audit log.
+  let itemLabel: string;
+  let batchNumber = data.batchNumber;
+  if (data.drugBatchId) {
+    const batch = await prisma.drugBatch.findFirst({
+      where: { id: data.drugBatchId, tenantId },
+      include: { drug: { select: { drugName: true } } },
+    });
+    if (!batch) throw AppError.notFound('Drug batch not found');
+    itemLabel = `${batch.drug?.drugName ?? 'Drug'} (batch ${batch.batchNumber})`;
+    batchNumber = batchNumber ?? batch.batchNumber;
+  } else {
+    const item = await prisma.inventoryItem.findFirst({
+      where: { id: data.inventoryItemId, tenantId, isActive: true },
+    });
+    if (!item) throw AppError.notFound('Inventory item not found or inactive');
+    itemLabel = item.itemName;
+  }
 
   if (data.fromDepartmentId) {
     const fromDept = await prisma.department.findFirst({
@@ -91,19 +115,21 @@ export async function createStockTransfer(
     data: {
       tenantId,
       transferNumber,
-      inventoryItemId: data.inventoryItemId,
+      inventoryItemId: data.inventoryItemId ?? null,
+      drugBatchId: data.drugBatchId ?? null,
       fromDepartmentId: data.fromDepartmentId,
       toDepartmentId: data.toDepartmentId,
       fromLocation: data.fromLocation,
       toLocation: data.toLocation,
       quantityRequested: data.quantityRequested,
-      batchNumber: data.batchNumber,
+      batchNumber,
       reason: data.reason,
       notes: data.notes,
       requestedBy: userId,
     },
     include: {
       inventoryItem: { select: { id: true, itemName: true, itemCode: true, unitOfMeasurement: true, currentStock: true } },
+      drugBatch: { select: { id: true, batchNumber: true, quantityInStock: true, drug: { select: { drugName: true } } } },
       fromDepartment: { select: { id: true, name: true } },
       toDepartment: { select: { id: true, name: true } },
       requester: { select: { id: true, firstName: true, lastName: true } },
@@ -116,7 +142,7 @@ export async function createStockTransfer(
     action: 'create',
     entityType: 'stock_transfer',
     entityId: transfer.id,
-    description: `Stock transfer ${transferNumber} created (${data.quantityRequested} × ${item.itemName})`,
+    description: `Stock transfer ${transferNumber} created (${data.quantityRequested} × ${itemLabel})`,
     newValues: transfer,
   });
 
@@ -158,6 +184,7 @@ export async function listStockTransfers(tenantId: string, query: ListStockTrans
     where.OR = [
       { transferNumber: { contains: query.search, mode: 'insensitive' } },
       { inventoryItem: { itemName: { contains: query.search, mode: 'insensitive' } } },
+      { drugBatch: { drug: { drugName: { contains: query.search, mode: 'insensitive' } } } },
       { fromDepartment: { name: { contains: query.search, mode: 'insensitive' } } },
       { toDepartment: { name: { contains: query.search, mode: 'insensitive' } } },
     ];
@@ -170,6 +197,7 @@ export async function listStockTransfers(tenantId: string, query: ListStockTrans
       take,
       include: {
         inventoryItem: { select: { id: true, itemName: true, itemCode: true, unitOfMeasurement: true, currentStock: true } },
+        drugBatch: { select: { id: true, batchNumber: true, quantityInStock: true, drug: { select: { drugName: true } } } },
         fromDepartment: { select: { id: true, name: true } },
         toDepartment: { select: { id: true, name: true } },
         requester: { select: { id: true, firstName: true, lastName: true } },
@@ -188,6 +216,7 @@ export async function getStockTransferById(tenantId: string, id: string) {
     where: { id, tenantId },
     include: {
       inventoryItem: true,
+      drugBatch: { select: { id: true, batchNumber: true, quantityInStock: true, drug: { select: { drugName: true } } } },
       fromDepartment: true,
       toDepartment: true,
       requester: { select: { id: true, firstName: true, lastName: true, email: true } },
@@ -280,7 +309,10 @@ export async function dispatchStockTransfer(
 ) {
   const transfer = await prisma.stockTransfer.findFirst({
     where: { id, tenantId },
-    include: { inventoryItem: true },
+    include: {
+      inventoryItem: true,
+      drugBatch: { select: { id: true, quantityInStock: true, drug: { select: { drugName: true } } } },
+    },
   });
   if (!transfer) throw AppError.notFound('Stock transfer not found');
   if (transfer.status !== 'approved') {
@@ -289,49 +321,79 @@ export async function dispatchStockTransfer(
 
   const qty = quantityDispatched ?? transfer.quantityRequested;
   if (qty <= 0) throw AppError.badRequest('Quantity must be positive');
-  if (qty > transfer.inventoryItem.currentStock) {
-    throw AppError.badRequest(
-      `Insufficient stock to dispatch. Available: ${transfer.inventoryItem.currentStock}, requested: ${qty}`,
-    );
+
+  const includeForUpdate = {
+    inventoryItem: { select: { id: true, itemName: true, itemCode: true, currentStock: true } },
+    drugBatch: { select: { id: true, batchNumber: true, quantityInStock: true, drug: { select: { drugName: true } } } },
+    fromDepartment: { select: { id: true, name: true } },
+    toDepartment: { select: { id: true, name: true } },
+  };
+
+  let result;
+  if (transfer.drugBatchId && transfer.drugBatch) {
+    // Pharmacy drug transfer: issue the drug out of the pharmacy. Drug stock is
+    // not department-scoped, so dispatch decrements the batch and receive simply
+    // marks delivery — the drug does not return to pharmacy stock.
+    if (qty > transfer.drugBatch.quantityInStock) {
+      throw AppError.badRequest(
+        `Insufficient drug stock to dispatch. Available: ${transfer.drugBatch.quantityInStock}, requested: ${qty}`,
+      );
+    }
+    result = await prisma.$transaction(async (tx) => {
+      await tx.drugBatch.update({
+        where: { id: transfer.drugBatchId! },
+        data: { quantityInStock: { decrement: qty } },
+      });
+      return tx.stockTransfer.update({
+        where: { id },
+        data: { status: 'dispatched', quantityTransferred: qty, dispatchedBy: userId, dispatchedAt: new Date() },
+        include: includeForUpdate,
+      });
+    });
+  } else {
+    if (!transfer.inventoryItem || !transfer.inventoryItemId) {
+      throw AppError.badRequest('Transfer has no item to dispatch');
+    }
+    if (qty > transfer.inventoryItem.currentStock) {
+      throw AppError.badRequest(
+        `Insufficient stock to dispatch. Available: ${transfer.inventoryItem.currentStock}, requested: ${qty}`,
+      );
+    }
+    const inventoryItemId = transfer.inventoryItemId;
+    result = await prisma.$transaction(async (tx) => {
+      // Stock out from the source side
+      await tx.stockTransaction.create({
+        data: {
+          tenantId,
+          inventoryItemId,
+          transactionType: 'stock_out',
+          quantity: qty,
+          batchNumber: transfer.batchNumber,
+          referenceType: 'stock_transfer',
+          referenceId: transfer.id,
+          departmentId: transfer.fromDepartmentId ?? undefined,
+          notes: `Dispatched via transfer ${transfer.transferNumber}`,
+          performedBy: userId,
+        },
+      });
+
+      await tx.inventoryItem.update({
+        where: { id: inventoryItemId },
+        data: { currentStock: { decrement: qty } },
+      });
+
+      return tx.stockTransfer.update({
+        where: { id },
+        data: {
+          status: 'dispatched',
+          quantityTransferred: qty,
+          dispatchedBy: userId,
+          dispatchedAt: new Date(),
+        },
+        include: includeForUpdate,
+      });
+    });
   }
-
-  const result = await prisma.$transaction(async (tx) => {
-    // Stock out from the source side
-    await tx.stockTransaction.create({
-      data: {
-        tenantId,
-        inventoryItemId: transfer.inventoryItemId,
-        transactionType: 'stock_out',
-        quantity: qty,
-        batchNumber: transfer.batchNumber,
-        referenceType: 'stock_transfer',
-        referenceId: transfer.id,
-        departmentId: transfer.fromDepartmentId ?? undefined,
-        notes: `Dispatched via transfer ${transfer.transferNumber}`,
-        performedBy: userId,
-      },
-    });
-
-    await tx.inventoryItem.update({
-      where: { id: transfer.inventoryItemId },
-      data: { currentStock: { decrement: qty } },
-    });
-
-    return tx.stockTransfer.update({
-      where: { id },
-      data: {
-        status: 'dispatched',
-        quantityTransferred: qty,
-        dispatchedBy: userId,
-        dispatchedAt: new Date(),
-      },
-      include: {
-        inventoryItem: { select: { id: true, itemName: true, itemCode: true, currentStock: true } },
-        fromDepartment: { select: { id: true, name: true } },
-        toDepartment: { select: { id: true, name: true } },
-      },
-    });
-  });
 
   void safeInventoryAudit({
     tenantId,
@@ -355,42 +417,58 @@ export async function receiveStockTransfer(tenantId: string, id: string, userId:
     throw AppError.badRequest(`Only dispatched transfers can be received (current: ${transfer.status})`);
   }
 
-  const result = await prisma.$transaction(async (tx) => {
-    // Stock in to the destination side (re-add to inventory)
-    await tx.stockTransaction.create({
-      data: {
-        tenantId,
-        inventoryItemId: transfer.inventoryItemId,
-        transactionType: 'stock_in',
-        quantity: transfer.quantityTransferred,
-        batchNumber: transfer.batchNumber,
-        referenceType: 'stock_transfer',
-        referenceId: transfer.id,
-        departmentId: transfer.toDepartmentId ?? undefined,
-        notes: `Received via transfer ${transfer.transferNumber}`,
-        performedBy: userId,
-      },
-    });
+  const includeForUpdate = {
+    inventoryItem: { select: { id: true, itemName: true, itemCode: true, currentStock: true } },
+    drugBatch: { select: { id: true, batchNumber: true, quantityInStock: true, drug: { select: { drugName: true } } } },
+    fromDepartment: { select: { id: true, name: true } },
+    toDepartment: { select: { id: true, name: true } },
+  };
 
-    await tx.inventoryItem.update({
-      where: { id: transfer.inventoryItemId },
-      data: { currentStock: { increment: transfer.quantityTransferred } },
-    });
-
-    return tx.stockTransfer.update({
+  let result;
+  if (transfer.drugBatchId) {
+    // Drug transfer: the batch was already decremented on dispatch (issued from
+    // the pharmacy). Receiving just confirms delivery — no stock change.
+    result = await prisma.stockTransfer.update({
       where: { id },
-      data: {
-        status: 'received',
-        receivedBy: userId,
-        receivedAt: new Date(),
-      },
-      include: {
-        inventoryItem: { select: { id: true, itemName: true, itemCode: true, currentStock: true } },
-        fromDepartment: { select: { id: true, name: true } },
-        toDepartment: { select: { id: true, name: true } },
-      },
+      data: { status: 'received', receivedBy: userId, receivedAt: new Date() },
+      include: includeForUpdate,
     });
-  });
+  } else {
+    const inventoryItemId = transfer.inventoryItemId;
+    result = await prisma.$transaction(async (tx) => {
+      // Stock in to the destination side (re-add to inventory)
+      if (inventoryItemId) {
+        await tx.stockTransaction.create({
+          data: {
+            tenantId,
+            inventoryItemId,
+            transactionType: 'stock_in',
+            quantity: transfer.quantityTransferred,
+            batchNumber: transfer.batchNumber,
+            referenceType: 'stock_transfer',
+            referenceId: transfer.id,
+            departmentId: transfer.toDepartmentId ?? undefined,
+            notes: `Received via transfer ${transfer.transferNumber}`,
+            performedBy: userId,
+          },
+        });
+        await tx.inventoryItem.update({
+          where: { id: inventoryItemId },
+          data: { currentStock: { increment: transfer.quantityTransferred } },
+        });
+      }
+
+      return tx.stockTransfer.update({
+        where: { id },
+        data: {
+          status: 'received',
+          receivedBy: userId,
+          receivedAt: new Date(),
+        },
+        include: includeForUpdate,
+      });
+    });
+  }
 
   void safeInventoryAudit({
     tenantId,
