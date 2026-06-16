@@ -9,6 +9,8 @@ import {
   updateCategorySchema,
   categoryIdParamSchema,
   createFormularySchema,
+  findFormularyMatchesSchema,
+  mergeFormularySchema,
   getFormularyQuerySchema,
   formularyIdParamSchema,
   updateFormularySchema,
@@ -54,6 +56,11 @@ pharmacyRoutes.get('/catalog', authenticate, requirePermission('pharmacy', 'read
 
 // --- Formulary ---
 pharmacyRoutes.post('/formulary', authenticate, requirePermission('pharmacy', 'create'), validate(createFormularySchema), controller.createFormularyItem);
+// G1: fuzzy duplicate look-up for the inward / add-drug dialog. Declared before
+// '/formulary/:id' so "match" isn't captured as an :id.
+pharmacyRoutes.get('/formulary/match', authenticate, requirePermission('pharmacy', 'read'), validate(findFormularyMatchesSchema), controller.findFormularyMatches);
+// G1: merge a duplicate drug row into the canonical one (consolidate split stock).
+pharmacyRoutes.post('/formulary/:id/merge', authenticate, requirePermission('pharmacy', 'update'), validate(mergeFormularySchema), controller.mergeFormularyItems);
 // Import from the platform drug catalog. Declared before '/formulary/:id' so
 // "import" isn't captured as an :id.
 pharmacyRoutes.post('/formulary/import', authenticate, requirePermission('pharmacy', 'create'), validate(importFormularySchema), controller.importFormularyItem);

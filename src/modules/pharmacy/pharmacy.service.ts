@@ -4,6 +4,12 @@ import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
 import { resolvePackSize, inferLooseUnitLabel } from '../drug-master/drug-master.dataset';
 import { safePharmacyAudit } from './pharmacy.audit';
+import {
+  scoreMatch,
+  normalizeDrugName,
+  MATCH_SUGGEST_THRESHOLD,
+  MATCH_BLOCK_THRESHOLD,
+} from './pharmacy.matching';
 import type {
   CreateCategoryInput,
   UpdateCategoryInput,
@@ -180,10 +186,92 @@ export async function deleteDrugCategory(tenantId: string, id: string) {
 // Formulary
 // ============================================================
 
+/**
+ * Find existing formulary rows that look like the same drug as `params` (G1 —
+ * fuzzy inward matching). Pre-filters candidates in SQL by the first name token
+ * / prefix / generic / manufacturer so we never score the whole formulary, then
+ * blends a character + token similarity in JS (see pharmacy.matching). Returns
+ * the top suggestions above MATCH_SUGGEST_THRESHOLD with a live stock rollup so
+ * the UI can show a side-by-side "existing vs incoming" comparison.
+ */
+export async function findFormularyMatches(
+  tenantId: string,
+  params: {
+    name: string;
+    genericName?: string | null;
+    manufacturer?: string | null;
+    strength?: string | null;
+    dosageForm?: string | null;
+    excludeId?: string;
+  },
+) {
+  const name = params.name?.trim();
+  if (!name) return { matches: [] as any[] };
+
+  const norm = normalizeDrugName(name);
+  const firstToken = norm.split(' ').filter(Boolean)[0] || name.trim().toLowerCase();
+  const prefix = firstToken.slice(0, 4);
+  const genericFirst = params.genericName
+    ? normalizeDrugName(params.genericName).split(' ').filter(Boolean)[0]
+    : '';
+
+  const or: any[] = [];
+  if (firstToken) or.push({ drugName: { contains: firstToken, mode: 'insensitive' } });
+  if (prefix && prefix !== firstToken) or.push({ drugName: { startsWith: prefix, mode: 'insensitive' } });
+  if (genericFirst) or.push({ genericName: { contains: genericFirst, mode: 'insensitive' } });
+  if (params.manufacturer) or.push({ manufacturer: { contains: params.manufacturer, mode: 'insensitive' } });
+
+  const where: any = { tenantId, isActive: true };
+  if (params.excludeId) where.id = { not: params.excludeId };
+  if (or.length) where.OR = or;
+
+  const candidates = await prisma.drugFormulary.findMany({
+    where,
+    take: 500,
+    select: {
+      id: true,
+      drugName: true,
+      genericName: true,
+      manufacturer: true,
+      dosageForm: true,
+      strength: true,
+      packSize: true,
+      price: true,
+      drugMasterId: true,
+      drugBatches: {
+        where: { isExpired: false, isRecalled: false, quantityInStock: { gt: 0 } },
+        select: { quantityInStock: true },
+      },
+    },
+  });
+
+  const incoming = {
+    drugName: name,
+    genericName: params.genericName,
+    manufacturer: params.manufacturer,
+    strength: params.strength,
+    dosageForm: params.dosageForm,
+  };
+  const matches = candidates
+    .map((c) => {
+      const { drugBatches, ...rest } = c;
+      return {
+        ...rest,
+        totalStock: drugBatches.reduce((s, b) => s + b.quantityInStock, 0),
+        score: scoreMatch(incoming, c as any),
+      };
+    })
+    .filter((c) => c.score >= MATCH_SUGGEST_THRESHOLD)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 8);
+
+  return { matches };
+}
+
 export async function createFormularyItem(
   tenantId: string,
   roles: string[],
-  data: CreateFormularyInput,
+  data: CreateFormularyInput & { force?: boolean },
 ) {
   assertPharmacyAdmin(roles, 'add formulary drugs');
   // Validate category exists if provided
@@ -193,6 +281,24 @@ export async function createFormularyItem(
     });
     if (!category) {
       throw AppError.notFound('Drug category not found');
+    }
+  }
+
+  // G1 duplicate guard: unless the user explicitly forced creation, refuse to
+  // silently add a new row when a high-confidence near-duplicate already exists
+  // (e.g. "Telmac 40 Tab" when "Telmac 40" is on file). The caller gets the
+  // suggestions back and re-submits with force=true to create anyway, or maps
+  // the inward stock onto the existing drug instead.
+  if (!data.force) {
+    const { matches } = await findFormularyMatches(tenantId, {
+      name: data.drugName,
+      genericName: data.genericName,
+      manufacturer: data.manufacturer,
+      strength: data.strength,
+      dosageForm: data.dosageForm,
+    });
+    if (matches.length && matches[0].score >= MATCH_BLOCK_THRESHOLD) {
+      return { status: 'duplicate_suspected' as const, matches };
     }
   }
 
@@ -220,7 +326,70 @@ export async function createFormularyItem(
   });
 
   logger.info({ tenantId, formularyId: formularyItem.id }, 'Formulary item created');
-  return formularyItem;
+  return { status: 'created' as const, item: formularyItem };
+}
+
+/**
+ * Merge a duplicate formulary row (`sourceId`) into the canonical one
+ * (`targetId`): repoint all batches, prescription items and returns onto the
+ * target, then delete the now-empty source. This is the cure for stock that has
+ * already split across two near-duplicate entries ("Telmac 40" + "Telmac 40
+ * Tab" each showing 100 → one entry showing 200). DrugBatch has no DB-level
+ * (drugId, batchNumber) unique, so repointing never collides.
+ */
+export async function mergeFormularyItems(
+  tenantId: string,
+  userId: string,
+  roles: string[],
+  targetId: string,
+  sourceId: string,
+) {
+  assertPharmacyAdmin(roles, 'merge formulary drugs');
+  if (targetId === sourceId) {
+    throw AppError.badRequest('Cannot merge a drug into itself');
+  }
+
+  const [target, source] = await Promise.all([
+    prisma.drugFormulary.findFirst({ where: { id: targetId, tenantId } }),
+    prisma.drugFormulary.findFirst({ where: { id: sourceId, tenantId } }),
+  ]);
+  if (!target) throw AppError.notFound('Target formulary item not found');
+  if (!source) throw AppError.notFound('Source formulary item not found');
+
+  const result = await prisma.$transaction(async (tx) => {
+    const batches = await tx.drugBatch.updateMany({
+      where: { drugId: sourceId, tenantId },
+      data: { drugId: targetId },
+    });
+    const rxItems = await tx.prescriptionItem.updateMany({
+      where: { drugId: sourceId },
+      data: { drugId: targetId },
+    });
+    const returns = await tx.drugReturn.updateMany({
+      where: { drugId: sourceId, tenantId },
+      data: { drugId: targetId },
+    });
+    await tx.drugFormulary.delete({ where: { id: sourceId } });
+    return {
+      batchesMoved: batches.count,
+      prescriptionItemsMoved: rxItems.count,
+      returnsMoved: returns.count,
+    };
+  });
+
+  await safePharmacyAudit({
+    tenantId,
+    userId,
+    action: 'merge',
+    entityType: 'drug_formulary',
+    entityId: targetId,
+    description: `Merged duplicate drug "${source.drugName}" into "${target.drugName}"`,
+    oldValues: { sourceId, sourceName: source.drugName },
+    newValues: { targetId, targetName: target.drugName, ...result },
+  });
+
+  logger.info({ tenantId, targetId, sourceId, ...result }, 'Formulary items merged');
+  return { target, ...result };
 }
 
 /**

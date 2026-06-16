@@ -94,13 +94,75 @@ export async function createFormularyItem(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const item = await pharmacyService.createFormularyItem(tenantId, req.user!.roles ?? [], req.body);
+    const result = await pharmacyService.createFormularyItem(
+      tenantId,
+      req.user!.roles ?? [],
+      req.body,
+    );
+    // G1: a high-confidence near-duplicate was found and the caller didn't force
+    // creation — return 200 with the suggestions so the UI can prompt the user
+    // to map to the existing drug instead of splitting stock.
+    if (result.status === 'duplicate_suspected') {
+      sendResponse({
+        res,
+        statusCode: 200,
+        message: 'A similar drug already exists. Map to it or create anyway.',
+        data: { duplicateSuspected: true, matches: result.matches },
+      });
+      return;
+    }
     sendResponse({
       res,
       statusCode: 201,
       message: 'Formulary item created successfully',
-      data: item,
+      data: result.item,
     });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// G1: live duplicate-detection used by the inward / add-drug dialog. Returns the
+// existing formulary rows most likely to be the same drug as the typed name.
+export async function findFormularyMatches(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const q = req.query as Record<string, string>;
+    const { matches } = await pharmacyService.findFormularyMatches(tenantId, {
+      name: q.name ?? '',
+      genericName: q.genericName,
+      manufacturer: q.manufacturer,
+      strength: q.strength,
+      dosageForm: q.dosageForm,
+      excludeId: q.excludeId,
+    });
+    sendResponse({ res, message: 'Formulary matches retrieved', data: { matches } });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// G1: consolidate stock that already split across two near-duplicate rows by
+// merging the source drug into the target (repoints batches + history).
+export async function mergeFormularyItems(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const result = await pharmacyService.mergeFormularyItems(
+      tenantId,
+      req.user!.userId,
+      req.user!.roles ?? [],
+      req.params.id as string,
+      req.body.sourceId as string,
+    );
+    sendResponse({ res, message: 'Drugs merged successfully', data: result });
   } catch (err) {
     next(err);
   }

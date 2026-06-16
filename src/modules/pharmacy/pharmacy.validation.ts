@@ -54,6 +54,31 @@ export const createFormularySchema = z.object({
     indications: z.string().optional(),
     contraindications: z.string().optional(),
     isActive: z.boolean().default(true),
+    // G1: set true to create even when a high-confidence near-duplicate exists
+    // (the user reviewed the suggestions and chose "create anyway").
+    force: z.boolean().optional(),
+  }),
+});
+
+// G1: live duplicate look-up for the inward / add-drug dialog.
+export const findFormularyMatchesSchema = z.object({
+  query: z.object({
+    name: z.string().min(1, 'A drug name is required').max(255),
+    genericName: z.string().max(255).optional(),
+    manufacturer: z.string().max(255).optional(),
+    strength: z.string().max(100).optional(),
+    dosageForm: z.string().max(40).optional(),
+    excludeId: z.string().uuid().optional(),
+  }),
+});
+
+// G1: merge a duplicate formulary row (sourceId) into the canonical one (:id).
+export const mergeFormularySchema = z.object({
+  body: z.object({
+    sourceId: z.string().uuid('Invalid source drug ID'),
+  }),
+  params: z.object({
+    id: z.string().uuid('Invalid formulary item ID'),
   }),
 });
 
