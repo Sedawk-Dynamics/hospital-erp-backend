@@ -33,6 +33,7 @@ import {
   createVendorReturnSchema,
   getReturnsQuerySchema,
   returnableQuerySchema,
+  returnIdParamSchema,
   processReturnSchema,
   recallBatchSchema,
   unrecallBatchSchema,
@@ -107,6 +108,8 @@ pharmacyRoutes.post('/vendor-returns', authenticate, requirePermission('pharmacy
 pharmacyRoutes.get('/returns', authenticate, requirePermission('pharmacy', 'read'), validate(getReturnsQuerySchema), controller.getReturns);
 // Returnable counter-sale lines for a patient (patient-return picker).
 pharmacyRoutes.get('/returnable', authenticate, requirePermission('pharmacy', 'read'), validate(returnableQuerySchema), controller.getReturnableDispenses);
+// Full return record for the printable acknowledgement receipt (G3).
+pharmacyRoutes.get('/returns/:id', authenticate, requirePermission('pharmacy', 'read'), validate(returnIdParamSchema), controller.getReturnById);
 pharmacyRoutes.patch('/returns/:id/process', authenticate, requirePermission('pharmacy', 'approve'), validate(processReturnSchema), controller.processReturn);
 
 // --- Recall Management ---

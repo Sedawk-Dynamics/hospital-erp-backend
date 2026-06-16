@@ -2279,6 +2279,53 @@ export async function getReturns(tenantId: string, query: GetReturnsQuery) {
 }
 
 /**
+ * Full return record + hospital header for the return-acknowledgement receipt
+ * (G3). Mirrors the sale receipt's payload so the print dialog has everything
+ * it needs in one call (drug, batch, patient, refund, original bill number).
+ */
+export async function getReturnById(tenantId: string, id: string) {
+  const drugReturn = await prisma.drugReturn.findFirst({
+    where: { id, tenantId },
+    include: {
+      drugBatch: {
+        select: { id: true, batchNumber: true, expiryDate: true, drug: { select: { id: true, drugName: true, looseUnitLabel: true } } },
+      },
+      drug: { select: { id: true, drugName: true, looseUnitLabel: true } },
+      patient: { select: { id: true, mrn: true, firstName: true, lastName: true, phone: true } },
+      supplier: { select: { id: true, name: true } },
+      processor: { select: { id: true, firstName: true, lastName: true } },
+      refund: { select: { id: true, amount: true, status: true } },
+    },
+  });
+  if (!drugReturn) throw AppError.notFound('Drug return not found');
+
+  // Resolve the original sale's invoice number (billId is a plain back-pointer).
+  let billNumber: string | null = null;
+  if (drugReturn.billId) {
+    const bill = await prisma.bill.findFirst({
+      where: { id: drugReturn.billId, tenantId },
+      select: { billNumber: true },
+    });
+    billNumber = bill?.billNumber ?? null;
+  }
+
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: tenantId },
+    select: {
+      name: true,
+      logoUrl: true,
+      address: true,
+      city: true,
+      state: true,
+      phone: true,
+      email: true,
+    },
+  });
+
+  return { return: drugReturn, billNumber, hospital: tenant };
+}
+
+/**
  * Counter-sale lines for a patient that still have units eligible for return —
  * powers the "pick the original sale" step of a patient return. Only sales
  * billed at the counter (billId set) in the recent past are offered; each line's

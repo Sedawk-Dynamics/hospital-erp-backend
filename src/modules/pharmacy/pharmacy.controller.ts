@@ -640,6 +640,21 @@ export async function getReturnableDispenses(
   }
 }
 
+// G3: full return record + hospital header for the printable acknowledgement.
+export async function getReturnById(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await pharmacyService.getReturnById(tenantId, req.params.id as string);
+    sendResponse({ res, message: 'Return retrieved', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function processReturn(
   req: AuthenticatedRequest,
   res: Response,
