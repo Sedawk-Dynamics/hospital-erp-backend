@@ -4070,6 +4070,11 @@ model DrugReturn {
   unitPrice          Decimal? @map("unit_price") @db.Decimal(12, 2)
   refundAmount       Decimal? @map("refund_amount") @db.Decimal(12, 2)
   refundId           String?  @unique @map("refund_id")
+  // G5 vendor returns (expired / damaged stock back to the distributor): the
+  // supplier's credit note reference + the credited value. Drives the Supplier
+  // Credit Notes report. On approval a vendor return REDUCES stock.
+  creditNoteNumber String?  @map("credit_note_number") @db.VarChar(80)
+  creditAmount     Decimal? @map("credit_amount") @db.Decimal(12, 2)
   createdAt   DateTime         @default(now()) @map("created_at")
 
   tenant           Tenant            @relation(fields: [tenantId], references: [id])

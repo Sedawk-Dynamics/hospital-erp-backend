@@ -2299,6 +2299,8 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
   }
 
   // Validate supplier if vendor return
+  let creditNoteNumber: string | null = null;
+  let creditAmount: number | null = null;
   if (data.returnType === 'vendor_return') {
     if (!data.supplierId) {
       throw AppError.badRequest('Supplier ID is required for vendor returns');
@@ -2308,6 +2310,14 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
     });
     if (!supplier) {
       throw AppError.notFound('Supplier not found');
+    }
+    // G5: credited value = explicit amount, else the returned stock at its
+    // purchase price (what the distributor should credit back).
+    creditNoteNumber = (data as any).creditNoteNumber ?? null;
+    if ((data as any).creditAmount != null) {
+      creditAmount = round2(Number((data as any).creditAmount));
+    } else if (drugBatch.purchasePrice != null) {
+      creditAmount = round2(Number(drugBatch.purchasePrice) * data.quantity);
     }
   }
 
@@ -2326,6 +2336,8 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
       saleUnit,
       unitPrice,
       refundAmount,
+      creditNoteNumber,
+      creditAmount,
     },
     include: {
       drugBatch: {
@@ -2601,12 +2613,28 @@ export async function processReturn(
         data: { status: 'processed', processedBy: userId, drugBatchId: restockBatchId },
       });
 
-      // Restock the returned quantity when we have a batch to put it back into.
+      // Move stock. Patient / counter returns come BACK into stock (increment).
+      // A vendor return (expired/damaged stock sent back to the distributor)
+      // LEAVES stock (decrement, floored at 0) — G5.
       if (restockBatchId) {
-        await tx.drugBatch.update({
-          where: { id: restockBatchId },
-          data: { quantityInStock: { increment: drugReturn.quantity } },
-        });
+        if (drugReturn.returnType === 'vendor_return') {
+          const batch = await tx.drugBatch.findUnique({
+            where: { id: restockBatchId },
+            select: { quantityInStock: true },
+          });
+          const dec = Math.min(drugReturn.quantity, batch?.quantityInStock ?? 0);
+          if (dec > 0) {
+            await tx.drugBatch.update({
+              where: { id: restockBatchId },
+              data: { quantityInStock: { decrement: dec } },
+            });
+          }
+        } else {
+          await tx.drugBatch.update({
+            where: { id: restockBatchId },
+            data: { quantityInStock: { increment: drugReturn.quantity } },
+          });
+        }
       }
 
       const refundDue =

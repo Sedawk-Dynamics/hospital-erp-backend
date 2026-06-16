@@ -403,6 +403,9 @@ export const createReturnSchema = z.object({
       supplierId: z.string().uuid('Invalid supplier ID').optional(),
       quantity: z.number().int().positive('Quantity must be positive'),
       reason: z.string().max(1000).optional(),
+      // G5: supplier credit note for vendor (expired/damaged) returns.
+      creditNoteNumber: z.string().max(80).optional(),
+      creditAmount: z.number().nonnegative().optional(),
     })
     .refine(
       (b) =>
@@ -425,6 +428,9 @@ export const createVendorReturnSchema = z.object({
     supplierId: z.string().uuid('Supplier is required for vendor returns'),
     quantity: z.number().int().positive('Quantity must be positive'),
     reason: z.string().max(1000).optional(),
+    // G5: supplier credit note for the returned (expired/damaged) stock.
+    creditNoteNumber: z.string().max(80).optional(),
+    creditAmount: z.number().nonnegative().optional(),
   }),
 });
 
