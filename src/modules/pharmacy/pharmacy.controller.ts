@@ -146,6 +146,78 @@ export async function findFormularyMatches(
   }
 }
 
+// ── G15: mandatory reports ──
+export async function getDailyTransactionReport(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await pharmacyService.getDailyTransactionReport(
+      req.user!.tenantId,
+      req.query.date as string | undefined,
+    );
+    sendResponse({ res, message: 'Daily transaction report', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getPurchaseReport(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await pharmacyService.getPurchaseReport(req.user!.tenantId, req.query as any);
+    sendResponse({ res, message: 'Purchase report', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getStockValuationReport(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await pharmacyService.getStockValuationReport(req.user!.tenantId);
+    sendResponse({ res, message: 'Stock valuation report', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getVendorWiseReport(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await pharmacyService.getVendorWiseReport(
+      req.user!.tenantId,
+      req.query.supplierId as string | undefined,
+    );
+    sendResponse({ res, message: 'Vendor-wise report', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getCreditNotesReport(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await pharmacyService.getCreditNotesReport(req.user!.tenantId, req.query as any);
+    sendResponse({ res, message: 'Supplier credit notes report', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // G16: mint a temporary emergency (Golden Hour) patient to dispense against.
 export async function createEmergencyPatient(
   req: AuthenticatedRequest,

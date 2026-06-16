@@ -557,6 +557,34 @@ export const getGstReportQuerySchema = z.object({
 });
 
 // ============================================================
+// G15 — Mandatory reports
+// ============================================================
+
+export const dailyTransactionQuerySchema = z.object({
+  query: z.object({ date: z.string().optional() }),
+});
+
+export const purchaseReportQuerySchema = z.object({
+  query: z.object({
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
+    supplierId: z.string().uuid().optional(),
+  }),
+});
+
+export const vendorWiseQuerySchema = z.object({
+  query: z.object({ supplierId: z.string().uuid().optional() }),
+});
+
+export const creditNotesQuerySchema = z.object({
+  query: z.object({
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
+    supplierId: z.string().uuid().optional(),
+  }),
+});
+
+// ============================================================
 // Stock ledger (batch-wise movement register)
 // ============================================================
 

@@ -47,6 +47,10 @@ import {
   getRecalledItemsQuerySchema,
   getGstReportQuerySchema,
   getStockLedgerQuerySchema,
+  dailyTransactionQuerySchema,
+  purchaseReportQuerySchema,
+  vendorWiseQuerySchema,
+  creditNotesQuerySchema,
 } from './pharmacy.validation';
 
 export const pharmacyRoutes = Router();
@@ -140,6 +144,13 @@ pharmacyRoutes.patch('/recalls/drugs/:id', authenticate, requirePermission('phar
 
 // --- GST Report ---
 pharmacyRoutes.get('/gst', authenticate, requirePermission('pharmacy', 'read'), validate(getGstReportQuerySchema), controller.getGstReport);
+
+// --- G15: mandatory reports (Daily Txn / Purchase / Stock Valuation / Vendor-wise / Credit Notes) ---
+pharmacyRoutes.get('/reports/daily-transactions', authenticate, requirePermission('pharmacy', 'read'), validate(dailyTransactionQuerySchema), controller.getDailyTransactionReport);
+pharmacyRoutes.get('/reports/purchases', authenticate, requirePermission('pharmacy', 'read'), validate(purchaseReportQuerySchema), controller.getPurchaseReport);
+pharmacyRoutes.get('/reports/stock-valuation', authenticate, requirePermission('pharmacy', 'read'), controller.getStockValuationReport);
+pharmacyRoutes.get('/reports/vendor-wise', authenticate, requirePermission('pharmacy', 'read'), validate(vendorWiseQuerySchema), controller.getVendorWiseReport);
+pharmacyRoutes.get('/reports/credit-notes', authenticate, requirePermission('pharmacy', 'read'), validate(creditNotesQuerySchema), controller.getCreditNotesReport);
 
 // --- Maintenance: auto-flag expired batches (idempotent) ---
 pharmacyRoutes.post('/maintenance/flag-expired', authenticate, requirePermission('pharmacy', 'approve'), controller.flagExpiredBatches);

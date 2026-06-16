@@ -2598,6 +2598,300 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
   return drugReturn;
 }
 
+// ============================================================
+// G15 — Mandatory pharmacy reports
+// ============================================================
+
+/** Daily Transaction Report (EOD): counter sales for a day + payment-mode breakup. */
+export async function getDailyTransactionReport(tenantId: string, dateStr?: string) {
+  const day = dateStr ? new Date(dateStr) : new Date();
+  const start = new Date(day);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(day);
+  end.setHours(23, 59, 59, 999);
+
+  const bills = await prisma.bill.findMany({
+    where: { tenantId, billNumber: { startsWith: 'PH-' }, billDate: { gte: start, lte: end } },
+    select: {
+      id: true,
+      billNumber: true,
+      billDate: true,
+      totalAmount: true,
+      discountAmount: true,
+      taxAmount: true,
+      amountPaid: true,
+      status: true,
+      patient: { select: { firstName: true, lastName: true, mrn: true } },
+      payments: { select: { amount: true, paymentMethod: true, status: true } },
+    },
+    orderBy: { billDate: 'asc' },
+    take: 2000,
+  });
+
+  const byMode: Record<string, number> = {};
+  let gross = 0;
+  let discount = 0;
+  let tax = 0;
+  let collected = 0;
+  let cancelled = 0;
+  for (const b of bills) {
+    if (b.status === 'cancelled') {
+      cancelled += 1;
+      continue;
+    }
+    gross += Number(b.totalAmount ?? 0);
+    discount += Number(b.discountAmount ?? 0);
+    tax += Number(b.taxAmount ?? 0);
+    collected += Number(b.amountPaid ?? 0);
+    for (const p of b.payments) {
+      if (p.status !== 'completed') continue;
+      byMode[p.paymentMethod] = round2((byMode[p.paymentMethod] ?? 0) + Number(p.amount));
+    }
+  }
+
+  return {
+    date: start,
+    bills,
+    summary: {
+      billCount: bills.length - cancelled,
+      cancelledCount: cancelled,
+      gross: round2(gross),
+      discount: round2(discount),
+      tax: round2(tax),
+      collected: round2(collected),
+      byPaymentMode: byMode,
+    },
+  };
+}
+
+/** Purchase Report: stock inward (batches received) over a date range. */
+export async function getPurchaseReport(
+  tenantId: string,
+  query: { fromDate?: string; toDate?: string; supplierId?: string },
+) {
+  const where: any = { tenantId };
+  if (query.supplierId) where.supplierId = query.supplierId;
+  if (query.fromDate || query.toDate) {
+    where.createdAt = {};
+    if (query.fromDate) where.createdAt.gte = new Date(query.fromDate);
+    if (query.toDate) where.createdAt.lte = new Date(query.toDate);
+  }
+
+  const batches = await prisma.drugBatch.findMany({
+    where,
+    select: {
+      id: true,
+      batchNumber: true,
+      expiryDate: true,
+      createdAt: true,
+      mrp: true,
+      purchasePrice: true,
+      purchaseDiscountPercent: true,
+      gstPercent: true,
+      quantityReceived: true,
+      freeQuantity: true,
+      drug: { select: { id: true, drugName: true } },
+      supplier: { select: { id: true, name: true } },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 3000,
+  });
+
+  let totalQty = 0;
+  let totalValue = 0;
+  let totalTax = 0;
+  const items = batches.map((b) => {
+    const econ = batchPurchaseEconomics(b as any);
+    totalQty += b.quantityReceived;
+    totalValue += econ.netPurchaseValue ?? 0;
+    totalTax += econ.taxAmount ?? 0;
+    return {
+      batchId: b.id,
+      drugName: b.drug?.drugName ?? '-',
+      batchNumber: b.batchNumber,
+      supplier: b.supplier?.name ?? null,
+      receivedAt: b.createdAt,
+      expiryDate: b.expiryDate,
+      quantityReceived: b.quantityReceived,
+      freeQuantity: b.freeQuantity ?? 0,
+      mrp: b.mrp != null ? Number(b.mrp) : null,
+      purchaseRate: b.purchasePrice != null ? Number(b.purchasePrice) : null,
+      discountPercent: b.purchaseDiscountPercent != null ? Number(b.purchaseDiscountPercent) : null,
+      gstPercent: b.gstPercent != null ? Number(b.gstPercent) : null,
+      netPurchaseValue: econ.netPurchaseValue,
+      taxAmount: econ.taxAmount,
+    };
+  });
+
+  return {
+    items,
+    totals: { lineCount: items.length, totalQty, totalValue: round2(totalValue), totalTax: round2(totalTax) },
+  };
+}
+
+/** Stock Valuation Report: on-hand stock at purchase value and selling value. */
+export async function getStockValuationReport(tenantId: string) {
+  const batches = await prisma.drugBatch.findMany({
+    where: { tenantId, isExpired: false, quantityInStock: { gt: 0 } },
+    select: {
+      id: true,
+      batchNumber: true,
+      quantityInStock: true,
+      purchasePrice: true,
+      sellingPrice: true,
+      expiryDate: true,
+      drug: { select: { id: true, drugName: true } },
+    },
+    orderBy: { drug: { drugName: 'asc' } },
+    take: 5000,
+  });
+
+  let totalPurchaseValue = 0;
+  let totalSellingValue = 0;
+  const items = batches.map((b) => {
+    const purchaseValue = round2(Number(b.purchasePrice ?? 0) * b.quantityInStock);
+    const sellingValue = round2(Number(b.sellingPrice ?? 0) * b.quantityInStock);
+    totalPurchaseValue += purchaseValue;
+    totalSellingValue += sellingValue;
+    return {
+      batchId: b.id,
+      drugName: b.drug?.drugName ?? '-',
+      batchNumber: b.batchNumber,
+      quantityInStock: b.quantityInStock,
+      expiryDate: b.expiryDate,
+      purchaseValue,
+      sellingValue,
+    };
+  });
+
+  return {
+    items,
+    totals: {
+      batchCount: items.length,
+      totalPurchaseValue: round2(totalPurchaseValue),
+      totalSellingValue: round2(totalSellingValue),
+      potentialMargin: round2(totalSellingValue - totalPurchaseValue),
+    },
+  };
+}
+
+/** Vendor-wise Segregation: per-vendor purchase value, stock qty, medicines. */
+export async function getVendorWiseReport(tenantId: string, supplierId?: string) {
+  const where: any = { tenantId, supplierId: supplierId ?? { not: null } };
+  const batches = await prisma.drugBatch.findMany({
+    where,
+    select: {
+      drugId: true,
+      supplierId: true,
+      quantityReceived: true,
+      quantityInStock: true,
+      purchasePrice: true,
+      purchaseDiscountPercent: true,
+      supplier: { select: { id: true, name: true } },
+    },
+    take: 8000,
+  });
+
+  const map = new Map<
+    string,
+    { supplierId: string; supplierName: string; totalPaid: number; totalQty: number; inStockQty: number; drugIds: Set<string>; batchCount: number }
+  >();
+  for (const b of batches) {
+    if (!b.supplierId) continue;
+    const net = Number(b.purchasePrice ?? 0) * (1 - Number(b.purchaseDiscountPercent ?? 0) / 100) * b.quantityReceived;
+    const cur =
+      map.get(b.supplierId) ??
+      {
+        supplierId: b.supplierId,
+        supplierName: b.supplier?.name ?? '-',
+        totalPaid: 0,
+        totalQty: 0,
+        inStockQty: 0,
+        drugIds: new Set<string>(),
+        batchCount: 0,
+      };
+    cur.totalPaid += net;
+    cur.totalQty += b.quantityReceived;
+    cur.inStockQty += b.quantityInStock;
+    cur.drugIds.add(b.drugId);
+    cur.batchCount += 1;
+    map.set(b.supplierId, cur);
+  }
+
+  const items = [...map.values()]
+    .map((v) => ({
+      supplierId: v.supplierId,
+      supplierName: v.supplierName,
+      totalPaid: round2(v.totalPaid),
+      totalQty: v.totalQty,
+      inStockQty: v.inStockQty,
+      medicineCount: v.drugIds.size,
+      batchCount: v.batchCount,
+    }))
+    .sort((a, b) => b.totalPaid - a.totalPaid);
+
+  return {
+    items,
+    totals: {
+      vendorCount: items.length,
+      totalPaid: round2(items.reduce((s, i) => s + i.totalPaid, 0)),
+      totalQty: items.reduce((s, i) => s + i.totalQty, 0),
+    },
+  };
+}
+
+/** Supplier Credit Notes: vendor returns with the supplier's credit note + value. */
+export async function getCreditNotesReport(
+  tenantId: string,
+  query: { fromDate?: string; toDate?: string; supplierId?: string },
+) {
+  const where: any = { tenantId, returnType: 'vendor_return' };
+  if (query.supplierId) where.supplierId = query.supplierId;
+  if (query.fromDate || query.toDate) {
+    where.createdAt = {};
+    if (query.fromDate) where.createdAt.gte = new Date(query.fromDate);
+    if (query.toDate) where.createdAt.lte = new Date(query.toDate);
+  }
+
+  const rows = await prisma.drugReturn.findMany({
+    where,
+    select: {
+      id: true,
+      createdAt: true,
+      quantity: true,
+      status: true,
+      creditNoteNumber: true,
+      creditAmount: true,
+      reason: true,
+      supplier: { select: { id: true, name: true } },
+      drugBatch: { select: { batchNumber: true, drug: { select: { drugName: true } } } },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 2000,
+  });
+
+  const items = rows.map((r) => ({
+    id: r.id,
+    date: r.createdAt,
+    supplier: r.supplier?.name ?? null,
+    drugName: r.drugBatch?.drug?.drugName ?? null,
+    batchNumber: r.drugBatch?.batchNumber ?? null,
+    quantity: r.quantity,
+    status: r.status,
+    creditNoteNumber: r.creditNoteNumber,
+    creditAmount: r.creditAmount != null ? Number(r.creditAmount) : null,
+    reason: r.reason,
+  }));
+
+  return {
+    items,
+    totals: {
+      noteCount: items.length,
+      totalCredit: round2(items.reduce((s, i) => s + (i.creditAmount ?? 0), 0)),
+    },
+  };
+}
+
 export async function getReturns(tenantId: string, query: GetReturnsQuery) {
   const { skip, take, page, limit } = getPaginationParams(query);
 
