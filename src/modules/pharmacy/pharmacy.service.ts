@@ -1771,6 +1771,69 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
     assertPharmacyAdmin(roles, 'record vendor returns');
   }
 
+  // Counter (walk-in / over-the-counter) return — NOT tied to a patient record
+  // or bill. The pharmacist just records the medicine, quantity and, optionally,
+  // a batch number / expiry the customer brought back. No refund is computed;
+  // stock is restored on approval (to a matching or created batch when known).
+  if (data.returnType === 'counter_return') {
+    if (!data.drugId) {
+      throw AppError.badRequest('A medicine is required for a counter return');
+    }
+    const drug = await prisma.drugFormulary.findFirst({
+      where: { id: data.drugId, tenantId },
+      select: { id: true, drugName: true },
+    });
+    if (!drug) throw AppError.notFound('Medicine not found in the formulary');
+
+    // If a tracked batch was picked, it must belong to this tenant + medicine.
+    let counterBatchId: string | null = null;
+    if (data.drugBatchId) {
+      const batch = await prisma.drugBatch.findFirst({
+        where: { id: data.drugBatchId, tenantId, drugId: drug.id },
+        select: { id: true },
+      });
+      if (!batch) throw AppError.notFound('Drug batch not found for this medicine');
+      counterBatchId = batch.id;
+    }
+
+    const counterReturn = await prisma.drugReturn.create({
+      data: {
+        tenantId,
+        returnType: 'counter_return',
+        drugId: drug.id,
+        drugBatchId: counterBatchId,
+        batchNumber: data.batchNumber || null,
+        expiryDate: data.expiryDate ?? null,
+        saleUnit: data.saleUnit ?? 'pack',
+        quantity: data.quantity,
+        reason: data.reason,
+        status: 'pending',
+      },
+      include: {
+        drug: { select: { id: true, drugName: true } },
+        drugBatch: {
+          select: { id: true, batchNumber: true, drug: { select: { id: true, drugName: true } } },
+        },
+      },
+    });
+
+    void safePharmacyAudit({
+      tenantId,
+      userId,
+      action: 'create',
+      entityType: 'drug_return',
+      entityId: counterReturn.id,
+      description: `Counter return recorded: ${data.quantity} × ${drug.drugName}${data.batchNumber ? ` (batch ${data.batchNumber})` : ''}`,
+      newValues: { quantity: data.quantity, returnType: 'counter_return', drugId: drug.id },
+    });
+
+    logger.info(
+      { tenantId, returnId: counterReturn.id, returnType: 'counter_return' },
+      'Counter drug return created',
+    );
+    return counterReturn;
+  }
+
   // Patient returns can be anchored to the original sale line. When they are,
   // the batch + patient are taken from that record, the quantity is bounded by
   // what is still returnable, and a refund amount is computed from the billed
@@ -1880,6 +1943,7 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
           drug: { select: { id: true, drugName: true } },
         },
       },
+      drug: { select: { id: true, drugName: true } },
       patient: { select: { id: true, firstName: true, lastName: true } },
       supplier: { select: { id: true, name: true } },
     },
@@ -1914,6 +1978,8 @@ export async function getReturns(tenantId: string, query: GetReturnsQuery) {
     where.OR = [
       { drugBatch: { batchNumber: { contains: query.search, mode: 'insensitive' } } },
       { drugBatch: { drug: { drugName: { contains: query.search, mode: 'insensitive' } } } },
+      { drug: { drugName: { contains: query.search, mode: 'insensitive' } } },
+      { batchNumber: { contains: query.search, mode: 'insensitive' } },
       { reason: { contains: query.search, mode: 'insensitive' } },
     ];
   }
@@ -1931,6 +1997,7 @@ export async function getReturns(tenantId: string, query: GetReturnsQuery) {
             drug: { select: { id: true, drugName: true } },
           },
         },
+        drug: { select: { id: true, drugName: true } },
         patient: { select: { id: true, firstName: true, lastName: true } },
         supplier: { select: { id: true, name: true } },
         processor: { select: { id: true, firstName: true, lastName: true } },
@@ -2033,16 +2100,55 @@ export async function processReturn(
   // payment and reducing the bill — mirroring billing.approveRefund.
   if (data.status === 'processed') {
     const result = await prisma.$transaction(async (tx) => {
+      // Resolve which batch to restock. Patient/vendor returns always carry a
+      // drugBatchId. A counter return may carry one too; if not, match its
+      // free-text batch number against an existing batch for the same medicine,
+      // or create one when an expiry was supplied. With no batch info at all we
+      // log the return without a stock movement (an admin can add stock later).
+      let restockBatchId = drugReturn.drugBatchId;
+      if (!restockBatchId && drugReturn.returnType === 'counter_return' && drugReturn.drugId) {
+        if (drugReturn.batchNumber) {
+          const existing = await tx.drugBatch.findFirst({
+            where: { tenantId, drugId: drugReturn.drugId, batchNumber: drugReturn.batchNumber },
+            select: { id: true },
+          });
+          if (existing) {
+            restockBatchId = existing.id;
+          } else if (drugReturn.expiryDate) {
+            const drug = await tx.drugFormulary.findUnique({
+              where: { id: drugReturn.drugId },
+              select: { price: true },
+            });
+            const created = await tx.drugBatch.create({
+              data: {
+                tenantId,
+                drugId: drugReturn.drugId,
+                batchNumber: drugReturn.batchNumber,
+                expiryDate: drugReturn.expiryDate,
+                sellingPrice: drug?.price ?? null,
+                quantityReceived: 0,
+                quantityInStock: 0,
+              },
+              select: { id: true },
+            });
+            restockBatchId = created.id;
+          }
+        }
+      }
+
       await tx.drugReturn.update({
         where: { id },
-        data: { status: 'processed', processedBy: userId },
+        // Link the resolved batch back so the record shows where stock went.
+        data: { status: 'processed', processedBy: userId, drugBatchId: restockBatchId },
       });
 
-      // Restock the returned quantity
-      await tx.drugBatch.update({
-        where: { id: drugReturn.drugBatchId },
-        data: { quantityInStock: { increment: drugReturn.quantity } },
-      });
+      // Restock the returned quantity when we have a batch to put it back into.
+      if (restockBatchId) {
+        await tx.drugBatch.update({
+          where: { id: restockBatchId },
+          data: { quantityInStock: { increment: drugReturn.quantity } },
+        });
+      }
 
       const refundDue =
         drugReturn.refundAmount != null ? Number(drugReturn.refundAmount) : 0;
@@ -2098,6 +2204,7 @@ export async function processReturn(
               drug: { select: { id: true, drugName: true } },
             },
           },
+          drug: { select: { id: true, drugName: true } },
           patient: { select: { id: true, firstName: true, lastName: true } },
           supplier: { select: { id: true, name: true } },
           processor: { select: { id: true, firstName: true, lastName: true } },
@@ -2134,9 +2241,11 @@ export async function processReturn(
       action: 'update',
       entityType: 'drug_return',
       entityId: id,
-      description: `Return approved — restocked ${drugReturn.quantity} unit(s) to batch ${result?.drugBatch?.batchNumber ?? '-'}`,
+      description: result?.drugBatchId
+        ? `Return approved — restocked ${drugReturn.quantity} unit(s) to batch ${result?.drugBatch?.batchNumber ?? '-'}`
+        : `Return approved — ${drugReturn.quantity} unit(s) logged (no batch to restock)`,
       oldValues: { status: 'pending' },
-      newValues: { status: 'processed', restockedQuantity: drugReturn.quantity },
+      newValues: { status: 'processed', restockedQuantity: result?.drugBatchId ? drugReturn.quantity : 0 },
     });
 
     logger.info({ tenantId, returnId: id, status: 'processed', processedBy: userId }, 'Drug return processed');
@@ -2158,6 +2267,7 @@ export async function processReturn(
           drug: { select: { id: true, drugName: true } },
         },
       },
+      drug: { select: { id: true, drugName: true } },
       patient: { select: { id: true, firstName: true, lastName: true } },
       supplier: { select: { id: true, name: true } },
       processor: { select: { id: true, firstName: true, lastName: true } },
@@ -2189,7 +2299,7 @@ export async function processReturn(
 
 export interface StockLedgerEntry {
   date: Date;
-  movementType: 'receipt' | 'dispense' | 'patient_return' | 'vendor_return';
+  movementType: 'receipt' | 'dispense' | 'patient_return' | 'vendor_return' | 'counter_return';
   drugId: string;
   drugName: string;
   batchNumber: string;
@@ -2231,10 +2341,14 @@ export async function getStockLedger(tenantId: string, query: GetStockLedgerQuer
     }),
     // DrugReturn has no processedAt; createdAt is close enough for a
     // window-bounded register (returns are processed within days).
+    // Only returns that actually moved stock back in — counter returns without a
+    // resolved batch (drugBatchId still null after approval) never incremented
+    // stock, so they don't belong in the inflow register.
     prisma.drugReturn.findMany({
-      where: { tenantId, status: 'processed', createdAt: window, ...batchDrugFilter },
+      where: { tenantId, status: 'processed', createdAt: window, drugBatchId: { not: null }, ...batchDrugFilter },
       include: {
         drugBatch: { select: { batchNumber: true, drug: { select: { id: true, drugName: true } } } },
+        drug: { select: { id: true, drugName: true } },
         supplier: { select: { name: true } },
       },
     }),
@@ -2269,10 +2383,15 @@ export async function getStockLedger(tenantId: string, query: GetStockLedgerQuer
     })),
     ...returns.map((r): StockLedgerEntry => ({
       date: r.createdAt,
-      movementType: r.returnType === 'vendor_return' ? 'vendor_return' : 'patient_return',
-      drugId: r.drugBatch.drug.id,
-      drugName: r.drugBatch.drug.drugName,
-      batchNumber: r.drugBatch.batchNumber,
+      movementType:
+        r.returnType === 'vendor_return'
+          ? 'vendor_return'
+          : r.returnType === 'counter_return'
+          ? 'counter_return'
+          : 'patient_return',
+      drugId: r.drugBatch?.drug.id ?? r.drug?.id ?? '',
+      drugName: r.drugBatch?.drug.drugName ?? r.drug?.drugName ?? 'Medication',
+      batchNumber: r.drugBatch?.batchNumber ?? r.batchNumber ?? '-',
       quantityIn: r.quantity,
       quantityOut: 0,
       party: r.supplier?.name ?? null,

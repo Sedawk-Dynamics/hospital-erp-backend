@@ -291,10 +291,16 @@ export const getDispenseQuerySchema = z.object({
 export const createReturnSchema = z.object({
   body: z
     .object({
-      returnType: z.enum(['patient_return', 'vendor_return']),
+      returnType: z.enum(['patient_return', 'vendor_return', 'counter_return']),
       // Optional when dispensingRecordId is given — the batch is taken from the
       // original sale line in that case.
       drugBatchId: z.string().uuid('Invalid drug batch ID').optional(),
+      // counter_return: the medicine being returned (formulary item). The batch
+      // and expiry below are optional — a walk-in return need not name a batch.
+      drugId: z.string().uuid('Invalid drug ID').optional(),
+      batchNumber: z.string().max(100).optional(),
+      expiryDate: z.coerce.date().optional(),
+      saleUnit: z.enum(['pack', 'loose']).optional(),
       // Anchor a patient return to the original sale line so the refund is
       // computed from what was billed and bounded by what was dispensed.
       dispensingRecordId: z.string().uuid('Invalid dispensing record ID').optional(),
@@ -303,10 +309,17 @@ export const createReturnSchema = z.object({
       quantity: z.number().int().positive('Quantity must be positive'),
       reason: z.string().max(1000).optional(),
     })
-    .refine((b) => !!b.drugBatchId || !!b.dispensingRecordId, {
-      message: 'Either drugBatchId or dispensingRecordId is required',
-      path: ['drugBatchId'],
-    }),
+    .refine(
+      (b) =>
+        b.returnType === 'counter_return'
+          ? !!b.drugId
+          : !!b.drugBatchId || !!b.dispensingRecordId,
+      {
+        message:
+          'A counter return needs a medicine (drugId); other returns need a drugBatchId or dispensingRecordId',
+        path: ['drugId'],
+      },
+    ),
 });
 
 // SOW-literal vendor-return endpoint (POST /pharmacy/vendor-returns): returnType
@@ -328,7 +341,7 @@ export const returnIdParamSchema = z.object({
 
 export const getReturnsQuerySchema = z.object({
   query: paginationSchema.extend({
-    returnType: z.enum(['patient_return', 'vendor_return']).optional(),
+    returnType: z.enum(['patient_return', 'vendor_return', 'counter_return']).optional(),
     status: z.enum(['pending', 'processed', 'rejected']).optional(),
   }),
 });

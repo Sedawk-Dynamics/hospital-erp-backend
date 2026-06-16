@@ -798,6 +798,10 @@ enum StockTransferStatus {
 enum ReturnType {
   patient_return @map("patient_return")
   vendor_return  @map("vendor_return")
+  // Walk-in / over-the-counter return that is NOT tied to a patient record or
+  // bill in the system — the pharmacist just records the medicine, quantity and
+  // (optionally) a batch/expiry. No patient lookup, no refund.
+  counter_return @map("counter_return")
 }
 
 enum DrugReturnStatus {
@@ -3953,6 +3957,7 @@ model DrugFormulary {
   drugMaster        DrugMaster?        @relation(fields: [drugMasterId], references: [id])
   drugBatches       DrugBatch[]
   prescriptionItems PrescriptionItem[]
+  drugReturns       DrugReturn[]
 
   @@map("drug_formulary")
 }
@@ -4026,7 +4031,16 @@ model DrugReturn {
   id          String           @id @default(uuid())
   tenantId    String           @map("tenant_id")
   returnType  ReturnType       @map("return_type")
-  drugBatchId String           @map("drug_batch_id")
+  // Nullable: a counter_return need not name a specific batch — the medicine is
+  // identified by drugId and the batch/expiry are optional free-text fields.
+  drugBatchId String?          @map("drug_batch_id")
+  // The medicine being returned. Set for counter_return (picked from the
+  // formulary); for patient/vendor returns the drug is reached via drugBatch.
+  drugId      String?          @map("drug_id")
+  // Free-text batch + expiry captured on a counter_return when the staff knows
+  // them but they are not (yet) a tracked DrugBatch. Both optional.
+  batchNumber String?          @map("batch_number") @db.VarChar(100)
+  expiryDate  DateTime?        @map("expiry_date") @db.Date
   patientId   String?          @map("patient_id")
   supplierId  String?          @map("supplier_id")
   quantity    Int
@@ -4048,7 +4062,8 @@ model DrugReturn {
   createdAt   DateTime         @default(now()) @map("created_at")
 
   tenant           Tenant            @relation(fields: [tenantId], references: [id])
-  drugBatch        DrugBatch         @relation(fields: [drugBatchId], references: [id])
+  drugBatch        DrugBatch?        @relation(fields: [drugBatchId], references: [id])
+  drug             DrugFormulary?    @relation(fields: [drugId], references: [id])
   patient          Patient?          @relation(fields: [patientId], references: [id])
   supplier         Supplier?         @relation(fields: [supplierId], references: [id])
   processor        User?             @relation(fields: [processedBy], references: [id])
