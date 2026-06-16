@@ -371,6 +371,16 @@ export const dispenseIdParamSchema = z.object({
   }),
 });
 
+// G12: advance an IP prescription through the ward→pharmacy fulfilment lifecycle.
+export const setPharmacyStatusSchema = z.object({
+  body: z.object({
+    status: z.enum(['ordered', 'preparing', 'ready', 'collected']),
+  }),
+  params: z.object({
+    id: z.string().uuid('Invalid prescription ID'),
+  }),
+});
+
 export const getDispenseQuerySchema = z.object({
   query: paginationSchema.extend({
     patientId: z.string().uuid().optional(),

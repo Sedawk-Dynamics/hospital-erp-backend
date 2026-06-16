@@ -146,6 +146,26 @@ export async function findFormularyMatches(
   }
 }
 
+// G12: advance an IP prescription through the ward→pharmacy fulfilment lifecycle.
+export async function setPrescriptionPharmacyStatus(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await pharmacyService.setPrescriptionPharmacyStatus(
+      tenantId,
+      req.user!.userId,
+      req.params.id as string,
+      req.body.status,
+    );
+    sendResponse({ res, message: 'Order status updated', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // G8: alternative brands sharing this drug's composition (for out-of-stock swaps).
 export async function getFormularyAlternatives(
   req: AuthenticatedRequest,

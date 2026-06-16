@@ -97,6 +97,8 @@ export const getPrescriptionsQuerySchema = z.object({
       .enum(['active', 'dispensed', 'partially_dispensed', 'cancelled', 'pending'])
       .optional(),
     prescriptionType: z.enum(['op', 'ip']).optional(),
+    // G12: filter the pharmacy queue by fulfilment stage.
+    pharmacyStatus: z.enum(['ordered', 'preparing', 'ready', 'collected']).optional(),
     // Pharmacy queue filter: when explicitly false, restricts to
     // prescriptions that are NOT fully dispensed (active /
     // partially_dispensed). When true, returns only fully dispensed.

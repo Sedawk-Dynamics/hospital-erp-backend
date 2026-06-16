@@ -25,6 +25,7 @@ import {
   adjustBatchSchema,
   getStockAdjustmentsQuerySchema,
   createDispenseSchema,
+  setPharmacyStatusSchema,
   createPharmacySaleSchema,
   getPharmacySalesQuerySchema,
   cancelSaleSchema,
@@ -102,6 +103,9 @@ pharmacyRoutes.post('/dispense', authenticate, requirePermission('pharmacy', 'cr
 pharmacyRoutes.get('/dispensing', authenticate, requirePermission('pharmacy', 'create'), validate(getDispenseQuerySchema), controller.getDispenseRecords);
 pharmacyRoutes.get('/dispensing/:id', authenticate, requirePermission('pharmacy', 'read'), validate(dispenseIdParamSchema), controller.getDispenseById);
 pharmacyRoutes.patch('/dispensing/:id/verify', authenticate, requirePermission('pharmacy', 'approve'), validate(dispenseIdParamSchema), controller.verifyDispense);
+
+// --- G12: ward→pharmacy order fulfilment status (Ordered→Preparing→Ready→Collected) ---
+pharmacyRoutes.patch('/queue/:id/status', authenticate, requirePermission('pharmacy', 'update'), validate(setPharmacyStatusSchema), controller.setPrescriptionPharmacyStatus);
 
 // --- Analytics (sales / expiry / stock usage / batch summary for the Reports page) ---
 pharmacyRoutes.get('/analytics', authenticate, requirePermission('pharmacy', 'read'), controller.getPharmacyAnalytics);

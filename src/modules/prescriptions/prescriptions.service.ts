@@ -184,6 +184,13 @@ export async function getPrescriptions(tenantId: string, query: GetPrescriptions
     where.status = 'dispensed';
   }
   if (query.prescriptionType) where.prescriptionType = query.prescriptionType;
+  // G12: filter the pharmacy queue by fulfilment stage (ordered/preparing/…).
+  if ((query as any).pharmacyStatus) {
+    where.pharmacyStatus =
+      (query as any).pharmacyStatus === 'ordered'
+        ? { in: ['ordered', null as any] } // null is treated as "ordered"
+        : (query as any).pharmacyStatus;
+  }
 
   if (query.fromDate) {
     where.createdAt = { ...where.createdAt, gte: new Date(query.fromDate) };
@@ -216,7 +223,21 @@ export async function getPrescriptions(tenantId: string, query: GetPrescriptions
           },
         },
         visit: {
-          select: { id: true, visitDate: true, visitType: true },
+          select: {
+            id: true,
+            visitDate: true,
+            visitType: true,
+            // G12: IP context for the pharmacy queue — patient billing category
+            // (collect payment?) + ward / bed so orders can be grouped by room.
+            admission: {
+              select: {
+                id: true,
+                billingCategory: true,
+                ward: { select: { id: true, name: true } },
+                bed: { select: { id: true, bedNumber: true } },
+              },
+            },
+          },
         },
         prescriptionItems: true,
       },

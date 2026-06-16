@@ -2356,6 +2356,10 @@ model Admission {
   expectedDischargeDate DateTime?       @map("expected_discharge_date") @db.Date
   admissionReason       String?         @map("admission_reason")
   depositAmount         Decimal         @default(0) @map("deposit_amount") @db.Decimal(12, 2)
+  // G12: how this IP patient's charges are settled — drives the pharmacy's
+  // "collect payment?" decision. cash | package | insurance | corporate.
+  // Null is treated as 'cash'. Set by the front desk at admission.
+  billingCategory       String?         @map("billing_category") @db.VarChar(20)
   status                AdmissionStatus @default(admitted)
   admittedBy            String?         @map("admitted_by")
   dischargedBy          String?         @map("discharged_by")
@@ -3100,6 +3104,9 @@ model Prescription {
   doctorId         String             @map("doctor_id")
   prescriptionType PrescriptionType   @map("prescription_type")
   status           PrescriptionStatus @default(active)
+  // G12: ward→pharmacy fulfilment lifecycle, independent of the clinical
+  // dispensing status. ordered | preparing | ready | collected (null = ordered).
+  pharmacyStatus   String?            @map("pharmacy_status") @db.VarChar(20)
   notes            String?
   followUpDate     DateTime?          @map("follow_up_date") @db.Date
   createdAt        DateTime           @default(now()) @map("created_at")

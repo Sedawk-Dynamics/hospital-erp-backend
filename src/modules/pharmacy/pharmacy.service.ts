@@ -1223,6 +1223,43 @@ export async function getStockAdjustments(
   return { items, total, page, limit };
 }
 
+/**
+ * G12: advance an IP prescription through the ward→pharmacy fulfilment
+ * lifecycle (ordered → preparing → ready → collected). Independent of the
+ * clinical dispensing status so the ward can track "is my order ready yet".
+ */
+export async function setPrescriptionPharmacyStatus(
+  tenantId: string,
+  userId: string,
+  prescriptionId: string,
+  status: 'ordered' | 'preparing' | 'ready' | 'collected',
+) {
+  const rx = await prisma.prescription.findFirst({
+    where: { id: prescriptionId, tenantId },
+    select: { id: true, pharmacyStatus: true },
+  });
+  if (!rx) throw AppError.notFound('Prescription not found');
+
+  const updated = await prisma.prescription.update({
+    where: { id: prescriptionId },
+    data: { pharmacyStatus: status },
+    select: { id: true, pharmacyStatus: true },
+  });
+
+  void safePharmacyAudit({
+    tenantId,
+    userId,
+    action: 'update',
+    entityType: 'dispensing_record',
+    entityId: prescriptionId,
+    description: `Pharmacy order status: ${rx.pharmacyStatus ?? 'ordered'} → ${status}`,
+    oldValues: { pharmacyStatus: rx.pharmacyStatus },
+    newValues: { pharmacyStatus: status },
+  });
+
+  return updated;
+}
+
 export async function getExpiringBatches(tenantId: string, query: GetExpiringBatchesQuery) {
   const { skip, take, page, limit } = getPaginationParams(query);
 
