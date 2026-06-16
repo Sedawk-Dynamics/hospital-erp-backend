@@ -233,6 +233,9 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'pharmacy', action: 'read' }, { module: 'pharmacy', action: 'create' }, { module: 'pharmacy', action: 'update' }, { module: 'pharmacy', action: 'delete' }, { module: 'pharmacy', action: 'approve' }, { module: 'pharmacy', action: 'export' },
       { module: 'prescriptions', action: 'read' }, { module: 'prescriptions', action: 'update' },
       { module: 'inventory', action: 'read' }, { module: 'inventory', action: 'create' }, { module: 'inventory', action: 'update' }, { module: 'inventory', action: 'delete' }, { module: 'inventory', action: 'approve' }, { module: 'inventory', action: 'export' },
+      // Read departments + wards so the stock-transfer form can list them as
+      // transfer source / destination.
+      { module: 'departments', action: 'read' }, { module: 'wards', action: 'read' },
       { module: 'patients', action: 'read' }, { module: 'reports', action: 'read' }, { module: 'reports', action: 'export' },
     ],
 
@@ -246,6 +249,9 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'inventory', action: 'delete' }, { module: 'inventory', action: 'approve' }, { module: 'inventory', action: 'export' },
       { module: 'pharmacy', action: 'read' }, { module: 'pharmacy', action: 'create' }, { module: 'pharmacy', action: 'update' },
       { module: 'pharmacy', action: 'delete' }, { module: 'pharmacy', action: 'approve' }, { module: 'pharmacy', action: 'export' },
+      // Read departments + wards so the stock-transfer form can list them as
+      // transfer source / destination.
+      { module: 'departments', action: 'read' }, { module: 'wards', action: 'read' },
       { module: 'reports', action: 'read' },
     ],
 
