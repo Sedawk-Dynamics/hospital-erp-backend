@@ -218,6 +218,20 @@ export async function getCreditNotesReport(
   }
 }
 
+// G17: narcotic / controlled-drug register for a Drug Inspector audit.
+export async function getNarcoticRegister(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await pharmacyService.getNarcoticRegister(req.user!.tenantId, req.query as any);
+    sendResponse({ res, message: 'Narcotic register', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // G16: mint a temporary emergency (Golden Hour) patient to dispense against.
 export async function createEmergencyPatient(
   req: AuthenticatedRequest,

@@ -584,6 +584,16 @@ export const creditNotesQuerySchema = z.object({
   }),
 });
 
+// G17: narcotic / controlled-drug register for a DI audit.
+export const narcoticRegisterQuerySchema = z.object({
+  query: z.object({
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
+    dispensedBy: z.string().uuid().optional(),
+    schedule: z.string().max(10).optional(),
+  }),
+});
+
 // ============================================================
 // Stock ledger (batch-wise movement register)
 // ============================================================

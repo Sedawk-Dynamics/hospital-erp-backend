@@ -2892,6 +2892,73 @@ export async function getCreditNotesReport(
   };
 }
 
+// Indian controlled / habit-forming schedules a drug inspector audits.
+const CONTROLLED_SCHEDULES = ['X', 'H1', 'H'];
+
+/**
+ * G17: Narcotic / controlled-drug register for a Drug Inspector audit —
+ * dispenses of scheduled drugs (Schedule X / H1 / H), filterable by the
+ * dispensing user and date range.
+ */
+export async function getNarcoticRegister(
+  tenantId: string,
+  query: { fromDate?: string; toDate?: string; dispensedBy?: string; schedule?: string },
+) {
+  const where: any = {
+    tenantId,
+    drugBatch: {
+      drug: {
+        drugMaster: {
+          schedule: query.schedule ? { equals: query.schedule } : { in: CONTROLLED_SCHEDULES },
+        },
+      },
+    },
+  };
+  if (query.dispensedBy) where.dispensedBy = query.dispensedBy;
+  if (query.fromDate || query.toDate) {
+    where.dispensedAt = {};
+    if (query.fromDate) where.dispensedAt.gte = new Date(query.fromDate);
+    if (query.toDate) where.dispensedAt.lte = new Date(query.toDate);
+  }
+
+  const rows = await prisma.dispensingRecord.findMany({
+    where,
+    select: {
+      id: true,
+      quantityDispensed: true,
+      dispensedAt: true,
+      billId: true,
+      patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+      dispenser: { select: { id: true, firstName: true, lastName: true } },
+      drugBatch: {
+        select: {
+          batchNumber: true,
+          drug: {
+            select: { drugName: true, drugMaster: { select: { schedule: true } } },
+          },
+        },
+      },
+    },
+    orderBy: { dispensedAt: 'desc' },
+    take: 3000,
+  });
+
+  const items = rows.map((r) => ({
+    id: r.id,
+    date: r.dispensedAt,
+    drugName: r.drugBatch?.drug?.drugName ?? '-',
+    schedule: r.drugBatch?.drug?.drugMaster?.schedule ?? null,
+    batchNumber: r.drugBatch?.batchNumber ?? null,
+    quantity: r.quantityDispensed,
+    patient: r.patient ? `${r.patient.firstName} ${r.patient.lastName ?? ''}`.trim() : null,
+    patientMrn: r.patient?.mrn ?? null,
+    dispensedBy: r.dispenser ? `${r.dispenser.firstName} ${r.dispenser.lastName ?? ''}`.trim() : null,
+    billId: r.billId,
+  }));
+
+  return { items, total: items.length };
+}
+
 export async function getReturns(tenantId: string, query: GetReturnsQuery) {
   const { skip, take, page, limit } = getPaginationParams(query);
 

@@ -51,6 +51,7 @@ import {
   purchaseReportQuerySchema,
   vendorWiseQuerySchema,
   creditNotesQuerySchema,
+  narcoticRegisterQuerySchema,
 } from './pharmacy.validation';
 
 export const pharmacyRoutes = Router();
@@ -151,6 +152,8 @@ pharmacyRoutes.get('/reports/purchases', authenticate, requirePermission('pharma
 pharmacyRoutes.get('/reports/stock-valuation', authenticate, requirePermission('pharmacy', 'read'), controller.getStockValuationReport);
 pharmacyRoutes.get('/reports/vendor-wise', authenticate, requirePermission('pharmacy', 'read'), validate(vendorWiseQuerySchema), controller.getVendorWiseReport);
 pharmacyRoutes.get('/reports/credit-notes', authenticate, requirePermission('pharmacy', 'read'), validate(creditNotesQuerySchema), controller.getCreditNotesReport);
+// G17: narcotic / controlled-drug register (DI audit) — filter by user + date.
+pharmacyRoutes.get('/reports/narcotic-register', authenticate, requirePermission('pharmacy', 'read'), validate(narcoticRegisterQuerySchema), controller.getNarcoticRegister);
 
 // --- Maintenance: auto-flag expired batches (idempotent) ---
 pharmacyRoutes.post('/maintenance/flag-expired', authenticate, requirePermission('pharmacy', 'approve'), controller.flagExpiredBatches);
