@@ -37,7 +37,10 @@ import type {
 // RETURNS, but those same perms must not let it manage the formulary, drug
 // categories or stock batches. This service-level guard enforces the 2-role
 // split (mirrors lab's assertCanCloneTemplates). admin/super_admin always pass.
-const PHARMACY_ADMIN_ROLES = new Set(['super_admin', 'admin', 'pharmacy_admin']);
+// inventory_manager is included because the drug-stock pages (formulary,
+// batches, catalog, GST) now live under the Inventory module and that role
+// owns inventory management across drugs + consumables.
+const PHARMACY_ADMIN_ROLES = new Set(['super_admin', 'admin', 'pharmacy_admin', 'inventory_manager']);
 
 function assertPharmacyAdmin(roles: string[], action = 'manage pharmacy master data'): void {
   if (!roles.some((r) => PHARMACY_ADMIN_ROLES.has(r))) {

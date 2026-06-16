@@ -236,9 +236,16 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'patients', action: 'read' }, { module: 'reports', action: 'read' }, { module: 'reports', action: 'export' },
     ],
 
+    // Inventory module + the pharmacy drug-stock surfaces (Drug Catalog,
+    // Formulary, Batches, GST) which now live under the Inventory module. The
+    // pharmacy perms let those drug pages (backed by /pharmacy/* endpoints)
+    // work for an inventory manager; clinical pharmacy flows (dispense, sales)
+    // have no UI here.
     inventory_manager: [
       { module: 'inventory', action: 'read' }, { module: 'inventory', action: 'create' }, { module: 'inventory', action: 'update' },
       { module: 'inventory', action: 'delete' }, { module: 'inventory', action: 'approve' }, { module: 'inventory', action: 'export' },
+      { module: 'pharmacy', action: 'read' }, { module: 'pharmacy', action: 'create' }, { module: 'pharmacy', action: 'update' },
+      { module: 'pharmacy', action: 'delete' }, { module: 'pharmacy', action: 'approve' }, { module: 'pharmacy', action: 'export' },
       { module: 'reports', action: 'read' },
     ],
 
