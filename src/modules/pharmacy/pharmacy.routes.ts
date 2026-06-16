@@ -52,6 +52,10 @@ import {
   vendorWiseQuerySchema,
   creditNotesQuerySchema,
   narcoticRegisterQuerySchema,
+  wardStockTransferSchema,
+  wardStockDispenseSchema,
+  wardStockQuerySchema,
+  wardLedgerQuerySchema,
 } from './pharmacy.validation';
 
 export const pharmacyRoutes = Router();
@@ -113,6 +117,12 @@ pharmacyRoutes.patch('/dispensing/:id/verify', authenticate, requirePermission('
 
 // --- G12: ward→pharmacy order fulfilment status (Ordered→Preparing→Ready→Collected) ---
 pharmacyRoutes.patch('/queue/:id/status', authenticate, requirePermission('pharmacy', 'update'), validate(setPharmacyStatusSchema), controller.setPrescriptionPharmacyStatus);
+
+// --- G13: Ward stock (central pharmacy → ward, ward → patient, ward ledger) ---
+pharmacyRoutes.get('/ward-stock', authenticate, requirePermission('pharmacy', 'read'), validate(wardStockQuerySchema), controller.getWardStock);
+pharmacyRoutes.get('/ward-stock/ledger', authenticate, requirePermission('pharmacy', 'read'), validate(wardLedgerQuerySchema), controller.getWardLedger);
+pharmacyRoutes.post('/ward-stock/transfer', authenticate, requirePermission('pharmacy', 'create'), validate(wardStockTransferSchema), controller.transferToWard);
+pharmacyRoutes.post('/ward-stock/dispense', authenticate, requirePermission('pharmacy', 'create'), validate(wardStockDispenseSchema), controller.dispenseFromWard);
 
 // --- G16: Emergency (Golden Hour) pre-registration buffer + retrospective merge ---
 pharmacyRoutes.post('/emergency-patients', authenticate, requirePermission('pharmacy', 'create'), validate(createEmergencyPatientSchema), controller.createEmergencyPatient);

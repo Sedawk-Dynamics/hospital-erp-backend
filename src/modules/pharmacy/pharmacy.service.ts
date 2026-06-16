@@ -2601,6 +2601,265 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
 }
 
 // ============================================================
+// G13 — Ward stock sub-module
+// ============================================================
+
+// Generator for ward-charge bill numbers (IP Ward) when a patient has no open
+// bill to post the ward dispense onto.
+async function nextWardBillNumber(tx: any, tenantId: string): Promise<string> {
+  const now = new Date();
+  const ymd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+  const prefix = `IPW-${ymd}-`;
+  const todays = await tx.bill.count({ where: { tenantId, billNumber: { startsWith: prefix } } });
+  return `${prefix}${String(todays + 1).padStart(4, '0')}`;
+}
+
+/** G13: move stock from the central pharmacy into a ward's own stock. */
+export async function transferToWard(
+  tenantId: string,
+  userId: string,
+  roles: string[],
+  data: { wardId: string; drugBatchId: string; quantity: number },
+) {
+  assertPharmacyAdmin(roles, 'transfer stock to wards');
+  if (data.quantity <= 0) throw AppError.badRequest('Quantity must be positive');
+
+  const ward = await prisma.ward.findFirst({ where: { id: data.wardId, tenantId }, select: { id: true } });
+  if (!ward) throw AppError.notFound('Ward not found');
+
+  const result = await prisma.$transaction(async (tx) => {
+    const batch = await tx.drugBatch.findFirst({ where: { id: data.drugBatchId, tenantId } });
+    if (!batch) throw AppError.notFound('Drug batch not found');
+    if (isBatchExpired(batch)) throw AppError.badRequest('Cannot transfer an expired batch');
+    if (batch.isRecalled) throw AppError.badRequest('Cannot transfer a recalled batch');
+    if (batch.quantityInStock < data.quantity) {
+      throw AppError.badRequest(`Insufficient central stock (have ${batch.quantityInStock}, need ${data.quantity})`);
+    }
+
+    await tx.drugBatch.update({
+      where: { id: batch.id },
+      data: { quantityInStock: { decrement: data.quantity } },
+    });
+
+    const existing = await tx.wardStock.findFirst({
+      where: { tenantId, wardId: data.wardId, drugBatchId: data.drugBatchId },
+    });
+    const wardStock = existing
+      ? await tx.wardStock.update({ where: { id: existing.id }, data: { quantityInStock: { increment: data.quantity } } })
+      : await tx.wardStock.create({
+          data: { tenantId, wardId: data.wardId, drugId: batch.drugId, drugBatchId: batch.id, quantityInStock: data.quantity },
+        });
+
+    await tx.wardStockLedger.create({
+      data: {
+        tenantId,
+        wardId: data.wardId,
+        drugId: batch.drugId,
+        drugBatchId: batch.id,
+        movementType: 'received',
+        quantity: data.quantity,
+        performedBy: userId,
+      },
+    });
+
+    return wardStock;
+  });
+
+  logger.info({ tenantId, wardId: data.wardId, drugBatchId: data.drugBatchId, qty: data.quantity }, 'Stock transferred to ward');
+  return result;
+}
+
+/** G13: current on-hand ward stock (qty > 0) with drug + batch detail. */
+export async function getWardStock(tenantId: string, wardId: string) {
+  const rows = await prisma.wardStock.findMany({
+    where: { tenantId, wardId, quantityInStock: { gt: 0 } },
+    orderBy: { updatedAt: 'desc' },
+    take: 2000,
+  });
+  const batchIds = rows.map((r) => r.drugBatchId);
+  const batches = batchIds.length
+    ? await prisma.drugBatch.findMany({
+        where: { id: { in: batchIds } },
+        select: { id: true, batchNumber: true, expiryDate: true, sellingPrice: true, drug: { select: { id: true, drugName: true, looseUnitLabel: true } } },
+      })
+    : [];
+  const byId = new Map(batches.map((b) => [b.id, b]));
+  const items = rows.map((r) => {
+    const b = byId.get(r.drugBatchId);
+    return {
+      id: r.id,
+      drugId: r.drugId,
+      drugBatchId: r.drugBatchId,
+      drugName: b?.drug?.drugName ?? '-',
+      looseUnitLabel: b?.drug?.looseUnitLabel ?? null,
+      batchNumber: b?.batchNumber ?? null,
+      expiryDate: b?.expiryDate ?? null,
+      sellingPrice: b?.sellingPrice != null ? Number(b.sellingPrice) : null,
+      quantityInStock: r.quantityInStock,
+    };
+  });
+  return { items, total: items.length };
+}
+
+/** G13: ward medicine ledger (received / dispensed / returned / adjusted). */
+export async function getWardLedger(
+  tenantId: string,
+  query: { wardId: string; fromDate?: string; toDate?: string },
+) {
+  const where: any = { tenantId, wardId: query.wardId };
+  if (query.fromDate || query.toDate) {
+    where.createdAt = {};
+    if (query.fromDate) where.createdAt.gte = new Date(query.fromDate);
+    if (query.toDate) where.createdAt.lte = new Date(query.toDate);
+  }
+  const rows = await prisma.wardStockLedger.findMany({
+    where,
+    orderBy: { createdAt: 'desc' },
+    take: 2000,
+  });
+  const batchIds = [...new Set(rows.map((r) => r.drugBatchId))];
+  const patientIds = [...new Set(rows.map((r) => r.patientId).filter((x): x is string => !!x))];
+  const [batches, patients] = await Promise.all([
+    batchIds.length
+      ? prisma.drugBatch.findMany({ where: { id: { in: batchIds } }, select: { id: true, batchNumber: true, drug: { select: { drugName: true } } } })
+      : Promise.resolve([]),
+    patientIds.length
+      ? prisma.patient.findMany({ where: { id: { in: patientIds } }, select: { id: true, mrn: true, firstName: true, lastName: true } })
+      : Promise.resolve([]),
+  ]);
+  const batchById = new Map(batches.map((b) => [b.id, b]));
+  const patientById = new Map(patients.map((p) => [p.id, p]));
+  const items = rows.map((r) => {
+    const b = batchById.get(r.drugBatchId);
+    const p = r.patientId ? patientById.get(r.patientId) : null;
+    return {
+      id: r.id,
+      date: r.createdAt,
+      movementType: r.movementType,
+      drugName: b?.drug?.drugName ?? '-',
+      batchNumber: b?.batchNumber ?? null,
+      quantity: r.quantity,
+      patient: p ? `${p.firstName} ${p.lastName ?? ''}`.trim() : null,
+      patientMrn: p?.mrn ?? null,
+      reason: r.reason,
+    };
+  });
+  return { items, total: items.length };
+}
+
+/**
+ * G13: a ward dispenses a drug from its own stock to a patient. Decrements ward
+ * stock, logs the ward ledger, and posts the charge to the patient's open IP
+ * bill (creating a draft IP-ward bill if none) so it's billed next cycle.
+ */
+export async function dispenseFromWard(
+  tenantId: string,
+  userId: string,
+  data: { wardId: string; drugBatchId: string; patientId: string; quantity: number; admissionId?: string; reason?: string },
+) {
+  if (data.quantity <= 0) throw AppError.badRequest('Quantity must be positive');
+
+  const patient = await prisma.patient.findFirst({ where: { id: data.patientId, tenantId }, select: { id: true } });
+  if (!patient) throw AppError.notFound('Patient not found');
+
+  const result = await prisma.$transaction(async (tx) => {
+    const ws = await tx.wardStock.findFirst({
+      where: { tenantId, wardId: data.wardId, drugBatchId: data.drugBatchId },
+    });
+    if (!ws || ws.quantityInStock < data.quantity) {
+      throw AppError.badRequest(`Insufficient ward stock (have ${ws?.quantityInStock ?? 0}, need ${data.quantity})`);
+    }
+
+    const batch = await tx.drugBatch.findUnique({
+      where: { id: data.drugBatchId },
+      include: { drug: { select: { drugName: true, price: true, taxPercent: true } } },
+    });
+    if (!batch) throw AppError.notFound('Drug batch not found');
+
+    await tx.wardStock.update({ where: { id: ws.id }, data: { quantityInStock: { decrement: data.quantity } } });
+
+    // Pricing — per base unit, MRP (tax-inclusive); derive embedded GST.
+    const unitPrice = Number(batch.sellingPrice ?? batch.drug?.price ?? batch.purchasePrice ?? 0);
+    const taxPct = batch.drug?.taxPercent != null ? Number(batch.drug.taxPercent) : 0;
+    const gross = round2(unitPrice * data.quantity);
+    const taxAmt = round2(gross - gross / (1 + taxPct / 100));
+
+    // Post the charge to the patient's open bill; else open a draft IP-ward bill.
+    let bill = await tx.bill.findFirst({
+      where: { tenantId, patientId: data.patientId, status: { in: ['draft', 'pending', 'partially_paid'] } },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!bill) {
+      bill = await tx.bill.create({
+        data: {
+          tenantId,
+          billNumber: await nextWardBillNumber(tx, tenantId),
+          patientId: data.patientId,
+          billDate: new Date(),
+          subtotal: 0,
+          discountAmount: 0,
+          taxAmount: 0,
+          totalAmount: 0,
+          patientPayableAmount: 0,
+          amountPaid: 0,
+          balanceDue: 0,
+          status: 'draft',
+          generatedBy: userId,
+        },
+      });
+    }
+
+    await tx.billItem.create({
+      data: {
+        billId: bill.id,
+        description: `${batch.drug?.drugName ?? 'Medication'} (Batch ${batch.batchNumber}) — ward issue, ${data.quantity} unit(s)`,
+        category: 'pharmacy',
+        quantity: data.quantity,
+        unitPrice,
+        taxPercent: taxPct,
+        taxAmount: taxAmt,
+        totalAmount: gross,
+        referenceType: 'ward_dispense',
+        referenceId: ws.id,
+        isAutoPulled: true,
+      },
+    });
+
+    await tx.bill.update({
+      where: { id: bill.id },
+      data: {
+        subtotal: round2(Number(bill.subtotal) + gross),
+        taxAmount: round2(Number(bill.taxAmount) + taxAmt),
+        totalAmount: round2(Number(bill.totalAmount) + gross),
+        patientPayableAmount: round2(Number(bill.patientPayableAmount) + gross),
+        balanceDue: round2(Number(bill.balanceDue) + gross),
+      },
+    });
+
+    await tx.wardStockLedger.create({
+      data: {
+        tenantId,
+        wardId: data.wardId,
+        drugId: ws.drugId,
+        drugBatchId: data.drugBatchId,
+        movementType: 'dispensed',
+        quantity: data.quantity,
+        patientId: data.patientId,
+        admissionId: data.admissionId ?? null,
+        billId: bill.id,
+        performedBy: userId,
+        reason: data.reason ?? null,
+      },
+    });
+
+    return { billId: bill.id, billNumber: bill.billNumber, charged: gross };
+  });
+
+  logger.info({ tenantId, ...data, ...result }, 'Ward stock dispensed to patient');
+  return result;
+}
+
+// ============================================================
 // G15 — Mandatory pharmacy reports
 // ============================================================
 

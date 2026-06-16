@@ -4100,6 +4100,45 @@ model DrugReturn {
   @@map("drug_returns")
 }
 
+// G13: on-hand stock of a drug batch held at a ward (transferred from the
+// central pharmacy). FK columns are scalar (no Prisma relations) so this is a
+// self-contained sub-module; names are resolved by the service.
+model WardStock {
+  id              String   @id @default(uuid())
+  tenantId        String   @map("tenant_id")
+  wardId          String   @map("ward_id")
+  drugId          String   @map("drug_id")
+  drugBatchId     String   @map("drug_batch_id")
+  quantityInStock Int      @default(0) @map("quantity_in_stock")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([tenantId, wardId, drugBatchId])
+  @@index([tenantId, wardId])
+  @@map("ward_stock")
+}
+
+// G13: ward medicine ledger — every movement of ward stock (received from
+// pharmacy, dispensed to a patient, returned, adjusted). Replaces the paper book.
+model WardStockLedger {
+  id           String   @id @default(uuid())
+  tenantId     String   @map("tenant_id")
+  wardId       String   @map("ward_id")
+  drugId       String   @map("drug_id")
+  drugBatchId  String   @map("drug_batch_id")
+  movementType String   @map("movement_type") @db.VarChar(20) // received | dispensed | returned | adjusted
+  quantity     Int
+  patientId    String?  @map("patient_id")
+  admissionId  String?  @map("admission_id")
+  billId       String?  @map("bill_id")
+  performedBy  String?  @map("performed_by")
+  reason       String?
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([tenantId, wardId, createdAt])
+  @@map("ward_stock_ledger")
+}
+
 // ============================================================
 // 12. INVENTORY & PURCHASE
 // ============================================================

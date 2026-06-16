@@ -218,6 +218,64 @@ export async function getCreditNotesReport(
   }
 }
 
+// ── G13: ward stock ──
+export async function transferToWard(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await pharmacyService.transferToWard(
+      req.user!.tenantId,
+      req.user!.userId,
+      req.user!.roles ?? [],
+      req.body,
+    );
+    sendResponse({ res, statusCode: 201, message: 'Stock transferred to ward', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getWardStock(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await pharmacyService.getWardStock(req.user!.tenantId, req.query.wardId as string);
+    sendResponse({ res, message: 'Ward stock retrieved', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function dispenseFromWard(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await pharmacyService.dispenseFromWard(req.user!.tenantId, req.user!.userId, req.body);
+    sendResponse({ res, statusCode: 201, message: 'Dispensed from ward stock', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getWardLedger(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await pharmacyService.getWardLedger(req.user!.tenantId, req.query as any);
+    sendResponse({ res, message: 'Ward ledger retrieved', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // G9: reorder list — formulary drugs at/below their reorder level (draft PO).
 export async function getReorderList(
   req: AuthenticatedRequest,

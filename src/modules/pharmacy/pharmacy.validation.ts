@@ -586,6 +586,40 @@ export const creditNotesQuerySchema = z.object({
   }),
 });
 
+// ============================================================
+// G13 — Ward stock
+// ============================================================
+export const wardStockTransferSchema = z.object({
+  body: z.object({
+    wardId: z.string().uuid('Invalid ward ID'),
+    drugBatchId: z.string().uuid('Invalid drug batch ID'),
+    quantity: z.number().int().positive('Quantity must be positive'),
+  }),
+});
+
+export const wardStockDispenseSchema = z.object({
+  body: z.object({
+    wardId: z.string().uuid('Invalid ward ID'),
+    drugBatchId: z.string().uuid('Invalid drug batch ID'),
+    patientId: z.string().uuid('Invalid patient ID'),
+    quantity: z.number().int().positive('Quantity must be positive'),
+    admissionId: z.string().uuid().optional(),
+    reason: z.string().max(500).optional(),
+  }),
+});
+
+export const wardStockQuerySchema = z.object({
+  query: z.object({ wardId: z.string().uuid('A ward ID is required') }),
+});
+
+export const wardLedgerQuerySchema = z.object({
+  query: z.object({
+    wardId: z.string().uuid('A ward ID is required'),
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
+  }),
+});
+
 // G17: narcotic / controlled-drug register for a DI audit.
 export const narcoticRegisterQuerySchema = z.object({
   query: z.object({
