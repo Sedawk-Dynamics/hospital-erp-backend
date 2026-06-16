@@ -2879,6 +2879,20 @@ export async function processReturn(
           include: { bill: true },
         });
         if (payment?.bill) {
+          // G14: decide whether to refund cash or credit the patient's advance.
+          // Explicit refundMode wins; otherwise auto-detect from the patient's
+          // active admission billing category (package/insurance → advance).
+          let mode: 'cash' | 'advance' = (data as any).refundMode ?? 'cash';
+          const admission = await tx.admission.findFirst({
+            where: { tenantId, patientId: drugReturn.patientId, status: 'admitted' },
+            orderBy: { admissionDate: 'desc' },
+            select: { id: true, billingCategory: true, depositAmount: true },
+          });
+          if (!(data as any).refundMode && admission) {
+            const cat = (admission.billingCategory ?? 'cash').toLowerCase();
+            if (cat === 'package' || cat === 'insurance') mode = 'advance';
+          }
+
           const refund = await tx.refund.create({
             data: {
               tenantId,
@@ -2886,7 +2900,10 @@ export async function processReturn(
               paymentId: payment.id,
               patientId: drugReturn.patientId,
               amount: refundDue,
-              reason: `Drug return${drugReturn.reason ? `: ${drugReturn.reason}` : ''}`,
+              reason:
+                mode === 'advance'
+                  ? `Drug return — credited to advance${drugReturn.reason ? `: ${drugReturn.reason}` : ''}`
+                  : `Drug return${drugReturn.reason ? `: ${drugReturn.reason}` : ''}`,
               status: 'approved',
               requestedBy: userId,
               approvedBy: userId,
@@ -2904,6 +2921,15 @@ export async function processReturn(
             where: { id: payment.bill.id },
             data: { amountPaid: newPaid, balanceDue: newBalance, status: newStatus as any },
           });
+
+          // G14: advance mode parks the refunded value on the IP admission's
+          // deposit (advance) pool instead of paying cash out.
+          if (mode === 'advance' && admission) {
+            await tx.admission.update({
+              where: { id: admission.id },
+              data: { depositAmount: Number(admission.depositAmount) + refundDue },
+            });
+          }
 
           await tx.drugReturn.update({ where: { id }, data: { refundId: refund.id } });
         }

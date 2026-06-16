@@ -495,6 +495,9 @@ export const returnableQuerySchema = z.object({
 export const processReturnSchema = z.object({
   body: z.object({
     status: z.enum(['processed', 'rejected']),
+    // G14: cash refund vs credit to the patient's advance. Omit to auto-detect
+    // from the patient's IP billing category (package/insurance → advance).
+    refundMode: z.enum(['cash', 'advance']).optional(),
   }),
   params: z.object({
     id: z.string().uuid('Invalid return ID'),
