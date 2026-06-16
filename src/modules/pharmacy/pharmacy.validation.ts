@@ -268,10 +268,32 @@ export const createPharmacySaleSchema = z.object({
         }),
       )
       .min(1, 'At least one item is required'),
+    // Single-mode tender (back-compat). Prefer `payments[]` for split tenders.
     paymentMethod: z
       .enum(['cash', 'credit_card', 'debit_card', 'upi', 'net_banking', 'cheque', 'other'])
       .optional(),
     amountPaid: z.number().nonnegative().optional(),
+    // G7: split payment — multiple tenders (cash + UPI + card…) in one bill.
+    // When present this takes precedence over paymentMethod/amountPaid.
+    payments: z
+      .array(
+        z.object({
+          method: z.enum([
+            'cash',
+            'credit_card',
+            'debit_card',
+            'upi',
+            'net_banking',
+            'insurance',
+            'cheque',
+            'other',
+          ]),
+          amount: z.number().positive('Tender amount must be positive'),
+          reference: z.string().max(120).optional(),
+        }),
+      )
+      .max(8, 'At most 8 tenders per bill')
+      .optional(),
     notes: z.string().max(1000).optional(),
   }),
 });

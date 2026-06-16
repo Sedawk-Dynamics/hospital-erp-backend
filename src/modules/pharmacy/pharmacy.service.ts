@@ -1518,10 +1518,32 @@ export async function createPharmacySale(
     const taxAmount = round2(lines.reduce((s, l) => s + l.taxAmt, 0));
     const totalAmount = round2(lines.reduce((s, l) => s + l.net, 0));
 
-    // Default to paid-in-full at the counter unless an explicit amount is given.
-    const applied = data.amountPaid != null
-      ? round2(Math.min(data.amountPaid, totalAmount))
-      : totalAmount;
+    // Resolve the tender(s). G7 split payment: when `payments[]` is given each
+    // entry becomes its own Payment row (cash + UPI + card…). Otherwise fall
+    // back to the single-mode path — pay-in-full unless an explicit amount.
+    let paymentLines: Array<{ method: string; amount: number; reference?: string }>;
+    if (data.payments && data.payments.length) {
+      paymentLines = data.payments
+        .filter((p) => p.amount > 0)
+        .map((p) => ({ method: p.method, amount: round2(p.amount), reference: p.reference }));
+    } else {
+      const single =
+        data.amountPaid != null ? round2(Math.min(data.amountPaid, totalAmount)) : totalAmount;
+      paymentLines = single > 0 ? [{ method: data.paymentMethod ?? 'cash', amount: single }] : [];
+    }
+    const rawPaid = round2(paymentLines.reduce((s, p) => s + p.amount, 0));
+    // Cap the bill's settled amount at the total — extra cash tendered is change,
+    // not a credit balance.
+    const applied = round2(Math.min(rawPaid, totalAmount));
+    // Trim any change off the last tender (usually cash) so the recorded payment
+    // rows sum exactly to `applied` rather than to the raw cash handed over.
+    let excess = round2(rawPaid - applied);
+    for (let i = paymentLines.length - 1; i >= 0 && excess > 0; i--) {
+      const cut = Math.min(paymentLines[i].amount, excess);
+      paymentLines[i].amount = round2(paymentLines[i].amount - cut);
+      excess = round2(excess - cut);
+    }
+    paymentLines = paymentLines.filter((p) => p.amount > 0);
     const balanceDue = round2(totalAmount - applied);
     const status: any = balanceDue <= 0 ? 'paid' : applied > 0 ? 'partially_paid' : 'pending';
 
@@ -1608,19 +1630,21 @@ export async function createPharmacySale(
       });
     }
 
-    // 4. Record the payment taken at the counter.
-    if (applied > 0) {
+    // 4. Record the payment(s) taken at the counter — one row per tender so a
+    // split bill (cash + UPI) shows each mode on the receipt and in reports.
+    for (const p of paymentLines) {
       await tx.payment.create({
         data: {
           tenantId,
           billId: bill.id,
           patientId,
           paymentDate: new Date(),
-          amount: applied,
-          paymentMethod: (data.paymentMethod ?? 'cash') as any,
+          amount: p.amount,
+          paymentMethod: p.method as any,
           paymentSource: 'frontdesk',
           status: 'completed',
           processedBy: userId,
+          transactionId: p.reference,
           notes: 'Pharmacy counter sale',
         },
       });
