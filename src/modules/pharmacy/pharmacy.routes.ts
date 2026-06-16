@@ -22,6 +22,8 @@ import {
   getExpiringBatchesQuerySchema,
   batchIdParamSchema,
   updateBatchSchema,
+  adjustBatchSchema,
+  getStockAdjustmentsQuerySchema,
   createDispenseSchema,
   createPharmacySaleSchema,
   getPharmacySalesQuerySchema,
@@ -76,8 +78,12 @@ pharmacyRoutes.delete('/formulary/:id', authenticate, requirePermission('pharmac
 pharmacyRoutes.post('/batches', authenticate, requirePermission('pharmacy', 'create'), validate(createBatchSchema), controller.createBatch);
 pharmacyRoutes.get('/batches', authenticate, requirePermission('pharmacy', 'read'), validate(getBatchesQuerySchema), controller.getBatches);
 pharmacyRoutes.get('/batches/expiring', authenticate, requirePermission('pharmacy', 'read'), validate(getExpiringBatchesQuerySchema), controller.getExpiringBatches);
+// G4: stock discrepancy report (manual count corrections). Before '/batches/:id'.
+pharmacyRoutes.get('/batches/adjustments', authenticate, requirePermission('pharmacy', 'read'), validate(getStockAdjustmentsQuerySchema), controller.getStockAdjustments);
 pharmacyRoutes.get('/batches/:id', authenticate, requirePermission('pharmacy', 'read'), validate(batchIdParamSchema), controller.getBatchById);
 pharmacyRoutes.put('/batches/:id', authenticate, requirePermission('pharmacy', 'update'), validate(updateBatchSchema), controller.updateBatch);
+// G4: deliberate stock-count correction (reason-stamped + audited).
+pharmacyRoutes.patch('/batches/:id/adjust', authenticate, requirePermission('pharmacy', 'update'), validate(adjustBatchSchema), controller.adjustBatchStock);
 
 // --- Counter billing (POS sale: partial / loose / walk-in, one invoice) ---
 pharmacyRoutes.post('/sales', authenticate, requirePermission('pharmacy', 'create'), validate(createPharmacySaleSchema), controller.createPharmacySale);

@@ -1041,6 +1041,131 @@ export async function updateBatch(
   return batch;
 }
 
+/**
+ * G4: deliberate manual stock-count correction on a batch, with a full audit
+ * trail (who, from-value, to-value, reason, optional physical count). Distinct
+ * from updateBatch so corrections are intentional and always reason-stamped —
+ * the AuditLog entry is tagged type:'stock_adjustment' so the discrepancy report
+ * can pull exactly these events.
+ */
+export async function adjustBatchStock(
+  tenantId: string,
+  userId: string,
+  roles: string[],
+  id: string,
+  data: { newQuantity?: number; physicalCount?: number; reason: string },
+) {
+  assertPharmacyAdmin(roles, 'adjust stock counts');
+  const batch = await prisma.drugBatch.findFirst({
+    where: { id, tenantId },
+    include: { drug: { select: { id: true, drugName: true } } },
+  });
+  if (!batch) throw AppError.notFound('Drug batch not found');
+
+  const target = data.newQuantity ?? data.physicalCount;
+  if (target == null) throw AppError.badRequest('Provide the corrected quantity (newQuantity or physicalCount)');
+  if (target < 0) throw AppError.badRequest('Corrected quantity cannot be negative');
+
+  const from = batch.quantityInStock;
+  const delta = target - from;
+
+  const updated = await prisma.drugBatch.update({
+    where: { id },
+    data: { quantityInStock: target },
+    include: {
+      drug: { select: { id: true, drugName: true } },
+      supplier: { select: { id: true, name: true } },
+    },
+  });
+
+  await safePharmacyAudit({
+    tenantId,
+    userId,
+    action: 'adjust',
+    entityType: 'drug_batch',
+    entityId: id,
+    description: `Stock adjustment: ${batch.drug?.drugName ?? 'drug'} (batch ${batch.batchNumber}) ${from} → ${target} (${delta >= 0 ? '+' : ''}${delta})`,
+    oldValues: { quantityInStock: from },
+    newValues: {
+      type: 'stock_adjustment',
+      from,
+      to: target,
+      delta,
+      reason: data.reason,
+      physicalCount: data.physicalCount ?? null,
+      drugName: batch.drug?.drugName ?? null,
+      batchNumber: batch.batchNumber,
+    },
+  });
+
+  logger.info({ tenantId, batchId: id, from, to: target, delta }, 'Drug batch stock adjusted');
+  return { batch: updated, from, to: target, delta };
+}
+
+/**
+ * G4: stock discrepancy report — every manual count correction in the window,
+ * filterable by date range and drug. Reads the tagged AuditLog rows so it shows
+ * who changed what, from/to and why.
+ */
+export async function getStockAdjustments(
+  tenantId: string,
+  query: { fromDate?: string; toDate?: string; drugId?: string; page?: number; limit?: number },
+) {
+  const page = query.page && query.page > 0 ? query.page : 1;
+  const limit = query.limit && query.limit > 0 ? Math.min(query.limit, 200) : 50;
+  const skip = (page - 1) * limit;
+
+  const where: any = {
+    tenantId,
+    entityType: 'drug_batch',
+    newValues: { path: ['type'], equals: 'stock_adjustment' },
+  };
+  if (query.fromDate || query.toDate) {
+    where.createdAt = {};
+    if (query.fromDate) where.createdAt.gte = new Date(query.fromDate);
+    if (query.toDate) where.createdAt.lte = new Date(query.toDate);
+  }
+
+  // Optional drug filter: restrict to batches of that drug.
+  if (query.drugId) {
+    const batchIds = await prisma.drugBatch.findMany({
+      where: { tenantId, drugId: query.drugId },
+      select: { id: true },
+    });
+    where.entityId = { in: batchIds.map((b) => b.id) };
+  }
+
+  const [rows, total] = await Promise.all([
+    prisma.auditLog.findMany({
+      where,
+      skip,
+      take: limit,
+      orderBy: { createdAt: 'desc' },
+      include: { user: { select: { id: true, firstName: true, lastName: true } } },
+    }),
+    prisma.auditLog.count({ where }),
+  ]);
+
+  const items = rows.map((row) => {
+    const nv = (row.newValues ?? {}) as Record<string, unknown>;
+    return {
+      id: row.id,
+      batchId: row.entityId,
+      drugName: (nv.drugName as string) ?? null,
+      batchNumber: (nv.batchNumber as string) ?? null,
+      from: (nv.from as number) ?? null,
+      to: (nv.to as number) ?? null,
+      delta: (nv.delta as number) ?? null,
+      physicalCount: (nv.physicalCount as number | null) ?? null,
+      reason: (nv.reason as string) ?? null,
+      user: row.user ? `${row.user.firstName} ${row.user.lastName ?? ''}`.trim() : null,
+      createdAt: row.createdAt,
+    };
+  });
+
+  return { items, total, page, limit };
+}
+
 export async function getExpiringBatches(tenantId: string, query: GetExpiringBatchesQuery) {
   const { skip, take, page, limit } = getPaginationParams(query);
 

@@ -212,6 +212,34 @@ export const batchIdParamSchema = z.object({
   }),
 });
 
+// G4: deliberate stock-count correction (always reason-stamped + audited).
+export const adjustBatchSchema = z.object({
+  body: z
+    .object({
+      newQuantity: z.number().int().nonnegative().optional(),
+      physicalCount: z.number().int().nonnegative().optional(),
+      reason: z.string().min(1, 'A reason is required').max(500),
+    })
+    .refine((b) => b.newQuantity != null || b.physicalCount != null, {
+      message: 'Provide the corrected quantity (newQuantity or physicalCount)',
+      path: ['newQuantity'],
+    }),
+  params: z.object({
+    id: z.string().uuid('Invalid batch ID'),
+  }),
+});
+
+// G4: stock discrepancy report — manual corrections in a date window.
+export const getStockAdjustmentsQuerySchema = z.object({
+  query: z.object({
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
+    drugId: z.string().uuid().optional(),
+    page: z.coerce.number().int().positive().optional(),
+    limit: z.coerce.number().int().positive().max(200).optional(),
+  }),
+});
+
 export const getBatchesQuerySchema = z.object({
   query: paginationSchema.extend({
     drugId: z.string().uuid().optional(),

@@ -381,6 +381,45 @@ export async function updateBatch(
   }
 }
 
+// G4: deliberate stock-count correction (reason-stamped + audited).
+export async function adjustBatchStock(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const result = await pharmacyService.adjustBatchStock(
+      tenantId,
+      req.user!.userId,
+      req.user!.roles ?? [],
+      req.params.id as string,
+      req.body,
+    );
+    sendResponse({ res, message: 'Stock adjusted successfully', data: result });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// G4: stock discrepancy report — manual corrections in a date window.
+export async function getStockAdjustments(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const { items, total, page, limit } = await pharmacyService.getStockAdjustments(
+      tenantId,
+      req.query as any,
+    );
+    sendPaginatedResponse(res, items, total, page, limit, 'Stock adjustments retrieved');
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getExpiringBatches(
   req: AuthenticatedRequest,
   res: Response,
