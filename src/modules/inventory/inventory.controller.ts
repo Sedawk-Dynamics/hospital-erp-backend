@@ -69,8 +69,8 @@ export async function deleteItem(req: AuthenticatedRequest, res: Response, next:
 }
 export async function getLowStockItems(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
-    const data = await service.getLowStockItems(req.user!.tenantId, req.query as any);
-    sendResponse({ res, message: 'Low stock items retrieved', data });
+    const result = await service.getLowStockItems(req.user!.tenantId, req.query as any);
+    sendPaginatedResponse(res, result.items, result.total, result.page, result.limit, 'Low stock items retrieved');
   } catch (err) { next(err); }
 }
 export async function getExpiringInventory(req: AuthenticatedRequest, res: Response, next: NextFunction) {

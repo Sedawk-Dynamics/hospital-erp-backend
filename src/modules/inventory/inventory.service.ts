@@ -479,12 +479,14 @@ export async function getLowStockItems(tenantId: string, query: any) {
     isActive: true,
   };
 
-  // Items where currentStock <= minimumStockThreshold
-  // Prisma doesn't support column-to-column comparisons directly in where,
-  // so we use a raw filter approach via findMany + count with raw conditions.
-  const [items, total] = await Promise.all([
-    prisma.$queryRawUnsafe<any[]>(
-      `SELECT * FROM inventory_items
+  // Items where currentStock <= minimumStockThreshold. Prisma can't compare two
+  // columns in a where clause, so use a raw query to find the matching IDs
+  // (ordered by how low the stock is), then re-fetch through Prisma so the rows
+  // come back camelCased and correctly typed — `SELECT *` returns snake_case
+  // columns the frontend/InventoryItem shape doesn't understand.
+  const [idRows, total] = await Promise.all([
+    prisma.$queryRawUnsafe<{ id: string }[]>(
+      `SELECT id FROM inventory_items
        WHERE tenant_id = $1
          AND is_active = true
          AND current_stock <= minimum_stock_threshold
@@ -502,6 +504,14 @@ export async function getLowStockItems(tenantId: string, query: any) {
       tenantId,
     ),
   ]);
+
+  const ids = idRows.map((r) => r.id);
+  const items = ids.length
+    ? await prisma.inventoryItem.findMany({
+        where: { id: { in: ids } },
+        orderBy: { currentStock: 'asc' },
+      })
+    : [];
 
   const totalCount = Number(total[0]?.count ?? 0);
 
