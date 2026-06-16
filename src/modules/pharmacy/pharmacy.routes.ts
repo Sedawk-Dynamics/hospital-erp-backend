@@ -154,6 +154,8 @@ pharmacyRoutes.get('/reports/vendor-wise', authenticate, requirePermission('phar
 pharmacyRoutes.get('/reports/credit-notes', authenticate, requirePermission('pharmacy', 'read'), validate(creditNotesQuerySchema), controller.getCreditNotesReport);
 // G17: narcotic / controlled-drug register (DI audit) — filter by user + date.
 pharmacyRoutes.get('/reports/narcotic-register', authenticate, requirePermission('pharmacy', 'read'), validate(narcoticRegisterQuerySchema), controller.getNarcoticRegister);
+// G9: reorder list — drugs at/below their reorder level (draft purchase order).
+pharmacyRoutes.get('/reports/reorder', authenticate, requirePermission('pharmacy', 'read'), controller.getReorderList);
 
 // --- Maintenance: auto-flag expired batches (idempotent) ---
 pharmacyRoutes.post('/maintenance/flag-expired', authenticate, requirePermission('pharmacy', 'approve'), controller.flagExpiredBatches);

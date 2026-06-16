@@ -358,6 +358,7 @@ export async function createFormularyItem(
       packSize: data.packSize,
       looseUnitLabel: data.looseUnitLabel,
       taxPercent: data.taxPercent,
+      minStock: (data as any).minStock,
       indications: data.indications,
       contraindications: data.contraindications,
       isActive: data.isActive ?? true,
@@ -852,6 +853,7 @@ export async function updateFormularyItem(
   if (data.packSize !== undefined) updateData.packSize = data.packSize;
   if (data.looseUnitLabel !== undefined) updateData.looseUnitLabel = data.looseUnitLabel;
   if (data.taxPercent !== undefined) updateData.taxPercent = data.taxPercent;
+  if ((data as any).minStock !== undefined) updateData.minStock = (data as any).minStock;
   if (data.indications !== undefined) updateData.indications = data.indications;
   if (data.contraindications !== undefined) updateData.contraindications = data.contraindications;
   if (data.isActive !== undefined) updateData.isActive = data.isActive;
@@ -2890,6 +2892,75 @@ export async function getCreditNotesReport(
       totalCredit: round2(items.reduce((s, i) => s + (i.creditAmount ?? 0), 0)),
     },
   };
+}
+
+/**
+ * G9: reorder list — formulary drugs whose live stock has fallen to/below their
+ * reorder level (minStock). Drives a draft purchase order (not auto-sent). Each
+ * row suggests an order quantity and the last supplier used.
+ */
+export async function getReorderList(tenantId: string) {
+  const drugs = await prisma.drugFormulary.findMany({
+    where: { tenantId, isActive: true, minStock: { not: null } },
+    select: {
+      id: true,
+      drugName: true,
+      strength: true,
+      manufacturer: true,
+      minStock: true,
+      packSize: true,
+      drugBatches: {
+        where: { isExpired: false, isRecalled: false, quantityInStock: { gt: 0 } },
+        select: { quantityInStock: true },
+      },
+      // Most recent batch → last supplier used (for the draft PO).
+      // (separate ordered fetch below to keep this select lean)
+    },
+    take: 5000,
+  });
+
+  const lowIds: string[] = [];
+  const base = drugs
+    .map((d) => {
+      const stock = d.drugBatches.reduce((s, b) => s + b.quantityInStock, 0);
+      return { d, stock };
+    })
+    .filter(({ d, stock }) => d.minStock != null && stock <= d.minStock);
+
+  base.forEach(({ d }) => lowIds.push(d.id));
+
+  // Last supplier per low-stock drug (most recent batch with a supplier).
+  const lastSupplierByDrug = new Map<string, string>();
+  if (lowIds.length) {
+    const recent = await prisma.drugBatch.findMany({
+      where: { tenantId, drugId: { in: lowIds }, supplierId: { not: null } },
+      select: { drugId: true, supplier: { select: { name: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+    for (const r of recent) {
+      if (!lastSupplierByDrug.has(r.drugId) && r.supplier) {
+        lastSupplierByDrug.set(r.drugId, r.supplier.name);
+      }
+    }
+  }
+
+  const items = base.map(({ d, stock }) => {
+    const minStock = d.minStock ?? 0;
+    // Suggest topping up to ~2× the reorder level (at least the reorder level).
+    const suggestedQty = Math.max(minStock * 2 - stock, minStock);
+    return {
+      drugId: d.id,
+      drugName: d.drugName,
+      strength: d.strength,
+      manufacturer: d.manufacturer,
+      stock,
+      minStock,
+      suggestedQty,
+      lastSupplier: lastSupplierByDrug.get(d.id) ?? null,
+    };
+  });
+
+  return { items, total: items.length };
 }
 
 // Indian controlled / habit-forming schedules a drug inspector audits.

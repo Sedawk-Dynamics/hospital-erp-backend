@@ -218,6 +218,20 @@ export async function getCreditNotesReport(
   }
 }
 
+// G9: reorder list — formulary drugs at/below their reorder level (draft PO).
+export async function getReorderList(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await pharmacyService.getReorderList(req.user!.tenantId);
+    sendResponse({ res, message: 'Reorder list', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // G17: narcotic / controlled-drug register for a Drug Inspector audit.
 export async function getNarcoticRegister(
   req: AuthenticatedRequest,

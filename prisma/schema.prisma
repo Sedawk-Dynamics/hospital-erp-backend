@@ -3949,6 +3949,9 @@ model DrugFormulary {
   // GST rate applied to this drug (India medicine = 0/5/12/18%). Prices are MRP
   // (tax-inclusive), so the bill shows the GST breakup rather than adding on top.
   taxPercent        Decimal?    @map("tax_percent") @db.Decimal(5, 2)
+  // G9: reorder level (in base units). When live stock falls to/below this, the
+  // drug surfaces in the reorder list for a draft purchase order.
+  minStock          Int?        @map("min_stock")
   indications       String?
   contraindications String?
   isActive          Boolean     @default(true) @map("is_active")
