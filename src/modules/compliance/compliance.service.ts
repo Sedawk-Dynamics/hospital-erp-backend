@@ -1013,7 +1013,28 @@ export async function getOTAnalytics(tenantId: string, query: OtAnalyticsQuery) 
     utilizationPercent: dayMinutes > 0 ? Math.min(100, Math.round((row.totalDuration / dayMinutes) * 100)) : 0,
   }));
 
+  // Average start delay = actual start − scheduled start (minutes). Positive
+  // means surgeries tend to start late. Only counts requests that have both an
+  // actual start and a scheduled date+time; absurd values are dropped as bad data.
+  let delaySum = 0;
+  let delayCount = 0;
+  for (const r of requests) {
+    if (!r.actualStartTime || !r.scheduledDate || !r.scheduledStartTime) continue;
+    const [hh, mm] = r.scheduledStartTime.split(':').map(Number);
+    if (Number.isNaN(hh)) continue;
+    const sched = new Date(r.scheduledDate);
+    sched.setHours(hh, mm ?? 0, 0, 0);
+    const delayMin = Math.round((r.actualStartTime.getTime() - sched.getTime()) / 60000);
+    if (delayMin > -12 * 60 && delayMin < 24 * 60) {
+      delaySum += delayMin;
+      delayCount += 1;
+    }
+  }
+  const avgStartDelayMin = delayCount ? Math.round(delaySum / delayCount) : 0;
+
   return {
+    avgStartDelayMin,
+    startDelaySampleSize: delayCount,
     fromDate: fromDate.toISOString(),
     toDate: toDate.toISOString(),
     totals: {
