@@ -443,6 +443,8 @@ export async function createAdmission(tenantId: string, userId: string, data: Cr
           : undefined,
         admissionReason: data.admissionReason,
         depositAmount: data.depositAmount ?? 0,
+        // G12: how this IP patient settles (cash/package/insurance/corporate).
+        billingCategory: (data as any).billingCategory ?? undefined,
         status: 'admitted',
         admittedBy: userId,
       },
@@ -665,6 +667,9 @@ export async function updateAdmission(tenantId: string, id: string, data: Update
       }),
       ...(data.admissionReason !== undefined && { admissionReason: data.admissionReason }),
       ...(data.depositAmount !== undefined && { depositAmount: data.depositAmount }),
+      ...((data as any).billingCategory !== undefined && {
+        billingCategory: (data as any).billingCategory,
+      }),
     },
     include: {
       patient: {

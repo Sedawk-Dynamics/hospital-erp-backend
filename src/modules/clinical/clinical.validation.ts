@@ -74,6 +74,8 @@ export const createAdmissionSchema = z.object({
       .optional(),
     admissionReason: z.string().max(2000).optional(),
     depositAmount: z.number().min(0).optional(),
+    // G12: how this IP patient settles charges.
+    billingCategory: z.enum(['cash', 'package', 'insurance', 'corporate']).optional(),
   }),
 });
 
@@ -112,6 +114,7 @@ export const updateAdmissionSchema = z.object({
       .optional(),
     admissionReason: z.string().max(2000).optional(),
     depositAmount: z.number().min(0).optional(),
+    billingCategory: z.enum(['cash', 'package', 'insurance', 'corporate']).optional(),
   }),
 });
 
