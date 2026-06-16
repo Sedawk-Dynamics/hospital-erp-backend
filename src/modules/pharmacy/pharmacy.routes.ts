@@ -26,6 +26,8 @@ import {
   getStockAdjustmentsQuerySchema,
   createDispenseSchema,
   setPharmacyStatusSchema,
+  createEmergencyPatientSchema,
+  mergeEmergencyPatientSchema,
   createPharmacySaleSchema,
   getPharmacySalesQuerySchema,
   cancelSaleSchema,
@@ -106,6 +108,11 @@ pharmacyRoutes.patch('/dispensing/:id/verify', authenticate, requirePermission('
 
 // --- G12: ward→pharmacy order fulfilment status (Ordered→Preparing→Ready→Collected) ---
 pharmacyRoutes.patch('/queue/:id/status', authenticate, requirePermission('pharmacy', 'update'), validate(setPharmacyStatusSchema), controller.setPrescriptionPharmacyStatus);
+
+// --- G16: Emergency (Golden Hour) pre-registration buffer + retrospective merge ---
+pharmacyRoutes.post('/emergency-patients', authenticate, requirePermission('pharmacy', 'create'), validate(createEmergencyPatientSchema), controller.createEmergencyPatient);
+pharmacyRoutes.get('/emergency-patients', authenticate, requirePermission('pharmacy', 'read'), controller.listEmergencyPatients);
+pharmacyRoutes.post('/emergency-patients/:id/merge', authenticate, requirePermission('pharmacy', 'update'), validate(mergeEmergencyPatientSchema), controller.mergeEmergencyPatient);
 
 // --- Analytics (sales / expiry / stock usage / batch summary for the Reports page) ---
 pharmacyRoutes.get('/analytics', authenticate, requirePermission('pharmacy', 'read'), controller.getPharmacyAnalytics);
