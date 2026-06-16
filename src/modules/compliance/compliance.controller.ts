@@ -302,7 +302,7 @@ export async function listOperatingTheaters(req: AuthenticatedRequest, res: Resp
 
 export async function createOperatingTheater(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
-    const data = await complianceService.createOperatingTheater(req.user!.tenantId, req.body);
+    const data = await complianceService.createOperatingTheater(req.user!.tenantId, req.user!.roles ?? [], req.body);
     sendResponse({ res, statusCode: 201, message: 'Operating theater created', data });
   } catch (err) {
     next(err);
@@ -313,6 +313,7 @@ export async function updateOperatingTheater(req: AuthenticatedRequest, res: Res
   try {
     const data = await complianceService.updateOperatingTheater(
       req.user!.tenantId,
+      req.user!.roles ?? [],
       req.params.id as string,
       req.body,
     );
@@ -324,7 +325,7 @@ export async function updateOperatingTheater(req: AuthenticatedRequest, res: Res
 
 export async function deleteOperatingTheater(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
-    await complianceService.deleteOperatingTheater(req.user!.tenantId, req.params.id as string);
+    await complianceService.deleteOperatingTheater(req.user!.tenantId, req.user!.roles ?? [], req.params.id as string);
     sendResponse({ res, message: 'Operating theater deleted' });
   } catch (err) {
     next(err);

@@ -1053,6 +1053,16 @@ export async function getOTAnalytics(tenantId: string, query: OtAnalyticsQuery) 
 // Operating Theaters (rooms)
 // ============================================================
 
+// Managing operation theaters (rooms) is a hospital-admin concern — other OT
+// users (e.g. inventory_manager) can view + use theaters for scheduling but
+// cannot add / edit / delete them. admin = hospital admin, super_admin = platform.
+const HOSPITAL_ADMIN_ROLES = new Set(['super_admin', 'admin']);
+function assertHospitalAdmin(roles: string[], action = 'manage operation theaters'): void {
+  if (!roles.some((r) => HOSPITAL_ADMIN_ROLES.has(r))) {
+    throw AppError.forbidden(`Only a hospital admin can ${action}.`);
+  }
+}
+
 export async function listOperatingTheaters(tenantId: string) {
   return prisma.operatingTheater.findMany({
     where: { tenantId },
@@ -1060,7 +1070,8 @@ export async function listOperatingTheaters(tenantId: string) {
   });
 }
 
-export async function createOperatingTheater(tenantId: string, data: CreateOtInput) {
+export async function createOperatingTheater(tenantId: string, roles: string[], data: CreateOtInput) {
+  assertHospitalAdmin(roles, 'add an operation theater');
   const ot = await prisma.operatingTheater.create({
     data: {
       tenantId,
@@ -1074,7 +1085,8 @@ export async function createOperatingTheater(tenantId: string, data: CreateOtInp
   return ot;
 }
 
-export async function updateOperatingTheater(tenantId: string, id: string, data: UpdateOtInput) {
+export async function updateOperatingTheater(tenantId: string, roles: string[], id: string, data: UpdateOtInput) {
+  assertHospitalAdmin(roles, 'edit an operation theater');
   const existing = await prisma.operatingTheater.findFirst({ where: { id, tenantId } });
   if (!existing) throw AppError.notFound('Operating theater not found');
 
@@ -1089,7 +1101,8 @@ export async function updateOperatingTheater(tenantId: string, id: string, data:
   });
 }
 
-export async function deleteOperatingTheater(tenantId: string, id: string) {
+export async function deleteOperatingTheater(tenantId: string, roles: string[], id: string) {
+  assertHospitalAdmin(roles, 'delete an operation theater');
   const existing = await prisma.operatingTheater.findFirst({ where: { id, tenantId } });
   if (!existing) throw AppError.notFound('Operating theater not found');
   // Block deletion if active OT requests reference it.
