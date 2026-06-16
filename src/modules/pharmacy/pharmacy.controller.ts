@@ -630,10 +630,10 @@ export async function getReturnableDispenses(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const data = await pharmacyService.getReturnableDispenses(
-      tenantId,
-      req.query.patientId as string,
-    );
+    const data = await pharmacyService.getReturnableDispenses(tenantId, {
+      patientId: req.query.patientId as string | undefined,
+      billNumber: req.query.billNumber as string | undefined,
+    });
     sendResponse({ res, message: 'Returnable sale lines retrieved', data });
   } catch (err) {
     next(err);

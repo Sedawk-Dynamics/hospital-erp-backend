@@ -2285,17 +2285,37 @@ export async function getReturns(tenantId: string, query: GetReturnsQuery) {
  * remaining qty is the dispensed amount minus what has already been returned
  * (excluding rejected returns).
  */
-export async function getReturnableDispenses(tenantId: string, patientId: string) {
+export async function getReturnableDispenses(
+  tenantId: string,
+  params: { patientId?: string; billNumber?: string },
+) {
   const since = new Date();
   since.setDate(since.getDate() - 120);
 
+  // G3: when a bill number is presented, resolve it first so the picker can be
+  // driven purely off the physical bill (and surface whose bill it is).
+  let billPatient: { id: string; mrn: string | null; firstName: string; lastName: string | null } | null =
+    null;
+  const where: any = { tenantId, billId: { not: null }, dispensedAt: { gte: since } };
+  if (params.billNumber) {
+    const bill = await prisma.bill.findFirst({
+      where: { tenantId, billNumber: params.billNumber },
+      select: {
+        id: true,
+        patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+      },
+    });
+    if (!bill) throw AppError.notFound('Bill not found');
+    where.billId = bill.id;
+    billPatient = bill.patient ?? null;
+  } else if (params.patientId) {
+    where.patientId = params.patientId;
+  } else {
+    throw AppError.badRequest('Provide a patientId or a billNumber');
+  }
+
   const records = await prisma.dispensingRecord.findMany({
-    where: {
-      tenantId,
-      patientId,
-      billId: { not: null },
-      dispensedAt: { gte: since },
-    },
+    where,
     include: {
       drugBatch: {
         select: {
@@ -2341,7 +2361,7 @@ export async function getReturnableDispenses(tenantId: string, patientId: string
     })
     .filter((i) => i.remaining > 0);
 
-  return { items, total: items.length };
+  return { items, total: items.length, patient: billPatient };
 }
 
 export async function processReturn(

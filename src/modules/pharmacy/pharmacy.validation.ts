@@ -413,11 +413,18 @@ export const getReturnsQuerySchema = z.object({
   }),
 });
 
-// Returnable counter-sale lines for a patient (drives the patient-return picker).
+// Returnable counter-sale lines for the patient-return picker. G3: a return can
+// be looked up either by patient or by presenting the physical bill (billNumber).
 export const returnableQuerySchema = z.object({
-  query: z.object({
-    patientId: z.string().uuid('A valid patient ID is required'),
-  }),
+  query: z
+    .object({
+      patientId: z.string().uuid('A valid patient ID is required').optional(),
+      billNumber: z.string().min(1).max(50).optional(),
+    })
+    .refine((q) => !!q.patientId || !!q.billNumber, {
+      message: 'Provide a patientId or a billNumber',
+      path: ['patientId'],
+    }),
 });
 
 export const processReturnSchema = z.object({
