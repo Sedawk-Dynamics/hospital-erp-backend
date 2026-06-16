@@ -19,6 +19,7 @@ import {
   patientIdParamSchema,
   getChargesQuerySchema,
   pullChargesSchema,
+  billOtRequestSchema,
   setBillDiscountSchema,
   splitPaymentSchema,
   advancePaymentSchema,
@@ -45,6 +46,15 @@ billingRoutes.get(
   requirePermission('billing', 'read'),
   validate(getChargesQuerySchema),
   controller.getCharges,
+);
+
+// Push an OT surgery's charge onto a hospital bill (+ optional payment).
+billingRoutes.post(
+  '/ot/:otRequestId/bill',
+  authenticate,
+  requirePermission('billing', 'create'),
+  validate(billOtRequestSchema),
+  controller.billOtRequest,
 );
 
 // --- Service Tariffs ---

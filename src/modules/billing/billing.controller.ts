@@ -251,6 +251,30 @@ export async function pullCharges(
   }
 }
 
+// --- OT surgery → bill ---
+
+export async function billOtRequest(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const result = await billingService.billOtRequest(tenantId, req.params.otRequestId as string, {
+      collectPayment: req.body?.collectPayment === true,
+      paymentMethod: req.body?.paymentMethod,
+    });
+    sendResponse({
+      res,
+      statusCode: 201,
+      message: result.paid ? 'Surgery billed and payment recorded' : 'Surgery added to bill',
+      data: result,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // --- Bill-level discount ---
 
 export async function setBillDiscount(

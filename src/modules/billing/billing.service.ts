@@ -1261,10 +1261,11 @@ export type ChargeSource =
   | 'pharmacy'
   | 'imaging'
   | 'room'
+  | 'ot'
   | 'all';
 
 interface ChargeRow {
-  source: 'consultation' | 'lab' | 'pharmacy' | 'imaging' | 'room';
+  source: 'consultation' | 'lab' | 'pharmacy' | 'imaging' | 'room' | 'ot';
   referenceType: string;
   referenceId: string;
   description: string;
@@ -1286,6 +1287,7 @@ const CHARGE_TAX_RATES: Record<string, number> = {
   pharmacy: 12,
   imaging: 0,
   room: 0,
+  ot: 0,
 };
 
 /**
@@ -1317,6 +1319,55 @@ async function indexBilledReferences(tenantId: string, patientId: string) {
     }
   }
   return map;
+}
+
+/**
+ * OT (surgery) charges — completed/scheduled surgeries with a billing amount
+ * set. Mirrors the other charge sources so a surgery can be pulled onto the
+ * patient's bill (idempotent via referenceType 'ot_request').
+ */
+async function getOtCharges(
+  tenantId: string,
+  patientId: string,
+  billedIndex: Map<string, { billItemId: string; billId: string }>,
+): Promise<ChargeRow[]> {
+  const requests = await prisma.otRequest.findMany({
+    where: {
+      tenantId,
+      patientId,
+      status: { notIn: ['cancelled'] as any },
+      billingAmount: { gt: 0 },
+    },
+    include: {
+      surgeon: { include: { user: { select: { firstName: true, lastName: true } } } },
+      doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 50,
+  });
+
+  return requests.map((r) => {
+    const amount = toNumber(r.billingAmount ?? 0);
+    const sUser = r.surgeon?.user ?? r.doctor?.user;
+    const surgeon = sUser ? `Dr. ${sUser.firstName} ${sUser.lastName}` : null;
+    const billed = billedIndex.get(`ot_request:${r.id}`);
+    return {
+      source: 'ot' as const,
+      referenceType: 'ot_request',
+      referenceId: r.id,
+      description: `Surgery — ${r.procedureName}${surgeon ? ` (${surgeon})` : ''}`,
+      quantity: 1,
+      unitPrice: amount,
+      totalAmount: amount,
+      taxRate: CHARGE_TAX_RATES.ot,
+      category: 'surgery',
+      occurredAt: formatDateTimeIST(r.scheduledDate ?? r.createdAt),
+      status: r.status,
+      alreadyBilled: !!billed,
+      billItemId: billed?.billItemId,
+      billId: billed?.billId,
+    };
+  });
 }
 
 async function getConsultationCharges(
@@ -1608,6 +1659,9 @@ export async function getPatientCharges(
   if (source === 'room' || source === 'all') {
     rows = rows.concat(await getRoomCharges(tenantId, query.patientId, billedIndex));
   }
+  if (source === 'ot' || source === 'all') {
+    rows = rows.concat(await getOtCharges(tenantId, query.patientId, billedIndex));
+  }
 
   if (!query.includeBilled) {
     rows = rows.filter((r) => !r.alreadyBilled);
@@ -1620,6 +1674,7 @@ export async function getPatientCharges(
     pharmacy: 0,
     imaging: 0,
     room: 0,
+    ot: 0,
     grandTotal: 0,
     count: rows.length,
   };
@@ -1629,6 +1684,99 @@ export async function getPatientCharges(
   }
 
   return { charges: rows, summary };
+}
+
+/**
+ * Push an OT surgery's charge onto a hospital bill for the patient, optionally
+ * collecting full payment. Creates a dedicated, finalized surgery invoice and
+ * is idempotent — if the surgery was already billed (a bill_item with
+ * referenceType 'ot_request' exists on a non-cancelled bill) that bill is
+ * reused instead of creating a duplicate. Keeps OtRequest.billingStatus in sync.
+ */
+export async function billOtRequest(
+  tenantId: string,
+  otRequestId: string,
+  opts: { collectPayment?: boolean; paymentMethod?: string } = {},
+) {
+  const req = await prisma.otRequest.findFirst({
+    where: { id: otRequestId, tenantId },
+    include: {
+      surgeon: { include: { user: { select: { firstName: true, lastName: true } } } },
+      doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
+    },
+  });
+  if (!req) throw AppError.notFound('OT request not found');
+  const amount = toNumber(req.billingAmount ?? 0);
+  if (amount <= 0) {
+    throw AppError.badRequest('Set a billing amount on the surgery before billing it');
+  }
+
+  // Idempotency: reuse the bill if this surgery was already billed.
+  const existingItem = await prisma.billItem.findFirst({
+    where: {
+      referenceType: 'ot_request',
+      referenceId: otRequestId,
+      bill: { tenantId, status: { not: 'cancelled' } },
+    },
+    select: { billId: true },
+  });
+
+  let billId: string;
+  if (existingItem) {
+    billId = existingItem.billId;
+  } else {
+    const sUser = req.surgeon?.user ?? req.doctor?.user;
+    const surgeon = sUser ? `Dr. ${sUser.firstName} ${sUser.lastName}` : null;
+    const bill = await createBill(tenantId, { patientId: req.patientId, visitId: req.visitId ?? undefined });
+    await pullChargesToBill(tenantId, bill.id, [
+      {
+        referenceType: 'ot_request',
+        referenceId: otRequestId,
+        description: `Surgery — ${req.procedureName}${surgeon ? ` (${surgeon})` : ''}`,
+        quantity: 1,
+        unitPrice: amount,
+        taxRate: CHARGE_TAX_RATES.ot,
+        category: 'surgery',
+      },
+    ]);
+    await finalizeBill(tenantId, bill.id);
+    billId = bill.id;
+  }
+
+  // Optionally collect full payment of the outstanding balance.
+  let paid = false;
+  const billBefore = await prisma.bill.findUnique({ where: { id: billId } });
+  if (opts.collectPayment && billBefore && billBefore.status !== 'paid' && billBefore.status !== 'draft') {
+    const due = toNumber(billBefore.balanceDue);
+    if (due > 0) {
+      await createPayment(tenantId, {
+        billId,
+        amount: due,
+        paymentMethod: (opts.paymentMethod ?? 'cash') as any,
+      });
+      paid = true;
+    }
+  }
+
+  const finalBill = await prisma.bill.findUnique({ where: { id: billId } });
+  const billingStatus =
+    finalBill?.status === 'paid'
+      ? 'paid'
+      : finalBill?.status === 'partially_paid'
+        ? 'partially_paid'
+        : 'pending';
+  await prisma.otRequest.update({ where: { id: otRequestId }, data: { billingStatus } });
+
+  logger.info({ tenantId, otRequestId, billId, paid }, 'OT surgery pushed to bill');
+  return {
+    billId,
+    billNumber: finalBill?.billNumber ?? null,
+    billStatus: finalBill?.status ?? null,
+    totalAmount: toNumber(finalBill?.totalAmount ?? amount),
+    amountPaid: toNumber(finalBill?.amountPaid ?? 0),
+    balanceDue: toNumber(finalBill?.balanceDue ?? 0),
+    paid,
+  };
 }
 
 /**

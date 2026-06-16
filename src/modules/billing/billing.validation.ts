@@ -345,11 +345,22 @@ export const getChargesQuerySchema = z.object({
   query: z.object({
     patientId: z.string().uuid('Invalid patient ID'),
     source: z
-      .enum(['consultation', 'lab', 'pharmacy', 'imaging', 'room', 'all'])
+      .enum(['consultation', 'lab', 'pharmacy', 'imaging', 'room', 'ot', 'all'])
       .optional(),
     includeBilled: z
       .string()
       .transform((v) => v === 'true')
+      .optional(),
+  }),
+});
+
+// Bill an OT surgery (push its charge onto a hospital bill, optionally pay).
+export const billOtRequestSchema = z.object({
+  params: z.object({ otRequestId: z.string().uuid('Invalid OT request ID') }),
+  body: z.object({
+    collectPayment: z.boolean().optional(),
+    paymentMethod: z
+      .enum(['cash', 'credit_card', 'debit_card', 'bank_transfer', 'upi', 'cheque', 'insurance', 'wallet', 'other'])
       .optional(),
   }),
 });
