@@ -758,6 +758,63 @@ export async function getFormularyItemById(tenantId: string, id: string) {
   return item;
 }
 
+/**
+ * G8: alternative brands that share this drug's composition (generic name).
+ * Lets the counter offer an in-stock substitute when the requested brand is out
+ * of stock — e.g. searching "Crocin" surfaces other paracetamol brands on hand.
+ * In-stock items are returned first.
+ */
+export async function getFormularyAlternatives(tenantId: string, id: string) {
+  const item = await prisma.drugFormulary.findFirst({
+    where: { id, tenantId },
+    select: { id: true, genericName: true, strength: true, dosageForm: true },
+  });
+  if (!item) throw AppError.notFound('Formulary item not found');
+  if (!item.genericName) {
+    return { composition: null, alternatives: [] as any[] };
+  }
+
+  const rows = await prisma.drugFormulary.findMany({
+    where: {
+      tenantId,
+      isActive: true,
+      id: { not: id },
+      genericName: { equals: item.genericName, mode: 'insensitive' },
+    },
+    select: {
+      id: true,
+      drugName: true,
+      genericName: true,
+      manufacturer: true,
+      dosageForm: true,
+      strength: true,
+      price: true,
+      packSize: true,
+      looseUnitLabel: true,
+      drugBatches: {
+        where: { isExpired: false, isRecalled: false, quantityInStock: { gt: 0 } },
+        select: { quantityInStock: true, expiryDate: true },
+      },
+    },
+    orderBy: { drugName: 'asc' },
+    take: 50,
+  });
+
+  const alternatives = rows
+    .map((r) => {
+      const { drugBatches, ...rest } = r;
+      const totalStock = drugBatches.reduce((s, b) => s + b.quantityInStock, 0);
+      const nearestExpiry = drugBatches.length
+        ? drugBatches.map((b) => b.expiryDate).reduce((min, d) => (d < min ? d : min))
+        : null;
+      return { ...rest, totalStock, inStock: totalStock > 0, nearestExpiry };
+    })
+    // In-stock brands first, then by name.
+    .sort((a, b) => Number(b.inStock) - Number(a.inStock) || a.drugName.localeCompare(b.drugName));
+
+  return { composition: item.genericName, alternatives };
+}
+
 export async function updateFormularyItem(
   tenantId: string,
   roles: string[],

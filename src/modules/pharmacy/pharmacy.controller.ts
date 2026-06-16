@@ -146,6 +146,21 @@ export async function findFormularyMatches(
   }
 }
 
+// G8: alternative brands sharing this drug's composition (for out-of-stock swaps).
+export async function getFormularyAlternatives(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await pharmacyService.getFormularyAlternatives(tenantId, req.params.id as string);
+    sendResponse({ res, message: 'Alternatives retrieved', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // G1: consolidate stock that already split across two near-duplicate rows by
 // merging the source drug into the target (repoints batches + history).
 export async function mergeFormularyItems(
