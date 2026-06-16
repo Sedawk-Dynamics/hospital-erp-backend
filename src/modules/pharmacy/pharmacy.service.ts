@@ -65,6 +65,48 @@ function isBatchExpired(batch: { isExpired: boolean; expiryDate: Date | string }
   return new Date(batch.expiryDate) < today;
 }
 
+const r2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
+
+/**
+ * G2: derive the purchase economics for a batch from its stored fields so the
+ * UI/reports show them consistently. Purchase rate is gross (per unit); net is
+ * rate after the purchase discount; landing cost folds in GST; margin compares
+ * the selling price against the per-unit landing cost. Free units count toward
+ * stock but not toward the purchase value (they dilute the landing cost).
+ */
+function batchPurchaseEconomics(b: {
+  mrp?: unknown;
+  purchasePrice?: unknown;
+  purchaseDiscountPercent?: unknown;
+  gstPercent?: unknown;
+  sellingPrice?: unknown;
+  quantityReceived?: number;
+  freeQuantity?: number | null;
+}) {
+  const numOrNull = (v: unknown): number | null =>
+    v == null || !Number.isFinite(Number(v)) ? null : Number(v);
+  const rate = numOrNull(b.purchasePrice);
+  const disc = numOrNull(b.purchaseDiscountPercent) ?? 0;
+  const gst = numOrNull(b.gstPercent);
+  const sell = numOrNull(b.sellingPrice);
+  const totalQty = b.quantityReceived ?? 0;
+  const paidQty = Math.max(0, totalQty - (b.freeQuantity ?? 0));
+
+  const netRate = rate != null ? r2(rate * (1 - disc / 100)) : null;
+  const netPurchaseValue = netRate != null ? r2(netRate * paidQty) : null;
+  const taxAmount =
+    netPurchaseValue != null && gst != null ? r2(netPurchaseValue * (gst / 100)) : null;
+  const landingTotal =
+    netPurchaseValue != null ? r2(netPurchaseValue + (taxAmount ?? 0)) : null;
+  // Spread landing cost over ALL received units (incl. free) → true unit cost.
+  const landingPerUnit = landingTotal != null && totalQty > 0 ? r2(landingTotal / totalQty) : null;
+  const marginPerUnit = sell != null && landingPerUnit != null ? r2(sell - landingPerUnit) : null;
+  const marginPercent =
+    marginPerUnit != null && landingPerUnit ? r2((marginPerUnit / landingPerUnit) * 100) : null;
+
+  return { netRate, netPurchaseValue, taxAmount, landingPerUnit, marginPerUnit, marginPercent };
+}
+
 // ============================================================
 // Drug Categories
 // ============================================================
@@ -829,6 +871,9 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
     throw AppError.conflict('A batch with this number already exists for this drug');
   }
 
+  // Free units count toward stock but not toward purchase value. quantityReceived
+  // is the TOTAL received (paid + free); freeQuantity records the free portion.
+  const freeQty = data.freeQuantity ?? 0;
   const batch = await prisma.drugBatch.create({
     data: {
       tenantId,
@@ -837,7 +882,11 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
       manufacturingDate: data.manufacturingDate ? new Date(data.manufacturingDate) : undefined,
       expiryDate: new Date(data.expiryDate),
       supplierId: data.supplierId,
+      mrp: data.mrp,
       purchasePrice: data.purchasePrice,
+      purchaseDiscountPercent: data.purchaseDiscountPercent,
+      gstPercent: data.gstPercent,
+      freeQuantity: freeQty,
       sellingPrice: data.sellingPrice,
       quantityReceived: data.quantityReceived,
       quantityInStock: data.quantityReceived,
@@ -916,7 +965,9 @@ export async function getBatches(tenantId: string, query: GetBatchesQuery) {
     prisma.drugBatch.count({ where }),
   ]);
 
-  return { batches, total, page, limit };
+  // Decorate each row with derived purchase economics (G2).
+  const shaped = batches.map((b) => ({ ...b, economics: batchPurchaseEconomics(b as any) }));
+  return { batches: shaped, total, page, limit };
 }
 
 export async function getBatchById(tenantId: string, id: string) {
@@ -932,7 +983,7 @@ export async function getBatchById(tenantId: string, id: string) {
     throw AppError.notFound('Drug batch not found');
   }
 
-  return batch;
+  return { ...batch, economics: batchPurchaseEconomics(batch as any) };
 }
 
 export async function updateBatch(
@@ -967,7 +1018,10 @@ export async function updateBatch(
   }
   if (data.expiryDate !== undefined) updateData.expiryDate = new Date(data.expiryDate);
   if (data.supplierId !== undefined) updateData.supplierId = data.supplierId;
+  if ((data as any).mrp !== undefined) updateData.mrp = (data as any).mrp;
   if (data.purchasePrice !== undefined) updateData.purchasePrice = data.purchasePrice;
+  if ((data as any).purchaseDiscountPercent !== undefined) updateData.purchaseDiscountPercent = (data as any).purchaseDiscountPercent;
+  if ((data as any).gstPercent !== undefined) updateData.gstPercent = (data as any).gstPercent;
   if (data.sellingPrice !== undefined) updateData.sellingPrice = data.sellingPrice;
   if (data.quantityInStock !== undefined) updateData.quantityInStock = data.quantityInStock;
   if (data.isExpired !== undefined) updateData.isExpired = data.isExpired;
@@ -1514,9 +1568,22 @@ export async function createPharmacySale(
 
     // 2. Roll up the invoice totals.
     const subtotal = round2(lines.reduce((s, l) => s + l.unitPrice * l.baseQty, 0));
-    const discountAmount = round2(lines.reduce((s, l) => s + l.discAmt, 0));
-    const taxAmount = round2(lines.reduce((s, l) => s + l.taxAmt, 0));
-    const totalAmount = round2(lines.reduce((s, l) => s + l.net, 0));
+    const itemDiscount = round2(lines.reduce((s, l) => s + l.discAmt, 0));
+    const itemTotal = round2(lines.reduce((s, l) => s + l.net, 0));
+
+    // G2 sale-side: apply a bill-level discount on top of per-item discounts.
+    // Percent is taken on the post-item-discount total, plus any flat amount,
+    // capped at the total. GST is tax-inclusive in MRP, so scale the embedded
+    // tax proportionally once the bill is discounted.
+    const billDiscPct = (data as any).billDiscountPercent ?? 0;
+    const billDiscFlat = (data as any).billDiscountAmount ?? 0;
+    const billDiscount = round2(
+      Math.min(itemTotal, round2(itemTotal * (billDiscPct / 100)) + billDiscFlat),
+    );
+    const totalAmount = round2(itemTotal - billDiscount);
+    const discountAmount = round2(itemDiscount + billDiscount);
+    const ratio = itemTotal > 0 ? totalAmount / itemTotal : 1;
+    const taxAmount = round2(lines.reduce((s, l) => s + l.taxAmt, 0) * ratio);
 
     // Resolve the tender(s). G7 split payment: when `payments[]` is given each
     // entry becomes its own Payment row (cash + UPI + card…). Otherwise fall

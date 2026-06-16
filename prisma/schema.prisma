@@ -3970,6 +3970,16 @@ model DrugBatch {
   manufacturingDate DateTime? @map("manufacturing_date") @db.Date
   expiryDate        DateTime  @map("expiry_date") @db.Date
   supplierId        String?   @map("supplier_id")
+  // Purchase economics captured at inward (G2 — separate fields so the GRN can
+  // show MRP, purchase rate, discount and GST distinctly). purchasePrice is the
+  // per-unit purchase RATE (gross, before discount); the net purchase price and
+  // landing cost are derived from rate + discount. mrp is the printed MRP.
+  mrp                     Decimal? @map("mrp") @db.Decimal(10, 2)
+  purchaseDiscountPercent Decimal? @map("purchase_discount_percent") @db.Decimal(5, 2)
+  gstPercent              Decimal? @map("gst_percent") @db.Decimal(5, 2)
+  // Free units received on top of the paid quantity (e.g. buy 100 get 10). They
+  // count toward stock but not toward purchase value.
+  freeQuantity            Int       @default(0) @map("free_quantity")
   purchasePrice     Decimal?  @map("purchase_price") @db.Decimal(10, 2)
   sellingPrice      Decimal?  @map("selling_price") @db.Decimal(10, 2)
   quantityReceived  Int       @map("quantity_received")

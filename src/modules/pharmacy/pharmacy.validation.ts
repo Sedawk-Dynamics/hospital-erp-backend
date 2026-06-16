@@ -173,9 +173,15 @@ export const createBatchSchema = z.object({
     manufacturingDate: z.string().optional(),
     expiryDate: z.string().min(1, 'Expiry date is required'),
     supplierId: z.string().uuid('Invalid supplier ID').optional(),
+    // G2 purchase-side discount structure — captured as distinct fields.
+    mrp: z.number().nonnegative('MRP must be non-negative').optional(),
     purchasePrice: z.number().nonnegative('Purchase price must be non-negative').optional(),
+    purchaseDiscountPercent: z.number().min(0).max(100).optional(),
+    gstPercent: z.number().min(0).max(100).optional(),
     sellingPrice: z.number().nonnegative('Selling price must be non-negative').optional(),
     quantityReceived: z.number().int().positive('Quantity received must be positive'),
+    // Free units received on top of the paid quantity (count toward stock).
+    freeQuantity: z.number().int().nonnegative().optional(),
   }),
 });
 
@@ -185,7 +191,10 @@ export const updateBatchSchema = z.object({
     manufacturingDate: z.string().optional().nullable(),
     expiryDate: z.string().optional(),
     supplierId: z.string().uuid('Invalid supplier ID').optional().nullable(),
+    mrp: z.number().nonnegative().optional().nullable(),
     purchasePrice: z.number().nonnegative().optional().nullable(),
+    purchaseDiscountPercent: z.number().min(0).max(100).optional().nullable(),
+    gstPercent: z.number().min(0).max(100).optional().nullable(),
     sellingPrice: z.number().nonnegative().optional().nullable(),
     quantityInStock: z.number().int().nonnegative('Stock quantity must be non-negative').optional(),
     isExpired: z.boolean().optional(),
@@ -268,6 +277,11 @@ export const createPharmacySaleSchema = z.object({
         }),
       )
       .min(1, 'At least one item is required'),
+    // G2 sale-side: a bill-level discount applied on top of any per-item
+    // discounts (both can be used together). Percent and flat amount both
+    // supported; the flat amount is added to the percent-derived discount.
+    billDiscountPercent: z.number().min(0).max(100).optional(),
+    billDiscountAmount: z.number().nonnegative().optional(),
     // Single-mode tender (back-compat). Prefer `payments[]` for split tenders.
     paymentMethod: z
       .enum(['cash', 'credit_card', 'debit_card', 'upi', 'net_banking', 'cheque', 'other'])
