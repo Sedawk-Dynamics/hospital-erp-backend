@@ -21,18 +21,37 @@ import {
 
 const TENANT_ID = 'tenant-1';
 const USER_ID = 'user-1';
+// Pharmacy-admin role — required by the guard on category/formulary/batch/vendor
+// mutations (assertPharmacyAdmin).
+const ADMIN_ROLES = ['pharmacy_admin'];
 
+// A comprehensive in-transaction mock so flows that touch several models inside
+// $transaction (dispense → prescription/bill auto-link, processReturn → restock
+// + refund) don't blow up on an undefined model method. Tests override the
+// specific methods they assert on.
 function mockTransaction() {
-  const txMock = {
-    dispensingRecord: {
-      create: vi.fn(),
-    },
-    drugBatch: {
-      update: vi.fn(),
-    },
-    drugReturn: {
-      update: vi.fn(),
-    },
+  const model = () => ({
+    create: vi.fn(),
+    update: vi.fn(),
+    findFirst: vi.fn(),
+    findUnique: vi.fn(),
+    findMany: vi.fn(),
+    aggregate: vi.fn(),
+    count: vi.fn(),
+  });
+  const txMock: any = {
+    dispensingRecord: model(),
+    drugBatch: model(),
+    drugReturn: model(),
+    drugFormulary: model(),
+    prescription: model(),
+    prescriptionItem: model(),
+    bill: model(),
+    billItem: model(),
+    payment: model(),
+    refund: model(),
+    admission: model(),
+    patient: model(),
   };
   (prisma.$transaction as any).mockImplementation((fn: any) => fn(txMock));
   return txMock;
@@ -56,7 +75,7 @@ describe('Pharmacy Service', () => {
       (prisma.drugCategory.findFirst as any).mockResolvedValue(null);
       (prisma.drugCategory.create as any).mockResolvedValue(expected);
 
-      const result = await createDrugCategory(TENANT_ID, input);
+      const result = await createDrugCategory(TENANT_ID, ADMIN_ROLES, input);
 
       expect(prisma.drugCategory.findFirst).toHaveBeenCalledWith({
         where: { tenantId: TENANT_ID, name: 'Antibiotics' },
@@ -71,7 +90,7 @@ describe('Pharmacy Service', () => {
       (prisma.drugCategory.findFirst as any).mockResolvedValue({ id: 'cat-existing' });
 
       await expect(
-        createDrugCategory(TENANT_ID, { name: 'Antibiotics' } as any),
+        createDrugCategory(TENANT_ID, ADMIN_ROLES, { name: 'Antibiotics' } as any),
       ).rejects.toThrow('A drug category with this name already exists');
     });
   });
@@ -146,10 +165,12 @@ describe('Pharmacy Service', () => {
       (prisma.drugCategory.findFirst as any).mockResolvedValue({ id: 'cat-1', tenantId: TENANT_ID });
       (prisma.drugFormulary.create as any).mockResolvedValue(created);
 
-      const result = await createFormularyItem(TENANT_ID, input as any);
+      // force:true skips the G1 duplicate-suspected guard so a fresh item is created.
+      const result = await createFormularyItem(TENANT_ID, ADMIN_ROLES, { ...input, force: true } as any);
 
-      expect(result.drugName).toBe('Amoxicillin');
-      expect(result.category.name).toBe('Antibiotics');
+      expect(result.status).toBe('created');
+      expect((result as any).item.drugName).toBe('Amoxicillin');
+      expect((result as any).item.category.name).toBe('Antibiotics');
       expect(prisma.drugFormulary.create).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -165,7 +186,7 @@ describe('Pharmacy Service', () => {
       const input = { drugName: 'Test Drug', categoryId: 'nonexistent' };
       (prisma.drugCategory.findFirst as any).mockResolvedValue(null);
 
-      await expect(createFormularyItem(TENANT_ID, input as any)).rejects.toThrow(
+      await expect(createFormularyItem(TENANT_ID, ADMIN_ROLES, input as any)).rejects.toThrow(
         'Drug category not found',
       );
     });
@@ -178,6 +199,8 @@ describe('Pharmacy Service', () => {
           id: 'drug-1',
           drugName: 'Amoxicillin',
           category: { id: 'cat-1', name: 'Antibiotics' },
+          // getFormulary rolls available batches up into a stock summary.
+          drugBatches: [],
         },
       ];
 
@@ -186,7 +209,10 @@ describe('Pharmacy Service', () => {
 
       const result = await getFormulary(TENANT_ID, { page: 1, limit: 20 } as any);
 
-      expect(result.items).toEqual(items);
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0].id).toBe('drug-1');
+      expect(result.items[0].totalStock).toBe(0);
+      expect(result.items[0].inStock).toBe(false);
       expect(result.total).toBe(1);
     });
   });
@@ -218,7 +244,7 @@ describe('Pharmacy Service', () => {
       };
       (prisma.drugBatch.create as any).mockResolvedValue(created);
 
-      const result = await createBatch(TENANT_ID, input as any);
+      const result = await createBatch(TENANT_ID, USER_ID, ADMIN_ROLES, input as any);
 
       expect(result.batchNumber).toBe('BATCH-001');
       expect(result.quantityInStock).toBe(500);
@@ -239,7 +265,7 @@ describe('Pharmacy Service', () => {
       (prisma.drugFormulary.findFirst as any).mockResolvedValue(null);
 
       await expect(
-        createBatch(TENANT_ID, { drugId: 'nonexistent', batchNumber: 'B1', expiryDate: '2027-01-01', quantityReceived: 10 } as any),
+        createBatch(TENANT_ID, USER_ID, ADMIN_ROLES, { drugId: 'nonexistent', batchNumber: 'B1', expiryDate: '2027-01-01', quantityReceived: 10 } as any),
       ).rejects.toThrow('Drug not found in formulary');
     });
 
@@ -248,7 +274,7 @@ describe('Pharmacy Service', () => {
       (prisma.drugBatch.findFirst as any).mockResolvedValue({ id: 'existing-batch' });
 
       await expect(
-        createBatch(TENANT_ID, { drugId: 'drug-1', batchNumber: 'DUP-001', expiryDate: '2027-01-01', quantityReceived: 10 } as any),
+        createBatch(TENANT_ID, USER_ID, ADMIN_ROLES, { drugId: 'drug-1', batchNumber: 'DUP-001', expiryDate: '2027-01-01', quantityReceived: 10 } as any),
       ).rejects.toThrow('A batch with this number already exists for this drug');
     });
   });
@@ -270,6 +296,8 @@ describe('Pharmacy Service', () => {
         isExpired: false,
         isRecalled: false,
         quantityInStock: 100,
+        batchNumber: 'BATCH-001',
+        drug: { id: 'drug-1', drugName: 'Amoxicillin' },
       });
       (prisma.patient.findFirst as any).mockResolvedValue({ id: 'patient-1' });
 
@@ -421,7 +449,7 @@ describe('Pharmacy Service', () => {
       };
       (prisma.drugReturn.create as any).mockResolvedValue(created);
 
-      const result = await createReturn(TENANT_ID, input as any);
+      const result = await createReturn(TENANT_ID, USER_ID, ADMIN_ROLES, input as any);
 
       expect(result.status).toBe('pending');
       expect(result.quantity).toBe(5);
@@ -432,7 +460,7 @@ describe('Pharmacy Service', () => {
       (prisma.drugBatch.findFirst as any).mockResolvedValue({ id: 'batch-1', tenantId: TENANT_ID });
 
       await expect(
-        createReturn(TENANT_ID, {
+        createReturn(TENANT_ID, USER_ID, ADMIN_ROLES, {
           returnType: 'patient_return',
           drugBatchId: 'batch-1',
           quantity: 5,
@@ -469,11 +497,13 @@ describe('Pharmacy Service', () => {
         processor: { id: USER_ID, firstName: 'Admin', lastName: 'User' },
       };
       txMock.drugReturn.update.mockResolvedValue(processedReturn);
+      // processReturn returns the re-fetched record at the end of the transaction.
+      txMock.drugReturn.findUnique.mockResolvedValue(processedReturn);
       txMock.drugBatch.update.mockResolvedValue({});
 
       const result = await processReturn(TENANT_ID, 'return-1', USER_ID, { status: 'processed' });
 
-      expect(result.status).toBe('processed');
+      expect(result!.status).toBe('processed');
       expect(txMock.drugBatch.update).toHaveBeenCalledWith({
         where: { id: 'batch-1' },
         data: { quantityInStock: { increment: 5 } },
