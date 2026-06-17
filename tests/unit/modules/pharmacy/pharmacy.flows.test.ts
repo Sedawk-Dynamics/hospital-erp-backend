@@ -150,6 +150,25 @@ describe('Pharmacy — flow coverage (sale / returns / merge / reports)', () => 
     });
   });
 
+  // ── Counter return: optional price/refund recorded on the return ──
+  describe('createReturn — counter_return optional refund', () => {
+    it('records the optional refund amount on a walk-in counter return', async () => {
+      (prisma.drugFormulary.findFirst as any).mockResolvedValue({ id: 'd1', tenantId: TENANT_ID, drugName: 'Amox' });
+      (prisma.drugReturn.create as any).mockImplementation((args: any) => Promise.resolve({ id: 'cr1', ...args.data }));
+      (prisma.drugReturn.findFirst as any).mockResolvedValue({
+        id: 'cr1', tenantId: TENANT_ID, status: 'pending', returnType: 'counter_return', drugId: 'd1', drugBatchId: null, batchNumber: null, quantity: 2,
+      });
+      const tx = txWith();
+      tx.drugReturn.findUnique.mockResolvedValue({ id: 'cr1', status: 'processed', refundAmount: 25 });
+
+      await createReturn(TENANT_ID, USER_ID, ADMIN_ROLES, {
+        returnType: 'counter_return', drugId: 'd1', quantity: 2, refundAmount: 25,
+      } as any);
+
+      expect((prisma.drugReturn.create as any).mock.calls[0][0].data.refundAmount).toBe(25);
+    });
+  });
+
   // ── Patient return: staff-entered "money given" overrides billed price ──
   describe('createReturn — refund amount override (money given)', () => {
     it('uses the entered refund amount instead of the billed price', async () => {

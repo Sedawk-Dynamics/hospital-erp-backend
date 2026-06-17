@@ -2483,6 +2483,9 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
         saleUnit: data.saleUnit ?? 'pack',
         quantity: data.quantity,
         reason: data.reason,
+        // Optional money given back to the walk-in customer. A counter return has
+        // no original bill, so this is just recorded on the return + its receipt.
+        refundAmount: (data as any).refundAmount != null ? round2(Number((data as any).refundAmount)) : null,
         status: 'pending',
       },
       include: {
