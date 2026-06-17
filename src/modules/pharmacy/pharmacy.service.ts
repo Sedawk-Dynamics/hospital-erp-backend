@@ -74,7 +74,7 @@ const r2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
  * the selling price against the per-unit landing cost. Free units count toward
  * stock but not toward the purchase value (they dilute the landing cost).
  */
-function batchPurchaseEconomics(b: {
+export function batchPurchaseEconomics(b: {
   mrp?: unknown;
   purchasePrice?: unknown;
   purchaseDiscountPercent?: unknown;
