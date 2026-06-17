@@ -422,7 +422,7 @@ describe('Pharmacy Service', () => {
   // Returns
   // ============================================================
   describe('createReturn (returnDrug)', () => {
-    it('should create a patient return with pending status', async () => {
+    it('creates a patient return and applies it immediately (restock + processed)', async () => {
       const input = {
         returnType: 'patient_return',
         drugBatchId: 'batch-1',
@@ -433,27 +433,24 @@ describe('Pharmacy Service', () => {
 
       (prisma.drugBatch.findFirst as any).mockResolvedValue({ id: 'batch-1', tenantId: TENANT_ID });
       (prisma.patient.findFirst as any).mockResolvedValue({ id: 'patient-1' });
+      (prisma.drugReturn.create as any).mockResolvedValue({ id: 'return-1', tenantId: TENANT_ID, ...input, status: 'pending' });
 
-      const created = {
-        id: 'return-1',
-        tenantId: TENANT_ID,
-        ...input,
-        status: 'pending',
-        drugBatch: {
-          id: 'batch-1',
-          batchNumber: 'BATCH-001',
-          drug: { id: 'drug-1', drugName: 'Amoxicillin' },
-        },
-        patient: { id: 'patient-1', firstName: 'Jane', lastName: 'Doe' },
-        supplier: null,
-      };
-      (prisma.drugReturn.create as any).mockResolvedValue(created);
+      // Returns now apply immediately — createReturn finalizes via processReturn
+      // (no separate approve step).
+      (prisma.drugReturn.findFirst as any).mockResolvedValue({
+        id: 'return-1', tenantId: TENANT_ID, status: 'pending', returnType: 'patient_return', drugBatchId: 'batch-1', quantity: 5,
+      });
+      const txMock = mockTransaction();
+      txMock.drugReturn.update.mockResolvedValue({});
+      txMock.drugBatch.update.mockResolvedValue({});
+      txMock.drugReturn.findUnique.mockResolvedValue({ id: 'return-1', status: 'processed', quantity: 5, returnType: 'patient_return' });
 
       const result = await createReturn(TENANT_ID, USER_ID, ADMIN_ROLES, input as any);
 
-      expect(result.status).toBe('pending');
-      expect(result.quantity).toBe(5);
-      expect(result.returnType).toBe('patient_return');
+      expect(result!.status).toBe('processed');
+      expect(result!.quantity).toBe(5);
+      // the returned units are restocked on the immediate apply
+      expect(txMock.drugBatch.update).toHaveBeenCalledWith({ where: { id: 'batch-1' }, data: { quantityInStock: { increment: 5 } } });
     });
 
     it('should throw bad request if patient_return lacks patientId', async () => {

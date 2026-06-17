@@ -2507,7 +2507,8 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
       { tenantId, returnId: counterReturn.id, returnType: 'counter_return' },
       'Counter drug return created',
     );
-    return counterReturn;
+    // Returns apply immediately — no separate approve step. Restock now.
+    return processReturn(tenantId, counterReturn.id, userId, { status: 'processed' });
   }
 
   // Patient returns can be anchored to the original sale line. When they are,
@@ -2553,6 +2554,10 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
     const discPct = record.discountPercent != null ? Number(record.discountPercent) : 0;
     if (unitPrice != null) {
       refundAmount = round2(unitPrice * data.quantity * (1 - discPct / 100));
+    }
+    // The staff-entered "money given" wins over the auto-computed billed price.
+    if ((data as any).refundAmount != null) {
+      refundAmount = round2(Number((data as any).refundAmount));
     }
   }
 
@@ -2651,7 +2656,13 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
     { tenantId, returnId: drugReturn.id, returnType: data.returnType, refundAmount },
     'Drug return created',
   );
-  return drugReturn;
+  // Returns apply immediately — no separate approve step. This restocks the
+  // batch and, for a patient return, books the refund against the bill so it
+  // shows there straight away.
+  return processReturn(tenantId, drugReturn.id, userId, {
+    status: 'processed',
+    ...((data as any).refundMode ? { refundMode: (data as any).refundMode } : {}),
+  });
 }
 
 // ============================================================

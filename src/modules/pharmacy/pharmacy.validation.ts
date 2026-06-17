@@ -448,6 +448,11 @@ export const createReturnSchema = z.object({
       supplierId: z.string().uuid('Invalid supplier ID').optional(),
       quantity: z.number().int().positive('Quantity must be positive'),
       reason: z.string().max(1000).optional(),
+      // Money actually handed back to the customer on a patient return. When
+      // given it overrides the auto-computed billed price and is what gets
+      // refunded against the original bill. Returns now apply immediately (no
+      // separate approve step).
+      refundAmount: z.number().nonnegative().optional(),
       // G5: supplier credit note for vendor (expired/damaged) returns.
       creditNoteNumber: z.string().max(80).optional(),
       creditAmount: z.number().nonnegative().optional(),

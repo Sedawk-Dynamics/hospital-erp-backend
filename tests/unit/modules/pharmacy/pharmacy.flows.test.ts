@@ -121,10 +121,15 @@ describe('Pharmacy — flow coverage (sale / returns / merge / reports)', () => 
 
   // ── G5 vendor return (credit note) ────────────────────────
   describe('createReturn — vendor_return (G5)', () => {
-    it('auto-computes the credit value from purchase price × qty', async () => {
+    it('auto-computes the credit value from purchase price × qty and applies immediately', async () => {
       (prisma.supplier.findFirst as any).mockResolvedValue({ id: 's1', tenantId: TENANT_ID });
       (prisma.drugBatch.findFirst as any).mockResolvedValue({ id: 'b1', tenantId: TENANT_ID, purchasePrice: 30 });
       (prisma.drugReturn.create as any).mockImplementation((args: any) => Promise.resolve({ id: 'r1', ...args.data, drugBatch: { batchNumber: 'BN1', drug: { drugName: 'Amox' } } }));
+      // Returns now apply immediately — createReturn finalizes via processReturn.
+      (prisma.drugReturn.findFirst as any).mockResolvedValue({ id: 'r1', tenantId: TENANT_ID, status: 'pending', returnType: 'vendor_return', drugBatchId: 'b1', quantity: 5, refundAmount: null });
+      const tx = txWith();
+      tx.drugBatch.findUnique.mockResolvedValue({ quantityInStock: 100 });
+      tx.drugReturn.findUnique.mockResolvedValue({ id: 'r1', status: 'processed' });
 
       await createReturn(TENANT_ID, USER_ID, ADMIN_ROLES, {
         returnType: 'vendor_return', drugBatchId: 'b1', supplierId: 's1', quantity: 5, reason: 'expired', creditNoteNumber: 'CN-9',
@@ -133,6 +138,8 @@ describe('Pharmacy — flow coverage (sale / returns / merge / reports)', () => 
       const created = (prisma.drugReturn.create as any).mock.calls[0][0].data;
       expect(created.creditNoteNumber).toBe('CN-9');
       expect(created.creditAmount).toBe(150); // 30 × 5
+      // vendor return decrements stock on the immediate apply
+      expect(tx.drugBatch.update).toHaveBeenCalledWith({ where: { id: 'b1' }, data: { quantityInStock: { decrement: 5 } } });
     });
 
     it('requires a supplier for a vendor return', async () => {
@@ -140,6 +147,42 @@ describe('Pharmacy — flow coverage (sale / returns / merge / reports)', () => 
       await expect(createReturn(TENANT_ID, USER_ID, ADMIN_ROLES, {
         returnType: 'vendor_return', drugBatchId: 'b1', quantity: 5,
       } as any)).rejects.toThrow('Supplier ID is required');
+    });
+  });
+
+  // ── Patient return: staff-entered "money given" overrides billed price ──
+  describe('createReturn — refund amount override (money given)', () => {
+    it('uses the entered refund amount instead of the billed price', async () => {
+      // Original sale: 10 units @ ₹20 (so billed price for 3 = ₹60), but staff
+      // hands back ₹40.
+      (prisma.dispensingRecord.findFirst as any).mockResolvedValue({
+        id: 'dr1', drugBatchId: 'b1', patientId: 'p1', billId: 'bill-1', saleUnit: 'pack',
+        quantityDispensed: 10, unitPrice: 20, discountPercent: 0,
+      });
+      (prisma.drugReturn.aggregate as any).mockResolvedValue({ _sum: { quantity: 0 } });
+      (prisma.drugBatch.findFirst as any).mockResolvedValue({ id: 'b1', tenantId: TENANT_ID });
+      (prisma.patient.findFirst as any).mockResolvedValue({ id: 'p1' });
+      (prisma.drugReturn.create as any).mockImplementation((args: any) => Promise.resolve({ id: 'r1', ...args.data }));
+      // immediate apply
+      (prisma.drugReturn.findFirst as any).mockResolvedValue({
+        id: 'r1', tenantId: TENANT_ID, status: 'pending', returnType: 'patient_return',
+        drugBatchId: 'b1', quantity: 3, billId: 'bill-1', patientId: 'p1', refundAmount: 40,
+      });
+      const tx = txWith();
+      tx.payment.findFirst.mockResolvedValue({ id: 'pay1', bill: { id: 'bill-1', amountPaid: 200, totalAmount: 200, status: 'paid' } });
+      tx.admission.findFirst.mockResolvedValue(null);
+      tx.refund.create.mockResolvedValue({ id: 'rf1' });
+      tx.drugReturn.findUnique.mockResolvedValue({ id: 'r1', status: 'processed' });
+
+      await createReturn(TENANT_ID, USER_ID, ADMIN_ROLES, {
+        returnType: 'patient_return', dispensingRecordId: 'dr1', quantity: 3, refundAmount: 40,
+      } as any);
+
+      // the DrugReturn is created with the entered amount, not the ₹60 billed price
+      expect((prisma.drugReturn.create as any).mock.calls[0][0].data.refundAmount).toBe(40);
+      // and a refund of that amount is booked against the bill (shows on the bill)
+      expect(tx.refund.create.mock.calls[0][0].data.amount).toBe(40);
+      expect(tx.bill.update).toHaveBeenCalled();
     });
   });
 
