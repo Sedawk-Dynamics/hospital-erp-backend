@@ -250,6 +250,19 @@ export async function getWardStock(
   }
 }
 
+export async function getCreditStatus(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await pharmacyService.getPatientCreditStatus(req.user!.tenantId, req.query.patientId as string);
+    sendResponse({ res, message: 'Credit status retrieved', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function dispenseFromWard(
   req: AuthenticatedRequest,
   res: Response,

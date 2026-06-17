@@ -361,6 +361,7 @@ export async function createFormularyItem(
       minStock: (data as any).minStock,
       indications: data.indications,
       contraindications: data.contraindications,
+      isLifeSaving: (data as any).isLifeSaving ?? false,
       isActive: data.isActive ?? true,
     },
     include: {
@@ -856,6 +857,7 @@ export async function updateFormularyItem(
   if ((data as any).minStock !== undefined) updateData.minStock = (data as any).minStock;
   if (data.indications !== undefined) updateData.indications = data.indications;
   if (data.contraindications !== undefined) updateData.contraindications = data.contraindications;
+  if ((data as any).isLifeSaving !== undefined) updateData.isLifeSaving = (data as any).isLifeSaving;
   if (data.isActive !== undefined) updateData.isActive = data.isActive;
   if (data.isRecalled !== undefined) updateData.isRecalled = data.isRecalled;
 
@@ -2748,14 +2750,61 @@ export async function getWardLedger(
 }
 
 /**
+ * IP design doc (Step 3 — Credit & Clearance Check). Before dispensing routine
+ * drugs to a CASH IP patient, the system must confirm the running bill hasn't
+ * outrun the deposit. Returns the patient's live credit picture so the UI can
+ * show a "Credit Limit Exceeded — Clearance Required" warning. Package /
+ * insurance / corporate patients settle against advance / TPA and are never
+ * gated here; life-saving drugs bypass the gate entirely.
+ */
+export async function getPatientCreditStatus(tenantId: string, patientId: string) {
+  const admission = await prisma.admission.findFirst({
+    where: { tenantId, patientId, status: 'admitted' },
+    orderBy: { admissionDate: 'desc' },
+    select: { id: true, billingCategory: true, depositAmount: true },
+  });
+  const category = (admission?.billingCategory ?? 'cash').toLowerCase();
+  const deposit = admission ? Number(admission.depositAmount) : 0;
+
+  // Running bill = the patient's currently-open (unsettled) bills.
+  const agg = await prisma.bill.aggregate({
+    where: { tenantId, patientId, status: { in: ['draft', 'pending', 'partially_paid'] } },
+    _sum: { totalAmount: true, balanceDue: true },
+  });
+  const billed = round2(Number(agg._sum.totalAmount ?? 0));
+  const balanceDue = round2(Number(agg._sum.balanceDue ?? 0));
+  const available = round2(deposit - billed);
+  const exceeded = billed > deposit;
+  // Only cash IP patients are held; everyone else settles elsewhere.
+  const requiresClearance = !!admission && category === 'cash' && exceeded;
+
+  return {
+    patientId,
+    hasAdmission: !!admission,
+    admissionId: admission?.id ?? null,
+    category,
+    deposit,
+    billed,
+    balanceDue,
+    available,
+    exceeded,
+    requiresClearance,
+  };
+}
+
+/**
  * G13: a ward dispenses a drug from its own stock to a patient. Decrements ward
  * stock, logs the ward ledger, and posts the charge to the patient's open IP
  * bill (creating a draft IP-ward bill if none) so it's billed next cycle.
+ *
+ * IP credit gate: for a cash patient whose running bill has outrun the deposit,
+ * the dispense is blocked unless `override` (clearance given) is set or the drug
+ * is flagged life-saving.
  */
 export async function dispenseFromWard(
   tenantId: string,
   userId: string,
-  data: { wardId: string; drugBatchId: string; patientId: string; quantity: number; admissionId?: string; reason?: string },
+  data: { wardId: string; drugBatchId: string; patientId: string; quantity: number; admissionId?: string; reason?: string; override?: boolean },
 ) {
   if (data.quantity <= 0) throw AppError.badRequest('Quantity must be positive');
 
@@ -2772,9 +2821,20 @@ export async function dispenseFromWard(
 
     const batch = await tx.drugBatch.findUnique({
       where: { id: data.drugBatchId },
-      include: { drug: { select: { drugName: true, price: true, taxPercent: true } } },
+      include: { drug: { select: { drugName: true, price: true, taxPercent: true, isLifeSaving: true } } },
     });
     if (!batch) throw AppError.notFound('Drug batch not found');
+
+    // IP credit gate — block a cash patient who is over deposit unless clearance
+    // was given (override) or the drug is life-saving (design doc IP Step 3).
+    if (!data.override && !batch.drug?.isLifeSaving) {
+      const credit = await getPatientCreditStatus(tenantId, data.patientId);
+      if (credit.requiresClearance) {
+        throw AppError.badRequest(
+          `Credit Limit Exceeded — Clearance Required. Running bill ₹${credit.billed.toFixed(2)} exceeds deposit ₹${credit.deposit.toFixed(2)}. Collect a top-up deposit or dispense with clearance.`,
+        );
+      }
+    }
 
     await tx.wardStock.update({ where: { id: ws.id }, data: { quantityInStock: { decrement: data.quantity } } });
 

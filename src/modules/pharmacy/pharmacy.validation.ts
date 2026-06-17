@@ -54,6 +54,8 @@ export const createFormularySchema = z.object({
     minStock: z.number().int().nonnegative().optional(),
     indications: z.string().optional(),
     contraindications: z.string().optional(),
+    // Vital/life-saving — bypasses the IP cash-patient credit-clearance gate.
+    isLifeSaving: z.boolean().optional(),
     isActive: z.boolean().default(true),
     // G1: set true to create even when a high-confidence near-duplicate exists
     // (the user reviewed the suggestions and chose "create anyway").
@@ -102,6 +104,7 @@ export const updateFormularySchema = z.object({
     minStock: z.number().int().nonnegative().optional().nullable(),
     indications: z.string().optional().nullable(),
     contraindications: z.string().optional().nullable(),
+    isLifeSaving: z.boolean().optional(),
     isActive: z.boolean().optional(),
     isRecalled: z.boolean().optional(),
   }),
@@ -605,7 +608,14 @@ export const wardStockDispenseSchema = z.object({
     quantity: z.number().int().positive('Quantity must be positive'),
     admissionId: z.string().uuid().optional(),
     reason: z.string().max(500).optional(),
+    // Clearance given for an over-deposit cash IP patient (IP credit gate).
+    override: z.boolean().optional(),
   }),
+});
+
+// IP credit & clearance check — live deposit-vs-bill picture for a patient.
+export const creditStatusQuerySchema = z.object({
+  query: z.object({ patientId: z.string().uuid('A patient ID is required') }),
 });
 
 export const wardStockQuerySchema = z.object({

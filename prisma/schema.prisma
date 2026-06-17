@@ -3956,6 +3956,10 @@ model DrugFormulary {
   contraindications String?
   isActive          Boolean     @default(true) @map("is_active")
   isRecalled        Boolean     @default(false) @map("is_recalled")
+  // Vital / life-saving drug. Per the IP design doc, the credit-clearance gate
+  // (cash patient over deposit) is bypassed for these so emergency dosing is
+  // never withheld for money. Defaults to false.
+  isLifeSaving      Boolean     @default(false) @map("is_life_saving")
   // Provenance: set when this formulary row was imported from the platform
   // DrugMaster catalog (vs. hospital-authored). Drives import dedupe.
   drugMasterId      String?     @map("drug_master_id")

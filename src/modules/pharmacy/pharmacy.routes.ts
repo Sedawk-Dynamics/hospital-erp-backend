@@ -56,6 +56,7 @@ import {
   wardStockDispenseSchema,
   wardStockQuerySchema,
   wardLedgerQuerySchema,
+  creditStatusQuerySchema,
 } from './pharmacy.validation';
 
 export const pharmacyRoutes = Router();
@@ -123,6 +124,8 @@ pharmacyRoutes.get('/ward-stock', authenticate, requirePermission('pharmacy', 'r
 pharmacyRoutes.get('/ward-stock/ledger', authenticate, requirePermission('pharmacy', 'read'), validate(wardLedgerQuerySchema), controller.getWardLedger);
 pharmacyRoutes.post('/ward-stock/transfer', authenticate, requirePermission('pharmacy', 'create'), validate(wardStockTransferSchema), controller.transferToWard);
 pharmacyRoutes.post('/ward-stock/dispense', authenticate, requirePermission('pharmacy', 'create'), validate(wardStockDispenseSchema), controller.dispenseFromWard);
+// IP credit & clearance check — patient's live deposit-vs-bill picture.
+pharmacyRoutes.get('/credit-status', authenticate, requirePermission('pharmacy', 'read'), validate(creditStatusQuerySchema), controller.getCreditStatus);
 
 // --- G16: Emergency (Golden Hour) pre-registration buffer + retrospective merge ---
 pharmacyRoutes.post('/emergency-patients', authenticate, requirePermission('pharmacy', 'create'), validate(createEmergencyPatientSchema), controller.createEmergencyPatient);
