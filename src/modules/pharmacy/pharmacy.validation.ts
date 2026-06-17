@@ -187,6 +187,13 @@ export const createBatchSchema = z.object({
     quantityReceived: z.number().int().positive('Quantity received must be positive'),
     // Free units received on top of the paid quantity (count toward stock).
     freeQuantity: z.number().int().nonnegative().optional(),
+    // GRN invoice traceability (design-doc manual GRN Steps 1/8/9).
+    invoiceNumber: z.string().max(100).optional(),
+    invoiceDate: z.string().optional(),
+    // Manual GRN Step 6: when a batch with this number already exists, set this
+    // to fold the received quantity into the existing batch (Increase Quantity)
+    // instead of erroring.
+    addToExisting: z.boolean().optional(),
   }),
 });
 
@@ -201,6 +208,8 @@ export const updateBatchSchema = z.object({
     purchaseDiscountPercent: z.number().min(0).max(100).optional().nullable(),
     gstPercent: z.number().min(0).max(100).optional().nullable(),
     sellingPrice: z.number().nonnegative().optional().nullable(),
+    invoiceNumber: z.string().max(100).optional().nullable(),
+    invoiceDate: z.string().optional().nullable(),
     quantityInStock: z.number().int().nonnegative('Stock quantity must be non-negative').optional(),
     isExpired: z.boolean().optional(),
     isRecalled: z.boolean().optional(),

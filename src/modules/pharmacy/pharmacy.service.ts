@@ -923,18 +923,63 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
     }
   }
 
-  // Check for duplicate batch number within the same drug
-  const existingBatch = await prisma.drugBatch.findFirst({
-    where: { tenantId, drugId: data.drugId, batchNumber: data.batchNumber },
-  });
-
-  if (existingBatch) {
-    throw AppError.conflict('A batch with this number already exists for this drug');
+  // Pricing sanity (manual GRN Step 8 — flag abnormal pricing). A purchase rate
+  // above the printed MRP is almost always a data-entry error; block it.
+  if (data.mrp != null && data.purchasePrice != null && Number(data.purchasePrice) > Number(data.mrp)) {
+    throw AppError.badRequest('Purchase rate cannot exceed MRP — please re-check the pricing.');
   }
 
   // Free units count toward stock but not toward purchase value. quantityReceived
   // is the TOTAL received (paid + free); freeQuantity records the free portion.
   const freeQty = data.freeQuantity ?? 0;
+
+  // Check for duplicate batch number within the same drug (manual GRN Step 6).
+  const existingBatch = await prisma.drugBatch.findFirst({
+    where: { tenantId, drugId: data.drugId, batchNumber: data.batchNumber },
+  });
+
+  if (existingBatch) {
+    // "Increase Quantity": fold the received qty into the existing batch instead
+    // of erroring (prevents duplicate-batch fragmentation). Only when the caller
+    // explicitly opted in after reviewing the existing batch.
+    if (!(data as any).addToExisting) {
+      throw AppError.conflict('A batch with this number already exists for this drug');
+    }
+    const merged = await prisma.drugBatch.update({
+      where: { id: existingBatch.id },
+      data: {
+        quantityInStock: { increment: data.quantityReceived },
+        quantityReceived: { increment: data.quantityReceived },
+        freeQuantity: { increment: freeQty },
+        // Refresh pricing / invoice metadata from the latest receipt when given.
+        mrp: data.mrp ?? existingBatch.mrp,
+        purchasePrice: data.purchasePrice ?? existingBatch.purchasePrice,
+        purchaseDiscountPercent: data.purchaseDiscountPercent ?? existingBatch.purchaseDiscountPercent,
+        gstPercent: data.gstPercent ?? existingBatch.gstPercent,
+        sellingPrice: data.sellingPrice ?? existingBatch.sellingPrice,
+        invoiceNumber: (data as any).invoiceNumber ?? existingBatch.invoiceNumber,
+        invoiceDate: (data as any).invoiceDate ? new Date((data as any).invoiceDate) : existingBatch.invoiceDate,
+        supplierId: data.supplierId ?? existingBatch.supplierId,
+      },
+      include: {
+        drug: { select: { id: true, drugName: true, genericName: true } },
+        supplier: { select: { id: true, name: true } },
+      },
+    });
+    void safePharmacyAudit({
+      tenantId,
+      userId,
+      action: 'update',
+      entityType: 'drug_batch',
+      entityId: merged.id,
+      description: `Stock in (merged): +${data.quantityReceived} base unit(s) of ${drug.drugName} into existing batch ${data.batchNumber}`,
+      oldValues: { quantityInStock: existingBatch.quantityInStock },
+      newValues: { quantityInStock: merged.quantityInStock, addedQuantity: data.quantityReceived },
+    });
+    logger.info({ tenantId, batchId: merged.id, drugId: data.drugId }, 'Drug batch quantity increased');
+    return merged;
+  }
+
   const batch = await prisma.drugBatch.create({
     data: {
       tenantId,
@@ -949,6 +994,8 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
       gstPercent: data.gstPercent,
       freeQuantity: freeQty,
       sellingPrice: data.sellingPrice,
+      invoiceNumber: (data as any).invoiceNumber ?? null,
+      invoiceDate: (data as any).invoiceDate ? new Date((data as any).invoiceDate) : null,
       quantityReceived: data.quantityReceived,
       quantityInStock: data.quantityReceived,
     },
@@ -969,6 +1016,7 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
       quantityReceived: data.quantityReceived,
       expiryDate: data.expiryDate,
       supplierId: data.supplierId ?? null,
+      invoiceNumber: (data as any).invoiceNumber ?? null,
     },
   });
 
@@ -1084,6 +1132,10 @@ export async function updateBatch(
   if ((data as any).purchaseDiscountPercent !== undefined) updateData.purchaseDiscountPercent = (data as any).purchaseDiscountPercent;
   if ((data as any).gstPercent !== undefined) updateData.gstPercent = (data as any).gstPercent;
   if (data.sellingPrice !== undefined) updateData.sellingPrice = data.sellingPrice;
+  if ((data as any).invoiceNumber !== undefined) updateData.invoiceNumber = (data as any).invoiceNumber;
+  if ((data as any).invoiceDate !== undefined) {
+    updateData.invoiceDate = (data as any).invoiceDate ? new Date((data as any).invoiceDate) : null;
+  }
   if (data.quantityInStock !== undefined) updateData.quantityInStock = data.quantityInStock;
   if (data.isExpired !== undefined) updateData.isExpired = data.isExpired;
   if (data.isRecalled !== undefined) updateData.isRecalled = data.isRecalled;
@@ -3011,6 +3063,8 @@ export async function getPurchaseReport(
       gstPercent: true,
       quantityReceived: true,
       freeQuantity: true,
+      invoiceNumber: true,
+      invoiceDate: true,
       drug: { select: { id: true, drugName: true } },
       supplier: { select: { id: true, name: true } },
     },
@@ -3031,6 +3085,8 @@ export async function getPurchaseReport(
       drugName: b.drug?.drugName ?? '-',
       batchNumber: b.batchNumber,
       supplier: b.supplier?.name ?? null,
+      invoiceNumber: b.invoiceNumber ?? null,
+      invoiceDate: b.invoiceDate ?? null,
       receivedAt: b.createdAt,
       expiryDate: b.expiryDate,
       quantityReceived: b.quantityReceived,

@@ -3994,6 +3994,11 @@ model DrugBatch {
   // Free units received on top of the paid quantity (e.g. buy 100 get 10). They
   // count toward stock but not toward purchase value.
   freeQuantity            Int       @default(0) @map("free_quantity")
+  // GRN invoice traceability (design-doc manual GRN Steps 1/8/9). Captured per
+  // batch so the purchase report shows the source invoice and a re-entry of the
+  // same supplier+invoice line can be flagged as a duplicate.
+  invoiceNumber           String?   @map("invoice_number") @db.VarChar(100)
+  invoiceDate             DateTime? @map("invoice_date") @db.Date
   purchasePrice     Decimal?  @map("purchase_price") @db.Decimal(10, 2)
   sellingPrice      Decimal?  @map("selling_price") @db.Decimal(10, 2)
   quantityReceived  Int       @map("quantity_received")
