@@ -697,6 +697,27 @@ export async function adjustBatchStock(
   }
 }
 
+// G4: reconcile a physical stock-take — apply each counted variance as an
+// audited correction (per-line resilient) and return a matched/adjusted summary.
+export async function reconcileStockTake(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await pharmacyService.reconcileStockTake(
+      tenantId,
+      req.user!.userId,
+      req.user!.roles ?? [],
+      req.body,
+    );
+    sendResponse({ res, message: 'Stock-take reconciled', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // G4: stock discrepancy report — manual corrections in a date window.
 export async function getStockAdjustments(
   req: AuthenticatedRequest,

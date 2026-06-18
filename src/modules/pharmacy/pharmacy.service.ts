@@ -35,6 +35,7 @@ import type {
   GetGstReportQuery,
   GetStockLedgerQuery,
   CommitInwardInput,
+  StockTakeReconcileInput,
 } from './pharmacy.validation';
 
 // ============================================================
@@ -1512,6 +1513,123 @@ export async function getStockAdjustments(
   });
 
   return { items, total, page, limit };
+}
+
+/**
+ * G4: reconcile a physical stock-take. Staff submit the physically counted
+ * quantity for a set of batches; for each batch where the count differs from the
+ * system quantity the variance is applied as a normal audited stock adjustment
+ * (so it appears in the same discrepancy report and carries who / from → to /
+ * reason / timestamp). Batches whose count matches are left untouched. Processing
+ * is per-line resilient — one bad batch never aborts the whole count sheet — and
+ * the response summarises matched vs adjusted, the net unit delta and the value
+ * impact (delta × selling price) so the shrinkage/surplus is visible at a glance.
+ */
+export async function reconcileStockTake(
+  tenantId: string,
+  userId: string,
+  roles: string[],
+  data: StockTakeReconcileInput,
+) {
+  assertPharmacyAdmin(roles, 'reconcile a physical stock-take');
+
+  const batchIds = data.lines.map((l) => l.batchId);
+  const batches = await prisma.drugBatch.findMany({
+    where: { id: { in: batchIds }, tenantId },
+    include: { drug: { select: { drugName: true } } },
+  });
+  const byId = new Map(batches.map((b) => [b.id, b]));
+
+  let matched = 0;
+  let adjusted = 0;
+  let failed = 0;
+  let netDelta = 0;
+  let valueDelta = 0;
+  const results: Array<{
+    batchId: string;
+    drugName: string | null;
+    batchNumber: string | null;
+    system: number;
+    counted: number;
+    delta: number;
+    valueDelta: number;
+    status: 'matched' | 'adjusted' | 'error';
+    message?: string;
+  }> = [];
+
+  for (const line of data.lines) {
+    const b = byId.get(line.batchId);
+    if (!b) {
+      failed++;
+      results.push({
+        batchId: line.batchId,
+        drugName: null,
+        batchNumber: null,
+        system: 0,
+        counted: line.countedQuantity,
+        delta: 0,
+        valueDelta: 0,
+        status: 'error',
+        message: 'Batch not found',
+      });
+      continue;
+    }
+
+    const system = b.quantityInStock;
+    const counted = line.countedQuantity;
+    const delta = counted - system;
+    const lineValueDelta = r2(delta * Number(b.sellingPrice ?? 0));
+    const base = {
+      batchId: b.id,
+      drugName: b.drug?.drugName ?? null,
+      batchNumber: b.batchNumber,
+      system,
+      counted,
+      delta,
+      valueDelta: lineValueDelta,
+    };
+
+    // No variance → nothing to correct, but it counts as verified.
+    if (delta === 0) {
+      matched++;
+      results.push({ ...base, status: 'matched' });
+      continue;
+    }
+
+    try {
+      // Reuse the single-batch path so every variance is audited identically and
+      // shows up in the existing stock-adjustment / discrepancy report.
+      await adjustBatchStock(tenantId, userId, roles, b.id, {
+        physicalCount: counted,
+        reason: line.reason?.trim() || `${data.reason.trim()} (stock-take)`,
+      });
+      adjusted++;
+      netDelta += delta;
+      valueDelta += lineValueDelta;
+      results.push({ ...base, status: 'adjusted' });
+    } catch (err) {
+      failed++;
+      results.push({
+        ...base,
+        status: 'error',
+        message: err instanceof Error ? err.message : 'Failed to apply this correction',
+      });
+    }
+  }
+
+  logger.info(
+    { tenantId, total: data.lines.length, matched, adjusted, failed, netDelta },
+    'Physical stock-take reconciled',
+  );
+  return {
+    total: data.lines.length,
+    matched,
+    adjusted,
+    failed,
+    netDelta,
+    valueDelta: r2(valueDelta),
+    results,
+  };
 }
 
 /**

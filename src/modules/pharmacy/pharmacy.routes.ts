@@ -25,6 +25,7 @@ import {
   batchIdParamSchema,
   updateBatchSchema,
   adjustBatchSchema,
+  stockTakeReconcileSchema,
   getStockAdjustmentsQuerySchema,
   createDispenseSchema,
   setPharmacyStatusSchema,
@@ -101,6 +102,8 @@ pharmacyRoutes.get('/batches/:id', authenticate, requirePermission('pharmacy', '
 pharmacyRoutes.put('/batches/:id', authenticate, requirePermission('pharmacy', 'update'), validate(updateBatchSchema), controller.updateBatch);
 // G4: deliberate stock-count correction (reason-stamped + audited).
 pharmacyRoutes.patch('/batches/:id/adjust', authenticate, requirePermission('pharmacy', 'update'), validate(adjustBatchSchema), controller.adjustBatchStock);
+// G4: physical stock-take — reconcile counted quantities into audited corrections.
+pharmacyRoutes.post('/stock-take/reconcile', authenticate, requirePermission('pharmacy', 'update'), validate(stockTakeReconcileSchema), controller.reconcileStockTake);
 
 // --- G1: bulk stock inward (CSV / OCR / manual multi-row) ---
 // Step 1 scores incoming distributor-invoice lines against the formulary (read);

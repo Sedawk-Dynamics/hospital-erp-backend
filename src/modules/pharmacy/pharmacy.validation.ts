@@ -243,6 +243,26 @@ export const adjustBatchSchema = z.object({
   }),
 });
 
+// G4: physical stock-take reconciliation — staff enter a counted quantity per
+// batch; the system flags the variance vs the system count and applies each
+// non-zero delta as an audited correction. `countedQuantity` is the physically
+// counted on-hand; a session-level reason is required (per-line note optional).
+export const stockTakeReconcileSchema = z.object({
+  body: z.object({
+    reason: z.string().min(1, 'A stock-take reason / reference is required').max(500),
+    lines: z
+      .array(
+        z.object({
+          batchId: z.string().uuid('Invalid batch ID'),
+          countedQuantity: z.number().int().nonnegative('Counted quantity cannot be negative'),
+          reason: z.string().max(500).optional(),
+        }),
+      )
+      .min(1, 'Count at least one batch')
+      .max(500, 'At most 500 batches per stock-take'),
+  }),
+});
+
 // G4: stock discrepancy report — manual corrections in a date window.
 export const getStockAdjustmentsQuerySchema = z.object({
   query: z.object({
@@ -760,6 +780,7 @@ export type GetFormularyQuery = z.infer<typeof getFormularyQuerySchema>['query']
 export type CreateBatchInput = z.infer<typeof createBatchSchema>['body'];
 export type InwardMatchInput = z.infer<typeof matchInwardSchema>['body'];
 export type CommitInwardInput = z.infer<typeof commitInwardSchema>['body'];
+export type StockTakeReconcileInput = z.infer<typeof stockTakeReconcileSchema>['body'];
 export type UpdateBatchInput = z.infer<typeof updateBatchSchema>['body'];
 export type GetBatchesQuery = z.infer<typeof getBatchesQuerySchema>['query'];
 export type GetExpiringBatchesQuery = z.infer<typeof getExpiringBatchesQuerySchema>['query'];
