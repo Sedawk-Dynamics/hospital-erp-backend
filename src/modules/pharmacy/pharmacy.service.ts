@@ -34,6 +34,7 @@ import type {
   GetRecalledItemsQuery,
   GetGstReportQuery,
   GetStockLedgerQuery,
+  CommitInwardInput,
 } from './pharmacy.validation';
 
 // ============================================================
@@ -434,6 +435,190 @@ export async function mergeFormularyItems(
 
   logger.info({ tenantId, targetId, sourceId, ...result }, 'Formulary items merged');
   return { target, ...result };
+}
+
+// ============================================================
+// G1 — Bulk stock inward (CSV / OCR / manual multi-row)
+// ============================================================
+// The single-drug add path (createFormularyItem) already blocks a near-duplicate
+// when one drug is typed at a time. But the field pain is at BULK inward: a
+// distributor invoice — keyed in by hand, photographed for OCR, or imported as a
+// CSV — carries 20-40 lines whose names drift from the formulary ("Telmac 40 Tab"
+// vs the on-file "Telmac 40"), and every mismatch silently creates a new row that
+// splits the stock. These two functions drive a review-then-commit flow:
+//   1. matchInwardLines scores every incoming line against the formulary and
+//      recommends map-vs-create (so the UI can show a side-by-side comparison).
+//   2. commitInward applies the user's per-line decision — reuse an existing drug
+//      (no split) or create a new one — and posts the received stock as batches.
+// Both reuse the same matching engine and batch path as the single-add flow, so
+// behaviour is identical; only the fan-out is new.
+
+export interface InwardLineInput {
+  drugName: string;
+  genericName?: string | null;
+  manufacturer?: string | null;
+  strength?: string | null;
+  dosageForm?: string | null;
+}
+
+export type InwardRecommendation = 'map' | 'review' | 'create';
+
+/**
+ * Score each incoming inward line against the existing formulary and recommend an
+ * action. 'map' — confidence high enough (≥ BLOCK) that it is almost certainly the
+ * same SKU, so default to linking the stock onto the existing drug; 'review' — a
+ * plausible match exists (≥ SUGGEST) but a human should confirm the side-by-side;
+ * 'create' — nothing looks close, so a new formulary row is expected. The full
+ * candidate list (with live stock + score) rides along so the UI can render the
+ * "existing vs incoming" comparison without a second round-trip per line.
+ */
+export async function matchInwardLines(tenantId: string, lines: InwardLineInput[]) {
+  const results = await Promise.all(
+    lines.map(async (line, index) => {
+      const { matches } = await findFormularyMatches(tenantId, {
+        name: line.drugName,
+        genericName: line.genericName,
+        manufacturer: line.manufacturer,
+        strength: line.strength,
+        dosageForm: line.dosageForm,
+      });
+      const top = matches[0];
+      let recommendation: InwardRecommendation;
+      if (top && top.score >= MATCH_BLOCK_THRESHOLD) recommendation = 'map';
+      else if (top && top.score >= MATCH_SUGGEST_THRESHOLD) recommendation = 'review';
+      else recommendation = 'create';
+      return {
+        index,
+        incoming: line,
+        matches,
+        recommendation,
+        // Pre-select the top match as the map target unless we're recommending a
+        // brand-new row. The UI can still override (pick a different drug / create).
+        suggestedFormularyId: recommendation === 'create' ? null : top?.id ?? null,
+      };
+    }),
+  );
+  return { lines: results };
+}
+
+/**
+ * Apply a reviewed bulk inward. Each line is processed independently so a single
+ * bad row (e.g. a clashing batch number) does not void a 40-line invoice — the
+ * row is recorded as an error and the rest still post. For a 'map' line the stock
+ * is added against the chosen existing drug (the cure for split stock); for a
+ * 'create' line a new formulary row is minted (force=true — the user already saw
+ * and dismissed the duplicate suggestions) before its batch is received. Header
+ * supplier/invoice values fall through to every line unless the line overrides.
+ */
+export async function commitInward(
+  tenantId: string,
+  userId: string,
+  roles: string[],
+  data: CommitInwardInput,
+) {
+  assertPharmacyAdmin(roles, 'receive stock inward');
+
+  let createdDrugs = 0;
+  let mappedDrugs = 0;
+  let batchesIn = 0;
+  let failed = 0;
+  const results: Array<{
+    index: number;
+    drugName: string;
+    action: 'map' | 'create';
+    status: 'ok' | 'error';
+    formularyId?: string;
+    batchId?: string;
+    message?: string;
+  }> = [];
+
+  for (let i = 0; i < data.lines.length; i++) {
+    const line = data.lines[i];
+    try {
+      let drugId: string;
+      let drugName: string;
+
+      if (line.action === 'map') {
+        // Reuse an existing formulary row — this is what keeps the 200 tablets
+        // under ONE entry instead of splitting into two 100s.
+        if (!line.targetFormularyId) {
+          throw AppError.badRequest('A mapped line needs a target drug');
+        }
+        const existing = await prisma.drugFormulary.findFirst({
+          where: { id: line.targetFormularyId, tenantId },
+          select: { id: true, drugName: true },
+        });
+        if (!existing) throw AppError.notFound('Mapped drug not found in formulary');
+        drugId = existing.id;
+        drugName = existing.drugName;
+        mappedDrugs++;
+      } else {
+        // Genuinely new drug — create it (force past the duplicate guard since the
+        // user reviewed the suggestions and chose "create new").
+        const created = await createFormularyItem(tenantId, roles, {
+          drugName: line.drugName,
+          genericName: line.genericName ?? undefined,
+          manufacturer: line.manufacturer ?? undefined,
+          dosageForm: line.dosageForm as CreateFormularyInput['dosageForm'],
+          strength: line.strength ?? undefined,
+          categoryId: line.categoryId,
+          packSize: line.packSize,
+          looseUnitLabel: line.looseUnitLabel,
+          taxPercent: line.gstPercent,
+          // Default selling price per base unit; MRP (per pack) is kept on the batch.
+          price: line.sellingPrice,
+          isActive: true,
+          force: true,
+        });
+        const item = (created as { item: { id: string; drugName: string } }).item;
+        drugId = item.id;
+        drugName = item.drugName;
+        createdDrugs++;
+      }
+
+      const batch = await createBatch(tenantId, userId, roles, {
+        drugId,
+        batchNumber: line.batchNumber,
+        expiryDate: line.expiryDate,
+        manufacturingDate: line.manufacturingDate,
+        quantityReceived: line.quantityReceived,
+        freeQuantity: line.freeQuantity,
+        mrp: line.mrp,
+        purchasePrice: line.purchasePrice,
+        purchaseDiscountPercent: line.purchaseDiscountPercent,
+        gstPercent: line.gstPercent,
+        sellingPrice: line.sellingPrice,
+        supplierId: line.supplierId ?? data.supplierId,
+        invoiceNumber: line.invoiceNumber ?? data.invoiceNumber,
+        invoiceDate: line.invoiceDate ?? data.invoiceDate,
+        addToExisting: line.addToExisting ?? data.addToExisting,
+      } as CreateBatchInput);
+      batchesIn++;
+      results.push({
+        index: i,
+        drugName,
+        action: line.action,
+        status: 'ok',
+        formularyId: drugId,
+        batchId: batch.id,
+      });
+    } catch (err) {
+      failed++;
+      results.push({
+        index: i,
+        drugName: line.drugName,
+        action: line.action,
+        status: 'error',
+        message: err instanceof Error ? err.message : 'Failed to post this line',
+      });
+    }
+  }
+
+  logger.info(
+    { tenantId, total: data.lines.length, createdDrugs, mappedDrugs, batchesIn, failed },
+    'Bulk stock inward committed',
+  );
+  return { total: data.lines.length, createdDrugs, mappedDrugs, batchesIn, failed, results };
 }
 
 /**

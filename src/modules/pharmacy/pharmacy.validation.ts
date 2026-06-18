@@ -283,6 +283,79 @@ export const getExpiringBatchesQuerySchema = z.object({
 });
 
 // ============================================================
+// G1 — Bulk stock inward (CSV / OCR / manual multi-row)
+// ============================================================
+
+// One incoming distributor-invoice line as far as duplicate detection cares —
+// just the identity fields the matching engine scores against.
+const inwardMatchLineSchema = z.object({
+  drugName: z.string().min(1, 'Drug name is required').max(255),
+  genericName: z.string().max(255).optional().nullable(),
+  manufacturer: z.string().max(255).optional().nullable(),
+  strength: z.string().max(100).optional().nullable(),
+  dosageForm: z.string().max(40).optional().nullable(),
+});
+
+// Step 1: score every incoming line against the formulary (no writes).
+export const matchInwardSchema = z.object({
+  body: z.object({
+    lines: z
+      .array(inwardMatchLineSchema)
+      .min(1, 'At least one line is required')
+      .max(200, 'At most 200 lines at a time'),
+  }),
+});
+
+// Step 2: a reviewed line — the user's map-or-create decision plus the batch /
+// stock-in details to post. `quantityReceived` is the TOTAL units received
+// (paid + free), matching createBatch; `freeQuantity` records the free portion.
+const commitInwardLineSchema = inwardMatchLineSchema
+  .extend({
+    action: z.enum(['map', 'create']),
+    // Required when action === 'map' — the existing formulary row to add stock to.
+    targetFormularyId: z.string().uuid('Invalid target drug ID').optional(),
+    // Used only when creating a new drug.
+    categoryId: z.string().uuid('Invalid category ID').optional(),
+    packSize: z.number().int().positive().optional(),
+    looseUnitLabel: z.string().max(40).optional(),
+    // Batch / stock-in (mirrors createBatchSchema).
+    batchNumber: z.string().min(1, 'Batch number is required').max(100),
+    manufacturingDate: z.string().optional(),
+    expiryDate: z.string().min(1, 'Expiry date is required'),
+    quantityReceived: z.number().int().positive('Quantity received must be positive'),
+    freeQuantity: z.number().int().nonnegative().optional(),
+    mrp: z.number().nonnegative().optional(),
+    purchasePrice: z.number().nonnegative().optional(),
+    purchaseDiscountPercent: z.number().min(0).max(100).optional(),
+    gstPercent: z.number().min(0).max(100).optional(),
+    sellingPrice: z.number().nonnegative().optional(),
+    // Per-line overrides for the header values.
+    supplierId: z.string().uuid('Invalid supplier ID').optional(),
+    invoiceNumber: z.string().max(100).optional(),
+    invoiceDate: z.string().optional(),
+    // Fold into an existing batch of the same number instead of erroring.
+    addToExisting: z.boolean().optional(),
+  })
+  .refine((l) => l.action === 'create' || !!l.targetFormularyId, {
+    message: 'A mapped line needs a target drug (targetFormularyId)',
+    path: ['targetFormularyId'],
+  });
+
+export const commitInwardSchema = z.object({
+  body: z.object({
+    // Header values applied to every line unless the line overrides them (G10).
+    supplierId: z.string().uuid('Invalid supplier ID').optional(),
+    invoiceNumber: z.string().max(100).optional(),
+    invoiceDate: z.string().optional(),
+    addToExisting: z.boolean().optional(),
+    lines: z
+      .array(commitInwardLineSchema)
+      .min(1, 'At least one line is required')
+      .max(200, 'At most 200 lines at a time'),
+  }),
+});
+
+// ============================================================
 // Dispensing
 // ============================================================
 
@@ -680,6 +753,8 @@ export type ImportFormularyInput = z.infer<typeof importFormularySchema>['body']
 export type ImportFormularyBulkInput = z.infer<typeof importFormularyBulkSchema>['body'];
 export type GetFormularyQuery = z.infer<typeof getFormularyQuerySchema>['query'];
 export type CreateBatchInput = z.infer<typeof createBatchSchema>['body'];
+export type InwardMatchInput = z.infer<typeof matchInwardSchema>['body'];
+export type CommitInwardInput = z.infer<typeof commitInwardSchema>['body'];
 export type UpdateBatchInput = z.infer<typeof updateBatchSchema>['body'];
 export type GetBatchesQuery = z.infer<typeof getBatchesQuerySchema>['query'];
 export type GetExpiringBatchesQuery = z.infer<typeof getExpiringBatchesQuerySchema>['query'];
