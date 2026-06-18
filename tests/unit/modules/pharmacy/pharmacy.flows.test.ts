@@ -117,6 +117,25 @@ describe('Pharmacy — flow coverage (sale / returns / merge / reports)', () => 
         patientId: 'p1', items: [{ drugBatchId: 'b1', quantity: 1, unitPrice: 100, saleUnit: 'pack' }],
       } as any)).rejects.toThrow('Insufficient stock');
     });
+
+    // G2 bullet 1: line-item AND bill-level discounts must combine without conflict.
+    it('applies a per-item discount AND a bill discount together (no conflict)', async () => {
+      (prisma.patient.findFirst as any).mockResolvedValue({ id: 'p1' });
+      const tx = txWith();
+      mockSaleBatch(tx);
+
+      await createPharmacySale(TENANT_ID, USER_ID, {
+        patientId: 'p1',
+        items: [{ drugBatchId: 'b1', quantity: 1, unitPrice: 100, saleUnit: 'pack', discountPercent: 10 }],
+        billDiscountPercent: 10,
+      } as any);
+
+      const bill = tx.bill.create.mock.calls[0][0].data;
+      // 100 − 10% item = 90, then − 10% bill = 81; total discount = 10 + 9 = 19.
+      expect(bill.totalAmount).toBe(81);
+      expect(bill.discountAmount).toBe(19);
+      expect(bill.amountPaid).toBe(81);
+    });
   });
 
   // ── G5 vendor return (credit note) ────────────────────────
