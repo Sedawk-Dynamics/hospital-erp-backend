@@ -1307,7 +1307,14 @@ export async function getBatches(tenantId: string, query: GetBatchesQuery) {
         },
         supplier: { select: { id: true, name: true } },
       },
-      orderBy: { createdAt: 'desc' },
+      // G6: the POS / dispensing picker requests availableOnly batches — those
+      // MUST come back FEFO (earliest expiry first, oldest receipt as tie-break)
+      // so the default selection is the soonest-to-expire batch and a `take`
+      // limit never truncates the earliest-expiry batch out of the list. The
+      // management view keeps newest-received-first.
+      orderBy: (query as any).availableOnly
+        ? [{ expiryDate: 'asc' as const }, { createdAt: 'asc' as const }]
+        : { createdAt: 'desc' as const },
     }),
     prisma.drugBatch.count({ where }),
   ]);

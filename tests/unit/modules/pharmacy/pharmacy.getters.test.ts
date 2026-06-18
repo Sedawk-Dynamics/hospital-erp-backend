@@ -67,6 +67,24 @@ describe('Pharmacy — getters / CRUD / recalls coverage', () => {
       const where = (prisma.drugBatch.findMany as any).mock.calls[0][0].where;
       expect(where).toMatchObject({ isExpired: false, isRecalled: false, quantityInStock: { gt: 0 } });
     });
+
+    // G6: the POS / dispensing picker must be FEFO (earliest expiry first).
+    it('availableOnly orders FEFO — earliest expiry first', async () => {
+      (prisma.drugBatch.findMany as any).mockResolvedValue([]);
+      (prisma.drugBatch.count as any).mockResolvedValue(0);
+      await getBatches(TENANT_ID, { page: 1, limit: 20, availableOnly: true } as any);
+      const orderBy = (prisma.drugBatch.findMany as any).mock.calls[0][0].orderBy;
+      expect(orderBy).toEqual([{ expiryDate: 'asc' }, { createdAt: 'asc' }]);
+    });
+
+    // The management list stays newest-received-first.
+    it('default list orders by createdAt desc (management view)', async () => {
+      (prisma.drugBatch.findMany as any).mockResolvedValue([]);
+      (prisma.drugBatch.count as any).mockResolvedValue(0);
+      await getBatches(TENANT_ID, { page: 1, limit: 20 } as any);
+      const orderBy = (prisma.drugBatch.findMany as any).mock.calls[0][0].orderBy;
+      expect(orderBy).toEqual({ createdAt: 'desc' });
+    });
   });
 
   describe('getExpiringBatches', () => {
