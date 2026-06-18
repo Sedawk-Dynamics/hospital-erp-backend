@@ -85,7 +85,10 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'diagnoses', action: 'read' },
       { module: 'nursing_notes', action: 'read' }, { module: 'nursing_notes', action: 'create' }, { module: 'nursing_notes', action: 'update' },
       { module: 'progress_notes', action: 'read' },
-      { module: 'prescriptions', action: 'read' }, { module: 'prescriptions', action: 'update' },
+      // §4.2 ward→pharmacy flow: the ward nurse enters the doctor's key-sheet
+      // prescription into the system against the IP patient's MRN (create), and
+      // advances/edits it (update). This is the order the pharmacy then receives.
+      { module: 'prescriptions', action: 'read' }, { module: 'prescriptions', action: 'create' }, { module: 'prescriptions', action: 'update' },
       { module: 'lab_orders', action: 'read' }, { module: 'lab_reports', action: 'read' },
       { module: 'imaging', action: 'read' },
       { module: 'nurse_assignments', action: 'read' },
