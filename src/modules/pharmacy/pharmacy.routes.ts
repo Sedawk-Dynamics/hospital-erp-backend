@@ -141,6 +141,8 @@ pharmacyRoutes.post('/ward-stock/transfer', authenticate, requirePermission('pha
 pharmacyRoutes.post('/ward-stock/dispense', authenticate, requirePermission('pharmacy', 'create'), validate(wardStockDispenseSchema), controller.dispenseFromWard);
 // IP credit & clearance check — patient's live deposit-vs-bill picture.
 pharmacyRoutes.get('/credit-status', authenticate, requirePermission('pharmacy', 'read'), validate(creditStatusQuerySchema), controller.getCreditStatus);
+// §4.1 Flow 2: consolidated IP billing / TPA-submission summary for a patient.
+pharmacyRoutes.get('/billing-summary', authenticate, requirePermission('pharmacy', 'read'), validate(creditStatusQuerySchema), controller.getIpBillingSummary);
 
 // --- G16: Emergency (Golden Hour) pre-registration buffer + retrospective merge ---
 pharmacyRoutes.post('/emergency-patients', authenticate, requirePermission('pharmacy', 'create'), validate(createEmergencyPatientSchema), controller.createEmergencyPatient);

@@ -3266,6 +3266,101 @@ export async function getPatientCreditStatus(tenantId: string, patientId: string
 }
 
 /**
+ * §4.1 Flow 2 — consolidated IP billing summary for a patient: every non-cancelled
+ * bill, charges grouped by service category, deposit / paid / balance, and (for
+ * insurance / corporate patients) the insurer + TPA + policy header. This is the
+ * TPA-format summary the hospital submits for cashless settlement; for cash /
+ * package patients it doubles as a plain running statement.
+ */
+export async function getIpBillingSummary(tenantId: string, patientId: string) {
+  const patient = await prisma.patient.findFirst({
+    where: { id: patientId, tenantId },
+    select: { id: true, mrn: true, firstName: true, lastName: true, phone: true, gender: true, dateOfBirth: true },
+  });
+  if (!patient) throw AppError.notFound('Patient not found');
+
+  const admission = await prisma.admission.findFirst({
+    where: { tenantId, patientId, status: 'admitted' },
+    orderBy: { admissionDate: 'desc' },
+    select: { id: true, billingCategory: true, depositAmount: true, admissionDate: true },
+  });
+  const category = (admission?.billingCategory ?? 'cash').toLowerCase();
+  const isTpa = category === 'insurance' || category === 'corporate';
+
+  // Insurer / TPA header for a cashless submission.
+  let insurance:
+    | { insurer: string | null; tpa: string | null; policyNumber: string; planName: string | null }
+    | null = null;
+  if (isTpa) {
+    const policy = await prisma.insurancePolicy.findFirst({
+      where: { tenantId, patientId },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        policyNumber: true,
+        planName: true,
+        insurer: { select: { name: true } },
+        tpa: { select: { name: true } },
+      },
+    });
+    if (policy) {
+      insurance = {
+        insurer: policy.insurer?.name ?? null,
+        tpa: policy.tpa?.name ?? null,
+        policyNumber: policy.policyNumber,
+        planName: policy.planName ?? null,
+      };
+    }
+  }
+
+  const bills = await prisma.bill.findMany({
+    where: { tenantId, patientId, status: { not: 'cancelled' } },
+    orderBy: { billDate: 'asc' },
+    select: {
+      id: true,
+      billNumber: true,
+      billDate: true,
+      totalAmount: true,
+      amountPaid: true,
+      balanceDue: true,
+      status: true,
+      billItems: {
+        orderBy: { createdAt: 'asc' },
+        select: { description: true, category: true, quantity: true, unitPrice: true, totalAmount: true },
+      },
+    },
+  });
+
+  // Group charges by service category (pharmacy / lab / radiology / procedure / …)
+  // for the TPA breakup line.
+  const byCategory: Record<string, number> = {};
+  for (const b of bills) {
+    for (const it of b.billItems) {
+      const c = String(it.category);
+      byCategory[c] = round2((byCategory[c] ?? 0) + Number(it.totalAmount));
+    }
+  }
+  const categoryTotals = Object.entries(byCategory)
+    .map(([cat, amount]) => ({ category: cat, amount }))
+    .sort((a, b) => b.amount - a.amount);
+
+  const totalBilled = round2(bills.reduce((s, b) => s + Number(b.totalAmount), 0));
+  const totalPaid = round2(bills.reduce((s, b) => s + Number(b.amountPaid), 0));
+  const balanceDue = round2(bills.reduce((s, b) => s + Number(b.balanceDue), 0));
+  const deposit = admission ? Number(admission.depositAmount) : 0;
+
+  return {
+    patient,
+    admission: admission ? { ...admission, billingCategory: category } : null,
+    category,
+    isTpa,
+    insurance,
+    bills,
+    categoryTotals,
+    totals: { totalBilled, totalPaid, balanceDue, deposit, available: round2(deposit - balanceDue) },
+  };
+}
+
+/**
  * G13: a ward dispenses a drug from its own stock to a patient. Decrements ward
  * stock, logs the ward ledger, and posts the charge to the patient's open IP
  * bill (creating a draft IP-ward bill if none) so it's billed next cycle.

@@ -301,6 +301,20 @@ export async function getCreditStatus(
   }
 }
 
+// §4.1 Flow 2: consolidated IP billing / TPA-submission summary for a patient.
+export async function getIpBillingSummary(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await pharmacyService.getIpBillingSummary(req.user!.tenantId, req.query.patientId as string);
+    sendResponse({ res, message: 'Billing summary retrieved', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function dispenseFromWard(
   req: AuthenticatedRequest,
   res: Response,
