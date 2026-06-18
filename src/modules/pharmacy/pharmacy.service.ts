@@ -518,6 +518,39 @@ export async function commitInward(
 ) {
   assertPharmacyAdmin(roles, 'receive stock inward');
 
+  // G2 purchase-side TOTAL-BILL discount. The distributor may discount the whole
+  // invoice on top of per-line discounts. We resolve it to ONE effective percent
+  // (a flat ₹ amount is converted against the post-line-discount net) and fold it
+  // into each line's purchaseDiscountPercent — so net purchase value, landing
+  // cost, GST and the purchase reports all reflect both discounts, while MRP and
+  // the gross purchase rate stay exactly as printed on the invoice. Apportioning
+  // a flat discount by net value yields the SAME percent for every line, so a
+  // single uniform bill percent is mathematically exact, not an approximation.
+  const paidUnits = (l: CommitInwardInput['lines'][number]) =>
+    Math.max(0, (l.quantityReceived ?? 0) - (l.freeQuantity ?? 0));
+  const lineNetValue = (l: CommitInwardInput['lines'][number]) =>
+    (l.purchasePrice ?? 0) * (1 - (l.purchaseDiscountPercent ?? 0) / 100) * paidUnits(l);
+  const grossValue = r2(
+    data.lines.reduce((s, l) => s + (l.purchasePrice ?? 0) * paidUnits(l), 0),
+  );
+  const invoiceNet = r2(data.lines.reduce((s, l) => s + lineNetValue(l), 0));
+  const billPct = Math.min(
+    100,
+    Math.max(
+      0,
+      (data.invoiceDiscountPercent ?? 0) +
+        (invoiceNet > 0 ? ((data.invoiceDiscountAmount ?? 0) / invoiceNet) * 100 : 0),
+    ),
+  );
+  // Combine the line discount and the bill discount multiplicatively (a 10% line
+  // + 5% bill ⇒ 14.5% off, not 15%) — i.e. the bill discount applies to the
+  // already-line-discounted price, which is how distributor invoices total up.
+  const effectiveDiscount = (lineDisc: number | undefined) =>
+    billPct > 0
+      ? r2((1 - (1 - (lineDisc ?? 0) / 100) * (1 - billPct / 100)) * 100)
+      : lineDisc;
+  const invoiceDiscountValue = r2(invoiceNet * (billPct / 100));
+
   let createdDrugs = 0;
   let mappedDrugs = 0;
   let batchesIn = 0;
@@ -585,7 +618,8 @@ export async function commitInward(
         freeQuantity: line.freeQuantity,
         mrp: line.mrp,
         purchasePrice: line.purchasePrice,
-        purchaseDiscountPercent: line.purchaseDiscountPercent,
+        // Per-line discount combined with the apportioned total-bill discount.
+        purchaseDiscountPercent: effectiveDiscount(line.purchaseDiscountPercent),
         gstPercent: line.gstPercent,
         sellingPrice: line.sellingPrice,
         supplierId: line.supplierId ?? data.supplierId,
@@ -615,10 +649,26 @@ export async function commitInward(
   }
 
   logger.info(
-    { tenantId, total: data.lines.length, createdDrugs, mappedDrugs, batchesIn, failed },
+    { tenantId, total: data.lines.length, createdDrugs, mappedDrugs, batchesIn, failed, billPct },
     'Bulk stock inward committed',
   );
-  return { total: data.lines.length, createdDrugs, mappedDrugs, batchesIn, failed, results };
+  return {
+    total: data.lines.length,
+    createdDrugs,
+    mappedDrugs,
+    batchesIn,
+    failed,
+    results,
+    // G2: purchase economics for the whole invoice (gross → −line disc → −bill
+    // disc → net) so the UI can confirm both discounts were applied.
+    purchaseSummary: {
+      grossValue,
+      lineDiscount: r2(grossValue - invoiceNet),
+      invoiceDiscountPercent: r2(billPct),
+      invoiceDiscount: invoiceDiscountValue,
+      netValue: r2(invoiceNet - invoiceDiscountValue),
+    },
+  };
 }
 
 /**

@@ -347,6 +347,11 @@ export const commitInwardSchema = z.object({
     supplierId: z.string().uuid('Invalid supplier ID').optional(),
     invoiceNumber: z.string().max(100).optional(),
     invoiceDate: z.string().optional(),
+    // G2 purchase-side TOTAL-BILL discount — the distributor's whole-invoice
+    // discount applied on top of any per-line purchaseDiscountPercent. Percent
+    // and/or a flat amount; both fold into each line's net purchase value.
+    invoiceDiscountPercent: z.number().min(0).max(100).optional(),
+    invoiceDiscountAmount: z.number().nonnegative().optional(),
     addToExisting: z.boolean().optional(),
     lines: z
       .array(commitInwardLineSchema)
