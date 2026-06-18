@@ -156,6 +156,54 @@ describe('Pharmacy — G1 bulk stock inward (CSV / OCR / manual)', () => {
       expect(res.results[1].status).toBe('ok');
     });
 
+    it('G2: folds a total-bill purchase discount into each line + reports net', async () => {
+      (prisma.drugFormulary.findFirst as any).mockResolvedValue({ id: 'drug-existing', drugName: 'Telmac 40' });
+      (prisma.drugBatch.findFirst as any).mockResolvedValue(null);
+      (prisma.drugBatch.create as any).mockResolvedValue({ id: 'batch-x' });
+
+      const res = await commitInward(TENANT_ID, USER_ID, ADMIN_ROLES, {
+        invoiceDiscountPercent: 10, // whole-invoice discount on top of line discounts
+        lines: [
+          // gross 1000, 10% line → net 900
+          { action: 'map', targetFormularyId: 'drug-existing', drugName: 'A', batchNumber: 'A1', expiryDate: '2030-12-31', quantityReceived: 10, purchasePrice: 100, purchaseDiscountPercent: 10 },
+          // gross 500, no line discount → net 500
+          { action: 'map', targetFormularyId: 'drug-existing', drugName: 'B', batchNumber: 'B1', expiryDate: '2030-12-31', quantityReceived: 10, purchasePrice: 50 },
+        ],
+      } as any);
+
+      // Line 1: 10% line ∘ 10% bill = 19% effective; Line 2: 0% ∘ 10% = 10%.
+      const calls = (prisma.drugBatch.create as any).mock.calls;
+      expect(calls[0][0].data.purchaseDiscountPercent).toBe(19);
+      expect(calls[1][0].data.purchaseDiscountPercent).toBe(10);
+      // MRP / gross rate are untouched — only the discount carries the bill cut.
+      expect(calls[0][0].data.purchasePrice).toBe(100);
+
+      expect(res.purchaseSummary).toMatchObject({
+        grossValue: 1500,
+        lineDiscount: 100, // 1500 gross − 1400 after line discounts
+        invoiceDiscountPercent: 10,
+        invoiceDiscount: 140, // 10% of the 1400 net
+        netValue: 1260,
+      });
+    });
+
+    it('G2: a flat invoice discount amount converts to the same net', async () => {
+      (prisma.drugFormulary.findFirst as any).mockResolvedValue({ id: 'drug-existing', drugName: 'Telmac 40' });
+      (prisma.drugBatch.findFirst as any).mockResolvedValue(null);
+      (prisma.drugBatch.create as any).mockResolvedValue({ id: 'batch-x' });
+
+      const res = await commitInward(TENANT_ID, USER_ID, ADMIN_ROLES, {
+        invoiceDiscountAmount: 140, // ₹140 off the 1400 net == 10%
+        lines: [
+          { action: 'map', targetFormularyId: 'drug-existing', drugName: 'A', batchNumber: 'A1', expiryDate: '2030-12-31', quantityReceived: 10, purchasePrice: 100, purchaseDiscountPercent: 10 },
+          { action: 'map', targetFormularyId: 'drug-existing', drugName: 'B', batchNumber: 'B1', expiryDate: '2030-12-31', quantityReceived: 10, purchasePrice: 50 },
+        ],
+      } as any);
+
+      expect(res.purchaseSummary.invoiceDiscountPercent).toBe(10);
+      expect(res.purchaseSummary.netValue).toBe(1260);
+    });
+
     it('rejects a non-pharmacy-admin caller', async () => {
       await expect(
         commitInward(TENANT_ID, USER_ID, ['pharmacist'], {
