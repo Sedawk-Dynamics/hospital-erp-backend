@@ -1,6 +1,7 @@
 import { prisma } from '../config/database';
 import { logger } from '../config/logger';
 import { runInventoryAlerts } from '../modules/inventory/inventory.service';
+import { runPharmacyExpiryAlerts } from '../modules/pharmacy/pharmacy.service';
 
 /**
  * Daily inventory alert sweep across all active tenants. For each tenant it
@@ -37,6 +38,14 @@ export async function runInventoryAlertsJob() {
       const result = await runInventoryAlerts(tenant.id, actor.id);
       if (result.lowStockAlerts || result.expiryAlerts || result.expiredFlagged) {
         logger.info({ tenantId: tenant.id, ...result }, 'Inventory alerts dispatched');
+      }
+
+      // G5: pharmacy drug-batch expiry — auto-flag expired + near-expiry alerts.
+      // Drug batches live in a separate store from inventory consumables, so they
+      // need their own pass (honouring the same per-tenant expiry settings).
+      const rxResult = await runPharmacyExpiryAlerts(tenant.id, actor.id);
+      if (rxResult.expiredFlagged || rxResult.expiryAlerts) {
+        logger.info({ tenantId: tenant.id, ...rxResult }, 'Pharmacy expiry alerts dispatched');
       }
       processed += 1;
     } catch (err) {

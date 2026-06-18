@@ -183,3 +183,5 @@ pharmacyRoutes.get('/reports/reorder', authenticate, requirePermission('pharmacy
 
 // --- Maintenance: auto-flag expired batches (idempotent) ---
 pharmacyRoutes.post('/maintenance/flag-expired', authenticate, requirePermission('pharmacy', 'approve'), controller.flagExpiredBatches);
+// G5: run the full expiry check now — flag expired + dispatch near-expiry alerts.
+pharmacyRoutes.post('/maintenance/run-expiry-alerts', authenticate, requirePermission('pharmacy', 'approve'), controller.runPharmacyExpiryAlerts);

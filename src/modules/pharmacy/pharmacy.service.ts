@@ -3,6 +3,8 @@ import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
 import { resolvePackSize, inferLooseUnitLabel } from '../drug-master/drug-master.dataset';
+import { getInventorySettingsSafe } from '../inventory/inventory.settings.service';
+import { notifyInventoryRecipients, hasOpenInventoryAlert } from '../inventory/inventory.notify';
 import { safePharmacyAudit } from './pharmacy.audit';
 import {
   scoreMatch,
@@ -4878,4 +4880,75 @@ export async function flagExpiredBatches(tenantId?: string) {
     logger.info({ tenantId, count: result.count }, 'Auto-flagged expired batches');
   }
   return { flagged: result.count };
+}
+
+/**
+ * G5: end-to-end expiry handling for drug stock. Auto-flags fully-expired batches
+ * (so they drop out of sellable stock while staying in the ledger for audit) and
+ * raises near-expiry alerts to the configured recipients so the pharmacy can
+ * start a return-to-distributor before the date hits. Honours the shared
+ * inventory settings — expiryAlertMonths (the configurable threshold),
+ * expiryAlertEnabled, autoFlagExpired and alertRecipientRoles — so the alert
+ * window is configurable per pharmacy. Runs unattended from the daily alerts job;
+ * `force` makes the manual "run now" action flag + alert regardless of the
+ * toggles. Near-expiry alerts are de-duped against open notifications so repeated
+ * runs never spam the same batch.
+ */
+export async function runPharmacyExpiryAlerts(
+  tenantId: string,
+  _userId: string,
+  opts: { force?: boolean } = {},
+) {
+  const settings = await getInventorySettingsSafe(tenantId);
+
+  // 1. Auto-tag fully-expired batches as expired (idempotent). They stay in the
+  //    table for audit but are excluded from every sellable-stock rollup.
+  let expiredFlagged = 0;
+  if (opts.force || settings.autoFlagExpired) {
+    const res = await flagExpiredBatches(tenantId);
+    expiredFlagged = res.flagged;
+  }
+
+  // 2. Near-expiry alerts within the configured look-ahead window.
+  let expiryAlerts = 0;
+  if (opts.force || settings.expiryAlertEnabled) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const until = new Date(today);
+    until.setMonth(until.getMonth() + (settings.expiryAlertMonths || 3));
+
+    const batches = await prisma.drugBatch.findMany({
+      where: {
+        tenantId,
+        isExpired: false,
+        isRecalled: false,
+        quantityInStock: { gt: 0 },
+        expiryDate: { gte: today, lte: until },
+      },
+      take: 1000,
+      orderBy: { expiryDate: 'asc' },
+      include: { drug: { select: { drugName: true } } },
+    });
+
+    for (const b of batches) {
+      // Skip if managers already have an unread alert for this batch.
+      if (await hasOpenInventoryAlert(tenantId, 'pharmacy_expiry', b.id)) continue;
+      const expiry = new Date(b.expiryDate).toISOString().slice(0, 10);
+      const sent = await notifyInventoryRecipients({
+        tenantId,
+        recipientRoles: settings.alertRecipientRoles,
+        title: 'Drug stock expiring soon',
+        message: `${b.drug?.drugName ?? 'Drug'} batch ${b.batchNumber} — ${b.quantityInStock} unit(s) expiring on ${expiry}. Initiate a return-to-distributor before expiry.`,
+        referenceType: 'pharmacy_expiry',
+        referenceId: b.id,
+      });
+      if (sent > 0) expiryAlerts += 1;
+    }
+  }
+
+  logger.info(
+    { tenantId, expiredFlagged, expiryAlerts, force: !!opts.force },
+    'Pharmacy expiry alerts run complete',
+  );
+  return { expiredFlagged, expiryAlerts };
 }

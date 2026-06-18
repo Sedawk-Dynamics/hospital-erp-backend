@@ -1189,3 +1189,22 @@ export async function flagExpiredBatches(
     next(err);
   }
 }
+
+// G5: manual "run expiry check now" — flags expired batches + dispatches
+// near-expiry alerts to the configured recipients (the daily job does this
+// automatically; this lets an admin trigger it on demand).
+export async function runPharmacyExpiryAlerts(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await pharmacyService.runPharmacyExpiryAlerts(tenantId, req.user!.userId, {
+      force: true,
+    });
+    sendResponse({ res, message: 'Expiry check complete', data });
+  } catch (err) {
+    next(err);
+  }
+}
