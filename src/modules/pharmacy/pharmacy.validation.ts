@@ -439,6 +439,8 @@ export const createPharmacySaleSchema = z.object({
             'upi',
             'net_banking',
             'insurance',
+            // G7: deduct from an admitted IP patient's prepaid advance.
+            'advance',
             'cheque',
             'other',
           ]),

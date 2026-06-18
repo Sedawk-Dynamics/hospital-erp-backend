@@ -136,6 +136,54 @@ describe('Pharmacy — flow coverage (sale / returns / merge / reports)', () => 
       expect(bill.discountAmount).toBe(19);
       expect(bill.amountPaid).toBe(81);
     });
+
+    // G7: Advance Deduction tender (IP only) — settle against the prepaid advance.
+    it('settles the bill by deducting from the IP patient advance', async () => {
+      (prisma.patient.findFirst as any).mockResolvedValue({ id: 'p1' });
+      // getPatientCreditStatus → admission with ₹1000 deposit, no open bills.
+      (prisma.admission.findFirst as any).mockResolvedValue({ id: 'adm1', billingCategory: 'package', depositAmount: 1000 });
+      (prisma.bill.aggregate as any).mockResolvedValue({ _sum: { totalAmount: 0, balanceDue: 0 } });
+      const tx = txWith();
+      mockSaleBatch(tx);
+      tx.admission.findUnique.mockResolvedValue({ depositAmount: 1000 });
+
+      await createPharmacySale(TENANT_ID, USER_ID, {
+        patientId: 'p1',
+        items: [{ drugBatchId: 'b1', quantity: 1, unitPrice: 100, saleUnit: 'pack' }],
+        payments: [{ method: 'advance', amount: 100 }],
+      } as any);
+
+      // Advance consumed from the admission deposit.
+      expect(tx.admission.update).toHaveBeenCalledTimes(1);
+      expect(tx.admission.update.mock.calls[0][0].data.depositAmount).toEqual({ decrement: 100 });
+      // Recorded as an 'advance' payment; bill fully settled.
+      expect(tx.payment.create.mock.calls[0][0].data.paymentMethod).toBe('advance');
+      const bill = tx.bill.create.mock.calls[0][0].data;
+      expect(bill.amountPaid).toBe(100);
+      expect(bill.status).toBe('paid');
+    });
+
+    it('rejects advance deduction when the patient has no IP admission', async () => {
+      (prisma.patient.findFirst as any).mockResolvedValue({ id: 'p1' });
+      (prisma.admission.findFirst as any).mockResolvedValue(null);
+      (prisma.bill.aggregate as any).mockResolvedValue({ _sum: {} });
+      await expect(createPharmacySale(TENANT_ID, USER_ID, {
+        patientId: 'p1',
+        items: [{ drugBatchId: 'b1', quantity: 1, unitPrice: 100, saleUnit: 'pack' }],
+        payments: [{ method: 'advance', amount: 100 }],
+      } as any)).rejects.toThrow(/IP admission/i);
+    });
+
+    it('rejects an advance tender that exceeds the available balance', async () => {
+      (prisma.patient.findFirst as any).mockResolvedValue({ id: 'p1' });
+      (prisma.admission.findFirst as any).mockResolvedValue({ id: 'adm1', billingCategory: 'cash', depositAmount: 50 });
+      (prisma.bill.aggregate as any).mockResolvedValue({ _sum: { totalAmount: 0, balanceDue: 0 } });
+      await expect(createPharmacySale(TENANT_ID, USER_ID, {
+        patientId: 'p1',
+        items: [{ drugBatchId: 'b1', quantity: 1, unitPrice: 100, saleUnit: 'pack' }],
+        payments: [{ method: 'advance', amount: 100 }],
+      } as any)).rejects.toThrow(/Insufficient advance/i);
+    });
   });
 
   // ── G5 vendor return (credit note) ────────────────────────

@@ -849,6 +849,8 @@ enum PaymentMethod {
   net_banking @map("net_banking")
   insurance   @map("insurance")
   cheque      @map("cheque")
+  // G7: settle (part of) a bill by deducting from an IP patient's prepaid advance.
+  advance     @map("advance")
   other       @map("other")
 }
 

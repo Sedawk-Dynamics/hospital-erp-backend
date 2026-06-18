@@ -2253,6 +2253,31 @@ export async function createPharmacySale(
     if (!rx) throw AppError.notFound('Prescription not found');
   }
 
+  // G7: advance-deduction tender (IP only). Validate the patient has an active
+  // admission with enough prepaid advance BEFORE settling part of the bill
+  // against it. The actual deposit decrement happens inside the transaction.
+  let advanceAdmissionId: string | null = null;
+  if ((data.payments ?? []).some((p) => p.method === 'advance')) {
+    if (!data.patientId) {
+      throw AppError.badRequest('Advance deduction is only available for an admitted IP patient.');
+    }
+    const credit = await getPatientCreditStatus(tenantId, data.patientId);
+    if (!credit.hasAdmission) {
+      throw AppError.badRequest('Advance deduction requires an active IP admission.');
+    }
+    const requestedAdvance = round2(
+      (data.payments ?? [])
+        .filter((p) => p.method === 'advance')
+        .reduce((s, p) => s + p.amount, 0),
+    );
+    if (requestedAdvance > credit.available + 0.01) {
+      throw AppError.badRequest(
+        `Insufficient advance balance. Available ₹${credit.available.toFixed(2)}.`,
+      );
+    }
+    advanceAdmissionId = credit.admissionId;
+  }
+
   const billId = await prisma.$transaction(async (tx) => {
     // 1. Validate every line and pre-compute its economics.
     const lines = [] as Array<{
@@ -2384,6 +2409,26 @@ export async function createPharmacySale(
     paymentLines = paymentLines.filter((p) => p.amount > 0);
     const balanceDue = round2(totalAmount - applied);
     const status: any = balanceDue <= 0 ? 'paid' : applied > 0 ? 'partially_paid' : 'pending';
+
+    // G7: consume the IP advance for the advance tender actually applied (post
+    // change-trim). Re-check the live deposit inside the transaction so a
+    // concurrent spend can't push it negative.
+    const appliedAdvance = round2(
+      paymentLines.filter((p) => p.method === 'advance').reduce((s, p) => s + p.amount, 0),
+    );
+    if (appliedAdvance > 0 && advanceAdmissionId) {
+      const adm = await tx.admission.findUnique({
+        where: { id: advanceAdmissionId },
+        select: { depositAmount: true },
+      });
+      if (!adm || Number(adm.depositAmount) < appliedAdvance) {
+        throw AppError.badRequest('Insufficient advance balance to settle this bill.');
+      }
+      await tx.admission.update({
+        where: { id: advanceAdmissionId },
+        data: { depositAmount: { decrement: appliedAdvance } },
+      });
+    }
 
     let visitId: string | null = null;
     if (data.prescriptionId) {
