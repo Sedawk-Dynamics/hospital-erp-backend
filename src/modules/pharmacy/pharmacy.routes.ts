@@ -11,6 +11,8 @@ import {
   createFormularySchema,
   findFormularyMatchesSchema,
   mergeFormularySchema,
+  matchInwardSchema,
+  commitInwardSchema,
   getFormularyQuerySchema,
   formularyIdParamSchema,
   updateFormularySchema,
@@ -99,6 +101,12 @@ pharmacyRoutes.get('/batches/:id', authenticate, requirePermission('pharmacy', '
 pharmacyRoutes.put('/batches/:id', authenticate, requirePermission('pharmacy', 'update'), validate(updateBatchSchema), controller.updateBatch);
 // G4: deliberate stock-count correction (reason-stamped + audited).
 pharmacyRoutes.patch('/batches/:id/adjust', authenticate, requirePermission('pharmacy', 'update'), validate(adjustBatchSchema), controller.adjustBatchStock);
+
+// --- G1: bulk stock inward (CSV / OCR / manual multi-row) ---
+// Step 1 scores incoming distributor-invoice lines against the formulary (read);
+// step 2 commits the reviewed map-or-create decisions and posts the stock.
+pharmacyRoutes.post('/inward/match', authenticate, requirePermission('pharmacy', 'read'), validate(matchInwardSchema), controller.matchInward);
+pharmacyRoutes.post('/inward/commit', authenticate, requirePermission('pharmacy', 'create'), validate(commitInwardSchema), controller.commitInward);
 
 // --- Counter billing (POS sale: partial / loose / walk-in, one invoice) ---
 pharmacyRoutes.post('/sales', authenticate, requirePermission('pharmacy', 'create'), validate(createPharmacySaleSchema), controller.createPharmacySale);

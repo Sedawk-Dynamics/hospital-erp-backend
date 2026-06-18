@@ -146,6 +146,44 @@ export async function findFormularyMatches(
   }
 }
 
+// G1: bulk stock inward — score every incoming distributor-invoice line against
+// the formulary so the UI can show a side-by-side "existing vs incoming" review
+// before any row is committed (prevents the split-stock duplicate problem).
+export async function matchInward(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await pharmacyService.matchInwardLines(tenantId, req.body.lines);
+    sendResponse({ res, message: 'Inward lines matched', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// G1: commit a reviewed bulk inward — map each line onto an existing drug or
+// create a new one, then post the received stock as batches (per-line resilient).
+export async function commitInward(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await pharmacyService.commitInward(
+      tenantId,
+      req.user!.userId,
+      req.user!.roles ?? [],
+      req.body,
+    );
+    sendResponse({ res, statusCode: 201, message: 'Stock inward committed', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // ── G15: mandatory reports ──
 export async function getDailyTransactionReport(
   req: AuthenticatedRequest,
