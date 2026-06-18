@@ -3881,36 +3881,36 @@ model DicomInstance {
 // lands in DrugFormulary with drugMasterId set (mirrors LabTestTemplate ->
 // LabTestCatalog). Doctors can still free-text any drug not present here.
 model DrugMaster {
-  id             String      @id @default(uuid())
-  name           String      @db.VarChar(255)
-  genericName    String?     @map("generic_name") @db.VarChar(500)
-  manufacturer   String?     @db.VarChar(255)
-  type           String?     @db.VarChar(50)
-  dosageForm     DosageForm? @map("dosage_form")
-  strength       String?     @db.VarChar(100)
-  packSizeLabel  String?     @map("pack_size_label") @db.VarChar(255)
+  id               String      @id @default(uuid())
+  name             String      @db.VarChar(255)
+  genericName      String?     @map("generic_name") @db.VarChar(500)
+  manufacturer     String?     @db.VarChar(255)
+  type             String?     @db.VarChar(50)
+  dosageForm       DosageForm? @map("dosage_form")
+  strength         String?     @db.VarChar(100)
+  packSizeLabel    String?     @map("pack_size_label") @db.VarChar(255)
   // Numeric base units per pack/strip (e.g. 10), resolved from the label. Copied
   // straight into DrugFormulary.packSize on import so a strip sells as loose
   // units. Null = indivisible container (bottle/vial/tube).
-  packSize       Int?        @map("pack_size")
-  mrp            Decimal?    @db.Decimal(10, 2)
-  isDiscontinued Boolean     @default(false) @map("is_discontinued")
-  schedule       String?     @db.VarChar(10)
-  aliases        String[]    @default([])
-  tags           String[]    @default([])
+  packSize         Int?        @map("pack_size")
+  mrp              Decimal?    @db.Decimal(10, 2)
+  isDiscontinued   Boolean     @default(false) @map("is_discontinued")
+  schedule         String?     @db.VarChar(10)
+  aliases          String[]    @default([])
+  tags             String[]    @default([])
   // Rich clinical detail (populated from the richer dataset / future provider
   // feeds). Reference data shared by all hospitals.
-  saltComposition  String? @map("salt_composition")
+  saltComposition  String?     @map("salt_composition")
   description      String? // uses / "about" text
-  sideEffects      String? @map("side_effects")
-  drugInteractions Json?   @map("drug_interactions") // { drug[], brand[], effect[] }
+  sideEffects      String?     @map("side_effects")
+  drugInteractions Json?       @map("drug_interactions") // { drug[], brand[], effect[] }
   // Denormalised lowercase index of name + generic + manufacturer, recomputed
   // on every create/update — drives the catalog search endpoint.
-  searchTokens   String?     @map("search_tokens")
-  isPublished    Boolean     @default(true) @map("is_published")
-  createdById    String?     @map("created_by_id")
-  createdAt      DateTime    @default(now()) @map("created_at")
-  updatedAt      DateTime    @default(now()) @updatedAt @map("updated_at")
+  searchTokens     String?     @map("search_tokens")
+  isPublished      Boolean     @default(true) @map("is_published")
+  createdById      String?     @map("created_by_id")
+  createdAt        DateTime    @default(now()) @map("created_at")
+  updatedAt        DateTime    @default(now()) @updatedAt @map("updated_at")
 
   formularyItems DrugFormulary[]
 
@@ -3968,31 +3968,32 @@ model DrugFormulary {
   createdAt         DateTime    @default(now()) @map("created_at")
   updatedAt         DateTime    @default(now()) @updatedAt @map("updated_at")
 
-  tenant            Tenant             @relation(fields: [tenantId], references: [id])
-  category          DrugCategory?      @relation(fields: [categoryId], references: [id])
-  drugMaster        DrugMaster?        @relation(fields: [drugMasterId], references: [id])
-  drugBatches       DrugBatch[]
-  prescriptionItems PrescriptionItem[]
-  drugReturns       DrugReturn[]
+  tenant             Tenant                  @relation(fields: [tenantId], references: [id])
+  category           DrugCategory?           @relation(fields: [categoryId], references: [id])
+  drugMaster         DrugMaster?             @relation(fields: [drugMasterId], references: [id])
+  drugBatches        DrugBatch[]
+  prescriptionItems  PrescriptionItem[]
+  drugReturns        DrugReturn[]
+  purchaseOrderItems DrugPurchaseOrderItem[]
 
   @@map("drug_formulary")
 }
 
 model DrugBatch {
-  id                String    @id @default(uuid())
-  drugId            String    @map("drug_id")
-  tenantId          String    @map("tenant_id")
-  batchNumber       String    @map("batch_number") @db.VarChar(100)
-  manufacturingDate DateTime? @map("manufacturing_date") @db.Date
-  expiryDate        DateTime  @map("expiry_date") @db.Date
-  supplierId        String?   @map("supplier_id")
+  id                      String    @id @default(uuid())
+  drugId                  String    @map("drug_id")
+  tenantId                String    @map("tenant_id")
+  batchNumber             String    @map("batch_number") @db.VarChar(100)
+  manufacturingDate       DateTime? @map("manufacturing_date") @db.Date
+  expiryDate              DateTime  @map("expiry_date") @db.Date
+  supplierId              String?   @map("supplier_id")
   // Purchase economics captured at inward (G2 — separate fields so the GRN can
   // show MRP, purchase rate, discount and GST distinctly). purchasePrice is the
   // per-unit purchase RATE (gross, before discount); the net purchase price and
   // landing cost are derived from rate + discount. mrp is the printed MRP.
-  mrp                     Decimal? @map("mrp") @db.Decimal(10, 2)
-  purchaseDiscountPercent Decimal? @map("purchase_discount_percent") @db.Decimal(5, 2)
-  gstPercent              Decimal? @map("gst_percent") @db.Decimal(5, 2)
+  mrp                     Decimal?  @map("mrp") @db.Decimal(10, 2)
+  purchaseDiscountPercent Decimal?  @map("purchase_discount_percent") @db.Decimal(5, 2)
+  gstPercent              Decimal?  @map("gst_percent") @db.Decimal(5, 2)
   // Free units received on top of the paid quantity (e.g. buy 100 get 10). They
   // count toward stock but not toward purchase value.
   freeQuantity            Int       @default(0) @map("free_quantity")
@@ -4001,15 +4002,15 @@ model DrugBatch {
   // same supplier+invoice line can be flagged as a duplicate.
   invoiceNumber           String?   @map("invoice_number") @db.VarChar(100)
   invoiceDate             DateTime? @map("invoice_date") @db.Date
-  purchasePrice     Decimal?  @map("purchase_price") @db.Decimal(10, 2)
-  sellingPrice      Decimal?  @map("selling_price") @db.Decimal(10, 2)
-  quantityReceived  Int       @map("quantity_received")
-  quantityInStock   Int       @map("quantity_in_stock")
-  isExpired         Boolean   @default(false) @map("is_expired")
-  isRecalled        Boolean   @default(false) @map("is_recalled")
-  recallReason      String?   @map("recall_reason")
-  createdAt         DateTime  @default(now()) @map("created_at")
-  updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at")
+  purchasePrice           Decimal?  @map("purchase_price") @db.Decimal(10, 2)
+  sellingPrice            Decimal?  @map("selling_price") @db.Decimal(10, 2)
+  quantityReceived        Int       @map("quantity_received")
+  quantityInStock         Int       @map("quantity_in_stock")
+  isExpired               Boolean   @default(false) @map("is_expired")
+  isRecalled              Boolean   @default(false) @map("is_recalled")
+  recallReason            String?   @map("recall_reason")
+  createdAt               DateTime  @default(now()) @map("created_at")
+  updatedAt               DateTime  @default(now()) @updatedAt @map("updated_at")
 
   drug              DrugFormulary      @relation(fields: [drugId], references: [id])
   tenant            Tenant             @relation(fields: [tenantId], references: [id])
@@ -4038,65 +4039,65 @@ model DispensingRecord {
   // Sale economics captured at dispense time so the cash counter, receipt and
   // GST report read the true billed figures (not a re-derived batch price).
   // sold = pack | loose (loose = sub-unit broken out of a strip/pack).
-  saleUnit        String?  @default("pack") @map("sale_unit") @db.VarChar(10)
-  unitPrice       Decimal? @map("unit_price") @db.Decimal(12, 2)
-  discountPercent Decimal? @default(0) @map("discount_percent") @db.Decimal(5, 2)
-  taxPercent      Decimal? @default(0) @map("tax_percent") @db.Decimal(5, 2)
-  lineTotal       Decimal? @map("line_total") @db.Decimal(12, 2)
+  saleUnit           String?  @default("pack") @map("sale_unit") @db.VarChar(10)
+  unitPrice          Decimal? @map("unit_price") @db.Decimal(12, 2)
+  discountPercent    Decimal? @default(0) @map("discount_percent") @db.Decimal(5, 2)
+  taxPercent         Decimal? @default(0) @map("tax_percent") @db.Decimal(5, 2)
+  lineTotal          Decimal? @map("line_total") @db.Decimal(12, 2)
   // Invoice this line was billed on (the pharmacy Bill). Plain column — the
   // canonical link is BillItem.referenceId; this is a convenience back-pointer.
-  billId          String?  @map("bill_id")
+  billId             String?  @map("bill_id")
 
   tenant           Tenant            @relation(fields: [tenantId], references: [id])
   prescription     Prescription?     @relation(fields: [prescriptionId], references: [id])
   prescriptionItem PrescriptionItem? @relation(fields: [prescriptionItemId], references: [id])
   patient          Patient           @relation(fields: [patientId], references: [id])
-  drugBatch        DrugBatch        @relation(fields: [drugBatchId], references: [id])
-  dispenser        User             @relation("Dispenser", fields: [dispensedBy], references: [id])
-  verifier         User?            @relation("DispensingVerifier", fields: [verifiedBy], references: [id])
+  drugBatch        DrugBatch         @relation(fields: [drugBatchId], references: [id])
+  dispenser        User              @relation("Dispenser", fields: [dispensedBy], references: [id])
+  verifier         User?             @relation("DispensingVerifier", fields: [verifiedBy], references: [id])
   drugReturns      DrugReturn[]
 
   @@map("dispensing_records")
 }
 
 model DrugReturn {
-  id          String           @id @default(uuid())
-  tenantId    String           @map("tenant_id")
-  returnType  ReturnType       @map("return_type")
+  id                 String           @id @default(uuid())
+  tenantId           String           @map("tenant_id")
+  returnType         ReturnType       @map("return_type")
   // Nullable: a counter_return need not name a specific batch — the medicine is
   // identified by drugId and the batch/expiry are optional free-text fields.
-  drugBatchId String?          @map("drug_batch_id")
+  drugBatchId        String?          @map("drug_batch_id")
   // The medicine being returned. Set for counter_return (picked from the
   // formulary); for patient/vendor returns the drug is reached via drugBatch.
-  drugId      String?          @map("drug_id")
+  drugId             String?          @map("drug_id")
   // Free-text batch + expiry captured on a counter_return when the staff knows
   // them but they are not (yet) a tracked DrugBatch. Both optional.
-  batchNumber String?          @map("batch_number") @db.VarChar(100)
-  expiryDate  DateTime?        @map("expiry_date") @db.Date
-  patientId   String?          @map("patient_id")
-  supplierId  String?          @map("supplier_id")
-  quantity    Int
-  reason      String?
-  processedBy String?          @map("processed_by")
-  status      DrugReturnStatus @default(pending)
+  batchNumber        String?          @map("batch_number") @db.VarChar(100)
+  expiryDate         DateTime?        @map("expiry_date") @db.Date
+  patientId          String?          @map("patient_id")
+  supplierId         String?          @map("supplier_id")
+  quantity           Int
+  reason             String?
+  processedBy        String?          @map("processed_by")
+  status             DrugReturnStatus @default(pending)
   // Billing linkage for patient returns. dispensingRecordId points at the
   // original sale line so the return is bounded by what was dispensed; billId
   // is the invoice it was sold on. saleUnit/unitPrice mirror the sale economics
   // (per BASE unit) so refundAmount is the money actually returned to the
   // patient (qty * unitPrice net of the line discount, GST-inclusive). refundId
   // is the Refund row created when the return is approved.
-  dispensingRecordId String?  @map("dispensing_record_id")
-  billId             String?  @map("bill_id")
-  saleUnit           String?  @map("sale_unit") @db.VarChar(10)
-  unitPrice          Decimal? @map("unit_price") @db.Decimal(12, 2)
-  refundAmount       Decimal? @map("refund_amount") @db.Decimal(12, 2)
-  refundId           String?  @unique @map("refund_id")
+  dispensingRecordId String?          @map("dispensing_record_id")
+  billId             String?          @map("bill_id")
+  saleUnit           String?          @map("sale_unit") @db.VarChar(10)
+  unitPrice          Decimal?         @map("unit_price") @db.Decimal(12, 2)
+  refundAmount       Decimal?         @map("refund_amount") @db.Decimal(12, 2)
+  refundId           String?          @unique @map("refund_id")
   // G5 vendor returns (expired / damaged stock back to the distributor): the
   // supplier's credit note reference + the credited value. Drives the Supplier
   // Credit Notes report. On approval a vendor return REDUCES stock.
-  creditNoteNumber String?  @map("credit_note_number") @db.VarChar(80)
-  creditAmount     Decimal? @map("credit_amount") @db.Decimal(12, 2)
-  createdAt   DateTime         @default(now()) @map("created_at")
+  creditNoteNumber   String?          @map("credit_note_number") @db.VarChar(80)
+  creditAmount       Decimal?         @map("credit_amount") @db.Decimal(12, 2)
+  createdAt          DateTime         @default(now()) @map("created_at")
 
   tenant           Tenant            @relation(fields: [tenantId], references: [id])
   drugBatch        DrugBatch?        @relation(fields: [drugBatchId], references: [id])
@@ -4168,11 +4169,12 @@ model Supplier {
   isActive      Boolean     @default(true) @map("is_active")
   createdAt     DateTime    @default(now()) @map("created_at")
 
-  tenant            Tenant             @relation(fields: [tenantId], references: [id])
-  drugBatches       DrugBatch[]
-  drugReturns       DrugReturn[]
-  stockTransactions StockTransaction[]
-  purchaseOrders    PurchaseOrder[]
+  tenant             Tenant              @relation(fields: [tenantId], references: [id])
+  drugBatches        DrugBatch[]
+  drugReturns        DrugReturn[]
+  stockTransactions  StockTransaction[]
+  purchaseOrders     PurchaseOrder[]
+  drugPurchaseOrders DrugPurchaseOrder[]
 
   @@map("suppliers")
 }
@@ -4267,6 +4269,48 @@ model PurchaseOrderItem {
   @@map("purchase_order_items")
 }
 
+// G9: draft purchase orders for DRUGS (distinct from the inventory-consumable
+// PurchaseOrder above, whose items link to InventoryItem). Generated from the
+// reorder list when a drug falls at/below its minimum stock; a draft the pharmacy
+// reviews and marks sent — never auto-dispatched.
+enum DrugPurchaseOrderStatus {
+  draft     @map("draft")
+  sent      @map("sent")
+  received  @map("received")
+  cancelled @map("cancelled")
+}
+
+model DrugPurchaseOrder {
+  id          String                  @id @default(uuid())
+  tenantId    String                  @map("tenant_id")
+  supplierId  String?                 @map("supplier_id")
+  orderNumber String                  @unique @map("order_number") @db.VarChar(50)
+  status      DrugPurchaseOrderStatus @default(draft)
+  notes       String?
+  createdBy   String?                 @map("created_by")
+  createdAt   DateTime                @default(now()) @map("created_at")
+  updatedAt   DateTime                @default(now()) @updatedAt @map("updated_at")
+
+  supplier Supplier?               @relation(fields: [supplierId], references: [id])
+  items    DrugPurchaseOrderItem[]
+
+  @@index([tenantId, status])
+  @@map("drug_purchase_orders")
+}
+
+model DrugPurchaseOrderItem {
+  id              String   @id @default(uuid())
+  purchaseOrderId String   @map("purchase_order_id")
+  drugId          String   @map("drug_id")
+  quantityOrdered Int      @map("quantity_ordered")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  purchaseOrder DrugPurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  drug          DrugFormulary     @relation(fields: [drugId], references: [id])
+
+  @@map("drug_purchase_order_items")
+}
+
 model SupplyRequest {
   id                String              @id @default(uuid())
   tenantId          String              @map("tenant_id")
@@ -4326,11 +4370,11 @@ model StockTransfer {
   inventoryItem  InventoryItem? @relation(fields: [inventoryItemId], references: [id])
   drugBatch      DrugBatch?     @relation(fields: [drugBatchId], references: [id])
   fromDepartment Department?    @relation("StockTransferFromDept", fields: [fromDepartmentId], references: [id])
-  toDepartment   Department?   @relation("StockTransferToDept", fields: [toDepartmentId], references: [id])
-  requester      User          @relation("StockTransferRequester", fields: [requestedBy], references: [id])
-  approver       User?         @relation("StockTransferApprover", fields: [approvedBy], references: [id])
-  dispatcher     User?         @relation("StockTransferDispatcher", fields: [dispatchedBy], references: [id])
-  receiver       User?         @relation("StockTransferReceiver", fields: [receivedBy], references: [id])
+  toDepartment   Department?    @relation("StockTransferToDept", fields: [toDepartmentId], references: [id])
+  requester      User           @relation("StockTransferRequester", fields: [requestedBy], references: [id])
+  approver       User?          @relation("StockTransferApprover", fields: [approvedBy], references: [id])
+  dispatcher     User?          @relation("StockTransferDispatcher", fields: [dispatchedBy], references: [id])
+  receiver       User?          @relation("StockTransferReceiver", fields: [receivedBy], references: [id])
 
   @@index([tenantId, status])
   @@index([tenantId, inventoryItemId])
@@ -4521,12 +4565,12 @@ model Refund {
   processedAt DateTime?    @map("processed_at")
   createdAt   DateTime     @default(now()) @map("created_at")
 
-  tenant    Tenant  @relation(fields: [tenantId], references: [id])
-  bill      Bill    @relation(fields: [billId], references: [id])
-  payment   Payment @relation(fields: [paymentId], references: [id])
-  patient   Patient @relation(fields: [patientId], references: [id])
-  requester User?   @relation("RefundRequester", fields: [requestedBy], references: [id])
-  approver  User?   @relation("RefundApprover", fields: [approvedBy], references: [id])
+  tenant     Tenant      @relation(fields: [tenantId], references: [id])
+  bill       Bill        @relation(fields: [billId], references: [id])
+  payment    Payment     @relation(fields: [paymentId], references: [id])
+  patient    Patient     @relation(fields: [patientId], references: [id])
+  requester  User?       @relation("RefundRequester", fields: [requestedBy], references: [id])
+  approver   User?       @relation("RefundApprover", fields: [approvedBy], references: [id])
   drugReturn DrugReturn?
 
   @@map("refunds")
@@ -5104,14 +5148,18 @@ model CdssAlert {
   tenantId         String          @map("tenant_id")
   patientId        String?         @map("patient_id")
   alertType        CdssAlertType   @map("alert_type")
-  /** info | minor | moderate | major | contraindicated | critical */
+  /**
+   * info | minor | moderate | major | contraindicated | critical
+   */
   severity         String          @db.VarChar(20)
   message          String
   detail           String?
   drugName         String?         @map("drug_name") @db.VarChar(255)
   parameterName    String?         @map("parameter_name") @db.VarChar(255)
   parameterValue   String?         @map("parameter_value") @db.VarChar(100)
-  /** What triggered this alert: prescription | lab_order */
+  /**
+   * What triggered this alert: prescription | lab_order
+   */
   referenceType    String?         @map("reference_type") @db.VarChar(50)
   referenceId      String?         @map("reference_id")
   notifiedUserId   String?         @map("notified_user_id")
@@ -5119,7 +5167,9 @@ model CdssAlert {
   acknowledgedById String?         @map("acknowledged_by_id")
   acknowledgedAt   DateTime?       @map("acknowledged_at")
   acknowledgeNote  String?         @map("acknowledge_note")
-  /** Required when status=overridden — the clinical justification. */
+  /**
+   * Required when status=overridden — the clinical justification.
+   */
   overrideReason   String?         @map("override_reason")
   createdAt        DateTime        @default(now()) @map("created_at")
   updatedAt        DateTime        @updatedAt @map("updated_at")

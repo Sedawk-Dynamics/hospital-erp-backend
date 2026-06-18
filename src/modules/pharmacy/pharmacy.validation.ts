@@ -755,6 +755,42 @@ export const narcoticRegisterQuerySchema = z.object({
 });
 
 // ============================================================
+// G9 — Draft purchase orders for drugs
+// ============================================================
+
+export const getDrugPurchaseOrdersQuerySchema = z.object({
+  query: z.object({
+    status: z.enum(['draft', 'sent', 'received', 'cancelled']).optional(),
+  }),
+});
+
+export const drugPurchaseOrderIdParamSchema = z.object({
+  params: z.object({ id: z.string().uuid('Invalid purchase order ID') }),
+});
+
+export const updateDrugPurchaseOrderSchema = z.object({
+  body: z.object({
+    supplierId: z.string().uuid('Invalid supplier ID').nullable().optional(),
+    notes: z.string().max(1000).optional(),
+    items: z
+      .array(
+        z.object({
+          drugId: z.string().uuid('Invalid drug ID'),
+          quantityOrdered: z.number().int().positive('Quantity must be positive'),
+        }),
+      )
+      .max(500, 'At most 500 lines per order')
+      .optional(),
+  }),
+  params: z.object({ id: z.string().uuid('Invalid purchase order ID') }),
+});
+
+export const setDrugPurchaseOrderStatusSchema = z.object({
+  body: z.object({ status: z.enum(['sent', 'received', 'cancelled']) }),
+  params: z.object({ id: z.string().uuid('Invalid purchase order ID') }),
+});
+
+// ============================================================
 // Stock ledger (batch-wise movement register)
 // ============================================================
 

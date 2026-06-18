@@ -3759,6 +3759,172 @@ export async function getReorderList(tenantId: string) {
   return { items, total: items.length };
 }
 
+// ============================================================
+// G9 — Draft Purchase Orders for drugs
+// ============================================================
+// The reorder list above is a read-only report. These turn it into actual,
+// persisted DRAFT purchase orders (grouped by the drug's last-used supplier) that
+// the pharmacy reviews and marks "sent" — never auto-dispatched. Drugs already on
+// an open (draft/sent) PO are skipped so repeated generation never duplicates.
+
+const DRUG_PO_INCLUDE = {
+  supplier: { select: { id: true, name: true, gstNumber: true, phone: true, contactPerson: true } },
+  items: {
+    include: { drug: { select: { id: true, drugName: true, strength: true, manufacturer: true } } },
+  },
+} as const;
+
+const DRUG_PO_TRANSITIONS: Record<string, string[]> = {
+  draft: ['sent', 'cancelled'],
+  sent: ['received', 'cancelled'],
+  received: [],
+  cancelled: [],
+};
+
+export async function generateReorderDraftPOs(tenantId: string, userId: string, roles: string[]) {
+  assertPharmacyAdmin(roles, 'generate purchase orders');
+  const { items } = await getReorderList(tenantId);
+  if (!items.length) return { created: 0, skipped: 0, purchaseOrders: [] as unknown[] };
+
+  // Don't re-order drugs already on an open (draft/sent) PO — avoids duplicates.
+  const openItems = await prisma.drugPurchaseOrderItem.findMany({
+    where: { purchaseOrder: { tenantId, status: { in: ['draft', 'sent'] } } },
+    select: { drugId: true },
+  });
+  const alreadyOpen = new Set(openItems.map((i) => i.drugId));
+  const toOrder = items.filter((i) => !alreadyOpen.has(i.drugId));
+  const skipped = items.length - toOrder.length;
+  if (!toOrder.length) return { created: 0, skipped, purchaseOrders: [] as unknown[] };
+
+  // Resolve the last-used supplier per drug to group the orders.
+  const recent = await prisma.drugBatch.findMany({
+    where: { tenantId, drugId: { in: toOrder.map((i) => i.drugId) }, supplierId: { not: null } },
+    select: { drugId: true, supplierId: true },
+    orderBy: { createdAt: 'desc' },
+  });
+  const supplierByDrug = new Map<string, string>();
+  for (const r of recent) {
+    if (r.supplierId && !supplierByDrug.has(r.drugId)) supplierByDrug.set(r.drugId, r.supplierId);
+  }
+
+  // Group items by supplier (null = unassigned → one "to be assigned" PO).
+  const groups = new Map<string | null, typeof toOrder>();
+  for (const it of toOrder) {
+    const sid = supplierByDrug.get(it.drugId) ?? null;
+    if (!groups.has(sid)) groups.set(sid, []);
+    groups.get(sid)!.push(it);
+  }
+
+  const stamp = Date.now();
+  let idx = 0;
+  const purchaseOrders: unknown[] = [];
+  for (const [supplierId, groupItems] of groups) {
+    const po = await prisma.drugPurchaseOrder.create({
+      data: {
+        tenantId,
+        supplierId: supplierId ?? null,
+        orderNumber: `DPO-${stamp}-${idx++}`,
+        status: 'draft',
+        createdBy: userId,
+        notes: 'Auto-generated from reorder — drugs at/below minimum stock.',
+        items: {
+          create: groupItems.map((g) => ({ drugId: g.drugId, quantityOrdered: g.suggestedQty })),
+        },
+      },
+      include: DRUG_PO_INCLUDE,
+    });
+    purchaseOrders.push(po);
+  }
+
+  logger.info({ tenantId, created: purchaseOrders.length, skipped }, 'Reorder draft POs generated');
+  return { created: purchaseOrders.length, skipped, purchaseOrders };
+}
+
+export async function getDrugPurchaseOrders(tenantId: string, query: { status?: string }) {
+  const where: { tenantId: string; status?: string } = { tenantId };
+  if (query.status) where.status = query.status;
+  const orders = await prisma.drugPurchaseOrder.findMany({
+    where: where as never,
+    orderBy: { createdAt: 'desc' },
+    include: DRUG_PO_INCLUDE,
+    take: 200,
+  });
+  return { orders };
+}
+
+export async function getDrugPurchaseOrderById(tenantId: string, id: string) {
+  const order = await prisma.drugPurchaseOrder.findFirst({
+    where: { id, tenantId },
+    include: DRUG_PO_INCLUDE,
+  });
+  if (!order) throw AppError.notFound('Purchase order not found');
+  return order;
+}
+
+export async function updateDrugPurchaseOrder(
+  tenantId: string,
+  roles: string[],
+  id: string,
+  data: { supplierId?: string | null; notes?: string; items?: Array<{ drugId: string; quantityOrdered: number }> },
+) {
+  assertPharmacyAdmin(roles, 'edit purchase orders');
+  const po = await prisma.drugPurchaseOrder.findFirst({ where: { id, tenantId } });
+  if (!po) throw AppError.notFound('Purchase order not found');
+  if (po.status !== 'draft') throw AppError.badRequest('Only a draft purchase order can be edited.');
+
+  await prisma.$transaction(async (tx) => {
+    if (data.items) {
+      await tx.drugPurchaseOrderItem.deleteMany({ where: { purchaseOrderId: id } });
+      if (data.items.length) {
+        await tx.drugPurchaseOrderItem.createMany({
+          data: data.items.map((i) => ({
+            purchaseOrderId: id,
+            drugId: i.drugId,
+            quantityOrdered: i.quantityOrdered,
+          })),
+        });
+      }
+    }
+    await tx.drugPurchaseOrder.update({
+      where: { id },
+      data: {
+        supplierId: data.supplierId !== undefined ? data.supplierId || null : undefined,
+        notes: data.notes !== undefined ? data.notes : undefined,
+      },
+    });
+  });
+
+  return getDrugPurchaseOrderById(tenantId, id);
+}
+
+export async function setDrugPurchaseOrderStatus(
+  tenantId: string,
+  roles: string[],
+  id: string,
+  status: string,
+) {
+  assertPharmacyAdmin(roles, 'update purchase orders');
+  const po = await prisma.drugPurchaseOrder.findFirst({ where: { id, tenantId } });
+  if (!po) throw AppError.notFound('Purchase order not found');
+  if (!DRUG_PO_TRANSITIONS[po.status]?.includes(status)) {
+    throw AppError.badRequest(`Cannot move a ${po.status} purchase order to ${status}.`);
+  }
+  if (status === 'sent' && !po.supplierId) {
+    throw AppError.badRequest('Assign a supplier before sending this purchase order.');
+  }
+  await prisma.drugPurchaseOrder.update({ where: { id }, data: { status: status as never } });
+  return getDrugPurchaseOrderById(tenantId, id);
+}
+
+export async function deleteDrugPurchaseOrder(tenantId: string, roles: string[], id: string) {
+  assertPharmacyAdmin(roles, 'delete purchase orders');
+  const po = await prisma.drugPurchaseOrder.findFirst({ where: { id, tenantId } });
+  if (!po) throw AppError.notFound('Purchase order not found');
+  if (po.status !== 'draft') throw AppError.badRequest('Only a draft purchase order can be deleted.');
+  await prisma.drugPurchaseOrder.delete({ where: { id } });
+  logger.info({ tenantId, id }, 'Drug purchase order deleted');
+}
+
 // Indian controlled / habit-forming schedules a drug inspector audits.
 const CONTROLLED_SCHEDULES = ['X', 'H1', 'H'];
 

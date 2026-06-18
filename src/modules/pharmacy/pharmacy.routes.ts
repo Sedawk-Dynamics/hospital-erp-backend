@@ -55,6 +55,10 @@ import {
   vendorWiseQuerySchema,
   creditNotesQuerySchema,
   narcoticRegisterQuerySchema,
+  getDrugPurchaseOrdersQuerySchema,
+  drugPurchaseOrderIdParamSchema,
+  updateDrugPurchaseOrderSchema,
+  setDrugPurchaseOrderStatusSchema,
   wardStockTransferSchema,
   wardStockDispenseSchema,
   wardStockQuerySchema,
@@ -180,6 +184,15 @@ pharmacyRoutes.get('/reports/credit-notes', authenticate, requirePermission('pha
 pharmacyRoutes.get('/reports/narcotic-register', authenticate, requirePermission('pharmacy', 'read'), validate(narcoticRegisterQuerySchema), controller.getNarcoticRegister);
 // G9: reorder list — drugs at/below their reorder level (draft purchase order).
 pharmacyRoutes.get('/reports/reorder', authenticate, requirePermission('pharmacy', 'read'), controller.getReorderList);
+
+// --- G9: draft purchase orders for drugs (generate from reorder → review → send) ---
+// "generate" + "/:id" — declare the static path first so it isn't read as an :id.
+pharmacyRoutes.post('/purchase-orders/generate', authenticate, requirePermission('pharmacy', 'create'), controller.generatePurchaseOrders);
+pharmacyRoutes.get('/purchase-orders', authenticate, requirePermission('pharmacy', 'read'), validate(getDrugPurchaseOrdersQuerySchema), controller.getDrugPurchaseOrders);
+pharmacyRoutes.get('/purchase-orders/:id', authenticate, requirePermission('pharmacy', 'read'), validate(drugPurchaseOrderIdParamSchema), controller.getDrugPurchaseOrderById);
+pharmacyRoutes.put('/purchase-orders/:id', authenticate, requirePermission('pharmacy', 'update'), validate(updateDrugPurchaseOrderSchema), controller.updateDrugPurchaseOrder);
+pharmacyRoutes.patch('/purchase-orders/:id/status', authenticate, requirePermission('pharmacy', 'update'), validate(setDrugPurchaseOrderStatusSchema), controller.setDrugPurchaseOrderStatus);
+pharmacyRoutes.delete('/purchase-orders/:id', authenticate, requirePermission('pharmacy', 'delete'), validate(drugPurchaseOrderIdParamSchema), controller.deleteDrugPurchaseOrder);
 
 // --- Maintenance: auto-flag expired batches (idempotent) ---
 pharmacyRoutes.post('/maintenance/flag-expired', authenticate, requirePermission('pharmacy', 'approve'), controller.flagExpiredBatches);

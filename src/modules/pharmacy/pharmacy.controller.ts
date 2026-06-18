@@ -341,6 +341,110 @@ export async function getReorderList(
   }
 }
 
+// ── G9: draft purchase orders for drugs ──
+export async function generatePurchaseOrders(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await pharmacyService.generateReorderDraftPOs(
+      req.user!.tenantId,
+      req.user!.userId,
+      req.user!.roles ?? [],
+    );
+    sendResponse({
+      res,
+      statusCode: 201,
+      message: data.created
+        ? `Generated ${data.created} draft purchase order(s)`
+        : 'No new drugs to order',
+      data,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getDrugPurchaseOrders(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await pharmacyService.getDrugPurchaseOrders(req.user!.tenantId, req.query as any);
+    sendResponse({ res, message: 'Purchase orders retrieved', data: data.orders });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getDrugPurchaseOrderById(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await pharmacyService.getDrugPurchaseOrderById(req.user!.tenantId, req.params.id as string);
+    sendResponse({ res, message: 'Purchase order retrieved', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function updateDrugPurchaseOrder(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await pharmacyService.updateDrugPurchaseOrder(
+      req.user!.tenantId,
+      req.user!.roles ?? [],
+      req.params.id as string,
+      req.body,
+    );
+    sendResponse({ res, message: 'Purchase order updated', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function setDrugPurchaseOrderStatus(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await pharmacyService.setDrugPurchaseOrderStatus(
+      req.user!.tenantId,
+      req.user!.roles ?? [],
+      req.params.id as string,
+      req.body.status,
+    );
+    sendResponse({ res, message: 'Purchase order updated', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function deleteDrugPurchaseOrder(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    await pharmacyService.deleteDrugPurchaseOrder(
+      req.user!.tenantId,
+      req.user!.roles ?? [],
+      req.params.id as string,
+    );
+    sendResponse({ res, message: 'Purchase order deleted' });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // G17: narcotic / controlled-drug register for a Drug Inspector audit.
 export async function getNarcoticRegister(
   req: AuthenticatedRequest,
