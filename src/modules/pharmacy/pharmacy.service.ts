@@ -2295,6 +2295,7 @@ export async function createPharmacySale(
       net: number;
       taxPct: number;
       taxAmt: number;
+      nonReturnable: boolean;
     }>;
 
     for (const item of data.items) {
@@ -2359,6 +2360,7 @@ export async function createPharmacySale(
         net,
         taxPct,
         taxAmt,
+        nonReturnable: item.nonReturnable ?? false,
       });
     }
 
@@ -2476,6 +2478,7 @@ export async function createPharmacySale(
           discountPercent: l.discPct,
           taxPercent: l.taxPct,
           lineTotal: l.net,
+          nonReturnable: l.nonReturnable,
           billId: bill.id,
         },
       });
@@ -2938,6 +2941,10 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
       where: { id: data.dispensingRecordId, tenantId },
     });
     if (!record) throw AppError.notFound('Original dispensing record not found');
+    // §4.4: an item marked non-returnable on the bill can never be taken back.
+    if (record.nonReturnable) {
+      throw AppError.badRequest('This item was marked non-returnable on the bill and cannot be returned.');
+    }
 
     dispensingRecordId = record.id;
     batchId = record.drugBatchId;
@@ -4351,6 +4358,9 @@ export async function getReturnableDispenses(
         unitPrice: r.unitPrice != null ? Number(r.unitPrice) : null,
         quantityDispensed: r.quantityDispensed,
         remaining,
+        // §4.4: surfaced so the picker shows non-returnable lines as such
+        // (the createReturn guard also blocks them server-side).
+        nonReturnable: r.nonReturnable,
         dispensedAt: r.dispensedAt,
       };
     })

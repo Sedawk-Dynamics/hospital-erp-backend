@@ -414,6 +414,8 @@ export const createPharmacySaleSchema = z.object({
           discountPercent: z.number().min(0).max(100).optional(),
           // Optional per-base-unit price override (e.g. negotiated price).
           unitPrice: z.number().nonnegative().optional(),
+          // §4.4: mark this line non-returnable on the bill (no patient return).
+          nonReturnable: z.boolean().optional(),
         }),
       )
       .min(1, 'At least one item is required'),

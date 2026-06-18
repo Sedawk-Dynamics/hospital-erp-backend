@@ -4044,6 +4044,9 @@ model DispensingRecord {
   discountPercent    Decimal? @default(0) @map("discount_percent") @db.Decimal(5, 2)
   taxPercent         Decimal? @default(0) @map("tax_percent") @db.Decimal(5, 2)
   lineTotal          Decimal? @map("line_total") @db.Decimal(12, 2)
+  // §4.4: a line marked non-returnable on the bill at sale time (e.g. opened
+  // vial, cold-chain item) can never be taken back as a patient return.
+  nonReturnable      Boolean  @default(false) @map("non_returnable")
   // Invoice this line was billed on (the pharmacy Bill). Plain column — the
   // canonical link is BillItem.referenceId; this is a convenience back-pointer.
   billId             String?  @map("bill_id")

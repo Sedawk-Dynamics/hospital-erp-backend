@@ -236,6 +236,19 @@ describe('Pharmacy — flow coverage (sale / returns / merge / reports)', () => 
     });
   });
 
+  // ── §4.4: a line marked non-returnable on the bill blocks a patient return ──
+  describe('createReturn — non-returnable guard', () => {
+    it('refuses to return a dispensing line flagged non-returnable', async () => {
+      (prisma.dispensingRecord.findFirst as any).mockResolvedValue({
+        id: 'dr-nr', tenantId: TENANT_ID, drugBatchId: 'b1', patientId: 'p1',
+        billId: 'bill-1', saleUnit: 'pack', quantityDispensed: 10, nonReturnable: true,
+      });
+      await expect(createReturn(TENANT_ID, USER_ID, ADMIN_ROLES, {
+        returnType: 'patient_return', dispensingRecordId: 'dr-nr', quantity: 5,
+      } as any)).rejects.toThrow(/non-returnable/i);
+    });
+  });
+
   // ── Patient return: staff-entered "money given" overrides billed price ──
   describe('createReturn — refund amount override (money given)', () => {
     it('uses the entered refund amount instead of the billed price', async () => {
