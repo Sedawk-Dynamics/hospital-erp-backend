@@ -61,6 +61,8 @@ import {
   setDrugPurchaseOrderStatusSchema,
   wardStockTransferSchema,
   wardStockDispenseSchema,
+  wardStockReturnSchema,
+  wardStockAdjustSchema,
   wardStockQuerySchema,
   wardLedgerQuerySchema,
   creditStatusQuerySchema,
@@ -139,6 +141,9 @@ pharmacyRoutes.get('/ward-stock', authenticate, requirePermission('pharmacy', 'r
 pharmacyRoutes.get('/ward-stock/ledger', authenticate, requirePermission('pharmacy', 'read'), validate(wardLedgerQuerySchema), controller.getWardLedger);
 pharmacyRoutes.post('/ward-stock/transfer', authenticate, requirePermission('pharmacy', 'create'), validate(wardStockTransferSchema), controller.transferToWard);
 pharmacyRoutes.post('/ward-stock/dispense', authenticate, requirePermission('pharmacy', 'create'), validate(wardStockDispenseSchema), controller.dispenseFromWard);
+// G13: reverse flows — return excess/near-expiry ward stock to central; correct count.
+pharmacyRoutes.post('/ward-stock/return', authenticate, requirePermission('pharmacy', 'create'), validate(wardStockReturnSchema), controller.returnWardStock);
+pharmacyRoutes.post('/ward-stock/adjust', authenticate, requirePermission('pharmacy', 'update'), validate(wardStockAdjustSchema), controller.adjustWardStock);
 // IP credit & clearance check — patient's live deposit-vs-bill picture.
 pharmacyRoutes.get('/credit-status', authenticate, requirePermission('pharmacy', 'read'), validate(creditStatusQuerySchema), controller.getCreditStatus);
 // §4.1 Flow 2: consolidated IP billing / TPA-submission summary for a patient.

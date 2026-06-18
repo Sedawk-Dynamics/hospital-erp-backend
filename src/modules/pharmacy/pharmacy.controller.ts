@@ -341,6 +341,44 @@ export async function getWardLedger(
   }
 }
 
+// G13: return excess / near-expiry ward stock to the central pharmacy.
+export async function returnWardStock(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await pharmacyService.returnWardStock(
+      req.user!.tenantId,
+      req.user!.userId,
+      req.user!.roles ?? [],
+      req.body,
+    );
+    sendResponse({ res, statusCode: 201, message: 'Ward stock returned to central', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// G13: correct a ward's on-hand count (breakage / miscount).
+export async function adjustWardStock(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await pharmacyService.adjustWardStock(
+      req.user!.tenantId,
+      req.user!.userId,
+      req.user!.roles ?? [],
+      req.body,
+    );
+    sendResponse({ res, message: 'Ward stock adjusted', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // G9: reorder list — formulary drugs at/below their reorder level (draft PO).
 export async function getReorderList(
   req: AuthenticatedRequest,

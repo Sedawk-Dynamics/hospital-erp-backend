@@ -727,6 +727,26 @@ export const wardStockDispenseSchema = z.object({
   }),
 });
 
+// G13: return excess / near-expiry ward stock back to the central pharmacy.
+export const wardStockReturnSchema = z.object({
+  body: z.object({
+    wardId: z.string().uuid('Invalid ward ID'),
+    drugBatchId: z.string().uuid('Invalid drug batch ID'),
+    quantity: z.number().int().positive('Quantity must be positive'),
+    reason: z.string().max(500).optional(),
+  }),
+});
+
+// G13: correct a ward's on-hand count (breakage / miscount) to a verified value.
+export const wardStockAdjustSchema = z.object({
+  body: z.object({
+    wardId: z.string().uuid('Invalid ward ID'),
+    drugBatchId: z.string().uuid('Invalid drug batch ID'),
+    newQuantity: z.number().int().nonnegative('Corrected quantity cannot be negative'),
+    reason: z.string().min(1, 'A reason is required').max(500),
+  }),
+});
+
 // IP credit & clearance check — live deposit-vs-bill picture for a patient.
 export const creditStatusQuerySchema = z.object({
   query: z.object({ patientId: z.string().uuid('A patient ID is required') }),

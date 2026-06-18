@@ -3487,6 +3487,100 @@ export async function dispenseFromWard(
   return result;
 }
 
+/**
+ * G13: return ward stock to the central pharmacy (the reverse of transferToWard).
+ * Used when a ward has excess or near-expiry medicine — it goes back to central
+ * (restoring the batch's stock so it can be re-issued or returned to the vendor)
+ * and the movement is logged as 'returned' in the ward ledger.
+ */
+export async function returnWardStock(
+  tenantId: string,
+  userId: string,
+  roles: string[],
+  data: { wardId: string; drugBatchId: string; quantity: number; reason?: string },
+) {
+  assertPharmacyAdmin(roles, 'return ward stock');
+  if (data.quantity <= 0) throw AppError.badRequest('Quantity must be positive');
+
+  const ward = await prisma.ward.findFirst({ where: { id: data.wardId, tenantId }, select: { id: true } });
+  if (!ward) throw AppError.notFound('Ward not found');
+
+  const result = await prisma.$transaction(async (tx) => {
+    const ws = await tx.wardStock.findFirst({
+      where: { tenantId, wardId: data.wardId, drugBatchId: data.drugBatchId },
+    });
+    if (!ws || ws.quantityInStock < data.quantity) {
+      throw AppError.badRequest(`Insufficient ward stock (have ${ws?.quantityInStock ?? 0}, need ${data.quantity})`);
+    }
+
+    await tx.wardStock.update({ where: { id: ws.id }, data: { quantityInStock: { decrement: data.quantity } } });
+    // Restore central stock for the batch.
+    await tx.drugBatch.update({ where: { id: data.drugBatchId }, data: { quantityInStock: { increment: data.quantity } } });
+
+    await tx.wardStockLedger.create({
+      data: {
+        tenantId,
+        wardId: data.wardId,
+        drugId: ws.drugId,
+        drugBatchId: data.drugBatchId,
+        movementType: 'returned',
+        quantity: data.quantity,
+        performedBy: userId,
+        reason: data.reason ?? null,
+      },
+    });
+
+    return { wardStockId: ws.id, returned: data.quantity };
+  });
+
+  logger.info({ tenantId, ...data }, 'Ward stock returned to central');
+  return result;
+}
+
+/**
+ * G13: correct a ward's on-hand count (breakage, spillage, miscount) to a
+ * physically-verified quantity. Central stock is NOT touched — this only fixes
+ * the ward figure — and the signed delta is logged as 'adjusted' with the reason.
+ */
+export async function adjustWardStock(
+  tenantId: string,
+  userId: string,
+  roles: string[],
+  data: { wardId: string; drugBatchId: string; newQuantity: number; reason: string },
+) {
+  assertPharmacyAdmin(roles, 'adjust ward stock');
+  if (data.newQuantity < 0) throw AppError.badRequest('Corrected quantity cannot be negative');
+
+  const result = await prisma.$transaction(async (tx) => {
+    const ws = await tx.wardStock.findFirst({
+      where: { tenantId, wardId: data.wardId, drugBatchId: data.drugBatchId },
+    });
+    if (!ws) throw AppError.notFound('Ward stock not found');
+
+    const from = ws.quantityInStock;
+    const delta = data.newQuantity - from;
+    await tx.wardStock.update({ where: { id: ws.id }, data: { quantityInStock: data.newQuantity } });
+
+    await tx.wardStockLedger.create({
+      data: {
+        tenantId,
+        wardId: data.wardId,
+        drugId: ws.drugId,
+        drugBatchId: data.drugBatchId,
+        movementType: 'adjusted',
+        quantity: Math.abs(delta),
+        performedBy: userId,
+        reason: `${data.reason} (${from} → ${data.newQuantity})`,
+      },
+    });
+
+    return { wardStockId: ws.id, from, to: data.newQuantity, delta };
+  });
+
+  logger.info({ tenantId, ...data, delta: result.delta }, 'Ward stock adjusted');
+  return result;
+}
+
 // ============================================================
 // G15 — Mandatory pharmacy reports
 // ============================================================
