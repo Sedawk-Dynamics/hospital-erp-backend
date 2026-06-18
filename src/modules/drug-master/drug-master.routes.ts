@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { authenticate } from '../../middleware/authenticate';
-import { requireRoles } from '../../middleware/authorize';
+import { requireRoles, requirePermission } from '../../middleware/authorize';
 import { validate } from '../../middleware/validate';
 import * as controller from './drug-master.controller';
 
@@ -14,6 +14,7 @@ import {
   drugMasterIdParamSchema,
   createDrugMasterSchema,
   updateDrugMasterSchema,
+  suggestDrugMasterSchema,
 } from './drug-master.validation';
 
 export const drugMasterRoutes = Router();
@@ -72,6 +73,15 @@ drugMasterRoutes.post(
   requireRoles('super_admin'),
   validate(createDrugMasterSchema),
   controller.createDrugMaster,
+);
+// G11: a pharmacy user suggests an unlisted brand — created unpublished, then a
+// platform admin reviews/publishes it. Declared before '/:id' routes.
+drugMasterRoutes.post(
+  '/suggest',
+  authenticate,
+  requirePermission('pharmacy', 'create'),
+  validate(suggestDrugMasterSchema),
+  controller.suggestDrugMaster,
 );
 drugMasterRoutes.put(
   '/:id',

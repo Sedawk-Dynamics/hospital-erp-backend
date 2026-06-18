@@ -65,7 +65,23 @@ export const updateDrugMasterSchema = z.object({
   params: z.object({ id: z.string().uuid('Invalid drug ID') }),
 });
 
+// G11: a pharmacist's suggestion of an unlisted brand — the identity fields only;
+// pricing / publish state are decided by the reviewing platform admin.
+export const suggestDrugMasterSchema = z.object({
+  body: z.object({
+    name: z.string().min(1, 'Drug name is required').max(255),
+    genericName: z.string().max(500).optional().nullable(),
+    manufacturer: z.string().max(255).optional().nullable(),
+    type: z.string().max(50).optional().nullable(),
+    dosageForm: dosageFormEnum.optional().nullable(),
+    strength: z.string().max(100).optional().nullable(),
+    packSizeLabel: z.string().max(255).optional().nullable(),
+    schedule: z.string().max(10).optional().nullable(),
+  }),
+});
+
 export type SearchDrugMasterQuery = z.infer<typeof searchDrugMasterSchema>['query'];
 export type ListDrugMasterQuery = z.infer<typeof listDrugMasterSchema>['query'];
 export type CreateDrugMasterInput = z.infer<typeof createDrugMasterSchema>['body'];
 export type UpdateDrugMasterInput = z.infer<typeof updateDrugMasterSchema>['body'];
+export type SuggestDrugMasterInput = z.infer<typeof suggestDrugMasterSchema>['body'];

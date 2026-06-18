@@ -62,6 +62,25 @@ export async function createDrugMaster(
   }
 }
 
+// G11: a pharmacist suggests an unlisted brand — lands unpublished for review.
+export async function suggestDrugMaster(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const drug = await service.suggestDrugMaster(req.user!.userId, req.body);
+    sendResponse({
+      res,
+      statusCode: 201,
+      message: 'Suggestion submitted to the national master for review',
+      data: drug,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function updateDrugMaster(
   req: AuthenticatedRequest,
   res: Response,

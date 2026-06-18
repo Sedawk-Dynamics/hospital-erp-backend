@@ -9,6 +9,7 @@ import type {
   ListDrugMasterQuery,
   CreateDrugMasterInput,
   UpdateDrugMasterInput,
+  SuggestDrugMasterInput,
 } from './drug-master.validation';
 
 // Only super_admin authors / edits the platform-wide drug catalog. Hospitals
@@ -128,6 +129,40 @@ export async function createDrugMaster(
   });
 
   logger.info({ drugMasterId: drug.id }, 'Drug master entry created');
+  return drug;
+}
+
+/**
+ * G11: a hospital pharmacist suggests a brand that isn't in the national master
+ * yet. Unlike createDrugMaster (super-admin only), this is open to any pharmacy
+ * user but always lands UNPUBLISHED — it's a pending suggestion that a platform
+ * admin reviews and publishes (via updateDrugMaster) before it becomes a live
+ * catalogue entry. createdById records the suggesting user for traceability.
+ */
+export async function suggestDrugMaster(userId: string, data: SuggestDrugMasterInput) {
+  const drug = await prisma.drugMaster.create({
+    data: {
+      name: data.name,
+      genericName: data.genericName ?? null,
+      manufacturer: data.manufacturer ?? null,
+      type: data.type ?? null,
+      dosageForm: (data.dosageForm ?? null) as any,
+      strength: data.strength ?? null,
+      packSizeLabel: data.packSizeLabel ?? null,
+      schedule: data.schedule ?? null,
+      searchTokens: buildDrugSearchTokens({
+        name: data.name,
+        genericName: data.genericName,
+        manufacturer: data.manufacturer,
+        aliases: [],
+        tags: [],
+      }),
+      // Always pending review — never auto-published from a tenant suggestion.
+      isPublished: false,
+      createdById: userId,
+    },
+  });
+  logger.info({ drugMasterId: drug.id, userId }, 'Drug master suggestion submitted');
   return drug;
 }
 
