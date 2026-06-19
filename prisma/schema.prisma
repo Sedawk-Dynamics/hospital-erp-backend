@@ -1266,6 +1266,7 @@ model Tenant {
   ndpsDailyBalances          NdpsDailyBalance[]
   surgicalKitTemplates       SurgicalKitTemplate[]
   otKitIssues                OtKitIssue[]
+  pharmacyStockHolds         PharmacyStockHold[]
   suppliers                  Supplier[]
   inventoryItems             InventoryItem[]
   stockTransactions          StockTransaction[]
@@ -1941,6 +1942,7 @@ model Patient {
   dispensingRecords         DispensingRecord[]
   drugReturns               DrugReturn[]
   otKitIssues               OtKitIssue[]
+  pharmacyStockHolds        PharmacyStockHold[]
   bills                     Bill[]
   payments                  Payment[]
   refunds                   Refund[]
@@ -4158,6 +4160,52 @@ model OtKitIssueItem {
   @@map("ot_kit_issue_items")
 }
 
+// ============================================================
+// OP pre-packing — "Stock Hold" / "Pre-Packed" (spec OP Step 1)
+// ============================================================
+// The pharmacy pre-packs a digital prescription before the patient arrives: the
+// stock is deducted from the Available-to-Sell pool (reserved against the chosen
+// batch) but NOT billed. On collection it is converted to a paid sale; if the
+// patient never shows, the hold is released and the stock returns to the pool.
+model PharmacyStockHold {
+  id             String    @id @default(uuid())
+  tenantId       String    @map("tenant_id")
+  patientId      String?   @map("patient_id")
+  prescriptionId String?   @map("prescription_id")
+  status         String    @default("held") // 'held' | 'collected' | 'released'
+  createdById    String    @map("created_by_id")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  collectedAt    DateTime? @map("collected_at")
+  releasedAt     DateTime? @map("released_at")
+  billId         String?   @map("bill_id")
+  notes          String?
+
+  tenant  Tenant                  @relation(fields: [tenantId], references: [id])
+  patient Patient?                @relation(fields: [patientId], references: [id])
+  items   PharmacyStockHoldItem[]
+
+  @@index([tenantId, status])
+  @@map("pharmacy_stock_holds")
+}
+
+model PharmacyStockHoldItem {
+  id              String   @id @default(uuid())
+  holdId          String   @map("hold_id")
+  drugFormularyId String   @map("drug_formulary_id")
+  drugBatchId     String   @map("drug_batch_id")
+  quantity        Int // base units held
+  saleUnit        String   @default("pack") @map("sale_unit") @db.VarChar(10)
+  unitPrice       Decimal? @map("unit_price") @db.Decimal(12, 2)
+  discountPercent Decimal? @default(0) @map("discount_percent") @db.Decimal(5, 2)
+  taxPercent      Decimal? @default(0) @map("tax_percent") @db.Decimal(5, 2)
+
+  hold      PharmacyStockHold @relation(fields: [holdId], references: [id], onDelete: Cascade)
+  drug      DrugFormulary     @relation(fields: [drugFormularyId], references: [id])
+  drugBatch DrugBatch         @relation(fields: [drugBatchId], references: [id])
+
+  @@map("pharmacy_stock_hold_items")
+}
+
 model DrugCategory {
   id          String   @id @default(uuid())
   tenantId    String   @map("tenant_id")
@@ -4237,6 +4285,7 @@ model DrugFormulary {
   ndpsDailyBalances   NdpsDailyBalance[]
   kitTemplateItems    SurgicalKitTemplateItem[]
   otKitIssueItems     OtKitIssueItem[]
+  stockHoldItems      PharmacyStockHoldItem[]
 
   @@map("drug_formulary")
 }
@@ -4287,6 +4336,7 @@ model DrugBatch {
   drugReturns       DrugReturn[]
   stockTransfers    StockTransfer[]
   otKitIssueItems   OtKitIssueItem[]
+  stockHoldItems    PharmacyStockHoldItem[]
 
   @@index([tenantId, barcode])
   @@map("drug_batches")

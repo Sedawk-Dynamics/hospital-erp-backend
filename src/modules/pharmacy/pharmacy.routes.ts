@@ -16,6 +16,9 @@ import {
   distributorMappingsQuerySchema,
   scanQuerySchema,
   complianceCheckSchema,
+  prePackHoldSchema,
+  collectHoldSchema,
+  holdsQuerySchema,
   getFormularyQuerySchema,
   formularyIdParamSchema,
   updateFormularySchema,
@@ -119,6 +122,12 @@ pharmacyRoutes.post('/stock-take/reconcile', authenticate, requirePermission('ph
 // step 2 commits the reviewed map-or-create decisions and posts the stock.
 pharmacyRoutes.post('/inward/match', authenticate, requirePermission('pharmacy', 'read'), validate(matchInwardSchema), controller.matchInward);
 pharmacyRoutes.post('/inward/commit', authenticate, requirePermission('pharmacy', 'create'), validate(commitInwardSchema), controller.commitInward);
+
+// --- OP pre-packing: Stock Hold / Pre-Packed (spec OP Step 1) ---
+pharmacyRoutes.get('/holds', authenticate, requirePermission('pharmacy', 'read'), validate(holdsQuerySchema), controller.listStockHolds);
+pharmacyRoutes.post('/holds', authenticate, requirePermission('pharmacy', 'create'), validate(prePackHoldSchema), controller.prePackHold);
+pharmacyRoutes.patch('/holds/:id/collect', authenticate, requirePermission('pharmacy', 'create'), validate(collectHoldSchema), controller.collectHold);
+pharmacyRoutes.patch('/holds/:id/release', authenticate, requirePermission('pharmacy', 'update'), controller.releaseHold);
 
 // --- Barcode-driven dispensing + automated compliance (spec Section 2) ---
 pharmacyRoutes.get('/scan', authenticate, requirePermission('pharmacy', 'read'), validate(scanQuerySchema), controller.resolveScan);

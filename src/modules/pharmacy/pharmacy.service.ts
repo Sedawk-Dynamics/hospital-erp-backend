@@ -3697,6 +3697,169 @@ export async function getIpBillingSummary(tenantId: string, patientId: string) {
   };
 }
 
+// ============================================================
+// OP pre-packing — "Stock Hold" / "Pre-Packed" (spec OP Step 1)
+// ============================================================
+
+/**
+ * Pre-pack a prescription before the patient arrives: reserve each line from its
+ * chosen batch (deducting it from the Available-to-Sell pool) WITHOUT billing.
+ * Quantities are in BASE (loose) units. The hold sits until it is collected
+ * (converted to a paid sale) or released (returned to the pool).
+ */
+export async function prePackHold(
+  tenantId: string,
+  userId: string,
+  data: {
+    patientId?: string;
+    prescriptionId?: string;
+    notes?: string;
+    items: Array<{ drugBatchId: string; quantity: number }>;
+  },
+) {
+  if (!data.items?.length) throw AppError.badRequest('Add at least one item to pre-pack');
+  if (data.patientId) {
+    const p = await prisma.patient.findFirst({ where: { id: data.patientId, tenantId }, select: { id: true } });
+    if (!p) throw AppError.notFound('Patient not found');
+  }
+
+  return prisma.$transaction(async (tx) => {
+    const holdItems: any[] = [];
+    for (const item of data.items) {
+      if (item.quantity <= 0) throw AppError.badRequest('Quantity must be positive');
+      const batch = await tx.drugBatch.findFirst({
+        where: { id: item.drugBatchId, tenantId },
+        include: { drug: { select: { drugName: true, price: true, taxPercent: true } } },
+      });
+      if (!batch) throw AppError.notFound(`Drug batch ${item.drugBatchId} not found`);
+      if (isBatchExpired(batch)) throw AppError.badRequest('Cannot pre-pack from an expired batch');
+      if (batch.isRecalled) throw AppError.badRequest('Cannot pre-pack from a recalled batch');
+      if (batch.quantityInStock < item.quantity) {
+        throw AppError.badRequest(`Insufficient stock for ${batch.drug?.drugName ?? 'drug'} (have ${batch.quantityInStock}, need ${item.quantity})`);
+      }
+      await tx.drugBatch.update({ where: { id: batch.id }, data: { quantityInStock: { decrement: item.quantity } } });
+      holdItems.push({
+        drugFormularyId: batch.drugId,
+        drugBatchId: batch.id,
+        quantity: item.quantity,
+        saleUnit: 'loose',
+        unitPrice: pickDispenseUnitPrice(batch as any),
+        taxPercent: batch.drug?.taxPercent != null ? Number(batch.drug.taxPercent) : 0,
+      });
+    }
+    const hold = await tx.pharmacyStockHold.create({
+      data: {
+        tenantId,
+        patientId: data.patientId ?? null,
+        prescriptionId: data.prescriptionId ?? null,
+        status: 'held',
+        createdById: userId,
+        notes: data.notes ?? null,
+        items: { create: holdItems },
+      },
+      include: { items: { include: { drug: { select: { drugName: true, strength: true } }, drugBatch: { select: { batchNumber: true } } } } },
+    });
+    logger.info({ tenantId, holdId: hold.id, items: holdItems.length }, 'Pharmacy stock pre-packed (held)');
+    return hold;
+  });
+}
+
+/**
+ * Collect a pre-packed hold when the patient arrives: convert it into a paid
+ * sale. The held stock is restored and then billed through the normal sale path
+ * (one invoice, dispensing records, payment) so the receipt/GST/returns all work
+ * identically. On any sale failure the stock is re-held so the invariant holds.
+ */
+export async function collectHold(
+  tenantId: string,
+  userId: string,
+  holdId: string,
+  extras: { payments?: any[]; billDiscountPercent?: number; billDiscountAmount?: number } = {},
+) {
+  const hold = await prisma.pharmacyStockHold.findFirst({ where: { id: holdId, tenantId }, include: { items: true } });
+  if (!hold) throw AppError.notFound('Stock hold not found');
+  if (hold.status !== 'held') throw AppError.badRequest(`This hold is already ${hold.status}.`);
+
+  // Restore the reserved stock so the normal sale can deduct + bill it.
+  await prisma.$transaction(async (tx) => {
+    for (const it of hold.items) {
+      await tx.drugBatch.update({ where: { id: it.drugBatchId }, data: { quantityInStock: { increment: it.quantity } } });
+    }
+  });
+
+  try {
+    const sale = await createPharmacySale(tenantId, userId, {
+      patientId: hold.patientId ?? undefined,
+      prescriptionId: hold.prescriptionId ?? undefined,
+      items: hold.items.map((i) => ({ drugBatchId: i.drugBatchId, quantity: i.quantity, saleUnit: 'loose' as const })),
+      payments: extras.payments,
+      billDiscountPercent: extras.billDiscountPercent,
+      billDiscountAmount: extras.billDiscountAmount,
+    } as CreatePharmacySaleInput);
+    const updated = await prisma.pharmacyStockHold.update({
+      where: { id: holdId },
+      data: { status: 'collected', collectedAt: new Date(), billId: sale.bill.id },
+    });
+    return { hold: updated, sale };
+  } catch (err) {
+    // Sale failed — re-hold the stock so the reservation invariant is preserved.
+    await prisma.$transaction(async (tx) => {
+      for (const it of hold.items) {
+        await tx.drugBatch.update({ where: { id: it.drugBatchId }, data: { quantityInStock: { decrement: it.quantity } } });
+      }
+    });
+    throw err;
+  }
+}
+
+/** Release a hold the patient never collected — return all reserved stock. */
+export async function releaseHold(tenantId: string, userId: string, holdId: string) {
+  const hold = await prisma.pharmacyStockHold.findFirst({ where: { id: holdId, tenantId }, include: { items: true } });
+  if (!hold) throw AppError.notFound('Stock hold not found');
+  if (hold.status !== 'held') throw AppError.badRequest(`This hold is already ${hold.status}.`);
+  return prisma.$transaction(async (tx) => {
+    for (const it of hold.items) {
+      await tx.drugBatch.update({ where: { id: it.drugBatchId }, data: { quantityInStock: { increment: it.quantity } } });
+    }
+    return tx.pharmacyStockHold.update({ where: { id: holdId }, data: { status: 'released', releasedAt: new Date() } });
+  });
+}
+
+export async function listStockHolds(tenantId: string, query: { status?: string; patientId?: string } = {}) {
+  const where: any = { tenantId };
+  if (query.status) where.status = query.status;
+  if (query.patientId) where.patientId = query.patientId;
+  const rows = await prisma.pharmacyStockHold.findMany({
+    where,
+    orderBy: { createdAt: 'desc' },
+    take: 1000,
+    include: {
+      patient: { select: { mrn: true, firstName: true, lastName: true } },
+      items: { include: { drug: { select: { drugName: true, strength: true } }, drugBatch: { select: { batchNumber: true } } } },
+    },
+  });
+  return {
+    items: rows.map((r) => ({
+      id: r.id,
+      status: r.status,
+      createdAt: r.createdAt,
+      collectedAt: r.collectedAt,
+      patient: r.patient ? { mrn: r.patient.mrn, name: `${r.patient.firstName} ${r.patient.lastName ?? ''}`.trim() } : null,
+      notes: r.notes,
+      items: r.items.map((i) => ({
+        id: i.id,
+        drugName: i.drug?.drugName ?? '-',
+        strength: i.drug?.strength ?? null,
+        batchNumber: i.drugBatch?.batchNumber ?? null,
+        quantity: i.quantity,
+        unitPrice: i.unitPrice != null ? Number(i.unitPrice) : null,
+      })),
+      total: round2(r.items.reduce((s, i) => s + Number(i.unitPrice ?? 0) * i.quantity, 0)),
+    })),
+    total: rows.length,
+  };
+}
+
 /**
  * G13: a ward dispenses a drug from its own stock to a patient. Decrements ward
  * stock, logs the ward ledger, and posts the charge to the patient's open IP

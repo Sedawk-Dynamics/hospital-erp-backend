@@ -163,6 +163,35 @@ export async function matchInward(
   }
 }
 
+// OP pre-packing — Stock Hold (spec OP Step 1).
+export async function prePackHold(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await pharmacyService.prePackHold(req.user!.tenantId, req.user!.userId, req.body);
+    sendResponse({ res, statusCode: 201, message: 'Stock pre-packed (held)', data });
+  } catch (err) { next(err); }
+}
+
+export async function collectHold(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await pharmacyService.collectHold(req.user!.tenantId, req.user!.userId, req.params.id as string, req.body);
+    sendResponse({ res, message: 'Hold collected (billed)', data });
+  } catch (err) { next(err); }
+}
+
+export async function releaseHold(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await pharmacyService.releaseHold(req.user!.tenantId, req.user!.userId, req.params.id as string);
+    sendResponse({ res, message: 'Hold released (stock returned)', data });
+  } catch (err) { next(err); }
+}
+
+export async function listStockHolds(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await pharmacyService.listStockHolds(req.user!.tenantId, req.query as any);
+    sendResponse({ res, message: 'Stock holds', data });
+  } catch (err) { next(err); }
+}
+
 // Barcode scan resolve (spec Section 2): one scan → product + batch + expiry + stock.
 export async function resolveScan(
   req: AuthenticatedRequest,

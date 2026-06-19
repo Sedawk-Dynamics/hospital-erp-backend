@@ -217,6 +217,40 @@ export const createBatchSchema = z.object({
   }),
 });
 
+// OP pre-packing — Stock Hold / Pre-Packed (spec OP Step 1).
+export const prePackHoldSchema = z.object({
+  body: z.object({
+    patientId: z.string().uuid('Invalid patient ID').optional(),
+    prescriptionId: z.string().uuid('Invalid prescription ID').optional(),
+    notes: z.string().max(1000).optional(),
+    items: z
+      .array(z.object({ drugBatchId: z.string().uuid('Invalid drug batch ID'), quantity: z.number().int().positive() }))
+      .min(1, 'Add at least one item to pre-pack'),
+  }),
+});
+
+export const collectHoldSchema = z.object({
+  params: z.object({ id: z.string().uuid('Invalid hold id') }),
+  body: z.object({
+    billDiscountPercent: z.number().min(0).max(100).optional(),
+    billDiscountAmount: z.number().nonnegative().optional(),
+    payments: z
+      .array(z.object({
+        method: z.enum(['cash', 'credit_card', 'debit_card', 'upi', 'net_banking', 'insurance', 'advance', 'cheque', 'other']),
+        amount: z.number().nonnegative(),
+        reference: z.string().max(120).optional(),
+      }))
+      .optional(),
+  }),
+});
+
+export const holdsQuerySchema = z.object({
+  query: z.object({
+    status: z.enum(['held', 'collected', 'released']).optional(),
+    patientId: z.string().uuid().optional(),
+  }),
+});
+
 // Barcode scan resolve (POS / dispensing) + automated compliance pre-check.
 export const scanQuerySchema = z.object({
   query: z.object({ code: z.string().min(1, 'A barcode is required').max(256) }),
