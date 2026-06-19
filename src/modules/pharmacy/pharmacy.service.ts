@@ -363,6 +363,12 @@ export async function createFormularyItem(
       looseUnitLabel: data.looseUnitLabel,
       taxPercent: data.taxPercent,
       minStock: (data as any).minStock,
+      // Product Resolution Engine identity (carried from the catalog or typed).
+      gtin: (data as any).gtin ?? undefined,
+      casePackGtin: (data as any).casePackGtin ?? undefined,
+      unitsPerCase: (data as any).unitsPerCase ?? undefined,
+      hsnCode: (data as any).hsnCode ?? undefined,
+      manufacturerCode: (data as any).manufacturerCode ?? undefined,
       indications: data.indications,
       contraindications: data.contraindications,
       isLifeSaving: (data as any).isLifeSaving ?? false,
@@ -462,9 +468,231 @@ export interface InwardLineInput {
   manufacturer?: string | null;
   strength?: string | null;
   dosageForm?: string | null;
+  // Product Resolution Engine inputs: the GTIN scanned/parsed off the invoice and
+  // the supplier the goods came from (drives the learned distributor mapping).
+  gtin?: string | null;
+  supplierId?: string | null;
 }
 
 export type InwardRecommendation = 'map' | 'review' | 'create';
+
+/** How an inward line was resolved to a formulary drug, highest-confidence first. */
+export type ResolveVia = 'gtin' | 'distributor_map' | 'similarity' | 'none';
+
+/**
+ * Product Resolution Engine (design-doc Section 2). Resolve a single incoming
+ * inward line to a formulary drug using the documented confidence hierarchy:
+ *   1. GTIN match (consumer GTIN-13 or outer-case GTIN-14) — highest confidence.
+ *   2. Historical distributor mapping — a previously-confirmed name/GTIN→drug pair
+ *      for this distributor, so repeat imports resolve with zero typing.
+ *   3. Multi-factor similarity — the existing fuzzy engine (name/strength/form/…).
+ *   4. None — nothing close; a new drug is expected (goes to the review queue).
+ * A GTIN-14 case hit also returns caseMultiplier = unitsPerCase so a scanned outer
+ * box can be translated into N consumer units upstream.
+ */
+export async function resolveInwardLine(
+  tenantId: string,
+  line: InwardLineInput,
+) {
+  // Tier 1 — GTIN (consumer unit or outer case).
+  const gtin = line.gtin?.trim();
+  if (gtin) {
+    const byGtin = await prisma.drugFormulary.findFirst({
+      where: { tenantId, isActive: true, OR: [{ gtin }, { casePackGtin: gtin }] },
+      select: {
+        id: true, drugName: true, genericName: true, manufacturer: true,
+        dosageForm: true, strength: true, packSize: true, price: true,
+        gtin: true, casePackGtin: true, unitsPerCase: true,
+      },
+    });
+    if (byGtin) {
+      const isCase = byGtin.casePackGtin === gtin && byGtin.gtin !== gtin;
+      return {
+        resolvedVia: 'gtin' as ResolveVia,
+        recommendation: 'map' as InwardRecommendation,
+        confidence: 100,
+        suggestedFormularyId: byGtin.id,
+        caseMultiplier: isCase ? Math.max(1, byGtin.unitsPerCase ?? 1) : 1,
+        matches: [{ ...byGtin, totalStock: 0, score: 100 }],
+      };
+    }
+  }
+
+  // Tier 2 — learned distributor mapping (by GTIN or normalised name for this supplier).
+  const norm = normalizeDrugName(line.drugName);
+  const mapOr: any[] = [];
+  if (gtin) mapOr.push({ gtin });
+  if (norm) mapOr.push({ externalNameNorm: norm, supplierId: line.supplierId ?? null });
+  if (mapOr.length) {
+    const learned = await prisma.distributorProductMap.findFirst({
+      where: { tenantId, OR: mapOr },
+      orderBy: { timesSeen: 'desc' },
+      include: {
+        drugFormulary: {
+          select: {
+            id: true, drugName: true, genericName: true, manufacturer: true,
+            dosageForm: true, strength: true, packSize: true, price: true, gtin: true,
+          },
+        },
+      },
+    });
+    if (learned?.drugFormulary) {
+      const f = learned.drugFormulary;
+      return {
+        resolvedVia: 'distributor_map' as ResolveVia,
+        recommendation: 'map' as InwardRecommendation,
+        confidence: learned.confidence,
+        suggestedFormularyId: f.id,
+        caseMultiplier: 1,
+        matches: [{ ...f, totalStock: 0, score: learned.confidence }],
+      };
+    }
+  }
+
+  // Tier 3 — multi-factor similarity (existing fuzzy engine).
+  const { matches } = await findFormularyMatches(tenantId, {
+    name: line.drugName,
+    genericName: line.genericName,
+    manufacturer: line.manufacturer,
+    strength: line.strength,
+    dosageForm: line.dosageForm,
+  });
+  const top = matches[0];
+  let recommendation: InwardRecommendation;
+  if (top && top.score >= MATCH_BLOCK_THRESHOLD) recommendation = 'map';
+  else if (top && top.score >= MATCH_SUGGEST_THRESHOLD) recommendation = 'review';
+  else recommendation = 'create';
+  return {
+    resolvedVia: (top ? 'similarity' : 'none') as ResolveVia,
+    recommendation,
+    confidence: top?.score ?? 0,
+    suggestedFormularyId: recommendation === 'create' ? null : top?.id ?? null,
+    caseMultiplier: 1,
+    matches,
+  };
+}
+
+/**
+ * Persist a confirmed distributor-line → formulary-drug mapping so the next
+ * import of the same name/GTIN from the same distributor resolves automatically
+ * (the doc's learning loop). Best-effort: a learning failure must never void a
+ * posted inward, so it is wrapped and swallowed.
+ */
+async function learnDistributorMapping(
+  tenantId: string,
+  userId: string,
+  input: { supplierId?: string | null; externalName: string; gtin?: string | null; drugFormularyId: string },
+) {
+  const norm = normalizeDrugName(input.externalName);
+  if (!norm) return;
+  try {
+    const existing = await prisma.distributorProductMap.findFirst({
+      where: { tenantId, supplierId: input.supplierId ?? null, externalNameNorm: norm },
+    });
+    if (existing) {
+      await prisma.distributorProductMap.update({
+        where: { id: existing.id },
+        data: {
+          timesSeen: { increment: 1 },
+          lastSeenAt: new Date(),
+          drugFormularyId: input.drugFormularyId,
+          gtin: input.gtin?.trim() || existing.gtin,
+        },
+      });
+    } else {
+      await prisma.distributorProductMap.create({
+        data: {
+          tenantId,
+          supplierId: input.supplierId ?? null,
+          externalName: input.externalName.slice(0, 255),
+          externalNameNorm: norm.slice(0, 255),
+          gtin: input.gtin?.trim() || null,
+          drugFormularyId: input.drugFormularyId,
+          createdById: userId,
+        },
+      });
+    }
+  } catch (err) {
+    logger.warn({ tenantId, err: err instanceof Error ? err.message : err }, 'learnDistributorMapping skipped');
+  }
+}
+
+/**
+ * Backfill GTIN / HSN / manufacturer-code onto a formulary drug only where the
+ * field is currently empty (the invoice is the source of truth for identity the
+ * drug doesn't yet have, but never overwrites a curated value). Best-effort.
+ */
+async function backfillFormularyIdentity(
+  tenantId: string,
+  formularyId: string,
+  ids: { gtin?: string | null; hsnCode?: string | null; manufacturerCode?: string | null },
+) {
+  try {
+    const f = await prisma.drugFormulary.findFirst({
+      where: { id: formularyId, tenantId },
+      select: { gtin: true, hsnCode: true, manufacturerCode: true },
+    });
+    if (!f) return;
+    const data: any = {};
+    if (ids.gtin?.trim() && !f.gtin) data.gtin = ids.gtin.trim();
+    if (ids.hsnCode?.trim() && !f.hsnCode) data.hsnCode = ids.hsnCode.trim();
+    if (ids.manufacturerCode?.trim() && !f.manufacturerCode) data.manufacturerCode = ids.manufacturerCode.trim();
+    if (Object.keys(data).length) {
+      await prisma.drugFormulary.update({ where: { id: formularyId }, data });
+    }
+  } catch (err) {
+    logger.warn({ tenantId, formularyId, err: err instanceof Error ? err.message : err }, 'backfillFormularyIdentity skipped');
+  }
+}
+
+/** List learned distributor → product mappings (admin management surface). */
+export async function getDistributorMappings(
+  tenantId: string,
+  query: { supplierId?: string; search?: string },
+) {
+  const where: any = { tenantId };
+  if (query.supplierId) where.supplierId = query.supplierId;
+  if (query.search) {
+    where.OR = [
+      { externalName: { contains: query.search, mode: 'insensitive' } },
+      { gtin: { contains: query.search, mode: 'insensitive' } },
+    ];
+  }
+  const rows = await prisma.distributorProductMap.findMany({
+    where,
+    orderBy: [{ timesSeen: 'desc' }, { lastSeenAt: 'desc' }],
+    take: 1000,
+    include: {
+      supplier: { select: { id: true, name: true } },
+      drugFormulary: { select: { id: true, drugName: true, strength: true } },
+    },
+  });
+  return {
+    items: rows.map((r) => ({
+      id: r.id,
+      externalName: r.externalName,
+      gtin: r.gtin,
+      supplier: r.supplier?.name ?? null,
+      supplierId: r.supplierId,
+      drugName: r.drugFormulary?.drugName ?? null,
+      drugStrength: r.drugFormulary?.strength ?? null,
+      drugFormularyId: r.drugFormularyId,
+      confidence: r.confidence,
+      timesSeen: r.timesSeen,
+      lastSeenAt: r.lastSeenAt,
+    })),
+    total: rows.length,
+  };
+}
+
+/** Delete a learned mapping (admin) — e.g. it was confirmed against the wrong drug. */
+export async function deleteDistributorMapping(tenantId: string, roles: string[], id: string) {
+  assertPharmacyAdmin(roles, 'manage distributor mappings');
+  const existing = await prisma.distributorProductMap.findFirst({ where: { id, tenantId } });
+  if (!existing) throw AppError.notFound('Mapping not found');
+  await prisma.distributorProductMap.delete({ where: { id } });
+  return { id, deleted: true };
+}
 
 /**
  * Score each incoming inward line against the existing formulary and recommend an
@@ -475,29 +703,33 @@ export type InwardRecommendation = 'map' | 'review' | 'create';
  * candidate list (with live stock + score) rides along so the UI can render the
  * "existing vs incoming" comparison without a second round-trip per line.
  */
-export async function matchInwardLines(tenantId: string, lines: InwardLineInput[]) {
+export async function matchInwardLines(
+  tenantId: string,
+  lines: InwardLineInput[],
+  headerSupplierId?: string | null,
+) {
   const results = await Promise.all(
     lines.map(async (line, index) => {
-      const { matches } = await findFormularyMatches(tenantId, {
-        name: line.drugName,
-        genericName: line.genericName,
-        manufacturer: line.manufacturer,
-        strength: line.strength,
-        dosageForm: line.dosageForm,
+      // Header supplier falls through to every line (for the distributor mapping
+      // lookup) unless the line overrides it.
+      const resolved = await resolveInwardLine(tenantId, {
+        ...line,
+        supplierId: line.supplierId ?? headerSupplierId ?? null,
       });
-      const top = matches[0];
-      let recommendation: InwardRecommendation;
-      if (top && top.score >= MATCH_BLOCK_THRESHOLD) recommendation = 'map';
-      else if (top && top.score >= MATCH_SUGGEST_THRESHOLD) recommendation = 'review';
-      else recommendation = 'create';
       return {
         index,
         incoming: line,
-        matches,
-        recommendation,
-        // Pre-select the top match as the map target unless we're recommending a
-        // brand-new row. The UI can still override (pick a different drug / create).
-        suggestedFormularyId: recommendation === 'create' ? null : top?.id ?? null,
+        matches: resolved.matches,
+        recommendation: resolved.recommendation,
+        // How the line resolved (gtin / distributor_map / similarity / none) +
+        // the confidence, so the UI can label "GTIN match", "Auto (learned)",
+        // "96% — confirm" or "New — review", and a GTIN-14 case multiplier.
+        resolvedVia: resolved.resolvedVia,
+        confidence: resolved.confidence,
+        caseMultiplier: resolved.caseMultiplier,
+        // Pre-select the resolved match as the map target unless a brand-new row
+        // is expected. The UI can still override (pick a different drug / create).
+        suggestedFormularyId: resolved.suggestedFormularyId,
       };
     }),
   );
@@ -601,11 +833,16 @@ export async function commitInward(
           packSize: line.packSize,
           looseUnitLabel: line.looseUnitLabel,
           taxPercent: line.gstPercent,
+          // Carry the invoice's GTIN / HSN / manufacturer code onto the new drug
+          // so subsequent imports resolve it via GTIN (Product Resolution Engine).
+          gtin: line.gtin ?? undefined,
+          hsnCode: line.hsnCode ?? undefined,
+          manufacturerCode: line.manufacturerCode ?? undefined,
           // Default selling price per base unit; MRP (per pack) is kept on the batch.
           price: line.sellingPrice,
           isActive: true,
           force: true,
-        });
+        } as CreateFormularyInput & { force: boolean });
         const item = (created as { item: { id: string; drugName: string } }).item;
         drugId = item.id;
         drugName = item.drugName;
@@ -631,6 +868,25 @@ export async function commitInward(
         addToExisting: line.addToExisting ?? data.addToExisting,
       } as CreateBatchInput);
       batchesIn++;
+
+      // Product Resolution Engine learning loop: remember that this distributor
+      // line (raw name + GTIN) maps to this drug, and backfill GTIN/HSN onto the
+      // drug if the invoice carried them — so the next import auto-resolves with
+      // no review. Best-effort; never voids a posted line.
+      await learnDistributorMapping(tenantId, userId, {
+        supplierId: line.supplierId ?? data.supplierId ?? null,
+        externalName: line.externalName ?? line.drugName,
+        gtin: line.gtin ?? null,
+        drugFormularyId: drugId,
+      });
+      if (line.gtin || line.hsnCode || line.manufacturerCode) {
+        await backfillFormularyIdentity(tenantId, drugId, {
+          gtin: line.gtin,
+          hsnCode: line.hsnCode,
+          manufacturerCode: line.manufacturerCode,
+        });
+      }
+
       results.push({
         index: i,
         drugName,
@@ -745,6 +1001,15 @@ export async function importFormularyItem(
       unitOfMeasurement: master.packSizeLabel?.slice(0, 20) ?? null,
       packSize: packSize ?? undefined,
       looseUnitLabel: looseUnitLabel ?? undefined,
+      // Carry the catalog's GTIN / case-pack / HSN / GST / manufacturer code so
+      // the imported drug resolves by GTIN at inward and bills with the right HSN
+      // + GST out of the box (Product Resolution Engine + compliance fields).
+      gtin: master.gtin ?? undefined,
+      casePackGtin: master.casePackGtin ?? undefined,
+      unitsPerCase: master.unitsPerCase ?? undefined,
+      hsnCode: master.hsnCode ?? undefined,
+      manufacturerCode: master.manufacturerCode ?? undefined,
+      taxPercent: master.gstRate ?? undefined,
       // Default selling price from the catalog MRP, converted to PER BASE UNIT
       // (MRP ÷ packSize) so a strip-of-10 @ ₹30 stores ₹3/tablet. An explicit
       // import price is taken as-is (already per unit). Hospital can edit later.
@@ -1093,6 +1358,11 @@ export async function updateFormularyItem(
   if (data.looseUnitLabel !== undefined) updateData.looseUnitLabel = data.looseUnitLabel;
   if (data.taxPercent !== undefined) updateData.taxPercent = data.taxPercent;
   if ((data as any).minStock !== undefined) updateData.minStock = (data as any).minStock;
+  if ((data as any).gtin !== undefined) updateData.gtin = (data as any).gtin;
+  if ((data as any).casePackGtin !== undefined) updateData.casePackGtin = (data as any).casePackGtin;
+  if ((data as any).unitsPerCase !== undefined) updateData.unitsPerCase = (data as any).unitsPerCase;
+  if ((data as any).hsnCode !== undefined) updateData.hsnCode = (data as any).hsnCode;
+  if ((data as any).manufacturerCode !== undefined) updateData.manufacturerCode = (data as any).manufacturerCode;
   if (data.indications !== undefined) updateData.indications = data.indications;
   if (data.contraindications !== undefined) updateData.contraindications = data.contraindications;
   if ((data as any).isLifeSaving !== undefined) updateData.isLifeSaving = (data as any).isLifeSaving;

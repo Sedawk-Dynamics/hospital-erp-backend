@@ -156,8 +156,39 @@ export async function matchInward(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const data = await pharmacyService.matchInwardLines(tenantId, req.body.lines);
+    const data = await pharmacyService.matchInwardLines(tenantId, req.body.lines, req.body.supplierId);
     sendResponse({ res, message: 'Inward lines matched', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Product Resolution Engine: list the learned distributor → product mappings.
+export async function getDistributorMappings(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await pharmacyService.getDistributorMappings(req.user!.tenantId, req.query as any);
+    sendResponse({ res, message: 'Distributor mappings', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function deleteDistributorMapping(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await pharmacyService.deleteDistributorMapping(
+      req.user!.tenantId,
+      req.user!.roles ?? [],
+      req.params.id as string,
+    );
+    sendResponse({ res, message: 'Mapping deleted', data });
   } catch (err) {
     next(err);
   }

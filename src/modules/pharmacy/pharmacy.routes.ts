@@ -13,6 +13,7 @@ import {
   mergeFormularySchema,
   matchInwardSchema,
   commitInwardSchema,
+  distributorMappingsQuerySchema,
   getFormularyQuerySchema,
   formularyIdParamSchema,
   updateFormularySchema,
@@ -116,6 +117,10 @@ pharmacyRoutes.post('/stock-take/reconcile', authenticate, requirePermission('ph
 // step 2 commits the reviewed map-or-create decisions and posts the stock.
 pharmacyRoutes.post('/inward/match', authenticate, requirePermission('pharmacy', 'read'), validate(matchInwardSchema), controller.matchInward);
 pharmacyRoutes.post('/inward/commit', authenticate, requirePermission('pharmacy', 'create'), validate(commitInwardSchema), controller.commitInward);
+
+// --- Product Resolution Engine: learned distributor → product mappings ---
+pharmacyRoutes.get('/distributor-mappings', authenticate, requirePermission('pharmacy', 'read'), validate(distributorMappingsQuerySchema), controller.getDistributorMappings);
+pharmacyRoutes.delete('/distributor-mappings/:id', authenticate, requirePermission('pharmacy', 'delete'), controller.deleteDistributorMapping);
 
 // --- Counter billing (POS sale: partial / loose / walk-in, one invoice) ---
 pharmacyRoutes.post('/sales', authenticate, requirePermission('pharmacy', 'create'), validate(createPharmacySaleSchema), controller.createPharmacySale);

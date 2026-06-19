@@ -52,6 +52,12 @@ export const createFormularySchema = z.object({
     looseUnitLabel: z.string().max(40).optional(),
     taxPercent: z.number().min(0).max(100).optional(),
     minStock: z.number().int().nonnegative().optional(),
+    // Product Resolution Engine / compliance identity.
+    gtin: z.string().max(20).optional(),
+    casePackGtin: z.string().max(20).optional(),
+    unitsPerCase: z.number().int().positive().optional(),
+    hsnCode: z.string().max(20).optional(),
+    manufacturerCode: z.string().max(100).optional(),
     indications: z.string().optional(),
     contraindications: z.string().optional(),
     // Vital/life-saving — bypasses the IP cash-patient credit-clearance gate.
@@ -102,6 +108,11 @@ export const updateFormularySchema = z.object({
     looseUnitLabel: z.string().max(40).optional().nullable(),
     taxPercent: z.number().min(0).max(100).optional().nullable(),
     minStock: z.number().int().nonnegative().optional().nullable(),
+    gtin: z.string().max(20).optional().nullable(),
+    casePackGtin: z.string().max(20).optional().nullable(),
+    unitsPerCase: z.number().int().positive().optional().nullable(),
+    hsnCode: z.string().max(20).optional().nullable(),
+    manufacturerCode: z.string().max(100).optional().nullable(),
     indications: z.string().optional().nullable(),
     contraindications: z.string().optional().nullable(),
     isLifeSaving: z.boolean().optional(),
@@ -307,18 +318,23 @@ export const getExpiringBatchesQuerySchema = z.object({
 // ============================================================
 
 // One incoming distributor-invoice line as far as duplicate detection cares —
-// just the identity fields the matching engine scores against.
+// the identity fields the matching engine scores against, plus the Product
+// Resolution Engine inputs (GTIN off the invoice/scan + the supplier the line
+// came from, which drives the learned distributor mapping).
 const inwardMatchLineSchema = z.object({
   drugName: z.string().min(1, 'Drug name is required').max(255),
   genericName: z.string().max(255).optional().nullable(),
   manufacturer: z.string().max(255).optional().nullable(),
   strength: z.string().max(100).optional().nullable(),
   dosageForm: z.string().max(40).optional().nullable(),
+  gtin: z.string().max(20).optional().nullable(),
 });
 
-// Step 1: score every incoming line against the formulary (no writes).
+// Step 1: score every incoming line against the formulary (no writes). An
+// optional header supplierId feeds the distributor-mapping lookup for every line.
 export const matchInwardSchema = z.object({
   body: z.object({
+    supplierId: z.string().uuid('Invalid supplier ID').optional(),
     lines: z
       .array(inwardMatchLineSchema)
       .min(1, 'At least one line is required')
@@ -334,10 +350,15 @@ const commitInwardLineSchema = inwardMatchLineSchema
     action: z.enum(['map', 'create']),
     // Required when action === 'map' — the existing formulary row to add stock to.
     targetFormularyId: z.string().uuid('Invalid target drug ID').optional(),
+    // The raw distributor line text (defaults to drugName) — stored verbatim as
+    // the learned mapping key so future imports of this exact name auto-resolve.
+    externalName: z.string().max(255).optional(),
     // Used only when creating a new drug.
     categoryId: z.string().uuid('Invalid category ID').optional(),
     packSize: z.number().int().positive().optional(),
     looseUnitLabel: z.string().max(40).optional(),
+    hsnCode: z.string().max(20).optional(),
+    manufacturerCode: z.string().max(100).optional(),
     // Batch / stock-in (mirrors createBatchSchema).
     batchNumber: z.string().min(1, 'Batch number is required').max(100),
     manufacturingDate: z.string().optional(),
@@ -360,6 +381,14 @@ const commitInwardLineSchema = inwardMatchLineSchema
     message: 'A mapped line needs a target drug (targetFormularyId)',
     path: ['targetFormularyId'],
   });
+
+// Learned distributor → product mappings (Product Resolution Engine admin surface).
+export const distributorMappingsQuerySchema = z.object({
+  query: z.object({
+    supplierId: z.string().uuid('Invalid supplier ID').optional(),
+    search: z.string().max(255).optional(),
+  }),
+});
 
 export const commitInwardSchema = z.object({
   body: z.object({

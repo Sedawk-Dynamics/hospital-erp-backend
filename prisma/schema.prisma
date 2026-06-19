@@ -1259,6 +1259,7 @@ model Tenant {
   drugBatches                DrugBatch[]
   dispensingRecords          DispensingRecord[]
   drugReturns                DrugReturn[]
+  distributorProductMaps     DistributorProductMap[]
   suppliers                  Supplier[]
   inventoryItems             InventoryItem[]
   stockTransactions          StockTransaction[]
@@ -3896,6 +3897,17 @@ model DrugMaster {
   mrp              Decimal?    @db.Decimal(10, 2)
   isDiscontinued   Boolean     @default(false) @map("is_discontinued")
   schedule         String?     @db.VarChar(10)
+  // Product Resolution Engine identity + compliance fields. GTIN-13 is the
+  // consumer unit (a single strip/bottle); casePackGtin (GTIN-14) is the outer
+  // wholesale case, and unitsPerCase translates a scanned case into N consumer
+  // units. manufacturerCode is the maker's own product code (second-tier match).
+  // hsnCode / gstRate drive tax + compliance validation at inward and billing.
+  gtin             String?     @db.VarChar(20)
+  casePackGtin     String?     @map("case_pack_gtin") @db.VarChar(20)
+  unitsPerCase     Int?        @map("units_per_case")
+  manufacturerCode String?     @map("manufacturer_code") @db.VarChar(100)
+  hsnCode          String?     @map("hsn_code") @db.VarChar(20)
+  gstRate          Decimal?    @map("gst_rate") @db.Decimal(5, 2)
   aliases          String[]    @default([])
   tags             String[]    @default([])
   // Rich clinical detail (populated from the richer dataset / future provider
@@ -3916,6 +3928,35 @@ model DrugMaster {
 
   @@index([name])
   @@map("drug_master")
+}
+
+/// Product Resolution Engine — learned distributor → product mappings. The first
+/// time staff confirm that a distributor's free-text line (e.g. "CROCIN ADV
+/// 650MG") maps to a formulary drug, the pair is stored here so every future
+/// import of that name from that distributor resolves automatically (the doc's
+/// `distributor_product_map`). Also keyed by GTIN when the invoice carries one.
+model DistributorProductMap {
+  id               String   @id @default(uuid())
+  tenantId         String   @map("tenant_id")
+  supplierId       String?  @map("supplier_id")
+  externalName     String   @map("external_name") @db.VarChar(255)
+  // Normalised (lowercased, dosage-form/strength-folded) key used for matching.
+  externalNameNorm String   @map("external_name_norm") @db.VarChar(255)
+  gtin             String?  @db.VarChar(20)
+  drugFormularyId  String   @map("drug_formulary_id")
+  confidence       Int      @default(100)
+  timesSeen        Int      @default(1) @map("times_seen")
+  lastSeenAt       DateTime @default(now()) @map("last_seen_at")
+  createdById      String?  @map("created_by_id")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  tenant        Tenant        @relation(fields: [tenantId], references: [id])
+  supplier      Supplier?     @relation(fields: [supplierId], references: [id])
+  drugFormulary DrugFormulary @relation(fields: [drugFormularyId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, supplierId, externalNameNorm])
+  @@index([tenantId, gtin])
+  @@map("distributor_product_map")
 }
 
 model DrugCategory {
@@ -3951,6 +3992,15 @@ model DrugFormulary {
   // GST rate applied to this drug (India medicine = 0/5/12/18%). Prices are MRP
   // (tax-inclusive), so the bill shows the GST breakup rather than adding on top.
   taxPercent        Decimal?    @map("tax_percent") @db.Decimal(5, 2)
+  // Product Resolution Engine / barcode identity carried from DrugMaster on
+  // import (or set on manual create). gtin = consumer-unit GTIN-13 used to
+  // resolve an inward line and to look the drug up from a POS scan; casePackGtin
+  // (GTIN-14) + unitsPerCase let a scanned outer case post N consumer units.
+  gtin              String?     @db.VarChar(20)
+  casePackGtin      String?     @map("case_pack_gtin") @db.VarChar(20)
+  unitsPerCase      Int?        @map("units_per_case")
+  manufacturerCode  String?     @map("manufacturer_code") @db.VarChar(100)
+  hsnCode           String?     @map("hsn_code") @db.VarChar(20)
   // G9: reorder level (in base units). When live stock falls to/below this, the
   // drug surfaces in the reorder list for a draft purchase order.
   minStock          Int?        @map("min_stock")
@@ -3971,10 +4021,11 @@ model DrugFormulary {
   tenant             Tenant                  @relation(fields: [tenantId], references: [id])
   category           DrugCategory?           @relation(fields: [categoryId], references: [id])
   drugMaster         DrugMaster?             @relation(fields: [drugMasterId], references: [id])
-  drugBatches        DrugBatch[]
-  prescriptionItems  PrescriptionItem[]
-  drugReturns        DrugReturn[]
-  purchaseOrderItems DrugPurchaseOrderItem[]
+  drugBatches         DrugBatch[]
+  prescriptionItems   PrescriptionItem[]
+  drugReturns         DrugReturn[]
+  purchaseOrderItems  DrugPurchaseOrderItem[]
+  distributorMappings DistributorProductMap[]
 
   @@map("drug_formulary")
 }
@@ -4172,12 +4223,13 @@ model Supplier {
   isActive      Boolean     @default(true) @map("is_active")
   createdAt     DateTime    @default(now()) @map("created_at")
 
-  tenant             Tenant              @relation(fields: [tenantId], references: [id])
-  drugBatches        DrugBatch[]
-  drugReturns        DrugReturn[]
-  stockTransactions  StockTransaction[]
-  purchaseOrders     PurchaseOrder[]
-  drugPurchaseOrders DrugPurchaseOrder[]
+  tenant              Tenant                  @relation(fields: [tenantId], references: [id])
+  drugBatches         DrugBatch[]
+  drugReturns         DrugReturn[]
+  stockTransactions   StockTransaction[]
+  purchaseOrders      PurchaseOrder[]
+  drugPurchaseOrders  DrugPurchaseOrder[]
+  distributorMappings DistributorProductMap[]
 
   @@map("suppliers")
 }

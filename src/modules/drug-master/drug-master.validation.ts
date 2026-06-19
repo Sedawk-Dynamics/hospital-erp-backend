@@ -54,6 +54,13 @@ export const createDrugMasterSchema = z.object({
     mrp: z.number().nonnegative('Price must be non-negative').optional().nullable(),
     isDiscontinued: z.boolean().optional(),
     schedule: z.string().max(10).optional().nullable(),
+    // Product Resolution Engine / compliance identity.
+    gtin: z.string().max(20).optional().nullable(),
+    casePackGtin: z.string().max(20).optional().nullable(),
+    unitsPerCase: z.number().int().positive().optional().nullable(),
+    manufacturerCode: z.string().max(100).optional().nullable(),
+    hsnCode: z.string().max(20).optional().nullable(),
+    gstRate: z.number().min(0).max(100).optional().nullable(),
     aliases: z.array(z.string()).optional(),
     tags: z.array(z.string()).optional(),
     isPublished: z.boolean().optional(),
