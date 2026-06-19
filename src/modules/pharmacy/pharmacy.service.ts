@@ -3769,7 +3769,13 @@ export async function getStockValuationReport(tenantId: string) {
   };
 }
 
-/** Vendor-wise Segregation: per-vendor purchase value, stock qty, medicines. */
+/**
+ * Vendor-wise Segregation (G15): per-vendor purchase value, stock qty, medicines.
+ * Each row carries the vendor's metadata (GSTIN / drug-licence / contact) so the
+ * report auto-populates vendor details on dropdown selection rather than only an
+ * id. When a single vendor is selected, `vendor` returns that supplier's full
+ * record even if it has no batches yet.
+ */
 export async function getVendorWiseReport(tenantId: string, supplierId?: string) {
   const where: any = { tenantId, supplierId: supplierId ?? { not: null } };
   const batches = await prisma.drugBatch.findMany({
@@ -3781,14 +3787,44 @@ export async function getVendorWiseReport(tenantId: string, supplierId?: string)
       quantityInStock: true,
       purchasePrice: true,
       purchaseDiscountPercent: true,
-      supplier: { select: { id: true, name: true } },
+      supplier: {
+        select: {
+          id: true,
+          name: true,
+          contactPerson: true,
+          phone: true,
+          email: true,
+          address: true,
+          gstNumber: true,
+          licenseNumber: true,
+          supplyType: true,
+        },
+      },
     },
     take: 8000,
   });
 
+  type VendorMeta = {
+    contactPerson: string | null;
+    phone: string | null;
+    email: string | null;
+    address: string | null;
+    gstNumber: string | null;
+    licenseNumber: string | null;
+    supplyType: string | null;
+  };
   const map = new Map<
     string,
-    { supplierId: string; supplierName: string; totalPaid: number; totalQty: number; inStockQty: number; drugIds: Set<string>; batchCount: number }
+    {
+      supplierId: string;
+      supplierName: string;
+      totalPaid: number;
+      totalQty: number;
+      inStockQty: number;
+      drugIds: Set<string>;
+      batchCount: number;
+      meta: VendorMeta;
+    }
   >();
   for (const b of batches) {
     if (!b.supplierId) continue;
@@ -3803,6 +3839,15 @@ export async function getVendorWiseReport(tenantId: string, supplierId?: string)
         inStockQty: 0,
         drugIds: new Set<string>(),
         batchCount: 0,
+        meta: {
+          contactPerson: b.supplier?.contactPerson ?? null,
+          phone: b.supplier?.phone ?? null,
+          email: b.supplier?.email ?? null,
+          address: b.supplier?.address ?? null,
+          gstNumber: b.supplier?.gstNumber ?? null,
+          licenseNumber: b.supplier?.licenseNumber ?? null,
+          supplyType: (b.supplier?.supplyType as string | null) ?? null,
+        },
       };
     cur.totalPaid += net;
     cur.totalQty += b.quantityReceived;
@@ -3821,10 +3866,46 @@ export async function getVendorWiseReport(tenantId: string, supplierId?: string)
       inStockQty: v.inStockQty,
       medicineCount: v.drugIds.size,
       batchCount: v.batchCount,
+      ...v.meta,
     }))
     .sort((a, b) => b.totalPaid - a.totalPaid);
 
+  // Auto-populate the selected vendor's metadata even when it has no purchases yet.
+  let vendor: (VendorMeta & { id: string; name: string; isActive: boolean }) | null = null;
+  if (supplierId) {
+    const s = await prisma.supplier.findFirst({
+      where: { id: supplierId, tenantId },
+      select: {
+        id: true,
+        name: true,
+        contactPerson: true,
+        phone: true,
+        email: true,
+        address: true,
+        gstNumber: true,
+        licenseNumber: true,
+        supplyType: true,
+        isActive: true,
+      },
+    });
+    if (s) {
+      vendor = {
+        id: s.id,
+        name: s.name,
+        isActive: s.isActive,
+        contactPerson: s.contactPerson ?? null,
+        phone: s.phone ?? null,
+        email: s.email ?? null,
+        address: s.address ?? null,
+        gstNumber: s.gstNumber ?? null,
+        licenseNumber: s.licenseNumber ?? null,
+        supplyType: (s.supplyType as string | null) ?? null,
+      };
+    }
+  }
+
   return {
+    vendor,
     items,
     totals: {
       vendorCount: items.length,
