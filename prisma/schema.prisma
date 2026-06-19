@@ -4134,6 +4134,10 @@ model DrugFormulary {
   // NDPS Essential Narcotic Drug — when true this drug is governed by the
   // narcotic accounting workflow (Form 3C/3E/3H, vault custody, dual-auth).
   isNarcotic        Boolean     @default(false) @map("is_narcotic")
+  // TPA/cashless reimbursability. Most drugs are reimbursable; disposables and
+  // certain consumables (syringes, gloves) are billed to the patient out-of-
+  // pocket. Drives the Reimbursable vs Non-Reimbursable split on the IP summary.
+  isReimbursable    Boolean     @default(true) @map("is_reimbursable")
   // Provenance: set when this formulary row was imported from the platform
   // DrugMaster catalog (vs. hospital-authored). Drives import dedupe.
   drugMasterId      String?     @map("drug_master_id")
@@ -4230,6 +4234,9 @@ model DispensingRecord {
   // §4.4: a line marked non-returnable on the bill at sale time (e.g. opened
   // vial, cold-chain item) can never be taken back as a patient return.
   nonReturnable      Boolean  @default(false) @map("non_returnable")
+  // TTO (To Take Out) — discharge medication dispensed in full packs and added
+  // to the final hospital bill, vs. routine daily IP unit-dose drops.
+  isTto              Boolean  @default(false) @map("is_tto")
   // Invoice this line was billed on (the pharmacy Bill). Plain column — the
   // canonical link is BillItem.referenceId; this is a convenience back-pointer.
   billId             String?  @map("bill_id")

@@ -375,6 +375,7 @@ export async function createFormularyItem(
       contraindications: data.contraindications,
       isLifeSaving: (data as any).isLifeSaving ?? false,
       isNarcotic: (data as any).isNarcotic ?? false,
+      isReimbursable: (data as any).isReimbursable ?? true,
       isActive: data.isActive ?? true,
     },
     include: {
@@ -1374,6 +1375,7 @@ export async function updateFormularyItem(
   if (data.contraindications !== undefined) updateData.contraindications = data.contraindications;
   if ((data as any).isLifeSaving !== undefined) updateData.isLifeSaving = (data as any).isLifeSaving;
   if ((data as any).isNarcotic !== undefined) updateData.isNarcotic = (data as any).isNarcotic;
+  if ((data as any).isReimbursable !== undefined) updateData.isReimbursable = (data as any).isReimbursable;
   if (data.isActive !== undefined) updateData.isActive = data.isActive;
   if (data.isRecalled !== undefined) updateData.isRecalled = data.isRecalled;
 
@@ -2777,6 +2779,8 @@ export async function createPharmacySale(
           taxPercent: l.taxPct,
           lineTotal: l.net,
           nonReturnable: l.nonReturnable,
+          // TTO (To Take Out) — discharge medication dispensed in full packs.
+          isTto: data.isTto ?? false,
           billId: bill.id,
         },
       });
@@ -3653,6 +3657,28 @@ export async function getIpBillingSummary(tenantId: string, patientId: string) {
   const balanceDue = round2(bills.reduce((s, b) => s + Number(b.balanceDue), 0));
   const deposit = admission ? Number(admission.depositAmount) : 0;
 
+  // TPA reimbursable split (spec — Cashless/TPA): a cashless insurer pays for the
+  // reimbursable drugs but not certain disposables/consumables, which the patient
+  // settles out-of-pocket. Plus the take-home (TTO) discharge meds total. Derived
+  // from this patient's pharmacy dispenses via each drug's isReimbursable flag.
+  const dispenses = (await prisma.dispensingRecord.findMany({
+    where: { tenantId, patientId },
+    select: {
+      lineTotal: true,
+      isTto: true,
+      drugBatch: { select: { drug: { select: { isReimbursable: true } } } },
+    },
+  })) ?? [];
+  let reimbursable = 0;
+  let nonReimbursable = 0;
+  let takeHome = 0;
+  for (const d of dispenses) {
+    const amt = Number(d.lineTotal ?? 0);
+    if (d.drugBatch?.drug?.isReimbursable === false) nonReimbursable += amt;
+    else reimbursable += amt;
+    if (d.isTto) takeHome += amt;
+  }
+
   return {
     patient,
     admission: admission ? { ...admission, billingCategory: category } : null,
@@ -3661,6 +3687,12 @@ export async function getIpBillingSummary(tenantId: string, patientId: string) {
     insurance,
     bills,
     categoryTotals,
+    // Reimbursable = claim from TPA; non-reimbursable = collect from patient.
+    pharmacySplit: {
+      reimbursable: round2(reimbursable),
+      nonReimbursable: round2(nonReimbursable),
+      takeHome: round2(takeHome),
+    },
     totals: { totalBilled, totalPaid, balanceDue, deposit, available: round2(deposit - balanceDue) },
   };
 }

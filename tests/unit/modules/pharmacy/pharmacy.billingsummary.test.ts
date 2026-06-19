@@ -55,4 +55,19 @@ describe('Pharmacy — §4.1 Flow 2 IP billing / TPA summary', () => {
     (prisma.patient.findFirst as any).mockResolvedValue(null);
     await expect(getIpBillingSummary(TENANT_ID, 'nope')).rejects.toThrow(/not found/i);
   });
+
+  it('splits pharmacy dispenses into reimbursable vs non-reimbursable + take-home (TTO)', async () => {
+    (prisma.patient.findFirst as any).mockResolvedValue({ id: 'p1', mrn: 'MRN1', firstName: 'A', lastName: 'B' });
+    (prisma.admission.findFirst as any).mockResolvedValue({ id: 'adm1', billingCategory: 'insurance', depositAmount: 0, admissionDate: new Date() });
+    (prisma.insurancePolicy.findFirst as any).mockResolvedValue(null);
+    (prisma.bill.findMany as any).mockResolvedValue([]);
+    (prisma.dispensingRecord.findMany as any).mockResolvedValue([
+      { lineTotal: 200, isTto: false, drugBatch: { drug: { isReimbursable: true } } },   // claimable
+      { lineTotal: 50, isTto: false, drugBatch: { drug: { isReimbursable: false } } },    // patient pays (e.g. gloves)
+      { lineTotal: 120, isTto: true, drugBatch: { drug: { isReimbursable: true } } },     // discharge take-home
+    ]);
+
+    const res = await getIpBillingSummary(TENANT_ID, 'p1');
+    expect(res.pharmacySplit).toEqual({ reimbursable: 320, nonReimbursable: 50, takeHome: 120 });
+  });
 });
