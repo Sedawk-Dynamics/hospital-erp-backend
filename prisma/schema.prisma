@@ -1264,6 +1264,8 @@ model Tenant {
   ndpsStockBalances          NdpsStockBalance[]
   ndpsTransactions           NdpsTransaction[]
   ndpsDailyBalances          NdpsDailyBalance[]
+  surgicalKitTemplates       SurgicalKitTemplate[]
+  otKitIssues                OtKitIssue[]
   suppliers                  Supplier[]
   inventoryItems             InventoryItem[]
   stockTransactions          StockTransaction[]
@@ -1938,6 +1940,7 @@ model Patient {
   dicomStudies              DicomStudy[]
   dispensingRecords         DispensingRecord[]
   drugReturns               DrugReturn[]
+  otKitIssues               OtKitIssue[]
   bills                     Bill[]
   payments                  Payment[]
   refunds                   Refund[]
@@ -4078,6 +4081,83 @@ model NdpsDailyBalance {
   @@map("ndps_daily_balances")
 }
 
+// ============================================================
+// OT Surgical Kits (spec — "Issue Bulk, Reconcile Net")
+// ============================================================
+// A surgeon's preference kit is issued as a bulk crate into a Virtual OT Ledger
+// bound to the patient's session; only what is actually consumed (issued −
+// returned) is billed, and the sealed leftovers are reversed back into stock.
+
+/// A reusable surgical kit (doctor-preference bundle of drugs/consumables).
+model SurgicalKitTemplate {
+  id          String   @id @default(uuid())
+  tenantId    String   @map("tenant_id")
+  name        String   @db.VarChar(160)
+  surgeryType String?  @map("surgery_type") @db.VarChar(160)
+  doctorId    String?  @map("doctor_id")
+  description String?
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant Tenant                    @relation(fields: [tenantId], references: [id])
+  items  SurgicalKitTemplateItem[]
+
+  @@map("surgical_kit_templates")
+}
+
+model SurgicalKitTemplateItem {
+  id              String @id @default(uuid())
+  templateId      String @map("template_id")
+  drugFormularyId String @map("drug_formulary_id")
+  quantity        Int
+
+  template SurgicalKitTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  drug     DrugFormulary       @relation(fields: [drugFormularyId], references: [id])
+
+  @@map("surgical_kit_template_items")
+}
+
+/// One bulk issue of a kit to a patient's OT session — the Virtual OT Ledger.
+model OtKitIssue {
+  id             String    @id @default(uuid())
+  tenantId       String    @map("tenant_id")
+  patientId      String    @map("patient_id")
+  admissionId    String?   @map("admission_id")
+  templateId     String?   @map("template_id")
+  surgeryName    String    @map("surgery_name") @db.VarChar(200)
+  status         String    @default("issued") // 'issued' | 'reconciled' | 'cancelled'
+  issuedById     String    @map("issued_by_id")
+  issuedAt       DateTime  @default(now()) @map("issued_at")
+  reconciledById String?   @map("reconciled_by_id")
+  reconciledAt   DateTime? @map("reconciled_at")
+  billId         String?   @map("bill_id")
+
+  tenant  Tenant           @relation(fields: [tenantId], references: [id])
+  patient Patient          @relation(fields: [patientId], references: [id])
+  items   OtKitIssueItem[]
+
+  @@index([tenantId, status])
+  @@map("ot_kit_issues")
+}
+
+model OtKitIssueItem {
+  id              String   @id @default(uuid())
+  issueId         String   @map("issue_id")
+  drugFormularyId String   @map("drug_formulary_id")
+  drugBatchId     String   @map("drug_batch_id")
+  issuedQty       Int      @map("issued_qty")
+  returnedQty     Int      @default(0) @map("returned_qty")
+  unitPrice       Decimal? @map("unit_price") @db.Decimal(12, 2)
+  taxPercent      Decimal? @default(0) @map("tax_percent") @db.Decimal(5, 2)
+
+  issue     OtKitIssue    @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  drug      DrugFormulary @relation(fields: [drugFormularyId], references: [id])
+  drugBatch DrugBatch     @relation(fields: [drugBatchId], references: [id])
+
+  @@map("ot_kit_issue_items")
+}
+
 model DrugCategory {
   id          String   @id @default(uuid())
   tenantId    String   @map("tenant_id")
@@ -4155,6 +4235,8 @@ model DrugFormulary {
   ndpsBalances        NdpsStockBalance[]
   ndpsTransactions    NdpsTransaction[]
   ndpsDailyBalances   NdpsDailyBalance[]
+  kitTemplateItems    SurgicalKitTemplateItem[]
+  otKitIssueItems     OtKitIssueItem[]
 
   @@map("drug_formulary")
 }
@@ -4204,6 +4286,7 @@ model DrugBatch {
   dispensingRecords DispensingRecord[]
   drugReturns       DrugReturn[]
   stockTransfers    StockTransfer[]
+  otKitIssueItems   OtKitIssueItem[]
 
   @@index([tenantId, barcode])
   @@map("drug_batches")

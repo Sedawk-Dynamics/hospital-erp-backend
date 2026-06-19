@@ -27,6 +27,7 @@ import { imagingRoutes } from './imaging/imaging.routes';
 import { buildPacsRouter } from './imaging/pacs';
 import { pharmacyRoutes } from './pharmacy/pharmacy.routes';
 import { ndpsRoutes } from './ndps/ndps.routes';
+import { otKitsRoutes } from './ot-kits/ot-kits.routes';
 import { inventoryRoutes } from './inventory/inventory.routes';
 import { insuranceRoutes } from './insurance/insurance.routes';
 import { bloodBankRoutes } from './blood-bank/blood-bank.routes';
@@ -95,6 +96,7 @@ apiRouter.use('/cdss', authenticate, userTierLimiter, subCheck, requireFeature('
 apiRouter.use('/imaging', authenticate, userTierLimiter, subCheck, requireFeature('imaging'), imagingRoutes);
 apiRouter.use('/pharmacy', authenticate, userTierLimiter, subCheck, requireFeature('pharmacy'), pharmacyRoutes);
 apiRouter.use('/ndps', authenticate, userTierLimiter, subCheck, requireFeature('pharmacy'), ndpsRoutes);
+apiRouter.use('/ot-kits', authenticate, userTierLimiter, subCheck, requireFeature('pharmacy'), otKitsRoutes);
 apiRouter.use('/inventory', authenticate, userTierLimiter, subCheck, requireFeature('inventory'), inventoryRoutes);
 apiRouter.use('/insurance', authenticate, userTierLimiter, subCheck, requireFeature('insurance'), insuranceRoutes);
 apiRouter.use('/blood-bank', authenticate, userTierLimiter, subCheck, requireFeature('blood_bank'), bloodBankRoutes);
