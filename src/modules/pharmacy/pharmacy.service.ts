@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
@@ -12,6 +13,7 @@ import {
   MATCH_SUGGEST_THRESHOLD,
   MATCH_BLOCK_THRESHOLD,
 } from './pharmacy.matching';
+import { parseGs1, makeInternalBarcode, isInternalBarcode } from './pharmacy.barcode';
 import type {
   CreateCategoryInput,
   UpdateCategoryInput,
@@ -865,6 +867,10 @@ export async function commitInward(
         supplierId: line.supplierId ?? data.supplierId,
         invoiceNumber: line.invoiceNumber ?? data.invoiceNumber,
         invoiceDate: line.invoiceDate ?? data.invoiceDate,
+        // Scanned pack barcode / shelf location carry through; absent barcode is
+        // minted internally by createBatch.
+        barcode: line.barcode,
+        storageLocation: line.storageLocation,
         addToExisting: line.addToExisting ?? data.addToExisting,
       } as CreateBatchInput);
       batchesIn++;
@@ -1488,8 +1494,13 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
     return merged;
   }
 
+  // Pre-mint the batch id so the internal barcode (spec Section 2) can be derived
+  // from it in a single insert — packs without a GS1 DataMatrix still get a stable
+  // scannable Code-128; a scanned/known pack barcode is stored as-is.
+  const batchId = randomUUID();
   const batch = await prisma.drugBatch.create({
     data: {
+      id: batchId,
       tenantId,
       drugId: data.drugId,
       batchNumber: data.batchNumber,
@@ -1506,12 +1517,15 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
       invoiceDate: (data as any).invoiceDate ? new Date((data as any).invoiceDate) : null,
       quantityReceived: data.quantityReceived,
       quantityInStock: data.quantityReceived,
+      storageLocation: (data as any).storageLocation ?? null,
+      barcode: ((data as any).barcode as string | undefined)?.trim() || makeInternalBarcode(batchId),
     },
     include: {
       drug: { select: { id: true, drugName: true, genericName: true } },
       supplier: { select: { id: true, name: true } },
     },
   });
+  const finalBatch = batch;
 
   void safePharmacyAudit({
     tenantId,
@@ -1529,7 +1543,7 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
   });
 
   logger.info({ tenantId, batchId: batch.id, drugId: data.drugId }, 'Drug batch created');
-  return batch;
+  return finalBatch;
 }
 
 export async function getBatches(tenantId: string, query: GetBatchesQuery) {
@@ -2521,6 +2535,18 @@ export async function createPharmacySale(
       select: { id: true },
     });
     if (!rx) throw AppError.notFound('Prescription not found');
+  }
+
+  // Automated compliance validation (spec Section 2) — hard-block a sale that
+  // violates a Schedule rule (e.g. Schedule X with no prescription) before any
+  // stock or money moves. Soft warnings (HSN/GST/Schedule H/H1) are surfaced by
+  // the dedicated pre-check endpoint the POS calls.
+  const compliance = await checkSaleCompliance(tenantId, {
+    items: data.items.map((i) => ({ drugBatchId: i.drugBatchId })),
+    prescriptionId: data.prescriptionId,
+  });
+  if (!compliance.ok) {
+    throw AppError.badRequest(compliance.blockers.join(' '));
   }
 
   // G7: advance-deduction tender (IP only). Validate the patient has an active
@@ -4537,6 +4563,168 @@ export async function getNarcoticRegister(
   }));
 
   return { items, total: items.length };
+}
+
+// ============================================================
+// Barcode-driven dispensing + compliance (spec Section 2)
+// ============================================================
+
+/**
+ * Resolve a single counter scan to a product + batch. Accepts a GS1 DataMatrix
+ * element string (GTIN + batch + expiry), a plain GTIN/EAN, one of our minted
+ * internal batch barcodes, or a raw batch number. Returns the drug, the picked
+ * batch (the GS1 batch if present, else the FEFO batch), expiry/mfg dates and
+ * the live stock — everything the POS needs from one scan.
+ */
+export async function resolveScan(tenantId: string, code: string) {
+  const raw = (code ?? '').trim();
+  if (!raw) throw AppError.badRequest('No barcode provided');
+
+  const gs1 = parseGs1(raw);
+  let gtin = gs1?.gtin;
+  const scannedBatchNumber = gs1?.batchNumber;
+  // A bare 8–14 digit string with no GS1 AIs is a plain GTIN/EAN.
+  if (!gtin && !gs1 && /^\d{8,14}$/.test(raw)) gtin = raw;
+
+  const drugSelect = {
+    id: true, drugName: true, genericName: true, strength: true, dosageForm: true,
+    gtin: true, casePackGtin: true, unitsPerCase: true, packSize: true,
+    looseUnitLabel: true, price: true, hsnCode: true, taxPercent: true, isRecalled: true,
+  } as const;
+
+  let drug: any = null;
+  let batch: any = null;
+
+  // 1. GTIN → drug.
+  if (gtin) {
+    drug = await prisma.drugFormulary.findFirst({
+      where: { tenantId, OR: [{ gtin }, { casePackGtin: gtin }] },
+      select: drugSelect,
+    });
+  }
+
+  // 2. Internal/known batch barcode → batch directly (then its drug).
+  if (!drug && (isInternalBarcode(raw) || !gs1)) {
+    batch = await prisma.drugBatch.findFirst({
+      where: { tenantId, barcode: raw },
+      include: { drug: { select: drugSelect } },
+    });
+    if (batch) drug = batch.drug;
+  }
+
+  // 3. Raw batch-number label fallback (no GS1, no internal barcode).
+  if (!drug && !batch && !gtin) {
+    batch = await prisma.drugBatch.findFirst({
+      where: { tenantId, batchNumber: raw, quantityInStock: { gt: 0 } },
+      orderBy: { expiryDate: 'asc' },
+      include: { drug: { select: drugSelect } },
+    });
+    if (batch) drug = batch.drug;
+  }
+
+  if (!drug) throw AppError.notFound('No product matched this barcode');
+
+  // Pick the batch: the GS1-scanned batch if named, else FEFO (earliest expiry).
+  if (!batch) {
+    batch = await prisma.drugBatch.findFirst({
+      where: {
+        tenantId,
+        drugId: drug.id,
+        isExpired: false,
+        isRecalled: false,
+        quantityInStock: { gt: 0 },
+        ...(scannedBatchNumber ? { batchNumber: scannedBatchNumber } : {}),
+      },
+      orderBy: [{ expiryDate: 'asc' }, { createdAt: 'asc' }],
+    });
+  }
+
+  const stock = await prisma.drugBatch.aggregate({
+    where: { tenantId, drugId: drug.id, isExpired: false, isRecalled: false, quantityInStock: { gt: 0 } },
+    _sum: { quantityInStock: true },
+  });
+
+  return {
+    resolvedVia: gs1 ? 'gs1' : gtin ? 'gtin' : 'batch',
+    gtin: gtin ?? null,
+    scannedBatchNumber: scannedBatchNumber ?? null,
+    drug: {
+      id: drug.id,
+      drugName: drug.drugName,
+      genericName: drug.genericName,
+      strength: drug.strength,
+      dosageForm: drug.dosageForm,
+      packSize: drug.packSize,
+      looseUnitLabel: drug.looseUnitLabel,
+      price: drug.price != null ? Number(drug.price) : null,
+      hsnCode: drug.hsnCode ?? null,
+    },
+    batch: batch
+      ? {
+          id: batch.id,
+          batchNumber: batch.batchNumber,
+          expiryDate: batch.expiryDate,
+          manufacturingDate: batch.manufacturingDate ?? null,
+          sellingPrice: batch.sellingPrice != null ? Number(batch.sellingPrice) : null,
+          mrp: batch.mrp != null ? Number(batch.mrp) : null,
+          quantityInStock: batch.quantityInStock,
+          storageLocation: batch.storageLocation ?? null,
+          barcode: batch.barcode ?? null,
+        }
+      : null,
+    totalStock: stock._sum.quantityInStock ?? 0,
+  };
+}
+
+/**
+ * Automated compliance validation (spec Section 2) run BEFORE a sale completes.
+ * For every cart line it checks: HSN code present, GST rate present, and the
+ * Schedule H/H1/X / controlled-drug rule. Schedule X without a prescription is a
+ * hard blocker (a prescription is mandatory by law); H/H1 without one is a
+ * warning the counter must heed and record. Returns blockers + warnings; the
+ * caller blocks the sale when `ok` is false.
+ */
+export async function checkSaleCompliance(
+  tenantId: string,
+  input: { items: Array<{ drugBatchId: string }>; prescriptionId?: string | null },
+) {
+  const hasRx = !!input.prescriptionId;
+  const batchIds = [...new Set(input.items.map((i) => i.drugBatchId).filter(Boolean))];
+  const blockers: string[] = [];
+  const warnings: string[] = [];
+
+  if (!batchIds.length) return { ok: true, blockers, warnings };
+
+  const batches = (await prisma.drugBatch.findMany({
+    where: { id: { in: batchIds }, tenantId },
+    select: {
+      id: true,
+      drug: {
+        select: {
+          drugName: true,
+          hsnCode: true,
+          taxPercent: true,
+          drugMaster: { select: { schedule: true } },
+        },
+      },
+    },
+  })) ?? [];
+
+  for (const b of batches) {
+    const name = b.drug?.drugName ?? 'Drug';
+    const schedule = (b.drug?.drugMaster?.schedule ?? '').toUpperCase();
+    if (!b.drug?.hsnCode) warnings.push(`${name}: HSN code not set (required for a compliant GST invoice).`);
+    if (b.drug?.taxPercent == null) warnings.push(`${name}: GST rate not set.`);
+    if (CONTROLLED_SCHEDULES.includes(schedule)) {
+      if (schedule === 'X' && !hasRx) {
+        blockers.push(`${name} is a Schedule X drug — a prescription is mandatory to dispense it.`);
+      } else if (!hasRx) {
+        warnings.push(`${name} is a Schedule ${schedule} drug — record the prescriber/Rx for this sale.`);
+      }
+    }
+  }
+
+  return { ok: blockers.length === 0, blockers, warnings };
 }
 
 export async function getReturns(tenantId: string, query: GetReturnsQuery) {

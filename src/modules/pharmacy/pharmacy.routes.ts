@@ -14,6 +14,8 @@ import {
   matchInwardSchema,
   commitInwardSchema,
   distributorMappingsQuerySchema,
+  scanQuerySchema,
+  complianceCheckSchema,
   getFormularyQuerySchema,
   formularyIdParamSchema,
   updateFormularySchema,
@@ -117,6 +119,10 @@ pharmacyRoutes.post('/stock-take/reconcile', authenticate, requirePermission('ph
 // step 2 commits the reviewed map-or-create decisions and posts the stock.
 pharmacyRoutes.post('/inward/match', authenticate, requirePermission('pharmacy', 'read'), validate(matchInwardSchema), controller.matchInward);
 pharmacyRoutes.post('/inward/commit', authenticate, requirePermission('pharmacy', 'create'), validate(commitInwardSchema), controller.commitInward);
+
+// --- Barcode-driven dispensing + automated compliance (spec Section 2) ---
+pharmacyRoutes.get('/scan', authenticate, requirePermission('pharmacy', 'read'), validate(scanQuerySchema), controller.resolveScan);
+pharmacyRoutes.post('/sales/compliance-check', authenticate, requirePermission('pharmacy', 'read'), validate(complianceCheckSchema), controller.checkSaleCompliance);
 
 // --- Product Resolution Engine: learned distributor → product mappings ---
 pharmacyRoutes.get('/distributor-mappings', authenticate, requirePermission('pharmacy', 'read'), validate(distributorMappingsQuerySchema), controller.getDistributorMappings);

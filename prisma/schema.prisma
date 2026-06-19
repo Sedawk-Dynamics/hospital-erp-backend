@@ -4060,6 +4060,12 @@ model DrugBatch {
   isExpired               Boolean   @default(false) @map("is_expired")
   isRecalled              Boolean   @default(false) @map("is_recalled")
   recallReason            String?   @map("recall_reason")
+  // Barcode-driven traceability (spec Section 2). barcode is the scannable code
+  // for THIS batch — an internal Code-128 minted at inward when the pack carries
+  // no GS1 DataMatrix, so one scan resolves drug + batch + expiry. storageLocation
+  // is the shelf/rack/cold-chain bin printed on the internal label.
+  barcode                 String?   @map("barcode") @db.VarChar(64)
+  storageLocation         String?   @map("storage_location") @db.VarChar(100)
   createdAt               DateTime  @default(now()) @map("created_at")
   updatedAt               DateTime  @default(now()) @updatedAt @map("updated_at")
 
@@ -4070,6 +4076,7 @@ model DrugBatch {
   drugReturns       DrugReturn[]
   stockTransfers    StockTransfer[]
 
+  @@index([tenantId, barcode])
   @@map("drug_batches")
 }
 

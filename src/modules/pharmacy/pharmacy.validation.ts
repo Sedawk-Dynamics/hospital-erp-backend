@@ -201,10 +201,29 @@ export const createBatchSchema = z.object({
     // GRN invoice traceability (design-doc manual GRN Steps 1/8/9).
     invoiceNumber: z.string().max(100).optional(),
     invoiceDate: z.string().optional(),
+    // Barcode-driven traceability (spec Section 2): a scanned pack barcode and
+    // the shelf/bin location printed on the internal label. When barcode is
+    // omitted an internal Code-128 is minted from the batch id.
+    barcode: z.string().max(64).optional(),
+    storageLocation: z.string().max(100).optional(),
     // Manual GRN Step 6: when a batch with this number already exists, set this
     // to fold the received quantity into the existing batch (Increase Quantity)
     // instead of erroring.
     addToExisting: z.boolean().optional(),
+  }),
+});
+
+// Barcode scan resolve (POS / dispensing) + automated compliance pre-check.
+export const scanQuerySchema = z.object({
+  query: z.object({ code: z.string().min(1, 'A barcode is required').max(256) }),
+});
+
+export const complianceCheckSchema = z.object({
+  body: z.object({
+    prescriptionId: z.string().uuid().optional(),
+    items: z
+      .array(z.object({ drugBatchId: z.string().uuid('Invalid drug batch ID') }))
+      .min(1, 'At least one item is required'),
   }),
 });
 
@@ -359,6 +378,8 @@ const commitInwardLineSchema = inwardMatchLineSchema
     looseUnitLabel: z.string().max(40).optional(),
     hsnCode: z.string().max(20).optional(),
     manufacturerCode: z.string().max(100).optional(),
+    barcode: z.string().max(64).optional(),
+    storageLocation: z.string().max(100).optional(),
     // Batch / stock-in (mirrors createBatchSchema).
     batchNumber: z.string().min(1, 'Batch number is required').max(100),
     manufacturingDate: z.string().optional(),

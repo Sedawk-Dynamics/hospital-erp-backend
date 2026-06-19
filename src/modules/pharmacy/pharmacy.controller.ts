@@ -163,6 +163,34 @@ export async function matchInward(
   }
 }
 
+// Barcode scan resolve (spec Section 2): one scan → product + batch + expiry + stock.
+export async function resolveScan(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await pharmacyService.resolveScan(req.user!.tenantId, req.query.code as string);
+    sendResponse({ res, message: 'Scan resolved', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Automated compliance pre-check for a cart (HSN/GST/Schedule rules).
+export async function checkSaleCompliance(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await pharmacyService.checkSaleCompliance(req.user!.tenantId, req.body);
+    sendResponse({ res, message: 'Compliance check', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // Product Resolution Engine: list the learned distributor → product mappings.
 export async function getDistributorMappings(
   req: AuthenticatedRequest,
