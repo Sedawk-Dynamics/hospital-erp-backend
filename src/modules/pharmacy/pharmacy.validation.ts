@@ -62,6 +62,7 @@ export const createFormularySchema = z.object({
     contraindications: z.string().optional(),
     // Vital/life-saving — bypasses the IP cash-patient credit-clearance gate.
     isLifeSaving: z.boolean().optional(),
+    isNarcotic: z.boolean().optional(),
     isActive: z.boolean().default(true),
     // G1: set true to create even when a high-confidence near-duplicate exists
     // (the user reviewed the suggestions and chose "create anyway").
@@ -116,6 +117,7 @@ export const updateFormularySchema = z.object({
     indications: z.string().optional().nullable(),
     contraindications: z.string().optional().nullable(),
     isLifeSaving: z.boolean().optional(),
+    isNarcotic: z.boolean().optional(),
     isActive: z.boolean().optional(),
     isRecalled: z.boolean().optional(),
   }),

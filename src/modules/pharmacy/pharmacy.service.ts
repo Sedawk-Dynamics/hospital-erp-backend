@@ -374,6 +374,7 @@ export async function createFormularyItem(
       indications: data.indications,
       contraindications: data.contraindications,
       isLifeSaving: (data as any).isLifeSaving ?? false,
+      isNarcotic: (data as any).isNarcotic ?? false,
       isActive: data.isActive ?? true,
     },
     include: {
@@ -1372,6 +1373,7 @@ export async function updateFormularyItem(
   if (data.indications !== undefined) updateData.indications = data.indications;
   if (data.contraindications !== undefined) updateData.contraindications = data.contraindications;
   if ((data as any).isLifeSaving !== undefined) updateData.isLifeSaving = (data as any).isLifeSaving;
+  if ((data as any).isNarcotic !== undefined) updateData.isNarcotic = (data as any).isNarcotic;
   if (data.isActive !== undefined) updateData.isActive = data.isActive;
   if (data.isRecalled !== undefined) updateData.isRecalled = data.isRecalled;
 

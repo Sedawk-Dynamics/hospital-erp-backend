@@ -1260,6 +1260,10 @@ model Tenant {
   dispensingRecords          DispensingRecord[]
   drugReturns                DrugReturn[]
   distributorProductMaps     DistributorProductMap[]
+  ndpsLocations              NdpsLocation[]
+  ndpsStockBalances          NdpsStockBalance[]
+  ndpsTransactions           NdpsTransaction[]
+  ndpsDailyBalances          NdpsDailyBalance[]
   suppliers                  Supplier[]
   inventoryItems             InventoryItem[]
   stockTransactions          StockTransaction[]
@@ -3959,6 +3963,121 @@ model DistributorProductMap {
   @@map("distributor_product_map")
 }
 
+// ============================================================
+// NDPS Narcotic Accounting (spec — Essential Narcotic Drug lifecycle)
+// ============================================================
+// Indian drug inspectors cross-reference physical narcotic stock against the
+// statutory Form 3C (incoming consignments), Form 3E (patient-wise consumption)
+// and Form 3H (daily account). These models give every Essential Narcotic Drug
+// a continuous, location-aware chain of custody from the Central Vault to the
+// patient's bedside, with dual-authentication on every hand-off.
+
+/// A narcotic stock location — the Central Vault or a sub-store cart (ICU, OT).
+model NdpsLocation {
+  id        String   @id @default(uuid())
+  tenantId  String   @map("tenant_id")
+  name      String   @db.VarChar(120)
+  type      String   @default("sub_store") // 'main_vault' | 'sub_store'
+  wardId    String?  @map("ward_id")
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant   Tenant             @relation(fields: [tenantId], references: [id])
+  balances NdpsStockBalance[]
+
+  @@unique([tenantId, name])
+  @@map("ndps_locations")
+}
+
+/// Live narcotic quantity per drug × location (drives the Inspector's "where are
+/// the vials" breakdown and guards transfers/dispenses from over-drawing).
+model NdpsStockBalance {
+  id              String   @id @default(uuid())
+  tenantId        String   @map("tenant_id")
+  drugFormularyId String   @map("drug_formulary_id")
+  locationId      String   @map("location_id")
+  quantity        Int      @default(0)
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant   Tenant        @relation(fields: [tenantId], references: [id])
+  drug     DrugFormulary @relation(fields: [drugFormularyId], references: [id])
+  location NdpsLocation  @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, drugFormularyId, locationId])
+  @@map("ndps_stock_balances")
+}
+
+/// The master NDPS register. Every row is one statutory event — an inward
+/// consignment (Form 3C), a vault→sub-store transfer (Internal Delivery Challan),
+/// a patient consumption (Form 3E) or a broken/spoiled disposal — carrying the
+/// fields each form mandates. from/to locations are plain ids resolved against
+/// NdpsLocation (kept relation-free so the ledger never blocks a location edit).
+model NdpsTransaction {
+  id              String   @id @default(uuid())
+  tenantId        String   @map("tenant_id")
+  drugFormularyId String   @map("drug_formulary_id")
+  entryType       String   @map("entry_type") // 'inward' | 'transfer' | 'dispense' | 'disposal'
+  quantity        Int
+  fromLocationId  String?  @map("from_location_id")
+  toLocationId    String?  @map("to_location_id")
+  // Form 3C (procurement) — consignment provenance.
+  ndpsLicenseNumber String? @map("ndps_license_number") @db.VarChar(120)
+  form3cNumber      String? @map("form_3c_number") @db.VarChar(120)
+  transportDetails  String? @map("transport_details")
+  grossWeight       String? @map("gross_weight") @db.VarChar(60)
+  supplierId        String? @map("supplier_id")
+  batchNumber       String? @map("batch_number") @db.VarChar(100)
+  expiryDate        DateTime? @map("expiry_date") @db.Date
+  // Form 3E (patient consumption) — mandatory audit fields.
+  patientId   String? @map("patient_id")
+  doctorRegNo String? @map("doctor_reg_no") @db.VarChar(60)
+  bedNumber   String? @map("bed_number") @db.VarChar(40)
+  diagnosis   String?
+  // Disposal — non-clinical loss accounting.
+  reasonCode      String? @map("reason_code") @db.VarChar(40) // 'breakage' | 'contamination' | 'expiry' | 'other'
+  referenceNumber String? @map("reference_number") @db.VarChar(120) // police complaint / destruction memo
+  attachmentUrl   String? @map("attachment_url")
+  coSignById      String? @map("co_sign_by_id")
+  // Chain of custody — who recorded it + the counterparty who received it.
+  recordedById   String  @map("recorded_by_id")
+  counterpartyId String? @map("counterparty_id")
+  notes          String?
+  occurredAt     DateTime @default(now()) @map("occurred_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  tenant Tenant        @relation(fields: [tenantId], references: [id])
+  drug   DrugFormulary @relation(fields: [drugFormularyId], references: [id])
+
+  @@index([tenantId, entryType, occurredAt])
+  @@index([tenantId, drugFormularyId, occurredAt])
+  @@map("ndps_transactions")
+}
+
+/// Form 3H — the daily account. A nightly cutoff hard-writes one row per narcotic
+/// drug: opening + received − dispensed − disposed = closing, which the
+/// pharmacist signs against a physical count the next morning.
+model NdpsDailyBalance {
+  id              String   @id @default(uuid())
+  tenantId        String   @map("tenant_id")
+  drugFormularyId String   @map("drug_formulary_id")
+  date            DateTime @db.Date
+  openingBalance  Int      @map("opening_balance")
+  received        Int      @default(0)
+  dispensed       Int      @default(0)
+  disposed        Int      @default(0)
+  closingBalance  Int      @map("closing_balance")
+  physicalCount   Int?     @map("physical_count")
+  isVerified      Boolean  @default(false) @map("is_verified")
+  verifiedById    String?  @map("verified_by_id")
+  closedAt        DateTime @default(now()) @map("closed_at")
+
+  tenant Tenant        @relation(fields: [tenantId], references: [id])
+  drug   DrugFormulary @relation(fields: [drugFormularyId], references: [id])
+
+  @@unique([tenantId, drugFormularyId, date])
+  @@map("ndps_daily_balances")
+}
+
 model DrugCategory {
   id          String   @id @default(uuid())
   tenantId    String   @map("tenant_id")
@@ -4012,6 +4131,9 @@ model DrugFormulary {
   // (cash patient over deposit) is bypassed for these so emergency dosing is
   // never withheld for money. Defaults to false.
   isLifeSaving      Boolean     @default(false) @map("is_life_saving")
+  // NDPS Essential Narcotic Drug — when true this drug is governed by the
+  // narcotic accounting workflow (Form 3C/3E/3H, vault custody, dual-auth).
+  isNarcotic        Boolean     @default(false) @map("is_narcotic")
   // Provenance: set when this formulary row was imported from the platform
   // DrugMaster catalog (vs. hospital-authored). Drives import dedupe.
   drugMasterId      String?     @map("drug_master_id")
@@ -4026,6 +4148,9 @@ model DrugFormulary {
   drugReturns         DrugReturn[]
   purchaseOrderItems  DrugPurchaseOrderItem[]
   distributorMappings DistributorProductMap[]
+  ndpsBalances        NdpsStockBalance[]
+  ndpsTransactions    NdpsTransaction[]
+  ndpsDailyBalances   NdpsDailyBalance[]
 
   @@map("drug_formulary")
 }

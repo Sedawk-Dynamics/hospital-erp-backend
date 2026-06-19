@@ -8,6 +8,7 @@ import { runSubscriptionJobs } from './jobs/subscription-reminders';
 import { runInsuranceExpiryJob } from './jobs/insurance-expiry';
 import { runAppointmentReminderJob } from './jobs/appointment-reminders';
 import { runInventoryAlertsJob } from './jobs/inventory-alerts';
+import { runNdpsDailyCloseJob } from './jobs/ndps-daily-close';
 import { archiveStaleOpProgressNotes } from './modules/progress-notes/progress-notes.service';
 import { tickLifecycle as emarTickLifecycle } from './modules/emar/emar.service';
 
@@ -72,6 +73,16 @@ setTimeout(() => {
 setInterval(() => {
   runInventoryAlertsJob().catch((err) => logger.error({ err }, 'Inventory alerts job failed'));
 }, TWELVE_HOURS);
+
+// NDPS Form 3H daily close across tenants (hourly; idempotent — overwrites the
+// day's row each run so the books stay accurate even after late entries). A
+// dedicated external cron can also POST /ndps/daily-close at the legal cutoff.
+setTimeout(() => {
+  runNdpsDailyCloseJob().catch((err) => logger.error({ err }, 'NDPS daily close job failed on startup'));
+}, 210_000);
+setInterval(() => {
+  runNdpsDailyCloseJob().catch((err) => logger.error({ err }, 'NDPS daily close job failed'));
+}, ONE_HOUR);
 
 // Graceful shutdown
 const shutdown = async (signal: string) => {
