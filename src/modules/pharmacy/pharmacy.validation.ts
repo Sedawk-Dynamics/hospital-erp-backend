@@ -210,6 +210,8 @@ export const createBatchSchema = z.object({
     // omitted an internal Code-128 is minted from the batch id.
     barcode: z.string().max(64).optional(),
     storageLocation: z.string().max(100).optional(),
+    // GS1 DataMatrix serial (AI 21) read from the 2D scan, kept for traceability.
+    serialNumber: z.string().max(80).optional(),
     // Manual GRN Step 6: when a batch with this number already exists, set this
     // to fold the received quantity into the existing batch (Increase Quantity)
     // instead of erroring.
@@ -453,6 +455,14 @@ export const distributorMappingsQuerySchema = z.object({
 export const inwardScanQuerySchema = z.object({
   query: z.object({
     code: z.string().min(1, 'No barcode provided').max(512),
+  }),
+});
+
+// Remember an unknown barcode against a chosen drug (stock-entry fallback).
+export const attachBarcodeSchema = z.object({
+  body: z.object({
+    gtin: z.string().min(1, 'No barcode provided').max(64),
+    drugId: z.string().uuid('Invalid drug ID'),
   }),
 });
 

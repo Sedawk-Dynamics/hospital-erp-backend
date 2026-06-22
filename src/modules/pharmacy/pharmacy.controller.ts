@@ -267,6 +267,20 @@ export async function resolveInwardScan(
   }
 }
 
+// Remember an unknown barcode against a chosen drug so future scans resolve.
+export async function attachBarcode(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await pharmacyService.attachBarcodeToDrug(req.user!.tenantId, req.user!.userId, req.body);
+    sendResponse({ res, message: 'Barcode mapped to drug', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // Barcode scan resolve (spec Section 2): one scan → product + batch + expiry + stock.
 export async function resolveScan(
   req: AuthenticatedRequest,

@@ -741,7 +741,7 @@ export async function matchInwardLines(
 }
 
 /** How an inward scan was resolved, highest-confidence first. */
-export type InwardScanVia = 'formulary_gtin' | 'drugmaster_gtin' | 'gs1' | 'none';
+export type InwardScanVia = 'formulary_gtin' | 'mapping_gtin' | 'drugmaster_gtin' | 'gs1' | 'none';
 
 /**
  * Resolve a scan taken at STOCK ENTRY (goods inward) — distinct from the POS
@@ -815,33 +815,101 @@ export async function resolveInwardScan(tenantId: string, code: string) {
         hsnCode: f.hsnCode,
       });
     } else {
-      // Tier 2 — known in the platform catalog; pre-fill so the user can create
-      // (or import) the formulary row with correct identity in one step.
-      const m = await prisma.drugMaster.findFirst({
-        where: { OR: [{ gtin }, { casePackGtin: gtin }] },
-        select: {
-          name: true, genericName: true, manufacturer: true, strength: true,
-          dosageForm: true, packSize: true, hsnCode: true,
-          gtin: true, casePackGtin: true, unitsPerCase: true,
+      // Tier 1.5 — a remembered barcode→drug mapping for this tenant (saved when an
+      // unknown barcode was confirmed against a drug), so future scans resolve.
+      const mapped = await prisma.distributorProductMap.findFirst({
+        where: { tenantId, gtin },
+        orderBy: { timesSeen: 'desc' },
+        include: {
+          drugFormulary: {
+            select: {
+              id: true, drugName: true, genericName: true, manufacturer: true,
+              strength: true, dosageForm: true, packSize: true, hsnCode: true,
+            },
+          },
         },
       });
-      if (m) {
-        via = 'drugmaster_gtin';
-        caseMultiplier = m.casePackGtin === gtin && m.gtin !== gtin ? Math.max(1, m.unitsPerCase ?? 1) : 1;
+      if (mapped?.drugFormulary) {
+        const fm = mapped.drugFormulary;
+        via = 'mapping_gtin';
+        suggestedFormularyId = fm.id;
         Object.assign(line, {
-          drugName: m.name,
-          genericName: m.genericName,
-          manufacturer: m.manufacturer,
-          strength: m.strength,
-          dosageForm: m.dosageForm,
-          packSize: m.packSize,
-          hsnCode: m.hsnCode,
+          drugName: fm.drugName,
+          genericName: fm.genericName,
+          manufacturer: fm.manufacturer,
+          strength: fm.strength,
+          dosageForm: fm.dosageForm,
+          packSize: fm.packSize,
+          hsnCode: fm.hsnCode,
         });
+      } else {
+        // Tier 2 — known in the platform catalog; pre-fill so the user can create
+        // (or import) the formulary row with correct identity in one step.
+        const m = await prisma.drugMaster.findFirst({
+          where: { OR: [{ gtin }, { casePackGtin: gtin }] },
+          select: {
+            name: true, genericName: true, manufacturer: true, strength: true,
+            dosageForm: true, packSize: true, hsnCode: true,
+            gtin: true, casePackGtin: true, unitsPerCase: true,
+          },
+        });
+        if (m) {
+          via = 'drugmaster_gtin';
+          caseMultiplier = m.casePackGtin === gtin && m.gtin !== gtin ? Math.max(1, m.unitsPerCase ?? 1) : 1;
+          Object.assign(line, {
+            drugName: m.name,
+            genericName: m.genericName,
+            manufacturer: m.manufacturer,
+            strength: m.strength,
+            dosageForm: m.dosageForm,
+            packSize: m.packSize,
+            hsnCode: m.hsnCode,
+          });
+        }
       }
     }
   }
 
   return { resolvedVia: via, gtin: gtin ?? null, caseMultiplier, parsed, suggestedFormularyId, line };
+}
+
+/**
+ * Remember a barcode → drug mapping. Used by the stock-entry fallback: when a
+ * scanned 1D/2D barcode resolves to nothing, the admin picks the medicine and we
+ * persist the GTIN so future scans auto-resolve. The consumer GTIN is backfilled
+ * onto the formulary drug when empty (so the POS scan also benefits), and the
+ * pair is recorded in the learned-mapping table (covering 2nd/3rd barcodes too).
+ */
+export async function attachBarcodeToDrug(
+  tenantId: string,
+  userId: string,
+  data: { gtin: string; drugId: string },
+) {
+  const gtin = (data.gtin ?? '').trim();
+  if (!gtin) throw AppError.badRequest('No barcode provided');
+  const drug = await prisma.drugFormulary.findFirst({
+    where: { id: data.drugId, tenantId },
+    select: { id: true, drugName: true },
+  });
+  if (!drug) throw AppError.notFound('Drug not found in formulary');
+
+  await backfillFormularyIdentity(tenantId, drug.id, { gtin });
+  await learnDistributorMapping(tenantId, userId, {
+    supplierId: null,
+    externalName: gtin,
+    gtin,
+    drugFormularyId: drug.id,
+  });
+  void safePharmacyAudit({
+    tenantId,
+    userId,
+    action: 'update',
+    entityType: 'drug_formulary',
+    entityId: drug.id,
+    description: `Barcode ${gtin} mapped to ${drug.drugName}`,
+    newValues: { gtin },
+  });
+  return { ok: true, gtin, drugId: drug.id };
 }
 
 /**
@@ -1626,6 +1694,7 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
       quantityReceived: data.quantityReceived,
       quantityInStock: data.quantityReceived,
       storageLocation: (data as any).storageLocation ?? null,
+      serialNumber: (data as any).serialNumber ?? null,
       barcode: ((data as any).barcode as string | undefined)?.trim() || makeInternalBarcode(batchId),
     },
     include: {
