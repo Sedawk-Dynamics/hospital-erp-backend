@@ -68,7 +68,6 @@ describe('Inventory Service', () => {
     it('should create a supplier successfully', async () => {
       const input = {
         name: 'MedSupply Inc.',
-        contactPerson: 'John Doe',
         phone: '+1234567890',
         email: 'john@medsupply.com',
         supplyType: 'pharmaceutical',
@@ -88,7 +87,6 @@ describe('Inventory Service', () => {
         data: expect.objectContaining({
           tenantId: TENANT_ID,
           name: 'MedSupply Inc.',
-          contactPerson: 'John Doe',
           isActive: true,
         }),
       });
@@ -122,7 +120,6 @@ describe('Inventory Service', () => {
       const findManyCall = (prisma.supplier.findMany as any).mock.calls[0][0];
       expect(findManyCall.where.OR).toEqual([
         { name: { contains: 'Med', mode: 'insensitive' } },
-        { contactPerson: { contains: 'Med', mode: 'insensitive' } },
         { email: { contains: 'Med', mode: 'insensitive' } },
       ]);
     });

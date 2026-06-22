@@ -4488,7 +4488,6 @@ model Supplier {
   id            String      @id @default(uuid())
   tenantId      String      @map("tenant_id")
   name          String      @db.VarChar(255)
-  contactPerson String?     @map("contact_person") @db.VarChar(100)
   phone         String?     @db.VarChar(20)
   email         String?     @db.VarChar(255)
   address       String?

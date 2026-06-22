@@ -371,13 +371,13 @@ describe('Pharmacy — feature coverage (G1–G17 + credit gate + GRN gaps)', ()
     });
 
     it('vendor-wise aggregates paid value + medicines and carries vendor metadata', async () => {
-      const acme = { id: 's1', name: 'Acme', contactPerson: 'Ravi', phone: '99999', email: 'a@acme', address: 'MG Rd', gstNumber: '29ABCDE1234F1Z5', licenseNumber: 'DL-21B/22B-001', supplyType: 'manufacturer' };
+      const acme = { id: 's1', name: 'Acme', phone: '99999', email: 'a@acme', address: 'MG Rd', gstNumber: '29ABCDE1234F1Z5', licenseNumber: 'DL-21B/22B-001', supplyType: 'manufacturer' };
       (prisma.drugBatch.findMany as any).mockResolvedValue([
         { drugId: 'd1', supplierId: 's1', quantityReceived: 100, quantityInStock: 80, purchasePrice: 10, purchaseDiscountPercent: 0, supplier: acme },
         { drugId: 'd2', supplierId: 's1', quantityReceived: 50, quantityInStock: 50, purchasePrice: 20, purchaseDiscountPercent: 10, supplier: acme },
       ]);
       const r = await getVendorWiseReport(TENANT_ID);
-      expect(r.items[0]).toMatchObject({ supplierId: 's1', supplierName: 'Acme', medicineCount: 2, batchCount: 2, gstNumber: '29ABCDE1234F1Z5', licenseNumber: 'DL-21B/22B-001', contactPerson: 'Ravi' });
+      expect(r.items[0]).toMatchObject({ supplierId: 's1', supplierName: 'Acme', medicineCount: 2, batchCount: 2, gstNumber: '29ABCDE1234F1Z5', licenseNumber: 'DL-21B/22B-001' });
       expect(r.items[0].totalPaid).toBe(1900); // 100×10 + 50×20×0.9
       expect(r.vendor).toBeNull(); // no vendor selected
     });
@@ -385,11 +385,11 @@ describe('Pharmacy — feature coverage (G1–G17 + credit gate + GRN gaps)', ()
     it('vendor-wise auto-populates the selected vendor metadata even with no purchases', async () => {
       (prisma.drugBatch.findMany as any).mockResolvedValue([]);
       (prisma.supplier.findFirst as any).mockResolvedValue({
-        id: 's9', name: 'NewVendor', contactPerson: 'Asha', phone: '12345', email: 'n@v', address: 'Park St', gstNumber: '07PQRS9876K1Z2', licenseNumber: 'DL-9', supplyType: 'distributor', isActive: true,
+        id: 's9', name: 'NewVendor', phone: '12345', email: 'n@v', address: 'Park St', gstNumber: '07PQRS9876K1Z2', licenseNumber: 'DL-9', supplyType: 'distributor', isActive: true,
       });
       const r = await getVendorWiseReport(TENANT_ID, 's9');
       expect(r.items).toHaveLength(0);
-      expect(r.vendor).toMatchObject({ id: 's9', name: 'NewVendor', gstNumber: '07PQRS9876K1Z2', licenseNumber: 'DL-9', contactPerson: 'Asha' });
+      expect(r.vendor).toMatchObject({ id: 's9', name: 'NewVendor', gstNumber: '07PQRS9876K1Z2', licenseNumber: 'DL-9' });
     });
 
     it('daily transaction report buckets collections by payment mode', async () => {

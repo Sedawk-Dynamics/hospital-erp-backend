@@ -4462,7 +4462,6 @@ export async function getVendorWiseReport(tenantId: string, supplierId?: string)
         select: {
           id: true,
           name: true,
-          contactPerson: true,
           phone: true,
           email: true,
           address: true,
@@ -4476,7 +4475,6 @@ export async function getVendorWiseReport(tenantId: string, supplierId?: string)
   });
 
   type VendorMeta = {
-    contactPerson: string | null;
     phone: string | null;
     email: string | null;
     address: string | null;
@@ -4511,7 +4509,6 @@ export async function getVendorWiseReport(tenantId: string, supplierId?: string)
         drugIds: new Set<string>(),
         batchCount: 0,
         meta: {
-          contactPerson: b.supplier?.contactPerson ?? null,
           phone: b.supplier?.phone ?? null,
           email: b.supplier?.email ?? null,
           address: b.supplier?.address ?? null,
@@ -4549,7 +4546,6 @@ export async function getVendorWiseReport(tenantId: string, supplierId?: string)
       select: {
         id: true,
         name: true,
-        contactPerson: true,
         phone: true,
         email: true,
         address: true,
@@ -4564,7 +4560,6 @@ export async function getVendorWiseReport(tenantId: string, supplierId?: string)
         id: s.id,
         name: s.name,
         isActive: s.isActive,
-        contactPerson: s.contactPerson ?? null,
         phone: s.phone ?? null,
         email: s.email ?? null,
         address: s.address ?? null,
@@ -4716,7 +4711,7 @@ export async function getReorderList(tenantId: string) {
 // an open (draft/sent) PO are skipped so repeated generation never duplicates.
 
 const DRUG_PO_INCLUDE = {
-  supplier: { select: { id: true, name: true, gstNumber: true, phone: true, contactPerson: true } },
+  supplier: { select: { id: true, name: true, gstNumber: true, phone: true } },
   items: {
     include: { drug: { select: { id: true, drugName: true, strength: true, manufacturer: true } } },
   },

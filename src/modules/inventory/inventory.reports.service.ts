@@ -352,7 +352,7 @@ export async function getReorderHistoryReport(tenantId: string, query: ReorderHi
       skip,
       take,
       include: {
-        supplier: { select: { id: true, name: true, contactPerson: true, phone: true } },
+        supplier: { select: { id: true, name: true, phone: true } },
         approver: { select: { id: true, firstName: true, lastName: true } },
         items: {
           include: {

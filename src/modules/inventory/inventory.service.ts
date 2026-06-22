@@ -84,7 +84,6 @@ export async function createSupplier(tenantId: string, data: CreateSupplierInput
     data: {
       tenantId,
       name: data.name,
-      contactPerson: data.contactPerson,
       phone: data.phone,
       email: data.email,
       address: data.address,
@@ -110,7 +109,6 @@ export async function getSuppliers(tenantId: string, query: GetSuppliersQuery) {
   if (query.search) {
     where.OR = [
       { name: { contains: query.search, mode: 'insensitive' } },
-      { contactPerson: { contains: query.search, mode: 'insensitive' } },
       { email: { contains: query.search, mode: 'insensitive' } },
     ];
   }
@@ -158,7 +156,6 @@ export async function updateSupplier(tenantId: string, id: string, data: UpdateS
 
   const updateData: any = {};
   if (data.name !== undefined) updateData.name = data.name;
-  if (data.contactPerson !== undefined) updateData.contactPerson = data.contactPerson;
   if (data.phone !== undefined) updateData.phone = data.phone;
   if (data.email !== undefined) updateData.email = data.email;
   if (data.address !== undefined) updateData.address = data.address;
@@ -891,7 +888,7 @@ export async function getPurchaseOrderById(tenantId: string, id: string) {
     where: { id, tenantId },
     include: {
       supplier: {
-        select: { id: true, name: true, contactPerson: true, phone: true, email: true },
+        select: { id: true, name: true, phone: true, email: true },
       },
       approver: {
         select: { id: true, firstName: true, lastName: true },

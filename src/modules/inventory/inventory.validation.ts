@@ -18,7 +18,6 @@ export const idParamSchema = z.object({
 export const createSupplierSchema = z.object({
   body: z.object({
     name: z.string().min(1, 'Supplier name is required').max(255),
-    contactPerson: z.string().max(100).optional(),
     phone: z.string().max(20).optional(),
     email: z.string().email('Invalid email').max(255).optional(),
     address: z.string().max(1000).optional(),
@@ -32,7 +31,6 @@ export const createSupplierSchema = z.object({
 export const updateSupplierSchema = z.object({
   body: z.object({
     name: z.string().min(1).max(255).optional(),
-    contactPerson: z.string().max(100).optional().nullable(),
     phone: z.string().max(20).optional().nullable(),
     email: z.string().email('Invalid email').max(255).optional().nullable(),
     address: z.string().max(1000).optional().nullable(),
