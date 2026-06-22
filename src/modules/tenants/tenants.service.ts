@@ -312,7 +312,6 @@ export const tenantsService = {
       await tx.drugReturn.deleteMany({ where: { tenantId } });
       await tx.drugBatch.deleteMany({ where: { tenantId } });
       await tx.drugFormulary.deleteMany({ where: { tenantId } });
-      await tx.drugCategory.deleteMany({ where: { tenantId } });
 
       await tx.labOrder.deleteMany({ where: { tenantId } });
       await tx.labTestCatalog.deleteMany({ where: { tenantId } });

@@ -7,10 +7,6 @@ import { uploadSingle } from '../../services/upload.service';
 import type { AuthenticatedRequest } from '../../shared/types';
 import * as controller from './pharmacy.controller';
 import {
-  createCategorySchema,
-  getCategoriesQuerySchema,
-  updateCategorySchema,
-  categoryIdParamSchema,
   createFormularySchema,
   findFormularyMatchesSchema,
   mergeFormularySchema,
@@ -80,12 +76,6 @@ import {
 } from './pharmacy.validation';
 
 export const pharmacyRoutes = Router();
-
-// --- Drug Categories ---
-pharmacyRoutes.post('/categories', authenticate, requirePermission('pharmacy', 'create'), validate(createCategorySchema), controller.createDrugCategory);
-pharmacyRoutes.get('/categories', authenticate, requirePermission('pharmacy', 'read'), validate(getCategoriesQuerySchema), controller.getDrugCategories);
-pharmacyRoutes.put('/categories/:id', authenticate, requirePermission('pharmacy', 'update'), validate(updateCategorySchema), controller.updateDrugCategory);
-pharmacyRoutes.delete('/categories/:id', authenticate, requirePermission('pharmacy', 'delete'), validate(categoryIdParamSchema), controller.deleteDrugCategory);
 
 // --- Drug catalog (tenant-facing browse of the platform DrugMaster) ---
 pharmacyRoutes.get('/catalog', authenticate, requirePermission('pharmacy', 'read'), validate(getCatalogQuerySchema), controller.getTenantCatalog);

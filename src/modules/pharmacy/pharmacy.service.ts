@@ -15,8 +15,6 @@ import {
 } from './pharmacy.matching';
 import { parseGs1, makeInternalBarcode, isInternalBarcode } from './pharmacy.barcode';
 import type {
-  CreateCategoryInput,
-  UpdateCategoryInput,
   CreateFormularyInput,
   UpdateFormularyInput,
   ImportFormularyInput,
@@ -114,123 +112,6 @@ export function batchPurchaseEconomics(b: {
 }
 
 // ============================================================
-// Drug Categories
-// ============================================================
-
-export async function createDrugCategory(
-  tenantId: string,
-  roles: string[],
-  data: CreateCategoryInput,
-) {
-  assertPharmacyAdmin(roles, 'create drug categories');
-  const existing = await prisma.drugCategory.findFirst({
-    where: { tenantId, name: data.name },
-  });
-
-  if (existing) {
-    throw AppError.conflict('A drug category with this name already exists');
-  }
-
-  const category = await prisma.drugCategory.create({
-    data: {
-      tenantId,
-      name: data.name,
-      description: data.description,
-    },
-  });
-
-  logger.info({ tenantId, categoryId: category.id }, 'Drug category created');
-  return category;
-}
-
-export async function getDrugCategories(tenantId: string, query: any) {
-  const { skip, take, page, limit } = getPaginationParams(query);
-
-  const where: any = { tenantId };
-
-  if (query.search) {
-    where.OR = [
-      { name: { contains: query.search, mode: 'insensitive' } },
-      { description: { contains: query.search, mode: 'insensitive' } },
-    ];
-  }
-
-  const [categories, total] = await Promise.all([
-    prisma.drugCategory.findMany({
-      where,
-      skip,
-      take,
-      orderBy: { name: 'asc' },
-    }),
-    prisma.drugCategory.count({ where }),
-  ]);
-
-  return { categories, total, page, limit };
-}
-
-export async function updateDrugCategory(
-  tenantId: string,
-  roles: string[],
-  id: string,
-  data: UpdateCategoryInput,
-) {
-  assertPharmacyAdmin(roles, 'edit drug categories');
-  const existing = await prisma.drugCategory.findFirst({
-    where: { id, tenantId },
-  });
-
-  if (!existing) {
-    throw AppError.notFound('Drug category not found');
-  }
-
-  if (data.name && data.name !== existing.name) {
-    const duplicate = await prisma.drugCategory.findFirst({
-      where: { tenantId, name: data.name, id: { not: id } },
-    });
-    if (duplicate) {
-      throw AppError.conflict('A drug category with this name already exists');
-    }
-  }
-
-  const updateData: any = {};
-  if (data.name !== undefined) updateData.name = data.name;
-  if (data.description !== undefined) updateData.description = data.description;
-
-  const category = await prisma.drugCategory.update({
-    where: { id },
-    data: updateData,
-  });
-
-  logger.info({ tenantId, categoryId: id }, 'Drug category updated');
-  return category;
-}
-
-export async function deleteDrugCategory(tenantId: string, id: string) {
-  const existing = await prisma.drugCategory.findFirst({
-    where: { id, tenantId },
-  });
-
-  if (!existing) {
-    throw AppError.notFound('Drug category not found');
-  }
-
-  // Check if any formulary items reference this category
-  const formularyCount = await prisma.drugFormulary.count({
-    where: { tenantId, categoryId: id },
-  });
-
-  if (formularyCount > 0) {
-    throw AppError.badRequest(
-      `Cannot delete category. ${formularyCount} formulary item(s) are linked to this category.`,
-    );
-  }
-
-  await prisma.drugCategory.delete({ where: { id } });
-
-  logger.info({ tenantId, categoryId: id }, 'Drug category deleted');
-}
-
-// ============================================================
 // Formulary
 // ============================================================
 
@@ -322,16 +203,6 @@ export async function createFormularyItem(
   data: CreateFormularyInput & { force?: boolean },
 ) {
   assertPharmacyAdmin(roles, 'add formulary drugs');
-  // Validate category exists if provided
-  if (data.categoryId) {
-    const category = await prisma.drugCategory.findFirst({
-      where: { id: data.categoryId, tenantId },
-    });
-    if (!category) {
-      throw AppError.notFound('Drug category not found');
-    }
-  }
-
   // G1 duplicate guard: unless the user explicitly forced creation, refuse to
   // silently add a new row when a high-confidence near-duplicate already exists
   // (e.g. "Telmac 40 Tab" when "Telmac 40" is on file). The caller gets the
@@ -355,7 +226,6 @@ export async function createFormularyItem(
       tenantId,
       drugName: data.drugName,
       genericName: data.genericName,
-      categoryId: data.categoryId,
       manufacturer: data.manufacturer,
       dosageForm: data.dosageForm as any,
       strength: data.strength,
@@ -377,9 +247,6 @@ export async function createFormularyItem(
       isNarcotic: (data as any).isNarcotic ?? false,
       isReimbursable: (data as any).isReimbursable ?? true,
       isActive: data.isActive ?? true,
-    },
-    include: {
-      category: { select: { id: true, name: true } },
     },
   });
 
@@ -1005,7 +872,6 @@ export async function commitInward(
           manufacturer: line.manufacturer ?? undefined,
           dosageForm: line.dosageForm as CreateFormularyInput['dosageForm'],
           strength: line.strength ?? undefined,
-          categoryId: line.categoryId,
           packSize: line.packSize,
           looseUnitLabel: line.looseUnitLabel,
           taxPercent: line.gstPercent,
@@ -1144,17 +1010,9 @@ export async function importFormularyItem(
   if (!master) throw AppError.notFound('Drug not found in catalog');
   if (!master.isPublished) throw AppError.badRequest('Drug is not published in the catalog');
 
-  if (data.categoryId) {
-    const category = await prisma.drugCategory.findFirst({
-      where: { id: data.categoryId, tenantId },
-    });
-    if (!category) throw AppError.notFound('Drug category not found');
-  }
-
   // Dedupe: a tenant should only have one formulary row per catalog entry.
   const existing = await prisma.drugFormulary.findFirst({
     where: { tenantId, drugMasterId: master.id },
-    include: { category: { select: { id: true, name: true } } },
   });
   if (existing) return { item: existing, status: 'already_imported' as const };
 
@@ -1174,7 +1032,6 @@ export async function importFormularyItem(
       // Catalog columns are wider than the formulary's — clamp to the formulary
       // column widths (genericName 255, unitOfMeasurement 20) to avoid overflow.
       genericName: master.genericName?.slice(0, 255) ?? null,
-      categoryId: data.categoryId ?? null,
       manufacturer: master.manufacturer,
       dosageForm: master.dosageForm,
       strength: master.strength,
@@ -1196,7 +1053,6 @@ export async function importFormularyItem(
       price: data.price ?? perBaseUnitPrice(master.mrp, packSize),
       isActive: true,
     },
-    include: { category: { select: { id: true, name: true } } },
   });
 
   logger.info(
@@ -1214,17 +1070,10 @@ export async function importFormularyItem(
 export async function importFormularyItemsBulk(
   tenantId: string,
   roles: string[],
-  data: { drugMasterIds: string[]; categoryId?: string },
+  data: { drugMasterIds: string[] },
 ) {
   assertPharmacyAdmin(roles, 'import drugs into the formulary');
   const ids = Array.from(new Set(data.drugMasterIds));
-
-  if (data.categoryId) {
-    const category = await prisma.drugCategory.findFirst({
-      where: { id: data.categoryId, tenantId },
-    });
-    if (!category) throw AppError.notFound('Drug category not found');
-  }
 
   const [masters, already] = await Promise.all([
     prisma.drugMaster.findMany({ where: { id: { in: ids }, isPublished: true } }),
@@ -1253,7 +1102,6 @@ export async function importFormularyItemsBulk(
           // Clamp to the formulary column widths (catalog columns are wider):
           // genericName 255 (catalog 500), unitOfMeasurement 20 (packSizeLabel 255).
           genericName: m.genericName?.slice(0, 255) ?? null,
-          categoryId: data.categoryId ?? null,
           manufacturer: m.manufacturer,
           dosageForm: m.dosageForm,
           strength: m.strength,
@@ -1352,7 +1200,6 @@ export async function getFormulary(tenantId: string, query: GetFormularyQuery) {
 
   const where: any = { tenantId };
 
-  if (query.categoryId) where.categoryId = query.categoryId;
   if (query.dosageForm) where.dosageForm = query.dosageForm;
   if (query.isActive !== undefined) where.isActive = query.isActive;
 
@@ -1383,7 +1230,6 @@ export async function getFormulary(tenantId: string, query: GetFormularyQuery) {
       skip,
       take,
       include: {
-        category: { select: { id: true, name: true } },
         // Only the in-stock batches — drives the per-row stock summary.
         drugBatches: {
           where: availableBatchFilter,
@@ -1421,7 +1267,6 @@ export async function getFormularyItemById(tenantId: string, id: string) {
   const item = await prisma.drugFormulary.findFirst({
     where: { id, tenantId },
     include: {
-      category: { select: { id: true, name: true } },
       drugBatches: {
         where: { isExpired: false, isRecalled: false, quantityInStock: { gt: 0 } },
         select: {
@@ -1515,20 +1360,9 @@ export async function updateFormularyItem(
     throw AppError.notFound('Formulary item not found');
   }
 
-  // Validate category if being changed
-  if (data.categoryId) {
-    const category = await prisma.drugCategory.findFirst({
-      where: { id: data.categoryId, tenantId },
-    });
-    if (!category) {
-      throw AppError.notFound('Drug category not found');
-    }
-  }
-
   const updateData: any = {};
   if (data.drugName !== undefined) updateData.drugName = data.drugName;
   if (data.genericName !== undefined) updateData.genericName = data.genericName;
-  if (data.categoryId !== undefined) updateData.categoryId = data.categoryId;
   if (data.manufacturer !== undefined) updateData.manufacturer = data.manufacturer;
   if (data.dosageForm !== undefined) updateData.dosageForm = data.dosageForm;
   if (data.strength !== undefined) updateData.strength = data.strength;
@@ -1554,9 +1388,6 @@ export async function updateFormularyItem(
   const item = await prisma.drugFormulary.update({
     where: { id },
     data: updateData,
-    include: {
-      category: { select: { id: true, name: true } },
-    },
   });
 
   logger.info({ tenantId, formularyId: id }, 'Formulary item updated');
@@ -5701,7 +5532,7 @@ export async function getPharmacyAnalytics(
           select: {
             sellingPrice: true,
             purchasePrice: true,
-            drug: { select: { id: true, drugName: true, category: { select: { id: true, name: true } } } },
+            drug: { select: { id: true, drugName: true } },
           },
         },
       },
@@ -5768,18 +5599,6 @@ export async function getPharmacyAnalytics(
   }
   const topDrugs = Array.from(drugTally.values()).sort((a, b) => b.qty - a.qty).slice(0, 15);
 
-  // Revenue by category
-  const categoryTally = new Map<string, { categoryId: string; categoryName: string; revenue: number }>();
-  for (const r of allDispenses) {
-    const cat = r.drugBatch?.drug?.category;
-    if (!cat) continue;
-    const prev = categoryTally.get(cat.id);
-    const inc = lineRevenue(r);
-    if (prev) prev.revenue += inc;
-    else categoryTally.set(cat.id, { categoryId: cat.id, categoryName: cat.name, revenue: inc });
-  }
-  const revenueByCategory = Array.from(categoryTally.values()).sort((a, b) => b.revenue - a.revenue);
-
   // Sum helpers for sale windows
   const sumRevenue = (rows: typeof todayDispenses) =>
     rows.reduce((s, r) => s + Number(r.drugBatch?.sellingPrice ?? 0) * r.quantityDispensed, 0);
@@ -5821,7 +5640,6 @@ export async function getPharmacyAnalytics(
       rangeRevenue: totalRevenue,
       rangeMargin: totalMargin,
       rangeTransactions: allDispenses.length,
-      revenueByCategory,
     },
     topDrugs,
     expiry: {
@@ -6064,7 +5882,6 @@ export async function getRecalledItems(tenantId: string, query: GetRecalledItems
       ? prisma.drugFormulary.findMany({
           where: { tenantId, isRecalled: true },
           include: {
-            category: { select: { id: true, name: true } },
             _count: { select: { drugBatches: true } },
           },
           orderBy: { updatedAt: 'desc' },
@@ -6101,7 +5918,6 @@ export async function getGstReport(tenantId: string, query: GetGstReportQuery) {
             select: {
               id: true,
               drugName: true,
-              category: { select: { id: true, name: true } },
             },
           },
         },
@@ -6109,10 +5925,10 @@ export async function getGstReport(tenantId: string, query: GetGstReportQuery) {
     },
   });
 
-  // Total taxable & gst per category
-  const categories = new Map<string, {
-    categoryId: string;
-    categoryName: string;
+  // Total taxable & gst per drug
+  const drugs = new Map<string, {
+    drugId: string;
+    drugName: string;
     taxableValue: number;
     gstAmount: number;
     totalAmount: number;
@@ -6135,19 +5951,19 @@ export async function getGstReport(tenantId: string, query: GetGstReportQuery) {
     totalTaxable += taxable;
     totalGst += gst;
 
-    const cat = r.drugBatch?.drug?.category;
-    const catId = cat?.id ?? '__uncat__';
-    const catName = cat?.name ?? 'Uncategorised';
-    const existing = categories.get(catId);
+    const drug = r.drugBatch?.drug;
+    const dId = drug?.id ?? '__unknown__';
+    const dName = drug?.drugName ?? 'Unknown';
+    const existing = drugs.get(dId);
     if (existing) {
       existing.taxableValue += taxable;
       existing.gstAmount += gst;
       existing.totalAmount += lineTotal;
       existing.transactions += 1;
     } else {
-      categories.set(catId, {
-        categoryId: catId,
-        categoryName: catName,
+      drugs.set(dId, {
+        drugId: dId,
+        drugName: dName,
         taxableValue: taxable,
         gstAmount: gst,
         totalAmount: lineTotal,
@@ -6171,7 +5987,7 @@ export async function getGstReport(tenantId: string, query: GetGstReportQuery) {
       igst: 0,
       transactions: records.length,
     },
-    byCategory: Array.from(categories.values())
+    byDrug: Array.from(drugs.values())
       .map((c) => ({
         ...c,
         taxableValue: Number(c.taxableValue.toFixed(2)),

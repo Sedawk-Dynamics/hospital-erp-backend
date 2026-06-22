@@ -1254,7 +1254,6 @@ model Tenant {
   labUnits                   LabUnit[]
   imagingRequests            ImagingRequest[]
   imagingAttachments         ImagingAttachment[]
-  drugCategories             DrugCategory[]
   drugFormulary              DrugFormulary[]
   drugBatches                DrugBatch[]
   dispensingRecords          DispensingRecord[]
@@ -4206,25 +4205,11 @@ model PharmacyStockHoldItem {
   @@map("pharmacy_stock_hold_items")
 }
 
-model DrugCategory {
-  id          String   @id @default(uuid())
-  tenantId    String   @map("tenant_id")
-  name        String   @db.VarChar(100)
-  description String?
-  createdAt   DateTime @default(now()) @map("created_at")
-
-  tenant        Tenant          @relation(fields: [tenantId], references: [id])
-  drugFormulary DrugFormulary[]
-
-  @@map("drug_categories")
-}
-
 model DrugFormulary {
   id                String      @id @default(uuid())
   tenantId          String      @map("tenant_id")
   drugName          String      @map("drug_name") @db.VarChar(255)
   genericName       String?     @map("generic_name") @db.VarChar(255)
-  categoryId        String?     @map("category_id")
   manufacturer      String?     @db.VarChar(255)
   dosageForm        DosageForm? @map("dosage_form")
   strength          String?     @db.VarChar(100)
@@ -4273,7 +4258,6 @@ model DrugFormulary {
   updatedAt         DateTime    @default(now()) @updatedAt @map("updated_at")
 
   tenant             Tenant                  @relation(fields: [tenantId], references: [id])
-  category           DrugCategory?           @relation(fields: [categoryId], references: [id])
   drugMaster         DrugMaster?             @relation(fields: [drugMasterId], references: [id])
   drugBatches         DrugBatch[]
   prescriptionItems   PrescriptionItem[]

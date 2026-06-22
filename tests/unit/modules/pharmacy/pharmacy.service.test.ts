@@ -3,8 +3,6 @@ import { prisma } from '../../../../src/config/database';
 import { AppError } from '../../../../src/shared/appError';
 
 import {
-  createDrugCategory,
-  getDrugCategories,
   createFormularyItem,
   getFormulary,
   createBatch,
@@ -12,7 +10,6 @@ import {
   createDispense,
   createReturn,
   processReturn,
-  deleteDrugCategory,
   verifyDispense,
   getExpiringBatches,
 } from '../../../../src/modules/pharmacy/pharmacy.service';
@@ -65,80 +62,6 @@ describe('Pharmacy Service', () => {
   });
 
   // ============================================================
-  // Drug Categories
-  // ============================================================
-  describe('createDrugCategory', () => {
-    it('should create a drug category successfully', async () => {
-      const input = { name: 'Antibiotics', description: 'Antimicrobial agents' };
-      const expected = { id: 'cat-1', tenantId: TENANT_ID, ...input };
-
-      (prisma.drugCategory.findFirst as any).mockResolvedValue(null);
-      (prisma.drugCategory.create as any).mockResolvedValue(expected);
-
-      const result = await createDrugCategory(TENANT_ID, ADMIN_ROLES, input);
-
-      expect(prisma.drugCategory.findFirst).toHaveBeenCalledWith({
-        where: { tenantId: TENANT_ID, name: 'Antibiotics' },
-      });
-      expect(prisma.drugCategory.create).toHaveBeenCalledWith({
-        data: { tenantId: TENANT_ID, name: 'Antibiotics', description: 'Antimicrobial agents' },
-      });
-      expect(result).toEqual(expected);
-    });
-
-    it('should throw conflict if category name already exists', async () => {
-      (prisma.drugCategory.findFirst as any).mockResolvedValue({ id: 'cat-existing' });
-
-      await expect(
-        createDrugCategory(TENANT_ID, ADMIN_ROLES, { name: 'Antibiotics' } as any),
-      ).rejects.toThrow('A drug category with this name already exists');
-    });
-  });
-
-  describe('getDrugCategories', () => {
-    it('should return paginated drug categories', async () => {
-      const categories = [
-        { id: 'cat-1', name: 'Antibiotics', tenantId: TENANT_ID },
-        { id: 'cat-2', name: 'Analgesics', tenantId: TENANT_ID },
-      ];
-
-      (prisma.drugCategory.findMany as any).mockResolvedValue(categories);
-      (prisma.drugCategory.count as any).mockResolvedValue(2);
-
-      const result = await getDrugCategories(TENANT_ID, { page: 1, limit: 20 });
-
-      expect(result.categories).toEqual(categories);
-      expect(result.total).toBe(2);
-      expect(result.page).toBe(1);
-      expect(result.limit).toBe(20);
-    });
-
-    it('should filter categories by search term', async () => {
-      (prisma.drugCategory.findMany as any).mockResolvedValue([]);
-      (prisma.drugCategory.count as any).mockResolvedValue(0);
-
-      await getDrugCategories(TENANT_ID, { page: 1, limit: 20, search: 'anti' });
-
-      const findManyCall = (prisma.drugCategory.findMany as any).mock.calls[0][0];
-      expect(findManyCall.where.OR).toEqual([
-        { name: { contains: 'anti', mode: 'insensitive' } },
-        { description: { contains: 'anti', mode: 'insensitive' } },
-      ]);
-    });
-  });
-
-  describe('deleteDrugCategory', () => {
-    it('should throw bad request if category has linked formulary items', async () => {
-      (prisma.drugCategory.findFirst as any).mockResolvedValue({ id: 'cat-1', tenantId: TENANT_ID });
-      (prisma.drugFormulary.count as any).mockResolvedValue(3);
-
-      await expect(deleteDrugCategory(TENANT_ID, 'cat-1')).rejects.toThrow(
-        'Cannot delete category. 3 formulary item(s) are linked to this category.',
-      );
-    });
-  });
-
-  // ============================================================
   // Formulary
   // ============================================================
   describe('createFormularyItem', () => {
@@ -146,7 +69,6 @@ describe('Pharmacy Service', () => {
       const input = {
         drugName: 'Amoxicillin',
         genericName: 'Amoxicillin Trihydrate',
-        categoryId: 'cat-1',
         manufacturer: 'PharmaCo',
         dosageForm: 'tablet',
         strength: '500mg',
@@ -159,10 +81,8 @@ describe('Pharmacy Service', () => {
         tenantId: TENANT_ID,
         ...input,
         isActive: true,
-        category: { id: 'cat-1', name: 'Antibiotics' },
       };
 
-      (prisma.drugCategory.findFirst as any).mockResolvedValue({ id: 'cat-1', tenantId: TENANT_ID });
       (prisma.drugFormulary.create as any).mockResolvedValue(created);
 
       // force:true skips the G1 duplicate-suspected guard so a fresh item is created.
@@ -170,24 +90,13 @@ describe('Pharmacy Service', () => {
 
       expect(result.status).toBe('created');
       expect((result as any).item.drugName).toBe('Amoxicillin');
-      expect((result as any).item.category.name).toBe('Antibiotics');
       expect(prisma.drugFormulary.create).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
             tenantId: TENANT_ID,
             drugName: 'Amoxicillin',
-            categoryId: 'cat-1',
           }),
         }),
-      );
-    });
-
-    it('should throw not found if category does not exist', async () => {
-      const input = { drugName: 'Test Drug', categoryId: 'nonexistent' };
-      (prisma.drugCategory.findFirst as any).mockResolvedValue(null);
-
-      await expect(createFormularyItem(TENANT_ID, ADMIN_ROLES, input as any)).rejects.toThrow(
-        'Drug category not found',
       );
     });
   });

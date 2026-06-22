@@ -2,37 +2,6 @@ import { z } from 'zod';
 import { paginationSchema } from '../../shared/pagination';
 
 // ============================================================
-// Drug Categories
-// ============================================================
-
-export const createCategorySchema = z.object({
-  body: z.object({
-    name: z.string().min(1, 'Category name is required').max(100),
-    description: z.string().max(500).optional(),
-  }),
-});
-
-export const updateCategorySchema = z.object({
-  body: z.object({
-    name: z.string().min(1).max(100).optional(),
-    description: z.string().max(500).optional().nullable(),
-  }),
-  params: z.object({
-    id: z.string().uuid('Invalid category ID'),
-  }),
-});
-
-export const categoryIdParamSchema = z.object({
-  params: z.object({
-    id: z.string().uuid('Invalid category ID'),
-  }),
-});
-
-export const getCategoriesQuerySchema = z.object({
-  query: paginationSchema,
-});
-
-// ============================================================
 // Formulary
 // ============================================================
 
@@ -40,7 +9,6 @@ export const createFormularySchema = z.object({
   body: z.object({
     drugName: z.string().min(1, 'Drug name is required').max(255),
     genericName: z.string().max(255).optional(),
-    categoryId: z.string().uuid('Invalid category ID').optional(),
     manufacturer: z.string().max(255).optional(),
     dosageForm: z
       .enum(['tablet', 'capsule', 'syrup', 'injection', 'cream', 'drops', 'inhaler', 'other'])
@@ -97,7 +65,6 @@ export const updateFormularySchema = z.object({
   body: z.object({
     drugName: z.string().min(1).max(255).optional(),
     genericName: z.string().max(255).optional().nullable(),
-    categoryId: z.string().uuid('Invalid category ID').optional().nullable(),
     manufacturer: z.string().max(255).optional().nullable(),
     dosageForm: z
       .enum(['tablet', 'capsule', 'syrup', 'injection', 'cream', 'drops', 'inhaler', 'other'])
@@ -140,7 +107,6 @@ export const formularyIdParamSchema = z.object({
 export const importFormularySchema = z.object({
   body: z.object({
     drugMasterId: z.string().uuid('Invalid drug catalog ID'),
-    categoryId: z.string().uuid('Invalid category ID').optional(),
     price: z.number().nonnegative('Price must be non-negative').optional(),
   }),
 });
@@ -163,13 +129,11 @@ export const importFormularyBulkSchema = z.object({
       .array(z.string().uuid('Invalid drug catalog ID'))
       .min(1, 'Select at least one drug')
       .max(1000, 'Import at most 1000 drugs at a time'),
-    categoryId: z.string().uuid('Invalid category ID').optional(),
   }),
 });
 
 export const getFormularyQuerySchema = z.object({
   query: paginationSchema.extend({
-    categoryId: z.string().uuid().optional(),
     dosageForm: z
       .enum(['tablet', 'capsule', 'syrup', 'injection', 'cream', 'drops', 'inhaler', 'other'])
       .optional(),
@@ -413,7 +377,6 @@ const commitInwardLineSchema = inwardMatchLineSchema
     // the learned mapping key so future imports of this exact name auto-resolve.
     externalName: z.string().max(255).optional(),
     // Used only when creating a new drug.
-    categoryId: z.string().uuid('Invalid category ID').optional(),
     packSize: z.number().int().positive().optional(),
     looseUnitLabel: z.string().max(40).optional(),
     hsnCode: z.string().max(20).optional(),
@@ -937,8 +900,6 @@ export const getStockLedgerQuerySchema = z.object({
 // Type exports
 // ============================================================
 
-export type CreateCategoryInput = z.infer<typeof createCategorySchema>['body'];
-export type UpdateCategoryInput = z.infer<typeof updateCategorySchema>['body'];
 export type CreateFormularyInput = z.infer<typeof createFormularySchema>['body'];
 export type UpdateFormularyInput = z.infer<typeof updateFormularySchema>['body'];
 export type ImportFormularyInput = z.infer<typeof importFormularySchema>['body'];
