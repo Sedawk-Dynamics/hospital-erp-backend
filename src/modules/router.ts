@@ -47,6 +47,7 @@ import { bankLinkingRoutes } from './bank-linking/bank-linking.routes';
 import { onlinePaymentsRoutes } from './online-payments/online-payments.routes';
 import { demoRequestRoutes } from './demo-requests/demo-requests.routes';
 import { drugMasterRoutes } from './drug-master/drug-master.routes';
+import { discountPolicyRoutes } from './discount-policy/discount-policy.routes';
 
 const apiRouter = Router();
 
@@ -98,6 +99,8 @@ apiRouter.use('/pharmacy', authenticate, userTierLimiter, subCheck, requireFeatu
 apiRouter.use('/ndps', authenticate, userTierLimiter, subCheck, requireFeature('pharmacy'), ndpsRoutes);
 apiRouter.use('/ot-kits', authenticate, userTierLimiter, subCheck, requireFeature('pharmacy'), otKitsRoutes);
 apiRouter.use('/inventory', authenticate, userTierLimiter, subCheck, requireFeature('inventory'), inventoryRoutes);
+// Margin-based system-wide discount — separate module, gated on the pharmacy feature.
+apiRouter.use('/discount-policy', authenticate, userTierLimiter, subCheck, requireFeature('pharmacy'), discountPolicyRoutes);
 apiRouter.use('/insurance', authenticate, userTierLimiter, subCheck, requireFeature('insurance'), insuranceRoutes);
 apiRouter.use('/blood-bank', authenticate, userTierLimiter, subCheck, requireFeature('blood_bank'), bloodBankRoutes);
 apiRouter.use('/hr', authenticate, userTierLimiter, subCheck, requireFeature('hr'), hrRoutes);

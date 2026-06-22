@@ -4921,6 +4921,49 @@ model Discount {
 }
 
 // ============================================================
+// Margin-based system-wide discount (separate module — visual refinement)
+// ============================================================
+// A distinct, opt-in module (kept apart from stock entry / bill discounts) that
+// derives the discount a cashier may grant from an item's PROFIT MARGIN rather
+// than from editing each medicine's price. Per-tenant rules map a margin% band
+// to the MAX discount% allowed; at the POS this is surfaced as a hint and
+// enforced as a ceiling. It never mutates stored medicine prices — it only
+// refines what the portal shows/allows. Self-contained sub-module: tenantId is
+// a scalar (no Prisma relation), matching the WardStock pattern above.
+
+/// Singleton per-tenant switch for the margin-discount module.
+model MarginDiscountConfig {
+  id        String   @id @default(uuid())
+  tenantId  String   @unique @map("tenant_id")
+  enabled   Boolean  @default(false)
+  // 'cap' — show the allowed discount AND enforce it as a ceiling at the POS
+  // (default). 'suggest' — show the recommended discount only, no enforcement.
+  mode      String   @default("cap") @db.VarChar(20)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("margin_discount_config")
+}
+
+/// One margin band → max-discount rule. Inclusive band [minMarginPercent,
+/// maxMarginPercent]; a null maxMarginPercent means "this margin and above".
+model MarginDiscountRule {
+  id                 String   @id @default(uuid())
+  tenantId           String   @map("tenant_id")
+  label              String   @db.VarChar(80)
+  minMarginPercent   Decimal  @map("min_margin_percent") @db.Decimal(6, 2)
+  maxMarginPercent   Decimal? @map("max_margin_percent") @db.Decimal(6, 2)
+  maxDiscountPercent Decimal  @map("max_discount_percent") @db.Decimal(5, 2)
+  isActive           Boolean  @default(true) @map("is_active")
+  sortOrder          Int      @default(0) @map("sort_order")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([tenantId, isActive])
+  @@map("margin_discount_rules")
+}
+
+// ============================================================
 // 14. INSURANCE & TPA
 // ============================================================
 
