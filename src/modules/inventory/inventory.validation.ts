@@ -220,6 +220,9 @@ export const receivePurchaseOrderSchema = z.object({
         z.object({
           purchaseOrderItemId: z.string().uuid('Invalid purchase order item ID'),
           quantityReceived: z.number().int().min(0, 'Quantity received cannot be negative'),
+          // Purchase price is captured at ARRIVAL (not at PO creation). Sets the
+          // stock cost / drug-batch purchase price and the PO line value.
+          unitPrice: z.number().min(0).optional(),
           // For DRUG lines these create a real DrugBatch in pharmacy stock, so the
           // batch + expiry are captured at receipt (batch/expiry required when the
           // line is a drug and qty > 0 — enforced in the service).

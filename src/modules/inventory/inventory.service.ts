@@ -1088,17 +1088,23 @@ export async function receivePurchaseOrder(
         );
       }
 
-      // Update the PO item received quantity
+      // Update the PO item received quantity + capture the price entered at
+      // arrival (PO creation no longer takes a price).
       await tx.purchaseOrderItem.update({
         where: { id: poItem.id },
-        data: { quantityReceived: newReceivedQty },
+        data: {
+          quantityReceived: newReceivedQty,
+          ...(receivedItem.unitPrice != null
+            ? { unitPrice: receivedItem.unitPrice, totalPrice: receivedItem.unitPrice * poItem.quantityOrdered }
+            : {}),
+        },
       });
 
       // Post the received stock. A DRUG line lands as a real DrugBatch in pharmacy
       // stock (so purchasing and pharmacy stay connected); an inventory-item line
       // increments InventoryItem stock via a stock_in transaction.
       if (receivedItem.quantityReceived > 0) {
-        const unitCost = toNumber(poItem.unitPrice);
+        const unitCost = receivedItem.unitPrice ?? toNumber(poItem.unitPrice);
 
         if (poItem.drugId) {
           if (!receivedItem.batchNumber || !receivedItem.expiryDate) {
@@ -1179,9 +1185,16 @@ export async function receivePurchaseOrder(
 
     const newStatus = allFullyReceived ? 'delivered' : 'partially_delivered';
 
+    // Recompute the PO value from the per-line prices captured at arrival.
+    const freshItems = await tx.purchaseOrderItem.findMany({
+      where: { purchaseOrderId: id },
+      select: { totalPrice: true },
+    });
+    const totalAmount = freshItems.reduce((s, it) => s + toNumber(it.totalPrice), 0);
+
     const updated = await tx.purchaseOrder.update({
       where: { id },
-      data: { status: newStatus as any },
+      data: { status: newStatus as any, totalAmount: totalAmount || undefined },
       include: {
         supplier: { select: { id: true, name: true } },
         items: {
