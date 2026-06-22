@@ -75,7 +75,7 @@ vi.mock('../src/config/database', () => ({
     inventorySetting: { findUnique: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn(), upsert: vi.fn() },
     stockTransaction: { findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), count: vi.fn(), aggregate: vi.fn() },
     purchaseOrder: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn(), groupBy: vi.fn() },
-    purchaseOrderItem: { create: vi.fn(), update: vi.fn(), deleteMany: vi.fn() },
+    purchaseOrderItem: { findMany: vi.fn(), create: vi.fn(), update: vi.fn(), deleteMany: vi.fn() },
     supplyRequest: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
     supplier: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), count: vi.fn() },
     stockTransfer: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },

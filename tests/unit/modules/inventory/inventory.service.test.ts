@@ -39,6 +39,12 @@ function mockTransaction() {
       create: vi.fn(),
       update: vi.fn(),
       deleteMany: vi.fn(),
+      // receivePurchaseOrder recomputes the PO total from the line prices.
+      findMany: vi.fn().mockResolvedValue([]),
+    },
+    drugBatch: {
+      // Drug PO lines are received as a DrugBatch (none in these item-only tests).
+      create: vi.fn(),
     },
     supplyRequest: {
       update: vi.fn(),
@@ -357,7 +363,7 @@ describe('Inventory Service', () => {
   // Purchase Orders
   // ============================================================
   describe('createPurchaseOrder', () => {
-    it('should create a PO with items in draft status', async () => {
+    it('should create a PO with items in approved (ready-to-receive) status', async () => {
       const input = {
         supplierId: 'supplier-1',
         items: [
@@ -386,7 +392,7 @@ describe('Inventory Service', () => {
         tenantId: TENANT_ID,
         supplierId: 'supplier-1',
         orderNumber: 'PO-20260309-0001',
-        status: 'draft',
+        status: 'approved',
         totalAmount: 3000,
         supplier: { id: 'supplier-1', name: 'MedSupply Inc.' },
         items: [
@@ -410,7 +416,7 @@ describe('Inventory Service', () => {
 
       const result = await createPurchaseOrder(TENANT_ID, input as any);
 
-      expect(result.status).toBe('draft');
+      expect(result.status).toBe('approved');
       expect(result.items).toHaveLength(2);
       expect(result.totalAmount).toBe(3000);
       expect(prisma.purchaseOrder.create).toHaveBeenCalledWith(
@@ -418,7 +424,7 @@ describe('Inventory Service', () => {
           data: expect.objectContaining({
             tenantId: TENANT_ID,
             supplierId: 'supplier-1',
-            status: 'draft',
+            status: 'approved',
           }),
         }),
       );
