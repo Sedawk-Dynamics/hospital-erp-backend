@@ -3,9 +3,12 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
+import { randomUUID } from 'crypto';
 import { safeInventoryAudit } from './inventory.audit';
 import { getInventorySettings, getInventorySettingsSafe } from './inventory.settings.service';
 import { notifyInventoryRecipients, hasOpenInventoryAlert } from './inventory.notify';
+import { makeInternalBarcode } from '../pharmacy/pharmacy.barcode';
+import { safePharmacyAudit } from '../pharmacy/pharmacy.audit';
 import type {
   CreateSupplierInput,
   UpdateSupplierInput,
@@ -752,6 +755,29 @@ export async function getStockTransactionById(tenantId: string, id: string) {
 // Purchase Orders
 // ============================================================
 
+// Verify every PO line points at an existing inventory item or formulary drug.
+async function assertPoLinesExist(
+  tenantId: string,
+  items: Array<{ inventoryItemId?: string; drugId?: string }>,
+) {
+  const itemIds = [...new Set(items.map((i) => i.inventoryItemId).filter((x): x is string => !!x))];
+  const drugIds = [...new Set(items.map((i) => i.drugId).filter((x): x is string => !!x))];
+  if (itemIds.length) {
+    const found = await prisma.inventoryItem.findMany({
+      where: { id: { in: itemIds }, tenantId },
+      select: { id: true },
+    });
+    if (found.length !== itemIds.length) throw AppError.badRequest('One or more inventory items not found');
+  }
+  if (drugIds.length) {
+    const found = await prisma.drugFormulary.findMany({
+      where: { id: { in: drugIds }, tenantId },
+      select: { id: true },
+    });
+    if (found.length !== drugIds.length) throw AppError.badRequest('One or more drugs not found in the formulary');
+  }
+}
+
 export async function createPurchaseOrder(tenantId: string, data: CreatePurchaseOrderInput) {
   // Verify supplier exists
   const supplier = await prisma.supplier.findFirst({
@@ -762,16 +788,8 @@ export async function createPurchaseOrder(tenantId: string, data: CreatePurchase
     throw AppError.notFound('Supplier not found or inactive');
   }
 
-  // Verify all inventory items exist
-  const itemIds = data.items.map((item) => item.inventoryItemId);
-  const existingItems = await prisma.inventoryItem.findMany({
-    where: { id: { in: itemIds }, tenantId },
-    select: { id: true },
-  });
-
-  if (existingItems.length !== itemIds.length) {
-    throw AppError.badRequest('One or more inventory items not found');
-  }
+  // A line references EITHER an inventory item OR a pharmacy drug — verify both.
+  await assertPoLinesExist(tenantId, data.items);
 
   const orderNumber = await generateOrderNumber(tenantId);
 
@@ -782,7 +800,8 @@ export async function createPurchaseOrder(tenantId: string, data: CreatePurchase
     const totalPrice = unitPrice * item.quantityOrdered;
     totalAmount += totalPrice;
     return {
-      inventoryItemId: item.inventoryItemId,
+      inventoryItemId: item.inventoryItemId ?? null,
+      drugId: item.drugId ?? null,
       quantityOrdered: item.quantityOrdered,
       unitPrice: unitPrice || undefined,
       totalPrice: totalPrice || undefined,
@@ -879,6 +898,9 @@ export async function getPurchaseOrderById(tenantId: string, id: string) {
           inventoryItem: {
             select: { id: true, itemName: true, itemCode: true, unitOfMeasurement: true },
           },
+          drug: {
+            select: { id: true, drugName: true, strength: true, dosageForm: true },
+          },
         },
       },
     },
@@ -911,16 +933,8 @@ export async function updatePurchaseOrder(
   const result = await prisma.$transaction(async (tx) => {
     // Update items if provided
     if (data.items) {
-      // Verify all inventory items exist
-      const itemIds = data.items.map((item) => item.inventoryItemId);
-      const existingItems = await tx.inventoryItem.findMany({
-        where: { id: { in: itemIds }, tenantId },
-        select: { id: true },
-      });
-
-      if (existingItems.length !== itemIds.length) {
-        throw AppError.badRequest('One or more inventory items not found');
-      }
+      // A line references an inventory item OR a drug — verify both.
+      await assertPoLinesExist(tenantId, data.items);
 
       // Delete existing items and recreate
       await tx.purchaseOrderItem.deleteMany({
@@ -936,7 +950,8 @@ export async function updatePurchaseOrder(
         await tx.purchaseOrderItem.create({
           data: {
             purchaseOrderId: id,
-            inventoryItemId: item.inventoryItemId,
+            inventoryItemId: item.inventoryItemId ?? null,
+            drugId: item.drugId ?? null,
             quantityOrdered: item.quantityOrdered,
             unitPrice: unitPrice || undefined,
             totalPrice: totalPrice || undefined,
@@ -1079,33 +1094,74 @@ export async function receivePurchaseOrder(
         data: { quantityReceived: newReceivedQty },
       });
 
-      // Create stock transaction for receiving
+      // Post the received stock. A DRUG line lands as a real DrugBatch in pharmacy
+      // stock (so purchasing and pharmacy stay connected); an inventory-item line
+      // increments InventoryItem stock via a stock_in transaction.
       if (receivedItem.quantityReceived > 0) {
         const unitCost = toNumber(poItem.unitPrice);
 
-        await tx.stockTransaction.create({
-          data: {
+        if (poItem.drugId) {
+          if (!receivedItem.batchNumber || !receivedItem.expiryDate) {
+            throw AppError.badRequest('Batch number and expiry date are required to receive a drug line');
+          }
+          const batchId = randomUUID();
+          const batch = await tx.drugBatch.create({
+            data: {
+              id: batchId,
+              tenantId,
+              drugId: poItem.drugId,
+              batchNumber: receivedItem.batchNumber,
+              expiryDate: new Date(receivedItem.expiryDate),
+              manufacturingDate: receivedItem.manufacturingDate
+                ? new Date(receivedItem.manufacturingDate)
+                : undefined,
+              supplierId: order.supplierId,
+              purchasePrice: unitCost || undefined,
+              mrp: receivedItem.mrp,
+              sellingPrice: receivedItem.sellingPrice,
+              quantityReceived: receivedItem.quantityReceived,
+              quantityInStock: receivedItem.quantityReceived,
+              invoiceNumber: order.orderNumber,
+              storageLocation: receivedItem.storageLocation ?? null,
+              barcode: makeInternalBarcode(batchId),
+            },
+          });
+          void safePharmacyAudit({
             tenantId,
-            inventoryItemId: poItem.inventoryItemId,
-            transactionType: 'stock_in',
-            quantity: receivedItem.quantityReceived,
-            supplierId: order.supplierId,
-            referenceType: 'purchase_order',
-            referenceId: order.id,
-            unitCost: unitCost || undefined,
-            totalCost: unitCost ? unitCost * receivedItem.quantityReceived : undefined,
-            performedBy: userId,
-            notes: `Received from PO ${order.orderNumber}`,
-          },
-        });
-
-        // Update inventory stock
-        await tx.inventoryItem.update({
-          where: { id: poItem.inventoryItemId },
-          data: {
-            currentStock: { increment: receivedItem.quantityReceived },
-          },
-        });
+            userId,
+            action: 'create',
+            entityType: 'drug_batch',
+            entityId: batch.id,
+            description: `Stock in (PO ${order.orderNumber}): ${receivedItem.quantityReceived} unit(s), batch ${receivedItem.batchNumber}`,
+            newValues: {
+              batchNumber: receivedItem.batchNumber,
+              quantityReceived: receivedItem.quantityReceived,
+              supplierId: order.supplierId,
+              storageLocation: receivedItem.storageLocation ?? null,
+              purchaseOrderId: order.id,
+            },
+          });
+        } else if (poItem.inventoryItemId) {
+          await tx.stockTransaction.create({
+            data: {
+              tenantId,
+              inventoryItemId: poItem.inventoryItemId,
+              transactionType: 'stock_in',
+              quantity: receivedItem.quantityReceived,
+              supplierId: order.supplierId,
+              referenceType: 'purchase_order',
+              referenceId: order.id,
+              unitCost: unitCost || undefined,
+              totalCost: unitCost ? unitCost * receivedItem.quantityReceived : undefined,
+              performedBy: userId,
+              notes: `Received from PO ${order.orderNumber}`,
+            },
+          });
+          await tx.inventoryItem.update({
+            where: { id: poItem.inventoryItemId },
+            data: { currentStock: { increment: receivedItem.quantityReceived } },
+          });
+        }
       }
 
       if (newReceivedQty < poItem.quantityOrdered) {
@@ -1132,6 +1188,9 @@ export async function receivePurchaseOrder(
           include: {
             inventoryItem: {
               select: { id: true, itemName: true, itemCode: true, currentStock: true },
+            },
+            drug: {
+              select: { id: true, drugName: true, strength: true, dosageForm: true },
             },
           },
         },

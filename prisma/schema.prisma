@@ -4279,6 +4279,7 @@ model DrugFormulary {
   prescriptionItems   PrescriptionItem[]
   drugReturns         DrugReturn[]
   purchaseOrderItems  DrugPurchaseOrderItem[]
+  inventoryPurchaseOrderItems PurchaseOrderItem[]
   distributorMappings DistributorProductMap[]
   ndpsBalances        NdpsStockBalance[]
   ndpsTransactions    NdpsTransaction[]
@@ -4583,15 +4584,20 @@ model PurchaseOrder {
 model PurchaseOrderItem {
   id               String   @id @default(uuid())
   purchaseOrderId  String   @map("purchase_order_id")
-  inventoryItemId  String   @map("inventory_item_id")
+  // A PO line is EITHER a generic inventory item OR a pharmacy drug (exactly one
+  // is set). Drug lines are received as a DrugBatch into pharmacy stock so the
+  // purchasing and pharmacy-stock systems stay connected.
+  inventoryItemId  String?  @map("inventory_item_id")
+  drugId           String?  @map("drug_id")
   quantityOrdered  Int      @map("quantity_ordered")
   quantityReceived Int      @default(0) @map("quantity_received")
   unitPrice        Decimal? @map("unit_price") @db.Decimal(10, 2)
   totalPrice       Decimal? @map("total_price") @db.Decimal(12, 2)
   createdAt        DateTime @default(now()) @map("created_at")
 
-  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id])
-  inventoryItem InventoryItem @relation(fields: [inventoryItemId], references: [id])
+  purchaseOrder PurchaseOrder  @relation(fields: [purchaseOrderId], references: [id])
+  inventoryItem InventoryItem? @relation(fields: [inventoryItemId], references: [id])
+  drug          DrugFormulary? @relation(fields: [drugId], references: [id])
 
   @@map("purchase_order_items")
 }

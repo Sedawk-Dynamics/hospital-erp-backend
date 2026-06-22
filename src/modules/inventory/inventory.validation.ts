@@ -165,20 +165,25 @@ export const getStockTransactionsQuerySchema = z.object({
 // Purchase Orders
 // ============================================================
 
+// A PO line references EITHER a generic inventory item OR a pharmacy drug.
+const purchaseOrderLineSchema = z
+  .object({
+    inventoryItemId: z.string().uuid('Invalid inventory item ID').optional(),
+    drugId: z.string().uuid('Invalid drug ID').optional(),
+    quantityOrdered: z.number().int().positive('Quantity must be positive'),
+    unitPrice: z.number().min(0).optional(),
+  })
+  .refine((i) => (i.inventoryItemId ? 1 : 0) + (i.drugId ? 1 : 0) === 1, {
+    message: 'Each line must reference exactly one of an inventory item or a drug',
+    path: ['inventoryItemId'],
+  });
+
 export const createPurchaseOrderSchema = z.object({
   body: z.object({
     supplierId: z.string().uuid('Invalid supplier ID'),
     expectedDeliveryDate: z.string().optional(),
     notes: z.string().max(2000).optional(),
-    items: z
-      .array(
-        z.object({
-          inventoryItemId: z.string().uuid('Invalid inventory item ID'),
-          quantityOrdered: z.number().int().positive('Quantity must be positive'),
-          unitPrice: z.number().min(0).optional(),
-        }),
-      )
-      .min(1, 'At least one item is required'),
+    items: z.array(purchaseOrderLineSchema).min(1, 'At least one item is required'),
   }),
 });
 
@@ -186,16 +191,7 @@ export const updatePurchaseOrderSchema = z.object({
   body: z.object({
     expectedDeliveryDate: z.string().optional().nullable(),
     notes: z.string().max(2000).optional().nullable(),
-    items: z
-      .array(
-        z.object({
-          inventoryItemId: z.string().uuid('Invalid inventory item ID'),
-          quantityOrdered: z.number().int().positive('Quantity must be positive'),
-          unitPrice: z.number().min(0).optional(),
-        }),
-      )
-      .min(1)
-      .optional(),
+    items: z.array(purchaseOrderLineSchema).min(1).optional(),
   }),
   params: z.object({
     id: z.string().uuid('Invalid purchase order ID'),
@@ -224,6 +220,15 @@ export const receivePurchaseOrderSchema = z.object({
         z.object({
           purchaseOrderItemId: z.string().uuid('Invalid purchase order item ID'),
           quantityReceived: z.number().int().min(0, 'Quantity received cannot be negative'),
+          // For DRUG lines these create a real DrugBatch in pharmacy stock, so the
+          // batch + expiry are captured at receipt (batch/expiry required when the
+          // line is a drug and qty > 0 — enforced in the service).
+          batchNumber: z.string().max(100).optional(),
+          expiryDate: z.string().optional(),
+          manufacturingDate: z.string().optional(),
+          mrp: z.number().min(0).optional(),
+          sellingPrice: z.number().min(0).optional(),
+          storageLocation: z.string().max(100).optional(),
         }),
       )
       .min(1, 'At least one item is required'),
