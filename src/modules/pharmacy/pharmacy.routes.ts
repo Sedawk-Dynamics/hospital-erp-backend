@@ -1,7 +1,10 @@
 import { Router } from 'express';
+import type { Response, NextFunction } from 'express';
 import { authenticate } from '../../middleware/authenticate';
 import { requirePermission } from '../../middleware/authorize';
 import { validate } from '../../middleware/validate';
+import { uploadSingle } from '../../services/upload.service';
+import type { AuthenticatedRequest } from '../../shared/types';
 import * as controller from './pharmacy.controller';
 import {
   createCategorySchema,
@@ -122,6 +125,15 @@ pharmacyRoutes.post('/stock-take/reconcile', authenticate, requirePermission('ph
 // step 2 commits the reviewed map-or-create decisions and posts the stock.
 pharmacyRoutes.post('/inward/match', authenticate, requirePermission('pharmacy', 'read'), validate(matchInwardSchema), controller.matchInward);
 pharmacyRoutes.post('/inward/commit', authenticate, requirePermission('pharmacy', 'create'), validate(commitInwardSchema), controller.commitInward);
+// OCR a supplier invoice photo/PDF into inward lines (multipart field: "invoice").
+// The file is read by Gemini, then scored by the same matcher as /inward/match.
+pharmacyRoutes.post(
+  '/inward/ocr',
+  authenticate,
+  requirePermission('pharmacy', 'create'),
+  (req: AuthenticatedRequest, res: Response, next: NextFunction) => uploadSingle('invoice')(req as any, res, next as any),
+  controller.ocrInward,
+);
 
 // --- OP pre-packing: Stock Hold / Pre-Packed (spec OP Step 1) ---
 pharmacyRoutes.get('/holds', authenticate, requirePermission('pharmacy', 'read'), validate(holdsQuerySchema), controller.listStockHolds);

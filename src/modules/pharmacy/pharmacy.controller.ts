@@ -1,7 +1,10 @@
 import { Response, NextFunction } from 'express';
 import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse, sendPaginatedResponse } from '../../shared/apiResponse';
+import { AppError } from '../../shared/appError';
+import { deleteFile } from '../../services/upload.service';
 import * as pharmacyService from './pharmacy.service';
+import { parseInvoiceFile } from './pharmacy.ocr';
 
 // ============================================================
 // Drug Categories
@@ -160,6 +163,63 @@ export async function matchInward(
     sendResponse({ res, message: 'Inward lines matched', data });
   } catch (err) {
     next(err);
+  }
+}
+
+// G1: OCR a supplier invoice (photo / PDF) into inward lines. The uploaded file
+// is read by Gemini into a header + line items, which are then run through the
+// SAME Product Resolution Engine as the CSV / manual paths so the review grid
+// can render match recommendations immediately. The temp upload is always
+// cleaned up. supplierId (optional, multipart field) feeds the learned-mapping
+// lookup; pass match=false to skip the scoring round-trip.
+export async function ocrInward(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  const file = req.file;
+  try {
+    if (!file) throw AppError.badRequest('No invoice file uploaded (field name "invoice")');
+    const tenantId = req.user!.tenantId;
+    const supplierId =
+      typeof req.body?.supplierId === 'string' && req.body.supplierId.trim()
+        ? req.body.supplierId.trim()
+        : undefined;
+    const ocr = await parseInvoiceFile({
+      path: file.path,
+      mimetype: file.mimetype,
+      originalname: file.originalname,
+    });
+
+    // Score the extracted lines against the formulary so the UI can show the
+    // existing-vs-incoming review without a second call (skip with match=false).
+    const runMatch = String(req.body?.match ?? 'true') !== 'false';
+    let match: Awaited<ReturnType<typeof pharmacyService.matchInwardLines>> | null = null;
+    if (runMatch && ocr.lines.length) {
+      match = await pharmacyService.matchInwardLines(
+        tenantId,
+        ocr.lines.map((l) => ({
+          drugName: l.drugName,
+          genericName: l.genericName ?? undefined,
+          manufacturer: l.manufacturer ?? undefined,
+          strength: l.strength ?? undefined,
+          dosageForm: l.dosageForm ?? undefined,
+          gtin: l.gtin ?? undefined,
+        })),
+        supplierId,
+      );
+    }
+
+    sendResponse({
+      res,
+      message: 'Invoice processed',
+      data: { model: ocr.model, header: ocr.header, lines: ocr.lines, warnings: ocr.warnings, match },
+    });
+  } catch (err) {
+    next(err);
+  } finally {
+    // Best-effort cleanup of the temp upload regardless of outcome.
+    if (file?.filename) void deleteFile(file.filename);
   }
 }
 
