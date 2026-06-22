@@ -1643,9 +1643,14 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
     entityId: batch.id,
     description: `Stock in: ${data.quantityReceived} base unit(s) of ${drug.drugName} (batch ${data.batchNumber})`,
     newValues: {
+      batchNumber: data.batchNumber,
       quantityReceived: data.quantityReceived,
       expiryDate: data.expiryDate,
+      // Vendor linkage + shelf location, captured on the audit trail per batch so
+      // a stock movement can always be traced to its supplier and storage point.
       supplierId: data.supplierId ?? null,
+      supplierName: finalBatch.supplier?.name ?? null,
+      storageLocation: (data as any).storageLocation ?? null,
       invoiceNumber: (data as any).invoiceNumber ?? null,
     },
   });
