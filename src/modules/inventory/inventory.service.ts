@@ -902,7 +902,7 @@ export async function getPurchaseOrderById(tenantId: string, id: string) {
             select: { id: true, itemName: true, itemCode: true, unitOfMeasurement: true },
           },
           drug: {
-            select: { id: true, drugName: true, strength: true, dosageForm: true },
+            select: { id: true, drugName: true, genericName: true, manufacturer: true, strength: true, dosageForm: true },
           },
         },
       },
@@ -1206,7 +1206,7 @@ export async function receivePurchaseOrder(
               select: { id: true, itemName: true, itemCode: true, currentStock: true },
             },
             drug: {
-              select: { id: true, drugName: true, strength: true, dosageForm: true },
+              select: { id: true, drugName: true, genericName: true, manufacturer: true, strength: true, dosageForm: true },
             },
           },
         },
