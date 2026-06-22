@@ -815,7 +815,10 @@ export async function createPurchaseOrder(tenantId: string, data: CreatePurchase
       orderNumber,
       orderDate: new Date(),
       expectedDeliveryDate: data.expectedDeliveryDate ? new Date(data.expectedDeliveryDate) : undefined,
-      status: 'draft',
+      // No draft/approval step — a PO is created ready to receive (shown as
+      // "Created" in the UI). Stored as 'approved' since that is the receivable
+      // pre-delivery state the receive flow accepts.
+      status: 'approved',
       totalAmount: totalAmount || undefined,
       notes: data.notes,
       items: {
