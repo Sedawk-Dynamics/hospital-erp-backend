@@ -740,6 +740,110 @@ export async function matchInwardLines(
   return { lines: results };
 }
 
+/** How an inward scan was resolved, highest-confidence first. */
+export type InwardScanVia = 'formulary_gtin' | 'drugmaster_gtin' | 'gs1' | 'none';
+
+/**
+ * Resolve a scan taken at STOCK ENTRY (goods inward) — distinct from the POS
+ * resolveScan because here the batch does not exist yet and the drug may not be
+ * in the formulary at all. We:
+ *   1. parse the GS1 DataMatrix for GTIN + batch + expiry + mfg date;
+ *   2. resolve the GTIN against the tenant formulary (→ suggest 'map' onto it);
+ *   3. else against the platform DrugMaster catalog (→ pre-fill a 'create');
+ *   4. and always hand back the batch/expiry parsed off the pack so the inward
+ *      line is filled in with one scan.
+ * A GTIN-14 outer-case hit also returns caseMultiplier = unitsPerCase so the
+ * scanned case can be expanded to consumer units upstream.
+ */
+export async function resolveInwardScan(tenantId: string, code: string) {
+  const raw = (code ?? '').trim();
+  if (!raw) throw AppError.badRequest('No barcode provided');
+
+  const gs1 = parseGs1(raw);
+  let gtin = gs1?.gtin;
+  // A bare 8–14 digit string with no GS1 AIs is a plain GTIN/EAN.
+  if (!gtin && !gs1 && /^\d{8,14}$/.test(raw)) gtin = raw;
+
+  const parsed = {
+    gtin: gtin ?? null,
+    batchNumber: gs1?.batchNumber ?? null,
+    expiryDate: gs1?.expiryDate ?? null,
+    manufacturingDate: gs1?.manufactureDate ?? null,
+    serial: gs1?.serial ?? null,
+  };
+
+  let via: InwardScanVia = gs1 ? 'gs1' : 'none';
+  let caseMultiplier = 1;
+  let suggestedFormularyId: string | null = null;
+
+  // The DraftLine seed the UI merges into the inward grid.
+  const line: Record<string, unknown> = {
+    drugName: '',
+    genericName: null,
+    manufacturer: null,
+    strength: null,
+    dosageForm: null,
+    gtin: gtin ?? null,
+    hsnCode: null,
+    packSize: null,
+    batchNumber: parsed.batchNumber,
+    expiryDate: parsed.expiryDate,
+    manufacturingDate: parsed.manufacturingDate,
+  };
+
+  if (gtin) {
+    // Tier 1 — already in this hospital's formulary.
+    const f = await prisma.drugFormulary.findFirst({
+      where: { tenantId, OR: [{ gtin }, { casePackGtin: gtin }] },
+      select: {
+        id: true, drugName: true, genericName: true, manufacturer: true,
+        strength: true, dosageForm: true, packSize: true, hsnCode: true,
+        gtin: true, casePackGtin: true, unitsPerCase: true,
+      },
+    });
+    if (f) {
+      via = 'formulary_gtin';
+      suggestedFormularyId = f.id;
+      caseMultiplier = f.casePackGtin === gtin && f.gtin !== gtin ? Math.max(1, f.unitsPerCase ?? 1) : 1;
+      Object.assign(line, {
+        drugName: f.drugName,
+        genericName: f.genericName,
+        manufacturer: f.manufacturer,
+        strength: f.strength,
+        dosageForm: f.dosageForm,
+        packSize: f.packSize,
+        hsnCode: f.hsnCode,
+      });
+    } else {
+      // Tier 2 — known in the platform catalog; pre-fill so the user can create
+      // (or import) the formulary row with correct identity in one step.
+      const m = await prisma.drugMaster.findFirst({
+        where: { OR: [{ gtin }, { casePackGtin: gtin }] },
+        select: {
+          name: true, genericName: true, manufacturer: true, strength: true,
+          dosageForm: true, packSize: true, hsnCode: true,
+          gtin: true, casePackGtin: true, unitsPerCase: true,
+        },
+      });
+      if (m) {
+        via = 'drugmaster_gtin';
+        caseMultiplier = m.casePackGtin === gtin && m.gtin !== gtin ? Math.max(1, m.unitsPerCase ?? 1) : 1;
+        Object.assign(line, {
+          drugName: m.name,
+          genericName: m.genericName,
+          manufacturer: m.manufacturer,
+          strength: m.strength,
+          dosageForm: m.dosageForm,
+          packSize: m.packSize,
+          hsnCode: m.hsnCode,
+        });
+      }
+    }
+  }
+
+  return { resolvedVia: via, gtin: gtin ?? null, caseMultiplier, parsed, suggestedFormularyId, line };
+}
+
 /**
  * Apply a reviewed bulk inward. Each line is processed independently so a single
  * bad row (e.g. a clashing batch number) does not void a 40-line invoice — the

@@ -252,6 +252,21 @@ export async function listStockHolds(req: AuthenticatedRequest, res: Response, n
   } catch (err) { next(err); }
 }
 
+// Stock-entry scan resolve: one scan → a draft inward line (drug identity from
+// formulary/catalog + batch/expiry parsed off the GS1 pack code).
+export async function resolveInwardScan(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await pharmacyService.resolveInwardScan(req.user!.tenantId, req.query.code as string);
+    sendResponse({ res, message: 'Inward scan resolved', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // Barcode scan resolve (spec Section 2): one scan → product + batch + expiry + stock.
 export async function resolveScan(
   req: AuthenticatedRequest,

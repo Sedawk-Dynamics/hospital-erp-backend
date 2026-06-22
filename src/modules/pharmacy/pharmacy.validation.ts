@@ -449,6 +449,13 @@ export const distributorMappingsQuerySchema = z.object({
   }),
 });
 
+// Resolve a barcode/GS1 scan taken at stock entry into a draft inward line.
+export const inwardScanQuerySchema = z.object({
+  query: z.object({
+    code: z.string().min(1, 'No barcode provided').max(512),
+  }),
+});
+
 export const commitInwardSchema = z.object({
   body: z.object({
     // Header values applied to every line unless the line overrides them (G10).

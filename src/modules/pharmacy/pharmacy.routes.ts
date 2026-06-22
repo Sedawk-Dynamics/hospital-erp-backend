@@ -16,6 +16,7 @@ import {
   mergeFormularySchema,
   matchInwardSchema,
   commitInwardSchema,
+  inwardScanQuerySchema,
   distributorMappingsQuerySchema,
   scanQuerySchema,
   complianceCheckSchema,
@@ -134,6 +135,9 @@ pharmacyRoutes.post(
   (req: AuthenticatedRequest, res: Response, next: NextFunction) => uploadSingle('invoice')(req as any, res, next as any),
   controller.ocrInward,
 );
+// Resolve a barcode/GS1 scan at stock entry → a draft inward line (drug identity
+// + batch/expiry parsed off the pack). Read-only lookup, hence 'read'.
+pharmacyRoutes.get('/inward/scan', authenticate, requirePermission('pharmacy', 'read'), validate(inwardScanQuerySchema), controller.resolveInwardScan);
 
 // --- OP pre-packing: Stock Hold / Pre-Packed (spec OP Step 1) ---
 pharmacyRoutes.get('/holds', authenticate, requirePermission('pharmacy', 'read'), validate(holdsQuerySchema), controller.listStockHolds);
