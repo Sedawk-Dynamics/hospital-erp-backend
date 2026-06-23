@@ -63,6 +63,8 @@ inventoryRoutes.get('/items/expiring', authenticate, requirePermission('inventor
 inventoryRoutes.get('/low-stock', authenticate, requirePermission('inventory', 'read'), validate(getLowStockQuerySchema), controller.getLowStockItems);
 inventoryRoutes.get('/expiring', authenticate, requirePermission('inventory', 'read'), validate(getExpiringQuerySchema), controller.getExpiringInventory);
 inventoryRoutes.post('/items/flag-expired', authenticate, requirePermission('inventory', 'approve'), controller.flagExpiredInventory);
+// Unified stock overview (generic items + pharmacy drug stock) for the combined page.
+inventoryRoutes.get('/stock-overview', authenticate, requirePermission('inventory', 'read'), controller.getStockOverview);
 inventoryRoutes.get('/items/:id', authenticate, requirePermission('inventory', 'read'), validate(idParamSchema), controller.getItemById);
 inventoryRoutes.put('/items/:id', authenticate, requirePermission('inventory', 'update'), validate(updateItemSchema), controller.updateItem);
 inventoryRoutes.delete('/items/:id', authenticate, requirePermission('inventory', 'delete'), validate(idParamSchema), controller.deleteItem);

@@ -411,6 +411,119 @@ export async function getExpiringInventory(tenantId: string, query: GetExpiringQ
   };
 }
 
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/**
+ * Unified stock overview across BOTH stock systems that the combined Inventory
+ * page surfaces as one picture:
+ *   • generic inventory items (inventory_items / stock_transactions), and
+ *   • pharmacy drug stock (drug_formulary / drug_batches).
+ *
+ * Returns a per-system breakdown plus a `combined` roll-up. Definitions match
+ * the two panels exactly — drug out-of-stock uses the same "no available batch"
+ * relation filter the formulary list uses; item expiry reuses getExpiringInventory.
+ */
+export async function getStockOverview(tenantId: string) {
+  const settings = await getInventorySettingsSafe(tenantId);
+  const expiryAlertMonths = settings?.expiryAlertMonths ?? 3;
+
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  const configuredThreshold = new Date(now);
+  configuredThreshold.setMonth(configuredThreshold.getMonth() + expiryAlertMonths);
+  const in90 = new Date(now);
+  in90.setDate(in90.getDate() + 90);
+
+  // ---- Generic inventory items ----
+  const items = await prisma.inventoryItem.findMany({
+    where: { tenantId, isActive: true },
+    select: {
+      currentStock: true,
+      minimumStockThreshold: true,
+      costPerUnit: true,
+      sellingPricePerUnit: true,
+    },
+  });
+  let itemLowStock = 0;
+  let itemOutOfStock = 0;
+  let itemStockValue = 0;
+  for (const it of items) {
+    if (it.currentStock <= 0) itemOutOfStock += 1;
+    else if (it.currentStock <= it.minimumStockThreshold) itemLowStock += 1;
+    const unit = toNumber(it.sellingPricePerUnit) || toNumber(it.costPerUnit);
+    itemStockValue += unit * it.currentStock;
+  }
+  const itemSkus = items.length;
+  const itemExpiring = (await getExpiringInventory(tenantId, { months: expiryAlertMonths } as GetExpiringQuery)).total;
+
+  // ---- Pharmacy drug stock ----
+  const availableBatchFilter = { isExpired: false, isRecalled: false, quantityInStock: { gt: 0 } };
+  const [drugSkus, drugOutOfStock, recalledBatches] = await Promise.all([
+    prisma.drugFormulary.count({ where: { tenantId, isActive: true } }),
+    prisma.drugFormulary.count({
+      where: { tenantId, isActive: true, drugBatches: { none: availableBatchFilter } },
+    }),
+    prisma.drugBatch.count({ where: { tenantId, isRecalled: true, quantityInStock: { gt: 0 } } }),
+  ]);
+
+  // In-stock (non-recalled) batches drive the value + expiry roll-ups and the
+  // per-drug live-stock total used for drug low-stock.
+  const batches = await prisma.drugBatch.findMany({
+    where: { tenantId, isRecalled: false, quantityInStock: { gt: 0 } },
+    select: { drugId: true, quantityInStock: true, sellingPrice: true, expiryDate: true, isExpired: true },
+  });
+  let drugStockValue = 0;
+  let drugExpiringConfigured = 0;
+  let drugValueAtRisk = 0;
+  const liveByDrug = new Map<string, number>();
+  for (const b of batches) {
+    const sell = toNumber(b.sellingPrice);
+    drugStockValue += sell * b.quantityInStock;
+    liveByDrug.set(b.drugId, (liveByDrug.get(b.drugId) ?? 0) + b.quantityInStock);
+    const exp = new Date(b.expiryDate);
+    if (exp <= configuredThreshold) drugExpiringConfigured += 1;
+    if (b.isExpired || exp <= in90) drugValueAtRisk += sell * b.quantityInStock;
+  }
+  // Drug low-stock: in-stock drugs whose live total has fallen to/below minStock.
+  const minStockDrugs = await prisma.drugFormulary.findMany({
+    where: { tenantId, isActive: true, minStock: { not: null } },
+    select: { id: true, minStock: true },
+  });
+  let drugLowStock = 0;
+  for (const d of minStockDrugs) {
+    const live = liveByDrug.get(d.id) ?? 0;
+    if (live > 0 && d.minStock != null && live <= d.minStock) drugLowStock += 1;
+  }
+
+  return {
+    expiryAlertMonths,
+    items: {
+      skus: itemSkus,
+      lowStock: itemLowStock,
+      outOfStock: itemOutOfStock,
+      expiring: itemExpiring,
+      stockValue: round2(itemStockValue),
+    },
+    drugs: {
+      skus: drugSkus,
+      lowStock: drugLowStock,
+      outOfStock: drugOutOfStock,
+      expiring: drugExpiringConfigured,
+      recalledBatches,
+      stockValue: round2(drugStockValue),
+      valueAtRisk: round2(drugValueAtRisk),
+    },
+    combined: {
+      skus: itemSkus + drugSkus,
+      lowStock: itemLowStock + drugLowStock,
+      outOfStock: itemOutOfStock + drugOutOfStock,
+      expiring: itemExpiring + drugExpiringConfigured,
+      stockValue: round2(itemStockValue + drugStockValue),
+      valueAtRisk: round2(drugValueAtRisk),
+    },
+  };
+}
+
 /**
  * Mark expired batches: any stock-in with expiryDate < today and remaining
  * quantity > 0 gets an `expired_removal` transaction that zeroes it out.

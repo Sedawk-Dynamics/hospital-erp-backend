@@ -85,6 +85,14 @@ export async function flagExpiredInventory(req: AuthenticatedRequest, res: Respo
     sendResponse({ res, message: 'Expired inventory batches flagged', data });
   } catch (err) { next(err); }
 }
+// Unified summary across generic inventory items + pharmacy drug stock — powers
+// the combined Inventory page's overview strip.
+export async function getStockOverview(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.getStockOverview(req.user!.tenantId);
+    sendResponse({ res, message: 'Stock overview retrieved', data });
+  } catch (err) { next(err); }
+}
 
 // Stock Transactions
 export async function createStockTransaction(req: AuthenticatedRequest, res: Response, next: NextFunction) {
