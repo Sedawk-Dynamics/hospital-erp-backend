@@ -4254,11 +4254,17 @@ model DrugFormulary {
   // Provenance: set when this formulary row was imported from the platform
   // DrugMaster catalog (vs. hospital-authored). Drives import dedupe.
   drugMasterId      String?     @map("drug_master_id")
+  // Additive unification link: optionally maps this pharmacy drug to the generic
+  // inventory item that represents the same product, so the combined Inventory
+  // page can treat the two stock systems as one (and de-duplicate SKU counts).
+  // Nullable — the default is unmapped, which leaves both systems untouched.
+  inventoryItemId   String?     @map("inventory_item_id")
   createdAt         DateTime    @default(now()) @map("created_at")
   updatedAt         DateTime    @default(now()) @updatedAt @map("updated_at")
 
   tenant             Tenant                  @relation(fields: [tenantId], references: [id])
   drugMaster         DrugMaster?             @relation(fields: [drugMasterId], references: [id])
+  inventoryItem      InventoryItem?          @relation("FormularyInventoryLink", fields: [inventoryItemId], references: [id])
   drugBatches         DrugBatch[]
   prescriptionItems   PrescriptionItem[]
   drugReturns         DrugReturn[]
@@ -4513,6 +4519,8 @@ model InventoryItem {
   purchaseOrderItems PurchaseOrderItem[]
   supplyRequests     SupplyRequest[]
   stockTransfers     StockTransfer[]
+  // Pharmacy drugs optionally mapped to this generic item (additive unification).
+  formularyDrugs     DrugFormulary[]     @relation("FormularyInventoryLink")
 
   @@map("inventory_items")
 }

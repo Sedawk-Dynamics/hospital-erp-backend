@@ -495,8 +495,21 @@ export async function getStockOverview(tenantId: string) {
     if (live > 0 && d.minStock != null && live <= d.minStock) drugLowStock += 1;
   }
 
+  // Additive-unification de-dupe: drugs that are mapped to a generic inventory
+  // item (drug_formulary.inventory_item_id) represent the SAME product in both
+  // systems, so the combined SKU count must not double-count them. Read via raw
+  // SQL so it works regardless of Prisma client regeneration. Default 0 (unmapped).
+  const linkedRows = await prisma.$queryRaw<Array<{ count: number }>>`
+    SELECT COUNT(*)::int AS count
+    FROM drug_formulary df
+    JOIN inventory_items ii ON ii.id = df.inventory_item_id
+    WHERE df.tenant_id = ${tenantId} AND df.is_active = true AND ii.is_active = true
+  `;
+  const linkedSkus = Number(linkedRows[0]?.count ?? 0);
+
   return {
     expiryAlertMonths,
+    linkedSkus,
     items: {
       skus: itemSkus,
       lowStock: itemLowStock,
@@ -514,7 +527,7 @@ export async function getStockOverview(tenantId: string) {
       valueAtRisk: round2(drugValueAtRisk),
     },
     combined: {
-      skus: itemSkus + drugSkus,
+      skus: itemSkus + drugSkus - linkedSkus,
       lowStock: itemLowStock + drugLowStock,
       outOfStock: itemOutOfStock + drugOutOfStock,
       expiring: itemExpiring + drugExpiringConfigured,
