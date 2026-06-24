@@ -152,6 +152,7 @@ export const createUnifiedStockSchema = z.object({
           price: z.number().min(0).optional(),
           minStock: z.number().int().min(0).optional(),
           hsnCode: z.string().max(20).optional(),
+          gtin: z.string().max(20).optional(),
           indications: z.string().max(2000).optional(),
           contraindications: z.string().max(2000).optional(),
         })
