@@ -345,12 +345,17 @@ export const getExpiringBatchesQuerySchema = z.object({
 // Resolution Engine inputs (GTIN off the invoice/scan + the supplier the line
 // came from, which drives the learned distributor mapping).
 const inwardMatchLineSchema = z.object({
-  drugName: z.string().min(1, 'Drug name is required').max(255),
+  drugName: z.string().min(1, 'Name is required').max(255),
   genericName: z.string().max(255).optional().nullable(),
   manufacturer: z.string().max(255).optional().nullable(),
   strength: z.string().max(100).optional().nullable(),
   dosageForm: z.string().max(40).optional().nullable(),
   gtin: z.string().max(20).optional().nullable(),
+  // A line can be a medicine (default — matched against the formulary) or any
+  // other stock item (matched against inventory_items). `category` is the item
+  // category when kind=item.
+  kind: z.enum(['drug', 'item']).optional(),
+  category: z.enum(['drug', 'consumable', 'surgical_supply', 'equipment', 'other']).optional().nullable(),
 });
 
 // Step 1: score every incoming line against the formulary (no writes). An
@@ -371,8 +376,10 @@ export const matchInwardSchema = z.object({
 const commitInwardLineSchema = inwardMatchLineSchema
   .extend({
     action: z.enum(['map', 'create']),
-    // Required when action === 'map' — the existing formulary row to add stock to.
+    // Required when action === 'map' — the existing formulary row (medicine) or
+    // inventory item (other stock) to add the incoming stock to.
     targetFormularyId: z.string().uuid('Invalid target drug ID').optional(),
+    targetInventoryItemId: z.string().uuid('Invalid target item ID').optional(),
     // The raw distributor line text (defaults to drugName) — stored verbatim as
     // the learned mapping key so future imports of this exact name auto-resolve.
     externalName: z.string().max(255).optional(),
@@ -383,10 +390,11 @@ const commitInwardLineSchema = inwardMatchLineSchema
     manufacturerCode: z.string().max(100).optional(),
     barcode: z.string().max(64).optional(),
     storageLocation: z.string().max(100).optional(),
-    // Batch / stock-in (mirrors createBatchSchema).
-    batchNumber: z.string().min(1, 'Batch number is required').max(100),
+    // Batch / stock-in (mirrors createBatchSchema). Batch + expiry are required
+    // for medicines (enforced below); for other items they are optional.
+    batchNumber: z.string().max(100).optional(),
     manufacturingDate: z.string().optional(),
-    expiryDate: z.string().min(1, 'Expiry date is required'),
+    expiryDate: z.string().optional(),
     quantityReceived: z.number().int().positive('Quantity received must be positive'),
     freeQuantity: z.number().int().nonnegative().optional(),
     mrp: z.number().nonnegative().optional(),
@@ -401,9 +409,18 @@ const commitInwardLineSchema = inwardMatchLineSchema
     // Fold into an existing batch of the same number instead of erroring.
     addToExisting: z.boolean().optional(),
   })
-  .refine((l) => l.action === 'create' || !!l.targetFormularyId, {
-    message: 'A mapped line needs a target drug (targetFormularyId)',
-    path: ['targetFormularyId'],
+  .refine(
+    (l) =>
+      l.action === 'create' ||
+      (l.kind === 'item' ? !!l.targetInventoryItemId : !!l.targetFormularyId),
+    {
+      message: 'A mapped line needs a target (existing drug or item)',
+      path: ['targetFormularyId'],
+    },
+  )
+  .refine((l) => l.kind === 'item' || (!!l.batchNumber && !!l.expiryDate), {
+    message: 'Batch number and expiry date are required for medicines',
+    path: ['batchNumber'],
   });
 
 // Learned distributor → product mappings (Product Resolution Engine admin surface).

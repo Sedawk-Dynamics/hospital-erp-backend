@@ -6,6 +6,10 @@ import { getPaginationParams } from '../../shared/pagination';
 import { resolvePackSize, inferLooseUnitLabel } from '../drug-master/drug-master.dataset';
 import { getInventorySettingsSafe } from '../inventory/inventory.settings.service';
 import { notifyInventoryRecipients, hasOpenInventoryAlert } from '../inventory/inventory.notify';
+import {
+  createItem as createInventoryItem,
+  createStockTransaction as createInventoryStockTransaction,
+} from '../inventory/inventory.service';
 import { safePharmacyAudit } from './pharmacy.audit';
 import {
   scoreMatch,
@@ -343,6 +347,10 @@ export interface InwardLineInput {
   // the supplier the goods came from (drives the learned distributor mapping).
   gtin?: string | null;
   supplierId?: string | null;
+  // A line can be a medicine (default) or any other stock item; items are matched
+  // against inventory_items rather than the formulary.
+  kind?: 'drug' | 'item' | null;
+  category?: string | null;
 }
 
 export type InwardRecommendation = 'map' | 'review' | 'create';
@@ -574,6 +582,48 @@ export async function deleteDistributorMapping(tenantId: string, roles: string[]
  * candidate list (with live stock + score) rides along so the UI can render the
  * "existing vs incoming" comparison without a second round-trip per line.
  */
+// Match a non-drug inward line against existing inventory items by name, returned
+// in the SAME shape as the formulary matcher so the review UI is uniform.
+async function matchInventoryItemLine(tenantId: string, name: string) {
+  const q = name.trim();
+  const items = q
+    ? await prisma.inventoryItem.findMany({
+        where: { tenantId, isActive: true, itemName: { contains: q, mode: 'insensitive' } },
+        take: 6,
+        select: { id: true, itemName: true, category: true, unitOfMeasurement: true, currentStock: true },
+      })
+    : [];
+  const lower = q.toLowerCase();
+  const matches = items
+    .map((it) => {
+      const n = it.itemName.toLowerCase();
+      const score = n === lower ? 100 : n.startsWith(lower) ? 90 : 75;
+      return {
+        id: it.id,
+        drugName: it.itemName,
+        genericName: null as string | null,
+        manufacturer: null as string | null,
+        strength: null as string | null,
+        totalStock: it.currentStock,
+        score,
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+  const top = matches[0];
+  const recommendation: InwardRecommendation =
+    top && top.score >= MATCH_BLOCK_THRESHOLD
+      ? 'map'
+      : top && top.score >= MATCH_SUGGEST_THRESHOLD
+        ? 'review'
+        : 'create';
+  return {
+    matches,
+    recommendation,
+    confidence: top?.score ?? 0,
+    suggestedId: recommendation === 'create' ? null : top?.id ?? null,
+  };
+}
+
 export async function matchInwardLines(
   tenantId: string,
   lines: InwardLineInput[],
@@ -581,6 +631,21 @@ export async function matchInwardLines(
 ) {
   const results = await Promise.all(
     lines.map(async (line, index) => {
+      // Non-drug items resolve against inventory_items, not the formulary.
+      if (line.kind === 'item') {
+        const m = await matchInventoryItemLine(tenantId, line.drugName);
+        return {
+          index,
+          incoming: line,
+          matches: m.matches,
+          recommendation: m.recommendation,
+          resolvedVia: (m.suggestedId ? 'similarity' : 'none') as ResolveVia,
+          confidence: m.confidence,
+          caseMultiplier: 1,
+          // Reused field — carries the suggested target id (item) for the UI.
+          suggestedFormularyId: m.suggestedId,
+        };
+      }
       // Header supplier falls through to every line (for the distributor mapping
       // lookup) unless the line overrides it.
       const resolved = await resolveInwardLine(tenantId, {
@@ -846,6 +911,63 @@ export async function commitInward(
   for (let i = 0; i < data.lines.length; i++) {
     const line = data.lines[i];
     try {
+      // ── Non-drug item line ────────────────────────────────────────────────
+      // Find/create the generic inventory item, then post a stock-in. No batch
+      // entity — expiry/batch (if given) ride on the stock transaction.
+      if (line.kind === 'item') {
+        let itemId: string;
+        let itemName: string;
+        if (line.action === 'map') {
+          if (!line.targetInventoryItemId) {
+            throw AppError.badRequest('A mapped item line needs a target item');
+          }
+          const existing = await prisma.inventoryItem.findFirst({
+            where: { id: line.targetInventoryItemId, tenantId },
+            select: { id: true, itemName: true },
+          });
+          if (!existing) throw AppError.notFound('Mapped item not found in inventory');
+          itemId = existing.id;
+          itemName = existing.itemName;
+          mappedDrugs++;
+        } else {
+          const created = await createInventoryItem(tenantId, {
+            itemName: line.drugName,
+            itemCode: line.gtin ?? undefined,
+            category: (line.category as 'consumable') ?? 'other',
+            unitOfMeasurement: line.looseUnitLabel ?? undefined,
+            costPerUnit: line.purchasePrice,
+            sellingPricePerUnit: line.sellingPrice,
+            currentStock: 0,
+            isActive: true,
+          });
+          itemId = created.id;
+          itemName = created.itemName;
+          createdDrugs++;
+        }
+        const eff = effectiveDiscount(line.purchaseDiscountPercent) ?? 0;
+        const netUnit =
+          line.purchasePrice != null ? r2(line.purchasePrice * (1 - eff / 100)) : undefined;
+        await createInventoryStockTransaction(tenantId, userId, {
+          inventoryItemId: itemId,
+          transactionType: 'stock_in',
+          quantity: line.quantityReceived,
+          batchNumber: line.batchNumber || undefined,
+          expiryDate: line.expiryDate || undefined,
+          supplierId: line.supplierId ?? data.supplierId,
+          unitCost: netUnit,
+          referenceType: 'bulk_inward',
+          notes: data.invoiceNumber ? `Bulk inward · invoice ${data.invoiceNumber}` : 'Bulk inward',
+        });
+        batchesIn++;
+        results.push({ index: i, drugName: itemName, action: line.action, status: 'ok', formularyId: itemId });
+        continue;
+      }
+
+      // ── Medicine line — batch + expiry are mandatory ──────────────────────
+      if (!line.batchNumber || !line.expiryDate) {
+        throw AppError.badRequest('Batch number and expiry date are required for medicines');
+      }
+
       let drugId: string;
       let drugName: string;
 
