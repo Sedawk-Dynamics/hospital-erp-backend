@@ -113,7 +113,7 @@ export const getUnifiedStockQuerySchema = z.object({
     search: z.string().max(255).optional(),
     type: z.enum(['all', 'item', 'drug']).optional(),
     category: z.enum(['drug', 'consumable', 'surgical_supply', 'equipment', 'other']).optional(),
-    stockStatus: z.enum(['all', 'low', 'out', 'expiring', 'in']).optional(),
+    stockStatus: z.enum(['all', 'low', 'out', 'expiring', 'in', 'recalled']).optional(),
   }),
 });
 

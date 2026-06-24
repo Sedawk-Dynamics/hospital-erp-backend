@@ -544,7 +544,7 @@ export interface GetUnifiedStockQuery {
   search?: string;
   type?: 'all' | 'item' | 'drug';
   category?: string;
-  stockStatus?: 'all' | 'low' | 'out' | 'expiring' | 'in';
+  stockStatus?: 'all' | 'low' | 'out' | 'expiring' | 'in' | 'recalled';
 }
 
 export interface UnifiedStockRow {
@@ -671,6 +671,8 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
     filters.push(Prisma.sql`current_stock > 0`);
   } else if (query.stockStatus === 'expiring') {
     filters.push(Prisma.sql`nearest_expiry IS NOT NULL AND nearest_expiry <= ${expiryThreshold}`);
+  } else if (query.stockStatus === 'recalled') {
+    filters.push(Prisma.sql`is_recalled = true`);
   }
   const whereSql = filters.length
     ? Prisma.sql`WHERE ${Prisma.join(filters, ' AND ')}`
