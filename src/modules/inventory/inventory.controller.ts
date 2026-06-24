@@ -3,6 +3,7 @@ import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse, sendPaginatedResponse } from '../../shared/apiResponse';
 import * as service from './inventory.service';
 import * as settingsService from './inventory.settings.service';
+import * as pharmacyService from '../pharmacy/pharmacy.service';
 
 // Suppliers
 export async function createSupplier(req: AuthenticatedRequest, res: Response, next: NextFunction) {
@@ -91,6 +92,55 @@ export async function getStockOverview(req: AuthenticatedRequest, res: Response,
   try {
     const data = await service.getStockOverview(req.user!.tenantId);
     sendResponse({ res, message: 'Stock overview retrieved', data });
+  } catch (err) { next(err); }
+}
+// One unified storage feed — generic items AND pharmacy drugs in a single list.
+export async function getUnifiedStock(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const result = await service.getUnifiedStock(req.user!.tenantId, req.query as any);
+    sendPaginatedResponse(res, result.data, result.total, result.page, result.limit, 'Stock retrieved');
+  } catch (err) { next(err); }
+}
+// Unified "New Item" — create a generic item or a batch-tracked medicine from one
+// flow. Drug creation delegates to the pharmacy service (keeps the formulary as the
+// single source of truth for medicines), with an optional opening batch.
+export async function createUnifiedStock(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const roles = req.user!.roles ?? [];
+    const body = req.body;
+
+    if (body.kind === 'drug') {
+      const result = await pharmacyService.createFormularyItem(tenantId, roles, {
+        ...body.drug,
+        force: body.force,
+      });
+      // A near-duplicate medicine already exists — hand the suggestions back so the
+      // UI can confirm and re-submit with force=true (mirrors the formulary guard).
+      if (result.status === 'duplicate_suspected') {
+        sendResponse({
+          res,
+          message: 'A similar medicine already exists',
+          data: { kind: 'drug', status: 'duplicate_suspected', matches: result.matches },
+        });
+        return;
+      }
+      sendResponse({
+        res,
+        statusCode: 201,
+        message: 'Medicine added to storage',
+        data: { kind: 'drug', status: 'created', item: result.item },
+      });
+      return;
+    }
+
+    const item = await service.createItem(tenantId, body.item);
+    sendResponse({
+      res,
+      statusCode: 201,
+      message: 'Item added to storage',
+      data: { kind: 'item', status: 'created', item },
+    });
   } catch (err) { next(err); }
 }
 

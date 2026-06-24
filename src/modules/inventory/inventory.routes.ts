@@ -12,6 +12,8 @@ import {
   getItemsQuerySchema,
   getLowStockQuerySchema,
   getExpiringQuerySchema,
+  getUnifiedStockQuerySchema,
+  createUnifiedStockSchema,
   createStockTransactionSchema,
   stockMovementSchema,
   getStockTransactionsQuerySchema,
@@ -65,6 +67,9 @@ inventoryRoutes.get('/expiring', authenticate, requirePermission('inventory', 'r
 inventoryRoutes.post('/items/flag-expired', authenticate, requirePermission('inventory', 'approve'), controller.flagExpiredInventory);
 // Unified stock overview (generic items + pharmacy drug stock) for the combined page.
 inventoryRoutes.get('/stock-overview', authenticate, requirePermission('inventory', 'read'), controller.getStockOverview);
+// One unified storage feed + create flow — generic items AND pharmacy drugs as one list.
+inventoryRoutes.get('/stock', authenticate, requirePermission('inventory', 'read'), validate(getUnifiedStockQuerySchema), controller.getUnifiedStock);
+inventoryRoutes.post('/stock', authenticate, requirePermission('inventory', 'create'), validate(createUnifiedStockSchema), controller.createUnifiedStock);
 inventoryRoutes.get('/items/:id', authenticate, requirePermission('inventory', 'read'), validate(idParamSchema), controller.getItemById);
 inventoryRoutes.put('/items/:id', authenticate, requirePermission('inventory', 'update'), validate(updateItemSchema), controller.updateItem);
 inventoryRoutes.delete('/items/:id', authenticate, requirePermission('inventory', 'delete'), validate(idParamSchema), controller.deleteItem);

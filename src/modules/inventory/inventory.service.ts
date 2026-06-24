@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
@@ -535,6 +536,196 @@ export async function getStockOverview(tenantId: string) {
       valueAtRisk: round2(drugValueAtRisk),
     },
   };
+}
+
+export interface GetUnifiedStockQuery {
+  page?: number;
+  limit?: number;
+  search?: string;
+  type?: 'all' | 'item' | 'drug';
+  category?: string;
+  stockStatus?: 'all' | 'low' | 'out' | 'expiring' | 'in';
+}
+
+export interface UnifiedStockRow {
+  kind: 'item' | 'drug';
+  refId: string;
+  name: string;
+  code: string | null;
+  category: string;
+  unit: string | null;
+  currentStock: number;
+  reorderLevel: number | null;
+  costPerUnit: number | null;
+  sellingPrice: number | null;
+  tracksBatches: boolean;
+  batchCount: number;
+  nearestExpiry: Date | string | null;
+  isRecalled: boolean;
+}
+
+/**
+ * One unified storage feed: generic inventory items AND pharmacy drugs (with
+ * their batch stock aggregated up) presented as ONE list of "things in storage".
+ *
+ * This is the read side of the merge — a hospital pharmacy keeps everything in
+ * one store, so a "stock item" can be a medicine or any other supply. Drugs keep
+ * their full batch engine underneath (FEFO / expiry / dispensing / NDPS); here we
+ * just roll each drug's live batches into a single row so it sits next to the
+ * generic items. Items mapped to a formulary drug (drug_formulary.inventory_item_id)
+ * are shown once, as the richer drug row, so nothing is double-counted.
+ *
+ * Built as a raw UNION so pagination/filtering happen in one SQL pass (and so it
+ * stays independent of Prisma client regeneration for the FK column).
+ */
+export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQuery) {
+  const { skip, take, page, limit } = getPaginationParams(query as any);
+
+  const settings = await getInventorySettingsSafe(tenantId);
+  const expiryAlertMonths = settings?.expiryAlertMonths ?? 3;
+  const expiryThreshold = new Date();
+  expiryThreshold.setHours(0, 0, 0, 0);
+  expiryThreshold.setMonth(expiryThreshold.getMonth() + expiryAlertMonths);
+
+  // Inner UNION of both stock systems, normalised to one row shape.
+  const base = Prisma.sql`
+    WITH unified_stock AS (
+      SELECT
+        'item'::text AS kind,
+        ii.id AS ref_id,
+        ii.item_name AS name,
+        ii.item_code AS code,
+        ii.category::text AS category,
+        ii.unit_of_measurement AS unit,
+        ii.current_stock AS current_stock,
+        ii.minimum_stock_threshold AS reorder_level,
+        ii.cost_per_unit AS cost_per_unit,
+        ii.selling_price_per_unit AS selling_price,
+        false AS tracks_batches,
+        0 AS batch_count,
+        NULL::date AS nearest_expiry,
+        false AS is_recalled,
+        ii.created_at AS created_at
+      FROM inventory_items ii
+      WHERE ii.tenant_id = ${tenantId}
+        AND ii.is_active = true
+        AND NOT EXISTS (
+          SELECT 1 FROM drug_formulary df2
+          WHERE df2.inventory_item_id = ii.id
+            AND df2.tenant_id = ${tenantId}
+            AND df2.is_active = true
+        )
+      UNION ALL
+      SELECT
+        'drug'::text AS kind,
+        df.id AS ref_id,
+        df.drug_name AS name,
+        df.hsn_code AS code,
+        'drug'::text AS category,
+        df.loose_unit_label AS unit,
+        COALESCE(b.qty, 0)::int AS current_stock,
+        df.min_stock AS reorder_level,
+        b.avg_purchase AS cost_per_unit,
+        COALESCE(df.price, b.max_selling) AS selling_price,
+        true AS tracks_batches,
+        COALESCE(b.batch_count, 0)::int AS batch_count,
+        b.nearest_expiry AS nearest_expiry,
+        df.is_recalled AS is_recalled,
+        df.created_at AS created_at
+      FROM drug_formulary df
+      LEFT JOIN (
+        SELECT
+          drug_id,
+          SUM(quantity_in_stock) AS qty,
+          COUNT(*) FILTER (WHERE quantity_in_stock > 0 AND is_expired = false AND is_recalled = false) AS batch_count,
+          MIN(expiry_date) FILTER (WHERE quantity_in_stock > 0 AND is_expired = false) AS nearest_expiry,
+          MAX(selling_price) AS max_selling,
+          AVG(purchase_price) AS avg_purchase
+        FROM drug_batches
+        WHERE tenant_id = ${tenantId}
+        GROUP BY drug_id
+      ) b ON b.drug_id = df.id
+      WHERE df.tenant_id = ${tenantId}
+        AND df.is_active = true
+    )
+  `;
+
+  const filters: Prisma.Sql[] = [];
+  if (query.type === 'item' || query.type === 'drug') {
+    filters.push(Prisma.sql`kind = ${query.type}`);
+  }
+  if (query.category) {
+    filters.push(Prisma.sql`category = ${query.category}`);
+  }
+  if (query.search) {
+    const like = `%${query.search.toLowerCase()}%`;
+    filters.push(Prisma.sql`(lower(name) LIKE ${like} OR lower(COALESCE(code, '')) LIKE ${like})`);
+  }
+  if (query.stockStatus === 'out') {
+    filters.push(Prisma.sql`current_stock <= 0`);
+  } else if (query.stockStatus === 'low') {
+    filters.push(
+      Prisma.sql`reorder_level IS NOT NULL AND current_stock > 0 AND current_stock <= reorder_level`,
+    );
+  } else if (query.stockStatus === 'in') {
+    filters.push(Prisma.sql`current_stock > 0`);
+  } else if (query.stockStatus === 'expiring') {
+    filters.push(Prisma.sql`nearest_expiry IS NOT NULL AND nearest_expiry <= ${expiryThreshold}`);
+  }
+  const whereSql = filters.length
+    ? Prisma.sql`WHERE ${Prisma.join(filters, ' AND ')}`
+    : Prisma.empty;
+
+  const rows = await prisma.$queryRaw<
+    Array<{
+      kind: string;
+      ref_id: string;
+      name: string;
+      code: string | null;
+      category: string;
+      unit: string | null;
+      current_stock: number;
+      reorder_level: number | null;
+      cost_per_unit: string | number | null;
+      selling_price: string | number | null;
+      tracks_batches: boolean;
+      batch_count: number;
+      nearest_expiry: Date | null;
+      is_recalled: boolean;
+    }>
+  >(Prisma.sql`
+    ${base}
+    SELECT * FROM unified_stock
+    ${whereSql}
+    ORDER BY name ASC
+    LIMIT ${take} OFFSET ${skip}
+  `);
+
+  const countRows = await prisma.$queryRaw<Array<{ count: number }>>(Prisma.sql`
+    ${base}
+    SELECT COUNT(*)::int AS count FROM unified_stock
+    ${whereSql}
+  `);
+  const total = Number(countRows[0]?.count ?? 0);
+
+  const data: UnifiedStockRow[] = rows.map((r) => ({
+    kind: r.kind as 'item' | 'drug',
+    refId: r.ref_id,
+    name: r.name,
+    code: r.code,
+    category: r.category,
+    unit: r.unit,
+    currentStock: Number(r.current_stock),
+    reorderLevel: r.reorder_level == null ? null : Number(r.reorder_level),
+    costPerUnit: r.cost_per_unit == null ? null : Number(r.cost_per_unit),
+    sellingPrice: r.selling_price == null ? null : Number(r.selling_price),
+    tracksBatches: r.tracks_batches,
+    batchCount: Number(r.batch_count),
+    nearestExpiry: r.nearest_expiry,
+    isRecalled: r.is_recalled,
+  }));
+
+  return { data, total, page, limit, expiryAlertMonths };
 }
 
 /**

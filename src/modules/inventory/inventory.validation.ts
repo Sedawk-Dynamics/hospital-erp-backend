@@ -107,6 +107,61 @@ export const getLowStockQuerySchema = z.object({
   query: paginationSchema,
 });
 
+// Unified storage feed: generic items + pharmacy drugs in one list.
+export const getUnifiedStockQuerySchema = z.object({
+  query: paginationSchema.extend({
+    search: z.string().max(255).optional(),
+    type: z.enum(['all', 'item', 'drug']).optional(),
+    category: z.enum(['drug', 'consumable', 'surgical_supply', 'equipment', 'other']).optional(),
+    stockStatus: z.enum(['all', 'low', 'out', 'expiring', 'in']).optional(),
+  }),
+});
+
+// Unified "New Item" — one create flow for a generic item OR a batch-tracked drug.
+export const createUnifiedStockSchema = z.object({
+  body: z
+    .object({
+      kind: z.enum(['item', 'drug']),
+      force: z.boolean().optional(),
+      item: z
+        .object({
+          itemName: z.string().min(1).max(255),
+          itemCode: z.string().max(50).optional(),
+          category: z.enum(['drug', 'consumable', 'surgical_supply', 'equipment', 'other']),
+          description: z.string().max(2000).optional(),
+          unitOfMeasurement: z.string().max(20).optional(),
+          minimumStockThreshold: z.number().int().min(0).optional(),
+          currentStock: z.number().int().min(0).default(0),
+          costPerUnit: z.number().min(0).optional(),
+          sellingPricePerUnit: z.number().min(0).optional(),
+        })
+        .optional(),
+      drug: z
+        .object({
+          drugName: z.string().min(1).max(255),
+          genericName: z.string().max(255).optional(),
+          manufacturer: z.string().max(255).optional(),
+          dosageForm: z
+            .enum(['tablet', 'capsule', 'syrup', 'injection', 'cream', 'drops', 'inhaler', 'other'])
+            .optional(),
+          strength: z.string().max(100).optional(),
+          unitOfMeasurement: z.string().max(20).optional(),
+          looseUnitLabel: z.string().max(40).optional(),
+          packSize: z.number().int().min(1).optional(),
+          taxPercent: z.number().min(0).max(100).optional(),
+          price: z.number().min(0).optional(),
+          minStock: z.number().int().min(0).optional(),
+          hsnCode: z.string().max(20).optional(),
+          indications: z.string().max(2000).optional(),
+          contraindications: z.string().max(2000).optional(),
+        })
+        .optional(),
+    })
+    .refine((b) => (b.kind === 'item' ? !!b.item : !!b.drug), {
+      message: 'Provide an `item` payload for kind=item or a `drug` payload for kind=drug',
+    }),
+});
+
 export const getExpiringQuerySchema = z.object({
   query: paginationSchema.extend({
     months: z.coerce.number().int().min(1).max(36).default(3),
