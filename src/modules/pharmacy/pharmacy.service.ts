@@ -937,6 +937,8 @@ export async function commitInward(
             unitOfMeasurement: line.looseUnitLabel ?? undefined,
             costPerUnit: line.purchasePrice,
             sellingPricePerUnit: line.sellingPrice,
+            minimumStockThreshold: line.minStock,
+            description: line.description ?? undefined,
             currentStock: 0,
             isActive: true,
           });
@@ -944,30 +946,32 @@ export async function commitInward(
           itemName = created.itemName;
           createdDrugs++;
         }
-        const eff = effectiveDiscount(line.purchaseDiscountPercent) ?? 0;
-        const netUnit =
-          line.purchasePrice != null ? r2(line.purchasePrice * (1 - eff / 100)) : undefined;
-        await createInventoryStockTransaction(tenantId, userId, {
-          inventoryItemId: itemId,
-          transactionType: 'stock_in',
-          quantity: line.quantityReceived,
-          batchNumber: line.batchNumber || undefined,
-          expiryDate: line.expiryDate || undefined,
-          supplierId: line.supplierId ?? data.supplierId,
-          unitCost: netUnit,
-          referenceType: 'bulk_inward',
-          notes: data.invoiceNumber ? `Bulk inward · invoice ${data.invoiceNumber}` : 'Bulk inward',
-        });
-        batchesIn++;
+        // Only post stock when a quantity is given — qty 0/absent just registers
+        // the item (the old "New Item" behaviour).
+        const itemQty = line.quantityReceived ?? 0;
+        if (itemQty > 0) {
+          const eff = effectiveDiscount(line.purchaseDiscountPercent) ?? 0;
+          const netUnit =
+            line.purchasePrice != null ? r2(line.purchasePrice * (1 - eff / 100)) : undefined;
+          await createInventoryStockTransaction(tenantId, userId, {
+            inventoryItemId: itemId,
+            transactionType: 'stock_in',
+            quantity: itemQty,
+            batchNumber: line.batchNumber || undefined,
+            expiryDate: line.expiryDate || undefined,
+            supplierId: line.supplierId ?? data.supplierId,
+            unitCost: netUnit,
+            referenceType: 'bulk_inward',
+            notes: data.invoiceNumber ? `Bulk inward · invoice ${data.invoiceNumber}` : 'Bulk inward',
+          });
+          batchesIn++;
+        }
         results.push({ index: i, drugName: itemName, action: line.action, status: 'ok', formularyId: itemId });
         continue;
       }
 
-      // ── Medicine line — batch + expiry are mandatory ──────────────────────
-      if (!line.batchNumber || !line.expiryDate) {
-        throw AppError.badRequest('Batch number and expiry date are required for medicines');
-      }
-
+      // ── Medicine line ─────────────────────────────────────────────────────
+      const drugQty = line.quantityReceived ?? 0;
       let drugId: string;
       let drugName: string;
 
@@ -996,6 +1000,7 @@ export async function commitInward(
           strength: line.strength ?? undefined,
           packSize: line.packSize,
           looseUnitLabel: line.looseUnitLabel,
+          minStock: line.minStock,
           taxPercent: line.gstPercent,
           // Carry the invoice's GTIN / HSN / manufacturer code onto the new drug
           // so subsequent imports resolve it via GTIN (Product Resolution Engine).
@@ -1013,29 +1018,38 @@ export async function commitInward(
         createdDrugs++;
       }
 
-      const batch = await createBatch(tenantId, userId, roles, {
-        drugId,
-        batchNumber: line.batchNumber,
-        expiryDate: line.expiryDate,
-        manufacturingDate: line.manufacturingDate,
-        quantityReceived: line.quantityReceived,
-        freeQuantity: line.freeQuantity,
-        mrp: line.mrp,
-        purchasePrice: line.purchasePrice,
-        // Per-line discount combined with the apportioned total-bill discount.
-        purchaseDiscountPercent: effectiveDiscount(line.purchaseDiscountPercent),
-        gstPercent: line.gstPercent,
-        sellingPrice: line.sellingPrice,
-        supplierId: line.supplierId ?? data.supplierId,
-        invoiceNumber: line.invoiceNumber ?? data.invoiceNumber,
-        invoiceDate: line.invoiceDate ?? data.invoiceDate,
-        // Scanned pack barcode / shelf location carry through; absent barcode is
-        // minted internally by createBatch.
-        barcode: line.barcode,
-        storageLocation: line.storageLocation,
-        addToExisting: line.addToExisting ?? data.addToExisting,
-      } as CreateBatchInput);
-      batchesIn++;
+      // Only receive a batch when a quantity is given — qty 0/absent just
+      // registers the medicine in the formulary (the old "New Item" behaviour).
+      let batchId: string | undefined;
+      if (drugQty > 0) {
+        if (!line.batchNumber || !line.expiryDate) {
+          throw AppError.badRequest('Batch number and expiry date are required when receiving a medicine');
+        }
+        const batch = await createBatch(tenantId, userId, roles, {
+          drugId,
+          batchNumber: line.batchNumber,
+          expiryDate: line.expiryDate,
+          manufacturingDate: line.manufacturingDate,
+          quantityReceived: drugQty,
+          freeQuantity: line.freeQuantity,
+          mrp: line.mrp,
+          purchasePrice: line.purchasePrice,
+          // Per-line discount combined with the apportioned total-bill discount.
+          purchaseDiscountPercent: effectiveDiscount(line.purchaseDiscountPercent),
+          gstPercent: line.gstPercent,
+          sellingPrice: line.sellingPrice,
+          supplierId: line.supplierId ?? data.supplierId,
+          invoiceNumber: line.invoiceNumber ?? data.invoiceNumber,
+          invoiceDate: line.invoiceDate ?? data.invoiceDate,
+          // Scanned pack barcode / shelf location carry through; absent barcode is
+          // minted internally by createBatch.
+          barcode: line.barcode,
+          storageLocation: line.storageLocation,
+          addToExisting: line.addToExisting ?? data.addToExisting,
+        } as CreateBatchInput);
+        batchId = batch.id;
+        batchesIn++;
+      }
 
       // Product Resolution Engine learning loop: remember that this distributor
       // line (raw name + GTIN) maps to this drug, and backfill GTIN/HSN onto the
@@ -1061,7 +1075,7 @@ export async function commitInward(
         action: line.action,
         status: 'ok',
         formularyId: drugId,
-        batchId: batch.id,
+        batchId,
       });
     } catch (err) {
       failed++;

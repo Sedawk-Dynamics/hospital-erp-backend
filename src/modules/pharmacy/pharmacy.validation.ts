@@ -383,19 +383,24 @@ const commitInwardLineSchema = inwardMatchLineSchema
     // The raw distributor line text (defaults to drugName) — stored verbatim as
     // the learned mapping key so future imports of this exact name auto-resolve.
     externalName: z.string().max(255).optional(),
-    // Used only when creating a new drug.
+    // Product-definition fields carried onto a newly-created product (medicine or
+    // item) — full "New Item" parity so one flow defines AND receives stock.
     packSize: z.number().int().positive().optional(),
     looseUnitLabel: z.string().max(40).optional(),
     hsnCode: z.string().max(20).optional(),
     manufacturerCode: z.string().max(100).optional(),
+    minStock: z.number().int().nonnegative().optional(),
+    description: z.string().max(2000).optional(),
     barcode: z.string().max(64).optional(),
     storageLocation: z.string().max(100).optional(),
     // Batch / stock-in (mirrors createBatchSchema). Batch + expiry are required
-    // for medicines (enforced below); for other items they are optional.
+    // only when actually receiving stock for a medicine (qty > 0); see refine.
     batchNumber: z.string().max(100).optional(),
     manufacturingDate: z.string().optional(),
     expiryDate: z.string().optional(),
-    quantityReceived: z.number().int().positive('Quantity received must be positive'),
+    // Optional: omit / 0 to just register the product without receiving stock
+    // (the old "New Item" behaviour); > 0 also posts a batch / stock-in.
+    quantityReceived: z.number().int().nonnegative().optional(),
     freeQuantity: z.number().int().nonnegative().optional(),
     mrp: z.number().nonnegative().optional(),
     purchasePrice: z.number().nonnegative().optional(),
@@ -418,10 +423,15 @@ const commitInwardLineSchema = inwardMatchLineSchema
       path: ['targetFormularyId'],
     },
   )
-  .refine((l) => l.kind === 'item' || (!!l.batchNumber && !!l.expiryDate), {
-    message: 'Batch number and expiry date are required for medicines',
-    path: ['batchNumber'],
-  });
+  .refine(
+    // Batch + expiry are required only when actually receiving stock for a
+    // medicine. Registering a medicine (qty 0/absent) or any item needs neither.
+    (l) => l.kind === 'item' || !((l.quantityReceived ?? 0) > 0) || (!!l.batchNumber && !!l.expiryDate),
+    {
+      message: 'Batch number and expiry date are required when receiving a medicine',
+      path: ['batchNumber'],
+    },
+  );
 
 // Learned distributor → product mappings (Product Resolution Engine admin surface).
 export const distributorMappingsQuerySchema = z.object({
