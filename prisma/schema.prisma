@@ -1227,6 +1227,7 @@ model Tenant {
   updatedAt                    DateTime  @default(now()) @updatedAt @map("updated_at")
 
   featureToggles             FeatureToggle[]
+  icdCodes                   IcdCode[]
   users                      User[]
   roles                      Role[]
   loginAuditLogs             LoginAuditLog[]
@@ -1415,6 +1416,59 @@ model FeatureToggle {
 
   @@unique([tenantId, featureKey])
   @@map("feature_toggles")
+}
+
+// Platform-wide AI / LLM configuration (single active row, managed by
+// super-admin). API keys live in env (never here); this row only selects the
+// provider/model and toggles each AI use-case on or off. Read at runtime by
+// the shared AI service so providers can be swapped without a redeploy.
+model AiConfig {
+  id                  String   @id @default(uuid())
+  // provider: which LLM backend to call — "gemini" | "openai" | "disabled".
+  provider            String   @default("gemini") @db.VarChar(20)
+  textModel           String   @default("gemini-2.0-flash") @map("text_model") @db.VarChar(100)
+  temperature         Decimal  @default(0.4) @db.Decimal(3, 2)
+  maxOutputTokens     Int      @default(1024) @map("max_output_tokens")
+  // Per-use-case feature flags (mirrors the TRMS CDSS Level use cases).
+  patientChatEnabled  Boolean  @default(true) @map("patient_chat_enabled") // UC2 (Lvl 1)
+  platformChatEnabled Boolean  @default(true) @map("platform_chat_enabled") // UC3 (Lvl 1, read-only)
+  dischargeAiEnabled  Boolean  @default(true) @map("discharge_ai_enabled") // UC4
+  // UC2.1 radiology image diagnosis — deferred to "coming soon" per MVP scope.
+  radiologyAiEnabled  Boolean  @default(false) @map("radiology_ai_enabled")
+  updatedById         String?  @map("updated_by_id")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("ai_config")
+}
+
+// Platform + per-tenant ICD-10 diagnosis code catalog. Rows with tenantId=null
+// are the shared platform reference set (managed by super-admin); rows with a
+// tenantId are a hospital's own custom codes. Powers diagnosis autocomplete and
+// the CDSS use cases that reference ICD codes.
+model IcdCode {
+  id           String   @id @default(uuid())
+  tenantId     String?  @map("tenant_id")
+  code         String   @db.VarChar(20)
+  title        String   @db.VarChar(500)
+  category     String?  @db.VarChar(255)
+  chapter      String?  @db.VarChar(255)
+  isBillable   Boolean  @default(true) @map("is_billable")
+  isCustom     Boolean  @default(false) @map("is_custom")
+  isActive     Boolean  @default(true) @map("is_active")
+  // Denormalised lowercase index of code + title + keywords, recomputed on
+  // write — drives the search endpoint.
+  searchTokens String?  @map("search_tokens")
+  keywords     String[] @default([])
+  createdById  String?  @map("created_by_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant Tenant? @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, code])
+  @@index([code])
+  @@map("icd_codes")
 }
 
 // ============================================================

@@ -24,6 +24,18 @@ const envSchema = z.object({
   RAZORPAY_KEY_SECRET: z.string().min(1),
   RAZORPAY_WEBHOOK_SECRET: z.string().default(''),
 
+  // ── AI / LLM integration (Gemini-first, provider-swappable) ─────────────
+  // The active provider + model is resolved at runtime from the platform
+  // AiConfig row (super-admin configurable). These env vars hold the API keys
+  // (never persisted to the DB) and the default provider/model fallbacks used
+  // when no AiConfig row exists yet. Leaving keys blank disables AI gracefully.
+  AI_PROVIDER: z.enum(['gemini', 'openai', 'disabled']).default('gemini'),
+  GEMINI_API_KEY: z.string().default(''),
+  GEMINI_MODEL: z.string().default('gemini-2.0-flash'),
+  OPENAI_API_KEY: z.string().default(''),
+  OPENAI_MODEL: z.string().default('gpt-4o-mini'),
+  OPENAI_API_BASE: z.string().default('https://api.openai.com/v1'),
+
   // ── PACS / DICOM integration ────────────────────────────────────────────
   // PACS_PROVIDER selects how uploaded DICOM is archived + viewed:
   //   none       → keep files in /uploads, render with the in-house viewer (default)
