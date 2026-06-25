@@ -2,6 +2,7 @@ import { Response, NextFunction } from 'express';
 import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse } from '../../shared/apiResponse';
 import * as configService from './ai.config.service';
+import * as chatService from './ai.chat.service';
 
 // --- Super-admin: LLM provider configuration ("Configure LLM Options") ---
 
@@ -29,6 +30,38 @@ export async function getStatus(req: AuthenticatedRequest, res: Response, next: 
   try {
     const status = await configService.getAiStatus();
     sendResponse({ res, message: 'AI status', data: status });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// --- Use Case 2 (Lvl 1): Patient AI chatbot for the doctor ---
+
+export async function patientChat(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const result = await chatService.patientChat(
+      req.user!.tenantId,
+      req.user!.userId,
+      req.body,
+    );
+    sendResponse({ res, message: 'AI patient analysis', data: result });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function bloodReportAnalysis(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const result = await chatService.bloodReportAnalysis(
+      req.user!.tenantId,
+      req.user!.userId,
+      req.body,
+    );
+    sendResponse({ res, message: 'Blood report analysis', data: result });
   } catch (err) {
     next(err);
   }
