@@ -25,6 +25,7 @@
     "db:seed:cleanup-radiologist-approve": "tsx prisma/scripts/cleanup-radiologist-approve-perm.ts",
     "db:seed:nurse-users": "tsx prisma/scripts/seed-nurse-users.ts",
     "db:seed:imaging-modalities": "tsx prisma/scripts/seed-imaging-modalities.ts",
+    "db:seed:icd": "tsx prisma/scripts/seed-icd-codes.ts",
     "db:seed:prod": "node dist-seed/prisma/seed.js",
     "db:studio": "prisma studio",
     "lint": "eslint src --ext .ts",
