@@ -44,7 +44,7 @@ const PATIENT_CHAT_SYSTEM = [
 ].join('\n');
 
 export async function patientChat(tenantId: string, userId: string, input: PatientChatInput) {
-  await assertFeatureEnabled('patientChat');
+  await assertFeatureEnabled('patientChat', tenantId);
 
   const context = await buildPatientContext(tenantId, input.patientId);
 
@@ -56,7 +56,7 @@ export async function patientChat(tenantId: string, userId: string, input: Patie
   }));
   const messages: AiMessage[] = [...history, { role: 'user', content: input.message }];
 
-  const { text, model, provider } = await generateText({ system, messages });
+  const { text, model, provider } = await generateText({ system, messages }, { tenantId });
 
   void auditAi(tenantId, userId, input.patientId, `Patient chat: ${input.message}`);
 
@@ -83,7 +83,7 @@ export async function bloodReportAnalysis(
   userId: string,
   input: BloodReportAnalysisInput,
 ) {
-  await assertFeatureEnabled('patientChat');
+  await assertFeatureEnabled('patientChat', tenantId);
 
   const results = await prisma.labResult.findMany({
     where: {
@@ -114,10 +114,13 @@ export async function bloodReportAnalysis(
     'JSON shape: {"score": number, "severity": "normal"|"mild"|"moderate"|"severe", "summary": string, "flagged": [{"parameter": string, "value": string, "status": "high"|"low"|"abnormal", "note": string}], "recommendations": string[]}',
   ].join('\n');
 
-  const result = await generateJson<BloodReportResult>({
-    system,
-    messages: [{ role: 'user', content: `Lab report:\n${reportText}` }],
-  });
+  const result = await generateJson<BloodReportResult>(
+    {
+      system,
+      messages: [{ role: 'user', content: `Lab report:\n${reportText}` }],
+    },
+    { tenantId },
+  );
 
   void auditAi(tenantId, userId, input.patientId, 'Blood report analysis');
 

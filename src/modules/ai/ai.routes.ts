@@ -5,6 +5,8 @@ import { validate } from '../../middleware/validate';
 import * as controller from './ai.controller';
 import {
   updateAiConfigSchema,
+  aiConfigQuerySchema,
+  aiConfigResetSchema,
   patientChatSchema,
   bloodReportAnalysisSchema,
   platformChatSchema,
@@ -42,12 +44,27 @@ aiRoutes.post(
   controller.bloodReportAnalysis,
 );
 
-// --- Super-admin: LLM provider configuration ---
-aiRoutes.get('/config', authenticate, requireRoles('super_admin'), controller.getConfig);
+// --- Super-admin: LLM provider configuration (per hospital + platform default) ---
+aiRoutes.get('/models', authenticate, requireRoles('super_admin'), controller.getModels);
+aiRoutes.get('/configs', authenticate, requireRoles('super_admin'), controller.listConfigs);
+aiRoutes.get(
+  '/config',
+  authenticate,
+  requireRoles('super_admin'),
+  validate(aiConfigQuerySchema),
+  controller.getConfig,
+);
 aiRoutes.put(
   '/config',
   authenticate,
   requireRoles('super_admin'),
   validate(updateAiConfigSchema),
   controller.updateConfig,
+);
+aiRoutes.delete(
+  '/config',
+  authenticate,
+  requireRoles('super_admin'),
+  validate(aiConfigResetSchema),
+  controller.resetConfig,
 );

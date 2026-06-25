@@ -21,7 +21,7 @@ interface DischargeNarrative {
 }
 
 export async function generateDischargeNarrative(tenantId: string, id: string) {
-  await assertFeatureEnabled('dischargeAi');
+  await assertFeatureEnabled('dischargeAi', tenantId);
 
   const summary = await prisma.dischargeSummary.findUnique({ where: { id } });
   if (!summary) throw AppError.notFound('Discharge summary not found');
@@ -65,11 +65,14 @@ export async function generateDischargeNarrative(tenantId: string, id: string) {
     '- followUpInstructions: when and with whom to follow up, and what to monitor.',
   ].join('\n');
 
-  const narrative = await generateJson<DischargeNarrative>({
-    system,
-    messages: [{ role: 'user', content: `Admission facts:\n\n${facts}` }],
-    maxOutputTokens: 1200,
-  });
+  const narrative = await generateJson<DischargeNarrative>(
+    {
+      system,
+      messages: [{ role: 'user', content: `Admission facts:\n\n${facts}` }],
+      maxOutputTokens: 1200,
+    },
+    { tenantId },
+  );
 
   // Suggestions only — mapped to the editor's narrative fields. Caller decides
   // what to keep.

@@ -130,21 +130,24 @@ export async function platformChat(
   _userId: string,
   input: PlatformChatInput,
 ) {
-  await assertFeatureEnabled('platformChat');
+  await assertFeatureEnabled('platformChat', tenantId);
 
   const today = new Date().toISOString().slice(0, 10);
 
   // --- Step 1: route the question (data vs help) + extract dates. ---
-  const planner = await generateJson<PlannerResult>({
-    system: [
-      'You route a hospital-software support question. Today is ' + today + '.',
-      'Decide if the question asks for a COUNT/NUMBER/REVENUE about the user\'s own hospital data ("data"), or a how-to/navigation/support question ("help").',
-      'If "data", choose exactly one intent from this list and extract any date range as ISO yyyy-mm-dd (resolve relative/partial dates using today; if no year is given assume the current year):',
-      DATA_INTENTS.map((i) => `- ${i}`).join('\n'),
-      'Return strict JSON: {"type":"data"|"help","intent":<one of the list or null>,"fromDate":<iso or null>,"toDate":<iso or null>}',
-    ].join('\n'),
-    messages: [{ role: 'user', content: input.message }],
-  }).catch(() => ({ type: 'help' as const }));
+  const planner = await generateJson<PlannerResult>(
+    {
+      system: [
+        'You route a hospital-software support question. Today is ' + today + '.',
+        'Decide if the question asks for a COUNT/NUMBER/REVENUE about the user\'s own hospital data ("data"), or a how-to/navigation/support question ("help").',
+        'If "data", choose exactly one intent from this list and extract any date range as ISO yyyy-mm-dd (resolve relative/partial dates using today; if no year is given assume the current year):',
+        DATA_INTENTS.map((i) => `- ${i}`).join('\n'),
+        'Return strict JSON: {"type":"data"|"help","intent":<one of the list or null>,"fromDate":<iso or null>,"toDate":<iso or null>}',
+      ].join('\n'),
+      messages: [{ role: 'user', content: input.message }],
+    },
+    { tenantId },
+  ).catch(() => ({ type: 'help' as const }));
 
   // --- Step 2a: data path — run the whitelisted query, then phrase it. ---
   if (planner.type === 'data' && planner.intent && DATA_INTENTS.includes(planner.intent)) {
@@ -157,17 +160,20 @@ export async function platformChat(
         ? ` for ${from ? from.toISOString().slice(0, 10) : 'the start'} to ${to ? to.toISOString().slice(0, 10) : 'now'}`
         : '';
 
-    const { text, model, provider } = await generateText({
-      system:
-        'You are a hospital software assistant. Phrase the computed answer in one friendly, precise sentence. Do not add extra numbers beyond the data given.',
-      messages: [
-        {
-          role: 'user',
-          content: `Question: ${input.message}\nComputed (${result.label}${range}): ${result.value}\nAnswer in one sentence.`,
-        },
-      ],
-      maxOutputTokens: 120,
-    });
+    const { text, model, provider } = await generateText(
+      {
+        system:
+          'You are a hospital software assistant. Phrase the computed answer in one friendly, precise sentence. Do not add extra numbers beyond the data given.',
+        messages: [
+          {
+            role: 'user',
+            content: `Question: ${input.message}\nComputed (${result.label}${range}): ${result.value}\nAnswer in one sentence.`,
+          },
+        ],
+        maxOutputTokens: 120,
+      },
+      { tenantId },
+    );
 
     return {
       reply: text,
@@ -185,20 +191,23 @@ export async function platformChat(
     ? docs.map((d) => `### ${d.title}\n${d.body}`).join('\n\n')
     : 'No specific documentation matched.';
 
-  const { text, model, provider } = await generateText({
-    system: [
-      'You are the support assistant for a hospital ERP/EMR. Answer the user\'s how-to question using ONLY the documentation snippets provided.',
-      'Be concise and give step-by-step navigation when relevant. If the snippets do not cover it, say you are not sure and suggest contacting support.',
-      'You are read-only: you cannot perform actions, only explain how to.',
-      '',
-      '=== DOCUMENTATION ===',
-      docContext,
-    ].join('\n'),
-    messages: [
-      ...(input.history ?? []).map((h) => ({ role: h.role, content: h.content })),
-      { role: 'user' as const, content: input.message },
-    ],
-  });
+  const { text, model, provider } = await generateText(
+    {
+      system: [
+        'You are the support assistant for a hospital ERP/EMR. Answer the user\'s how-to question using ONLY the documentation snippets provided.',
+        'Be concise and give step-by-step navigation when relevant. If the snippets do not cover it, say you are not sure and suggest contacting support.',
+        'You are read-only: you cannot perform actions, only explain how to.',
+        '',
+        '=== DOCUMENTATION ===',
+        docContext,
+      ].join('\n'),
+      messages: [
+        ...(input.history ?? []).map((h) => ({ role: h.role, content: h.content })),
+        { role: 'user' as const, content: input.message },
+      ],
+    },
+    { tenantId },
+  );
 
   return {
     reply: text,

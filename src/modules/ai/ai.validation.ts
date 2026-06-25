@@ -1,10 +1,13 @@
 import { z } from 'zod';
 
-// Super-admin update of the platform AI config. All fields optional (partial).
+// Super-admin update of an AI config scope. tenantId omitted/null = platform
+// default; a uuid = that hospital's override. All other fields optional.
 export const updateAiConfigSchema = z.object({
   body: z.object({
+    tenantId: z.string().uuid().nullable().optional(),
     provider: z.enum(['gemini', 'openai', 'disabled']).optional(),
     textModel: z.string().trim().min(1).max(100).optional(),
+    fallbackModels: z.array(z.string().trim().max(100)).max(5).optional(),
     temperature: z.coerce.number().min(0).max(2).optional(),
     maxOutputTokens: z.coerce.number().int().min(64).max(8192).optional(),
     patientChatEnabled: z.boolean().optional(),
@@ -14,7 +17,19 @@ export const updateAiConfigSchema = z.object({
   }),
 });
 
-export type UpdateAiConfigInput = z.infer<typeof updateAiConfigSchema>['body'];
+// The persisted fields (tenantId is routing, not stored as data).
+export type UpdateAiConfigInput = Omit<
+  z.infer<typeof updateAiConfigSchema>['body'],
+  'tenantId'
+>;
+
+export const aiConfigQuerySchema = z.object({
+  query: z.object({ tenantId: z.string().uuid().optional() }),
+});
+
+export const aiConfigResetSchema = z.object({
+  query: z.object({ tenantId: z.string().uuid('A hospital id is required') }),
+});
 
 // UC3 — platform-wide support chatbot (read-only). A user question plus an
 // optional short prior-turn history for follow-ups.
