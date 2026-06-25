@@ -3,6 +3,7 @@ import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse } from '../../shared/apiResponse';
 import * as configService from './ai.config.service';
 import * as chatService from './ai.chat.service';
+import * as platformService from './ai.platform.service';
 
 // --- Super-admin: LLM provider configuration ("Configure LLM Options") ---
 
@@ -62,6 +63,21 @@ export async function bloodReportAnalysis(
       req.body,
     );
     sendResponse({ res, message: 'Blood report analysis', data: result });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// --- Use Case 3 (Lvl 1): Platform-wide support chatbot (read-only) ---
+
+export async function platformChat(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const result = await platformService.platformChat(
+      req.user!.tenantId,
+      req.user!.userId,
+      req.body,
+    );
+    sendResponse({ res, message: 'Support assistant', data: result });
   } catch (err) {
     next(err);
   }

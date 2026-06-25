@@ -7,6 +7,7 @@ import {
   updateAiConfigSchema,
   patientChatSchema,
   bloodReportAnalysisSchema,
+  platformChatSchema,
 } from './ai.validation';
 
 export const aiRoutes = Router();
@@ -14,6 +15,16 @@ export const aiRoutes = Router();
 // --- Feature status (any authenticated user) ---
 // Lets the frontend decide whether to show AI panels/buttons. Booleans only.
 aiRoutes.get('/status', authenticate, controller.getStatus);
+
+// --- Use Case 3 (Lvl 1): Platform-wide support chatbot (read-only) ---
+// Any authenticated user; the service hard-scopes every data query to the
+// caller's own tenant.
+aiRoutes.post(
+  '/support/chat',
+  authenticate,
+  validate(platformChatSchema),
+  controller.platformChat,
+);
 
 // --- Use Case 2 (Lvl 1): Patient AI chatbot for the doctor (read-only) ---
 aiRoutes.post(
