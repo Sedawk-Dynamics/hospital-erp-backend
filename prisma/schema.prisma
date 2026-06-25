@@ -1228,6 +1228,7 @@ model Tenant {
 
   featureToggles             FeatureToggle[]
   icdCodes                   IcdCode[]
+  aiConfig                   AiConfig?
   users                      User[]
   roles                      Role[]
   loginAuditLogs             LoginAuditLog[]
@@ -1418,15 +1419,23 @@ model FeatureToggle {
   @@map("feature_toggles")
 }
 
-// Platform-wide AI / LLM configuration (single active row, managed by
-// super-admin). API keys live in env (never here); this row only selects the
-// provider/model and toggles each AI use-case on or off. Read at runtime by
-// the shared AI service so providers can be swapped without a redeploy.
+// AI / LLM configuration, resolvable per hospital. A row with tenantId=null is
+// the PLATFORM DEFAULT; a row with a tenantId is that hospital's override.
+// resolveAiConfig(tenantId) uses the hospital row if present, else the platform
+// default (default provider = gemini). API keys live in env (never here); these
+// rows only select provider/model + fallbacks and toggle each AI use case, so a
+// super-admin can run Gemini for one hospital and OpenAI for another, or turn
+// AI off entirely (provider="disabled") — without a redeploy.
 model AiConfig {
   id                  String   @id @default(uuid())
+  // null = platform default; set = this hospital's override (one row each).
+  tenantId            String?  @unique @map("tenant_id")
   // provider: which LLM backend to call — "gemini" | "openai" | "disabled".
   provider            String   @default("gemini") @db.VarChar(20)
-  textModel           String   @default("gemini-2.0-flash") @map("text_model") @db.VarChar(100)
+  textModel           String   @default("gemini-2.5-flash") @map("text_model") @db.VarChar(100)
+  // Ordered same-provider fallback models tried when the primary is rate-limited
+  // or unavailable (e.g. free-tier RPD exhausted).
+  fallbackModels      String[] @default([]) @map("fallback_models")
   temperature         Decimal  @default(0.4) @db.Decimal(3, 2)
   maxOutputTokens     Int      @default(1024) @map("max_output_tokens")
   // Per-use-case feature flags (mirrors the TRMS CDSS Level use cases).
@@ -1438,6 +1447,8 @@ model AiConfig {
   updatedById         String?  @map("updated_by_id")
   createdAt           DateTime @default(now()) @map("created_at")
   updatedAt           DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant Tenant? @relation(fields: [tenantId], references: [id])
 
   @@map("ai_config")
 }
