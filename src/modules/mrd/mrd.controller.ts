@@ -2,6 +2,7 @@ import { Response, NextFunction } from 'express';
 import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse, sendPaginatedResponse } from '../../shared/apiResponse';
 import * as mrdService from './mrd.service';
+import { generateDischargeNarrative } from './mrd.discharge-ai';
 import { streamDischargeSummaryPdf } from './discharge-summary-pdf';
 
 export async function getMrdDocuments(
@@ -175,6 +176,22 @@ export async function refreshDischargeSummary(
     const id = req.params.id as string;
     const result = await mrdService.refreshDischargeSummary(tenantId, id);
     sendResponse({ res, message: 'Discharge summary refreshed', data: result });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// UC4: AI-draft the narrative sections (suggestions only — not persisted).
+export async function generateDischargeAiNarrative(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const id = req.params.id as string;
+    const result = await generateDischargeNarrative(tenantId, id);
+    sendResponse({ res, message: 'AI narrative drafted', data: result });
   } catch (err) {
     next(err);
   }

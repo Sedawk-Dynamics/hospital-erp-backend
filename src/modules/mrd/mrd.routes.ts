@@ -86,6 +86,15 @@ mrdRoutes.post(
   controller.refreshDischargeSummary,
 );
 
+// UC4: AI-draft the narrative sections (80/20). Returns suggestions only.
+mrdRoutes.post(
+  '/discharge-summary/:id/ai-narrative',
+  authenticate,
+  requirePermission('admissions', 'update'),
+  validate(dischargeSummaryIdParamSchema),
+  controller.generateDischargeAiNarrative,
+);
+
 mrdRoutes.get(
   '/discharge-summary/:id/pdf',
   authenticate,
