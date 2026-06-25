@@ -48,6 +48,8 @@ import { onlinePaymentsRoutes } from './online-payments/online-payments.routes';
 import { demoRequestRoutes } from './demo-requests/demo-requests.routes';
 import { drugMasterRoutes } from './drug-master/drug-master.routes';
 import { discountPolicyRoutes } from './discount-policy/discount-policy.routes';
+import { aiRoutes } from './ai/ai.routes';
+import { icdRoutes } from './icd/icd.routes';
 
 const apiRouter = Router();
 
@@ -72,6 +74,14 @@ apiRouter.use('/communication', authenticate, userTierLimiter, communicationRout
 // feature gate: super-admin manages it; any clinical/pharmacy user searches it
 // to pick a drug or import it into the hospital formulary.
 apiRouter.use('/drug-master', authenticate, userTierLimiter, drugMasterRoutes);
+// Platform + per-tenant ICD-10 diagnosis code catalog (reference data). No
+// feature gate: super-admin manages the shared set; any clinical user searches
+// it for diagnosis autocomplete.
+apiRouter.use('/icd', authenticate, userTierLimiter, icdRoutes);
+// AI / LLM use cases (patient chatbot, platform support chatbot, discharge
+// generation) + super-admin LLM provider config. Cross-cutting, so mounted as
+// a core module with per-route permission checks (no single feature gate).
+apiRouter.use('/ai', authenticate, userTierLimiter, aiRoutes);
 
 // PACS auth gateway. Mounted WITHOUT the global `authenticate` because its
 // /o/* proxy authenticates via the pacs_session cookie (the OHIF iframe can't
