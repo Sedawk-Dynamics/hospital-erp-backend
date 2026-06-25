@@ -38,11 +38,15 @@ export interface AiProviderClient {
 export interface ResolvedAiConfig {
   provider: AiProvider;
   textModel: string;
+  /** Ordered same-provider fallback models tried when the primary fails. */
+  fallbackModels: string[];
   temperature: number;
   maxOutputTokens: number;
   apiKey: string;
   /** True when a usable provider + key is present. */
   ready: boolean;
+  /** True when this resolved from the platform default (no hospital override). */
+  inherited: boolean;
   features: {
     patientChat: boolean;
     platformChat: boolean;

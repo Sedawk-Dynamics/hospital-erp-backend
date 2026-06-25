@@ -1,5 +1,5 @@
 import { logger } from '../../../config/logger';
-import { AppError } from '../../../shared/appError';
+import { AiProviderError, isRetriableStatus } from '../ai.errors';
 import type { AiGenerateOptions, AiProviderClient } from '../ai.types';
 
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
@@ -46,13 +46,19 @@ export const geminiProvider: AiProviderClient = {
       });
     } catch (err) {
       logger.error({ err }, 'Gemini API request failed');
-      throw AppError.internal('AI service unreachable');
+      // Network failures are worth retrying on a fallback model/endpoint.
+      throw new AiProviderError('gemini', 'AI service unreachable', undefined, true);
     }
 
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
-      logger.error({ status: res.status, body: errText.slice(0, 500) }, 'Gemini API error');
-      throw AppError.internal('AI service returned an error');
+      logger.error({ status: res.status, model, body: errText.slice(0, 500) }, 'Gemini API error');
+      throw new AiProviderError(
+        'gemini',
+        `Gemini API error (${res.status})`,
+        res.status,
+        isRetriableStatus(res.status),
+      );
     }
 
     const data = (await res.json()) as {
@@ -62,7 +68,8 @@ export const geminiProvider: AiProviderClient = {
 
     if (data.promptFeedback?.blockReason) {
       logger.warn({ blockReason: data.promptFeedback.blockReason }, 'Gemini blocked prompt');
-      throw AppError.internal('AI service blocked the request');
+      // A safety block won't change on another model — fatal.
+      throw new AiProviderError('gemini', 'AI service blocked the request', 400, false);
     }
 
     return data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? '').join('') ?? '';
