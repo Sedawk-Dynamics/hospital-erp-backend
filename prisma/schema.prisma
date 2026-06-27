@@ -4378,10 +4378,8 @@ model DrugBatch {
   recallReason            String?   @map("recall_reason")
   // Barcode-driven traceability (spec Section 2). barcode is the scannable code
   // for THIS batch — an internal Code-128 minted at inward when the pack carries
-  // no GS1 DataMatrix, so one scan resolves drug + batch + expiry. storageLocation
-  // is the shelf/rack/cold-chain bin printed on the internal label.
+  // no GS1 DataMatrix, so one scan resolves drug + batch + expiry.
   barcode                 String?   @map("barcode") @db.VarChar(64)
-  storageLocation         String?   @map("storage_location") @db.VarChar(100)
   // GS1 DataMatrix serial (AI 21) captured at receipt for track-and-trace.
   serialNumber            String?   @map("serial_number") @db.VarChar(80)
   createdAt               DateTime  @default(now()) @map("created_at")

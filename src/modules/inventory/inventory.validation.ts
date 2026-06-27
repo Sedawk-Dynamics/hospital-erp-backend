@@ -285,7 +285,6 @@ export const receivePurchaseOrderSchema = z.object({
           manufacturingDate: z.string().optional(),
           mrp: z.number().min(0).optional(),
           sellingPrice: z.number().min(0).optional(),
-          storageLocation: z.string().max(100).optional(),
         }),
       )
       .min(1, 'At least one item is required'),

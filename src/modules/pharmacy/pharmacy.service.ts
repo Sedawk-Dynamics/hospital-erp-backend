@@ -1041,10 +1041,9 @@ export async function commitInward(
           supplierId: line.supplierId ?? data.supplierId,
           invoiceNumber: line.invoiceNumber ?? data.invoiceNumber,
           invoiceDate: line.invoiceDate ?? data.invoiceDate,
-          // Scanned pack barcode / shelf location carry through; absent barcode is
-          // minted internally by createBatch.
+          // Scanned pack barcode carries through; absent barcode is minted
+          // internally by createBatch.
           barcode: line.barcode,
-          storageLocation: line.storageLocation,
           addToExisting: line.addToExisting ?? data.addToExisting,
         } as CreateBatchInput);
         batchId = batch.id;
@@ -1660,7 +1659,6 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
       invoiceDate: (data as any).invoiceDate ? new Date((data as any).invoiceDate) : null,
       quantityReceived: data.quantityReceived,
       quantityInStock: data.quantityReceived,
-      storageLocation: (data as any).storageLocation ?? null,
       serialNumber: (data as any).serialNumber ?? null,
       barcode: ((data as any).barcode as string | undefined)?.trim() || makeInternalBarcode(batchId),
     },
@@ -1682,11 +1680,10 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
       batchNumber: data.batchNumber,
       quantityReceived: data.quantityReceived,
       expiryDate: data.expiryDate,
-      // Vendor linkage + shelf location, captured on the audit trail per batch so
-      // a stock movement can always be traced to its supplier and storage point.
+      // Vendor linkage captured on the audit trail per batch so a stock movement
+      // can always be traced back to its supplier.
       supplierId: data.supplierId ?? null,
       supplierName: finalBatch.supplier?.name ?? null,
-      storageLocation: (data as any).storageLocation ?? null,
       invoiceNumber: (data as any).invoiceNumber ?? null,
     },
   });
@@ -5005,7 +5002,6 @@ export async function resolveScan(tenantId: string, code: string) {
           sellingPrice: batch.sellingPrice != null ? Number(batch.sellingPrice) : null,
           mrp: batch.mrp != null ? Number(batch.mrp) : null,
           quantityInStock: batch.quantityInStock,
-          storageLocation: batch.storageLocation ?? null,
           barcode: batch.barcode ?? null,
         }
       : null,

@@ -1447,7 +1447,6 @@ export async function receivePurchaseOrder(
               quantityReceived: receivedItem.quantityReceived,
               quantityInStock: receivedItem.quantityReceived,
               invoiceNumber: order.orderNumber,
-              storageLocation: receivedItem.storageLocation ?? null,
               barcode: makeInternalBarcode(batchId),
             },
           });
@@ -1462,7 +1461,6 @@ export async function receivePurchaseOrder(
               batchNumber: receivedItem.batchNumber,
               quantityReceived: receivedItem.quantityReceived,
               supplierId: order.supplierId,
-              storageLocation: receivedItem.storageLocation ?? null,
               purchaseOrderId: order.id,
             },
           });

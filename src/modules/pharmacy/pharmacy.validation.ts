@@ -169,11 +169,9 @@ export const createBatchSchema = z.object({
     // GRN invoice traceability (design-doc manual GRN Steps 1/8/9).
     invoiceNumber: z.string().max(100).optional(),
     invoiceDate: z.string().optional(),
-    // Barcode-driven traceability (spec Section 2): a scanned pack barcode and
-    // the shelf/bin location printed on the internal label. When barcode is
-    // omitted an internal Code-128 is minted from the batch id.
+    // Barcode-driven traceability (spec Section 2): a scanned pack barcode. When
+    // barcode is omitted an internal Code-128 is minted from the batch id.
     barcode: z.string().max(64).optional(),
-    storageLocation: z.string().max(100).optional(),
     // GS1 DataMatrix serial (AI 21) read from the 2D scan, kept for traceability.
     serialNumber: z.string().max(80).optional(),
     // Manual GRN Step 6: when a batch with this number already exists, set this
@@ -392,7 +390,6 @@ const commitInwardLineSchema = inwardMatchLineSchema
     minStock: z.number().int().nonnegative().optional(),
     description: z.string().max(2000).optional(),
     barcode: z.string().max(64).optional(),
-    storageLocation: z.string().max(100).optional(),
     // Batch / stock-in (mirrors createBatchSchema). Batch + expiry are required
     // only when actually receiving stock for a medicine (qty > 0); see refine.
     batchNumber: z.string().max(100).optional(),

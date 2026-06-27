@@ -65,7 +65,7 @@ describe('Pharmacy — resolveScan', () => {
   };
   const BATCH = {
     id: 'b1', batchNumber: 'CRT8821', expiryDate: new Date('2028-08-31'), manufacturingDate: new Date('2026-06-01'),
-    sellingPrice: 3, mrp: 30, quantityInStock: 120, storageLocation: 'A1', barcode: 'PHBxxxx',
+    sellingPrice: 3, mrp: 30, quantityInStock: 120, barcode: 'PHBxxxx',
   };
 
   it('resolves a GS1 scan to drug + the scanned batch + stock', async () => {
