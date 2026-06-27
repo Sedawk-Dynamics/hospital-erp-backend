@@ -201,6 +201,93 @@ export async function findFormularyMatches(
   return { matches };
 }
 
+// Catalog suggestions are a fallback, so we surface "most similar" a bit more
+// generously than formulary near-duplicates (which gate a hard block).
+const CATALOG_SUGGEST_THRESHOLD = 45;
+
+/**
+ * When the hospital's own formulary has no confident match for an incoming line,
+ * fall back to the platform-wide DrugMaster catalog (lakhs of Indian drugs) and
+ * surface the MOST SIMILAR entries. Picking one seeds/import the formulary row
+ * from the catalog and stocks it — so OCR / inward never dead-ends on "create
+ * from blank" when a near-identical drug is one click away in the catalog.
+ *
+ * Pre-filters in SQL by the first name token (prefix index + denormalised
+ * searchTokens) so we never scan the whole 254K-row catalog, then blends the
+ * same character + token similarity used for the formulary.
+ */
+export async function findDrugMasterMatches(
+  params: {
+    name: string;
+    genericName?: string | null;
+    manufacturer?: string | null;
+    strength?: string | null;
+    dosageForm?: string | null;
+  },
+  limit = 5,
+) {
+  const name = params.name?.trim();
+  if (!name) return [] as any[];
+
+  const norm = normalizeDrugName(name);
+  const firstToken = norm.split(' ').filter(Boolean)[0] || name.trim().toLowerCase();
+  const prefix = firstToken.slice(0, 4);
+  const genericFirst = params.genericName
+    ? normalizeDrugName(params.genericName).split(' ').filter(Boolean)[0]
+    : '';
+
+  const or: any[] = [];
+  if (prefix) or.push({ name: { startsWith: prefix, mode: 'insensitive' } }); // uses @@index([name])
+  if (firstToken) or.push({ searchTokens: { contains: firstToken, mode: 'insensitive' } });
+  if (genericFirst) or.push({ genericName: { contains: genericFirst, mode: 'insensitive' } });
+  if (!or.length) return [];
+
+  const rows = await prisma.drugMaster.findMany({
+    where: { OR: or },
+    take: 400,
+    select: {
+      id: true, name: true, genericName: true, manufacturer: true,
+      dosageForm: true, strength: true, packSize: true, hsnCode: true, gtin: true,
+    },
+  });
+
+  const incoming = {
+    drugName: name,
+    genericName: params.genericName,
+    manufacturer: params.manufacturer,
+    strength: params.strength,
+    dosageForm: params.dosageForm,
+  };
+  return rows
+    .map((m) => ({
+      // No formulary row yet — drugMasterId + source tell the UI/commit to
+      // create-from-catalog rather than map to an existing formulary id.
+      id: '',
+      drugMasterId: m.id,
+      source: 'catalog' as const,
+      drugName: m.name,
+      genericName: m.genericName,
+      manufacturer: m.manufacturer,
+      dosageForm: m.dosageForm,
+      strength: m.strength,
+      packSize: m.packSize,
+      hsnCode: m.hsnCode,
+      gtin: m.gtin,
+      price: null as number | null,
+      totalStock: 0,
+      score: scoreMatch(incoming, {
+        drugName: m.name,
+        genericName: m.genericName,
+        manufacturer: m.manufacturer,
+        strength: m.strength,
+        dosageForm: m.dosageForm,
+      }),
+    }))
+    .filter((c) => c.score >= CATALOG_SUGGEST_THRESHOLD)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+}
+
 export async function createFormularyItem(
   tenantId: string,
   roles: string[],
@@ -245,6 +332,8 @@ export async function createFormularyItem(
       unitsPerCase: (data as any).unitsPerCase ?? undefined,
       hsnCode: (data as any).hsnCode ?? undefined,
       manufacturerCode: (data as any).manufacturerCode ?? undefined,
+      // Link to the platform catalog drug when the row was seeded from it.
+      drugMasterId: (data as any).drugMasterId ?? undefined,
       indications: data.indications,
       contraindications: data.contraindications,
       isLifeSaving: (data as any).isLifeSaving ?? false,
@@ -428,19 +517,40 @@ export async function resolveInwardLine(
     }
   }
 
-  // Tier 3 — multi-factor similarity (existing fuzzy engine).
-  const { matches } = await findFormularyMatches(tenantId, {
+  // Tier 3 — multi-factor similarity against THIS hospital's formulary.
+  const { matches: formularyMatches } = await findFormularyMatches(tenantId, {
     name: line.drugName,
     genericName: line.genericName,
     manufacturer: line.manufacturer,
     strength: line.strength,
     dosageForm: line.dosageForm,
   });
-  const top = matches[0];
+  const top = formularyMatches[0];
   let recommendation: InwardRecommendation;
   if (top && top.score >= MATCH_BLOCK_THRESHOLD) recommendation = 'map';
   else if (top && top.score >= MATCH_SUGGEST_THRESHOLD) recommendation = 'review';
   else recommendation = 'create';
+
+  // Tag formulary matches so the UI can tell them apart from catalog suggestions.
+  let matches: any[] = formularyMatches.map((m) => ({ ...m, source: 'formulary' as const }));
+
+  // Tier 4 — catalog fallback. When the formulary has no confident map (nothing,
+  // or only a weak suggestion), search the platform DrugMaster catalog for the
+  // most similar drugs so the user can pick one (→ import + stock) instead of
+  // typing a brand-new drug from scratch. Skip catalog drugs already represented
+  // by a formulary match.
+  if (!top || top.score < MATCH_BLOCK_THRESHOLD) {
+    const catalog = await findDrugMasterMatches({
+      name: line.drugName,
+      genericName: line.genericName,
+      manufacturer: line.manufacturer,
+      strength: line.strength,
+      dosageForm: line.dosageForm,
+    });
+    const haveMaster = new Set(matches.map((m) => m.drugMasterId).filter(Boolean));
+    matches = [...matches, ...catalog.filter((c) => !haveMaster.has(c.drugMasterId))];
+  }
+
   return {
     resolvedVia: (top ? 'similarity' : 'none') as ResolveVia,
     recommendation,
@@ -1007,6 +1117,9 @@ export async function commitInward(
           gtin: line.gtin ?? undefined,
           hsnCode: line.hsnCode ?? undefined,
           manufacturerCode: line.manufacturerCode ?? undefined,
+          // When the line was seeded from the DrugMaster catalog, link the new
+          // formulary row back to the catalog drug.
+          drugMasterId: line.drugMasterId ?? undefined,
           // Default selling price per base unit; MRP (per pack) is kept on the batch.
           price: line.sellingPrice,
           isActive: true,

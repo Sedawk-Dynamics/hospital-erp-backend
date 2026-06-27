@@ -378,6 +378,9 @@ const commitInwardLineSchema = inwardMatchLineSchema
     // inventory item (other stock) to add the incoming stock to.
     targetFormularyId: z.string().uuid('Invalid target drug ID').optional(),
     targetInventoryItemId: z.string().uuid('Invalid target item ID').optional(),
+    // Set on a 'create' line that the user seeded from the DrugMaster catalog —
+    // the new formulary row links back to the catalog drug for identity/pricing.
+    drugMasterId: z.string().uuid('Invalid drug catalog ID').optional(),
     // The raw distributor line text (defaults to drugName) — stored verbatim as
     // the learned mapping key so future imports of this exact name auto-resolve.
     externalName: z.string().max(255).optional(),
