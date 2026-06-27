@@ -100,6 +100,7 @@ inventoryRoutes.post('/alerts/run', authenticate, requirePermission('inventory',
 // Stock balance / dept consumption / reorder history / expiry-waste / audit logs.
 // All are read-only and require `inventory:read`; access is further scoped per
 // tenant inside the service.
+inventoryRoutes.get('/reports/detailed', authenticate, requirePermission('inventory', 'read'), reportsController.detailedReport);
 inventoryRoutes.get('/reports/stock-balance', authenticate, requirePermission('inventory', 'read'), validate(stockBalanceReportSchema), reportsController.stockBalanceReport);
 inventoryRoutes.get('/reports/dept-consumption', authenticate, requirePermission('inventory', 'read'), validate(deptConsumptionReportSchema), reportsController.deptConsumptionReport);
 inventoryRoutes.get('/reports/reorder-history', authenticate, requirePermission('inventory', 'read'), validate(reorderHistoryReportSchema), reportsController.reorderHistoryReport);

@@ -3,6 +3,14 @@ import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse, sendPaginatedResponse } from '../../shared/apiResponse';
 import * as reports from './inventory.reports.service';
 import * as transfers from './inventory.transfer.service';
+import { getInventoryDetailedReport } from './inventory.detailed-report.service';
+
+export async function detailedReport(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await getInventoryDetailedReport(req.user!.tenantId, req.query as any);
+    sendResponse({ res, message: 'Inventory detailed report', data });
+  } catch (err) { next(err); }
+}
 
 export async function stockBalanceReport(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
