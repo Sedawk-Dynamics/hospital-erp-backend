@@ -16,7 +16,9 @@ import { logger } from '../../config/logger';
 // CSV / manual entry that already exists, rather than failing silently.
 // ============================================================
 
-const DEFAULT_MODEL = 'gemini-2.0-flash';
+// Fallback only when GEMINI_MODEL is unset. gemini-2.0-flash had its free-tier
+// quota zeroed (429 "limit: 0"); 2.5-flash is multimodal and still works.
+const DEFAULT_MODEL = 'gemini-2.5-flash';
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 // MIME types Gemini can OCR inline. Mirrors the upload allowlist (images + PDF).
