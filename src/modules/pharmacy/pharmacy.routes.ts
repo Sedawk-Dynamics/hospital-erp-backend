@@ -185,6 +185,8 @@ pharmacyRoutes.post('/emergency-patients/:id/merge', authenticate, requirePermis
 
 // --- Analytics (sales / expiry / stock usage / batch summary for the Reports page) ---
 pharmacyRoutes.get('/analytics', authenticate, requirePermission('pharmacy', 'read'), controller.getPharmacyAnalytics);
+// Detailed Analysis — one-call deep rollup (sales/margin/ABC/expiry/GST/suppliers…).
+pharmacyRoutes.get('/reports/detailed', authenticate, requirePermission('pharmacy', 'read'), controller.getPharmacyDetailedReport);
 
 // --- Stock ledger (batch-wise movement register: receipts / dispenses / returns) ---
 pharmacyRoutes.get('/stock-ledger', authenticate, requirePermission('pharmacy', 'read'), validate(getStockLedgerQuerySchema), controller.getStockLedger);

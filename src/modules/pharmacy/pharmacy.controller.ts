@@ -6,6 +6,7 @@ import { deleteFile } from '../../services/upload.service';
 import * as pharmacyService from './pharmacy.service';
 import { parseInvoiceFile } from './pharmacy.ocr';
 import { assertFeatureEnabled } from '../ai/ai.config.service';
+import { getPharmacyDetailedReport as getDetailedReport } from './pharmacy.detailed-report.service';
 
 // ============================================================
 // Formulary
@@ -1316,6 +1317,23 @@ export async function getPharmacyAnalytics(
       toDate: req.query.toDate as string | undefined,
     });
     sendResponse({ res, message: 'Pharmacy analytics retrieved successfully', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getPharmacyDetailedReport(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const data = await getDetailedReport(tenantId, {
+      fromDate: req.query.fromDate as string | undefined,
+      toDate: req.query.toDate as string | undefined,
+    });
+    sendResponse({ res, message: 'Pharmacy detailed report retrieved successfully', data });
   } catch (err) {
     next(err);
   }
