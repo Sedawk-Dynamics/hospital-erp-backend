@@ -10,7 +10,8 @@ import { logger } from '../../config/logger';
 // button or surface a toast.
 // ============================================================
 
-const DEFAULT_MODEL = 'gemini-2.0-flash';
+// Fallback only when GEMINI_MODEL is unset. 2.0-flash's free-tier quota is now 0.
+const DEFAULT_MODEL = 'gemini-2.5-flash';
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 export interface SmartSuggestionInput {

@@ -1438,12 +1438,18 @@ model AiConfig {
   fallbackModels      String[] @default([]) @map("fallback_models")
   temperature         Decimal  @default(0.4) @db.Decimal(3, 2)
   maxOutputTokens     Int      @default(1024) @map("max_output_tokens")
-  // Per-use-case feature flags (mirrors the TRMS CDSS Level use cases).
+  // Per-use-case feature flags — one switch per place AI is used, so a
+  // super-admin can disable AI in any single surface independently.
   patientChatEnabled  Boolean  @default(true) @map("patient_chat_enabled") // UC2 (Lvl 1)
+  bloodReportEnabled  Boolean  @default(true) @map("blood_report_enabled") // UC2.2 blood report analysis
   platformChatEnabled Boolean  @default(true) @map("platform_chat_enabled") // UC3 (Lvl 1, read-only)
   dischargeAiEnabled  Boolean  @default(true) @map("discharge_ai_enabled") // UC4
   // UC2.1 radiology image diagnosis — deferred to "coming soon" per MVP scope.
   radiologyAiEnabled  Boolean  @default(false) @map("radiology_ai_enabled")
+  // Progress-note smart suggestions (doctor SOAP pad).
+  progressNotesAiEnabled Boolean @default(true) @map("progress_notes_ai_enabled")
+  // Pharmacy/inventory invoice OCR scan (Add Stock).
+  ocrInvoiceEnabled   Boolean  @default(true) @map("ocr_invoice_enabled")
   updatedById         String?  @map("updated_by_id")
   createdAt           DateTime @default(now()) @map("created_at")
   updatedAt           DateTime @default(now()) @updatedAt @map("updated_at")

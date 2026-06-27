@@ -83,7 +83,7 @@ export async function bloodReportAnalysis(
   userId: string,
   input: BloodReportAnalysisInput,
 ) {
-  await assertFeatureEnabled('patientChat', tenantId);
+  await assertFeatureEnabled('bloodReport', tenantId);
 
   const results = await prisma.labResult.findMany({
     where: {

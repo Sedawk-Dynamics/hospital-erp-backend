@@ -11,9 +11,12 @@ export const updateAiConfigSchema = z.object({
     temperature: z.coerce.number().min(0).max(2).optional(),
     maxOutputTokens: z.coerce.number().int().min(64).max(8192).optional(),
     patientChatEnabled: z.boolean().optional(),
+    bloodReportEnabled: z.boolean().optional(),
     platformChatEnabled: z.boolean().optional(),
     dischargeAiEnabled: z.boolean().optional(),
     radiologyAiEnabled: z.boolean().optional(),
+    progressNotesAiEnabled: z.boolean().optional(),
+    ocrInvoiceEnabled: z.boolean().optional(),
   }),
 });
 

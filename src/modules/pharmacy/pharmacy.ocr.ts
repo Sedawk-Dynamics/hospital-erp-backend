@@ -38,6 +38,8 @@ export interface OcrInvoiceLine {
   manufacturer?: string | null;
   strength?: string | null;
   dosageForm?: string | null;
+  // Loose dispensing/base unit a pack is counted in (Tablet, Capsule, ml, Box…).
+  unit?: string | null;
   gtin?: string | null;
   hsnCode?: string | null;
   packSize?: number | null;
@@ -75,6 +77,8 @@ function buildPrompt(): string {
     'Rules:',
     '- Extract ONLY what is printed. Do not invent values. If a field is not present or unreadable, use null.',
     '- drugName: the brand/product name exactly as printed (without the pack suffix).',
+    '- dosageForm: the medicine form — one of Tablet, Capsule, Syrup, Suspension, Injection, Cream, Ointment, Gel, Drops, Inhaler, Powder, Solution, Spray, Lotion, Sachet, Suppository — inferred from the product name / pack (e.g. "TAB"→Tablet, "INJ"→Injection, "SYP"→Syrup), else null.',
+    '- unit: the single loose dispensing unit a pack is broken into and counted in — e.g. "Tablet", "Capsule", "ml", "Box", "Strip", "Vial", "Sachet". For tablets/capsules use "Tablet"/"Capsule"; for liquids use "ml". Null if unclear.',
     '- strength: the dose if part of the name (e.g. "650mg", "40mg"), else null.',
     '- manufacturer: the marketing company / manufacturer column if present (expand obvious abbreviations only when certain), else null.',
     '- packSize: the number of base units in a pack as an integer when the pack is like "10\'S", "1x10", "10 TAB" → 10. If it is a bottle/vial/single unit, use null.',
@@ -89,7 +93,7 @@ function buildPrompt(): string {
     'Return ONLY a JSON object with this exact shape (no prose, no markdown):',
     '{',
     '  "header": { "supplierName": string|null, "supplierGstin": string|null, "invoiceNumber": string|null, "invoiceDate": string|null },',
-    '  "lines": [ { "drugName": string, "genericName": string|null, "manufacturer": string|null, "strength": string|null, "dosageForm": string|null, "gtin": string|null, "hsnCode": string|null, "packSize": number|null, "batchNumber": string|null, "expiryDate": string|null, "manufacturingDate": string|null, "quantityReceived": number|null, "freeQuantity": number|null, "mrp": number|null, "purchasePrice": number|null, "purchaseDiscountPercent": number|null, "gstPercent": number|null, "sellingPrice": number|null } ]',
+    '  "lines": [ { "drugName": string, "genericName": string|null, "manufacturer": string|null, "strength": string|null, "dosageForm": string|null, "unit": string|null, "gtin": string|null, "hsnCode": string|null, "packSize": number|null, "batchNumber": string|null, "expiryDate": string|null, "manufacturingDate": string|null, "quantityReceived": number|null, "freeQuantity": number|null, "mrp": number|null, "purchasePrice": number|null, "purchaseDiscountPercent": number|null, "gstPercent": number|null, "sellingPrice": number|null } ]',
     '}',
     'If the image is not a medicine purchase invoice, return {"header":{},"lines":[]}.',
   ].join('\n');
@@ -167,6 +171,7 @@ function coerceLine(raw: unknown): OcrInvoiceLine | null {
     manufacturer: str(r.manufacturer),
     strength: str(r.strength),
     dosageForm: str(r.dosageForm),
+    unit: str(r.unit),
     gtin: str(r.gtin),
     hsnCode: str(r.hsnCode),
     packSize: packSizeNum != null && packSizeNum > 0 ? Math.round(packSizeNum) : null,

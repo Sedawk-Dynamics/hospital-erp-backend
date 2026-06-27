@@ -5,6 +5,7 @@ import { AppError } from '../../shared/appError';
 import { deleteFile } from '../../services/upload.service';
 import * as pharmacyService from './pharmacy.service';
 import { parseInvoiceFile } from './pharmacy.ocr';
+import { assertFeatureEnabled } from '../ai/ai.config.service';
 
 // ============================================================
 // Formulary
@@ -101,6 +102,8 @@ export async function ocrInward(
   try {
     if (!file) throw AppError.badRequest('No invoice file uploaded (field name "invoice")');
     const tenantId = req.user!.tenantId;
+    // Super-admin can disable invoice OCR per hospital (AI / LLM Settings).
+    await assertFeatureEnabled('ocrInvoice', tenantId);
     const supplierId =
       typeof req.body?.supplierId === 'string' && req.body.supplierId.trim()
         ? req.body.supplierId.trim()

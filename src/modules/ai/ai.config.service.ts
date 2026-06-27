@@ -8,6 +8,7 @@ import {
   AI_MODELS,
   resolveFallbacks,
   isKnownModel,
+  type AiFeatureKey,
 } from '../../services/ai';
 import type { UpdateAiConfigInput } from './ai.validation';
 
@@ -22,9 +23,12 @@ function shapeConfig(
     temperature: unknown;
     maxOutputTokens: number;
     patientChatEnabled: boolean;
+    bloodReportEnabled: boolean;
     platformChatEnabled: boolean;
     dischargeAiEnabled: boolean;
     radiologyAiEnabled: boolean;
+    progressNotesAiEnabled: boolean;
+    ocrInvoiceEnabled: boolean;
     updatedAt: Date;
   },
   scope: { tenantId: string | null; inherited: boolean },
@@ -40,9 +44,12 @@ function shapeConfig(
     maxOutputTokens: row.maxOutputTokens,
     features: {
       patientChatEnabled: row.patientChatEnabled,
+      bloodReportEnabled: row.bloodReportEnabled,
       platformChatEnabled: row.platformChatEnabled,
       dischargeAiEnabled: row.dischargeAiEnabled,
       radiologyAiEnabled: row.radiologyAiEnabled,
+      progressNotesAiEnabled: row.progressNotesAiEnabled,
+      ocrInvoiceEnabled: row.ocrInvoiceEnabled,
     },
     providerKeys: providerKeyStatus(),
     updatedAt: row.updatedAt,
@@ -104,9 +111,12 @@ export async function updateAiConfig(
     temperature: data.temperature ?? undefined,
     maxOutputTokens: data.maxOutputTokens ?? undefined,
     patientChatEnabled: data.patientChatEnabled ?? undefined,
+    bloodReportEnabled: data.bloodReportEnabled ?? undefined,
     platformChatEnabled: data.platformChatEnabled ?? undefined,
     dischargeAiEnabled: data.dischargeAiEnabled ?? undefined,
     radiologyAiEnabled: data.radiologyAiEnabled ?? undefined,
+    progressNotesAiEnabled: data.progressNotesAiEnabled ?? undefined,
+    ocrInvoiceEnabled: data.ocrInvoiceEnabled ?? undefined,
     updatedById: userId,
   };
 
@@ -148,17 +158,20 @@ export async function getAiStatus(tenantId?: string | null) {
     model: cfg.ready ? cfg.textModel : null,
     features: {
       patientChat: cfg.ready && cfg.features.patientChat,
+      bloodReport: cfg.ready && cfg.features.bloodReport,
       platformChat: cfg.ready && cfg.features.platformChat,
       dischargeAi: cfg.ready && cfg.features.dischargeAi,
       // Radiology image diagnosis (UC2.1) deferred — surfaced as "coming soon".
       radiologyAi: cfg.ready && cfg.features.radiologyAi,
+      progressNotesAi: cfg.ready && cfg.features.progressNotesAi,
+      ocrInvoice: cfg.ready && cfg.features.ocrInvoice,
     },
   };
 }
 
 /** Guard used by AI feature endpoints; throws when the feature is off. */
 export async function assertFeatureEnabled(
-  feature: 'patientChat' | 'platformChat' | 'dischargeAi',
+  feature: AiFeatureKey,
   tenantId?: string | null,
 ): Promise<void> {
   const status = await getAiStatus(tenantId);

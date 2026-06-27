@@ -3,6 +3,7 @@ import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse, sendPaginatedResponse } from '../../shared/apiResponse';
 import * as progressNotesService from './progress-notes.service';
 import { getSmartSuggestions } from './progress-notes.ai';
+import { assertFeatureEnabled } from '../ai/ai.config.service';
 
 // ============================================================
 // Progress Notes
@@ -187,6 +188,8 @@ export async function smartSuggestions(
   next: NextFunction,
 ) {
   try {
+    // Super-admin can disable progress-note AI suggestions per hospital.
+    await assertFeatureEnabled('progressNotesAi', req.user!.tenantId);
     const result = await getSmartSuggestions(req.body);
     sendResponse({ res, message: 'AI suggestions generated', data: result });
   } catch (err) {

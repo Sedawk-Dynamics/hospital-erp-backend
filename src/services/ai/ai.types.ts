@@ -47,10 +47,19 @@ export interface ResolvedAiConfig {
   ready: boolean;
   /** True when this resolved from the platform default (no hospital override). */
   inherited: boolean;
-  features: {
-    patientChat: boolean;
-    platformChat: boolean;
-    dischargeAi: boolean;
-    radiologyAi: boolean;
-  };
+  features: AiFeatures;
 }
+
+/** Per-use-case AI enable flags — one per surface AI can be used in. */
+export interface AiFeatures {
+  patientChat: boolean;
+  bloodReport: boolean;
+  platformChat: boolean;
+  dischargeAi: boolean;
+  radiologyAi: boolean;
+  progressNotesAi: boolean;
+  ocrInvoice: boolean;
+}
+
+/** The set of toggleable AI use-case keys. */
+export type AiFeatureKey = keyof AiFeatures;

@@ -58,9 +58,12 @@ export async function resolveAiConfig(tenantId?: string | null): Promise<Resolve
     inherited: tenantId ? !tenantRow : false,
     features: {
       patientChat: row.patientChatEnabled,
+      bloodReport: row.bloodReportEnabled,
       platformChat: row.platformChatEnabled,
       dischargeAi: row.dischargeAiEnabled,
       radiologyAi: row.radiologyAiEnabled,
+      progressNotesAi: row.progressNotesAiEnabled,
+      ocrInvoice: row.ocrInvoiceEnabled,
     },
   };
 }
