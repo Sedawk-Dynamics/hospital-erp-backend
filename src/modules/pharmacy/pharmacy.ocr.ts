@@ -77,7 +77,7 @@ function buildPrompt(): string {
     'Rules:',
     '- Extract ONLY what is printed. Do not invent values. If a field is not present or unreadable, use null.',
     '- drugName: the brand/product name exactly as printed (without the pack suffix).',
-    '- dosageForm: the medicine form — one of Tablet, Capsule, Syrup, Suspension, Injection, Cream, Ointment, Gel, Drops, Inhaler, Powder, Solution, Spray, Lotion, Sachet, Suppository — inferred from the product name / pack (e.g. "TAB"→Tablet, "INJ"→Injection, "SYP"→Syrup), else null.',
+    '- dosageForm: the medicine form as EXACTLY one of (lowercase): tablet, capsule, syrup, injection, cream, drops, inhaler, other. Map e.g. TAB→tablet, CAP→capsule, INJ/vial/amp→injection, SYP/suspension/solution→syrup, ointment/gel→cream; use "other" if none fit, null if unknown.',
     '- unit: the single loose dispensing unit a pack is broken into and counted in — e.g. "Tablet", "Capsule", "ml", "Box", "Strip", "Vial", "Sachet". For tablets/capsules use "Tablet"/"Capsule"; for liquids use "ml". Null if unclear.',
     '- strength: the dose if part of the name (e.g. "650mg", "40mg"), else null.',
     '- manufacturer: the marketing company / manufacturer column if present (expand obvious abbreviations only when certain), else null.',

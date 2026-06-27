@@ -288,6 +288,31 @@ export async function findDrugMasterMatches(
     .slice(0, limit);
 }
 
+// The DosageForm enum only has 8 lowercase values. Inward sources (OCR / CSV /
+// distributor text) hand us free-form strings like "Tablet", "INJ", "Suspension"
+// — map them to a valid enum (case-insensitive + common synonyms), else 'other',
+// so a create never blows up on an unrecognised form. undefined stays undefined.
+const DOSAGE_FORM_SYNONYMS: Record<string, string> = {
+  tab: 'tablet', tabs: 'tablet', tablets: 'tablet',
+  cap: 'capsule', caps: 'capsule', capsules: 'capsule',
+  syp: 'syrup', syr: 'syrup', suspension: 'syrup', susp: 'syrup',
+  solution: 'syrup', soln: 'syrup', sol: 'syrup', elixir: 'syrup', liquid: 'syrup',
+  inj: 'injection', injections: 'injection', vial: 'injection', amp: 'injection', ampoule: 'injection',
+  ointment: 'cream', oint: 'cream', gel: 'cream', lotion: 'cream', paste: 'cream',
+  drop: 'drops', eyedrops: 'drops', 'eye drops': 'drops',
+  rotacap: 'inhaler', respules: 'inhaler', inhalation: 'inhaler', mdi: 'inhaler',
+};
+const DOSAGE_FORM_VALUES = new Set(['tablet', 'capsule', 'syrup', 'injection', 'cream', 'drops', 'inhaler', 'other']);
+
+export function normalizeDosageForm(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const s = raw.trim().toLowerCase();
+  if (!s) return undefined;
+  if (DOSAGE_FORM_VALUES.has(s)) return s;
+  if (DOSAGE_FORM_SYNONYMS[s]) return DOSAGE_FORM_SYNONYMS[s];
+  return 'other';
+}
+
 export async function createFormularyItem(
   tenantId: string,
   roles: string[],
@@ -318,7 +343,8 @@ export async function createFormularyItem(
       drugName: data.drugName,
       genericName: data.genericName,
       manufacturer: data.manufacturer,
-      dosageForm: data.dosageForm as any,
+      // Coerce free-form inward/OCR forms ("Tablet", "INJ", …) to the enum.
+      dosageForm: normalizeDosageForm(data.dosageForm) as any,
       strength: data.strength,
       unitOfMeasurement: data.unitOfMeasurement,
       price: data.price,
