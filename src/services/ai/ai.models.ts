@@ -65,12 +65,12 @@ export const AI_MODELS: AiModelInfo[] = [
     notes: 'Cheapest/fastest 2.0 model.',
   },
   {
-    id: 'gemini-3-flash',
+    id: 'gemini-3-flash-preview',
     label: 'Gemini 3 Flash',
     provider: 'gemini',
     free: true,
-    limits: 'Free: ~10 RPM · 250K TPM · 1,500 req/day',
-    notes: 'Newer recommended free-tier flash model (2026).',
+    limits: 'Free: limits vary by key (often ~5 RPM · 250K TPM · 20 req/day)',
+    notes: 'Preview model; API id is gemini-3-flash-preview. Verify quota on your key.',
   },
   {
     id: 'gemini-3.5-flash',
@@ -85,8 +85,8 @@ export const AI_MODELS: AiModelInfo[] = [
     label: 'Gemini 3.1 Flash-Lite',
     provider: 'gemini',
     free: true,
-    limits: 'Free tier (limits vary; check AI Studio)',
-    notes: 'Frontier-class at low cost; good fallback.',
+    limits: 'Free: ~15 RPM · 250K TPM · up to 500 req/day',
+    notes: 'Best free-tier daily quota (500 RPD) — recommended primary for free keys. Supports system instructions + JSON.',
   },
 
   // ── OpenAI (no free tier — pay per token) ───────────────────────────────
@@ -162,7 +162,7 @@ export const DEFAULT_FALLBACKS: Record<string, string[]> = {
   'gemini-2.5-flash-lite': ['gemini-2.0-flash-lite', 'gemini-2.0-flash'],
   'gemini-2.5-pro': ['gemini-2.5-flash', 'gemini-2.0-flash'],
   'gemini-2.0-flash': ['gemini-2.0-flash-lite', 'gemini-2.5-flash'],
-  'gemini-3-flash': ['gemini-2.5-flash', 'gemini-2.5-flash-lite'],
+  'gemini-3-flash-preview': ['gemini-2.5-flash', 'gemini-2.5-flash-lite'],
   'gemini-3.5-flash': ['gemini-2.5-flash', 'gemini-2.0-flash'],
   'gemini-3.1-flash-lite': ['gemini-2.5-flash-lite', 'gemini-2.0-flash'],
   'gpt-4o-mini': ['gpt-4.1-mini'],

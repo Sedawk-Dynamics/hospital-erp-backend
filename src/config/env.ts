@@ -31,7 +31,7 @@ const envSchema = z.object({
   // when no AiConfig row exists yet. Leaving keys blank disables AI gracefully.
   AI_PROVIDER: z.enum(['gemini', 'openai', 'disabled']).default('gemini'),
   GEMINI_API_KEY: z.string().default(''),
-  GEMINI_MODEL: z.string().default('gemini-2.0-flash'),
+  GEMINI_MODEL: z.string().default('gemini-2.5-flash'),
   OPENAI_API_KEY: z.string().default(''),
   OPENAI_MODEL: z.string().default('gpt-4o-mini'),
   OPENAI_API_BASE: z.string().default('https://api.openai.com/v1'),
