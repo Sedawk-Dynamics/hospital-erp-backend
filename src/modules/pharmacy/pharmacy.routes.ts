@@ -14,7 +14,6 @@ import {
   commitInwardSchema,
   inwardScanQuerySchema,
   attachBarcodeSchema,
-  distributorMappingsQuerySchema,
   scanQuerySchema,
   complianceCheckSchema,
   prePackHoldSchema,
@@ -141,10 +140,6 @@ pharmacyRoutes.patch('/holds/:id/release', authenticate, requirePermission('phar
 // --- Barcode-driven dispensing + automated compliance (spec Section 2) ---
 pharmacyRoutes.get('/scan', authenticate, requirePermission('pharmacy', 'read'), validate(scanQuerySchema), controller.resolveScan);
 pharmacyRoutes.post('/sales/compliance-check', authenticate, requirePermission('pharmacy', 'read'), validate(complianceCheckSchema), controller.checkSaleCompliance);
-
-// --- Product Resolution Engine: learned distributor → product mappings ---
-pharmacyRoutes.get('/distributor-mappings', authenticate, requirePermission('pharmacy', 'read'), validate(distributorMappingsQuerySchema), controller.getDistributorMappings);
-pharmacyRoutes.delete('/distributor-mappings/:id', authenticate, requirePermission('pharmacy', 'delete'), controller.deleteDistributorMapping);
 
 // --- Counter billing (POS sale: partial / loose / walk-in, one invoice) ---
 pharmacyRoutes.post('/sales', authenticate, requirePermission('pharmacy', 'create'), validate(createPharmacySaleSchema), controller.createPharmacySale);

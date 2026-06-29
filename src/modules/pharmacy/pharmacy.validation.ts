@@ -433,14 +433,6 @@ const commitInwardLineSchema = inwardMatchLineSchema
     },
   );
 
-// Learned distributor → product mappings (Product Resolution Engine admin surface).
-export const distributorMappingsQuerySchema = z.object({
-  query: z.object({
-    supplierId: z.string().uuid('Invalid supplier ID').optional(),
-    search: z.string().max(255).optional(),
-  }),
-});
-
 // Resolve a barcode/GS1 scan taken at stock entry into a draft inward line.
 export const inwardScanQuerySchema = z.object({
   query: z.object({

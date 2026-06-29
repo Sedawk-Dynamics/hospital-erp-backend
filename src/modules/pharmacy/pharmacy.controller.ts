@@ -233,37 +233,6 @@ export async function checkSaleCompliance(
   }
 }
 
-// Product Resolution Engine: list the learned distributor → product mappings.
-export async function getDistributorMappings(
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction,
-) {
-  try {
-    const data = await pharmacyService.getDistributorMappings(req.user!.tenantId, req.query as any);
-    sendResponse({ res, message: 'Distributor mappings', data });
-  } catch (err) {
-    next(err);
-  }
-}
-
-export async function deleteDistributorMapping(
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction,
-) {
-  try {
-    const data = await pharmacyService.deleteDistributorMapping(
-      req.user!.tenantId,
-      req.user!.roles ?? [],
-      req.params.id as string,
-    );
-    sendResponse({ res, message: 'Mapping deleted', data });
-  } catch (err) {
-    next(err);
-  }
-}
-
 // G1: commit a reviewed bulk inward — map each line onto an existing drug or
 // create a new one, then post the received stock as batches (per-line resilient).
 export async function commitInward(
