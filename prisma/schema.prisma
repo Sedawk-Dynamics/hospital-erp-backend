@@ -1260,7 +1260,6 @@ model Tenant {
   drugBatches                DrugBatch[]
   dispensingRecords          DispensingRecord[]
   drugReturns                DrugReturn[]
-  distributorProductMaps     DistributorProductMap[]
   ndpsLocations              NdpsLocation[]
   ndpsStockBalances          NdpsStockBalance[]
   ndpsTransactions           NdpsTransaction[]
@@ -4006,35 +4005,6 @@ model DrugMaster {
   @@map("drug_master")
 }
 
-/// Product Resolution Engine — learned distributor → product mappings. The first
-/// time staff confirm that a distributor's free-text line (e.g. "CROCIN ADV
-/// 650MG") maps to a formulary drug, the pair is stored here so every future
-/// import of that name from that distributor resolves automatically (the doc's
-/// `distributor_product_map`). Also keyed by GTIN when the invoice carries one.
-model DistributorProductMap {
-  id               String   @id @default(uuid())
-  tenantId         String   @map("tenant_id")
-  supplierId       String?  @map("supplier_id")
-  externalName     String   @map("external_name") @db.VarChar(255)
-  // Normalised (lowercased, dosage-form/strength-folded) key used for matching.
-  externalNameNorm String   @map("external_name_norm") @db.VarChar(255)
-  gtin             String?  @db.VarChar(20)
-  drugFormularyId  String   @map("drug_formulary_id")
-  confidence       Int      @default(100)
-  timesSeen        Int      @default(1) @map("times_seen")
-  lastSeenAt       DateTime @default(now()) @map("last_seen_at")
-  createdById      String?  @map("created_by_id")
-  createdAt        DateTime @default(now()) @map("created_at")
-
-  tenant        Tenant        @relation(fields: [tenantId], references: [id])
-  supplier      Supplier?     @relation(fields: [supplierId], references: [id])
-  drugFormulary DrugFormulary @relation(fields: [drugFormularyId], references: [id], onDelete: Cascade)
-
-  @@unique([tenantId, supplierId, externalNameNorm])
-  @@index([tenantId, gtin])
-  @@map("distributor_product_map")
-}
-
 // ============================================================
 // NDPS Narcotic Accounting (spec — Essential Narcotic Drug lifecycle)
 // ============================================================
@@ -4261,7 +4231,6 @@ model DrugFormulary {
   drugReturns         DrugReturn[]
   purchaseOrderItems  DrugPurchaseOrderItem[]
   inventoryPurchaseOrderItems PurchaseOrderItem[]
-  distributorMappings DistributorProductMap[]
   ndpsBalances        NdpsStockBalance[]
   ndpsTransactions    NdpsTransaction[]
   ndpsDailyBalances   NdpsDailyBalance[]
@@ -4479,7 +4448,6 @@ model Supplier {
   stockTransactions   StockTransaction[]
   purchaseOrders      PurchaseOrder[]
   drugPurchaseOrders  DrugPurchaseOrder[]
-  distributorMappings DistributorProductMap[]
 
   @@map("suppliers")
 }
