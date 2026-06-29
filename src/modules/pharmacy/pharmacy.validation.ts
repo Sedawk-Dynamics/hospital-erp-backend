@@ -357,7 +357,7 @@ const inwardMatchLineSchema = z.object({
 });
 
 // Step 1: score every incoming line against the formulary (no writes). An
-// optional header supplierId feeds the distributor-mapping lookup for every line.
+// optional header supplierId is recorded on each received batch.
 export const matchInwardSchema = z.object({
   body: z.object({
     supplierId: z.string().uuid('Invalid supplier ID').optional(),
