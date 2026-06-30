@@ -34,4 +34,6 @@ ndpsRoutes.patch('/daily-balances/:id/verify', authenticate, requirePermission('
 // Inspector Dashboard (read-only): live stock-by-location + statutory registers.
 ndpsRoutes.get('/stock-by-location', authenticate, requirePermission('pharmacy', 'read'), validate(stockQuerySchema), controller.getStockByLocation);
 ndpsRoutes.get('/register', authenticate, requirePermission('pharmacy', 'read'), validate(registerQuerySchema), controller.getRegister);
+ndpsRoutes.get('/register/pdf', authenticate, requirePermission('pharmacy', 'read'), validate(registerQuerySchema), controller.exportRegisterPdf);
 ndpsRoutes.get('/daily-balances', authenticate, requirePermission('pharmacy', 'read'), controller.getDailyBalances);
+ndpsRoutes.get('/daily-balances/pdf', authenticate, requirePermission('pharmacy', 'read'), controller.exportDailyPdf);

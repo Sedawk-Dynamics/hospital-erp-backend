@@ -91,3 +91,19 @@ export async function getDailyBalances(req: AuthenticatedRequest, res: Response,
     sendResponse({ res, message: 'NDPS daily accounts (Form 3H)', data });
   } catch (err) { next(err); }
 }
+
+export async function exportRegisterPdf(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.getRegisterExport(req.user!.tenantId, req.query as any);
+    const { streamNdpsRegisterPdf } = await import('./ndps.pdf');
+    streamNdpsRegisterPdf(res, data as any);
+  } catch (err) { next(err); }
+}
+
+export async function exportDailyPdf(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.getDailyExport(req.user!.tenantId, req.query as any);
+    const { streamNdpsDailyPdf } = await import('./ndps.pdf');
+    streamNdpsDailyPdf(res, data);
+  } catch (err) { next(err); }
+}

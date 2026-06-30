@@ -489,6 +489,32 @@ export async function getRegister(
   };
 }
 
+/** Tenant/hospital identity block for the statutory PDF headers. */
+export async function getTenantHeader(tenantId: string) {
+  return prisma.tenant.findUnique({
+    where: { id: tenantId },
+    select: { name: true, address: true, city: true, state: true, phone: true, email: true, licenseNumber: true },
+  });
+}
+
+/** Bundle the register + tenant header for a Form 3C/3E/transfer/disposal PDF. */
+export async function getRegisterExport(
+  tenantId: string,
+  query: { formType?: string; drugFormularyId?: string; fromDate?: string; toDate?: string },
+) {
+  const [tenant, reg] = await Promise.all([getTenantHeader(tenantId), getRegister(tenantId, query)]);
+  return { tenant, items: reg.items, formType: query.formType ?? 'all', from: query.fromDate, to: query.toDate };
+}
+
+/** Bundle the daily accounts + tenant header for the Form 3H PDF. */
+export async function getDailyExport(
+  tenantId: string,
+  query: { drugFormularyId?: string; fromDate?: string; toDate?: string },
+) {
+  const [tenant, daily] = await Promise.all([getTenantHeader(tenantId), getDailyBalances(tenantId, query)]);
+  return { tenant, items: daily.items, from: query.fromDate, to: query.toDate };
+}
+
 /** Form 3H listing (daily accounts) for the Inspector Dashboard. */
 export async function getDailyBalances(
   tenantId: string,
