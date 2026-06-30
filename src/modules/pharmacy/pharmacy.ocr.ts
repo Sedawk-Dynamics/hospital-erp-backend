@@ -269,7 +269,27 @@ export async function parseInvoiceFile(file: {
   if (!res.ok) {
     const errText = await res.text().catch(() => '');
     logger.error({ status: res.status, body: errText.slice(0, 500) }, 'Gemini OCR error');
-    throw AppError.internal('OCR service returned an error');
+    // Map the upstream AI failure to a clear, actionable error instead of a
+    // generic 500 — the cause is almost always quota/billing or a bad API key.
+    if (res.status === 429) {
+      throw new AppError(
+        'Invoice OCR is temporarily unavailable — the AI provider quota/credits are exhausted. Top up billing on the Gemini API key (or set a new GEMINI_API_KEY). You can still add stock manually or via CSV.',
+        503,
+        'OCR_QUOTA_EXHAUSTED',
+      );
+    }
+    if (res.status === 401 || res.status === 403) {
+      throw new AppError(
+        'Invoice OCR is misconfigured — the AI API key was rejected. Check GEMINI_API_KEY on the server. You can still add stock manually or via CSV.',
+        503,
+        'OCR_AUTH_ERROR',
+      );
+    }
+    throw new AppError(
+      'The AI OCR service returned an error. Please try again in a moment, or add the stock manually / via CSV.',
+      502,
+      'OCR_UPSTREAM_ERROR',
+    );
   }
 
   const data = (await res.json()) as {
