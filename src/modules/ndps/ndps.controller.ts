@@ -1,6 +1,8 @@
 import { Response, NextFunction } from 'express';
 import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse } from '../../shared/apiResponse';
+import { AppError } from '../../shared/appError';
+import { getFileUrl } from '../../services/upload.service';
 import * as service from './ndps.service';
 
 const ctx = (req: AuthenticatedRequest) => ({
@@ -53,6 +55,15 @@ export async function logDisposal(req: AuthenticatedRequest, res: Response, next
     const { tenantId, userId, roles } = ctx(req);
     const data = await service.logDisposal(tenantId, userId, roles, req.body);
     sendResponse({ res, statusCode: 201, message: 'NDPS disposal logged', data });
+  } catch (err) { next(err); }
+}
+
+/** Upload a broken/spoiled-vial evidence photo; returns the stored file URL. */
+export async function uploadEvidence(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const file = (req as unknown as { file?: Express.Multer.File }).file;
+    if (!file) throw AppError.badRequest('No file uploaded');
+    sendResponse({ res, statusCode: 201, message: 'Evidence uploaded', data: { fileUrl: getFileUrl(file.filename), fileName: file.originalname } });
   } catch (err) { next(err); }
 }
 

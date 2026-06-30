@@ -1,7 +1,9 @@
-import { Router } from 'express';
+import { Router, Response, NextFunction } from 'express';
 import { authenticate } from '../../middleware/authenticate';
 import { requirePermission } from '../../middleware/authorize';
 import { validate } from '../../middleware/validate';
+import { uploadSingle } from '../../services/upload.service';
+import { AuthenticatedRequest } from '../../shared/types';
 import * as controller from './ndps.controller';
 import {
   createLocationSchema,
@@ -26,6 +28,13 @@ ndpsRoutes.post('/consignments', authenticate, requirePermission('pharmacy', 'cr
 ndpsRoutes.post('/transfers', authenticate, requirePermission('pharmacy', 'create'), validate(transferSchema), controller.transferStock);
 ndpsRoutes.post('/consumption', authenticate, requirePermission('pharmacy', 'create'), validate(consumptionSchema), controller.recordConsumption);
 ndpsRoutes.post('/disposals', authenticate, requirePermission('pharmacy', 'create'), validate(disposalSchema), controller.logDisposal);
+ndpsRoutes.post(
+  '/disposals/evidence',
+  authenticate,
+  requirePermission('pharmacy', 'create'),
+  (req: AuthenticatedRequest, res: Response, next: NextFunction) => uploadSingle('file')(req as any, res, next as any),
+  controller.uploadEvidence,
+);
 
 // Form 3H daily close + sign-off.
 ndpsRoutes.post('/daily-close', authenticate, requirePermission('pharmacy', 'create'), validate(dailyCloseSchema), controller.runDailyClose);
