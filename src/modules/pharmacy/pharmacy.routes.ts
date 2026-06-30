@@ -228,6 +228,9 @@ pharmacyRoutes.patch('/purchase-orders/:id/status', authenticate, requirePermiss
 pharmacyRoutes.delete('/purchase-orders/:id', authenticate, requirePermission('pharmacy', 'delete'), validate(drugPurchaseOrderIdParamSchema), controller.deleteDrugPurchaseOrder);
 
 // --- Maintenance: auto-flag expired batches (idempotent) ---
-pharmacyRoutes.post('/maintenance/flag-expired', authenticate, requirePermission('pharmacy', 'approve'), controller.flagExpiredBatches);
+// Routine stock maintenance (not an approval) — gated at 'update' so every stock
+// manager who can edit/receive stock (pharmacist, pharmacy_admin,
+// inventory_manager) can run it from the Storage page, matching the UI exposure.
+pharmacyRoutes.post('/maintenance/flag-expired', authenticate, requirePermission('pharmacy', 'update'), controller.flagExpiredBatches);
 // G5: run the full expiry check now — flag expired + dispatch near-expiry alerts.
-pharmacyRoutes.post('/maintenance/run-expiry-alerts', authenticate, requirePermission('pharmacy', 'approve'), controller.runPharmacyExpiryAlerts);
+pharmacyRoutes.post('/maintenance/run-expiry-alerts', authenticate, requirePermission('pharmacy', 'update'), controller.runPharmacyExpiryAlerts);
