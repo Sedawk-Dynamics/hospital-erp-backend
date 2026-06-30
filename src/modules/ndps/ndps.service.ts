@@ -50,17 +50,102 @@ export async function createLocation(
   });
 }
 
+/** Round to 2 decimals (currency). */
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
 /** Assert a drug is an NDPS narcotic before any register operation touches it. */
 async function assertNarcoticDrug(tenantId: string, drugFormularyId: string) {
   const drug = await prisma.drugFormulary.findFirst({
     where: { id: drugFormularyId, tenantId },
-    select: { id: true, drugName: true, isNarcotic: true },
+    select: { id: true, drugName: true, isNarcotic: true, price: true, taxPercent: true },
   });
   if (!drug) throw AppError.notFound('Drug not found in formulary');
   if (!drug.isNarcotic) {
     throw AppError.badRequest(`${drug.drugName} is not flagged as an NDPS narcotic drug.`);
   }
   return drug;
+}
+
+/** Next IP bill number (IPW-YYYYMMDD-####), matching the ward-dispense series. */
+async function nextIpBillNumber(tx: any, tenantId: string): Promise<string> {
+  const now = new Date();
+  const ymd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+  const prefix = `IPW-${ymd}-`;
+  const todays = await tx.bill.count({ where: { tenantId, billNumber: { startsWith: prefix } } });
+  return `${prefix}${String(todays + 1).padStart(4, '0')}`;
+}
+
+/**
+ * Spec Step 3 — post the narcotic dose cost to the patient's active inpatient
+ * bill, simultaneously with the clinical Form 3E record. Mirrors the pharmacy
+ * ward-dispense charge path: append to the open bill (or open a draft IP bill)
+ * and increment its totals. The price is the hospital's own formulary price
+ * (tax-inclusive); if no price is configured the consumption is still recorded
+ * clinically and no charge is posted. Returns the billing summary, or null.
+ */
+async function postConsumptionCharge(
+  tx: any,
+  tenantId: string,
+  userId: string,
+  p: { patientId: string; drugName: string; unitPrice: number; taxPercent: number; quantity: number; bedNumber: string; ndpsTxnId: string },
+) {
+  if (!(p.unitPrice > 0)) return null;
+
+  const admission = await tx.admission.findFirst({
+    where: { tenantId, patientId: p.patientId, status: 'admitted' },
+    orderBy: { admissionDate: 'desc' },
+    select: { id: true },
+  });
+
+  let bill = await tx.bill.findFirst({
+    where: { tenantId, patientId: p.patientId, status: { in: ['draft', 'pending', 'partially_paid'] } },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (!bill) {
+    bill = await tx.bill.create({
+      data: {
+        tenantId,
+        patientId: p.patientId,
+        admissionId: admission?.id ?? null,
+        billNumber: await nextIpBillNumber(tx, tenantId),
+        billDate: new Date(),
+        status: 'draft',
+        generatedBy: userId,
+      },
+    });
+  }
+
+  const gross = round2(p.unitPrice * p.quantity);
+  const taxAmt = p.taxPercent > 0 ? round2(gross - gross / (1 + p.taxPercent / 100)) : 0;
+
+  await tx.billItem.create({
+    data: {
+      billId: bill.id,
+      description: `${p.drugName} — NDPS bedside administration (bed ${p.bedNumber}), ${p.quantity} dose(s)`,
+      category: 'pharmacy',
+      quantity: p.quantity,
+      unitPrice: p.unitPrice,
+      taxPercent: p.taxPercent,
+      taxAmount: taxAmt,
+      totalAmount: gross,
+      referenceType: 'ndps_consumption',
+      referenceId: p.ndpsTxnId,
+      isAutoPulled: true,
+    },
+  });
+
+  await tx.bill.update({
+    where: { id: bill.id },
+    data: {
+      subtotal: { increment: gross },
+      taxAmount: { increment: taxAmt },
+      totalAmount: { increment: gross },
+      patientPayableAmount: { increment: gross },
+      balanceDue: { increment: gross },
+    },
+  });
+
+  return { billId: bill.id, billNumber: bill.billNumber, charged: gross };
 }
 
 /** Adjust the live per-drug × location balance inside a transaction. */
@@ -217,7 +302,7 @@ export async function recordConsumption(
   },
 ) {
   assertNdpsAdmin(roles, 'record NDPS consumption');
-  await assertNarcoticDrug(tenantId, data.drugFormularyId);
+  const drug = await assertNarcoticDrug(tenantId, data.drugFormularyId);
   if (data.quantity <= 0) throw AppError.badRequest('Quantity must be positive');
   if (!data.doctorRegNo?.trim()) throw AppError.badRequest("The prescribing doctor's registration number is mandatory.");
   if (!data.bedNumber?.trim()) throw AppError.badRequest("The patient's bed number is mandatory.");
@@ -232,7 +317,7 @@ export async function recordConsumption(
 
   return prisma.$transaction(async (tx) => {
     await adjustBalance(tx, tenantId, data.drugFormularyId, data.fromLocationId, -data.quantity);
-    return tx.ndpsTransaction.create({
+    const txn = await tx.ndpsTransaction.create({
       data: {
         tenantId,
         drugFormularyId: data.drugFormularyId,
@@ -247,6 +332,17 @@ export async function recordConsumption(
         notes: data.notes ?? null,
       },
     });
+    // Spec Step 3 — bill the dose to the patient's active IP ledger, atomically.
+    const billing = await postConsumptionCharge(tx, tenantId, userId, {
+      patientId: data.patientId,
+      drugName: drug.drugName,
+      unitPrice: Number(drug.price ?? 0),
+      taxPercent: Number(drug.taxPercent ?? 0),
+      quantity: data.quantity,
+      bedNumber: data.bedNumber.trim(),
+      ndpsTxnId: txn.id,
+    });
+    return { ...txn, billing };
   });
 }
 

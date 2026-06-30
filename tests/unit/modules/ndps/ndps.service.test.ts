@@ -180,3 +180,68 @@ describe('NDPS — Inspector stock-by-location', () => {
     expect(r.items[0].locations).toHaveLength(2);
   });
 });
+
+describe('NDPS — Form 3E IP-bill posting', () => {
+  const armConsumption = () => {
+    (prisma.ndpsLocation.findFirst as any).mockResolvedValue(ICU);
+    (prisma.patient.findFirst as any).mockResolvedValue({ id: 'p1' });
+    (prisma.ndpsStockBalance.findFirst as any).mockResolvedValue({ id: 'b1', quantity: 10 });
+    (prisma.ndpsStockBalance.update as any).mockResolvedValue({});
+  };
+
+  it("posts the dose cost to the patient's active IP bill (opening a draft bill)", async () => {
+    (prisma.drugFormulary.findFirst as any).mockResolvedValue({ id: 'd1', drugName: 'Morphine', isNarcotic: true, price: 120, taxPercent: 0 });
+    armConsumption();
+    (prisma.admission.findFirst as any).mockResolvedValue({ id: 'adm-1' });
+    (prisma.bill.findFirst as any).mockResolvedValue(null); // no open bill yet
+    (prisma.bill.count as any).mockResolvedValue(0);
+    (prisma.bill.create as any).mockImplementation((args: any) => ({ id: 'bill-1', billNumber: args.data.billNumber }));
+    (prisma.billItem.create as any).mockResolvedValue({ id: 'bi-1' });
+    (prisma.bill.update as any).mockResolvedValue({});
+
+    const res: any = await recordConsumption(TENANT, USER, ADMIN, {
+      drugFormularyId: 'd1', fromLocationId: ICU.id, quantity: 2, patientId: 'p1', doctorRegNo: 'NMC-1', bedNumber: 'ICU-3', diagnosis: 'pain',
+    });
+
+    expect(prisma.bill.create).toHaveBeenCalled();
+    const billItemArg = (prisma.billItem.create as any).mock.calls[0][0].data;
+    expect(billItemArg.category).toBe('pharmacy');
+    expect(billItemArg.totalAmount).toBe(240); // 120 × 2
+    expect(billItemArg.referenceType).toBe('ndps_consumption');
+    expect(prisma.bill.update).toHaveBeenCalled();
+    expect(res.entryType).toBe('dispense');
+    expect(res.billing.charged).toBe(240);
+  });
+
+  it('appends to the existing open bill rather than creating a new one', async () => {
+    (prisma.drugFormulary.findFirst as any).mockResolvedValue({ id: 'd1', drugName: 'Morphine', isNarcotic: true, price: 50, taxPercent: 12 });
+    armConsumption();
+    (prisma.admission.findFirst as any).mockResolvedValue(null);
+    (prisma.bill.findFirst as any).mockResolvedValue({ id: 'bill-open', billNumber: 'IPW-1' });
+    (prisma.billItem.create as any).mockResolvedValue({ id: 'bi-1' });
+    (prisma.bill.update as any).mockResolvedValue({});
+
+    const res: any = await recordConsumption(TENANT, USER, ADMIN, {
+      drugFormularyId: 'd1', fromLocationId: ICU.id, quantity: 1, patientId: 'p1', doctorRegNo: 'NMC-1', bedNumber: 'B1', diagnosis: 'pain',
+    });
+
+    expect(prisma.bill.create).not.toHaveBeenCalled();
+    expect((prisma.billItem.create as any).mock.calls[0][0].data.billId).toBe('bill-open');
+    expect(res.billing.billId).toBe('bill-open');
+    expect(res.billing.charged).toBe(50);
+  });
+
+  it('records the consumption but skips billing when the drug has no price', async () => {
+    (prisma.drugFormulary.findFirst as any).mockResolvedValue({ id: 'd1', drugName: 'Morphine', isNarcotic: true, price: null, taxPercent: null });
+    armConsumption();
+
+    const res: any = await recordConsumption(TENANT, USER, ADMIN, {
+      drugFormularyId: 'd1', fromLocationId: ICU.id, quantity: 1, patientId: 'p1', doctorRegNo: 'NMC-1', bedNumber: 'B1', diagnosis: 'pain',
+    });
+
+    expect(res.billing).toBeNull();
+    expect(prisma.bill.create).not.toHaveBeenCalled();
+    expect(prisma.billItem.create).not.toHaveBeenCalled();
+    expect(res.entryType).toBe('dispense');
+  });
+});
