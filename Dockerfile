@@ -25,4 +25,10 @@ COPY package.json ./
 RUN mkdir -p /app/uploads
 VOLUME ["/app/uploads"]
 EXPOSE 4000
-CMD ["sh", "-c", "./node_modules/.bin/prisma migrate deploy && node dist/server.js"]
+# Provision the schema with `db push` (schema-first sync) rather than
+# `migrate deploy`: the migration history can't replay cleanly on a fresh DB
+# (some tables only ever existed via db push), whereas db push always brings the
+# database in sync with schema.prisma and is a no-op once synced. The server
+# then seeds all reference data automatically on boot (see src/bootstrap).
+# `exec` makes node PID 1 so SIGTERM reaches it for graceful shutdown.
+CMD ["sh", "-c", "./node_modules/.bin/prisma db push --skip-generate && exec node dist/server.js"]
