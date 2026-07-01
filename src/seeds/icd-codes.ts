@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
-import { SEED_ICD_CODES } from '../../src/modules/icd/icd.data';
+import { SEED_ICD_CODES } from '../modules/icd/icd.data';
 
 /**
  * Seeds the platform-wide ICD-10 catalog (tenantId = null). Idempotent: an
@@ -9,7 +9,7 @@ import { SEED_ICD_CODES } from '../../src/modules/icd/icd.data';
  *
  *   npm run db:seed:icd
  */
-const prisma = new PrismaClient();
+let prisma!: PrismaClient;
 
 function buildSearchTokens(code: string, title: string, keywords: string[] = []): string {
   return [code, title, ...keywords].join(' ').toLowerCase();
@@ -47,9 +47,21 @@ async function main() {
   console.log(`ICD seed complete — created ${created}, updated ${updated}.`);
 }
 
-main()
-  .catch((err) => {
-    console.error(err);
-    process.exit(1);
-  })
-  .finally(() => prisma.$disconnect());
+export async function seedIcdCodes(client?: PrismaClient): Promise<void> {
+  const owns = !client;
+  prisma = client ?? new PrismaClient();
+  try {
+    await main();
+  } finally {
+    if (owns) await prisma.$disconnect();
+  }
+}
+
+if (require.main === module) {
+  seedIcdCodes()
+    .then(() => process.exit(0))
+    .catch((err) => {
+      console.error(err);
+      process.exit(1);
+    });
+}

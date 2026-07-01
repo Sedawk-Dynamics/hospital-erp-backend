@@ -4,6 +4,7 @@ import { logger } from './config/logger';
 import { prisma } from './config/database';
 import { redis } from './config/redis';
 import { app } from './app';
+import { runAutoSeed } from './bootstrap/auto-seed';
 import { runSubscriptionJobs } from './jobs/subscription-reminders';
 import { runInsuranceExpiryJob } from './jobs/insurance-expiry';
 import { runAppointmentReminderJob } from './jobs/appointment-reminders';
@@ -14,6 +15,9 @@ import { tickLifecycle as emarTickLifecycle } from './modules/emar/emar.service'
 
 const server = app.listen(env.PORT, () => {
   logger.info(`Server running on port ${env.PORT} in ${env.NODE_ENV} mode`);
+  // Idempotent auto-seed of all reference data. Runs after the server is
+  // accepting traffic (so health checks pass immediately) and never throws.
+  void runAutoSeed();
 });
 
 // Subscription maintenance: expiry checks + renewal reminders (every 6 hours)

@@ -13,7 +13,7 @@
 
 import { PrismaClient } from '@prisma/client';
 
-const prisma = new PrismaClient();
+let prisma!: PrismaClient;
 
 // modality enum → default catalog entry. Prices are sensible starting points;
 // the admin overrides them in Settings.
@@ -73,9 +73,21 @@ async function main() {
   console.log(`=== done — created ${created} modality tariff row(s) ===`);
 }
 
-main()
-  .catch((err) => {
-    console.error(err);
-    process.exit(1);
-  })
-  .finally(() => prisma.$disconnect());
+export async function seedImagingModalities(client?: PrismaClient): Promise<void> {
+  const owns = !client;
+  prisma = client ?? new PrismaClient();
+  try {
+    await main();
+  } finally {
+    if (owns) await prisma.$disconnect();
+  }
+}
+
+if (require.main === module) {
+  seedImagingModalities()
+    .then(() => process.exit(0))
+    .catch((err) => {
+      console.error(err);
+      process.exit(1);
+    });
+}

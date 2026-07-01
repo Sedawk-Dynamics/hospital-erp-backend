@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { PrismaClient, Prisma } from '@prisma/client';
 
-const prisma = new PrismaClient();
+let prisma!: PrismaClient;
 
 // ─────────────────────────────────────────────────────────────
 // Lab Unit Groups + Units (platform-global)
@@ -267,9 +267,21 @@ async function main() {
   console.log(`✅  Seeded ${groupCount} unit groups, ${unitCount} units total.`);
 }
 
-main()
-  .catch((err) => {
-    console.error(err);
-    process.exitCode = 1;
-  })
-  .finally(() => prisma.$disconnect());
+export async function seedLabUnits(client?: PrismaClient): Promise<void> {
+  const owns = !client;
+  prisma = client ?? new PrismaClient();
+  try {
+    await main();
+  } finally {
+    if (owns) await prisma.$disconnect();
+  }
+}
+
+if (require.main === module) {
+  seedLabUnits()
+    .then(() => process.exit(0))
+    .catch((err) => {
+      console.error(err);
+      process.exit(1);
+    });
+}

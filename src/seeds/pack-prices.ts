@@ -18,7 +18,7 @@ import { PrismaClient } from '@prisma/client';
  * alone (safe to re-run).
  */
 
-const prisma = new PrismaClient();
+let prisma!: PrismaClient;
 const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 
 /** Is `price` closer to the pack MRP than to the per-unit MRP? → pack-scaled. */
@@ -81,11 +81,21 @@ async function main() {
   );
 }
 
-main()
-  .catch((e) => {
-    console.error(e);
-    process.exit(1);
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+export async function seedPackPrices(client?: PrismaClient): Promise<void> {
+  const owns = !client;
+  prisma = client ?? new PrismaClient();
+  try {
+    await main();
+  } finally {
+    if (owns) await prisma.$disconnect();
+  }
+}
+
+if (require.main === module) {
+  seedPackPrices()
+    .then(() => process.exit(0))
+    .catch((e) => {
+      console.error(e);
+      process.exit(1);
+    });
+}

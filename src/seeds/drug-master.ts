@@ -2,9 +2,9 @@ import 'dotenv/config';
 import { PrismaClient, Prisma } from '@prisma/client';
 import * as fs from 'fs';
 import * as path from 'path';
-import { parseDrugCsv } from '../../src/modules/drug-master/drug-master.dataset';
-import { refreshDrugMasterFromRows } from '../../src/modules/drug-master/drug-master.refresh';
-import { OPEN_DATASET_RICH_URL } from '../../src/modules/drug-master/drug-master.providers';
+import { parseDrugCsv } from '../modules/drug-master/drug-master.dataset';
+import { refreshDrugMasterFromRows } from '../modules/drug-master/drug-master.refresh';
+import { OPEN_DATASET_RICH_URL } from '../modules/drug-master/drug-master.providers';
 
 /**
  * Seeds / enriches the platform-wide DrugMaster catalog from the richer Indian
@@ -18,9 +18,13 @@ import { OPEN_DATASET_RICH_URL } from '../../src/modules/drug-master/drug-master
  * via the refresh engine, so existing ids + hospital drugMasterId links stay.
  */
 
-const prisma = new PrismaClient();
+let prisma!: PrismaClient;
 
-const DATA_DIR = path.join(__dirname, 'data');
+// The dataset CSV lives under prisma/scripts/data (shipped in the Docker image
+// via `COPY prisma ./prisma`). Resolve from the process CWD so it works both in
+// dev (cwd = backend/) and in prod (cwd = /app) regardless of where this
+// compiled module ends up.
+const DATA_DIR = path.resolve(process.cwd(), 'prisma', 'scripts', 'data');
 const CSV_PATH = path.join(DATA_DIR, 'updated_indian_medicine_data.csv');
 const BATCH_SIZE = 5000;
 const FORCE = process.argv.includes('--force');
@@ -95,11 +99,21 @@ async function main() {
   console.log(`Done. DrugMaster total: ${await prisma.drugMaster.count()}`);
 }
 
-main()
-  .catch((e) => {
-    console.error(e);
-    process.exit(1);
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+export async function seedDrugMaster(client?: PrismaClient): Promise<void> {
+  const owns = !client;
+  prisma = client ?? new PrismaClient();
+  try {
+    await main();
+  } finally {
+    if (owns) await prisma.$disconnect();
+  }
+}
+
+if (require.main === module) {
+  seedDrugMaster()
+    .then(() => process.exit(0))
+    .catch((e) => {
+      console.error(e);
+      process.exit(1);
+    });
+}

@@ -3,14 +3,14 @@ import { PrismaClient, Prisma } from '@prisma/client';
 import {
   parametersArraySchema,
   type ParameterSpec,
-} from '../src/modules/lab/lab.validation';
+} from '../modules/lab/lab.validation';
 import {
   buildSearchTokens,
   normaliseAliases,
   normaliseTags,
-} from '../src/modules/lab/lab-templates.service';
+} from '../modules/lab/lab-templates.service';
 
-const prisma = new PrismaClient();
+let prisma!: PrismaClient;
 
 // ─────────────────────────────────────────────────────────────
 // Platform-wide lab test templates. Owned by the super_admin
@@ -974,11 +974,21 @@ async function seed() {
   console.log(`\n✅ Done. ${created} created, ${updated} updated, ${TEMPLATES.length} total.`);
 }
 
-seed()
-  .catch((err) => {
-    console.error('❌ Lab test template seed failed:', err);
-    process.exit(1);
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+export async function seedLabTestTemplates(client?: PrismaClient): Promise<void> {
+  const owns = !client;
+  prisma = client ?? new PrismaClient();
+  try {
+    await seed();
+  } finally {
+    if (owns) await prisma.$disconnect();
+  }
+}
+
+if (require.main === module) {
+  seedLabTestTemplates()
+    .then(() => process.exit(0))
+    .catch((err) => {
+      console.error('❌ Lab test template seed failed:', err);
+      process.exit(1);
+    });
+}

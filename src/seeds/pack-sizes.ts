@@ -3,7 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import {
   resolvePackSize,
   inferLooseUnitLabel,
-} from '../../src/modules/drug-master/drug-master.dataset';
+} from '../modules/drug-master/drug-master.dataset';
 
 /**
  * Backfill numeric pack sizes.
@@ -19,7 +19,7 @@ import {
  *    tablets instead of as a single "pack".
  */
 
-const prisma = new PrismaClient();
+let prisma!: PrismaClient;
 const PAGE = 10_000;
 const ID_CHUNK = 5_000;
 
@@ -113,11 +113,21 @@ async function main() {
   console.log(`DrugFormulary done: ${JSON.stringify(formulary)}`);
 }
 
-main()
-  .catch((e) => {
-    console.error(e);
-    process.exit(1);
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+export async function seedPackSizes(client?: PrismaClient): Promise<void> {
+  const owns = !client;
+  prisma = client ?? new PrismaClient();
+  try {
+    await main();
+  } finally {
+    if (owns) await prisma.$disconnect();
+  }
+}
+
+if (require.main === module) {
+  seedPackSizes()
+    .then(() => process.exit(0))
+    .catch((e) => {
+      console.error(e);
+      process.exit(1);
+    });
+}

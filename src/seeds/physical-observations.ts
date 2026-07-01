@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { PrismaClient, PhysicalObservationSystem } from '@prisma/client';
 
-const prisma = new PrismaClient();
+let prisma!: PrismaClient;
 
 type Seed = { system: PhysicalObservationSystem; name: string; description?: string };
 
@@ -86,11 +86,21 @@ async function main() {
   console.log(`  ✓ ${created} created, ${skipped} already present`);
 }
 
-main()
-  .catch((err) => {
-    console.error(err);
-    process.exit(1);
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+export async function seedPhysicalObservations(client?: PrismaClient): Promise<void> {
+  const owns = !client;
+  prisma = client ?? new PrismaClient();
+  try {
+    await main();
+  } finally {
+    if (owns) await prisma.$disconnect();
+  }
+}
+
+if (require.main === module) {
+  seedPhysicalObservations()
+    .then(() => process.exit(0))
+    .catch((err) => {
+      console.error(err);
+      process.exit(1);
+    });
+}

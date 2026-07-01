@@ -1,8 +1,8 @@
 import 'dotenv/config';
 import { PrismaClient, FormCategory, Prisma } from '@prisma/client';
-import { formSchemaShape, type FormField } from '../src/modules/forms/forms.validation';
+import { formSchemaShape, type FormField } from '../modules/forms/forms.validation';
 
-const prisma = new PrismaClient();
+let prisma!: PrismaClient;
 
 // ─────────────────────────────────────────────────────────────
 // Seed a starter pack of patient-form templates owned by the
@@ -853,11 +853,21 @@ async function seed() {
   console.log(`\n✅ Done. ${created} created, ${updated} updated, ${TEMPLATES.length} total.`);
 }
 
-seed()
-  .catch((err) => {
-    console.error('❌ Seed failed:', err);
-    process.exit(1);
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+export async function seedFormTemplates(client?: PrismaClient): Promise<void> {
+  const owns = !client;
+  prisma = client ?? new PrismaClient();
+  try {
+    await seed();
+  } finally {
+    if (owns) await prisma.$disconnect();
+  }
+}
+
+if (require.main === module) {
+  seedFormTemplates()
+    .then(() => process.exit(0))
+    .catch((err) => {
+      console.error('❌ Seed failed:', err);
+      process.exit(1);
+    });
+}

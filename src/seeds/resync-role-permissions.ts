@@ -20,9 +20,9 @@ import {
   PERMISSION_MODULES,
   PERMISSION_ACTIONS,
   getRolePermissions,
-} from '../../src/shared/role-permissions';
+} from '../shared/role-permissions';
 
-const prisma = new PrismaClient();
+let prisma!: PrismaClient;
 
 async function ensureGlobalPermissionRows() {
   const rows: Array<{ module: string; action: string; description: string }> = [];
@@ -106,9 +106,21 @@ async function main() {
   console.log('=== complete ===');
 }
 
-main()
-  .catch((err) => {
-    console.error(err);
-    process.exit(1);
-  })
-  .finally(() => prisma.$disconnect());
+export async function resyncRolePermissions(client?: PrismaClient): Promise<void> {
+  const owns = !client;
+  prisma = client ?? new PrismaClient();
+  try {
+    await main();
+  } finally {
+    if (owns) await prisma.$disconnect();
+  }
+}
+
+if (require.main === module) {
+  resyncRolePermissions()
+    .then(() => process.exit(0))
+    .catch((err) => {
+      console.error(err);
+      process.exit(1);
+    });
+}
