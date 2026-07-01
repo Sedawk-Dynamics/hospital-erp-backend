@@ -32,36 +32,36 @@ const app = express();
 app.set('trust proxy', env.NODE_ENV === 'production' ? 1 : 'loopback');
 
 // CORS must run before helmet / rate limiter so preflights always get headers.
-app.use(cors({ origin: true, credentials: true }));
-// app.options('*', cors({ origin: true, credentials: true })); // ← uncomment this
+// The global cors() middleware also answers OPTIONS preflights automatically.
+app.use(cors(corsOptions));
 
 // ---------------------------------------------------------------
-// Security headers
+// Security headers (Helmet)
 // ---------------------------------------------------------------
-// app.use(
-//   helmet({
-//     // We serve an API — no inline HTML — so a strict default CSP is safe.
-//     // Note: static `/uploads` is served by the same origin so we allow self.
-//     contentSecurityPolicy: {
-//       directives: {
-//         defaultSrc: ["'self'"],
-//         imgSrc: ["'self'", 'data:', 'blob:'],
-//         scriptSrc: ["'self'"],
-//         styleSrc: ["'self'", "'unsafe-inline'"],
-//         connectSrc: ["'self'"],
-//         frameAncestors: ["'none'"],
-//       },
-//     },
-//     // API responses should never be cached across users by intermediaries.
-//     crossOriginResourcePolicy: { policy: 'cross-origin' },
-//     referrerPolicy: { policy: 'no-referrer' },
-//     // HSTS only applies in production (dev uses http://localhost).
-//     hsts:
-//       env.NODE_ENV === 'production'
-//         ? { maxAge: 15552000, includeSubDomains: true, preload: false }
-//         : false,
-//   }),
-// );
+// This is a JSON API that is called cross-domain by the SPA (cenaps.in →
+// api.cenaps.in), serves user images from /uploads cross-domain, and embeds
+// the OHIF DICOM viewer in a cross-domain iframe. So we keep the low-risk
+// hardening headers but disable the ones that would break those flows:
+//   - CSP off: the browser app + iframe are on other origins; a default CSP
+//     (frameAncestors 'none') would block the viewer iframe.
+//   - CORP cross-origin: lets the SPA load /uploads assets from this origin.
+//   - COEP/COOP off: don't force cross-origin isolation on embedded resources.
+//   - frameguard off: the viewer is framed from a different domain.
+// HSTS is enabled only in production (dev runs on http://localhost).
+app.use(
+  helmet({
+    contentSecurityPolicy: false,
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+    crossOriginEmbedderPolicy: false,
+    crossOriginOpenerPolicy: false,
+    frameguard: false,
+    referrerPolicy: { policy: 'no-referrer' },
+    hsts:
+      env.NODE_ENV === 'production'
+        ? { maxAge: 15552000, includeSubDomains: true, preload: false }
+        : false,
+  }),
+);
 
 // ---------------------------------------------------------------
 // Global per-IP rate limit (DDoS / scraping guard)
