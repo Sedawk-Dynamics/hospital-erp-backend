@@ -42,10 +42,14 @@ import { seedImagingModalities } from '../seeds/imaging-modalities';
 const LOCK_KEY = 4820257011;
 
 function shouldRun(): boolean {
-  const flag = process.env.AUTO_SEED;
-  if (flag != null && flag.trim() !== '') return flag === 'true' || flag === '1';
-  // Default: on in production, off elsewhere.
-  return env.NODE_ENV === 'production';
+  // Default ON — the whole point is zero-config seeding on deploy, and every
+  // step is idempotent (heavy catalogs skip themselves once populated), so a
+  // dev restart against an already-seeded DB is fast. Disable only by setting
+  // AUTO_SEED to an explicit off value. (Previously this required
+  // NODE_ENV=production, which silently skipped seeding when that env var was
+  // not set on the host.)
+  const flag = (process.env.AUTO_SEED ?? '').trim().toLowerCase();
+  return !['false', '0', 'off', 'no'].includes(flag);
 }
 
 /** DATABASE_URL forced to a single-connection pool for the lock session. */
@@ -118,21 +122,31 @@ export async function runSeeds(db: PrismaClient): Promise<void> {
  */
 export async function runAutoSeed(): Promise<void> {
   if (!shouldRun()) {
-    logger.info('[auto-seed] disabled (set AUTO_SEED=true to enable)');
+    logger.info('[auto-seed] disabled (AUTO_SEED is set to an off value)');
     return;
   }
 
+  logger.info('[auto-seed] starting…');
   const lockClient = new PrismaClient({ datasources: { db: { url: lockClientUrl() } } });
+  let gotLock = false;
   try {
-    const rows = await lockClient.$queryRawUnsafe<Array<{ locked: boolean }>>(
-      `SELECT pg_try_advisory_lock(${LOCK_KEY}) AS locked`,
-    );
-    if (!rows[0]?.locked) {
-      logger.info('[auto-seed] another instance holds the seed lock — skipping');
-      return;
+    // Best-effort advisory lock so multiple replicas booting together don't all
+    // seed at once. If we DON'T get it, we still proceed: a single killed
+    // container can leave its lock session lingering on Postgres for a while,
+    // and skipping seeding entirely (the old behavior) is worse than the small
+    // race risk — all steps are idempotent anyway.
+    try {
+      const rows = await lockClient.$queryRawUnsafe<Array<{ locked: boolean }>>(
+        `SELECT pg_try_advisory_lock(${LOCK_KEY}) AS locked`,
+      );
+      gotLock = !!rows[0]?.locked;
+      if (!gotLock) {
+        logger.warn('[auto-seed] advisory lock not acquired — proceeding anyway (idempotent)');
+      }
+    } catch (err) {
+      logger.warn({ err }, '[auto-seed] advisory lock check failed — proceeding anyway');
     }
 
-    logger.info('[auto-seed] starting…');
     const t0 = Date.now();
     await runSeeds(prisma);
     logger.info(`[auto-seed] complete (${Math.round((Date.now() - t0) / 1000)}s)`);
@@ -141,7 +155,7 @@ export async function runAutoSeed(): Promise<void> {
     // seeding problem take the server down.
     logger.error({ err }, '[auto-seed] unexpected failure');
   } finally {
-    // Disconnecting the lock session releases the advisory lock.
+    // Disconnecting the lock session releases the advisory lock (if held).
     await lockClient.$disconnect().catch(() => {});
   }
 }
