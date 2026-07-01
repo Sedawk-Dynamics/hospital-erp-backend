@@ -23,10 +23,11 @@
  * All counters live in Redis so they are shared across every Node process /
  * horizontal replica. Super-admin requests bypass every limiter.
  */
-import type { Request, Response, NextFunction } from 'express';
+import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import rateLimit, { Options } from 'express-rate-limit';
 import RedisStore from 'rate-limit-redis';
 import { redis } from '../config/redis';
+import { logger } from '../config/logger';
 import { AppError } from '../shared/appError';
 import { AuthenticatedRequest } from '../shared/types';
 
@@ -162,6 +163,30 @@ function jsonHandler(_req: Request, res: Response, _next: NextFunction, opts: Op
   res.status(opts.statusCode ?? 429).json(rateLimitedBody(retryAfter));
 }
 
+/**
+ * Wrap a limiter so that a backing-store outage (e.g. Redis unreachable) fails
+ * OPEN — the request is allowed through instead of 500-ing. For a hospital
+ * system, availability beats strict rate limiting when the store blips; a
+ * transient Redis outage must not take the whole API down. (loginAttemptGuard
+ * already fails open the same way.) Normal 429 responses are unaffected.
+ */
+function failOpen(limiter: RequestHandler): RequestHandler {
+  return (req, res, next) => {
+    try {
+      limiter(req, res, ((err?: unknown) => {
+        if (err) {
+          logger.warn({ err }, 'rate limiter store error — allowing request (fail open)');
+          return next();
+        }
+        next();
+      }) as NextFunction);
+    } catch (err) {
+      logger.warn({ err }, 'rate limiter threw — allowing request (fail open)');
+      next();
+    }
+  };
+}
+
 /* ------------------------------------------------------------------ */
 /*  1. Global per-IP limiter (DDoS / scraping guard)                   */
 /* ------------------------------------------------------------------ */
@@ -171,7 +196,7 @@ function jsonHandler(_req: Request, res: Response, _next: NextFunction, opts: Op
  * easily emit 2k req/min during busy hours. We set this high enough to let
  * that pass while blocking obvious scrapers and DDoS.
  */
-export const globalIpLimiter = rateLimit({
+const rawGlobalIpLimiter = rateLimit({
   windowMs: PER_MINUTE,
   limit: 3000,
   standardHeaders: 'draft-7',
@@ -195,7 +220,7 @@ export const globalIpLimiter = rateLimit({
  * NB: express-rate-limit evaluates `limit` dynamically when given a function,
  * so each user gets their correct budget per their role.
  */
-export const userTierLimiter = rateLimit({
+const rawUserTierLimiter = rateLimit({
   windowMs: PER_MINUTE,
   limit: (req) => pickTier((req as AuthenticatedRequest).user?.roles).limit,
   standardHeaders: 'draft-7',
@@ -223,7 +248,7 @@ export const userTierLimiter = rateLimit({
  * stuffing. Combined with {@link loginAttemptGuard} (per-email) this stops
  * both burst attacks from one IP and slow attacks across many IPs.
  */
-export const authLimiter = rateLimit({
+const rawAuthLimiter = rateLimit({
   windowMs: 15 * PER_MINUTE,
   limit: 30,
   standardHeaders: 'draft-7',
@@ -237,7 +262,7 @@ export const authLimiter = rateLimit({
  * Tighter limiter for endpoints that should rarely fire in bulk: password
  * reset, 2FA setup/verify. Keeps account-recovery flows from being weaponized.
  */
-export const sensitiveAuthLimiter = rateLimit({
+const rawSensitiveAuthLimiter = rateLimit({
   windowMs: 60 * PER_MINUTE, // 1 hour
   limit: 10,
   standardHeaders: 'draft-7',
@@ -251,7 +276,7 @@ export const sensitiveAuthLimiter = rateLimit({
  * Refresh happens silently in browsers and may burst when a tab re-wakes.
  * Keep it generous per-IP.
  */
-export const refreshLimiter = rateLimit({
+const rawRefreshLimiter = rateLimit({
   windowMs: 15 * PER_MINUTE,
   limit: 120,
   standardHeaders: 'draft-7',
@@ -350,6 +375,18 @@ export async function clearLoginFailures(email: string): Promise<void> {
     // Non-fatal.
   }
 }
+
+/* ------------------------------------------------------------------ */
+/*  Fail-open exports                                                   */
+/*  Every limiter is wrapped so a Redis outage lets traffic through     */
+/*  instead of erroring every request.                                 */
+/* ------------------------------------------------------------------ */
+
+export const globalIpLimiter = failOpen(rawGlobalIpLimiter);
+export const userTierLimiter = failOpen(rawUserTierLimiter);
+export const authLimiter = failOpen(rawAuthLimiter);
+export const sensitiveAuthLimiter = failOpen(rawSensitiveAuthLimiter);
+export const refreshLimiter = failOpen(rawRefreshLimiter);
 
 /* ------------------------------------------------------------------ */
 /*  Legacy export — keep `generalLimiter` alias for any external users */
