@@ -156,8 +156,13 @@ Network tab shows requests going to `https://api.cenaps.in/api/v1` (not localhos
 
 - **Migrations vs db push:** `prisma migrate deploy` fails on a fresh DB (a
   migration references `drug_master`, a table no migration creates). We therefore
-  provision via `db push`, which always brings the DB in sync with
-  `schema.prisma`. Keep using `db push` for schema changes in this deployment.
+  provision via `db push --accept-data-loss`, which always brings the DB in sync
+  with `schema.prisma`. `--accept-data-loss` is required so non-interactive
+  startup can apply changes the live DB lacks (e.g. a new unique index like
+  `drug_returns.refund_id`); it still fails loudly on genuinely impossible
+  changes (real duplicate values). ⚠️ It also means a schema change that **drops
+  a column will drop it on deploy** — review `schema.prisma` diffs before
+  shipping. Keep using `db push` for schema changes in this deployment.
 - **Redis is strongly recommended** (rate limiting + login brute-force
   lockout). Rate limiting now **fails open** if Redis is unreachable — the API
   keeps serving (logged as warnings) rather than 500-ing every request — but
