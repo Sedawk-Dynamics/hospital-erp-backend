@@ -129,6 +129,14 @@ On a PaaS, set them as **build-time** env vars (not just runtime).
 After changing any `NEXT_PUBLIC_*` value you must **rebuild** — restarting is
 not enough.
 
+> ⚠️ **`.env.local` overrides `.env.production`.** Next.js loads `.env.local`
+> during `next build` and it wins over `.env.production`. The repo's local
+> `.env.local` points at `http://localhost:4000`, so a **local** build bakes
+> localhost. This is fine on the server (`.env.local` is gitignored and absent
+> there — the platform's env vars / `.env.production` are used), but if you build
+> locally for prod, remove/ignore `.env.local` or set `NEXT_PUBLIC_API_URL`
+> explicitly in the build environment (a real env var beats every `.env` file).
+
 ---
 
 ## 3. Post-deploy smoke test
