@@ -28,9 +28,12 @@ export const corsOptions: CorsOptions = {
   origin: useAllowlist
     ? (origin, cb) => {
         // Non-browser clients (curl, server-to-server, health checks) send no
-        // Origin — always allow those.
+        // Origin — always allow those. Disallowed browser origins are denied by
+        // simply omitting the CORS headers (cb(null, false)) rather than raising
+        // an error, so the request still returns normally and the browser blocks
+        // it — no 500s in the logs.
         if (!origin || allowlist.includes(origin)) return cb(null, true);
-        return cb(new Error(`Origin ${origin} not allowed by CORS`));
+        return cb(null, false);
       }
     : true,
   credentials: true,
