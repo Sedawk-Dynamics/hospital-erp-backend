@@ -158,6 +158,9 @@ Network tab shows requests going to `https://api.cenaps.in/api/v1` (not localhos
   migration references `drug_master`, a table no migration creates). We therefore
   provision via `db push`, which always brings the DB in sync with
   `schema.prisma`. Keep using `db push` for schema changes in this deployment.
-- **Redis is required.** Without it the rate limiter has no backing store.
+- **Redis is strongly recommended** (rate limiting + login brute-force
+  lockout). Rate limiting now **fails open** if Redis is unreachable — the API
+  keeps serving (logged as warnings) rather than 500-ing every request — but
+  without Redis you effectively have no rate limiting/lockout, so provision it.
 - **Uploads** live on the local disk under `/app/uploads` — use a persistent
   volume (or migrate to object storage) so files survive redeploys.
