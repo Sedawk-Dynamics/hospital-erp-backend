@@ -1,6 +1,6 @@
 # Production Deployment — Hospital ERP
 
-Backend: **api.cenaps.in**  •  Frontend: **cenaps.in**
+Backend: **api.cenaps.in**  •  Frontend: **dev.cenaps.in**
 
 This is the single source of truth for getting both services live and correctly
 configured. It reflects the production-readiness changes made on the
@@ -33,7 +33,7 @@ Copy from [`.env.production.example`](./.env.production.example). The essentials
 | `DATABASE_URL` | your managed Postgres URL (`?sslmode=require` if needed) |
 | `REDIS_URL` | your managed Redis URL — **required** (rate limiting + login lockout) |
 | `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` | two long random strings (different) |
-| `FRONTEND_URL` | `https://cenaps.in` |
+| `FRONTEND_URL` | `https://dev.cenaps.in` |
 | `CORS_ORIGINS` | empty = allow all origins (current policy); set to lock down |
 | `RAZORPAY_KEY_ID` / `_SECRET` / `_WEBHOOK_SECRET` | **live** keys |
 | `AUTO_SEED` | `true` (default in production) |
@@ -81,10 +81,10 @@ To disable auto-seed: `AUTO_SEED=false`. To seed manually instead:
 ### CORS
 Handled entirely by the API. Default = allow any origin (with credentials
 reflected). To restrict to the SPA only, set
-`CORS_ORIGINS=https://cenaps.in,https://www.cenaps.in` and redeploy.
+`CORS_ORIGINS=https://dev.cenaps.in` and redeploy.
 
 ### DICOM viewer (only if `PACS_PROVIDER=orthanc`)
-The OHIF viewer iframe is served from api.cenaps.in but embedded in cenaps.in
+The OHIF viewer iframe is served from api.cenaps.in but embedded in dev.cenaps.in
 (cross-domain), so the session cookie must be cross-site:
 ```
 PACS_PROXY_ENABLED=true
@@ -96,7 +96,7 @@ Leave `PACS_PROVIDER=none` (default) to use the in-house viewer with no extra in
 
 ---
 
-## 2. Frontend (cenaps.in)
+## 2. Frontend (dev.cenaps.in)
 
 `NEXT_PUBLIC_*` values are **baked into the bundle at build time**. The #1
 deployment bug is building with the default `localhost:4000` API URL — every
@@ -144,10 +144,10 @@ not enough.
 ```bash
 curl https://api.cenaps.in/health                     # {"status":"ok",...}
 curl -i -X OPTIONS https://api.cenaps.in/api/v1/auth/login \
-  -H "Origin: https://cenaps.in" \
+  -H "Origin: https://dev.cenaps.in" \
   -H "Access-Control-Request-Method: POST"            # 204 + Access-Control-* headers
 ```
-Then open https://cenaps.in and log in as the super admin. Confirm the browser
+Then open https://dev.cenaps.in and log in as the super admin. Confirm the browser
 Network tab shows requests going to `https://api.cenaps.in/api/v1` (not localhost).
 
 ---
