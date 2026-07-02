@@ -1922,6 +1922,105 @@ export async function createPatientPaymentOrder(
 }
 
 /**
+ * Create a Razorpay order so a patient can pay an already-generated bill
+ * online from the portal (lab / pharmacy / room / consultation charges).
+ *
+ * Mirrors createPatientPaymentOrder but targets an existing bill instead of
+ * synthesising one from an appointment. Ownership is enforced by scoping the
+ * bill lookup to the account's own patientIds — a patient can only pay their
+ * own bills. Verification reuses verifyPatientPayment; the balance is settled
+ * by the Razorpay webhook (payment.captured), same as every other online path.
+ */
+export async function createPatientBillPaymentOrder(
+  userId: string,
+  email: string,
+  data: { billId: string },
+) {
+  // Resolve the account's own patient records (connections + email fallback).
+  const patientLinks = await findConnectedPatients(userId);
+  const patientIds = patientLinks.map((p) => p.id);
+  if (patientIds.length === 0) {
+    const byEmail = await findPatientsByEmail(email);
+    patientIds.push(...byEmail.map((p) => p.id));
+  }
+  if (patientIds.length === 0) {
+    throw AppError.notFound('No patient records linked to this account');
+  }
+
+  // Ownership check: the bill must belong to one of this account's patients.
+  const bill = await prisma.bill.findFirst({
+    where: { id: data.billId, patientId: { in: patientIds } },
+  });
+  if (!bill) throw AppError.notFound('Bill not found');
+
+  if (bill.status !== 'pending' && bill.status !== 'partially_paid') {
+    throw AppError.badRequest('Bill is not payable');
+  }
+
+  const amount = Number(bill.balanceDue);
+  if (amount <= 0) throw AppError.badRequest('No balance due on this bill');
+
+  const tenantId = bill.tenantId;
+  const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } });
+  if (!tenant?.linkedAccountId || !tenant.bankVerified) {
+    throw AppError.badRequest('Hospital bank account not linked. Online payment unavailable.');
+  }
+
+  const commissionPercent = await commissionService.getCommissionForTenant(tenantId);
+  const commissionAmount = Math.round((amount * commissionPercent / 100) * 100) / 100;
+  const hospitalAmount = Math.round((amount - commissionAmount) * 100) / 100;
+  const amountInPaise = Math.round(amount * 100);
+
+  const order = await razorpay.orders.create({
+    amount: amountInPaise,
+    currency: 'INR',
+    receipt: `bill_${data.billId.slice(0, 8)}_${Date.now()}`,
+    notes: { tenantId, billId: data.billId },
+  });
+
+  const payment = await prisma.payment.create({
+    data: {
+      tenantId,
+      billId: data.billId,
+      patientId: bill.patientId,
+      paymentDate: new Date(),
+      amount,
+      paymentMethod: 'upi',
+      paymentSource: 'online',
+      paymentType: 'regular',
+      status: 'pending',
+      processedBy: userId,
+      gatewayReference: order.id,
+      notes: 'Online bill payment via patient portal',
+    },
+  });
+
+  await prisma.paymentTransfer.create({
+    data: {
+      tenantId,
+      paymentId: payment.id,
+      razorpayOrderId: order.id,
+      totalAmount: amount,
+      commissionAmount,
+      hospitalAmount,
+      commissionPercent,
+      transferStatus: 'pending',
+    },
+  });
+
+  logger.info({ billId: data.billId, orderId: order.id }, 'Patient bill payment order created');
+
+  return {
+    orderId: order.id,
+    amount: amountInPaise,
+    currency: 'INR',
+    keyId: env.RAZORPAY_KEY_ID,
+    paymentId: payment.id,
+    billId: data.billId,
+  };
+}
+
+/**
  * Verify a Razorpay payment signature (patient portal).
  */
 export async function verifyPatientPayment(data: {

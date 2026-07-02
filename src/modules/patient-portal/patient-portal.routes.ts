@@ -564,6 +564,23 @@ router.post('/verify-payment', async (req: AuthenticatedRequest, res: Response, 
   } catch (err) { next(err); }
 });
 
+// POST /patient-portal/create-bill-payment-order
+// Pay an already-generated bill (lab / pharmacy / room / consultation) online.
+// Verification reuses POST /patient-portal/verify-payment above.
+router.post('/create-bill-payment-order', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const { billId } = req.body;
+    if (!billId) {
+      sendResponse({ res, statusCode: 400, message: 'billId is required' });
+      return;
+    }
+    const result = await patientPortalService.createPatientBillPaymentOrder(
+      req.user!.userId, req.user!.email, { billId },
+    );
+    sendResponse({ res, statusCode: 201, message: 'Bill payment order created', data: result });
+  } catch (err) { next(err); }
+});
+
 // POST /patient-portal/confirm-frontdesk-payment
 router.post('/confirm-frontdesk-payment', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
