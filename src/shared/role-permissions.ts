@@ -153,7 +153,13 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'floors', action: 'read' },
       { module: 'wards', action: 'read' },
       { module: 'beds', action: 'read' },
+      // Front desk is the billing/cash counter — it owns IP billing end to end:
+      // generate the bill (create), apply concessions (update), finalize it so
+      // it becomes payable (approve), and collect (payments create). approve
+      // also covers bill cancel / payment reversal / refund approval, which the
+      // counter handles.
       { module: 'billing', action: 'read' }, { module: 'billing', action: 'create' },
+      { module: 'billing', action: 'update' }, { module: 'billing', action: 'approve' },
       { module: 'payments', action: 'read' }, { module: 'payments', action: 'create' },
       { module: 'departments', action: 'read' },
       { module: 'forms', action: 'read' }, { module: 'forms', action: 'create' }, { module: 'forms', action: 'approve' },
