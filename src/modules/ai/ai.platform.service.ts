@@ -2,22 +2,33 @@ import { prisma } from '../../config/database';
 import { generateJson, generateText } from '../../services/ai';
 import { assertFeatureEnabled } from './ai.config.service';
 import { retrieveDocs } from './ai.knowledge';
+import {
+  describeCaller,
+  getRoleProfile,
+  labelsProse,
+  normalizeRoles,
+  primaryRole,
+  roleLanding,
+} from './ai.roles';
 import type { PlatformChatInput } from './ai.validation';
 
 // ============================================================================
-// Use Case 3 (Level 1): Platform-wide AI support chatbot — READ-ONLY.
+// Use Case 3 (Level 1): Platform-wide AI support chatbot — READ-ONLY + ROLE-AWARE.
 //
-// Two capabilities:
-//   1. "help"  — answer software how-to / documentation questions (RAG over a
-//                curated knowledge base).
+// The assistant knows WHICH ROLE the signed-in user holds and answers in terms
+// of that role's portal, modules and workflow. Two capabilities:
+//   1. "help"  — answer software how-to / navigation questions (role-scoped RAG
+//                over a curated knowledge base).
 //   2. "data"  — answer read-only questions about the user's OWN organisation
-//                via a strict whitelist of aggregate queries.
+//                via a strict whitelist of aggregate queries, gated per role.
 //
 // GUARDRAILS:
 //   - Every data query is hard-scoped to the caller's tenantId. There is no
 //     code path that reads another organisation's data.
-//   - Only the whitelisted intents below can run; the LLM only PICKS an intent
-//     and supplies dates — it never writes or runs raw SQL.
+//   - Only whitelisted intents can run; the LLM only PICKS an intent + dates —
+//     it never writes or runs raw SQL.
+//   - Each intent is additionally gated to the roles allowed to see it (e.g.
+//     revenue is finance/admin only; patients get no hospital aggregates).
 //   - No write operations exist here (Level 2 is deliberately out of scope).
 // ============================================================================
 
@@ -46,6 +57,29 @@ const DATA_INTENTS: DataIntent[] = [
   'total_revenue',
   'bed_occupancy',
 ];
+
+// Which roles may read each aggregate. '*' = any staff role. `admin` and
+// `super_admin` always pass. Revenue is restricted to finance/admin; patients
+// never receive hospital-wide aggregates (they only see their own portal data).
+const INTENT_ACCESS: Record<DataIntent, string[] | '*'> = {
+  count_patients_registered: '*',
+  count_appointments: '*',
+  count_admissions: '*',
+  current_inpatients: '*',
+  count_visits: '*',
+  bed_occupancy: '*',
+  total_revenue: ['super_admin', 'admin', 'billing_admin', 'cashier'],
+};
+
+function canAccessIntent(intent: DataIntent, roles: string[]): boolean {
+  const norm = normalizeRoles(roles);
+  if (norm.includes('super_admin') || norm.includes('admin')) return true;
+  // A patient (with no staff role) gets no hospital aggregates.
+  if (norm.length && norm.every((r) => r === 'patient')) return false;
+  const allow = INTENT_ACCESS[intent];
+  if (allow === '*') return true;
+  return norm.some((r) => allow.includes(r));
+}
 
 function parseDate(s?: string | null): Date | undefined {
   if (!s) return undefined;
@@ -128,11 +162,14 @@ async function runDataIntent(
 export async function platformChat(
   tenantId: string,
   _userId: string,
+  roles: string[],
   input: PlatformChatInput,
 ) {
   await assertFeatureEnabled('platformChat', tenantId);
 
   const today = new Date().toISOString().slice(0, 10);
+  const callerBlock = describeCaller(roles);
+  const roleLabel = getRoleProfile(primaryRole(roles)).label;
 
   // --- Step 1: route the question (data vs help) + extract dates. ---
   const planner = await generateJson<PlannerResult>(
@@ -151,6 +188,17 @@ export async function platformChat(
 
   // --- Step 2a: data path — run the whitelisted query, then phrase it. ---
   if (planner.type === 'data' && planner.intent && DATA_INTENTS.includes(planner.intent)) {
+    // Role gate: some figures (e.g. revenue) are restricted, and patients get
+    // no hospital aggregates. Refuse gracefully instead of leaking the number.
+    if (!canAccessIntent(planner.intent, roles)) {
+      return {
+        reply: `That figure isn't available to your role (${roleLabel}). A hospital admin or billing admin can pull it up — please ask them, or I can help you with a how-to question instead.`,
+        mode: 'data' as const,
+        intent: planner.intent,
+        restricted: true,
+      };
+    }
+
     const from = parseDate(planner.fromDate);
     const to = parseDate(planner.toDate);
     const result = await runDataIntent(tenantId, planner.intent, from, to);
@@ -185,8 +233,28 @@ export async function platformChat(
     };
   }
 
-  // --- Step 2b: help path — RAG over the how-to knowledge base. ---
-  const docs = retrieveDocs(input.message, 3);
+  // --- Step 2b: help path — role-scoped RAG over the how-to knowledge base. ---
+  const norm = normalizeRoles(roles);
+  const profile = getRoleProfile(primaryRole(roles));
+  const docs = retrieveDocs(input.message, roles, 4);
+  const topDoc = docs[0];
+
+  // Out-of-scope guard (deterministic): if the best-matching how-to is written
+  // ONLY for other roles, don't hand this role invented steps — tell them
+  // plainly that it isn't part of their job and name the role that does it.
+  const topIsForMe =
+    !topDoc || topDoc.roles.includes('*') || topDoc.roles.some((r) => norm.includes(r));
+  if (topDoc && !topIsForMe) {
+    const who = labelsProse(topDoc.roles.filter((r) => r !== '*').map((r) => getRoleProfile(r).label));
+    return {
+      reply: `**${profile.label} · ${profile.portal}**\n\nThat isn't part of the ${profile.label} role — “${topDoc.title}” is handled by ${who}. Ask them to help with this. I can walk you through anything in your own area instead (you work in ${profile.modules.slice(0, 3).join(', ')}).`,
+      mode: 'help' as const,
+      role: roleLabel,
+      scope: 'out' as const,
+      sources: [topDoc.title],
+    };
+  }
+
   const docContext = docs.length
     ? docs.map((d) => `### ${d.title}\n${d.body}`).join('\n\n')
     : 'No specific documentation matched.';
@@ -194,9 +262,17 @@ export async function platformChat(
   const { text, model, provider } = await generateText(
     {
       system: [
-        'You are the support assistant for a hospital ERP/EMR. Answer the user\'s how-to question using ONLY the documentation snippets provided.',
-        'Be concise and give step-by-step navigation when relevant. If the snippets do not cover it, say you are not sure and suggest contacting support.',
-        'You are read-only: you cannot perform actions, only explain how to.',
+        'You are the in-app support assistant for a multi-tenant hospital ERP/EMR. Answer the user\'s how-to/navigation question using ONLY the documentation snippets provided.',
+        '',
+        '=== WHO IS ASKING (tailor the answer to this role) ===',
+        callerBlock,
+        '',
+        'Rules:',
+        `- Answer specifically for the ${profile.label}. Begin the steps from their landing screen (${roleLanding(primaryRole(roles))}) and use the exact screen/menu names of THEIR portal.`,
+        '- Do NOT restate their role name or portal (the app already shows it) — go straight into the concise, numbered steps.',
+        '- If the task is outside this role\'s permissions, say so plainly and name the role that performs it (do not invent steps for them).',
+        '- Be concise. If the snippets do not cover it, say you are not sure and suggest contacting your administrator or support.',
+        '- You are READ-ONLY: you explain how to do things, you never perform actions or change data.',
         '',
         '=== DOCUMENTATION ===',
         docContext,
@@ -209,9 +285,13 @@ export async function platformChat(
     { tenantId },
   );
 
+  // Deterministic role lead so the answer is visibly tailored to this role even
+  // when the underlying workflow is identical across roles.
   return {
-    reply: text,
+    reply: `**${profile.label} · ${profile.portal}** — here's how:\n\n${text}`,
     mode: 'help' as const,
+    role: roleLabel,
+    scope: 'in' as const,
     sources: docs.map((d) => d.title),
     model,
     provider,

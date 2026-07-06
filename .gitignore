@@ -8,3 +8,4 @@ dist-seed/
 coverage/
 .nyc_output/
 uploads
+platform-config

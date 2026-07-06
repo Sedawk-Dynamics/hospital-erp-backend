@@ -49,6 +49,7 @@ import { drugMasterRoutes } from './drug-master/drug-master.routes';
 import { discountPolicyRoutes } from './discount-policy/discount-policy.routes';
 import { aiRoutes } from './ai/ai.routes';
 import { icdRoutes } from './icd/icd.routes';
+import { platformBrandingRoutes } from './platform-branding/platform-branding.routes';
 
 const apiRouter = Router();
 
@@ -81,6 +82,10 @@ apiRouter.use('/icd', authenticate, userTierLimiter, icdRoutes);
 // generation) + super-admin LLM provider config. Cross-cutting, so mounted as
 // a core module with per-route permission checks (no single feature gate).
 apiRouter.use('/ai', authenticate, userTierLimiter, aiRoutes);
+// Platform branding (the two super-admin logo variants). GET is PUBLIC so the
+// pre-auth login screen / website can render the logo; upload/delete are
+// super-admin only (guarded inside the router).
+apiRouter.use('/platform-branding', platformBrandingRoutes);
 
 // PACS auth gateway. Mounted WITHOUT the global `authenticate` because its
 // /o/* proxy authenticates via the pacs_session cookie (the OHIF iframe can't

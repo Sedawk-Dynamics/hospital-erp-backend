@@ -105,6 +105,7 @@ export async function platformChat(req: AuthenticatedRequest, res: Response, nex
     const result = await platformService.platformChat(
       req.user!.tenantId,
       req.user!.userId,
+      req.user!.roles ?? [],
       req.body,
     );
     sendResponse({ res, message: 'Support assistant', data: result });
