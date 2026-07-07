@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
@@ -120,13 +121,22 @@ async function generateBillNumber(tenantId: string): Promise<string> {
 /**
  * Generate a unique receipt number.
  * Format: RCP-YYYYMMDD-XXXX
+ *
+ * `db` lets callers pass the active transaction client. This MATTERS for split
+ * payments: multiple receipts are created inside one $transaction, so the number
+ * generator must read the transaction's own uncommitted rows — reading the
+ * global (committed) state would hand every split the same number and violate
+ * the `Receipt.receiptNumber` unique constraint on the 2nd split.
  */
-async function generateReceiptNumber(tenantId: string): Promise<string> {
+async function generateReceiptNumber(
+  tenantId: string,
+  db: Prisma.TransactionClient = prisma,
+): Promise<string> {
   const dateStr = getISTDateStr();
 
   const prefix = `RCP-${dateStr}-`;
 
-  const latestReceipt = await prisma.receipt.findFirst({
+  const latestReceipt = await db.receipt.findFirst({
     where: {
       tenantId,
       receiptNumber: { startsWith: prefix },
@@ -143,12 +153,12 @@ async function generateReceiptNumber(tenantId: string): Promise<string> {
 
   const receiptNumber = `${prefix}${nextNumber.toString().padStart(4, '0')}`;
 
-  const existing = await prisma.receipt.findFirst({
+  const existing = await db.receipt.findFirst({
     where: { tenantId, receiptNumber },
   });
 
   if (existing) {
-    return generateReceiptNumber(tenantId);
+    return generateReceiptNumber(tenantId, db);
   }
 
   return receiptNumber;
@@ -1971,7 +1981,9 @@ export async function createSplitPayment(
   const result = await prisma.$transaction(async (tx) => {
     const payments = [] as { id: string; receiptId: string; amount: number; method: string }[];
     for (const split of data.splits) {
-      const receiptNumber = await generateReceiptNumber(tenantId);
+      // Pass `tx` so each split's number reflects the ones created earlier in
+      // THIS transaction (otherwise every split collides on the same number).
+      const receiptNumber = await generateReceiptNumber(tenantId, tx);
       const payment = await tx.payment.create({
         data: {
           tenantId,

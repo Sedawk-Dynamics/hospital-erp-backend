@@ -4426,6 +4426,172 @@ model WardStockLedger {
 }
 
 // ============================================================
+// 11b. IP MEDICATION INDENT (design doc I — ward→pharmacy request lifecycle)
+// ============================================================
+// A ward nurse raises an electronic indent to the IP pharmacy for a patient's
+// prescribed drugs that exceed the ward emergency-kit stock. The IP pharmacist
+// reviews it (credit-gated — a cash patient over deposit is held unless the
+// drug is life-saving or clearance is given), approves, dispenses against FEFO
+// batches (posting the charge to the patient's IP bill ledger), a runner
+// delivers to the ward, and the ward nurse verifies the received batch against
+// the indent and Acknowledges before administering. Scalar FK columns (no
+// Prisma relations) resolved by the service — mirrors the WardStock sub-module.
+model MedicationIndent {
+  id               String    @id @default(uuid())
+  tenantId         String    @map("tenant_id")
+  indentNumber     String    @map("indent_number") @db.VarChar(40)
+  patientId        String    @map("patient_id")
+  admissionId      String?   @map("admission_id")
+  wardId           String?   @map("ward_id")
+  prescriptionId   String?   @map("prescription_id")
+  // raised | approved | dispensed | delivered | acknowledged | cancelled
+  status           String    @default("raised") @db.VarChar(20)
+  // ok | clearance_required | cleared — the credit picture at raise/approve time.
+  creditStatus     String    @default("ok") @map("credit_status") @db.VarChar(24)
+  // TTO (To Take Out) discharge indent — dispensed in full packs and added to
+  // the final hospital bill, vs. a routine daily ward indent (unit-dose allowed).
+  isTto            Boolean   @default(false) @map("is_tto")
+  priority         String?   @db.VarChar(20)
+  notes            String?
+  billId           String?   @map("bill_id")
+  raisedById       String    @map("raised_by_id")
+  approvedById     String?   @map("approved_by_id")
+  approvedAt       DateTime? @map("approved_at")
+  dispensedById    String?   @map("dispensed_by_id")
+  dispensedAt      DateTime? @map("dispensed_at")
+  deliveredAt      DateTime? @map("delivered_at")
+  acknowledgedById String?   @map("acknowledged_by_id")
+  acknowledgedAt   DateTime? @map("acknowledged_at")
+  cancelledReason  String?   @map("cancelled_reason")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  items MedicationIndentItem[]
+
+  @@unique([tenantId, indentNumber])
+  @@index([tenantId, status])
+  @@index([tenantId, patientId])
+  @@map("medication_indents")
+}
+
+model MedicationIndentItem {
+  id               String   @id @default(uuid())
+  indentId         String   @map("indent_id")
+  drugFormularyId  String   @map("drug_formulary_id")
+  requestedQty     Int      @map("requested_qty")
+  approvedQty      Int?     @map("approved_qty")
+  // Base (loose) units vs whole packs. A TTO indent forces 'pack'.
+  saleUnit         String   @default("pack") @map("sale_unit") @db.VarChar(10)
+  dispensedBatchId String?  @map("dispensed_batch_id")
+  dispensedQty     Int?     @map("dispensed_qty")
+  unitPrice        Decimal? @map("unit_price") @db.Decimal(12, 2)
+  lineTotal        Decimal? @map("line_total") @db.Decimal(12, 2)
+  acknowledged     Boolean  @default(false)
+  notes            String?
+
+  indent MedicationIndent @relation(fields: [indentId], references: [id], onDelete: Cascade)
+
+  @@index([indentId])
+  @@map("medication_indent_items")
+}
+
+// ============================================================
+// 11c. OT KIT — surgical preference-card templates + "Issue Bulk, Reconcile
+// Net" virtual OT ledger (design doc III)
+// ============================================================
+// A hospital pre-defines surgeon-preference kit bundles (SurgicalTemplate +
+// items). Pre-op, the OT nurse requests a template for a scheduled patient; the
+// pharmacy issues the whole bundle (FEFO batches leave active stock into a
+// transit bucket bound to the OT session, NOT billed). Post-op, the crate of
+// unused items is scanned back and the system nets Issued − Returned = Consumed:
+// only the consumed cost is posted to the patient's bill and the unused units
+// are reversed into active pharmacy stock. Scalar FKs, service-resolved.
+model SurgicalTemplate {
+  id            String   @id @default(uuid())
+  tenantId      String   @map("tenant_id")
+  name          String   @db.VarChar(160)
+  procedureName String?  @map("procedure_name") @db.VarChar(200)
+  // Preferred surgeon (DoctorProfile id) whose preference card this is. Nullable.
+  doctorId      String?  @map("doctor_id")
+  // Scannable kit-master barcode — one scan expands the whole bundle at issue.
+  kitBarcode    String?  @map("kit_barcode") @db.VarChar(64)
+  notes         String?
+  isActive      Boolean  @default(true) @map("is_active")
+  createdById   String?  @map("created_by_id")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at")
+
+  items SurgicalTemplateItem[]
+
+  @@index([tenantId, isActive])
+  @@map("surgical_templates")
+}
+
+model SurgicalTemplateItem {
+  id              String  @id @default(uuid())
+  templateId      String  @map("template_id")
+  drugFormularyId String  @map("drug_formulary_id")
+  // Default kit quantity in BASE units of the drug (e.g. 4 sutures, 5 syringes).
+  defaultQuantity Int     @map("default_quantity")
+  notes           String?
+
+  template SurgicalTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@index([templateId])
+  @@map("surgical_template_items")
+}
+
+/// The virtual OT ledger — a transit bucket bound to one OT session (OtRequest).
+/// requested → issued (stock moved out of pharmacy into transit, not billed) →
+/// reconciled (returned scanned back; consumed = issued − returned billed to the
+/// patient, unused reversed to active stock). Scalar FKs, service-resolved.
+model OtKitIssue {
+  id             String    @id @default(uuid())
+  tenantId       String    @map("tenant_id")
+  issueNumber    String    @map("issue_number") @db.VarChar(40)
+  otRequestId    String?   @map("ot_request_id")
+  patientId      String    @map("patient_id")
+  visitId        String?   @map("visit_id")
+  templateId     String?   @map("template_id")
+  // requested | issued | reconciled | cancelled
+  status         String    @default("requested") @db.VarChar(20)
+  requestedById  String?   @map("requested_by_id")
+  issuedById     String?   @map("issued_by_id")
+  issuedAt       DateTime? @map("issued_at")
+  reconciledById String?   @map("reconciled_by_id")
+  reconciledAt   DateTime? @map("reconciled_at")
+  billId         String?   @map("bill_id")
+  notes          String?
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  items OtKitIssueItem[]
+
+  @@unique([tenantId, issueNumber])
+  @@index([tenantId, status])
+  @@index([tenantId, otRequestId])
+  @@map("ot_kit_issues")
+}
+
+model OtKitIssueItem {
+  id              String   @id @default(uuid())
+  issueId         String   @map("issue_id")
+  drugFormularyId String   @map("drug_formulary_id")
+  drugBatchId     String?  @map("drug_batch_id")
+  issuedQty       Int      @default(0) @map("issued_qty")
+  returnedQty     Int      @default(0) @map("returned_qty")
+  consumedQty     Int?     @map("consumed_qty")
+  unitPrice       Decimal? @map("unit_price") @db.Decimal(12, 2)
+  taxPercent      Decimal? @default(0) @map("tax_percent") @db.Decimal(5, 2)
+  lineTotal       Decimal? @map("line_total") @db.Decimal(12, 2)
+
+  issue OtKitIssue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+
+  @@index([issueId])
+  @@map("ot_kit_issue_items")
+}
+
+// ============================================================
 // 12. INVENTORY & PURCHASE
 // ============================================================
 

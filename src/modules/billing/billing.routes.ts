@@ -246,6 +246,7 @@ billingRoutes.get(
 billingRoutes.post(
   '/refunds',
   authenticate,
+  requirePermission('billing', 'update'),
   validate(createRefundSchema),
   controller.createRefund,
 );

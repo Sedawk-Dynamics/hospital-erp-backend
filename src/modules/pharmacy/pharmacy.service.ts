@@ -2307,6 +2307,7 @@ export async function createDispense(tenantId: string, userId: string, data: Cre
         select: {
           drugName: true,
           price: true,
+          isNarcotic: true,
         },
       },
     },
@@ -2322,6 +2323,13 @@ export async function createDispense(tenantId: string, userId: string, data: Cre
 
   if (drugBatch.isRecalled) {
     throw AppError.badRequest('Cannot dispense from a recalled batch');
+  }
+
+  // NDPS "Locked in Main Safe": narcotics route through the NDPS Form 3E workflow.
+  if (drugBatch.drug?.isNarcotic) {
+    throw AppError.badRequest(
+      `${drugBatch.drug.drugName} is an NDPS narcotic — dispense it via the NDPS (Form 3E) consumption workflow.`,
+    );
   }
 
   // The hospital dispenses at its own price (operational truth).
@@ -2588,12 +2596,28 @@ export async function mergeEmergencyPatient(
   }
 
   const result = await prisma.$transaction(async (tx) => {
-    const bills = await tx.bill.updateMany({ where: { tenantId, patientId: tempId }, data: { patientId: targetPatientId } });
+    // Fold the migrated pharmacy bills onto the permanent patient's ACTIVE IPD
+    // admission ledger (design doc: "migrate line items onto the permanent IPD
+    // billing ledger") so the deferred-hold bills stop floating as standalone
+    // records and roll into the admission's running account.
+    const targetAdmission = await tx.admission.findFirst({
+      where: { tenantId, patientId: targetPatientId, status: 'admitted' },
+      orderBy: { admissionDate: 'desc' },
+      select: { id: true },
+    });
+    const bills = await tx.bill.updateMany({
+      where: { tenantId, patientId: tempId },
+      data: { patientId: targetPatientId, ...(targetAdmission ? { admissionId: targetAdmission.id } : {}) },
+    });
     const payments = await tx.payment.updateMany({ where: { tenantId, patientId: tempId }, data: { patientId: targetPatientId } });
     const dispenses = await tx.dispensingRecord.updateMany({ where: { tenantId, patientId: tempId }, data: { patientId: targetPatientId } });
     const returns = await tx.drugReturn.updateMany({ where: { tenantId, patientId: tempId }, data: { patientId: targetPatientId } });
     const refunds = await tx.refund.updateMany({ where: { tenantId, patientId: tempId }, data: { patientId: targetPatientId } });
     const rx = await tx.prescription.updateMany({ where: { tenantId, patientId: tempId }, data: { patientId: targetPatientId } });
+    // Repoint the sub-module ledgers that key on patientId directly (scalar FKs).
+    const wardLedger = await tx.wardStockLedger.updateMany({ where: { tenantId, patientId: tempId }, data: { patientId: targetPatientId } });
+    const indents = await tx.medicationIndent.updateMany({ where: { tenantId, patientId: tempId }, data: { patientId: targetPatientId, ...(targetAdmission ? { admissionId: targetAdmission.id } : {}) } });
+    const otKits = await tx.otKitIssue.updateMany({ where: { tenantId, patientId: tempId }, data: { patientId: targetPatientId } });
     // Retire the temp record (kept for audit; flagged inactive + MRN suffixed).
     await tx.patient.update({
       where: { id: tempId },
@@ -2606,6 +2630,10 @@ export async function mergeEmergencyPatient(
       returns: returns.count,
       refunds: refunds.count,
       prescriptions: rx.count,
+      wardLedger: wardLedger.count,
+      indents: indents.count,
+      otKits: otKits.count,
+      admissionLinked: !!targetAdmission,
     };
   });
 
@@ -2706,6 +2734,7 @@ export async function createPharmacySale(
       taxPct: number;
       taxAmt: number;
       nonReturnable: boolean;
+      expiry: Date | null;
     }>;
 
     for (const item of data.items) {
@@ -2720,6 +2749,7 @@ export async function createPharmacySale(
               looseUnitLabel: true,
               dosageForm: true,
               taxPercent: true,
+              isNarcotic: true,
             },
           },
         },
@@ -2727,6 +2757,14 @@ export async function createPharmacySale(
       if (!batch) throw AppError.notFound(`Drug batch ${item.drugBatchId} not found`);
       if (isBatchExpired(batch)) throw AppError.badRequest('Cannot sell from an expired batch');
       if (batch.isRecalled) throw AppError.badRequest('Cannot sell from a recalled batch');
+      // NDPS "Locked in Main Safe": an Essential Narcotic Drug can never be issued
+      // through the ordinary counter — it must go through the NDPS vault custody +
+      // Form 3E consumption workflow so the statutory register stays complete.
+      if (batch.drug?.isNarcotic) {
+        throw AppError.badRequest(
+          `${batch.drug.drugName} is an NDPS narcotic — it must be dispensed via the NDPS (Form 3E) consumption workflow, not the counter.`,
+        );
+      }
 
       const packSize = batch.drug?.packSize && batch.drug.packSize > 0 ? batch.drug.packSize : 1;
       const saleUnit = item.saleUnit ?? 'pack';
@@ -2771,6 +2809,7 @@ export async function createPharmacySale(
         taxPct,
         taxAmt,
         nonReturnable: item.nonReturnable ?? false,
+        expiry: batch.expiryDate ?? null,
       });
     }
 
@@ -2909,10 +2948,15 @@ export async function createPharmacySale(
           : l.packSize > 1
             ? `${l.baseQty / l.packSize} pack of ${l.packSize} ${l.looseUnit}`
             : `${l.baseQty} ${l.looseUnit}`;
+      // Print batch AND expiry on the receipt line (design doc OP Step 5 requires
+      // "batch/expiry details" on the printed bill). dd/MM/yyyy per house style.
+      const expTag = l.expiry
+        ? `, Exp ${new Date(l.expiry).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' })}`
+        : '';
       await tx.billItem.create({
         data: {
           billId: bill.id,
-          description: `${l.drugName} (Batch ${l.batchNumber}) — ${unitDetail}`,
+          description: `${l.drugName} (Batch ${l.batchNumber}${expTag}) — ${unitDetail}`,
           category: 'pharmacy',
           quantity: l.baseQty,
           unitPrice: l.unitPrice,
@@ -3999,9 +4043,16 @@ export async function dispenseFromWard(
 
     const batch = await tx.drugBatch.findUnique({
       where: { id: data.drugBatchId },
-      include: { drug: { select: { drugName: true, price: true, taxPercent: true, isLifeSaving: true } } },
+      include: { drug: { select: { drugName: true, price: true, taxPercent: true, isLifeSaving: true, isNarcotic: true } } },
     });
     if (!batch) throw AppError.notFound('Drug batch not found');
+    // NDPS "Locked in Main Safe": narcotics are dispensed only via the NDPS vault
+    // custody + Form 3E workflow, never through ordinary ward stock.
+    if (batch.drug?.isNarcotic) {
+      throw AppError.badRequest(
+        `${batch.drug.drugName} is an NDPS narcotic — dispense it via the NDPS (Form 3E) consumption workflow, not ward stock.`,
+      );
+    }
 
     // IP credit gate — block a cash patient who is over deposit unless clearance
     // was given (override) or the drug is life-saving (design doc IP Step 3).

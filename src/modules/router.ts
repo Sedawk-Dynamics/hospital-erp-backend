@@ -27,6 +27,8 @@ import { imagingRoutes } from './imaging/imaging.routes';
 import { buildPacsRouter } from './imaging/pacs';
 import { pharmacyRoutes } from './pharmacy/pharmacy.routes';
 import { ndpsRoutes } from './ndps/ndps.routes';
+import { otKitRoutes } from './ot-kit/ot-kit.routes';
+import { indentRoutes } from './indents/indents.routes';
 import { inventoryRoutes } from './inventory/inventory.routes';
 import { insuranceRoutes } from './insurance/insurance.routes';
 import { bloodBankRoutes } from './blood-bank/blood-bank.routes';
@@ -111,6 +113,14 @@ apiRouter.use('/cdss', authenticate, userTierLimiter, subCheck, requireFeature('
 apiRouter.use('/imaging', authenticate, userTierLimiter, subCheck, requireFeature('imaging'), imagingRoutes);
 apiRouter.use('/pharmacy', authenticate, userTierLimiter, subCheck, requireFeature('pharmacy'), pharmacyRoutes);
 apiRouter.use('/ndps', authenticate, userTierLimiter, subCheck, requireFeature('pharmacy'), ndpsRoutes);
+// OT "Kit" — surgical preference-card templates + issue-bulk / reconcile-net
+// virtual OT ledger (design doc III). Pharmacy-feature-gated (pharmacy issues,
+// bills and reverses the stock); the OT nurse's pre-op request is permission-open.
+apiRouter.use('/ot-kit', authenticate, userTierLimiter, subCheck, requireFeature('pharmacy'), otKitRoutes);
+// IP medication indents — ward→pharmacy request → approve → dispense → deliver →
+// acknowledge lifecycle (design doc I). Pharmacy-feature-gated; nurse-facing
+// raise/acknowledge are permission-open, pharmacist approve/dispense are gated.
+apiRouter.use('/indents', authenticate, userTierLimiter, subCheck, requireFeature('pharmacy'), indentRoutes);
 apiRouter.use('/inventory', authenticate, userTierLimiter, subCheck, requireFeature('inventory'), inventoryRoutes);
 // Margin-based system-wide discount — separate module, gated on the pharmacy feature.
 apiRouter.use('/discount-policy', authenticate, userTierLimiter, subCheck, requireFeature('pharmacy'), discountPolicyRoutes);
