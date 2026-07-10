@@ -308,7 +308,8 @@ export async function dispenseIndent(
         where: { id: it.id },
         // dispensedQty is in the item's sale unit (packs/loose), consistent with
         // requestedQty/approvedQty; the base-unit count lives on the DispensingRecord.
-        data: { dispensedBatchId: batch.id, dispensedQty: qty, unitPrice, lineTotal: gross },
+        // dispensingRecordId is kept so the RTS flow can reverse this exact line.
+        data: { dispensedBatchId: batch.id, dispensedQty: qty, unitPrice, lineTotal: gross, dispensingRecordId: rec.id, returnedQty: 0 },
       });
 
       addedGross = round2(addedGross + gross);
@@ -337,6 +338,134 @@ export async function dispenseIndent(
 
   logger.info({ tenantId, indentId: id, billId: result.billId }, 'Medication indent dispensed to IP bill');
   return hydrate(tenantId, result);
+}
+
+/**
+ * Return-to-Stock (RTS) — design doc IP feature #2. The ward returns unused /
+ * un-administered medicine from a dispensed indent; the pharmacist records it and
+ * the system (a) restocks the exact original batch and (b) credits the patient's
+ * running IP bill (a negative BillItem + reduced bill totals), while netting the
+ * dispense record down so every read-model (bill, TPA split, returnable picker)
+ * stays consistent. Returns are in the line's saleUnit and bounded by what the
+ * ward still holds (dispensedQty − returnedQty).
+ */
+export async function returnIndentItems(
+  tenantId: string,
+  userId: string,
+  roles: string[],
+  id: string,
+  data: { items: Array<{ itemId: string; returnQty: number }>; reason?: string },
+) {
+  assertPharmacyOperator(roles, 'process an IP drug return');
+  const indent = await prisma.medicationIndent.findFirst({ where: { id, tenantId }, include: { items: true } });
+  if (!indent) throw AppError.notFound('Indent not found');
+  if (!['dispensed', 'delivered', 'acknowledged'].includes(indent.status)) {
+    throw AppError.badRequest('Only a dispensed indent can have items returned to pharmacy');
+  }
+  if (!indent.billId) throw AppError.badRequest('This indent has no bill to credit');
+  const reqMap = new Map((data.items ?? []).map((r) => [r.itemId, Math.max(0, Math.trunc(r.returnQty))]));
+  if (![...reqMap.values()].some((q) => q > 0)) throw AppError.badRequest('Enter a quantity to return');
+
+  const result = await prisma.$transaction(async (tx) => {
+    const bill = await tx.bill.findFirst({ where: { id: indent.billId!, tenantId } });
+    if (!bill) throw AppError.badRequest('The billed invoice for this indent no longer exists');
+
+    let creditGross = 0;
+    let creditTax = 0;
+    const returned: Array<{ itemId: string; drugName: string; qty: number; credit: number }> = [];
+
+    for (const it of indent.items) {
+      const want = reqMap.get(it.id) ?? 0;
+      if (want <= 0) continue;
+      const alreadyReturned = it.returnedQty ?? 0;
+      const dispensed = it.dispensedQty ?? 0;
+      const remaining = dispensed - alreadyReturned;
+      if (remaining <= 0) continue;
+      const qty = Math.min(want, remaining);
+      if (!it.dispensedBatchId) throw AppError.badRequest('Cannot return a line that was never dispensed against a batch');
+
+      const drug = await tx.drugFormulary.findFirst({
+        where: { id: it.drugFormularyId, tenantId },
+        select: { id: true, drugName: true, packSize: true, taxPercent: true, looseUnitLabel: true },
+      });
+      if (!drug) throw AppError.badRequest('A drug on this indent is no longer in the formulary');
+      const packSize = drug.packSize && drug.packSize > 0 ? drug.packSize : 1;
+      const baseQty = it.saleUnit === 'loose' ? qty : qty * packSize;
+
+      // (a) Restock the exact original batch.
+      await tx.drugBatch.update({ where: { id: it.dispensedBatchId }, data: { quantityInStock: { increment: baseQty } } });
+
+      // (b) Credit the running bill — value the return at the price it was billed at
+      // (unitPrice is per base unit, GST-inclusive), mirroring the dispense math.
+      const unitPrice = Number(it.unitPrice ?? 0);
+      const taxPct = drug.taxPercent != null ? Number(drug.taxPercent) : 0;
+      const gross = round2(unitPrice * baseQty);
+      const taxAmt = round2(gross - gross / (1 + taxPct / 100));
+      const unitLabel = it.saleUnit === 'loose' ? (drug.looseUnitLabel ?? 'unit') : 'pack';
+
+      await tx.billItem.create({
+        data: {
+          billId: bill.id,
+          description: `Return credit — ${drug.drugName}, ${qty} ${unitLabel}(s) back to pharmacy (indent ${indent.indentNumber})`,
+          category: 'pharmacy',
+          quantity: -baseQty,
+          unitPrice,
+          taxPercent: taxPct,
+          taxAmount: round2(-taxAmt),
+          totalAmount: round2(-gross),
+          referenceType: 'indent_return',
+          referenceId: it.id,
+          isAutoPulled: true,
+        },
+      });
+
+      // Net the dispense record down so the TPA reimbursable split and the returnable
+      // picker reflect what is actually still with the patient.
+      if (it.dispensingRecordId) {
+        const rec = await tx.dispensingRecord.findFirst({ where: { id: it.dispensingRecordId, tenantId }, select: { quantityDispensed: true, lineTotal: true } });
+        if (rec) {
+          await tx.dispensingRecord.update({
+            where: { id: it.dispensingRecordId },
+            data: {
+              quantityDispensed: Math.max(0, rec.quantityDispensed - baseQty),
+              lineTotal: round2(Math.max(0, Number(rec.lineTotal ?? 0) - gross)),
+            },
+          });
+        }
+      }
+
+      await tx.medicationIndentItem.update({ where: { id: it.id }, data: { returnedQty: alreadyReturned + qty } });
+
+      creditGross = round2(creditGross + gross);
+      creditTax = round2(creditTax + taxAmt);
+      returned.push({ itemId: it.id, drugName: drug.drugName, qty, credit: gross });
+    }
+
+    if (creditGross <= 0) throw AppError.badRequest('Nothing was eligible to return');
+
+    const newTotal = round2(Number(bill.totalAmount) - creditGross);
+    const newBalance = Math.max(0, round2(newTotal - Number(bill.amountPaid)));
+    await tx.bill.update({
+      where: { id: bill.id },
+      data: {
+        subtotal: round2(Number(bill.subtotal) - creditGross),
+        taxAmount: round2(Number(bill.taxAmount) - creditTax),
+        totalAmount: newTotal,
+        patientPayableAmount: Math.max(0, round2(Number(bill.patientPayableAmount) - creditGross)),
+        balanceDue: newBalance,
+      },
+    });
+
+    const updated = await tx.medicationIndent.update({
+      where: { id },
+      data: { notes: [indent.notes, `RTS ${new Date().toISOString().slice(0, 10)}: ${returned.map((r) => `${r.qty}× ${r.drugName}`).join(', ')}${data.reason ? ` (${data.reason})` : ''}`].filter(Boolean).join('\n') },
+      include: { items: true },
+    });
+    return { updated, creditGross };
+  });
+
+  logger.info({ tenantId, indentId: id, credit: result.creditGross }, 'IP indent items returned to pharmacy (RTS)');
+  return hydrate(tenantId, result.updated);
 }
 
 /** Runner hand-off — the meds leave the pharmacy for the ward. */

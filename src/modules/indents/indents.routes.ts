@@ -7,6 +7,7 @@ import {
   raiseIndentSchema,
   approveIndentSchema,
   dispenseIndentSchema,
+  returnIndentSchema,
   acknowledgeIndentSchema,
   cancelIndentSchema,
   indentIdParamSchema,
@@ -28,3 +29,5 @@ indentRoutes.patch('/:id/cancel', authenticate, validate(cancelIndentSchema), co
 indentRoutes.patch('/:id/approve', authenticate, requirePermission('pharmacy', 'update'), validate(approveIndentSchema), controller.approveIndent);
 indentRoutes.patch('/:id/dispense', authenticate, requirePermission('pharmacy', 'create'), validate(dispenseIndentSchema), controller.dispenseIndent);
 indentRoutes.patch('/:id/deliver', authenticate, requirePermission('pharmacy', 'update'), validate(indentIdParamSchema), controller.markDelivered);
+// IP Return-to-Stock (RTS): ward returns unused meds → restock batch + credit the IP bill.
+indentRoutes.post('/:id/return', authenticate, requirePermission('pharmacy', 'update'), validate(returnIndentSchema), controller.returnIndentItems);

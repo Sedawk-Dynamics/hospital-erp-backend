@@ -141,6 +141,11 @@ export const getFormularyQuerySchema = z.object({
       .string()
       .transform((val) => val === 'true')
       .optional(),
+    // Filter to NDPS narcotic drugs only (drives the NDPS drug pickers).
+    isNarcotic: z
+      .string()
+      .transform((val) => val === 'true')
+      .optional(),
     // Filter by live stock derived from available batches.
     stockStatus: z.enum(['in', 'out']).optional(),
   }),

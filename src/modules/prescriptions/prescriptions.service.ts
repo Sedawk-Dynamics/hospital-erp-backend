@@ -64,9 +64,12 @@ export async function createPrescription(
     throw AppError.notFound('Patient not found');
   }
 
-  // Verify doctor belongs to tenant
+  // Verify doctor belongs to tenant. The doctor UI sends the authenticated
+  // User.id as doctorId, while other callers may send a DoctorProfile.id —
+  // resolve either form (DoctorProfile.userId is @unique) so the stored FK is
+  // always a valid DoctorProfile.id.
   const doctor = await prisma.doctorProfile.findFirst({
-    where: { id: data.doctorId, tenantId },
+    where: { tenantId, OR: [{ id: data.doctorId }, { userId: data.doctorId }] },
   });
   if (!doctor) {
     throw AppError.notFound('Doctor not found');
@@ -84,7 +87,7 @@ export async function createPrescription(
     data: {
       tenantId,
       patientId: data.patientId,
-      doctorId: data.doctorId,
+      doctorId: doctor.id,
       visitId: data.visitId,
       prescriptionType: data.prescriptionType,
       notes: data.notes,
@@ -126,7 +129,7 @@ export async function createPrescription(
   });
 
   logger.info(
-    { tenantId, prescriptionId: prescription.id, doctorId: data.doctorId, patientId: data.patientId },
+    { tenantId, prescriptionId: prescription.id, doctorId: doctor.id, patientId: data.patientId },
     'Prescription created',
   );
 

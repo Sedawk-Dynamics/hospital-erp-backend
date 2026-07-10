@@ -162,7 +162,10 @@ async function adjustBalance(
   const current = existing?.quantity ?? 0;
   const next = current + delta;
   if (next < 0) {
-    throw AppError.badRequest('Insufficient narcotic stock at the source location.');
+    throw AppError.badRequest(
+      `Insufficient narcotic stock at this location — only ${current} unit(s) available, need ${Math.abs(delta)}. ` +
+        `Receive a Form 3C consignment into the vault and transfer stock to this location first.`,
+    );
   }
   if (existing) {
     await tx.ndpsStockBalance.update({ where: { id: existing.id }, data: { quantity: next } });

@@ -35,6 +35,14 @@ export const dispenseIndentSchema = z.object({
   }),
 });
 
+export const returnIndentSchema = z.object({
+  params: z.object({ id: z.string().uuid() }),
+  body: z.object({
+    items: z.array(z.object({ itemId: z.string().uuid(), returnQty: z.number().int().positive() })).min(1),
+    reason: z.string().max(500).optional(),
+  }),
+});
+
 export const acknowledgeIndentSchema = z.object({
   params: z.object({ id: z.string().uuid() }),
   body: z.object({ itemIds: z.array(z.string().uuid()).optional() }),

@@ -4486,6 +4486,13 @@ model MedicationIndentItem {
   dispensedQty     Int?     @map("dispensed_qty")
   unitPrice        Decimal? @map("unit_price") @db.Decimal(12, 2)
   lineTotal        Decimal? @map("line_total") @db.Decimal(12, 2)
+  // The DispensingRecord minted when this line was dispensed — kept so the IP
+  // Return-to-Stock (RTS) flow can precisely reverse the exact dispense (restock
+  // the original batch, net down the sale record, credit the running bill).
+  dispensingRecordId String? @map("dispensing_record_id")
+  // Cumulative quantity (in this line's saleUnit) already returned to pharmacy via
+  // the RTS flow. dispensedQty − returnedQty = what the ward still holds.
+  returnedQty      Int?     @default(0) @map("returned_qty")
   acknowledged     Boolean  @default(false)
   notes            String?
 

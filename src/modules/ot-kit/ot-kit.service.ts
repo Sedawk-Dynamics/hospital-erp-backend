@@ -13,13 +13,15 @@ import { AppError } from '../../shared/appError';
 // the consumed cost is posted to the patient's bill and the unused units are
 // reversed into active pharmacy stock.
 
-const PHARMACY_ADMIN_ROLES = new Set(['super_admin', 'admin', 'pharmacy_admin']);
 const PHARMACY_OP_ROLES = new Set(['super_admin', 'admin', 'pharmacy_admin', 'pharmacist']);
 
-function assertTemplateManager(roles: string[], action: string) {
-  if (!roles.some((r) => PHARMACY_ADMIN_ROLES.has(r))) {
-    throw AppError.forbidden(`You do not have permission to ${action}.`);
-  }
+// Surgical preference-card templates are shared OT + pharmacy MASTER DATA: both
+// the pharmacy (admin) and the OT nurse maintain them. Any authenticated staff
+// member who can reach the OT-Kit / Pharmacy module may manage them — access is
+// scoped by the module navigation, not a hard role check here. Kept as a hook so
+// a tenant can re-tighten it later without touching the call sites.
+function assertTemplateManager(_roles: string[], _action: string): void {
+  /* intentionally permissive — OT nurse + pharmacy both manage templates */
 }
 
 function assertPharmacyOperator(roles: string[], action: string) {
@@ -328,30 +330,51 @@ export async function issueKit(
         throw AppError.badRequest(`${drug.drugName} is an NDPS narcotic and cannot be issued in an OT kit — use the NDPS workflow.`);
       }
 
-      // FEFO: earliest-expiring in-stock, non-expired, non-recalled batch with enough stock.
-      const batch = await tx.drugBatch.findFirst({
-        where: { tenantId, drugId: drug.id, isExpired: false, isRecalled: false, quantityInStock: { gte: qty } },
+      const taxPct = drug.taxPercent != null ? Number(drug.taxPercent) : 0;
+
+      // FEFO across ALL available batches: draw the requested quantity from the
+      // earliest-expiring batches first, one issue line per batch used. Any
+      // shortfall — a consumable with no/low stock, e.g. not yet inward-ed — is
+      // still issued as a batch-less line so the physical crate is fully tracked
+      // and can be reconciled/billed. Issuing therefore never fails on stock.
+      let remaining = qty;
+      const batches = await tx.drugBatch.findMany({
+        where: { tenantId, drugId: drug.id, isExpired: false, isRecalled: false, quantityInStock: { gt: 0 } },
         orderBy: [{ expiryDate: 'asc' }, { createdAt: 'asc' }],
       });
-      if (!batch) {
-        throw AppError.badRequest(`Insufficient stock for ${drug.drugName} — need ${qty} in a single batch`);
+      for (const b of batches) {
+        if (remaining <= 0) break;
+        const take = Math.min(remaining, b.quantityInStock);
+        if (take <= 0) continue;
+        await tx.drugBatch.update({ where: { id: b.id }, data: { quantityInStock: { decrement: take } } });
+        await tx.otKitIssueItem.create({
+          data: {
+            issueId: issue.id,
+            drugFormularyId: drug.id,
+            drugBatchId: b.id,
+            issuedQty: take,
+            returnedQty: 0,
+            unitPrice: Number(b.sellingPrice ?? drug.price ?? b.purchasePrice ?? 0),
+            taxPercent: taxPct,
+          },
+        });
+        remaining -= take;
       }
-
-      await tx.drugBatch.update({ where: { id: batch.id }, data: { quantityInStock: { decrement: qty } } });
-
-      const unitPrice = Number(batch.sellingPrice ?? drug.price ?? batch.purchasePrice ?? 0);
-      const taxPct = drug.taxPercent != null ? Number(drug.taxPercent) : 0;
-      await tx.otKitIssueItem.create({
-        data: {
-          issueId: issue.id,
-          drugFormularyId: drug.id,
-          drugBatchId: batch.id,
-          issuedQty: qty,
-          returnedQty: 0,
-          unitPrice,
-          taxPercent: taxPct,
-        },
-      });
+      if (remaining > 0) {
+        // Not enough stock on hand — issue the remainder without a batch link so
+        // the crate reflects the full quantity (no stock movement for this part).
+        await tx.otKitIssueItem.create({
+          data: {
+            issueId: issue.id,
+            drugFormularyId: drug.id,
+            drugBatchId: null,
+            issuedQty: remaining,
+            returnedQty: 0,
+            unitPrice: Number(drug.price ?? 0),
+            taxPercent: taxPct,
+          },
+        });
+      }
     }
 
     return tx.otKitIssue.update({
@@ -528,6 +551,14 @@ export async function cancelKit(tenantId: string, userId: string, roles: string[
 // Reads
 // ============================================================
 
+/** Resolve batch numbers for a set of batch ids (issue lines can span batches). */
+async function batchNumberMap(tenantId: string, ids: Array<string | null | undefined>) {
+  const uniq = [...new Set(ids.filter((x): x is string => !!x))];
+  if (!uniq.length) return new Map<string, string>();
+  const rows = await prisma.drugBatch.findMany({ where: { tenantId, id: { in: uniq } }, select: { id: true, batchNumber: true } });
+  return new Map(rows.map((r) => [r.id, r.batchNumber]));
+}
+
 export async function listIssues(
   tenantId: string,
   query: { status?: string; patientId?: string; otRequestId?: string } = {},
@@ -543,6 +574,7 @@ export async function listIssues(
     take: 300,
   });
   const names = await drugMap(tenantId, issues.flatMap((i) => i.items.map((x) => x.drugFormularyId)));
+  const batchNos = await batchNumberMap(tenantId, issues.flatMap((i) => i.items.map((x) => x.drugBatchId)));
   const patientIds = [...new Set(issues.map((i) => i.patientId))];
   const patients = await prisma.patient.findMany({ where: { tenantId, id: { in: patientIds } }, select: { id: true, firstName: true, lastName: true, mrn: true } });
   const pMap = new Map(patients.map((p) => [p.id, { name: `${p.firstName} ${p.lastName ?? ''}`.trim(), mrn: p.mrn }]));
@@ -551,7 +583,12 @@ export async function listIssues(
       ...i,
       patientName: pMap.get(i.patientId)?.name ?? null,
       patientMrn: pMap.get(i.patientId)?.mrn ?? null,
-      items: i.items.map((x) => ({ ...x, drugName: names.get(x.drugFormularyId)?.drugName ?? '-', looseUnitLabel: names.get(x.drugFormularyId)?.looseUnitLabel ?? null })),
+      items: i.items.map((x) => ({
+        ...x,
+        drugName: names.get(x.drugFormularyId)?.drugName ?? '-',
+        looseUnitLabel: names.get(x.drugFormularyId)?.looseUnitLabel ?? null,
+        batchNumber: x.drugBatchId ? (batchNos.get(x.drugBatchId) ?? null) : null,
+      })),
     })),
     total: issues.length,
   };
@@ -561,6 +598,7 @@ export async function getIssueById(tenantId: string, id: string) {
   const issue = await prisma.otKitIssue.findFirst({ where: { id, tenantId }, include: { items: true } });
   if (!issue) throw AppError.notFound('OT kit issue not found');
   const names = await drugMap(tenantId, issue.items.map((i) => i.drugFormularyId));
+  const batchNos = await batchNumberMap(tenantId, issue.items.map((i) => i.drugBatchId));
   const patient = await patientLabel(tenantId, issue.patientId);
   return {
     ...issue,
@@ -570,6 +608,7 @@ export async function getIssueById(tenantId: string, id: string) {
       ...x,
       drugName: names.get(x.drugFormularyId)?.drugName ?? '-',
       looseUnitLabel: names.get(x.drugFormularyId)?.looseUnitLabel ?? null,
+      batchNumber: x.drugBatchId ? (batchNos.get(x.drugBatchId) ?? null) : null,
     })),
   };
 }

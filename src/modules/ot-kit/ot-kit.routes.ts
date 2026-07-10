@@ -21,11 +21,14 @@ export const otKitRoutes = Router();
 // --- Surgical templates (preference cards). Reads are open to any authenticated
 // staff (the OT nurse browses them to request a kit); writes are pharmacy master
 // data (pharmacy_admin). ---
+// Reads + writes are open to any authenticated staff — surgical preference cards
+// are shared OT + pharmacy master data, maintained by BOTH the OT nurse and the
+// pharmacy. (Kit issue/reconcile below stay pharmacy-permissioned.)
 otKitRoutes.get('/templates', authenticate, validate(listTemplatesQuerySchema), controller.listTemplates);
 otKitRoutes.get('/templates/:id', authenticate, validate(templateIdParamSchema), controller.getTemplate);
-otKitRoutes.post('/templates', authenticate, requirePermission('pharmacy', 'create'), validate(createTemplateSchema), controller.createTemplate);
-otKitRoutes.put('/templates/:id', authenticate, requirePermission('pharmacy', 'update'), validate(updateTemplateSchema), controller.updateTemplate);
-otKitRoutes.delete('/templates/:id', authenticate, requirePermission('pharmacy', 'delete'), validate(templateIdParamSchema), controller.deleteTemplate);
+otKitRoutes.post('/templates', authenticate, validate(createTemplateSchema), controller.createTemplate);
+otKitRoutes.put('/templates/:id', authenticate, validate(updateTemplateSchema), controller.updateTemplate);
+otKitRoutes.delete('/templates/:id', authenticate, validate(templateIdParamSchema), controller.deleteTemplate);
 
 // --- Kit issue lifecycle ---
 // Pre-op request by the OT nurse (any authenticated staff — no pharmacy perm).

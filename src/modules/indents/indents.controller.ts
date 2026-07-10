@@ -33,6 +33,14 @@ export async function dispenseIndent(req: AuthenticatedRequest, res: Response, n
   } catch (err) { next(err); }
 }
 
+export async function returnIndentItems(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const { tenantId, userId, roles } = ctx(req);
+    const data = await service.returnIndentItems(tenantId, userId, roles, req.params.id as string, req.body);
+    sendResponse({ res, message: 'Items returned to pharmacy and credited to the IP bill', data });
+  } catch (err) { next(err); }
+}
+
 export async function markDelivered(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const { tenantId, userId, roles } = ctx(req);

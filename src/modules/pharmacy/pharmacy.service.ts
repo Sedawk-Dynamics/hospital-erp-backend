@@ -1305,6 +1305,8 @@ export async function getFormulary(tenantId: string, query: GetFormularyQuery) {
 
   if (query.dosageForm) where.dosageForm = query.dosageForm;
   if (query.isActive !== undefined) where.isActive = query.isActive;
+  // NDPS narcotic-only filter (feeds the narcotic drug pickers server-side).
+  if ((query as any).isNarcotic !== undefined) where.isNarcotic = (query as any).isNarcotic;
 
   // Stock filter — derived from available (non-expired, non-recalled, qty>0)
   // batches via a relation filter so the pharmacy can see what is / isn't stocked.
@@ -2460,16 +2462,28 @@ const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 
 // Human-friendly, collision-free pharmacy invoice number: PH-YYYYMMDD-#### per
 // tenant per day. Counter throughput is low enough that a count+1 is safe.
-async function nextPharmacyInvoiceNumber(tx: typeof prisma, tenantId: string) {
+async function nextPharmacyInvoiceNumber(tx: typeof prisma, tenantId: string, attempt = 0) {
   const now = new Date();
   const y = now.getFullYear();
   const m = String(now.getMonth() + 1).padStart(2, '0');
   const d = String(now.getDate()).padStart(2, '0');
   const prefix = `PH-${y}${m}${d}-`;
-  const todays = await tx.bill.count({
+  // Base the next suffix on the HIGHEST existing number (not count()): count()+1
+  // silently repeats a number the moment there is any gap in the sequence, and
+  // the zero-padded suffix sorts lexicographically so `desc` gives us the max.
+  const latest = await tx.bill.findFirst({
     where: { tenantId, billNumber: { startsWith: prefix } },
+    orderBy: { billNumber: 'desc' },
+    select: { billNumber: true },
   });
-  return `${prefix}${String(todays + 1).padStart(4, '0')}`;
+  const lastSeq = latest?.billNumber
+    ? parseInt(latest.billNumber.split('-').pop() || '0', 10)
+    : 0;
+  // `attempt` steps the candidate forward on each retry so a collision against
+  // the GLOBAL bill_number unique constraint (another tenant, or a concurrent
+  // counter sale) is resolved by moving to the next free slot — a plain re-read
+  // would keep proposing the same number because the count is tenant-scoped.
+  return `${prefix}${String(lastSeq + 1 + attempt).padStart(4, '0')}`;
 }
 
 // Reusable per-tenant "Walk-in" customer so OTC sales (no patient selected)
@@ -2716,7 +2730,7 @@ export async function createPharmacySale(
     advanceAdmissionId = credit.admissionId;
   }
 
-  const billId = await prisma.$transaction(async (tx) => {
+  const runSaleTx = (attempt: number) => prisma.$transaction(async (tx) => {
     // 1. Validate every line and pre-compute its economics.
     const lines = [] as Array<{
       batchId: string;
@@ -2890,7 +2904,7 @@ export async function createPharmacySale(
       visitId = rx?.visitId ?? null;
     }
 
-    const billNumber = await nextPharmacyInvoiceNumber(tx as any, tenantId);
+    const billNumber = await nextPharmacyInvoiceNumber(tx as any, tenantId, attempt);
     const bill = await tx.bill.create({
       data: {
         tenantId,
@@ -2999,6 +3013,25 @@ export async function createPharmacySale(
 
     return bill.id;
   });
+
+  // The generated bill_number can still lose a race against the GLOBAL unique
+  // constraint (a concurrent counter sale, or another tenant's first sale of the
+  // day landing on the same PH-YYYYMMDD-#### slot). Retry the whole transaction —
+  // it rolls back cleanly on failure — advancing the candidate number each time
+  // via `attempt` until we claim a free number, so the POS never sees a 409.
+  let billId: string;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      billId = await runSaleTx(attempt);
+      break;
+    } catch (err) {
+      const billNumberClash =
+        (err as any)?.code === 'P2002' &&
+        String((err as any)?.meta?.target ?? '').includes('bill_number');
+      if (billNumberClash && attempt < 5) continue;
+      throw err;
+    }
+  }
 
   void safePharmacyAudit({
     tenantId,
