@@ -5,6 +5,7 @@ import { validate } from '../../middleware/validate';
 import * as controller from './indents.controller';
 import {
   raiseIndentSchema,
+  confirmIndentSchema,
   approveIndentSchema,
   dispenseIndentSchema,
   returnIndentSchema,
@@ -22,6 +23,8 @@ indentRoutes.get('/:id', authenticate, validate(indentIdParamSchema), controller
 
 // Ward nurse: raise an indent + acknowledge the delivery (no pharmacy permission).
 indentRoutes.post('/', authenticate, validate(raiseIndentSchema), controller.raiseIndent);
+// Ward nurse: confirm an auto-created draft (from the doctor's Rx) → raise it to pharmacy.
+indentRoutes.patch('/:id/confirm', authenticate, validate(confirmIndentSchema), controller.confirmDraftIndent);
 indentRoutes.patch('/:id/acknowledge', authenticate, validate(acknowledgeIndentSchema), controller.acknowledgeIndent);
 indentRoutes.patch('/:id/cancel', authenticate, validate(cancelIndentSchema), controller.cancelIndent);
 

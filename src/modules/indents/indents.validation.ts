@@ -43,6 +43,15 @@ export const returnIndentSchema = z.object({
   }),
 });
 
+export const confirmIndentSchema = z.object({
+  params: z.object({ id: z.string().uuid() }),
+  body: z.object({
+    items: z.array(indentItem).optional(),
+    priority: z.string().max(20).optional(),
+    notes: z.string().max(1000).optional(),
+  }),
+});
+
 export const acknowledgeIndentSchema = z.object({
   params: z.object({ id: z.string().uuid() }),
   body: z.object({ itemIds: z.array(z.string().uuid()).optional() }),
@@ -59,7 +68,7 @@ export const indentIdParamSchema = z.object({
 
 export const listIndentsQuerySchema = z.object({
   query: z.object({
-    status: z.enum(['raised', 'approved', 'dispensed', 'delivered', 'acknowledged', 'cancelled']).optional(),
+    status: z.enum(['draft', 'raised', 'approved', 'dispensed', 'delivered', 'acknowledged', 'cancelled']).optional(),
     patientId: z.string().uuid().optional(),
     wardId: z.string().uuid().optional(),
     isTto: z.coerce.boolean().optional(),

@@ -139,6 +139,14 @@ export async function createPrescription(
     emarGenerateForPrescription(prescription.id).catch((err) => {
       logger.error({ err, prescriptionId: prescription.id }, 'eMAR generation failed (create)');
     });
+    // G1: pre-fill a DRAFT pharmacy indent from the order so the ward nurse only
+    // reviews & sends it (instead of re-typing every line). Dynamic import avoids
+    // a load-time cycle (indents → pharmacy → …). Fire-and-forget.
+    import('../indents/indents.service')
+      .then((m) => m.createDraftIndentFromPrescription(tenantId, userId, prescription.id))
+      .catch((err) => {
+        logger.error({ err, prescriptionId: prescription.id }, 'draft indent auto-create failed (create)');
+      });
   }
 
   return prescription;

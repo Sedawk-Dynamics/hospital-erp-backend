@@ -17,6 +17,14 @@ export async function raiseIndent(req: AuthenticatedRequest, res: Response, next
   } catch (err) { next(err); }
 }
 
+export async function confirmDraftIndent(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const { tenantId, userId } = ctx(req);
+    const data = await service.confirmDraftIndent(tenantId, userId, req.params.id as string, req.body);
+    sendResponse({ res, message: 'Draft indent confirmed and sent to pharmacy', data });
+  } catch (err) { next(err); }
+}
+
 export async function approveIndent(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const { tenantId, userId, roles } = ctx(req);

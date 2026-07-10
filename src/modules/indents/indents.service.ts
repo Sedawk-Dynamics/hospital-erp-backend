@@ -125,6 +125,129 @@ export async function raiseIndent(
 }
 
 /**
+ * Auto-create a DRAFT indent from a freshly-signed IP prescription (design G1 —
+ * the doctor's order pre-fills the pharmacy request instead of the nurse
+ * re-typing it). Idempotent per prescription; maps only the Rx lines that resolve
+ * to a formulary drug (free-text / PRN lines are skipped); returns null silently
+ * when nothing maps. The draft sits in the ward nurse's workspace as a pending
+ * request until they confirm it (→ 'raised'). Fire-and-forget safe.
+ */
+export async function createDraftIndentFromPrescription(tenantId: string, userId: string, prescriptionId: string) {
+  const rx = await prisma.prescription.findFirst({
+    where: { id: prescriptionId, tenantId },
+    include: { prescriptionItems: true },
+  });
+  if (!rx || rx.prescriptionType !== 'ip') return null;
+
+  // Idempotent: never open a second live indent for the same prescription.
+  const existing = await prisma.medicationIndent.findFirst({
+    where: { tenantId, prescriptionId, status: { notIn: ['cancelled'] } },
+    select: { id: true },
+  });
+  if (existing) return null;
+
+  // Resolve the active admission (and its ward) from the Rx's visit.
+  const admission = await prisma.admission.findFirst({
+    where: { tenantId, visitId: rx.visitId, status: 'admitted' },
+    select: { id: true, wardId: true },
+  });
+
+  // Only lines that resolve to a formulary drug can become indent items.
+  const drugIds = [...new Set(rx.prescriptionItems.filter((i) => i.drugId).map((i) => i.drugId as string))];
+  if (!drugIds.length) return null;
+  const inFormulary = await prisma.drugFormulary.findMany({ where: { tenantId, id: { in: drugIds } }, select: { id: true } });
+  const okIds = new Set(inFormulary.map((d) => d.id));
+
+  const lines = rx.prescriptionItems
+    .filter((i) => i.drugId && okIds.has(i.drugId) && !i.isPrn)
+    .map((i) => ({
+      drugFormularyId: i.drugId as string,
+      // A daily IP order is sent as loose (unit) doses; requestedQty comes from the
+      // Rx's computed dispense quantity. The nurse can trim this before sending.
+      requestedQty: Math.max(1, Math.trunc(Number(i.quantity ?? 1))),
+      saleUnit: 'loose',
+      notes: [i.dosage, i.frequency, i.duration].filter(Boolean).join(' · ') || null,
+    }));
+  if (!lines.length) return null;
+
+  const indent = await prisma.$transaction(async (tx) =>
+    tx.medicationIndent.create({
+      data: {
+        tenantId,
+        indentNumber: await nextIndentNumber(tx, tenantId),
+        patientId: rx.patientId,
+        admissionId: admission?.id ?? null,
+        wardId: admission?.wardId ?? null,
+        prescriptionId,
+        status: 'draft',
+        creditStatus: 'ok',
+        raisedById: userId,
+        items: { create: lines.map((l) => ({ drugFormularyId: l.drugFormularyId, requestedQty: l.requestedQty, saleUnit: l.saleUnit, notes: l.notes })) },
+      },
+      include: { items: true },
+    }),
+  );
+  logger.info({ tenantId, indentId: indent.id, prescriptionId }, 'Draft indent auto-created from IP prescription');
+  return hydrate(tenantId, indent);
+}
+
+/**
+ * Ward nurse reviews an auto-created draft and sends it to the IP pharmacy
+ * (draft → raised). Optionally replaces the item lines with the nurse's edits.
+ * The credit picture is snapshotted here (as in raiseIndent); it does not block.
+ */
+export async function confirmDraftIndent(
+  tenantId: string,
+  userId: string,
+  id: string,
+  data: { items?: IndentItemInput[]; priority?: string; notes?: string } = {},
+) {
+  const indent = await prisma.medicationIndent.findFirst({ where: { id, tenantId }, include: { items: true } });
+  if (!indent) throw AppError.notFound('Indent not found');
+  if (indent.status !== 'draft') throw AppError.badRequest(`Only a draft indent can be confirmed (this one is ${indent.status})`);
+
+  const replace = (data.items ?? []).filter((i) => i.drugFormularyId && i.requestedQty > 0);
+  if (replace.length) {
+    const uniq = [...new Set(replace.map((i) => i.drugFormularyId))];
+    const found = await prisma.drugFormulary.count({ where: { tenantId, id: { in: uniq } } });
+    if (found !== uniq.length) throw AppError.badRequest('One or more drugs are not in this hospital formulary');
+  }
+
+  let creditStatus = 'ok';
+  try {
+    const credit = await getPatientCreditStatus(tenantId, indent.patientId);
+    if (credit.requiresClearance) creditStatus = 'clearance_required';
+  } catch { /* no admission → no credit gate */ }
+
+  const updated = await prisma.$transaction(async (tx) => {
+    if (replace.length) {
+      await tx.medicationIndentItem.deleteMany({ where: { indentId: id } });
+      await tx.medicationIndentItem.createMany({
+        data: replace.map((i) => ({
+          indentId: id,
+          drugFormularyId: i.drugFormularyId,
+          requestedQty: Math.max(1, Math.trunc(i.requestedQty)),
+          saleUnit: i.saleUnit === 'pack' ? 'pack' : 'loose',
+          notes: i.notes?.trim() || null,
+        })),
+      });
+    }
+    return tx.medicationIndent.update({
+      where: { id },
+      data: {
+        status: 'raised',
+        creditStatus,
+        priority: data.priority ?? indent.priority,
+        notes: data.notes?.trim() ?? indent.notes,
+      },
+      include: { items: true },
+    });
+  });
+  logger.info({ tenantId, indentId: id }, 'Draft indent confirmed → raised to IP pharmacy');
+  return hydrate(tenantId, updated);
+}
+
+/**
  * Pharmacist reviews the indent. The IP credit gate fires HERE (before dispensing):
  * a cash patient over deposit is held unless clearance is given (override) or every
  * requested drug is life-saving.
