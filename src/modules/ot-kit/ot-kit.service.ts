@@ -445,6 +445,9 @@ export async function reconcileKit(
     // Net-bill: post the consumed cost to the patient's open bill (or a draft IP bill).
     let billId: string | null = null;
     if (consumedTotal > 0) {
+      // G2: scope the OT bill to the patient's active admission so the running IP
+      // ledger is per-stay (an OT case for an admitted patient bills to that stay).
+      const admId = (await tx.admission.findFirst({ where: { tenantId, patientId: issue.patientId, status: 'admitted' }, orderBy: { admissionDate: 'desc' }, select: { id: true } }))?.id ?? null;
       let bill = await tx.bill.findFirst({
         where: { tenantId, patientId: issue.patientId, status: { in: ['draft', 'pending', 'partially_paid'] } },
         orderBy: { createdAt: 'desc' },
@@ -460,6 +463,7 @@ export async function reconcileKit(
             billNumber: `${prefix}${String(seq + 1).padStart(4, '0')}`,
             patientId: issue.patientId,
             visitId: issue.visitId ?? undefined,
+            admissionId: admId ?? undefined,
             billDate: new Date(),
             subtotal: 0,
             taxAmount: 0,
@@ -470,6 +474,8 @@ export async function reconcileKit(
             generatedBy: userId,
           },
         });
+      } else if (!bill.admissionId && admId) {
+        bill = await tx.bill.update({ where: { id: bill.id }, data: { admissionId: admId } });
       }
 
       for (const line of consumedLines) {

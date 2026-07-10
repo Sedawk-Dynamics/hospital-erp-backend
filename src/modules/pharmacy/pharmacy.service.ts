@@ -2238,6 +2238,9 @@ export async function autoLinkDispenseToBill(
     });
     if (!record || !record.prescription?.visitId) return;
     const visitId = record.prescription.visitId;
+    // G2: scope the IP ledger to the admission (Visit 1:1 Admission). OP visits
+    // have no admission → stays null.
+    const adm = await tx.admission.findFirst({ where: { tenantId, visitId }, orderBy: { admissionDate: 'desc' }, select: { id: true } });
 
     let bill = await tx.bill.findFirst({
       where: { tenantId, visitId, status: 'draft' },
@@ -2250,10 +2253,13 @@ export async function autoLinkDispenseToBill(
           billNumber,
           patientId: record.patientId,
           visitId,
+          admissionId: adm?.id ?? null,
           billDate: new Date(),
           status: 'draft',
         },
       });
+    } else if (!bill.admissionId && adm) {
+      bill = await tx.bill.update({ where: { id: bill.id }, data: { admissionId: adm.id } });
     }
 
     const existing = await tx.billItem.findFirst({
@@ -4106,6 +4112,12 @@ export async function dispenseFromWard(
     const gross = round2(unitPrice * data.quantity);
     const taxAmt = round2(gross - gross / (1 + taxPct / 100));
 
+    // G2: scope the ward-issue bill to the admission (explicit hint or the
+    // patient's active admission) so the running IP ledger is per-stay.
+    const admId = data.admissionId
+      ?? (await tx.admission.findFirst({ where: { tenantId, patientId: data.patientId, status: 'admitted' }, orderBy: { admissionDate: 'desc' }, select: { id: true } }))?.id
+      ?? null;
+
     // Post the charge to the patient's open bill; else open a draft IP-ward bill.
     let bill = await tx.bill.findFirst({
       where: { tenantId, patientId: data.patientId, status: { in: ['draft', 'pending', 'partially_paid'] } },
@@ -4117,6 +4129,7 @@ export async function dispenseFromWard(
           tenantId,
           billNumber: await nextWardBillNumber(tx, tenantId),
           patientId: data.patientId,
+          admissionId: admId,
           billDate: new Date(),
           subtotal: 0,
           discountAmount: 0,
@@ -4129,6 +4142,8 @@ export async function dispenseFromWard(
           generatedBy: userId,
         },
       });
+    } else if (!bill.admissionId && admId) {
+      bill = await tx.bill.update({ where: { id: bill.id }, data: { admissionId: admId } });
     }
 
     await tx.billItem.create({

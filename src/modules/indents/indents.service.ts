@@ -316,6 +316,12 @@ export async function dispenseIndent(
   const batchMap = new Map((data.batches ?? []).map((b) => [b.itemId, b.drugBatchId]));
 
   const result = await prisma.$transaction(async (tx) => {
+    // G2: scope the IP bill to the admission (the indent's, else the patient's
+    // active admission) so the running IP ledger is per-stay.
+    const admId = indent.admissionId
+      ?? (await tx.admission.findFirst({ where: { tenantId, patientId: indent.patientId, status: 'admitted' }, orderBy: { admissionDate: 'desc' }, select: { id: true } }))?.id
+      ?? null;
+
     // Find/open the patient's IP bill.
     let bill = await tx.bill.findFirst({
       where: { tenantId, patientId: indent.patientId, status: { in: ['draft', 'pending', 'partially_paid'] } },
@@ -331,7 +337,7 @@ export async function dispenseIndent(
           tenantId,
           billNumber: `${prefix}${String(seq + 1).padStart(4, '0')}`,
           patientId: indent.patientId,
-          admissionId: indent.admissionId ?? undefined,
+          admissionId: admId ?? undefined,
           billDate: new Date(),
           subtotal: 0,
           taxAmount: 0,
@@ -342,6 +348,8 @@ export async function dispenseIndent(
           generatedBy: userId,
         },
       });
+    } else if (!bill.admissionId && admId) {
+      bill = await tx.bill.update({ where: { id: bill.id }, data: { admissionId: admId } });
     }
 
     let addedGross = 0;
