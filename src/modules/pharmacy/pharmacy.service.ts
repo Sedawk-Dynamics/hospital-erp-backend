@@ -2316,6 +2316,7 @@ export async function createDispense(tenantId: string, userId: string, data: Cre
           drugName: true,
           price: true,
           isNarcotic: true,
+          isLifeSaving: true,
         },
       },
     },
@@ -2354,6 +2355,18 @@ export async function createDispense(tenantId: string, userId: string, data: Cre
 
   if (!patient) {
     throw AppError.notFound('Patient not found');
+  }
+
+  // G7/3.3: IP credit gate on the ordinary dispense path too — an admitted cash
+  // patient over deposit is held unless the drug is life-saving or clearance was
+  // given. No-ops for OP/non-admitted patients (requiresClearance is false).
+  if (!(data as any).override && !drugBatch.drug?.isLifeSaving) {
+    const credit = await getPatientCreditStatus(tenantId, data.patientId);
+    if (credit.requiresClearance) {
+      throw AppError.badRequest(
+        `Credit Limit Exceeded — Clearance Required. Running bill ₹${credit.billed.toFixed(2)} exceeds deposit ₹${credit.deposit.toFixed(2)}. Collect a top-up deposit or dispense with clearance.`,
+      );
+    }
   }
 
   // Create dispensing record, decrement stock, recompute Rx status, and
@@ -2709,6 +2722,25 @@ export async function createPharmacySale(
   });
   if (!compliance.ok) {
     throw AppError.badRequest(compliance.blockers.join(' '));
+  }
+
+  // G7/3.3: IP credit gate for a counter sale billed to a named, admitted cash
+  // patient over deposit — held unless EVERY line is life-saving or clearance was
+  // given. Walk-in / OTC sales (no patientId) are exempt (never admitted).
+  if (data.patientId && !(data as any).override) {
+    const credit = await getPatientCreditStatus(tenantId, data.patientId);
+    if (credit.requiresClearance) {
+      const batchDrugs = await prisma.drugBatch.findMany({
+        where: { tenantId, id: { in: data.items.map((i) => i.drugBatchId) } },
+        select: { drug: { select: { isLifeSaving: true } } },
+      });
+      const allLifeSaving = batchDrugs.length > 0 && batchDrugs.every((b) => b.drug?.isLifeSaving);
+      if (!allLifeSaving) {
+        throw AppError.badRequest(
+          `Credit Limit Exceeded — Clearance Required. Running bill ₹${credit.billed.toFixed(2)} exceeds deposit ₹${credit.deposit.toFixed(2)}. Collect a top-up deposit or sell with clearance.`,
+        );
+      }
+    }
   }
 
   // G7: advance-deduction tender (IP only). Validate the patient has an active
