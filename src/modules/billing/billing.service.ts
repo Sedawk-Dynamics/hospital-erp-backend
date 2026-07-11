@@ -1956,6 +1956,165 @@ export async function assembleDischargeBill(
   };
 }
 
+// ============================================================
+// IP running ledger (nurse/doctor-addable charges + live view)
+// ============================================================
+
+/**
+ * The single running IP bill for an admission — the ledger everything posts to.
+ * Prefers an open DRAFT bill scoped to the admission (so new lines can be added),
+ * else the patient's open draft (backfilling admissionId), else opens a fresh IPW-
+ * draft. Stays draft for the whole stay; finalized at discharge.
+ */
+export async function getOrCreateRunningIpBill(tenantId: string, admissionId: string, userId: string) {
+  const admission = await prisma.admission.findFirst({ where: { id: admissionId, tenantId }, select: { id: true, patientId: true } });
+  if (!admission) throw AppError.notFound('Admission not found');
+
+  let bill = await prisma.bill.findFirst({ where: { tenantId, admissionId, status: 'draft' }, orderBy: { createdAt: 'desc' } });
+  if (!bill) {
+    const patientDraft = await prisma.bill.findFirst({ where: { tenantId, patientId: admission.patientId, status: 'draft' }, orderBy: { createdAt: 'desc' } });
+    if (patientDraft) {
+      bill = patientDraft.admissionId ? patientDraft : await prisma.bill.update({ where: { id: patientDraft.id }, data: { admissionId } });
+    }
+  }
+  if (!bill) {
+    const now = new Date();
+    const ymd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+    const prefix = `IPW-${ymd}-`;
+    const seq = await prisma.bill.count({ where: { tenantId, billNumber: { startsWith: prefix } } });
+    bill = await prisma.bill.create({
+      data: { tenantId, billNumber: `${prefix}${String(seq + 1).padStart(4, '0')}`, patientId: admission.patientId, admissionId, billDate: new Date(), status: 'draft', generatedBy: userId },
+    });
+  }
+  return bill;
+}
+
+const IP_CHARGE_CATEGORIES = new Set(['consultation', 'surgery', 'room', 'lab', 'radiology', 'pharmacy', 'procedure', 'consumable', 'other']);
+
+/**
+ * A clinician (doctor / nurse) posts a charge onto the admission's running IP
+ * ledger — a doctor visit / professional fee, a nursing procedure, a consumable,
+ * bed extras, etc. Resolves/opens the running draft bill and appends a
+ * categorised line (tagged manual_clinical so it never collides with auto-pull).
+ */
+export async function addIpCharge(
+  tenantId: string,
+  userId: string,
+  admissionId: string,
+  data: { category: string; description: string; quantity?: number; unitPrice: number; taxRate?: number; serviceTariffId?: string; notes?: string },
+) {
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  const category = IP_CHARGE_CATEGORIES.has(data.category) ? data.category : 'other';
+  const bill = await getOrCreateRunningIpBill(tenantId, admissionId, userId);
+  const qty = Math.max(1, Math.trunc(data.quantity ?? 1));
+  const unitPrice = r2(Math.max(0, data.unitPrice));
+  const taxPercent = Math.max(0, data.taxRate ?? 0);
+  const subtotal = r2(unitPrice * qty);
+  const taxAmount = r2(subtotal * (taxPercent / 100));
+  const totalAmount = r2(subtotal + taxAmount);
+
+  const item = await prisma.billItem.create({
+    data: {
+      billId: bill.id,
+      serviceTariffId: data.serviceTariffId ?? null,
+      description: data.description.trim(),
+      category: category as any,
+      quantity: qty,
+      unitPrice,
+      taxPercent,
+      taxAmount,
+      totalAmount,
+      referenceType: 'manual_clinical',
+      referenceId: `${userId}:${Date.now()}`,
+      isAutoPulled: false,
+    },
+  });
+  await recalculateBillTotals(bill.id);
+  logger.info({ tenantId, admissionId, billId: bill.id, category, totalAmount }, 'IP clinical charge added to ledger');
+  return { billId: bill.id, item };
+}
+
+/**
+ * Admission-scoped running ledger for the IP workspace: every posted BillItem
+ * across the admission's bills PLUS the still-unbilled auto-charges (room days,
+ * doctor fee, lab, imaging, OT) so the care team sees the true running total,
+ * grouped by category, with deposit and the reimbursable / patient split.
+ */
+export async function getAdmissionLedger(tenantId: string, admissionId: string) {
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  const admission = await prisma.admission.findFirst({
+    where: { id: admissionId, tenantId },
+    select: { id: true, patientId: true, depositAmount: true, billingCategory: true, admissionDate: true },
+  });
+  if (!admission) throw AppError.notFound('Admission not found');
+
+  const bills = await prisma.bill.findMany({
+    where: { tenantId, admissionId, status: { not: 'cancelled' } },
+    orderBy: { createdAt: 'asc' },
+    include: { billItems: { orderBy: { createdAt: 'asc' } } },
+  });
+
+  const posted = bills.flatMap((b) =>
+    b.billItems.map((it) => ({
+      id: it.id, billId: b.id, billNumber: b.billNumber,
+      description: it.description, category: String(it.category),
+      quantity: it.quantity, unitPrice: Number(it.unitPrice), totalAmount: Number(it.totalAmount),
+      isReimbursable: it.isReimbursable, isAutoPulled: it.isAutoPulled,
+      status: 'posted' as const, at: it.createdAt.toISOString(),
+    })),
+  );
+
+  // Pending auto-charges not yet on any bill (room days, doctor fee, lab, imaging, OT).
+  let pending: typeof posted = [];
+  try {
+    const { charges } = await getPatientCharges(tenantId, { patientId: admission.patientId });
+    pending = charges.map((c) => ({
+      id: `${c.referenceType}:${c.referenceId}`, billId: null as any, billNumber: null as any,
+      description: c.description, category: String(c.category),
+      quantity: c.quantity, unitPrice: c.unitPrice, totalAmount: c.totalAmount,
+      isReimbursable: null as any, isAutoPulled: true,
+      status: 'pending' as any, at: c.occurredAt,
+    }));
+  } catch { /* patient missing → no pending */ }
+
+  const lines = [...posted, ...pending].sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+
+  const byCat = new Map<string, { posted: number; pending: number }>();
+  for (const l of lines) {
+    const cur = byCat.get(l.category) ?? { posted: 0, pending: 0 };
+    if (l.status === 'posted') cur.posted = r2(cur.posted + l.totalAmount); else cur.pending = r2(cur.pending + l.totalAmount);
+    byCat.set(l.category, cur);
+  }
+  const categoryTotals = [...byCat.entries()].map(([category, v]) => ({ category, posted: v.posted, pending: v.pending, total: r2(v.posted + v.pending) }));
+
+  const totalPosted = r2(posted.reduce((s, l) => s + l.totalAmount, 0));
+  const totalPending = r2(pending.reduce((s, l) => s + l.totalAmount, 0));
+  const paid = r2(bills.reduce((s, b) => s + Number(b.amountPaid), 0));
+  const deposit = Number(admission.depositAmount ?? 0);
+  const grandTotal = r2(totalPosted + totalPending);
+  const reimbursable = r2(posted.filter((l) => l.isReimbursable === true).reduce((s, l) => s + l.totalAmount, 0));
+  const nonReimbursable = r2(posted.filter((l) => l.isReimbursable === false).reduce((s, l) => s + l.totalAmount, 0));
+
+  return {
+    admissionId,
+    patientId: admission.patientId,
+    billingCategory: (admission.billingCategory ?? 'cash').toLowerCase(),
+    lines,
+    categoryTotals,
+    bills: bills.map((b) => ({ id: b.id, billNumber: b.billNumber, status: b.status, totalAmount: Number(b.totalAmount), amountPaid: Number(b.amountPaid), balanceDue: Number(b.balanceDue) })),
+    totals: {
+      posted: totalPosted,
+      pending: totalPending,
+      grandTotal,
+      paid,
+      deposit,
+      balanceAfterDeposit: r2(Math.max(0, grandTotal - paid - deposit)),
+      reimbursable,
+      nonReimbursable,
+    },
+  };
+}
+
 // --- Bill-level discount (single value, editable) ---
 
 export async function setBillDiscount(

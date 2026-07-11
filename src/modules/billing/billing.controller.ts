@@ -537,6 +537,27 @@ export async function assembleDischargeBill(req: AuthenticatedRequest, res: Resp
   }
 }
 
+// IP running ledger — a clinician posts a charge; anyone on the care team reads it.
+export async function addIpCharge(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const data = await billingService.addIpCharge(tenantId, userId, req.params.admissionId as string, req.body);
+    sendResponse({ res, statusCode: 201, message: 'Charge added to the IP ledger', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getAdmissionLedger(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await billingService.getAdmissionLedger(req.user!.tenantId, req.params.admissionId as string);
+    sendResponse({ res, message: 'IP admission ledger', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function applyDiscount(
   req: AuthenticatedRequest,
   res: Response,

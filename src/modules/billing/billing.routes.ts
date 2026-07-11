@@ -8,6 +8,8 @@ import {
   getTariffsQuerySchema,
   createBillSchema,
   addBillItemSchema,
+  addIpChargeSchema,
+  admissionLedgerParamSchema,
   removeBillItemSchema,
   createPaymentSchema,
   createRefundSchema,
@@ -329,6 +331,22 @@ billingRoutes.post(
   authenticate,
   requirePermission('billing', 'create'),
   controller.assembleDischargeBill,
+);
+
+// IP running ledger — read the live itemized ledger; a clinician (doctor/nurse)
+// or billing staff posts a charge onto it. Authenticated care-team access (the
+// ledger is clinical + financial data the whole IP team needs to see/record).
+billingRoutes.get(
+  '/admissions/:admissionId/ledger',
+  authenticate,
+  validate(admissionLedgerParamSchema),
+  controller.getAdmissionLedger,
+);
+billingRoutes.post(
+  '/admissions/:admissionId/charges',
+  authenticate,
+  validate(addIpChargeSchema),
+  controller.addIpCharge,
 );
 
 billingRoutes.patch(

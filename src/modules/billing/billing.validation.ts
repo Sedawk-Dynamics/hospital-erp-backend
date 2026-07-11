@@ -385,6 +385,7 @@ export const pullChargesSchema = z.object({
               'radiology',
               'pharmacy',
               'procedure',
+              'consumable',
               'other',
             ])
             .optional(),
@@ -395,6 +396,24 @@ export const pullChargesSchema = z.object({
   params: z.object({
     id: z.string().uuid('Invalid bill ID'),
   }),
+});
+
+// IP running ledger — a clinician posts a categorised charge onto the admission's bill.
+export const addIpChargeSchema = z.object({
+  params: z.object({ admissionId: z.string().uuid('Invalid admission ID') }),
+  body: z.object({
+    category: z.enum(['consultation', 'surgery', 'room', 'lab', 'radiology', 'pharmacy', 'procedure', 'consumable', 'other']),
+    description: z.string().min(1).max(500),
+    quantity: z.number().int().positive().default(1),
+    unitPrice: z.number().positive(),
+    taxRate: z.number().min(0).max(100).default(0),
+    serviceTariffId: z.string().uuid().optional(),
+    notes: z.string().max(500).optional(),
+  }),
+});
+
+export const admissionLedgerParamSchema = z.object({
+  params: z.object({ admissionId: z.string().uuid('Invalid admission ID') }),
 });
 
 export const setBillDiscountSchema = z.object({
