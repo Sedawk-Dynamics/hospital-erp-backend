@@ -759,7 +759,8 @@ export async function dischargePatient(
   let dischargeBilling: Awaited<ReturnType<typeof import('../billing/billing.service')['assembleDischargeBill']>> | null = null;
   try {
     const billing = await import('../billing/billing.service');
-    dischargeBilling = await billing.assembleDischargeBill(tenantId, id, userId);
+    // Signature is (tenantId, userId, admissionId, opts) — pass in that order.
+    dischargeBilling = await billing.assembleDischargeBill(tenantId, userId, id);
   } catch (err) {
     logger.error({ err, admissionId: id }, 'discharge bill assembly failed');
   }
