@@ -1991,6 +1991,43 @@ export async function getOrCreateRunningIpBill(tenantId: string, admissionId: st
 
 const IP_CHARGE_CATEGORIES = new Set(['consultation', 'surgery', 'room', 'lab', 'radiology', 'pharmacy', 'procedure', 'consumable', 'other']);
 
+// Billing / hospital-admin roles that get full access to any IP ledger.
+const IP_LEDGER_FULL_ROLES = new Set(['super_admin', 'admin', 'billing_admin', 'front_desk', 'cashier']);
+
+/**
+ * Access to an admission's IP ledger is relationship-scoped:
+ *  - full: billing / hospital-admin roles (super_admin, admin, billing_admin, …);
+ *  - read + post charge: the admission's OWN doctor and the actively-assigned nurse;
+ *  - read only: the patient (their own ledger);
+ *  - everyone else: denied.
+ */
+async function assertIpLedgerAccess(
+  tenantId: string,
+  admissionId: string,
+  actor: { userId: string; roles: string[] },
+  opts: { write: boolean },
+) {
+  if ((actor.roles ?? []).some((r) => IP_LEDGER_FULL_ROLES.has(r))) return;
+
+  const admission = await prisma.admission.findFirst({ where: { id: admissionId, tenantId }, select: { doctorId: true, patientId: true } });
+  if (!admission) throw AppError.notFound('Admission not found');
+
+  // The admission's own doctor (Admission.doctorId is a DoctorProfile.id).
+  if (admission.doctorId) {
+    const dp = await prisma.doctorProfile.findFirst({ where: { userId: actor.userId, tenantId }, select: { id: true } });
+    if (dp && dp.id === admission.doctorId) return;
+  }
+  // The actively-assigned nurse for this admission.
+  const nurse = await prisma.nurseAssignment.findFirst({ where: { tenantId, admissionId, status: 'active', nurseId: actor.userId }, select: { id: true } });
+  if (nurse) return;
+  // The patient — read only (their own ledger).
+  if (!opts.write) {
+    const patient = await prisma.patient.findFirst({ where: { id: admission.patientId, tenantId }, select: { userId: true } });
+    if (patient?.userId && patient.userId === actor.userId) return;
+  }
+  throw AppError.forbidden('You do not have access to this IP patient\'s ledger.');
+}
+
 /**
  * A clinician (doctor / nurse) posts a charge onto the admission's running IP
  * ledger — a doctor visit / professional fee, a nursing procedure, a consumable,
@@ -2002,7 +2039,9 @@ export async function addIpCharge(
   userId: string,
   admissionId: string,
   data: { category: string; description: string; quantity?: number; unitPrice: number; taxRate?: number; serviceTariffId?: string; notes?: string },
+  roles: string[] = [],
 ) {
+  await assertIpLedgerAccess(tenantId, admissionId, { userId, roles }, { write: true });
   const r2 = (n: number) => Math.round(n * 100) / 100;
   const category = IP_CHARGE_CATEGORIES.has(data.category) ? data.category : 'other';
   const bill = await getOrCreateRunningIpBill(tenantId, admissionId, userId);
@@ -2040,7 +2079,8 @@ export async function addIpCharge(
  * doctor fee, lab, imaging, OT) so the care team sees the true running total,
  * grouped by category, with deposit and the reimbursable / patient split.
  */
-export async function getAdmissionLedger(tenantId: string, admissionId: string) {
+export async function getAdmissionLedger(tenantId: string, admissionId: string, actor: { userId: string; roles: string[] }) {
+  await assertIpLedgerAccess(tenantId, admissionId, actor, { write: false });
   const r2 = (n: number) => Math.round(n * 100) / 100;
   const admission = await prisma.admission.findFirst({
     where: { id: admissionId, tenantId },

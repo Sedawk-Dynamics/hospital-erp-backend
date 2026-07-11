@@ -542,7 +542,8 @@ export async function addIpCharge(req: AuthenticatedRequest, res: Response, next
   try {
     const tenantId = req.user!.tenantId;
     const userId = req.user!.userId;
-    const data = await billingService.addIpCharge(tenantId, userId, req.params.admissionId as string, req.body);
+    const roles = req.user!.roles ?? [];
+    const data = await billingService.addIpCharge(tenantId, userId, req.params.admissionId as string, req.body, roles);
     sendResponse({ res, statusCode: 201, message: 'Charge added to the IP ledger', data });
   } catch (err) {
     next(err);
@@ -551,7 +552,10 @@ export async function addIpCharge(req: AuthenticatedRequest, res: Response, next
 
 export async function getAdmissionLedger(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
-    const data = await billingService.getAdmissionLedger(req.user!.tenantId, req.params.admissionId as string);
+    const data = await billingService.getAdmissionLedger(req.user!.tenantId, req.params.admissionId as string, {
+      userId: req.user!.userId,
+      roles: req.user!.roles ?? [],
+    });
     sendResponse({ res, message: 'IP admission ledger', data });
   } catch (err) {
     next(err);
