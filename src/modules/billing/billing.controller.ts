@@ -562,6 +562,33 @@ export async function getAdmissionLedger(req: AuthenticatedRequest, res: Respons
   }
 }
 
+export async function recordDoctorVisit(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await billingService.recordDoctorVisit(
+      req.user!.tenantId,
+      req.user!.userId,
+      req.params.admissionId as string,
+      req.body,
+      req.user!.roles ?? [],
+    );
+    sendResponse({ res, statusCode: 201, message: 'Doctor visit recorded', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getAdmissionActivity(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await billingService.getAdmissionActivity(req.user!.tenantId, req.params.admissionId as string, {
+      userId: req.user!.userId,
+      roles: req.user!.roles ?? [],
+    });
+    sendResponse({ res, message: 'IP admission activity log', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function applyDiscount(
   req: AuthenticatedRequest,
   res: Response,

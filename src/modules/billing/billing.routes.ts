@@ -10,6 +10,7 @@ import {
   addBillItemSchema,
   addIpChargeSchema,
   admissionLedgerParamSchema,
+  recordDoctorVisitSchema,
   removeBillItemSchema,
   createPaymentSchema,
   createRefundSchema,
@@ -347,6 +348,20 @@ billingRoutes.post(
   authenticate,
   validate(addIpChargeSchema),
   controller.addIpCharge,
+);
+// A doctor records a visit / review round (logs it + posts the visit fee).
+billingRoutes.post(
+  '/admissions/:admissionId/doctor-visit',
+  authenticate,
+  validate(recordDoctorVisitSchema),
+  controller.recordDoctorVisit,
+);
+// The full admission timeline (admit → discharge) — same care-team access as the ledger.
+billingRoutes.get(
+  '/admissions/:admissionId/activity',
+  authenticate,
+  validate(admissionLedgerParamSchema),
+  controller.getAdmissionActivity,
 );
 
 billingRoutes.patch(

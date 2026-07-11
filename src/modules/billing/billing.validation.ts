@@ -399,10 +399,13 @@ export const pullChargesSchema = z.object({
 });
 
 // IP running ledger — a clinician posts a categorised charge onto the admission's bill.
+// Only MANUAL categories are accepted: lab / radiology / pharmacy / surgery are
+// auto-pulled onto the ledger when the doctor orders them, so they are not
+// offered here (would double-count).
 export const addIpChargeSchema = z.object({
   params: z.object({ admissionId: z.string().uuid('Invalid admission ID') }),
   body: z.object({
-    category: z.enum(['consultation', 'surgery', 'room', 'lab', 'radiology', 'pharmacy', 'procedure', 'consumable', 'other']),
+    category: z.enum(['consultation', 'procedure', 'consumable', 'room', 'other']),
     description: z.string().min(1).max(500),
     quantity: z.number().int().positive().default(1),
     unitPrice: z.number().positive(),
@@ -414,6 +417,15 @@ export const addIpChargeSchema = z.object({
 
 export const admissionLedgerParamSchema = z.object({
   params: z.object({ admissionId: z.string().uuid('Invalid admission ID') }),
+});
+
+// A doctor records a visit / review round — logs it and posts the (optional) visit fee.
+export const recordDoctorVisitSchema = z.object({
+  params: z.object({ admissionId: z.string().uuid('Invalid admission ID') }),
+  body: z.object({
+    review: z.string().max(1000).optional(),
+    fee: z.number().min(0).max(1_000_000).default(0),
+  }),
 });
 
 export const setBillDiscountSchema = z.object({

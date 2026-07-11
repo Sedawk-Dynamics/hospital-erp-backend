@@ -2155,6 +2155,177 @@ export async function getAdmissionLedger(tenantId: string, admissionId: string, 
   };
 }
 
+/**
+ * A doctor records a visit / review round on the admission. This is BOTH a
+ * ledger event (a consultation charge — the visit fee, which may be 0 for a
+ * no-charge review) AND a timeline entry: the review/situation note is kept in
+ * the line description and the item is tagged `doctor_visit` so the activity log
+ * renders it as a visit rather than a generic charge.
+ */
+export async function recordDoctorVisit(
+  tenantId: string,
+  userId: string,
+  admissionId: string,
+  data: { review?: string; fee?: number },
+  roles: string[] = [],
+) {
+  await assertIpLedgerAccess(tenantId, admissionId, { userId, roles }, { write: true });
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  const bill = await getOrCreateRunningIpBill(tenantId, admissionId, userId);
+  const review = (data.review ?? '').trim();
+  const fee = r2(Math.max(0, data.fee ?? 0));
+
+  const item = await prisma.billItem.create({
+    data: {
+      billId: bill.id,
+      description: review ? `Doctor visit — ${review}` : 'Doctor visit',
+      category: 'consultation' as any,
+      quantity: 1,
+      unitPrice: fee,
+      taxPercent: 0,
+      taxAmount: 0,
+      totalAmount: fee,
+      referenceType: 'doctor_visit',
+      referenceId: `${userId}:${Date.now()}`,
+      isAutoPulled: false,
+    },
+  });
+  await recalculateBillTotals(bill.id);
+  logger.info({ tenantId, admissionId, billId: bill.id, fee }, 'IP doctor visit recorded');
+  return { billId: bill.id, item };
+}
+
+/**
+ * A detailed chronological log of everything that happens on an admission —
+ * from admit to discharge — for the same care team that can see the ledger.
+ * Aggregates admission/discharge, nurse assignments, doctor visits, ledger
+ * charges, lab orders, imaging requests and prescriptions into one timeline.
+ */
+export async function getAdmissionActivity(tenantId: string, admissionId: string, actor: { userId: string; roles: string[] }) {
+  await assertIpLedgerAccess(tenantId, admissionId, actor, { write: false });
+
+  const admission = await prisma.admission.findFirst({
+    where: { id: admissionId, tenantId },
+    select: {
+      id: true, patientId: true, admissionDate: true, dischargeDate: true, status: true,
+      doctor: { select: { user: { select: { firstName: true, lastName: true } } } },
+      ward: { select: { name: true } },
+      bed: { select: { bedNumber: true } },
+    },
+  });
+  if (!admission) throw AppError.notFound('Admission not found');
+
+  const start = admission.admissionDate;
+  const end = admission.dischargeDate ?? new Date();
+  const patientWindow = { patientId: admission.patientId, tenantId, createdAt: { gte: start, lte: end } };
+
+  type Event = { at: string; type: string; title: string; detail?: string; actor?: string; amount?: number; status?: string };
+  const events: Event[] = [];
+
+  // --- Admission ---
+  const doc = admission.doctor?.user;
+  const where = [admission.ward?.name && `Ward ${admission.ward.name}`, admission.bed?.bedNumber && `Bed ${admission.bed.bedNumber}`].filter(Boolean).join(', ');
+  events.push({
+    at: admission.admissionDate.toISOString(), type: 'admission', title: 'Patient admitted',
+    detail: where || undefined,
+    actor: doc ? `Dr. ${doc.firstName} ${doc.lastName}`.trim() : undefined,
+  });
+
+  // --- Nurse assignments ---
+  const assignments = await prisma.nurseAssignment.findMany({
+    where: { tenantId, admissionId },
+    select: { assignedAt: true, shiftType: true, status: true, nurse: { select: { firstName: true, lastName: true } } },
+    orderBy: { assignedAt: 'asc' },
+  });
+  for (const a of assignments) {
+    events.push({
+      at: a.assignedAt.toISOString(), type: 'nurse_assignment',
+      title: `Nurse assigned${a.status !== 'active' ? ' (ended)' : ''}`,
+      detail: `${a.shiftType} shift`,
+      actor: `${a.nurse.firstName} ${a.nurse.lastName}`.trim(),
+    });
+  }
+
+  // --- Ledger charges + doctor visits (from the admission's bills) ---
+  const bills = await prisma.bill.findMany({
+    where: { tenantId, admissionId, status: { not: 'cancelled' } },
+    select: { billItems: { select: { description: true, category: true, totalAmount: true, referenceType: true, referenceId: true, createdAt: true } } },
+  });
+  const items = bills.flatMap((b) => b.billItems);
+  const visitorIds = [...new Set(items.filter((it) => it.referenceType === 'doctor_visit').map((it) => it.referenceId?.split(':')[0]).filter(Boolean) as string[])];
+  const visitors = visitorIds.length
+    ? await prisma.user.findMany({ where: { id: { in: visitorIds } }, select: { id: true, firstName: true, lastName: true } })
+    : [];
+  const visitorName = new Map(visitors.map((u) => [u.id, `Dr. ${u.firstName} ${u.lastName}`.trim()]));
+  for (const it of items) {
+    if (it.referenceType === 'doctor_visit') {
+      events.push({
+        at: it.createdAt.toISOString(), type: 'doctor_visit', title: 'Doctor visit',
+        detail: it.description.replace(/^Doctor visit\s*—\s*/, '') || undefined,
+        actor: visitorName.get(it.referenceId?.split(':')[0] ?? '') || undefined,
+        amount: Number(it.totalAmount) || undefined,
+      });
+    } else if (it.referenceType === 'manual_clinical') {
+      events.push({
+        at: it.createdAt.toISOString(), type: 'charge', title: 'Charge added',
+        detail: `${it.description} (${String(it.category)})`,
+        amount: Number(it.totalAmount),
+      });
+    }
+  }
+
+  // --- Lab orders ---
+  const labs = await prisma.labOrder.findMany({
+    where: patientWindow,
+    select: { id: true, status: true, createdAt: true, labOrderItems: { select: { test: { select: { testName: true } } } } },
+    orderBy: { createdAt: 'asc' },
+  });
+  for (const l of labs) {
+    const names = l.labOrderItems.map((i) => i.test?.testName).filter(Boolean) as string[];
+    events.push({
+      at: l.createdAt.toISOString(), type: 'lab_order', title: 'Lab ordered',
+      detail: names.length ? names.slice(0, 4).join(', ') + (names.length > 4 ? ` +${names.length - 4} more` : '') : undefined,
+      status: String(l.status),
+    });
+  }
+
+  // --- Imaging requests ---
+  const imaging = await prisma.imagingRequest.findMany({
+    where: patientWindow,
+    select: { imagingType: true, bodyPart: true, status: true, createdAt: true },
+    orderBy: { createdAt: 'asc' },
+  });
+  for (const im of imaging) {
+    events.push({
+      at: im.createdAt.toISOString(), type: 'imaging_request', title: 'Imaging requested',
+      detail: [String(im.imagingType), im.bodyPart].filter(Boolean).join(' — '),
+      status: String(im.status),
+    });
+  }
+
+  // --- Prescriptions ---
+  const scripts = await prisma.prescription.findMany({
+    where: patientWindow,
+    select: { prescriptionType: true, status: true, createdAt: true, _count: { select: { prescriptionItems: true } } },
+    orderBy: { createdAt: 'asc' },
+  });
+  for (const s of scripts) {
+    events.push({
+      at: s.createdAt.toISOString(), type: 'prescription', title: 'Prescription written',
+      detail: `${s._count.prescriptionItems} medicine${s._count.prescriptionItems === 1 ? '' : 's'} (${String(s.prescriptionType)})`,
+      status: String(s.status),
+    });
+  }
+
+  // --- Discharge ---
+  if (admission.dischargeDate) {
+    events.push({ at: admission.dischargeDate.toISOString(), type: 'discharge', title: 'Patient discharged' });
+  }
+
+  events.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+  return { admissionId, status: admission.status, discharged: !!admission.dischargeDate, events };
+}
+
 // --- Bill-level discount (single value, editable) ---
 
 export async function setBillDiscount(
