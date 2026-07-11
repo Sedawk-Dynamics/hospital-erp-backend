@@ -125,14 +125,20 @@ export async function raiseIndent(
 }
 
 /**
- * Auto-create a DRAFT indent from a freshly-signed IP prescription (design G1 —
- * the doctor's order pre-fills the pharmacy request instead of the nurse
- * re-typing it). Idempotent per prescription; maps only the Rx lines that resolve
- * to a formulary drug (free-text / PRN lines are skipped); returns null silently
- * when nothing maps. The draft sits in the ward nurse's workspace as a pending
- * request until they confirm it (→ 'raised'). Fire-and-forget safe.
+ * Build an indent from an IP prescription (shared by the daily-draft path — G1 —
+ * and the TTO/discharge path — G5/2.2). Maps only Rx lines that resolve to a
+ * formulary drug (free-text / PRN skipped). Idempotent per prescription; returns
+ * null when nothing maps. A TTO indent is dispensed in FULL PACKS (requestedQty is
+ * converted from the Rx's loose dose-count via the drug's pack size); a daily
+ * indent is loose. `status` is 'draft' (nurse reviews) or 'raised' (straight to
+ * pharmacy) — a raised indent snapshots the credit picture.
  */
-export async function createDraftIndentFromPrescription(tenantId: string, userId: string, prescriptionId: string) {
+async function buildIndentFromRx(
+  tenantId: string,
+  userId: string,
+  prescriptionId: string,
+  opts: { isTto: boolean; status: 'draft' | 'raised' },
+) {
   const rx = await prisma.prescription.findFirst({
     where: { id: prescriptionId, tenantId },
     include: { prescriptionItems: true },
@@ -155,20 +161,33 @@ export async function createDraftIndentFromPrescription(tenantId: string, userId
   // Only lines that resolve to a formulary drug can become indent items.
   const drugIds = [...new Set(rx.prescriptionItems.filter((i) => i.drugId).map((i) => i.drugId as string))];
   if (!drugIds.length) return null;
-  const inFormulary = await prisma.drugFormulary.findMany({ where: { tenantId, id: { in: drugIds } }, select: { id: true } });
-  const okIds = new Set(inFormulary.map((d) => d.id));
+  const inFormulary = await prisma.drugFormulary.findMany({ where: { tenantId, id: { in: drugIds } }, select: { id: true, packSize: true } });
+  const fMap = new Map(inFormulary.map((d) => [d.id, d]));
 
   const lines = rx.prescriptionItems
-    .filter((i) => i.drugId && okIds.has(i.drugId) && !i.isPrn)
-    .map((i) => ({
-      drugFormularyId: i.drugId as string,
-      // A daily IP order is sent as loose (unit) doses; requestedQty comes from the
-      // Rx's computed dispense quantity. The nurse can trim this before sending.
-      requestedQty: Math.max(1, Math.trunc(Number(i.quantity ?? 1))),
-      saleUnit: 'loose',
-      notes: [i.dosage, i.frequency, i.duration].filter(Boolean).join(' · ') || null,
-    }));
+    .filter((i) => i.drugId && fMap.has(i.drugId) && !i.isPrn)
+    .map((i) => {
+      const looseQty = Math.max(1, Math.trunc(Number(i.quantity ?? 1)));
+      const notes = [i.dosage, i.frequency, i.duration].filter(Boolean).join(' · ') || null;
+      if (opts.isTto) {
+        // TTO discharge meds go out in full packs: convert the loose dose-count
+        // to whole packs using the drug's pack size (min 1 pack).
+        const ps = fMap.get(i.drugId!)!.packSize;
+        const packSize = ps && ps > 0 ? ps : 1;
+        return { drugFormularyId: i.drugId as string, requestedQty: Math.max(1, Math.ceil(looseQty / packSize)), saleUnit: 'pack', notes };
+      }
+      return { drugFormularyId: i.drugId as string, requestedQty: looseQty, saleUnit: 'loose', notes };
+    });
   if (!lines.length) return null;
+
+  // A raised indent snapshots the credit picture (surfaced to the pharmacist).
+  let creditStatus = 'ok';
+  if (opts.status === 'raised') {
+    try {
+      const credit = await getPatientCreditStatus(tenantId, rx.patientId);
+      if (credit.requiresClearance) creditStatus = 'clearance_required';
+    } catch { /* no admission → no gate */ }
+  }
 
   const indent = await prisma.$transaction(async (tx) =>
     tx.medicationIndent.create({
@@ -179,16 +198,33 @@ export async function createDraftIndentFromPrescription(tenantId: string, userId
         admissionId: admission?.id ?? null,
         wardId: admission?.wardId ?? null,
         prescriptionId,
-        status: 'draft',
-        creditStatus: 'ok',
+        status: opts.status,
+        creditStatus,
+        isTto: opts.isTto,
         raisedById: userId,
         items: { create: lines.map((l) => ({ drugFormularyId: l.drugFormularyId, requestedQty: l.requestedQty, saleUnit: l.saleUnit, notes: l.notes })) },
       },
       include: { items: true },
     }),
   );
-  logger.info({ tenantId, indentId: indent.id, prescriptionId }, 'Draft indent auto-created from IP prescription');
+  logger.info({ tenantId, indentId: indent.id, prescriptionId, isTto: opts.isTto, status: opts.status }, 'Indent built from IP prescription');
   return hydrate(tenantId, indent);
+}
+
+/** G1 — auto-pre-fill a DRAFT daily indent from a freshly-signed IP prescription. */
+export async function createDraftIndentFromPrescription(tenantId: string, userId: string, prescriptionId: string) {
+  return buildIndentFromRx(tenantId, userId, prescriptionId, { isTto: false, status: 'draft' });
+}
+
+/**
+ * G5/2.2 — TTO (To Take Out) discharge medication. Creates a RAISED, full-pack
+ * TTO indent from the discharge prescription so the IP pharmacy packs it and the
+ * charge lands on the final hospital bill.
+ */
+export async function createTtoIndentFromPrescription(tenantId: string, userId: string, prescriptionId: string) {
+  const indent = await buildIndentFromRx(tenantId, userId, prescriptionId, { isTto: true, status: 'raised' });
+  if (!indent) throw AppError.badRequest('No formulary-linked medicines on this prescription to send as a TTO (or a live indent already exists for it).');
+  return indent;
 }
 
 /**

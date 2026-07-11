@@ -66,6 +66,10 @@ export const indentIdParamSchema = z.object({
   params: z.object({ id: z.string().uuid() }),
 });
 
+export const ttoFromPrescriptionSchema = z.object({
+  params: z.object({ prescriptionId: z.string().uuid() }),
+});
+
 export const listIndentsQuerySchema = z.object({
   query: z.object({
     status: z.enum(['draft', 'raised', 'approved', 'dispensed', 'delivered', 'acknowledged', 'cancelled']).optional(),

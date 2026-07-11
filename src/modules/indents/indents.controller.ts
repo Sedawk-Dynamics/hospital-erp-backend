@@ -25,6 +25,14 @@ export async function confirmDraftIndent(req: AuthenticatedRequest, res: Respons
   } catch (err) { next(err); }
 }
 
+export async function createTtoIndent(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const { tenantId, userId } = ctx(req);
+    const data = await service.createTtoIndentFromPrescription(tenantId, userId, req.params.prescriptionId as string);
+    sendResponse({ res, statusCode: 201, message: 'TTO (discharge) indent raised to pharmacy', data });
+  } catch (err) { next(err); }
+}
+
 export async function approveIndent(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const { tenantId, userId, roles } = ctx(req);
