@@ -838,6 +838,7 @@ enum BillItemCategory {
   radiology    @map("radiology")
   pharmacy     @map("pharmacy")
   procedure    @map("procedure")
+  consumable   @map("consumable")
   other        @map("other")
 }
 
@@ -4957,6 +4958,11 @@ model BillItem {
   referenceType   String?          @map("reference_type") @db.VarChar(50)
   referenceId     String?          @map("reference_id")
   isAutoPulled    Boolean          @default(false) @map("is_auto_pulled")
+  // G7 (3.2): TPA split at the line level — the billing desk sees, per line,
+  // what the insurer reimburses vs what the patient pays out-of-pocket (e.g. the
+  // drug is covered but the disposable syringe is not). null = not categorised.
+  isReimbursable  Boolean?         @map("is_reimbursable")
+  tpaCategory     String?          @map("tpa_category") @db.VarChar(40)
   createdAt       DateTime         @default(now()) @map("created_at")
 
   bill          Bill           @relation(fields: [billId], references: [id])

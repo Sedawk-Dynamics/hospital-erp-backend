@@ -44,10 +44,10 @@ async function nextIssueNumber(tx: any, tenantId: string): Promise<string> {
 /** Resolve formulary names/pricing for a set of drug ids (for list hydration). */
 async function drugMap(tenantId: string, ids: string[]) {
   const uniq = [...new Set(ids.filter(Boolean))];
-  if (!uniq.length) return new Map<string, { drugName: string; genericName: string | null; looseUnitLabel: string | null; price: number | null; taxPercent: number | null }>();
+  if (!uniq.length) return new Map<string, { drugName: string; genericName: string | null; looseUnitLabel: string | null; price: number | null; taxPercent: number | null; isReimbursable: boolean | null }>();
   const rows = await prisma.drugFormulary.findMany({
     where: { tenantId, id: { in: uniq } },
-    select: { id: true, drugName: true, genericName: true, looseUnitLabel: true, price: true, taxPercent: true },
+    select: { id: true, drugName: true, genericName: true, looseUnitLabel: true, price: true, taxPercent: true, isReimbursable: true },
   });
   return new Map(rows.map((r) => [r.id, {
     drugName: r.drugName,
@@ -55,6 +55,7 @@ async function drugMap(tenantId: string, ids: string[]) {
     looseUnitLabel: r.looseUnitLabel,
     price: r.price != null ? Number(r.price) : null,
     taxPercent: r.taxPercent != null ? Number(r.taxPercent) : null,
+    isReimbursable: r.isReimbursable ?? null,
   }]));
 }
 
@@ -417,7 +418,7 @@ export async function reconcileKit(
   const result = await prisma.$transaction(async (tx) => {
     let consumedTotal = 0;
     let consumedTax = 0;
-    const consumedLines: Array<{ drugName: string; consumedQty: number; unitPrice: number; taxPct: number; gross: number }> = [];
+    const consumedLines: Array<{ drugName: string; consumedQty: number; unitPrice: number; taxPct: number; gross: number; isReimbursable: boolean | null }> = [];
 
     for (const it of issue.items) {
       const ret = returnMap.get(it.id) ?? 0;
@@ -438,7 +439,7 @@ export async function reconcileKit(
       if (consumed > 0) {
         consumedTotal = round2(consumedTotal + gross);
         consumedTax = round2(consumedTax + taxAmt);
-        consumedLines.push({ drugName: drugNames.get(it.drugFormularyId)?.drugName ?? 'Item', consumedQty: consumed, unitPrice, taxPct, gross });
+        consumedLines.push({ drugName: drugNames.get(it.drugFormularyId)?.drugName ?? 'Item', consumedQty: consumed, unitPrice, taxPct, gross, isReimbursable: drugNames.get(it.drugFormularyId)?.isReimbursable ?? null });
       }
     }
 
@@ -484,7 +485,9 @@ export async function reconcileKit(
           data: {
             billId: bill.id,
             description: `${line.drugName} — OT kit consumed (${line.consumedQty} unit(s), Kit ${issue.issueNumber})`,
-            category: 'pharmacy',
+            // OT kit items are surgical consumables (sutures, gloves, syringes) —
+            // categorised so the TPA desk can separate them from reimbursable drugs.
+            category: 'consumable',
             quantity: line.consumedQty,
             unitPrice: line.unitPrice,
             taxPercent: line.taxPct,
@@ -493,6 +496,7 @@ export async function reconcileKit(
             referenceType: 'ot_kit_issue',
             referenceId: issue.id,
             isAutoPulled: true,
+            isReimbursable: line.isReimbursable ?? null,
           },
         });
       }

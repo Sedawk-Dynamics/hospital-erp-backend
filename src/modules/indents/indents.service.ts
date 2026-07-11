@@ -396,7 +396,7 @@ export async function dispenseIndent(
       if (qty <= 0) continue;
       const drug = await tx.drugFormulary.findFirst({
         where: { id: it.drugFormularyId, tenantId },
-        select: { id: true, drugName: true, packSize: true, price: true, taxPercent: true, looseUnitLabel: true, isNarcotic: true },
+        select: { id: true, drugName: true, packSize: true, price: true, taxPercent: true, looseUnitLabel: true, isNarcotic: true, isReimbursable: true },
       });
       if (!drug) throw AppError.badRequest('A drug on this indent is no longer in the formulary');
       // NDPS narcotics never flow through a ward indent — they are vault-controlled
@@ -468,6 +468,9 @@ export async function dispenseIndent(
           referenceType: 'dispensing_record',
           referenceId: rec.id,
           isAutoPulled: true,
+          // G7 (3.2): TPA line split — the drug's reimbursable flag flows onto the
+          // bill line so the billing desk can split covered vs out-of-pocket.
+          isReimbursable: drug.isReimbursable ?? null,
         },
       });
 

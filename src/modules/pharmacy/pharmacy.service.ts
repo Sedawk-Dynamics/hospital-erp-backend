@@ -2228,7 +2228,7 @@ export async function autoLinkDispenseToBill(
         prescription: { select: { visitId: true } },
         drugBatch: {
           select: {
-            drug: { select: { drugName: true, price: true } },
+            drug: { select: { drugName: true, price: true, isReimbursable: true } },
             sellingPrice: true,
             purchasePrice: true,
             batchNumber: true,
@@ -2287,6 +2287,7 @@ export async function autoLinkDispenseToBill(
         referenceType: 'dispensing_record',
         referenceId: dispensingId,
         isAutoPulled: true,
+        isReimbursable: (record.drugBatch as any)?.drug?.isReimbursable ?? null,
       },
     });
 
@@ -4114,7 +4115,7 @@ export async function dispenseFromWard(
 
     const batch = await tx.drugBatch.findUnique({
       where: { id: data.drugBatchId },
-      include: { drug: { select: { drugName: true, price: true, taxPercent: true, isLifeSaving: true, isNarcotic: true } } },
+      include: { drug: { select: { drugName: true, price: true, taxPercent: true, isLifeSaving: true, isNarcotic: true, isReimbursable: true } } },
     });
     if (!batch) throw AppError.notFound('Drug batch not found');
     // NDPS "Locked in Main Safe": narcotics are dispensed only via the NDPS vault
@@ -4191,6 +4192,7 @@ export async function dispenseFromWard(
         referenceType: 'ward_dispense',
         referenceId: ws.id,
         isAutoPulled: true,
+        isReimbursable: batch.drug?.isReimbursable ?? null,
       },
     });
 
