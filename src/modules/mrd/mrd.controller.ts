@@ -153,12 +153,15 @@ export async function publishDischargeSummary(
 ) {
   try {
     const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
     const id = req.params.id as string;
-    const result = await mrdService.publishDischargeSummary(tenantId, id);
+    const result = await mrdService.publishDischargeSummary(tenantId, id, userId);
     sendResponse({
       res,
       statusCode: 200,
-      message: 'Discharge summary published successfully',
+      message: result.discharged
+        ? 'Discharge summary published — patient discharged'
+        : 'Discharge summary published successfully',
       data: result,
     });
   } catch (err) {

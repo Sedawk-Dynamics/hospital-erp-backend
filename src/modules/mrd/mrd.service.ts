@@ -596,7 +596,7 @@ export async function signDischargeSummary(
   return signed;
 }
 
-export async function publishDischargeSummary(tenantId: string, id: string) {
+export async function publishDischargeSummary(tenantId: string, id: string, userId: string) {
   const existing = await getDischargeSummaryById(tenantId, id);
 
   if (existing.status !== 'finalized') {
@@ -623,7 +623,31 @@ export async function publishDischargeSummary(tenantId: string, id: string) {
     );
   }
 
-  return published;
+  // Publishing the discharge summary IS the clinical discharge: the doctor has
+  // signed off, so mark the admission discharged (idempotent — skip if already
+  // discharged). This also assembles the final bill (via clinical.dischargePatient).
+  // Wrapped so an auto-discharge glitch never fails the already-committed publish.
+  let discharged = false;
+  try {
+    const clinical = await import('../clinical/clinical.service');
+    const admission = await prisma.admission.findFirst({
+      where: { id: published.admissionId, tenantId },
+      select: { status: true },
+    });
+    if (admission?.status === 'discharged') {
+      discharged = true;
+    } else if (admission) {
+      await clinical.dischargePatient(tenantId, published.admissionId, userId);
+      discharged = true;
+    }
+  } catch (err) {
+    logger.error(
+      { err, tenantId, admissionId: published.admissionId },
+      'Auto-discharge on discharge-summary publish failed (publish still succeeded)',
+    );
+  }
+
+  return Object.assign(published, { discharged });
 }
 
 /**

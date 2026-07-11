@@ -128,6 +128,9 @@ export const dischargePatientSchema = z.object({
       .refine((val) => !isNaN(Date.parse(val)), { message: 'Invalid discharge date' })
       .optional(),
     notes: z.string().max(2000).optional(),
+    // Administrative override — discharge without a published discharge summary
+    // (e.g. LAMA / transfer-out / death). Normally a published summary is required.
+    force: z.boolean().optional(),
   }).optional(),
 });
 

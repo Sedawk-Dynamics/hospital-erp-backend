@@ -712,7 +712,7 @@ export async function dischargePatient(
   tenantId: string,
   id: string,
   userId: string,
-  data?: { dischargeDate?: string; notes?: string },
+  data?: { dischargeDate?: string; notes?: string; force?: boolean },
 ) {
   const admission = await prisma.admission.findFirst({
     where: { id, tenantId },
@@ -724,6 +724,22 @@ export async function dischargePatient(
 
   if (admission.status === 'discharged') {
     throw AppError.badRequest('Patient is already discharged');
+  }
+
+  // The published discharge summary is the doctor's clinical sign-off for
+  // discharge: the patient can only be discharged once it exists. (Publishing
+  // the summary itself calls this with the summary already published.) An
+  // explicit administrative override (force) covers LAMA / transfer-out / death.
+  if (!data?.force) {
+    const publishedSummary = await prisma.dischargeSummary.findFirst({
+      where: { admissionId: id, status: 'published' },
+      select: { id: true },
+    });
+    if (!publishedSummary) {
+      throw AppError.badRequest(
+        'A published discharge summary is required before discharging this patient. Please complete and publish the discharge summary first.',
+      );
+    }
   }
 
   const dischargeDate = data?.dischargeDate ? new Date(data.dischargeDate) : new Date();
