@@ -322,6 +322,15 @@ billingRoutes.patch(
   controller.finalizeBill,
 );
 
+// G5 (2.1): assemble an admission's discharge bill (pull outstanding charges +
+// finalize; optional advance application).
+billingRoutes.post(
+  '/admissions/:admissionId/assemble-final',
+  authenticate,
+  requirePermission('billing', 'create'),
+  controller.assembleDischargeBill,
+);
+
 billingRoutes.patch(
   '/:id/cancel',
   authenticate,

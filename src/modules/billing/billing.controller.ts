@@ -522,6 +522,21 @@ export async function finalizeBill(req: AuthenticatedRequest, res: Response, nex
   }
 }
 
+// G5 (2.1): assemble an admission's discharge bill — pull outstanding charges onto
+// a finalized final-charges bill, optionally applying the patient's advance.
+export async function assembleDischargeBill(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const data = await billingService.assembleDischargeBill(tenantId, userId, req.params.admissionId as string, {
+      applyAdvance: !!req.body?.applyAdvance,
+    });
+    sendResponse({ res, message: 'Discharge bill assembled', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function applyDiscount(
   req: AuthenticatedRequest,
   res: Response,

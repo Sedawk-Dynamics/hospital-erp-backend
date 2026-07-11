@@ -749,6 +749,14 @@ export async function dischargePatient(
     return discharged;
   });
 
+  // G5 (2.1): assemble the discharge bill — pull every outstanding charge onto a
+  // finalized final-charges bill — as a best-effort step AFTER the clinical
+  // discharge commits, so a billing glitch never blocks the discharge. Advance /
+  // deposit settlement stays the biller's explicit step (applyAdvance omitted).
+  import('../billing/billing.service')
+    .then((m) => m.assembleDischargeBill(tenantId, id, userId))
+    .catch((err) => logger.error({ err, admissionId: id }, 'discharge bill assembly failed'));
+
   logger.info({ tenantId, admissionId: id }, 'Patient discharged');
   return updated;
 }

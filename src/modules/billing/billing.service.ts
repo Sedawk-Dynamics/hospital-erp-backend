@@ -1853,6 +1853,109 @@ export async function pullChargesToBill(
   return { added: created.length, billId };
 }
 
+/**
+ * G5 (2.1) — Discharge final-bill assembly. On discharge, pull every charge that
+ * is not yet on any bill (room/bed, consultation, lab, imaging, OT, pharmacy) onto
+ * a fresh admission-scoped "final charges" bill and finalize it, then optionally
+ * apply the patient's advance balance. Pharmacy/indent charges already billed on
+ * the running IP bill are NOT duplicated (getPatientCharges only surfaces unbilled
+ * references). Returns an admission-wide financial summary (deposit is surfaced,
+ * not auto-moved — its settlement stays the biller's explicit step).
+ */
+export async function assembleDischargeBill(
+  tenantId: string,
+  userId: string,
+  admissionId: string,
+  opts: { applyAdvance?: boolean } = {},
+) {
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  const admission = await prisma.admission.findFirst({
+    where: { id: admissionId, tenantId },
+    select: { id: true, patientId: true, depositAmount: true },
+  });
+  if (!admission) throw AppError.notFound('Admission not found');
+  const patientId = admission.patientId;
+
+  // 1. Discover charges not yet on any bill and pull them onto a fresh draft.
+  const { charges } = await getPatientCharges(tenantId, { patientId });
+  let finalBillId: string | null = null;
+  if (charges.length > 0) {
+    const now = new Date();
+    const ymd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+    const prefix = `FIN-${ymd}-`;
+    const seq = await prisma.bill.count({ where: { tenantId, billNumber: { startsWith: prefix } } });
+    const draft = await prisma.bill.create({
+      data: {
+        tenantId,
+        billNumber: `${prefix}${String(seq + 1).padStart(4, '0')}`,
+        patientId,
+        admissionId,
+        billDate: new Date(),
+        status: 'draft',
+        generatedBy: userId,
+      },
+    });
+    await pullChargesToBill(
+      tenantId,
+      draft.id,
+      charges.map((c) => ({
+        referenceType: c.referenceType,
+        referenceId: c.referenceId,
+        description: c.description,
+        quantity: c.quantity,
+        unitPrice: c.unitPrice,
+        taxRate: c.taxRate,
+        category: c.category,
+      })),
+    );
+    const withItems = await prisma.billItem.count({ where: { billId: draft.id } });
+    if (withItems > 0) {
+      await finalizeBill(tenantId, draft.id);
+      finalBillId = draft.id;
+    } else {
+      await prisma.bill.delete({ where: { id: draft.id } });
+    }
+  }
+
+  // 2. Optionally apply the patient's advance balance to the finalized bill.
+  let advanceApplied = 0;
+  if (opts.applyAdvance && finalBillId) {
+    const adv = await getPatientAdvanceBalance(tenantId, patientId);
+    const fb = await prisma.bill.findFirst({ where: { id: finalBillId, tenantId }, select: { balanceDue: true } });
+    const toApply = r2(Math.min(Number(adv.balance ?? 0), Number(fb?.balanceDue ?? 0)));
+    if (toApply > 0) {
+      await adjustAdvanceToBill(tenantId, userId, { patientId, billId: finalBillId, amount: toApply });
+      advanceApplied = toApply;
+    }
+  }
+
+  // 3. Admission-wide financial summary across all non-cancelled bills.
+  const bills = await prisma.bill.findMany({
+    where: { tenantId, admissionId, status: { not: 'cancelled' } },
+    select: { id: true, billNumber: true, status: true, totalAmount: true, amountPaid: true, balanceDue: true },
+  });
+  const totalBilled = r2(bills.reduce((s, b) => s + Number(b.totalAmount), 0));
+  const totalPaid = r2(bills.reduce((s, b) => s + Number(b.amountPaid), 0));
+  const totalBalanceDue = r2(bills.reduce((s, b) => s + Number(b.balanceDue), 0));
+  const deposit = Number(admission.depositAmount ?? 0);
+
+  logger.info({ tenantId, admissionId, finalBillId, totalBilled, totalBalanceDue }, 'Discharge bill assembled');
+  return {
+    admissionId,
+    patientId,
+    finalBillId,
+    bills,
+    totalBilled,
+    totalPaid,
+    totalBalanceDue,
+    depositAmount: deposit,
+    advanceApplied,
+    // Informational net after the deposit is settled by the biller.
+    netAfterDeposit: r2(Math.max(0, totalBalanceDue - deposit)),
+    refundDue: r2(Math.max(0, deposit - totalBalanceDue)),
+  };
+}
+
 // --- Bill-level discount (single value, editable) ---
 
 export async function setBillDiscount(
