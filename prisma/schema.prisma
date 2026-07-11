@@ -2427,9 +2427,13 @@ model Admission {
   tenantId              String          @map("tenant_id")
   visitId               String          @unique @map("visit_id")
   patientId             String          @map("patient_id")
-  doctorId              String          @map("doctor_id")
-  bedId                 String          @map("bed_id")
-  wardId                String          @map("ward_id")
+  // G6 (2.3): nullable so an Emergency/Casualty "pending-placement" admission can
+  // be opened for a trauma patient before a doctor is assigned or a bed is
+  // allocated. A normal admission always sets both; they are filled in later for
+  // an ER admission when the patient is placed.
+  doctorId              String?         @map("doctor_id")
+  bedId                 String?         @map("bed_id")
+  wardId                String?         @map("ward_id")
   admissionDate         DateTime        @map("admission_date")
   dischargeDate         DateTime?       @map("discharge_date")
   expectedDischargeDate DateTime?       @map("expected_discharge_date") @db.Date
@@ -2448,9 +2452,9 @@ model Admission {
   tenant               Tenant                       @relation(fields: [tenantId], references: [id])
   visit                Visit                        @relation(fields: [visitId], references: [id])
   patient              Patient                      @relation(fields: [patientId], references: [id])
-  doctor               DoctorProfile                @relation(fields: [doctorId], references: [id])
-  bed                  Bed                          @relation(fields: [bedId], references: [id])
-  ward                 Ward                         @relation(fields: [wardId], references: [id])
+  doctor               DoctorProfile?               @relation(fields: [doctorId], references: [id])
+  bed                  Bed?                         @relation(fields: [bedId], references: [id])
+  ward                 Ward?                        @relation(fields: [wardId], references: [id])
   admitter             User?                        @relation("Admitter", fields: [admittedBy], references: [id])
   discharger           User?                        @relation("Discharger", fields: [dischargedBy], references: [id])
   dischargeSummary     DischargeSummary?

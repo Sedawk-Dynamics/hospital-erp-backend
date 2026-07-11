@@ -70,6 +70,11 @@ export async function createNurseAssignment(
     );
   }
 
+  // G6 (2.3): wardId is nullable for a pending-placement (ER) admission; a nurse
+  // assignment is ward-based, so require the patient to be placed in a ward first.
+  if (!admission.wardId) {
+    throw AppError.badRequest('Cannot assign a nurse: this admission has no ward yet (place the patient in a ward first).');
+  }
   const assignment = await prisma.nurseAssignment.create({
     data: {
       tenantId,

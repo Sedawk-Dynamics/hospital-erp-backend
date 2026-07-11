@@ -646,7 +646,9 @@ export async function updateAdmission(tenantId: string, id: string, data: Update
   }
 
   if (data.bedId) {
-    const wardId = data.wardId ?? admission.wardId;
+    // wardId may be null for a pending-placement (ER) admission (G6/2.3) — only
+    // constrain the bed lookup by ward when we actually have one.
+    const wardId = data.wardId ?? admission.wardId ?? undefined;
     const bed = await prisma.bed.findFirst({
       where: { id: data.bedId, wardId, tenantId },
     });

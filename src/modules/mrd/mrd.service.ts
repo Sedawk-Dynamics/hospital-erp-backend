@@ -435,12 +435,18 @@ export async function generateDischargeSummary(
     return updated;
   }
 
+  // G6 (2.3): an admission's doctor is now nullable (ER pending-placement). A
+  // discharge summary requires the treating doctor, so guard the edge case.
+  const summaryDoctorId = built.admission.doctorId;
+  if (!summaryDoctorId) {
+    throw AppError.badRequest('Cannot generate a discharge summary: no treating doctor is assigned to this admission yet.');
+  }
   const dischargeSummary = await prisma.dischargeSummary.create({
     data: {
       admissionId,
       visitId: built.visitId,
       patientId: built.patientId,
-      doctorId: built.admission.doctorId,
+      doctorId: summaryDoctorId,
       admissionDate: built.admission.admissionDate,
       dischargeDate: built.admission.dischargeDate,
       headerSummary: built.headerSummary,

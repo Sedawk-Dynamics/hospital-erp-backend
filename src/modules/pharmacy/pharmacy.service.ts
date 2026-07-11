@@ -2569,8 +2569,36 @@ export async function createEmergencyPatient(
     select: { id: true, mrn: true, firstName: true, lastName: true },
   });
 
-  logger.info({ tenantId, patientId: patient.id, mrn }, 'Emergency temp patient created');
-  return patient;
+  // G6 (2.3): open a lightweight "pending-placement" IP admission so Golden-Hour
+  // charges scope to an admission from the first dose (bed / ward / treating
+  // doctor are all null until the patient is placed, or folded into the permanent
+  // admission at merge). The Visit shell needs a doctor FK, so reference any
+  // tenant doctor as a placeholder; the admission's treating doctor stays null.
+  let admissionId: string | null = null;
+  try {
+    const placeholderDoctor = await prisma.doctorProfile.findFirst({ where: { tenantId }, select: { id: true } });
+    if (placeholderDoctor) {
+      const admission = await prisma.$transaction(async (tx) => {
+        const visit = await tx.visit.create({
+          data: { tenantId, patientId: patient.id, doctorId: placeholderDoctor.id, visitType: 'ip', visitDate: now, status: 'active', chiefComplaint: 'Emergency / Casualty (Golden Hour)' },
+          select: { id: true },
+        });
+        return tx.admission.create({
+          data: { tenantId, visitId: visit.id, patientId: patient.id, admissionDate: now, status: 'admitted', admittedBy: userId, admissionReason: 'Emergency trauma admission (pending placement)' },
+          select: { id: true },
+        });
+      });
+      admissionId = admission.id;
+    } else {
+      logger.warn({ tenantId, patientId: patient.id }, 'Emergency admission skipped — no doctor in tenant for the visit shell');
+    }
+  } catch (err) {
+    // Never let admission creation block the Golden-Hour patient mint.
+    logger.error({ err, tenantId, patientId: patient.id }, 'Emergency pending-placement admission failed');
+  }
+
+  logger.info({ tenantId, patientId: patient.id, mrn, admissionId }, 'Emergency temp patient created');
+  return { ...patient, admissionId };
 }
 
 /** Active emergency temp patients + their unpaid pharmacy hold, for the merge picker. */
@@ -2652,6 +2680,13 @@ export async function mergeEmergencyPatient(
     const wardLedger = await tx.wardStockLedger.updateMany({ where: { tenantId, patientId: tempId }, data: { patientId: targetPatientId } });
     const indents = await tx.medicationIndent.updateMany({ where: { tenantId, patientId: tempId }, data: { patientId: targetPatientId, ...(targetAdmission ? { admissionId: targetAdmission.id } : {}) } });
     const otKits = await tx.otKitIssue.updateMany({ where: { tenantId, patientId: tempId }, data: { patientId: targetPatientId } });
+    // G6 (2.3): close the temp patient's pending-placement admission (its charges
+    // have been folded onto the target's ledger) so it stops counting as active.
+    await tx.admission.updateMany({
+      where: { tenantId, patientId: tempId, status: 'admitted' },
+      data: { status: 'discharged', dischargeDate: new Date(), dischargedBy: userId },
+    });
+    await tx.visit.updateMany({ where: { tenantId, patientId: tempId, status: 'active' }, data: { status: 'discharged' } });
     // Retire the temp record (kept for audit; flagged inactive + MRN suffixed).
     await tx.patient.update({
       where: { id: tempId },
@@ -3766,13 +3801,20 @@ export async function getWardLedger(
  * gated here; life-saving drugs bypass the gate entirely.
  */
 export async function getPatientCreditStatus(tenantId: string, patientId: string) {
-  const admission = await prisma.admission.findFirst({
-    where: { tenantId, patientId, status: 'admitted' },
-    orderBy: { admissionDate: 'desc' },
-    select: { id: true, billingCategory: true, depositAmount: true },
-  });
+  const [admission, patient] = await Promise.all([
+    prisma.admission.findFirst({
+      where: { tenantId, patientId, status: 'admitted' },
+      orderBy: { admissionDate: 'desc' },
+      select: { id: true, billingCategory: true, depositAmount: true },
+    }),
+    prisma.patient.findFirst({ where: { id: patientId, tenantId }, select: { mrn: true } }),
+  ]);
   const category = (admission?.billingCategory ?? 'cash').toLowerCase();
   const deposit = admission ? Number(admission.depositAmount) : 0;
+  // G6 (2.3): an Emergency/Casualty temp patient (TEMP-ER-…) is in the Golden-Hour
+  // bypass — never held by the credit gate, even though it may now carry a
+  // pending-placement admission with a zero deposit.
+  const isEmergency = patient?.mrn?.startsWith(EMERGENCY_MRN_PREFIX) ?? false;
 
   // Running bill = the patient's currently-open (unsettled) bills.
   const agg = await prisma.bill.aggregate({
@@ -3783,8 +3825,8 @@ export async function getPatientCreditStatus(tenantId: string, patientId: string
   const balanceDue = round2(Number(agg._sum.balanceDue ?? 0));
   const available = round2(deposit - billed);
   const exceeded = billed > deposit;
-  // Only cash IP patients are held; everyone else settles elsewhere.
-  const requiresClearance = !!admission && category === 'cash' && exceeded;
+  // Only cash IP patients are held; everyone else (and emergency) settles elsewhere.
+  const requiresClearance = !isEmergency && !!admission && category === 'cash' && exceeded;
 
   return {
     patientId,
