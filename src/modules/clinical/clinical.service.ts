@@ -617,6 +617,22 @@ export async function getAdmissionById(tenantId: string, id: string) {
       visit: {
         select: { id: true, visitType: true, visitDate: true, chiefComplaint: true, status: true },
       },
+      // Active nurse(s) assigned to this admission — surfaced in the IP workspace
+      // header (the whole care team reads the admission, so no nurse_assignments
+      // permission is needed to see who is nursing the patient).
+      nurseAssignments: {
+        where: { status: 'active' },
+        orderBy: { assignedAt: 'desc' },
+        take: 3,
+        select: {
+          id: true,
+          shiftType: true,
+          shiftDate: true,
+          nurse: { select: { firstName: true, lastName: true } },
+          ward: { select: { name: true } },
+          bed: { select: { bedNumber: true } },
+        },
+      },
       admitter: { select: { id: true, firstName: true, lastName: true } },
       discharger: { select: { id: true, firstName: true, lastName: true } },
     },
