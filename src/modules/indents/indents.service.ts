@@ -479,6 +479,23 @@ export async function dispenseIndent(
         data: { dispensedBatchId: batch.id, dispensedQty: qty, unitPrice, lineTotal: gross, dispensingRecordId: rec.id, returnedQty: 0 },
       });
 
+      // G4 (1.4): stamp the dispensed batch + record onto this drug's pending eMAR
+      // doses so the nurse charts "given" against the exact batch that was supplied.
+      // Traceability only — eMAR still moves no stock and no money (link, don't
+      // double-deduct). Matched via the prescription items that share this drug.
+      if (indent.prescriptionId) {
+        const rxItems = await tx.prescriptionItem.findMany({
+          where: { prescriptionId: indent.prescriptionId, drugId: drug.id },
+          select: { id: true },
+        });
+        if (rxItems.length) {
+          await tx.emarSchedule.updateMany({
+            where: { tenantId, prescriptionItemId: { in: rxItems.map((r) => r.id) }, status: 'pending', drugBatchId: null },
+            data: { drugBatchId: batch.id, dispensingRecordId: rec.id },
+          });
+        }
+      }
+
       addedGross = round2(addedGross + gross);
       addedTax = round2(addedTax + taxAmt);
     }

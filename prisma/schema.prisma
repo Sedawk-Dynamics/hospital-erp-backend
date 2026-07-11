@@ -3351,6 +3351,12 @@ model EmarSchedule {
   prescriptionItemId String          @map("prescription_item_id")
   patientId          String          @map("patient_id")
   admissionId        String?         @map("admission_id")
+  // G4 (1.4): traceability link to the pharmacy supply that covers these doses —
+  // the dispensed batch + its DispensingRecord, stamped when a ward indent for the
+  // same drug is dispensed. Scalar (no relation); eMAR stays a clinical record with
+  // no stock/bill effect (link, don't double-deduct).
+  drugBatchId        String?         @map("drug_batch_id")
+  dispensingRecordId String?         @map("dispensing_record_id")
   drugName           String          @map("drug_name") @db.VarChar(255)
   dosage             String          @db.VarChar(100)
   route              MedicationRoute @default(oral)
