@@ -2208,6 +2208,7 @@ export async function getAdmissionActivity(tenantId: string, admissionId: string
     where: { id: admissionId, tenantId },
     select: {
       id: true, patientId: true, admissionDate: true, dischargeDate: true, status: true,
+      admissionReason: true, depositAmount: true, billingCategory: true,
       doctor: { select: { user: { select: { firstName: true, lastName: true } } } },
       ward: { select: { name: true } },
       bed: { select: { bedNumber: true } },
@@ -2218,17 +2219,24 @@ export async function getAdmissionActivity(tenantId: string, admissionId: string
   const start = admission.admissionDate;
   const end = admission.dischargeDate ?? new Date();
   const patientWindow = { patientId: admission.patientId, tenantId, createdAt: { gte: start, lte: end } };
+  const money = (n: number) => `₹${(Math.round(n * 100) / 100).toFixed(2)}`;
+  const drName = (u?: { firstName: string; lastName: string | null } | null) => (u ? `Dr. ${u.firstName} ${u.lastName ?? ''}`.trim() : undefined);
+  const name = (u?: { firstName: string; lastName: string | null } | null) => (u ? `${u.firstName} ${u.lastName ?? ''}`.trim() : undefined);
 
-  type Event = { at: string; type: string; title: string; detail?: string; actor?: string; amount?: number; status?: string };
+  type Event = { at: string; type: string; title: string; detail?: string; actor?: string; amount?: number; status?: string; meta?: Record<string, string> };
   const events: Event[] = [];
 
   // --- Admission ---
-  const doc = admission.doctor?.user;
-  const where = [admission.ward?.name && `Ward ${admission.ward.name}`, admission.bed?.bedNumber && `Bed ${admission.bed.bedNumber}`].filter(Boolean).join(', ');
   events.push({
     at: admission.admissionDate.toISOString(), type: 'admission', title: 'Patient admitted',
-    detail: where || undefined,
-    actor: doc ? `Dr. ${doc.firstName} ${doc.lastName}`.trim() : undefined,
+    detail: admission.admissionReason || undefined,
+    actor: drName(admission.doctor?.user),
+    meta: {
+      ...(admission.ward?.name ? { Ward: admission.ward.name } : {}),
+      ...(admission.bed?.bedNumber ? { Bed: admission.bed.bedNumber } : {}),
+      Billing: (admission.billingCategory ?? 'cash').toLowerCase(),
+      ...(Number(admission.depositAmount) > 0 ? { Deposit: money(Number(admission.depositAmount)) } : {}),
+    },
   });
 
   // --- Nurse assignments ---
@@ -2240,36 +2248,82 @@ export async function getAdmissionActivity(tenantId: string, admissionId: string
   for (const a of assignments) {
     events.push({
       at: a.assignedAt.toISOString(), type: 'nurse_assignment',
-      title: `Nurse assigned${a.status !== 'active' ? ' (ended)' : ''}`,
-      detail: `${a.shiftType} shift`,
-      actor: `${a.nurse.firstName} ${a.nurse.lastName}`.trim(),
+      title: a.status === 'active' ? 'Nurse assigned' : 'Nurse assignment ended',
+      actor: name(a.nurse),
+      meta: { Shift: String(a.shiftType), Status: String(a.status) },
+    });
+  }
+
+  // --- Vitals recorded (nurse) ---
+  const vitals = await prisma.vital.findMany({
+    where: { patientId: admission.patientId, recordedAt: { gte: start, lte: end } },
+    select: {
+      recordedAt: true, bloodPressureSystolic: true, bloodPressureDiastolic: true, pulseRate: true,
+      temperature: true, respiratoryRate: true, oxygenSaturation: true, recorder: { select: { firstName: true, lastName: true } },
+    },
+    orderBy: { recordedAt: 'asc' },
+  }).catch(() => []);
+  for (const v of vitals as any[]) {
+    const parts = [
+      v.bloodPressureSystolic && v.bloodPressureDiastolic ? `BP ${v.bloodPressureSystolic}/${v.bloodPressureDiastolic}` : null,
+      v.pulseRate ? `Pulse ${v.pulseRate}` : null,
+      v.temperature != null ? `Temp ${Number(v.temperature)}°` : null,
+      v.respiratoryRate ? `RR ${v.respiratoryRate}` : null,
+      v.oxygenSaturation ? `SpO₂ ${v.oxygenSaturation}%` : null,
+    ].filter(Boolean);
+    events.push({
+      at: v.recordedAt.toISOString(), type: 'vitals', title: 'Vitals recorded',
+      detail: parts.length ? parts.join(' · ') : undefined,
+      actor: name(v.recorder),
+    });
+  }
+
+  // --- Progress notes (doctor) ---
+  const notes = await prisma.progressNote.findMany({
+    where: { admissionId },
+    select: { createdAt: true, noteType: true, content: true, doctor: { select: { user: { select: { firstName: true, lastName: true } } } } },
+    orderBy: { createdAt: 'asc' },
+  }).catch(() => []);
+  for (const n of notes as any[]) {
+    const snip = (n.content ?? '').replace(/\s+/g, ' ').trim();
+    events.push({
+      at: n.createdAt.toISOString(), type: 'progress_note', title: 'Progress note',
+      detail: snip ? (snip.length > 180 ? `${snip.slice(0, 180)}…` : snip) : undefined,
+      actor: drName(n.doctor?.user),
+      ...(n.noteType ? { meta: { Type: String(n.noteType) } } : {}),
     });
   }
 
   // --- Ledger charges + doctor visits (from the admission's bills) ---
   const bills = await prisma.bill.findMany({
     where: { tenantId, admissionId, status: { not: 'cancelled' } },
-    select: { billItems: { select: { description: true, category: true, totalAmount: true, referenceType: true, referenceId: true, createdAt: true } } },
+    select: { billItems: { select: { description: true, category: true, quantity: true, unitPrice: true, totalAmount: true, referenceType: true, referenceId: true, createdAt: true } } },
   });
   const items = bills.flatMap((b) => b.billItems);
-  const visitorIds = [...new Set(items.filter((it) => it.referenceType === 'doctor_visit').map((it) => it.referenceId?.split(':')[0]).filter(Boolean) as string[])];
-  const visitors = visitorIds.length
-    ? await prisma.user.findMany({ where: { id: { in: visitorIds } }, select: { id: true, firstName: true, lastName: true } })
+  const clinicianIds = [...new Set(
+    items.filter((it) => it.referenceType === 'doctor_visit' || it.referenceType === 'manual_clinical')
+      .map((it) => it.referenceId?.split(':')[0]).filter(Boolean) as string[],
+  )];
+  const clinicians = clinicianIds.length
+    ? await prisma.user.findMany({ where: { id: { in: clinicianIds } }, select: { id: true, firstName: true, lastName: true } })
     : [];
-  const visitorName = new Map(visitors.map((u) => [u.id, `Dr. ${u.firstName} ${u.lastName}`.trim()]));
+  const clinicianName = new Map(clinicians.map((u) => [u.id, `${u.firstName} ${u.lastName}`.trim()]));
   for (const it of items) {
     if (it.referenceType === 'doctor_visit') {
+      const who = clinicianName.get(it.referenceId?.split(':')[0] ?? '');
       events.push({
         at: it.createdAt.toISOString(), type: 'doctor_visit', title: 'Doctor visit',
-        detail: it.description.replace(/^Doctor visit\s*—\s*/, '') || undefined,
-        actor: visitorName.get(it.referenceId?.split(':')[0] ?? '') || undefined,
+        detail: it.description.replace(/^Doctor visit\s*—\s*/, '') || 'Reviewed patient',
+        actor: who ? `Dr. ${who}` : undefined,
         amount: Number(it.totalAmount) || undefined,
       });
     } else if (it.referenceType === 'manual_clinical') {
       events.push({
         at: it.createdAt.toISOString(), type: 'charge', title: 'Charge added',
-        detail: `${it.description} (${String(it.category)})`,
+        detail: it.description,
+        actor: clinicianName.get(it.referenceId?.split(':')[0] ?? '') || undefined,
         amount: Number(it.totalAmount),
+        meta: { Category: String(it.category), Qty: String(it.quantity), 'Unit price': money(Number(it.unitPrice)) },
       });
     }
   }
@@ -2277,53 +2331,95 @@ export async function getAdmissionActivity(tenantId: string, admissionId: string
   // --- Lab orders ---
   const labs = await prisma.labOrder.findMany({
     where: patientWindow,
-    select: { id: true, status: true, createdAt: true, labOrderItems: { select: { test: { select: { testName: true } } } } },
+    select: {
+      status: true, urgency: true, createdAt: true,
+      labOrderItems: { select: { test: { select: { testName: true } } } },
+      orderer: { select: { firstName: true, lastName: true } },
+    },
     orderBy: { createdAt: 'asc' },
   });
   for (const l of labs) {
     const names = l.labOrderItems.map((i) => i.test?.testName).filter(Boolean) as string[];
     events.push({
-      at: l.createdAt.toISOString(), type: 'lab_order', title: 'Lab ordered',
-      detail: names.length ? names.slice(0, 4).join(', ') + (names.length > 4 ? ` +${names.length - 4} more` : '') : undefined,
+      at: l.createdAt.toISOString(), type: 'lab_order', title: `Lab ordered (${names.length} test${names.length === 1 ? '' : 's'})`,
+      detail: names.length ? names.slice(0, 6).join(', ') + (names.length > 6 ? ` +${names.length - 6} more` : '') : undefined,
+      actor: drName(l.orderer),
       status: String(l.status),
+      meta: { Urgency: String(l.urgency) },
     });
   }
 
   // --- Imaging requests ---
   const imaging = await prisma.imagingRequest.findMany({
     where: patientWindow,
-    select: { imagingType: true, bodyPart: true, status: true, createdAt: true },
+    select: { imagingType: true, bodyPart: true, urgency: true, status: true, createdAt: true, orderer: { select: { firstName: true, lastName: true } } },
     orderBy: { createdAt: 'asc' },
   });
   for (const im of imaging) {
     events.push({
       at: im.createdAt.toISOString(), type: 'imaging_request', title: 'Imaging requested',
       detail: [String(im.imagingType), im.bodyPart].filter(Boolean).join(' — '),
+      actor: drName(im.orderer),
       status: String(im.status),
+      meta: { Urgency: String(im.urgency) },
     });
   }
 
   // --- Prescriptions ---
   const scripts = await prisma.prescription.findMany({
     where: patientWindow,
-    select: { prescriptionType: true, status: true, createdAt: true, _count: { select: { prescriptionItems: true } } },
+    select: {
+      prescriptionType: true, status: true, createdAt: true,
+      prescriptionItems: { select: { drugName: true } },
+      doctor: { select: { user: { select: { firstName: true, lastName: true } } } },
+    },
     orderBy: { createdAt: 'asc' },
   });
   for (const s of scripts) {
+    const drugs = s.prescriptionItems.map((i) => i.drugName).filter(Boolean);
     events.push({
-      at: s.createdAt.toISOString(), type: 'prescription', title: 'Prescription written',
-      detail: `${s._count.prescriptionItems} medicine${s._count.prescriptionItems === 1 ? '' : 's'} (${String(s.prescriptionType)})`,
+      at: s.createdAt.toISOString(), type: 'prescription',
+      title: `Prescription written (${drugs.length} medicine${drugs.length === 1 ? '' : 's'})`,
+      detail: drugs.length ? drugs.slice(0, 6).join(', ') + (drugs.length > 6 ? ` +${drugs.length - 6} more` : '') : undefined,
+      actor: drName(s.doctor?.user),
       status: String(s.status),
+      meta: { Type: String(s.prescriptionType) },
+    });
+  }
+
+  // --- Payments / deposits ---
+  const payments = await prisma.payment.findMany({
+    where: { patientId: admission.patientId, tenantId, paymentDate: { gte: start, lte: end }, status: { not: 'failed' } },
+    select: { paymentDate: true, amount: true, paymentMethod: true, paymentType: true, status: true, processor: { select: { firstName: true, lastName: true } } },
+    orderBy: { paymentDate: 'asc' },
+  }).catch(() => []);
+  for (const p of payments as any[]) {
+    events.push({
+      at: p.paymentDate.toISOString(), type: 'payment',
+      title: p.paymentType === 'advance' ? 'Advance / deposit paid' : 'Payment received',
+      actor: name(p.processor),
+      amount: Number(p.amount),
+      status: String(p.status),
+      meta: { Method: String(p.paymentMethod), Type: String(p.paymentType) },
     });
   }
 
   // --- Discharge ---
   if (admission.dischargeDate) {
-    events.push({ at: admission.dischargeDate.toISOString(), type: 'discharge', title: 'Patient discharged' });
+    events.push({
+      at: admission.dischargeDate.toISOString(), type: 'discharge', title: 'Patient discharged',
+      meta: { Status: String(admission.status) },
+    });
   }
 
   events.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
-  return { admissionId, status: admission.status, discharged: !!admission.dischargeDate, events };
+  return {
+    admissionId, status: admission.status, discharged: !!admission.dischargeDate,
+    admittedAt: admission.admissionDate.toISOString(),
+    dischargedAt: admission.dischargeDate?.toISOString() ?? null,
+    count: events.length,
+    events,
+  };
 }
 
 // --- Bill-level discount (single value, editable) ---
