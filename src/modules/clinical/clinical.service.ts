@@ -752,15 +752,20 @@ export async function dischargePatient(
   });
 
   // G5 (2.1): assemble the discharge bill — pull every outstanding charge onto a
-  // finalized final-charges bill — as a best-effort step AFTER the clinical
-  // discharge commits, so a billing glitch never blocks the discharge. Advance /
-  // deposit settlement stays the biller's explicit step (applyAdvance omitted).
-  import('../billing/billing.service')
-    .then((m) => m.assembleDischargeBill(tenantId, id, userId))
-    .catch((err) => logger.error({ err, admissionId: id }, 'discharge bill assembly failed'));
+  // finalized final-charges bill — AFTER the clinical discharge commits. Awaited
+  // (so the response carries the financial summary for the discharge screen) but
+  // wrapped so a billing glitch never fails the already-committed discharge. Its
+  // charge-pull is idempotent, so this is the single assembly point (no double-bill).
+  let dischargeBilling: Awaited<ReturnType<typeof import('../billing/billing.service')['assembleDischargeBill']>> | null = null;
+  try {
+    const billing = await import('../billing/billing.service');
+    dischargeBilling = await billing.assembleDischargeBill(tenantId, id, userId);
+  } catch (err) {
+    logger.error({ err, admissionId: id }, 'discharge bill assembly failed');
+  }
 
   logger.info({ tenantId, admissionId: id }, 'Patient discharged');
-  return updated;
+  return { ...updated, dischargeBilling };
 }
 
 // ==================== Transfers ====================
