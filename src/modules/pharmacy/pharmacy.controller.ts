@@ -652,6 +652,28 @@ export async function setPrescriptionPharmacyStatus(
   }
 }
 
+// Dispense an IP prescription from the queue straight to the patient's IP bill
+// (no indent, no counter sale). Bills the hospital IP ledger.
+export async function dispenseIpPrescription(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const indents = await import('../indents/indents.service');
+    const data = await indents.dispenseIpPrescription(
+      req.user!.tenantId,
+      req.user!.userId,
+      req.user!.roles ?? [],
+      req.params.id as string,
+      req.body ?? {},
+    );
+    sendResponse({ res, statusCode: 201, message: "Dispensed to the patient's IP bill", data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // G8: alternative brands sharing this drug's composition (for out-of-stock swaps).
 export async function getFormularyAlternatives(
   req: AuthenticatedRequest,

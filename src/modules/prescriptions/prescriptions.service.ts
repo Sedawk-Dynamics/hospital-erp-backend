@@ -134,19 +134,13 @@ export async function createPrescription(
   );
 
   // Auto-generate eMAR dose schedules for IP prescriptions. We swallow errors
-  // so a scheduling glitch never blocks the doctor's prescription write.
+  // so a scheduling glitch never blocks the doctor's prescription write. The IP Rx
+  // then flows straight to the pharmacy queue — no indent step; the pharmacist
+  // dispenses it there, billing the patient's IP ledger.
   if (prescription.prescriptionType === 'ip') {
     emarGenerateForPrescription(prescription.id).catch((err) => {
       logger.error({ err, prescriptionId: prescription.id }, 'eMAR generation failed (create)');
     });
-    // G1: pre-fill a DRAFT pharmacy indent from the order so the ward nurse only
-    // reviews & sends it (instead of re-typing every line). Dynamic import avoids
-    // a load-time cycle (indents → pharmacy → …). Fire-and-forget.
-    import('../indents/indents.service')
-      .then((m) => m.createDraftIndentFromPrescription(tenantId, userId, prescription.id))
-      .catch((err) => {
-        logger.error({ err, prescriptionId: prescription.id }, 'draft indent auto-create failed (create)');
-      });
   }
 
   return prescription;

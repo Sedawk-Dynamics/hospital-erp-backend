@@ -159,6 +159,8 @@ pharmacyRoutes.patch('/dispensing/:id/verify', authenticate, requirePermission('
 
 // --- G12: ward→pharmacy order fulfilment status (Ordered→Preparing→Ready→Collected) ---
 pharmacyRoutes.patch('/queue/:id/status', authenticate, requirePermission('pharmacy', 'update'), validate(setPharmacyStatusSchema), controller.setPrescriptionPharmacyStatus);
+// Dispense an IP prescription from the queue → bills the patient's IP ledger (no indent, no counter sale).
+pharmacyRoutes.post('/queue/:id/dispense-ip', authenticate, requirePermission('pharmacy', 'create'), controller.dispenseIpPrescription);
 
 // All medicines dispensed to IP (admitted) patients — billed to the hospital IP
 // bill, not the pharmacy counter. The "medicines sent to IP" list.

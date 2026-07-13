@@ -546,6 +546,160 @@ export async function dispenseIndent(
 }
 
 /**
+ * Dispense an IP prescription DIRECTLY from the pharmacy queue (no indent). The
+ * doctor's IP Rx flows to the queue; the pharmacist dispenses here and every
+ * stocked, non-PRN line is billed to the patient's running IP bill (hospital
+ * ledger) — NOT sold at the pharmacy counter. FEFO across batches; a stock
+ * shortage doesn't block the (approved) medicine. Marks the Rx pharmacyStatus
+ * 'collected'. Idempotent (one dispense per prescription).
+ */
+export async function dispenseIpPrescription(
+  tenantId: string,
+  userId: string,
+  roles: string[],
+  prescriptionId: string,
+  data: { batches?: Array<{ itemId: string; drugBatchId: string }> } = {},
+) {
+  assertPharmacyOperator(roles, 'dispense an IP prescription');
+  const rx = await prisma.prescription.findFirst({
+    where: { id: prescriptionId, tenantId },
+    include: { prescriptionItems: true, visit: { select: { admission: { select: { id: true } } } } },
+  });
+  if (!rx) throw AppError.notFound('Prescription not found');
+  if (rx.prescriptionType !== 'ip') {
+    throw AppError.badRequest('Only IP prescriptions are billed to the patient IP ledger.');
+  }
+
+  const already = await prisma.dispensingRecord.findFirst({ where: { tenantId, prescriptionId }, select: { id: true } });
+  if (already) throw AppError.badRequest('This prescription has already been dispensed.');
+
+  // Only stocked (formulary) non-PRN lines with a quantity can be dispensed to stock.
+  const dispensable = rx.prescriptionItems.filter((i) => i.drugId && !i.isPrn && Number(i.quantity ?? 0) > 0);
+  if (dispensable.length === 0) {
+    throw AppError.badRequest('No stocked, non-PRN medicine with a quantity to dispense on this prescription.');
+  }
+  const batchMap = new Map((data.batches ?? []).map((b) => [b.itemId, b.drugBatchId]));
+
+  const result = await prisma.$transaction(async (tx) => {
+    const admId = rx.visit?.admission?.id
+      ?? (await tx.admission.findFirst({ where: { tenantId, patientId: rx.patientId, status: 'admitted' }, orderBy: { admissionDate: 'desc' }, select: { id: true } }))?.id
+      ?? null;
+
+    // Attach to the patient's running IP bill (draft/pending/partially_paid), else open one.
+    let bill = await tx.bill.findFirst({
+      where: { tenantId, patientId: rx.patientId, status: { in: ['draft', 'pending', 'partially_paid'] } },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!bill) {
+      const now = new Date();
+      const ymd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+      const prefix = `IPW-${ymd}-`;
+      const seq = await tx.bill.count({ where: { tenantId, billNumber: { startsWith: prefix } } });
+      bill = await tx.bill.create({
+        data: {
+          tenantId, billNumber: `${prefix}${String(seq + 1).padStart(4, '0')}`, patientId: rx.patientId,
+          admissionId: admId ?? undefined, billDate: new Date(), subtotal: 0, taxAmount: 0, totalAmount: 0,
+          patientPayableAmount: 0, balanceDue: 0, status: 'draft', generatedBy: userId,
+        },
+      });
+    } else if (!bill.admissionId && admId) {
+      bill = await tx.bill.update({ where: { id: bill.id }, data: { admissionId: admId } });
+    }
+
+    let addedGross = 0;
+    let addedTax = 0;
+
+    for (const it of dispensable) {
+      const baseQty = Math.max(1, Math.trunc(Number(it.quantity ?? 1)));
+      const drug = await tx.drugFormulary.findFirst({
+        where: { id: it.drugId as string, tenantId },
+        select: { id: true, drugName: true, price: true, taxPercent: true, looseUnitLabel: true, isNarcotic: true, isReimbursable: true },
+      });
+      if (!drug) continue; // free-text / no longer stocked — skip (nothing to draw from stock)
+      if (drug.isNarcotic) {
+        throw AppError.badRequest(`${drug.drugName} is an NDPS narcotic — dispense it via the NDPS (Form 3E) workflow.`);
+      }
+
+      const chosen = batchMap.get(it.id);
+      const usable = await tx.drugBatch.findMany({
+        where: { tenantId, drugId: drug.id, isExpired: false, isRecalled: false },
+        orderBy: [{ expiryDate: 'asc' }, { createdAt: 'asc' }],
+      });
+      const ordered = chosen ? [...usable.filter((b) => b.id === chosen), ...usable.filter((b) => b.id !== chosen)] : usable;
+      if (ordered.length === 0) {
+        throw AppError.badRequest(`No usable stock batch for ${drug.drugName} — add a batch (or clear the recall/expiry) first.`);
+      }
+      const batch = ordered[0];
+
+      let remaining = baseQty;
+      for (const b of ordered) {
+        if (remaining <= 0) break;
+        const take = Math.min(b.quantityInStock, remaining);
+        if (take > 0) {
+          await tx.drugBatch.update({ where: { id: b.id }, data: { quantityInStock: { decrement: take } } });
+          remaining -= take;
+        }
+      }
+      const shortfall = remaining;
+
+      const unitPrice = Number(batch.sellingPrice ?? drug.price ?? batch.purchasePrice ?? 0);
+      const taxPct = drug.taxPercent != null ? Number(drug.taxPercent) : 0;
+      const gross = round2(unitPrice * baseQty);
+      const taxAmt = round2(gross - gross / (1 + taxPct / 100));
+      const unitLabel = drug.looseUnitLabel ?? 'unit';
+      const expTag = batch.expiryDate ? `, exp ${new Date(batch.expiryDate).toLocaleDateString('en-GB')}` : '';
+
+      const rec = await tx.dispensingRecord.create({
+        data: {
+          tenantId, prescriptionId, prescriptionItemId: it.id, patientId: rx.patientId, drugBatchId: batch.id,
+          quantityDispensed: baseQty, dispensedBy: userId, saleUnit: 'loose', unitPrice, taxPercent: taxPct,
+          lineTotal: gross, isTto: false, billId: bill.id,
+          notes: `IP Rx dispense${shortfall > 0 ? ` — stock short by ${shortfall}` : ''}`,
+        },
+      });
+
+      await tx.billItem.create({
+        data: {
+          billId: bill.id,
+          description: `${drug.drugName} (Batch ${batch.batchNumber}${expTag}) — IP prescription, ${baseQty} ${unitLabel}(s)`,
+          category: 'pharmacy', quantity: baseQty, unitPrice, taxPercent: taxPct, taxAmount: taxAmt, totalAmount: gross,
+          referenceType: 'dispensing_record', referenceId: rec.id, isAutoPulled: true,
+          isReimbursable: drug.isReimbursable ?? null,
+        },
+      });
+
+      // Stamp the dispensed batch onto this exact Rx line's pending eMAR doses.
+      await tx.emarSchedule.updateMany({
+        where: { tenantId, prescriptionItemId: it.id, status: 'pending', drugBatchId: null },
+        data: { drugBatchId: batch.id, dispensingRecordId: rec.id },
+      });
+
+      addedGross = round2(addedGross + gross);
+      addedTax = round2(addedTax + taxAmt);
+    }
+
+    if (addedGross > 0) {
+      await tx.bill.update({
+        where: { id: bill.id },
+        data: {
+          subtotal: round2(Number(bill.subtotal) + addedGross),
+          taxAmount: round2(Number(bill.taxAmount) + addedTax),
+          totalAmount: round2(Number(bill.totalAmount) + addedGross),
+          patientPayableAmount: round2(Number(bill.patientPayableAmount) + addedGross),
+          balanceDue: round2(Number(bill.balanceDue) + addedGross),
+        },
+      });
+    }
+
+    await tx.prescription.update({ where: { id: prescriptionId }, data: { pharmacyStatus: 'collected' } });
+    return { billId: bill.id, dispensedLines: dispensable.length };
+  });
+
+  logger.info({ tenantId, prescriptionId, billId: result.billId }, 'IP prescription dispensed to IP bill (queue)');
+  return result;
+}
+
+/**
  * Return-to-Stock (RTS) — design doc IP feature #2. The ward returns unused /
  * un-administered medicine from a dispensed indent; the pharmacist records it and
  * the system (a) restocks the exact original batch and (b) credits the patient's
