@@ -165,12 +165,19 @@ export function drawBrandedFooters(pdf: PDFKit.PDFDocument, b: HospitalBranding,
   const footer = b.footerText || 'This is a computer-generated document.';
   for (let i = 0; i < range.count; i++) {
     pdf.switchToPage(range.start + i);
+    // Writing into the bottom margin makes PDFKit auto-append a blank page (one
+    // per write) — that's the "extra pages" bug. Drop the bottom margin for the
+    // footer writes (and disable line-breaking) so no pages are added, then
+    // restore it.
+    const savedBottom = pdf.page.margins.bottom;
+    pdf.page.margins.bottom = 0;
     const fy = pdf.page.height - margin + 6;
     pdf.font('Helvetica').fontSize(7).fillColor(MUTED);
-    pdf.text(b.name, left, fy, { width: contentWidth / 2, align: 'left' });
-    pdf.text(`Page ${i + 1} of ${range.count}`, left + contentWidth / 2, fy, { width: contentWidth / 2, align: 'right' });
+    pdf.text(b.name, left, fy, { width: contentWidth / 2, align: 'left', lineBreak: false });
+    pdf.text(`Page ${i + 1} of ${range.count}`, left + contentWidth / 2, fy, { width: contentWidth / 2, align: 'right', lineBreak: false });
     if (i === range.count - 1 && (b.show?.footer ?? true)) {
-      pdf.fillColor(MUTED).fontSize(6.8).text(footer, left, fy + 9, { width: contentWidth, align: 'center' });
+      pdf.fillColor(MUTED).fontSize(6.8).text(footer, left, fy + 9, { width: contentWidth, align: 'center', lineBreak: false });
     }
+    pdf.page.margins.bottom = savedBottom;
   }
 }
