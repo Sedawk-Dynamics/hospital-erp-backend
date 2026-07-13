@@ -1825,6 +1825,9 @@ model Ward {
   name         String    @db.VarChar(100)
   wardType     WardType? @map("ward_type")
   totalBeds    Int       @default(0) @map("total_beds")
+  // Per-day bed charge for this ward, set by the hospital admin. Feeds IP room
+  // billing (falls back to the room ServiceTariff when unset).
+  dailyCharge  Decimal?  @map("daily_charge") @db.Decimal(10, 2)
   isActive     Boolean   @default(true) @map("is_active")
   createdAt    DateTime  @default(now()) @map("created_at")
 

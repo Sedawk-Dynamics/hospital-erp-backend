@@ -381,6 +381,7 @@ export async function createWard(tenantId: string, data: CreateWardInput) {
   }
 
   const ward = await prisma.ward.create({
+    // `dailyCharge` cast until the Prisma client is regenerated (restart backend).
     data: {
       tenantId,
       name: data.name,
@@ -388,8 +389,9 @@ export async function createWard(tenantId: string, data: CreateWardInput) {
       floorId: data.floorId,
       wardType: data.wardType as any,
       totalBeds: data.totalBeds ?? 0,
+      dailyCharge: data.dailyCharge ?? null,
       isActive: data.isActive ?? true,
-    },
+    } as any,
     include: {
       floor: { select: { id: true, name: true, level: true } },
       department: { select: { id: true, name: true } },
@@ -505,8 +507,9 @@ export async function updateWard(tenantId: string, id: string, data: UpdateWardI
       ...(data.floorId !== undefined && { floorId: data.floorId }),
       ...(data.wardType !== undefined && { wardType: data.wardType as any }),
       ...(data.totalBeds !== undefined && { totalBeds: data.totalBeds }),
+      ...(data.dailyCharge !== undefined && { dailyCharge: data.dailyCharge }),
       ...(data.isActive !== undefined && { isActive: data.isActive }),
-    },
+    } as any,
     include: {
       floor: { select: { id: true, name: true, level: true } },
       department: { select: { id: true, name: true } },

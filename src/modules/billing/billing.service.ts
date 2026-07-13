@@ -1610,7 +1610,8 @@ async function getRoomCharges(
     where: { tenantId, patientId },
     include: {
       bed: { select: { bedNumber: true, bedType: true } },
-      ward: { select: { name: true } },
+      // `dailyCharge` cast until the Prisma client is regenerated (restart backend).
+      ward: { select: { name: true, dailyCharge: true } as any },
     },
     orderBy: { admissionDate: 'desc' },
     take: 20,
@@ -1633,7 +1634,10 @@ async function getRoomCharges(
       roomTariffs.find((t) => (t.serviceCode ?? '').toLowerCase() === String(bedType ?? '').toLowerCase()) ||
       roomTariffs[0];
 
-    const unit = toNumber(tariff?.basePrice ?? 0);
+    // The ward's admin-set per-day bed charge takes precedence; otherwise fall
+    // back to the room ServiceTariff (matched by bed type).
+    const wardRate = toNumber((adm.ward as any)?.dailyCharge ?? 0);
+    const unit = wardRate > 0 ? wardRate : toNumber(tariff?.basePrice ?? 0);
     const total = unit * days;
     const wardName = adm.ward?.name ?? 'Ward';
     const bedNumber = adm.bed?.bedNumber ?? '-';

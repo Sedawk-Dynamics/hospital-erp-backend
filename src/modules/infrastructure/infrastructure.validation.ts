@@ -100,6 +100,8 @@ export const createWardSchema = z.object({
     floorId: z.string().uuid('Invalid floor ID').optional(),
     wardType: wardTypeEnum.optional(),
     totalBeds: z.number().int().min(0).default(0),
+    // Per-day bed charge for the ward (hospital-admin set).
+    dailyCharge: z.number().min(0).optional().nullable(),
     isActive: z.boolean().default(true),
   }),
 });
@@ -111,6 +113,7 @@ export const updateWardSchema = z.object({
     floorId: z.string().uuid('Invalid floor ID').optional().nullable(),
     wardType: wardTypeEnum.optional().nullable(),
     totalBeds: z.number().int().min(0).optional(),
+    dailyCharge: z.number().min(0).optional().nullable(),
     isActive: z.boolean().optional(),
   }),
   params: z.object({
