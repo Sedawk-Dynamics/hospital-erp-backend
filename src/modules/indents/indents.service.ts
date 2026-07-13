@@ -408,23 +408,34 @@ export async function dispenseIndent(
       // Base (loose) units to remove from stock. Pack lines multiply by pack size.
       const baseQty = it.saleUnit === 'loose' ? qty : qty * packSize;
 
-      // Batch: explicit scan, else FEFO earliest-expiry with enough stock.
-      let batch;
+      // Batch: consume available stock across batches (FEFO); an explicit scan is
+      // consumed first. The FULL approved quantity is billed to the IP ledger even
+      // if ward stock is short — the medicine is prescribed + approved for this
+      // admitted patient, so a stock shortage must NOT block delivery/billing
+      // (stock reconciliation is a separate ward-stock concern, flagged in notes).
       const chosen = batchMap.get(it.id);
-      if (chosen) {
-        batch = await tx.drugBatch.findFirst({ where: { id: chosen, tenantId, drugId: drug.id } });
-        if (!batch) throw AppError.badRequest(`Scanned batch not found for ${drug.drugName}`);
-        if (batch.isExpired || batch.isRecalled) throw AppError.badRequest(`Cannot dispense an expired/recalled batch of ${drug.drugName}`);
-        if (batch.quantityInStock < baseQty) throw AppError.badRequest(`Insufficient stock in the scanned batch of ${drug.drugName}`);
-      } else {
-        batch = await tx.drugBatch.findFirst({
-          where: { tenantId, drugId: drug.id, isExpired: false, isRecalled: false, quantityInStock: { gte: baseQty } },
-          orderBy: [{ expiryDate: 'asc' }, { createdAt: 'asc' }],
-        });
-        if (!batch) throw AppError.badRequest(`Insufficient stock for ${drug.drugName} — need ${baseQty} unit(s) in a single batch`);
+      const usable = await tx.drugBatch.findMany({
+        where: { tenantId, drugId: drug.id, isExpired: false, isRecalled: false },
+        orderBy: [{ expiryDate: 'asc' }, { createdAt: 'asc' }],
+      });
+      const ordered = chosen
+        ? [...usable.filter((b) => b.id === chosen), ...usable.filter((b) => b.id !== chosen)]
+        : usable;
+      if (ordered.length === 0) {
+        throw AppError.badRequest(`No usable stock batch for ${drug.drugName} — add a batch (or clear the recall/expiry) first.`);
       }
+      const batch = ordered[0]; // representative batch for pricing + traceability
 
-      await tx.drugBatch.update({ where: { id: batch.id }, data: { quantityInStock: { decrement: baseQty } } });
+      let remaining = baseQty;
+      for (const b of ordered) {
+        if (remaining <= 0) break;
+        const take = Math.min(b.quantityInStock, remaining);
+        if (take > 0) {
+          await tx.drugBatch.update({ where: { id: b.id }, data: { quantityInStock: { decrement: take } } });
+          remaining -= take;
+        }
+      }
+      const shortfall = remaining; // > 0 = billed beyond on-hand stock
 
       const unitPrice = Number(batch.sellingPrice ?? drug.price ?? batch.purchasePrice ?? 0);
       const taxPct = drug.taxPercent != null ? Number(drug.taxPercent) : 0;
@@ -451,7 +462,7 @@ export async function dispenseIndent(
           lineTotal: gross,
           isTto: indent.isTto,
           billId: bill.id,
-          notes: `IP indent ${indent.indentNumber}`,
+          notes: `IP indent ${indent.indentNumber}${shortfall > 0 ? ` — stock short by ${shortfall}` : ''}`,
         },
       });
 
@@ -516,14 +527,16 @@ export async function dispenseIndent(
       });
     }
 
+    // Dispensing an IP indent IS the delivery to the ward — one step. The charge
+    // is now on the patient's IP bill; the nurse acknowledges receipt next.
     return tx.medicationIndent.update({
       where: { id },
-      data: { status: 'dispensed', dispensedById: userId, dispensedAt: new Date(), billId: bill.id },
+      data: { status: 'delivered', dispensedById: userId, dispensedAt: new Date(), deliveredAt: new Date(), billId: bill.id },
       include: { items: true },
     });
   });
 
-  logger.info({ tenantId, indentId: id, billId: result.billId }, 'Medication indent dispensed to IP bill');
+  logger.info({ tenantId, indentId: id, billId: result.billId }, 'Medication indent dispensed to IP bill + delivered');
   return hydrate(tenantId, result);
 }
 
