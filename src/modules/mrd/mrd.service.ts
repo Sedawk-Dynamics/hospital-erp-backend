@@ -183,21 +183,23 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
   const visitId = admission.visitId;
   const patientId = admission.patientId;
 
-  const [diagnoses, pinnedNotes, sectionPins, labResults, prescriptions] = await Promise.all([
+  const [diagnoses, allNotes, sectionPins, labResults, prescriptions] = await Promise.all([
     prisma.diagnosis.findMany({
       where: { visitId },
       orderBy: { diagnosedAt: 'asc' },
     }),
-    // Legacy whole-note pins (pinToDischargeSummary=true). Kept for
-    // backward compatibility with notes written before the per-section
-    // pin model; these feed `proceduresSummary` as before.
+    // ALL of the admission's progress notes (the running IP log). Every note now
+    // flows into the discharge summary's hospital course automatically — the
+    // doctor no longer pins per note. Oldest → newest for a readable course.
     prisma.progressNote.findMany({
       where: {
         visitId,
-        pinToDischargeSummary: true,
         status: { in: ['active', 'finalized'] },
       },
       orderBy: { createdAt: 'asc' },
+      include: {
+        doctor: { select: { user: { select: { firstName: true, lastName: true } } } },
+      },
     }),
     // New per-section pins via ProgressNotePin. Each pin carries
     // explicit {dischargeSection, content}; we route the content into
@@ -299,12 +301,14 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
   // Legacy whole-note pins + new "procedure" and "hospital_course" section
   // pins all roll up into proceduresSummary, with labelled sub-sections so
   // the doctor can tell them apart when reviewing.
-  const legacyPinBlock = pinnedNotes.length > 0
-    ? pinnedNotes
+  const allNotesBlock = allNotes.length > 0
+    ? allNotes
         .map((n) => {
-          const parts: string[] = [];
-          const label = n.noteType || 'note';
-          parts.push(`- [${label}] ${n.content}`);
+          const when = new Date(n.createdAt).toLocaleDateString('en-IN');
+          const dr = (n as any).doctor?.user
+            ? `Dr. ${(n as any).doctor.user.firstName}${(n as any).doctor.user.lastName ? ' ' + (n as any).doctor.user.lastName : ''}`
+            : 'Doctor';
+          const parts: string[] = [`- [${when} · ${dr}] ${n.content}`];
           if ((n as any).impressions) parts.push(`  Impression: ${(n as any).impressions}`);
           if ((n as any).discussions) parts.push(`  Discussion: ${(n as any).discussions}`);
           if ((n as any).conclusions) parts.push(`  Conclusion: ${(n as any).conclusions}`);
@@ -318,10 +322,12 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
         })
         .join('\n')
     : null;
+  // Explicit "procedure" / "hospital_course" section pins from the consultation
+  // page still add to the course (in addition to the auto-included notes above).
   const procedurePins = renderBucket('procedure');
   const hospitalCoursePins = renderBucket('hospital_course');
-  const hospitalCourseBlock = hospitalCoursePins ? `Hospital course:\n${hospitalCoursePins}` : null;
-  const proceduresSummary = mergeSections([legacyPinBlock, procedurePins, hospitalCourseBlock]);
+  const hospitalCourseBlock = hospitalCoursePins ? `Additional hospital-course notes:\n${hospitalCoursePins}` : null;
+  const proceduresSummary = mergeSections([allNotesBlock, procedurePins, hospitalCourseBlock]);
 
   // ── All lab results (full) ──
   const labResultsSummary = labResults.length > 0
