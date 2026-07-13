@@ -592,6 +592,20 @@ export async function transferAdmissionToTpa(req: AuthenticatedRequest, res: Res
   }
 }
 
+export async function recordTpaSettlement(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await billingService.recordTpaSettlement(
+      req.user!.tenantId,
+      req.user!.userId,
+      req.params.admissionId as string,
+      req.body,
+    );
+    sendResponse({ res, message: 'TPA settlement recorded', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getAdmissionLedger(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const data = await billingService.getAdmissionLedger(req.user!.tenantId, req.params.admissionId as string, {

@@ -173,6 +173,15 @@ export const admissionActionParamSchema = z.object({
   params: z.object({ admissionId: z.string().uuid('Invalid admission ID') }),
 });
 
+// Record a TPA payment against the admission's claim.
+export const recordTpaSettlementSchema = z.object({
+  params: z.object({ admissionId: z.string().uuid('Invalid admission ID') }),
+  body: z.object({
+    paidAmount: z.number().positive('Paid amount must be positive'),
+    notes: z.string().max(500).optional(),
+  }),
+});
+
 export const getPaymentsQuerySchema = z.object({
   query: paginationSchema.extend({
     patientId: z.string().uuid().optional(),

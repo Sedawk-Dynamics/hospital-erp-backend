@@ -2011,6 +2011,41 @@ export async function transferAdmissionToTpa(tenantId: string, userId: string, a
 }
 
 /**
+ * Billing-counter action: record a TPA payment against an IP admission's claim
+ * (how much the TPA paid → paid / remaining tracked on the claim). If the claim
+ * hasn't been marked approved yet, approve it at the computed covered amount so
+ * the billing desk can settle in one place. Gated by billing permission — runs
+ * the insurance lifecycle via the service layer.
+ */
+export async function recordTpaSettlement(
+  tenantId: string,
+  userId: string,
+  admissionId: string,
+  data: { paidAmount: number; notes?: string },
+) {
+  const admission = await prisma.admission.findFirst({ where: { id: admissionId, tenantId }, select: { id: true } });
+  if (!admission) throw AppError.notFound('Admission not found');
+
+  const claim = await prisma.insuranceClaim.findFirst({
+    where: { tenantId, bill: { admissionId }, status: { notIn: ['cancelled', 'rejected', 'settled'] } },
+    orderBy: { createdAt: 'desc' },
+    select: { id: true, status: true, coveredAmount: true, claimAmount: true },
+  });
+  if (!claim) throw AppError.badRequest('No open TPA claim for this admission. Transfer the bill to the TPA first.');
+
+  const insurance = await import('../insurance/insurance.service');
+  // If the TPA response hasn't been recorded as approved yet, approve at the
+  // computed covered amount so a payment can be recorded here in one step.
+  if (['submitted', 'under_review', 'resubmitted'].includes(String(claim.status))) {
+    const approvedAmount = Number(claim.coveredAmount ?? claim.claimAmount);
+    await insurance.approveClaim(tenantId, claim.id, userId, { approvedAmount } as any);
+  }
+  const settled = await insurance.settleClaim(tenantId, claim.id, userId, { paidAmount: data.paidAmount, notes: data.notes } as any);
+  logger.info({ tenantId, admissionId, claimId: claim.id, paidAmount: data.paidAmount }, 'TPA settlement recorded from billing');
+  return settled;
+}
+
+/**
  * G5 (2.1) — Discharge final-bill assembly. On discharge, consolidate every charge
  * onto the admission's SINGLE running IP bill and finalize it, then optionally
  * apply the patient's advance balance. Pharmacy/indent charges already billed on

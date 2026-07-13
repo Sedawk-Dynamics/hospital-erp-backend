@@ -11,6 +11,7 @@ import {
   addIpChargeSchema,
   admissionLedgerParamSchema,
   admissionActionParamSchema,
+  recordTpaSettlementSchema,
   removeIpChargeSchema,
   recordDoctorVisitSchema,
   removeBillItemSchema,
@@ -387,6 +388,14 @@ billingRoutes.post(
   requirePermission('billing', 'update'),
   validate(admissionActionParamSchema),
   controller.transferAdmissionToTpa,
+);
+// Record a TPA payment (approve-if-needed + settle) against the admission's claim.
+billingRoutes.post(
+  '/admissions/:admissionId/tpa-settlement',
+  authenticate,
+  requirePermission('billing', 'update'),
+  validate(recordTpaSettlementSchema),
+  controller.recordTpaSettlement,
 );
 
 billingRoutes.patch(
