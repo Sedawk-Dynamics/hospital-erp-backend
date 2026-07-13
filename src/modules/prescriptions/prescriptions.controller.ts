@@ -3,6 +3,8 @@ import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse, sendPaginatedResponse } from '../../shared/apiResponse';
 import * as prescriptionsService from './prescriptions.service';
 import { getDrugHistoryForDoctor } from './drug-history.service';
+import { streamPrescriptionPdf } from './prescription-pdf';
+import { getHospitalBranding } from '../hospital-branding/hospital-branding.service';
 
 export async function getDrugHistory(
   req: AuthenticatedRequest,
@@ -73,6 +75,24 @@ export async function getPrescriptionById(
       message: 'Prescription retrieved successfully',
       data: prescription,
     });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Branded prescription PDF (uses the hospital admin's PDF Builder letterhead).
+export async function downloadPrescriptionPdf(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const [prescription, branding] = await Promise.all([
+      prescriptionsService.getPrescriptionById(tenantId, req.params.id as string),
+      getHospitalBranding(tenantId),
+    ]);
+    streamPrescriptionPdf(res, prescription as never, branding);
   } catch (err) {
     next(err);
   }

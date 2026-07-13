@@ -34,6 +34,7 @@ prescriptionRoutes.get('/drug-history/:patientId', authenticate, requirePermissi
 prescriptionRoutes.post('/', authenticate, requirePermission('prescriptions', 'create'), validate(createPrescriptionSchema), controller.createPrescription);
 prescriptionRoutes.get('/', authenticate, requirePermission('prescriptions', 'read'), validate(getPrescriptionsQuerySchema), controller.getPrescriptions);
 prescriptionRoutes.get('/:id', authenticate, requirePermission('prescriptions', 'read'), validate(prescriptionIdParamSchema), controller.getPrescriptionById);
+prescriptionRoutes.get('/:id/pdf', authenticate, requirePermission('prescriptions', 'read'), validate(prescriptionIdParamSchema), controller.downloadPrescriptionPdf);
 prescriptionRoutes.put('/:id', authenticate, requirePermission('prescriptions', 'update'), validate(updatePrescriptionSchema), controller.updatePrescription);
 prescriptionRoutes.patch('/:id', authenticate, requirePermission('prescriptions', 'update'), validate(updatePrescriptionSchema), controller.updatePrescription);
 prescriptionRoutes.patch('/:id/cancel', authenticate, requirePermission('prescriptions', 'update'), validate(cancelPrescriptionSchema), controller.cancelPrescription);
