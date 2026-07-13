@@ -550,6 +550,21 @@ export async function addIpCharge(req: AuthenticatedRequest, res: Response, next
   }
 }
 
+export async function removeIpCharge(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await billingService.removeIpCharge(
+      req.user!.tenantId,
+      req.user!.userId,
+      req.params.admissionId as string,
+      req.params.itemId as string,
+      req.user!.roles ?? [],
+    );
+    sendResponse({ res, message: 'Charge removed from the IP ledger', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getAdmissionLedger(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const data = await billingService.getAdmissionLedger(req.user!.tenantId, req.params.admissionId as string, {

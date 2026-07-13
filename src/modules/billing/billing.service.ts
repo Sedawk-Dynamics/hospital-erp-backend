@@ -2074,6 +2074,41 @@ export async function addIpCharge(
 }
 
 /**
+ * Remove a manually-posted charge from the running IP ledger — the care team
+ * (assigned nurse / the patient's doctor) or billing staff can delete a manual
+ * charge or doctor-visit line they added. Guards: only MANUAL lines
+ * (isAutoPulled = false) can be removed here — auto-pulled charges come from real
+ * orders (lab / pharmacy / room / imaging / OT) and must be handled at source —
+ * and only while the bill is still a draft.
+ */
+export async function removeIpCharge(
+  tenantId: string,
+  userId: string,
+  admissionId: string,
+  itemId: string,
+  roles: string[] = [],
+) {
+  await assertIpLedgerAccess(tenantId, admissionId, { userId, roles }, { write: true });
+
+  const item = await prisma.billItem.findFirst({
+    where: { id: itemId, bill: { tenantId, admissionId } },
+    select: { id: true, billId: true, isAutoPulled: true, bill: { select: { status: true } } },
+  });
+  if (!item) throw AppError.notFound('Ledger charge not found');
+  if (item.isAutoPulled) {
+    throw AppError.badRequest('Auto-pulled charges cannot be removed here — they come from orders (lab, pharmacy, room, imaging, OT).');
+  }
+  if (item.bill.status !== 'draft') {
+    throw AppError.badRequest('This charge is on a finalized bill and can no longer be removed.');
+  }
+
+  await prisma.billItem.delete({ where: { id: itemId } });
+  await recalculateBillTotals(item.billId);
+  logger.info({ tenantId, admissionId, billId: item.billId, itemId }, 'IP ledger charge removed');
+  return { billId: item.billId, removed: itemId };
+}
+
+/**
  * Admission-scoped running ledger for the IP workspace: every posted BillItem
  * across the admission's bills PLUS the still-unbilled auto-charges (room days,
  * doctor fee, lab, imaging, OT) so the care team sees the true running total,

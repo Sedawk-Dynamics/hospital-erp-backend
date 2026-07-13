@@ -10,6 +10,7 @@ import {
   addBillItemSchema,
   addIpChargeSchema,
   admissionLedgerParamSchema,
+  removeIpChargeSchema,
   recordDoctorVisitSchema,
   removeBillItemSchema,
   createPaymentSchema,
@@ -348,6 +349,13 @@ billingRoutes.post(
   authenticate,
   validate(addIpChargeSchema),
   controller.addIpCharge,
+);
+// Remove a manually-posted ledger charge (care team / billing only — service-gated).
+billingRoutes.delete(
+  '/admissions/:admissionId/charges/:itemId',
+  authenticate,
+  validate(removeIpChargeSchema),
+  controller.removeIpCharge,
 );
 // A doctor records a visit / review round (logs it + posts the visit fee).
 billingRoutes.post(
