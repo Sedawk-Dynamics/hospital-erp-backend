@@ -419,12 +419,13 @@ export const admissionLedgerParamSchema = z.object({
   params: z.object({ admissionId: z.string().uuid('Invalid admission ID') }),
 });
 
-// A doctor records a visit / review round — logs it and posts the (optional) visit fee.
+// A doctor records a visit / review round — logs it and posts the doctor's
+// admin-configured visit fee (consultationFee). The fee is NOT sent by the
+// client; only an optional review note.
 export const recordDoctorVisitSchema = z.object({
   params: z.object({ admissionId: z.string().uuid('Invalid admission ID') }),
   body: z.object({
     review: z.string().max(1000).optional(),
-    fee: z.number().min(0).max(1_000_000).default(0),
   }),
 });
 

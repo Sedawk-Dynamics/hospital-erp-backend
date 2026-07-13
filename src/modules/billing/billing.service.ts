@@ -2166,14 +2166,27 @@ export async function recordDoctorVisit(
   tenantId: string,
   userId: string,
   admissionId: string,
-  data: { review?: string; fee?: number },
+  data: { review?: string },
   roles: string[] = [],
 ) {
   await assertIpLedgerAccess(tenantId, admissionId, { userId, roles }, { write: true });
   const r2 = (n: number) => Math.round(n * 100) / 100;
+
+  // The visit fee is decided by the hospital admin (the doctor's configured
+  // consultationFee) — NOT entered at visit time. Prefer the visiting doctor's
+  // fee; fall back to the admission's treating doctor's; else 0 (visit still
+  // logged, no charge).
+  const admission = await prisma.admission.findFirst({ where: { id: admissionId, tenantId }, select: { doctorId: true } });
+  const actorDoc = await prisma.doctorProfile.findFirst({ where: { userId, tenantId }, select: { consultationFee: true } });
+  let fee = Number(actorDoc?.consultationFee ?? 0);
+  if (!(fee > 0) && admission?.doctorId) {
+    const admDoc = await prisma.doctorProfile.findFirst({ where: { id: admission.doctorId, tenantId }, select: { consultationFee: true } });
+    fee = Number(admDoc?.consultationFee ?? 0);
+  }
+  fee = r2(Math.max(0, fee));
+
   const bill = await getOrCreateRunningIpBill(tenantId, admissionId, userId);
   const review = (data.review ?? '').trim();
-  const fee = r2(Math.max(0, data.fee ?? 0));
 
   const item = await prisma.billItem.create({
     data: {
@@ -2192,7 +2205,7 @@ export async function recordDoctorVisit(
   });
   await recalculateBillTotals(bill.id);
   logger.info({ tenantId, admissionId, billId: bill.id, fee }, 'IP doctor visit recorded');
-  return { billId: bill.id, item };
+  return { billId: bill.id, item, fee };
 }
 
 /**
