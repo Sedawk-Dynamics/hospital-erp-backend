@@ -632,6 +632,52 @@ export async function getAdmissionLedger(req: AuthenticatedRequest, res: Respons
   }
 }
 
+// The IP billing worklist — one row per admission, from day one.
+export async function getIpAdmissionsForBilling(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await billingService.getIpAdmissionsForBilling(req.user!.tenantId, req.user!.userId, {
+      search: (req.query.search as string) || undefined,
+      includeDischarged: req.query.includeDischarged === 'true' || req.query.includeDischarged === '1',
+      limit: req.query.limit ? Number(req.query.limit) : undefined,
+    });
+    sendResponse({ res, message: 'IP admissions for billing', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Cut (part of) the admission deposit from the running IP bill.
+export async function applyDepositToBill(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await billingService.applyDepositToBill(
+      req.user!.tenantId,
+      req.user!.userId,
+      req.params.admissionId as string,
+      { userId: req.user!.userId, roles: req.user!.roles ?? [] },
+      { amount: req.body?.amount != null ? Number(req.body.amount) : undefined },
+    );
+    sendResponse({ res, message: 'Deposit applied to the IP bill', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Return the unused deposit to the patient (e.g. insurance covered the charges).
+export async function refundDeposit(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await billingService.refundDeposit(
+      req.user!.tenantId,
+      req.user!.userId,
+      req.params.admissionId as string,
+      { userId: req.user!.userId, roles: req.user!.roles ?? [] },
+      { amount: req.body?.amount != null ? Number(req.body.amount) : undefined, reason: req.body?.reason },
+    );
+    sendResponse({ res, message: 'Deposit returned to the patient', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function recordDoctorVisit(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const data = await billingService.recordDoctorVisit(

@@ -285,6 +285,15 @@ billingRoutes.get(
   controller.getBills,
 );
 
+// IP billing worklist — one row per admission, listed from admission (literal
+// path: must sit before GET /:id so it isn't captured as an id).
+billingRoutes.get(
+  '/ip-admissions',
+  authenticate,
+  requirePermission('billing', 'read'),
+  controller.getIpAdmissionsForBilling,
+);
+
 billingRoutes.get(
   '/:id',
   authenticate,
@@ -398,6 +407,22 @@ billingRoutes.post(
   requirePermission('billing', 'update'),
   validate(recordTpaSettlementSchema),
   controller.recordTpaSettlement,
+);
+// Deposit at the billing counter: cut it from the running IP bill, or return the
+// unused part to the patient (e.g. insurance covered the charges in full).
+billingRoutes.post(
+  '/admissions/:admissionId/apply-deposit',
+  authenticate,
+  requirePermission('billing', 'update'),
+  validate(admissionActionParamSchema),
+  controller.applyDepositToBill,
+);
+billingRoutes.post(
+  '/admissions/:admissionId/refund-deposit',
+  authenticate,
+  requirePermission('billing', 'update'),
+  validate(admissionActionParamSchema),
+  controller.refundDeposit,
 );
 // Line-level insurance split — mark a bill line insurance-eligible / patient-only.
 billingRoutes.patch(

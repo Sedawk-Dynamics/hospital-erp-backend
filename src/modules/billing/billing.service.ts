@@ -812,7 +812,7 @@ export async function getBills(tenantId: string, query: GetBillsQuery) {
         // patient is "insurance"/"corporate" and can offer Transfer-to-TPA.
         admission: {
           select: {
-            id: true, billingCategory: true, status: true,
+            id: true, billingCategory: true, status: true, depositAmount: true,
             ward: { select: { name: true } },
             bed: { select: { bedNumber: true } },
           },
@@ -2229,11 +2229,12 @@ export async function getOrCreateRunningIpBill(tenantId: string, admissionId: st
     const ymd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
     const prefix = `IPW-${ymd}-`;
     // Derive the next sequence from the MAX existing number (not count — a deleted
-    // bill would make count collide with a surviving higher number). Retry on the
-    // unique-constraint race.
-    for (let attempt = 0; attempt < 5 && !bill; attempt++) {
+    // bill would make count collide with a surviving higher number). bill_number is
+    // GLOBALLY unique, so the max must be taken across ALL tenants (not tenant-scoped)
+    // — otherwise a tenant whose max lags the global max collides. Retry on the race.
+    for (let attempt = 0; attempt < 10 && !bill; attempt++) {
       const last = await prisma.bill.findFirst({
-        where: { tenantId, billNumber: { startsWith: prefix } },
+        where: { billNumber: { startsWith: prefix } },
         orderBy: { billNumber: 'desc' },
         select: { billNumber: true },
       });
@@ -2413,6 +2414,50 @@ export async function setBillItemReimbursable(tenantId: string, itemId: string, 
  * doctor fee, lab, imaging, OT) so the care team sees the true running total,
  * grouped by category, with deposit and the reimbursable / patient split.
  */
+// A deposit that's been moved onto the running IP bill is recorded as an
+// `advance` Payment tagged with this prefix (so we can tell the deposit apart
+// from cash the patient pays at the counter, and refund it later).
+const DEPOSIT_TXN_PREFIX = 'IPDEP:';
+
+/**
+ * The deposit "position" for an admission: how much was collected at admission
+ * (on file), how much has been applied onto the bill, and how much of that was
+ * refunded back to the patient. Derived entirely from Payment/Refund markers so
+ * no schema change is needed.
+ */
+async function getAdmissionDepositState(tenantId: string, admissionId: string) {
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  const admission = await prisma.admission.findFirst({
+    where: { id: admissionId, tenantId },
+    select: { depositAmount: true },
+  });
+  const onFile = r2(Number(admission?.depositAmount ?? 0));
+
+  const depositPayments = await prisma.payment.findMany({
+    where: { tenantId, status: 'completed', transactionId: { startsWith: DEPOSIT_TXN_PREFIX }, bill: { admissionId } },
+    select: { id: true, amount: true },
+  });
+  const applied = r2(depositPayments.reduce((s, p) => s + Number(p.amount), 0));
+
+  const paymentIds = depositPayments.map((p) => p.id);
+  const refunds = paymentIds.length
+    ? await prisma.refund.findMany({
+        where: { tenantId, paymentId: { in: paymentIds }, status: { in: ['requested', 'approved', 'processed'] } },
+        select: { amount: true },
+      })
+    : [];
+  const refunded = r2(refunds.reduce((s, r) => s + Number(r.amount), 0));
+
+  return {
+    onFile,
+    applied,
+    refunded,
+    // Deposit still sitting on file that could be applied to the bill.
+    availableToApply: r2(Math.max(0, onFile - applied)),
+    paymentIds,
+  };
+}
+
 export async function getAdmissionLedger(tenantId: string, admissionId: string, actor: { userId: string; roles: string[] }) {
   await assertIpLedgerAccess(tenantId, admissionId, actor, { write: false });
   const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -2464,10 +2509,28 @@ export async function getAdmissionLedger(tenantId: string, admissionId: string, 
   const totalPosted = r2(posted.reduce((s, l) => s + l.totalAmount, 0));
   const totalPending = r2(pending.reduce((s, l) => s + l.totalAmount, 0));
   const paid = r2(bills.reduce((s, b) => s + Number(b.amountPaid), 0));
-  const deposit = Number(admission.depositAmount ?? 0);
+  const insuranceCovered = r2(bills.reduce((s, b) => s + Number(b.insuranceCoveredAmount ?? 0), 0));
   const grandTotal = r2(totalPosted + totalPending);
   const reimbursable = r2(posted.filter((l) => l.isReimbursable === true).reduce((s, l) => s + l.totalAmount, 0));
   const nonReimbursable = r2(posted.filter((l) => l.isReimbursable === false).reduce((s, l) => s + l.totalAmount, 0));
+
+  // Deposit position (on file / applied / refunded) + the deposit-adjusted
+  // patient balance and how much of the deposit is now refundable.
+  const dep = await getAdmissionDepositState(tenantId, admissionId);
+  const deposit = dep.onFile;
+  // Real cash the patient paid at the counter (excludes deposit moved onto the bill).
+  const cashPaid = r2(Math.max(0, paid - dep.applied));
+  // What the patient must ultimately pay = charges minus the insurer-covered part.
+  const netPatientObligation = r2(Math.max(0, grandTotal - insuranceCovered));
+  // Money the hospital currently holds from the patient = deposit on file + cash
+  // paid, LESS any deposit already returned.
+  const moneyFromPatient = r2(cashPaid + deposit - dep.refunded);
+  // Deposit-adjusted balance still owed by the patient.
+  const balanceAfterDeposit = r2(Math.max(0, netPatientObligation - moneyFromPatient));
+  // Surplus the patient overpaid (e.g. insurance covered the charges) — refundable
+  // from the deposit (capped at the deposit not yet returned).
+  const surplus = r2(Math.max(0, moneyFromPatient - netPatientObligation));
+  const refundable = r2(Math.min(surplus, r2(Math.max(0, deposit - dep.refunded))));
 
   return {
     admissionId,
@@ -2481,12 +2544,264 @@ export async function getAdmissionLedger(tenantId: string, admissionId: string, 
       pending: totalPending,
       grandTotal,
       paid,
+      cashPaid,
+      insuranceCovered,
       deposit,
-      balanceAfterDeposit: r2(Math.max(0, grandTotal - paid - deposit)),
+      depositApplied: dep.applied,
+      depositRefunded: dep.refunded,
+      depositAvailable: dep.availableToApply,
+      balanceAfterDeposit,
+      refundable,
       reimbursable,
       nonReimbursable,
     },
   };
+}
+
+/**
+ * Billing-counter action: "cut the deposit from the bill" — move (part of) the
+ * admission's deposit onto the running IP bill as an `advance` payment, reducing
+ * the patient's balance due. Applied against the current outstanding balance; the
+ * deposit stays on file until there's a charge to set it against.
+ */
+export async function applyDepositToBill(
+  tenantId: string,
+  userId: string,
+  admissionId: string,
+  actor: { userId: string; roles: string[] },
+  opts: { amount?: number } = {},
+) {
+  await assertIpLedgerAccess(tenantId, admissionId, actor, { write: true });
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  const admission = await prisma.admission.findFirst({ where: { id: admissionId, tenantId }, select: { id: true, patientId: true } });
+  if (!admission) throw AppError.notFound('Admission not found');
+
+  const dep = await getAdmissionDepositState(tenantId, admissionId);
+  if (dep.availableToApply <= 0) throw AppError.badRequest('The full deposit has already been applied to the bill.');
+
+  const bill = await getOrCreateRunningIpBill(tenantId, admissionId, userId);
+  const fresh = await prisma.bill.findFirst({ where: { id: bill.id, tenantId }, select: { balanceDue: true } });
+  const balance = r2(Number(fresh?.balanceDue ?? 0));
+  if (balance <= 0) throw AppError.badRequest('No outstanding balance to set the deposit against yet — charges are still building up.');
+
+  const requested = opts.amount != null ? r2(Math.max(0, opts.amount)) : dep.availableToApply;
+  const toApply = r2(Math.min(requested, dep.availableToApply, balance));
+  if (toApply <= 0) throw AppError.badRequest('Nothing to apply.');
+
+  await prisma.payment.create({
+    data: {
+      tenantId,
+      billId: bill.id,
+      patientId: admission.patientId,
+      paymentDate: new Date(),
+      amount: toApply,
+      paymentMethod: 'advance',
+      paymentType: 'advance',
+      transactionId: `${DEPOSIT_TXN_PREFIX}${admissionId}`,
+      status: 'completed',
+      processedBy: userId,
+      notes: 'Admission deposit applied to IP bill',
+    },
+  });
+  await recalculateBillTotals(bill.id);
+  logger.info({ tenantId, admissionId, billId: bill.id, toApply }, 'Deposit applied to IP bill');
+  return getAdmissionLedger(tenantId, admissionId, actor);
+}
+
+/**
+ * Billing-counter action: "return the deposit" — refund the unused part of the
+ * deposit to the patient (typically when insurance covered the charges in full,
+ * so the deposit was never needed). Records the deposit as received on the bill
+ * (if it wasn't already) and raises a processed Refund against it.
+ */
+export async function refundDeposit(
+  tenantId: string,
+  userId: string,
+  admissionId: string,
+  actor: { userId: string; roles: string[] },
+  opts: { amount?: number; reason?: string } = {},
+) {
+  await assertIpLedgerAccess(tenantId, admissionId, actor, { write: true });
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  const admission = await prisma.admission.findFirst({ where: { id: admissionId, tenantId }, select: { id: true, patientId: true } });
+  if (!admission) throw AppError.notFound('Admission not found');
+
+  const ledger = await getAdmissionLedger(tenantId, admissionId, actor);
+  const refundableNow = Number(ledger.totals.refundable ?? 0);
+  const requested = opts.amount != null ? r2(Math.max(0, opts.amount)) : refundableNow;
+  const toRefund = r2(Math.min(requested, refundableNow));
+  if (toRefund <= 0) {
+    throw AppError.badRequest('No deposit to return — the charges (after insurance) still use up the deposit.');
+  }
+
+  // We need a completed Payment to attach the Refund to. Reuse an existing deposit
+  // payment with enough headroom, else record the deposit onto the running bill now.
+  const bill = await getOrCreateRunningIpBill(tenantId, admissionId, userId);
+  const depositPayments = await prisma.payment.findMany({
+    where: { tenantId, status: 'completed', transactionId: { startsWith: DEPOSIT_TXN_PREFIX }, bill: { admissionId } },
+    select: { id: true, amount: true, refunds: { where: { status: { in: ['requested', 'approved', 'processed'] } }, select: { amount: true } } },
+  });
+  let target = depositPayments.find((p) => {
+    const already = p.refunds.reduce((s, r) => s + Number(r.amount), 0);
+    return r2(Number(p.amount) - already) >= toRefund;
+  });
+  if (!target) {
+    const created = await prisma.payment.create({
+      data: {
+        tenantId,
+        billId: bill.id,
+        patientId: admission.patientId,
+        paymentDate: new Date(),
+        amount: toRefund,
+        paymentMethod: 'advance',
+        paymentType: 'advance',
+        transactionId: `${DEPOSIT_TXN_PREFIX}${admissionId}`,
+        status: 'completed',
+        processedBy: userId,
+        notes: 'Admission deposit recorded for refund',
+      },
+    });
+    await recalculateBillTotals(bill.id);
+    target = { id: created.id, amount: created.amount as any, refunds: [] };
+  }
+
+  const refund = await prisma.refund.create({
+    data: {
+      tenantId,
+      billId: bill.id,
+      paymentId: target.id,
+      patientId: admission.patientId,
+      amount: toRefund,
+      reason: opts.reason?.trim() || 'Deposit returned — charges covered (insurance / no balance)',
+      status: 'processed',
+      requestedBy: userId,
+      approvedBy: userId,
+      processedAt: new Date(),
+    },
+  });
+  logger.info({ tenantId, admissionId, billId: bill.id, refundId: refund.id, toRefund }, 'IP deposit returned to patient');
+  const summary = await getAdmissionLedger(tenantId, admissionId, actor);
+  return { refund, ledger: summary };
+}
+
+/**
+ * The IP billing worklist — ONE row per admission, shown from the moment the
+ * patient is admitted (not only once a bill exists). Every active admission gets
+ * its running IP bill ensured, its charges rolled up (deposit-adjusted), and its
+ * TPA/insurance claim surfaced. This is what the Hospital Billing → IP section lists.
+ */
+export async function getIpAdmissionsForBilling(
+  tenantId: string,
+  userId: string,
+  query: { search?: string; includeDischarged?: boolean; limit?: number } = {},
+) {
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  const limit = Math.min(Math.max(Number(query.limit ?? 60), 1), 200);
+  const search = query.search?.trim();
+
+  const patientFilter = search
+    ? {
+        OR: [
+          { firstName: { contains: search, mode: 'insensitive' as const } },
+          { lastName: { contains: search, mode: 'insensitive' as const } },
+          { mrn: { contains: search, mode: 'insensitive' as const } },
+        ],
+      }
+    : undefined;
+
+  const statusIn = query.includeDischarged ? ['admitted', 'discharged'] : ['admitted'];
+  const admissions = await prisma.admission.findMany({
+    where: {
+      tenantId,
+      status: { in: statusIn as any },
+      ...(patientFilter ? { patient: patientFilter } : {}),
+    },
+    orderBy: [{ status: 'asc' }, { admissionDate: 'desc' }],
+    take: limit,
+    select: {
+      id: true, status: true, admissionDate: true, dischargeDate: true,
+      depositAmount: true, billingCategory: true, patientId: true,
+      patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+      ward: { select: { name: true } },
+      bed: { select: { bedNumber: true } },
+    },
+  });
+
+  const rows = [];
+  for (const a of admissions) {
+    // Every ACTIVE admission gets a running bill so it appears here from day one
+    // and charges have somewhere to post. Discharged keeps whatever bills it has.
+    if (a.status === 'admitted') {
+      try { await getOrCreateRunningIpBill(tenantId, a.id, userId); } catch { /* non-fatal */ }
+    }
+    const bills = await prisma.bill.findMany({
+      where: { tenantId, admissionId: a.id, status: { not: 'cancelled' } },
+      orderBy: { createdAt: 'asc' },
+      select: {
+        id: true, billNumber: true, status: true,
+        totalAmount: true, amountPaid: true, balanceDue: true, discountAmount: true,
+        insuranceCoveredAmount: true, patientPayableAmount: true,
+        insuranceClaims: {
+          select: {
+            id: true, claimNumber: true, status: true, claimAmount: true, approvedAmount: true,
+            coveredAmount: true, patientShare: true, paidAmount: true, outstandingAmount: true,
+            policy: { select: { policyNumber: true, insurer: { select: { name: true } }, tpa: { select: { name: true } } } },
+          },
+          orderBy: { createdAt: 'desc' }, take: 1,
+        },
+      },
+    });
+    const primary = bills.find((b) => ['draft', 'pending', 'partially_paid'].includes(b.status)) ?? bills[bills.length - 1] ?? null;
+    const claim = bills.map((b) => b.insuranceClaims?.[0]).find(Boolean) ?? null;
+    const totalAmount = r2(bills.reduce((s, b) => s + Number(b.totalAmount), 0));
+    const amountPaid = r2(bills.reduce((s, b) => s + Number(b.amountPaid), 0));
+    const balanceDue = r2(bills.reduce((s, b) => s + Number(b.balanceDue), 0));
+    const insuranceCovered = r2(bills.reduce((s, b) => s + Number(b.insuranceCoveredAmount ?? 0), 0));
+    const patientPayable = r2(bills.reduce((s, b) => s + Number(b.patientPayableAmount ?? 0), 0));
+    const discountAmount = r2(bills.reduce((s, b) => s + Number(b.discountAmount ?? 0), 0));
+
+    const dep = await getAdmissionDepositState(tenantId, a.id);
+    const deposit = dep.onFile;
+    const cashPaid = r2(Math.max(0, amountPaid - dep.applied));
+    const netPatientObligation = r2(Math.max(0, totalAmount - insuranceCovered));
+    const moneyFromPatient = r2(cashPaid + deposit - dep.refunded);
+    const balanceAfterDeposit = r2(Math.max(0, netPatientObligation - moneyFromPatient));
+    const refundable = r2(Math.min(Math.max(0, moneyFromPatient - netPatientObligation), Math.max(0, deposit - dep.refunded)));
+
+    rows.push({
+      id: primary?.id ?? a.id,
+      billNumber: primary?.billNumber ?? '—',
+      status: primary?.status ?? 'draft',
+      admissionId: a.id,
+      totalAmount,
+      amountPaid,
+      balanceDue,
+      insuranceCoveredAmount: insuranceCovered,
+      patientPayableAmount: patientPayable,
+      discountAmount,
+      patient: a.patient,
+      admission: {
+        id: a.id,
+        billingCategory: a.billingCategory,
+        status: a.status,
+        ward: a.ward,
+        bed: a.bed,
+        depositAmount: deposit,
+        admissionDate: a.admissionDate ? a.admissionDate.toISOString() : null,
+        dischargeDate: a.dischargeDate ? a.dischargeDate.toISOString() : null,
+      },
+      insuranceClaims: claim ? [claim] : [],
+      deposit: {
+        onFile: deposit,
+        applied: dep.applied,
+        refunded: dep.refunded,
+        available: dep.availableToApply,
+        refundable,
+        balanceAfterDeposit,
+      },
+    });
+  }
+  return rows;
 }
 
 /**
