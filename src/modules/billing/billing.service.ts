@@ -2006,7 +2006,35 @@ async function resolveTransferPolicy(tenantId: string, patientId: string, opts: 
       include: { insurer: { select: { id: true, name: true } }, tpa: { select: { id: true, name: true } } },
     });
   }
-  return insurance.findActivePolicyForPatient(tenantId, patientId);
+  // Default (one-click handoff): use the patient's active policy if the insurance
+  // team already registered one; otherwise raise the claim against a PENDING
+  // placeholder policy that the TPA / insurance team fills in (insurer, TPA,
+  // coverage) and processes. The billing admin doesn't enter any details.
+  const active = await insurance.findActivePolicyForPatient(tenantId, patientId);
+  if (active) return active;
+
+  const policyInclude = { insurer: { select: { id: true, name: true } }, tpa: { select: { id: true, name: true } } };
+  const existingPending = await prisma.insurancePolicy.findFirst({
+    where: { tenantId, patientId, status: 'active', policyNumber: { startsWith: 'PENDING-' } },
+    include: policyInclude,
+  });
+  if (existingPending) return existingPending;
+
+  const pendingName = 'Pending TPA Assignment';
+  const insurer =
+    (await prisma.insurer.findFirst({ where: { tenantId, name: pendingName } })) ??
+    (await prisma.insurer.create({ data: { tenantId, name: pendingName } }));
+  const now = new Date();
+  return prisma.insurancePolicy.create({
+    data: {
+      tenantId, patientId, insurerId: insurer.id, tpaId: null,
+      policyNumber: `PENDING-${Date.now()}`,
+      coPayPercent: 0, deductibleAmount: 0,
+      validFrom: now, validTo: new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000),
+      status: 'active',
+    },
+    include: policyInclude,
+  });
 }
 
 export async function transferAdmissionToTpa(tenantId: string, userId: string, admissionId: string, opts: TransferToTpaOptions = {}) {
