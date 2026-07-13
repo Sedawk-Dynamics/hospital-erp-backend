@@ -160,6 +160,10 @@ pharmacyRoutes.patch('/dispensing/:id/verify', authenticate, requirePermission('
 // --- G12: ward→pharmacy order fulfilment status (Ordered→Preparing→Ready→Collected) ---
 pharmacyRoutes.patch('/queue/:id/status', authenticate, requirePermission('pharmacy', 'update'), validate(setPharmacyStatusSchema), controller.setPrescriptionPharmacyStatus);
 
+// All medicines dispensed to IP (admitted) patients — billed to the hospital IP
+// bill, not the pharmacy counter. The "medicines sent to IP" list.
+pharmacyRoutes.get('/ip-dispensed', authenticate, requirePermission('pharmacy', 'read'), controller.getIpDispensedMedicines);
+
 // --- G13: Ward stock (central pharmacy → ward, ward → patient, ward ledger) ---
 pharmacyRoutes.get('/ward-stock', authenticate, requirePermission('pharmacy', 'read'), validate(wardStockQuerySchema), controller.getWardStock);
 pharmacyRoutes.get('/ward-stock/ledger', authenticate, requirePermission('pharmacy', 'read'), validate(wardLedgerQuerySchema), controller.getWardLedger);

@@ -979,6 +979,19 @@ export async function getExpiringBatches(
   }
 }
 
+export async function getIpDispensedMedicines(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await pharmacyService.getIpDispensedMedicines(req.user!.tenantId, req.query as any);
+    sendResponse({ res, message: 'IP dispensed medicines', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // ============================================================
 // Dispensing
 // ============================================================

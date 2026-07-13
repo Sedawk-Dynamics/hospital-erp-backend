@@ -2078,6 +2078,85 @@ export async function setPrescriptionPharmacyStatus(
   return updated;
 }
 
+/**
+ * All medicines dispensed to IP (admitted) patients — i.e. billed onto a
+ * hospital IP bill (admission-scoped), NOT sold at the pharmacy counter. This is
+ * the ward-wide "medicines sent to IP" list. Backed by DispensingRecord whose
+ * billId points to an admission bill.
+ */
+export async function getIpDispensedMedicines(
+  tenantId: string,
+  query: { patientId?: string; wardId?: string; fromDate?: string; toDate?: string; limit?: number },
+) {
+  const take = Math.min(query.limit ?? 200, 500);
+  const dispensedAt: any = {};
+  if (query.fromDate) dispensedAt.gte = new Date(query.fromDate);
+  if (query.toDate) dispensedAt.lte = new Date(query.toDate);
+
+  const records = await prisma.dispensingRecord.findMany({
+    where: {
+      tenantId,
+      billId: { not: null },
+      ...(query.patientId ? { patientId: query.patientId } : {}),
+      ...(query.fromDate || query.toDate ? { dispensedAt } : {}),
+    },
+    select: {
+      id: true, quantityDispensed: true, saleUnit: true, unitPrice: true, lineTotal: true,
+      isTto: true, dispensedAt: true, billId: true,
+      patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+      drugBatch: { select: { batchNumber: true, drug: { select: { drugName: true, dosageForm: true, looseUnitLabel: true } } } },
+      dispenser: { select: { firstName: true, lastName: true } },
+    },
+    orderBy: { dispensedAt: 'desc' },
+    take: take * 2, // over-fetch; we filter to IP (admission) bills next
+  });
+
+  // Keep only records billed to an IP (admission-scoped) bill.
+  const billIds = [...new Set(records.map((r) => r.billId).filter(Boolean) as string[])];
+  const bills = billIds.length
+    ? await prisma.bill.findMany({
+        where: {
+          id: { in: billIds },
+          admissionId: { not: null },
+          ...(query.wardId ? { admission: { wardId: query.wardId } } : {}),
+        },
+        select: {
+          id: true, billNumber: true, status: true,
+          admission: { select: { id: true, ward: { select: { name: true } }, bed: { select: { bedNumber: true } }, status: true } },
+        },
+      })
+    : [];
+  const billMap = new Map(bills.map((b) => [b.id, b]));
+
+  const rows = records
+    .filter((r) => r.billId && billMap.has(r.billId))
+    .slice(0, take)
+    .map((r) => {
+      const bill = billMap.get(r.billId!)!;
+      return {
+        id: r.id,
+        dispensedAt: r.dispensedAt.toISOString(),
+        drugName: r.drugBatch.drug?.drugName ?? 'Drug',
+        dosageForm: r.drugBatch.drug?.dosageForm ?? null,
+        looseUnitLabel: r.drugBatch.drug?.looseUnitLabel ?? null,
+        batchNumber: r.drugBatch.batchNumber,
+        quantity: r.quantityDispensed,
+        saleUnit: r.saleUnit ?? 'loose',
+        unitPrice: Number(r.unitPrice ?? 0),
+        lineTotal: Number(r.lineTotal ?? 0),
+        isTto: r.isTto,
+        patient: r.patient,
+        dispensedBy: r.dispenser ? `${r.dispenser.firstName} ${r.dispenser.lastName ?? ''}`.trim() : null,
+        bill: { id: bill.id, billNumber: bill.billNumber, status: bill.status },
+        ward: bill.admission?.ward?.name ?? null,
+        bed: bill.admission?.bed?.bedNumber ?? null,
+      };
+    });
+
+  const totalAmount = Math.round(rows.reduce((s, r) => s + r.lineTotal, 0) * 100) / 100;
+  return { rows, count: rows.length, totalAmount };
+}
+
 export async function getExpiringBatches(tenantId: string, query: GetExpiringBatchesQuery) {
   const { skip, take, page, limit } = getPaginationParams(query);
 
@@ -2743,9 +2822,17 @@ export async function createPharmacySale(
   if (data.prescriptionId) {
     const rx = await prisma.prescription.findFirst({
       where: { id: data.prescriptionId, tenantId },
-      select: { id: true },
+      select: { id: true, prescriptionType: true },
     });
     if (!rx) throw AppError.notFound('Prescription not found');
+    // IP medicines are billed to the hospital (IP) bill via the ward indent —
+    // never sold/settled at the pharmacy counter (that would double-bill the
+    // patient, once on the IP bill and once on a PH- invoice).
+    if (rx.prescriptionType === 'ip') {
+      throw AppError.badRequest(
+        'IP medicines are billed to the patient\'s hospital (IP) bill, not at the pharmacy counter. Dispense this order from the Ward Indents queue — the charge is added to the IP bill automatically.',
+      );
+    }
   }
 
   // Automated compliance validation (spec Section 2) — hard-block a sale that
