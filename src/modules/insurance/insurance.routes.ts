@@ -30,8 +30,6 @@ import {
   approvePreAuthSchema,
   rejectPreAuthSchema,
   holdPreAuthSchema,
-  createTpaLogSchema,
-  getTpaLogsQuerySchema,
   calcResponsibilitySchema,
   splitBillSchema,
   reportsQuerySchema,
@@ -102,12 +100,6 @@ insuranceRoutes.patch('/pre-auth/:id/reject', authenticate, requirePermission('i
 insuranceRoutes.patch('/pre-auth/:id/hold', authenticate, requirePermission('insurance', 'approve'), validate(holdPreAuthSchema), controller.holdPreAuth);
 insuranceRoutes.patch('/pre-auth/:id/release-hold', authenticate, requirePermission('insurance', 'approve'), validate(idParamSchema), controller.releasePreAuthHold);
 insuranceRoutes.patch('/pre-auth/:id/cancel', authenticate, requirePermission('insurance', 'update'), validate(idParamSchema), controller.cancelPreAuth);
-
-// ============================================================
-// TPA Communication Logs
-// ============================================================
-insuranceRoutes.post('/tpa-logs', authenticate, requirePermission('insurance', 'create'), validate(createTpaLogSchema), controller.createTpaLog);
-insuranceRoutes.get('/tpa-logs', authenticate, requirePermission('insurance', 'read'), validate(getTpaLogsQuerySchema), controller.getTpaLogs);
 
 // ============================================================
 // Calc + Bill Split

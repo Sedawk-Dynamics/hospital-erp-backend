@@ -333,31 +333,6 @@ export const holdPreAuthSchema = z.object({
 });
 
 // ============================================================
-// TPA Communication Logs
-// ============================================================
-
-export const createTpaLogSchema = z.object({
-  body: z.object({
-    tpaId: z.string().uuid('Invalid TPA ID'),
-    claimId: z.string().uuid('Invalid claim ID').optional(),
-    communicationType: z.enum(['email', 'phone', 'portal', 'letter']).optional(),
-    direction: z.enum(['inbound', 'outbound']).optional(),
-    subject: z.string().max(255).optional(),
-    content: z.string().optional(),
-  }),
-});
-
-export const getTpaLogsQuerySchema = z.object({
-  query: paginationSchema.extend({
-    tpaId: z.string().uuid().optional(),
-    claimId: z.string().uuid().optional(),
-    direction: z.enum(['inbound', 'outbound']).optional(),
-    fromDate: z.string().optional(),
-    toDate: z.string().optional(),
-  }),
-});
-
-// ============================================================
 // Calc / Bill split / Reports
 // ============================================================
 
@@ -410,5 +385,4 @@ export type UpdatePreAuthInput = z.infer<typeof updatePreAuthSchema>['body'];
 export type ApprovePreAuthInput = z.infer<typeof approvePreAuthSchema>['body'];
 export type RejectPreAuthInput = z.infer<typeof rejectPreAuthSchema>['body'];
 export type HoldPreAuthInput = z.infer<typeof holdPreAuthSchema>['body'];
-export type CreateTpaLogInput = z.infer<typeof createTpaLogSchema>['body'];
 export type SplitBillInput = z.infer<typeof splitBillSchema>['body'];

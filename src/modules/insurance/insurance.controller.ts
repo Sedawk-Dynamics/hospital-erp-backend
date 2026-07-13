@@ -276,22 +276,6 @@ export async function cancelPreAuth(req: AuthenticatedRequest, res: Response, ne
 }
 
 // ============================================================
-// TPA logs
-// ============================================================
-export async function createTpaLog(req: AuthenticatedRequest, res: Response, next: NextFunction) {
-  try {
-    const data = await service.createTpaLog(req.user!.tenantId, req.user!.userId, req.body);
-    sendResponse({ res, statusCode: 201, message: 'TPA log recorded', data });
-  } catch (err) { next(err); }
-}
-export async function getTpaLogs(req: AuthenticatedRequest, res: Response, next: NextFunction) {
-  try {
-    const result = await service.getTpaLogs(req.user!.tenantId, req.query as any);
-    sendPaginatedResponse(res, result.logs, result.total, result.page, result.limit, 'TPA logs retrieved');
-  } catch (err) { next(err); }
-}
-
-// ============================================================
 // Calc / Bill split
 // ============================================================
 export async function calcResponsibility(req: AuthenticatedRequest, res: Response, next: NextFunction) {

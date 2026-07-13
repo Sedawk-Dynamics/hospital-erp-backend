@@ -23,7 +23,6 @@ import type {
   ApprovePreAuthInput,
   RejectPreAuthInput,
   HoldPreAuthInput,
-  CreateTpaLogInput,
   SplitBillInput,
 } from './insurance.validation';
 
@@ -1631,76 +1630,6 @@ export async function cancelPreAuth(tenantId: string, id: string) {
 
   logger.info({ tenantId, preAuthId: id }, 'Pre-authorization cancelled');
   return preAuth;
-}
-
-// ============================================================
-// TPA Communication Logs
-// ============================================================
-
-export async function createTpaLog(tenantId: string, userId: string, data: CreateTpaLogInput) {
-  const tpa = await prisma.tpaProvider.findFirst({ where: { id: data.tpaId, tenantId } });
-  if (!tpa) throw AppError.notFound('TPA provider not found');
-
-  if (data.claimId) {
-    const claim = await prisma.insuranceClaim.findFirst({ where: { id: data.claimId, tenantId } });
-    if (!claim) throw AppError.notFound('Insurance claim not found');
-  }
-
-  const log = await prisma.tpaCommunicationLog.create({
-    data: {
-      tenantId,
-      tpaId: data.tpaId,
-      claimId: data.claimId,
-      communicationType: data.communicationType,
-      direction: data.direction,
-      subject: data.subject,
-      content: data.content,
-      communicatedBy: userId,
-    },
-    include: {
-      tpa: { select: { id: true, name: true } },
-      claim: { select: { id: true, claimNumber: true } },
-      communicator: { select: { id: true, firstName: true, lastName: true } },
-    },
-  });
-
-  logger.info({ tenantId, logId: log.id, tpaId: data.tpaId, claimId: data.claimId }, 'TPA communication log created');
-  return log;
-}
-
-export async function getTpaLogs(tenantId: string, query: any) {
-  const { skip, take, page, limit } = getPaginationParams(query);
-
-  const where: any = { tenantId };
-  if (query.tpaId) where.tpaId = query.tpaId;
-  if (query.claimId) where.claimId = query.claimId;
-  if (query.direction) where.direction = query.direction;
-  if (query.fromDate) where.createdAt = { ...where.createdAt, gte: new Date(query.fromDate) };
-  if (query.toDate) where.createdAt = { ...where.createdAt, lte: new Date(query.toDate) };
-
-  if (query.search) {
-    where.OR = [
-      { subject: { contains: query.search, mode: 'insensitive' } },
-      { content: { contains: query.search, mode: 'insensitive' } },
-    ];
-  }
-
-  const [logs, total] = await Promise.all([
-    prisma.tpaCommunicationLog.findMany({
-      where,
-      skip,
-      take,
-      include: {
-        tpa: { select: { id: true, name: true } },
-        claim: { select: { id: true, claimNumber: true } },
-        communicator: { select: { id: true, firstName: true, lastName: true } },
-      },
-      orderBy: { createdAt: 'desc' },
-    }),
-    prisma.tpaCommunicationLog.count({ where }),
-  ]);
-
-  return { logs, total, page, limit };
 }
 
 // ============================================================
