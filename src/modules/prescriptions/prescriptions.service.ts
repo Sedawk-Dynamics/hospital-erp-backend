@@ -250,7 +250,14 @@ export async function getPrescriptions(tenantId: string, query: GetPrescriptions
             },
           },
         },
-        prescriptionItems: true,
+        // Include the stocked drug's pack/loose config so the pharmacy queue can
+        // render the total as tablets + a pack/loose breakdown (packSize base
+        // units per strip, looseUnitLabel = the sub-unit name).
+        prescriptionItems: {
+          include: {
+            drug: { select: { packSize: true, looseUnitLabel: true, dosageForm: true } },
+          },
+        },
       },
       orderBy: { createdAt: query.sortOrder || 'desc' },
     }),
@@ -292,6 +299,8 @@ export async function getPrescriptionById(tenantId: string, id: string) {
             orderBy: { administeredAt: 'desc' },
             take: 5,
           },
+          // Pack/loose config for the POS + queue detail.
+          drug: { select: { packSize: true, looseUnitLabel: true, dosageForm: true } },
         },
       },
     },
