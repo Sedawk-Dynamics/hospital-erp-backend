@@ -173,6 +173,22 @@ export const admissionActionParamSchema = z.object({
   params: z.object({ admissionId: z.string().uuid('Invalid admission ID') }),
 });
 
+// Transfer to TPA — optionally with an explicit policy or inline new-policy details.
+export const transferToTpaSchema = z.object({
+  params: z.object({ admissionId: z.string().uuid('Invalid admission ID') }),
+  body: z.object({
+    policyId: z.string().uuid().optional(),
+    newPolicy: z.object({
+      insurerName: z.string().min(1).max(255),
+      tpaName: z.string().max(255).optional(),
+      policyNumber: z.string().max(100).optional(),
+      coverageAmount: z.number().min(0).optional(),
+      coPayPercent: z.number().min(0).max(100).optional(),
+      deductibleAmount: z.number().min(0).optional(),
+    }).optional(),
+  }).optional(),
+});
+
 // Record a TPA payment against the admission's claim.
 export const recordTpaSettlementSchema = z.object({
   params: z.object({ admissionId: z.string().uuid('Invalid admission ID') }),

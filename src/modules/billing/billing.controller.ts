@@ -585,6 +585,7 @@ export async function transferAdmissionToTpa(req: AuthenticatedRequest, res: Res
       req.user!.tenantId,
       req.user!.userId,
       req.params.admissionId as string,
+      req.body ?? {},
     );
     sendResponse({ res, statusCode: 201, message: 'Bill transferred to TPA — insurance claim raised', data });
   } catch (err) {

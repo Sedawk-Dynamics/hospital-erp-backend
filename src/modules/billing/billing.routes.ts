@@ -11,6 +11,7 @@ import {
   addIpChargeSchema,
   admissionLedgerParamSchema,
   admissionActionParamSchema,
+  transferToTpaSchema,
   recordTpaSettlementSchema,
   setBillItemReimbursableSchema,
   removeIpChargeSchema,
@@ -387,7 +388,7 @@ billingRoutes.post(
   '/admissions/:admissionId/transfer-to-tpa',
   authenticate,
   requirePermission('billing', 'update'),
-  validate(admissionActionParamSchema),
+  validate(transferToTpaSchema),
   controller.transferAdmissionToTpa,
 );
 // Record a TPA payment (approve-if-needed + settle) against the admission's claim.

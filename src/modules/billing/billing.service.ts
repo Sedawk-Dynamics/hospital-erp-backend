@@ -1957,7 +1957,59 @@ export async function consolidateAdmissionBill(
  * trigger it even though they only have insurance:read (the claim is created via
  * the service layer, not the permission-gated insurance HTTP route).
  */
-export async function transferAdmissionToTpa(tenantId: string, userId: string, admissionId: string) {
+export interface TransferToTpaOptions {
+  policyId?: string;
+  // Create a policy on the fly at transfer time (billing desk has no insurance:create).
+  newPolicy?: {
+    insurerName: string;
+    tpaName?: string;
+    policyNumber?: string;
+    coverageAmount?: number;
+    coPayPercent?: number;
+    deductibleAmount?: number;
+  };
+}
+
+/** Resolve which policy to claim against: explicit id, inline new policy, or the patient's active one. */
+async function resolveTransferPolicy(tenantId: string, patientId: string, opts: TransferToTpaOptions) {
+  const insurance = await import('../insurance/insurance.service');
+  if (opts.policyId) {
+    return prisma.insurancePolicy.findFirst({
+      where: { id: opts.policyId, tenantId },
+      include: { insurer: { select: { id: true, name: true } }, tpa: { select: { id: true, name: true } } },
+    });
+  }
+  if (opts.newPolicy?.insurerName?.trim()) {
+    const np = opts.newPolicy;
+    const insurer =
+      (await prisma.insurer.findFirst({ where: { tenantId, name: np.insurerName.trim() } })) ??
+      (await prisma.insurer.create({ data: { tenantId, name: np.insurerName.trim() } }));
+    let tpaId: string | null = null;
+    if (np.tpaName?.trim()) {
+      const tpa =
+        (await prisma.tpaProvider.findFirst({ where: { tenantId, name: np.tpaName.trim() } })) ??
+        (await prisma.tpaProvider.create({ data: { tenantId, name: np.tpaName.trim() } }));
+      tpaId = tpa.id;
+    }
+    const now = new Date();
+    return prisma.insurancePolicy.create({
+      data: {
+        tenantId, patientId, insurerId: insurer.id, tpaId,
+        policyNumber: np.policyNumber?.trim() || `POL-${Date.now()}`,
+        coverageAmount: np.coverageAmount ?? null,
+        coPayPercent: np.coPayPercent ?? 0,
+        deductibleAmount: np.deductibleAmount ?? 0,
+        validFrom: now,
+        validTo: new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000),
+        status: 'active',
+      },
+      include: { insurer: { select: { id: true, name: true } }, tpa: { select: { id: true, name: true } } },
+    });
+  }
+  return insurance.findActivePolicyForPatient(tenantId, patientId);
+}
+
+export async function transferAdmissionToTpa(tenantId: string, userId: string, admissionId: string, opts: TransferToTpaOptions = {}) {
   const r2 = (n: number) => Math.round(n * 100) / 100;
   const admission = await prisma.admission.findFirst({
     where: { id: admissionId, tenantId },
@@ -1980,11 +2032,11 @@ export async function transferAdmissionToTpa(tenantId: string, userId: string, a
     throw AppError.badRequest(`This bill is already with the TPA (claim ${existing.claimNumber ?? existing.id}, ${existing.status}).`);
   }
 
-  // 3. Find the patient's active policy + raise + split (via the insurance module).
+  // 3. Resolve the policy (explicit / inline-new / patient's active) + raise + split.
   const insurance = await import('../insurance/insurance.service');
-  const policy = await insurance.findActivePolicyForPatient(tenantId, admission.patientId);
+  const policy = await resolveTransferPolicy(tenantId, admission.patientId, opts);
   if (!policy) {
-    throw AppError.badRequest('No active insurance policy found for this patient. Add / verify a policy in the Insurance module first.');
+    throw AppError.badRequest('No insurance policy for this patient. Enter the insurer / TPA + policy details when transferring, or add a policy in the Insurance module.');
   }
 
   // Line-level split: only the INSURANCE-ELIGIBLE lines go to the TPA. A line is
