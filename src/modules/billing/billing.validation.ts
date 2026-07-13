@@ -182,6 +182,12 @@ export const recordTpaSettlementSchema = z.object({
   }),
 });
 
+// Mark a bill line insurance-eligible (true) / patient-only (false) / unset (null).
+export const setBillItemReimbursableSchema = z.object({
+  params: z.object({ itemId: z.string().uuid('Invalid bill line ID') }),
+  body: z.object({ isReimbursable: z.boolean().nullable() }),
+});
+
 export const getPaymentsQuerySchema = z.object({
   query: paginationSchema.extend({
     patientId: z.string().uuid().optional(),

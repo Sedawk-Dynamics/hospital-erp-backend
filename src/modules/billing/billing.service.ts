@@ -1958,6 +1958,7 @@ export async function consolidateAdmissionBill(
  * the service layer, not the permission-gated insurance HTTP route).
  */
 export async function transferAdmissionToTpa(tenantId: string, userId: string, admissionId: string) {
+  const r2 = (n: number) => Math.round(n * 100) / 100;
   const admission = await prisma.admission.findFirst({
     where: { id: admissionId, tenantId },
     select: { id: true, patientId: true, billingCategory: true },
@@ -1986,14 +1987,25 @@ export async function transferAdmissionToTpa(tenantId: string, userId: string, a
     throw AppError.badRequest('No active insurance policy found for this patient. Add / verify a policy in the Insurance module first.');
   }
 
+  // Line-level split: only the INSURANCE-ELIGIBLE lines go to the TPA. A line is
+  // claimed unless it's explicitly marked non-reimbursable (patient-only). The
+  // patient always owes the non-reimbursable lines + whatever the insurer doesn't
+  // cover (copay / deductible / over-limit) on the claimed portion.
+  const items = await prisma.billItem.findMany({ where: { billId: bill.id }, select: { totalAmount: true, isReimbursable: true } });
+  const reimbursable = r2(items.filter((it) => it.isReimbursable !== false).reduce((s, it) => s + Number(it.totalAmount), 0));
+  const claimAmountToTpa = reimbursable > 0 ? reimbursable : claimAmount;
+
   const claim = await insurance.createClaim(tenantId, userId, {
     policyId: policy.id,
     patientId: admission.patientId,
     billId: bill.id,
-    claimAmount,
+    claimAmount: claimAmountToTpa,
   });
-  // Reflect the insurer-covered / patient-payable split on the bill.
-  await insurance.splitBill(tenantId, bill.id, { policyId: policy.id });
+  // Reflect the insurer-covered vs patient-payable split on the WHOLE bill:
+  // insurer covers the covered portion of the claimed lines; the patient owes
+  // everything else (non-reimbursable lines + uncovered part of the claim).
+  const covered = Number(claim.coveredAmount ?? 0);
+  await insurance.applyBillSplit(tenantId, bill.id, covered, r2(claimAmount - covered));
 
   const updatedBill = await prisma.bill.findFirst({
     where: { id: bill.id, tenantId },
@@ -2277,6 +2289,42 @@ export async function removeIpCharge(
   await recalculateBillTotals(item.billId);
   logger.info({ tenantId, admissionId, billId: item.billId, itemId }, 'IP ledger charge removed');
   return { billId: item.billId, removed: itemId };
+}
+
+/**
+ * Mark a bill line as insurance-eligible (reimbursable) or patient-only. This is
+ * the line-level split — some charges the insurer covers, some the patient always
+ * pays. If the bill already has a live TPA claim, the insurer / patient split on
+ * the bill is recomputed so the balances stay correct.
+ */
+export async function setBillItemReimbursable(tenantId: string, itemId: string, isReimbursable: boolean | null) {
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  const item = await prisma.billItem.findFirst({
+    where: { id: itemId, bill: { tenantId } },
+    select: { id: true, billId: true, bill: { select: { id: true, admissionId: true, totalAmount: true } } },
+  });
+  if (!item) throw AppError.notFound('Bill line not found');
+
+  await prisma.billItem.update({ where: { id: itemId }, data: { isReimbursable } });
+
+  // If a live claim exists, re-split the bill against the new reimbursable set.
+  const claim = await prisma.insuranceClaim.findFirst({
+    where: { tenantId, billId: item.billId, status: { notIn: ['cancelled', 'rejected'] } },
+    orderBy: { createdAt: 'desc' },
+    select: { id: true, policyId: true },
+  });
+  if (claim) {
+    const insurance = await import('../insurance/insurance.service');
+    const items = await prisma.billItem.findMany({ where: { billId: item.billId }, select: { totalAmount: true, isReimbursable: true } });
+    const reimbursable = r2(items.filter((it) => it.isReimbursable !== false).reduce((s, it) => s + Number(it.totalAmount), 0));
+    const total = Number(item.bill.totalAmount);
+    const policy = await prisma.insurancePolicy.findFirst({ where: { id: claim.policyId, tenantId }, select: { coPayPercent: true, deductibleAmount: true, coverageAmount: true } });
+    const split = insurance.computeResponsibility(reimbursable, Number(policy?.coPayPercent ?? 0), Number(policy?.deductibleAmount ?? 0), Number(policy?.coverageAmount ?? 0));
+    await insurance.applyBillSplit(tenantId, item.billId, split.coveredAmount, r2(total - split.coveredAmount));
+  }
+
+  logger.info({ tenantId, billId: item.billId, itemId, isReimbursable }, 'Bill line reimbursable flag set');
+  return { billId: item.billId, itemId, isReimbursable };
 }
 
 /**

@@ -1173,7 +1173,7 @@ export async function cancelClaim(
 // Bill split helper
 // ============================================================
 
-async function applyBillSplit(
+export async function applyBillSplit(
   tenantId: string,
   billId: string,
   insurancePortion: number,

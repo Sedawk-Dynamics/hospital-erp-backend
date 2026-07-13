@@ -606,6 +606,19 @@ export async function recordTpaSettlement(req: AuthenticatedRequest, res: Respon
   }
 }
 
+export async function setBillItemReimbursable(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await billingService.setBillItemReimbursable(
+      req.user!.tenantId,
+      req.params.itemId as string,
+      req.body.isReimbursable ?? null,
+    );
+    sendResponse({ res, message: 'Bill line split updated', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getAdmissionLedger(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const data = await billingService.getAdmissionLedger(req.user!.tenantId, req.params.admissionId as string, {

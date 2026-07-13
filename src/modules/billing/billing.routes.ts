@@ -12,6 +12,7 @@ import {
   admissionLedgerParamSchema,
   admissionActionParamSchema,
   recordTpaSettlementSchema,
+  setBillItemReimbursableSchema,
   removeIpChargeSchema,
   recordDoctorVisitSchema,
   removeBillItemSchema,
@@ -396,6 +397,14 @@ billingRoutes.post(
   requirePermission('billing', 'update'),
   validate(recordTpaSettlementSchema),
   controller.recordTpaSettlement,
+);
+// Line-level insurance split — mark a bill line insurance-eligible / patient-only.
+billingRoutes.patch(
+  '/bill-items/:itemId/reimbursable',
+  authenticate,
+  requirePermission('billing', 'update'),
+  validate(setBillItemReimbursableSchema),
+  controller.setBillItemReimbursable,
 );
 
 billingRoutes.patch(
