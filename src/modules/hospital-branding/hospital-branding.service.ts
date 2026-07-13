@@ -1,7 +1,7 @@
 import { prisma } from '../../config/database';
 import { AppError } from '../../shared/appError';
 import { getFileUrl } from '../../services/upload.service';
-import { DEFAULT_ACCENT, type HospitalBranding } from '../../services/pdf-branding';
+import { DEFAULT_ACCENT, DEFAULT_SHOW, type BrandingVisibility, type HospitalBranding } from '../../services/pdf-branding';
 
 // Per-hospital PDF/print branding. Stored as: the identity fields on the Tenant
 // row (so the rest of the app stays consistent) + the PDF-only extras in
@@ -51,6 +51,7 @@ export async function getHospitalBranding(tenantId: string): Promise<HospitalBra
     accreditation: x.accreditation ?? t.accreditationInfo ?? null,
     footerText: x.footerText ?? null,
     accentColor: x.accentColor && /^#[0-9a-fA-F]{6}$/.test(x.accentColor) ? x.accentColor : DEFAULT_ACCENT,
+    show: { ...DEFAULT_SHOW, ...((x.show as Partial<BrandingVisibility>) ?? {}) },
   };
 }
 
@@ -68,6 +69,8 @@ export async function updateHospitalBranding(tenantId: string, data: UpdateBrand
     accentColor: data.accentColor && /^#[0-9a-fA-F]{6}$/.test(data.accentColor) ? data.accentColor : current.accentColor,
     showLogo: data.showLogo ?? current.showLogo,
     name: (data.name ?? current.name)?.trim() || 'Hospital',
+    // Merge the visibility toggles (partial updates keep the untouched ones).
+    show: { ...current.show, ...(data.show ?? {}) },
   };
 
   const existingTheme = (t?.themeConfig && typeof t.themeConfig === 'object') ? (t.themeConfig as Record<string, unknown>) : {};

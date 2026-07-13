@@ -10,6 +10,25 @@ import { UPLOAD_DIR } from './upload.service';
 // single renderer so a change in the builder shows up everywhere consistently.
 // ---------------------------------------------------------------------------
 
+// Which optional bits appear on the document. Toggled by the hospital admin in
+// the PDF Builder; the renderer + print view honour them.
+export interface BrandingVisibility {
+  tagline: boolean;
+  address: boolean;
+  phone: boolean;
+  email: boolean;
+  website: boolean;
+  registrationNo: boolean;
+  gstin: boolean;
+  accreditation: boolean;
+  footer: boolean;
+}
+
+export const DEFAULT_SHOW: BrandingVisibility = {
+  tagline: true, address: true, phone: true, email: true, website: true,
+  registrationNo: true, gstin: true, accreditation: true, footer: true,
+};
+
 export interface HospitalBranding {
   name: string;
   tagline: string | null;
@@ -31,6 +50,7 @@ export interface HospitalBranding {
   accreditation: string | null;
   footerText: string | null;
   accentColor: string; // hex
+  show: BrandingVisibility;
 }
 
 export const DEFAULT_ACCENT = '#0f766e';
@@ -71,14 +91,23 @@ interface HeaderOpts {
 export function drawBrandedHeader(pdf: PDFKit.PDFDocument, b: HospitalBranding, opts: HeaderOpts) {
   const { title, margin, contentWidth } = opts;
   const accent = /^#[0-9a-fA-F]{6}$/.test(b.accentColor) ? b.accentColor : DEFAULT_ACCENT;
+  const s = b.show ?? DEFAULT_SHOW;
   const left = margin;
   const logoPath = b.showLogo ? resolveLogoPath(b.logoUrl) : null;
-  const addr = brandingAddressLine(b);
-  const contact = [b.phone, b.altPhone, b.email, b.website].filter(Boolean).join('  •  ');
+  const showTagline = !!b.tagline && s.tagline;
+  const addr = s.address ? brandingAddressLine(b) : null;
+  const contact = [
+    s.phone ? b.phone : null,
+    s.phone ? b.altPhone : null,
+    s.email ? b.email : null,
+    s.website ? b.website : null,
+  ]
+    .filter(Boolean)
+    .join('  •  ');
   const reg = [
-    b.registrationNo ? `Reg. No: ${b.registrationNo}` : '',
-    b.gstin ? `GSTIN: ${b.gstin}` : '',
-    b.accreditation || '',
+    s.registrationNo && b.registrationNo ? `Reg. No: ${b.registrationNo}` : '',
+    s.gstin && b.gstin ? `GSTIN: ${b.gstin}` : '',
+    s.accreditation ? b.accreditation || '' : '',
   ]
     .filter(Boolean)
     .join('  •  ');
@@ -91,7 +120,7 @@ export function drawBrandedHeader(pdf: PDFKit.PDFDocument, b: HospitalBranding, 
     const tx = left + 76;
     const tw = contentWidth - 76;
     pdf.font('Helvetica-Bold').fontSize(17).fillColor(INK).text(b.name, tx, topY, { width: tw });
-    if (b.tagline) pdf.font('Helvetica-Oblique').fontSize(9).fillColor(accent).text(b.tagline, tx, pdf.y, { width: tw });
+    if (showTagline) pdf.font('Helvetica-Oblique').fontSize(9).fillColor(accent).text(b.tagline ?? "", tx, pdf.y, { width: tw });
     pdf.font('Helvetica').fontSize(8.5).fillColor(MUTED);
     if (addr) pdf.text(addr, tx, pdf.y + 1, { width: tw });
     if (contact) pdf.text(contact, tx, pdf.y, { width: tw });
@@ -108,7 +137,7 @@ export function drawBrandedHeader(pdf: PDFKit.PDFDocument, b: HospitalBranding, 
       pdf.y = topY;
     }
     pdf.font('Helvetica-Bold').fontSize(18).fillColor(INK).text(b.name, left, pdf.y, { width: contentWidth, align: 'center' });
-    if (b.tagline) pdf.font('Helvetica-Oblique').fontSize(9).fillColor(accent).text(b.tagline, { width: contentWidth, align: 'center' });
+    if (showTagline) pdf.font('Helvetica-Oblique').fontSize(9).fillColor(accent).text(b.tagline ?? "", { width: contentWidth, align: 'center' });
     pdf.font('Helvetica').fontSize(8.5).fillColor(MUTED);
     if (addr) pdf.text(addr, { width: contentWidth, align: 'center' });
     if (contact) pdf.text(contact, { width: contentWidth, align: 'center' });
@@ -140,7 +169,7 @@ export function drawBrandedFooters(pdf: PDFKit.PDFDocument, b: HospitalBranding,
     pdf.font('Helvetica').fontSize(7).fillColor(MUTED);
     pdf.text(b.name, left, fy, { width: contentWidth / 2, align: 'left' });
     pdf.text(`Page ${i + 1} of ${range.count}`, left + contentWidth / 2, fy, { width: contentWidth / 2, align: 'right' });
-    if (i === range.count - 1) {
+    if (i === range.count - 1 && (b.show?.footer ?? true)) {
       pdf.fillColor(MUTED).fontSize(6.8).text(footer, left, fy + 9, { width: contentWidth, align: 'center' });
     }
   }

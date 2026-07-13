@@ -69,6 +69,7 @@ function coerce(body: Record<string, unknown>, base: HospitalBranding): Hospital
     accreditation: s('accreditation'),
     footerText: s('footerText'),
     accentColor: typeof body.accentColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(body.accentColor) ? body.accentColor : base.accentColor || DEFAULT_ACCENT,
+    show: { ...base.show, ...(body.show && typeof body.show === 'object' ? (body.show as Partial<HospitalBranding['show']>) : {}) },
   };
 }
 
