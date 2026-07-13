@@ -3,6 +3,7 @@ import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
 import { sendDischargeSummaryPublishedEmail } from '../../services/email.service';
+import type { DischargeDocument, DischargeVitalRow } from './discharge-summary-pdf';
 
 interface GetMrdQuery {
   page?: number;
@@ -726,6 +727,170 @@ export async function getDischargeSummaryForPdf(tenantId: string, id: string) {
     throw AppError.badRequest('Cannot export a draft discharge summary');
   }
   return summary;
+}
+
+/**
+ * Assemble the FULL, fully-detailed discharge document for an admission — the
+ * doctor's signed narrative sections PLUS all the structured clinical data
+ * (demographics, admission/LOS, emergency contact, allergies, vitals on
+ * admission & discharge, procedures, imaging, structured discharge meds). Used
+ * for both the PDF and the on-screen print view so they render identically.
+ */
+export async function buildDischargeDocument(tenantId: string, id: string): Promise<DischargeDocument> {
+  const summary = await getDischargeSummaryById(tenantId, id);
+  const { visitId, patientId } = summary;
+  const num = (v: unknown) => (v === null || v === undefined ? null : Number(v));
+
+  const [patient, tenant, emergency, allergies, diagnoses, vitalsAll, otRequests, imaging, prescriptions] = await Promise.all([
+    prisma.patient.findFirst({
+      where: { id: patientId },
+      select: {
+        firstName: true, lastName: true, mrn: true, dateOfBirth: true, gender: true,
+        bloodGroup: true, phone: true, addressLine1: true, addressLine2: true, city: true,
+        state: true, maritalStatus: true, nationality: true,
+      },
+    }),
+    prisma.tenant.findFirst({
+      where: { id: tenantId },
+      select: { name: true, address: true, city: true, state: true, country: true, phone: true, email: true, website: true, licenseNumber: true, accreditationInfo: true },
+    }),
+    prisma.patientEmergencyContact.findFirst({
+      where: { patientId },
+      orderBy: [{ isPrimary: 'desc' }, { createdAt: 'asc' }],
+      select: { name: true, relationship: true, phone: true },
+    }),
+    prisma.patientAllergy.findMany({ where: { patientId }, select: { allergen: true, reaction: true }, orderBy: { createdAt: 'asc' } }),
+    prisma.diagnosis.findMany({ where: { visitId }, orderBy: { diagnosedAt: 'asc' }, select: { diagnosisName: true, diagnosisType: true, icdCode: true } }),
+    prisma.vital.findMany({ where: { visitId }, orderBy: { recordedAt: 'asc' } }),
+    prisma.otRequest.findMany({
+      where: { visitId, tenantId },
+      orderBy: [{ scheduledDate: 'asc' }],
+      select: { procedureName: true, surgeryType: true, scheduledDate: true, actualStartTime: true, status: true, surgeon: { select: { user: { select: { firstName: true, lastName: true } } } } },
+    }),
+    prisma.imagingRequest.findMany({
+      where: { visitId, tenantId },
+      orderBy: { createdAt: 'asc' },
+      select: { bodyPart: true, clinicalIndication: true, completedAt: true, imagingResult: { select: { impression: true } } },
+    }),
+    prisma.prescription.findMany({
+      where: { visitId, tenantId, status: 'active' },
+      orderBy: { createdAt: 'desc' },
+      include: { prescriptionItems: { select: { drugName: true, dosage: true, frequency: true, duration: true, route: true, instructions: true } } },
+    }),
+  ]);
+
+  // Canonical vitals: drop rows that have been superseded by a correction.
+  const superseded = new Set(vitalsAll.map((v) => v.supersedesVitalId).filter((x): x is string => !!x));
+  const vitals = vitalsAll.filter((v) => !superseded.has(v.id));
+  const toVitalRow = (v?: (typeof vitals)[number]): DischargeVitalRow | null =>
+    v
+      ? {
+          at: v.recordedAt.toISOString(),
+          bp: v.bloodPressureSystolic != null && v.bloodPressureDiastolic != null ? `${v.bloodPressureSystolic}/${v.bloodPressureDiastolic}` : null,
+          pulse: v.pulseRate ?? null,
+          temp: num(v.temperature),
+          rr: v.respiratoryRate ?? null,
+          spo2: num(v.oxygenSaturation),
+          weight: num(v.weightKg),
+          height: num(v.heightCm),
+          bmi: num(v.bmi),
+          sugar: num(v.bloodSugar),
+        }
+      : null;
+
+  const admissionDate = summary.admission?.admissionDate ?? null;
+  const dischargeDate = summary.admission?.dischargeDate ?? null;
+  const los = admissionDate && dischargeDate
+    ? Math.max(1, Math.round((new Date(dischargeDate).getTime() - new Date(admissionDate).getTime()) / 86_400_000))
+    : null;
+  const age = patient?.dateOfBirth ? Math.floor((Date.now() - new Date(patient.dateOfBirth).getTime()) / (365.25 * 86_400_000)) : null;
+  const attending = summary.doctor?.user ? `Dr. ${summary.doctor.user.firstName} ${summary.doctor.user.lastName ?? ''}`.trim() : 'Attending Physician';
+
+  return {
+    hospital: {
+      name: tenant?.name ?? 'Hospital',
+      address: [tenant?.address, tenant?.city, tenant?.state, tenant?.country].filter(Boolean).join(', ') || null,
+      phone: tenant?.phone ?? null,
+      email: tenant?.email ?? null,
+      website: tenant?.website ?? null,
+      licenseNumber: tenant?.licenseNumber ?? null,
+      accreditation: tenant?.accreditationInfo ?? null,
+    },
+    meta: {
+      id: summary.id,
+      status: summary.status,
+      signedAt: summary.signedAt ? summary.signedAt.toISOString() : null,
+      signerName: summary.signer ? `${summary.signer.firstName} ${summary.signer.lastName ?? ''}`.trim() : null,
+      attestation: summary.eSignatureUrl?.startsWith('typed:') ? summary.eSignatureUrl.replace(/^typed:/, '') : null,
+      generatedAt: new Date().toISOString(),
+    },
+    patient: {
+      name: patient ? `${patient.firstName} ${patient.lastName ?? ''}`.trim() : 'Unknown',
+      mrn: patient?.mrn ?? null,
+      age,
+      gender: patient?.gender ?? null,
+      dob: patient?.dateOfBirth ? patient.dateOfBirth.toISOString() : null,
+      bloodGroup: patient?.bloodGroup ?? null,
+      phone: patient?.phone ?? null,
+      address: [patient?.addressLine1, patient?.addressLine2, patient?.city, patient?.state].filter(Boolean).join(', ') || null,
+      maritalStatus: patient?.maritalStatus ?? null,
+      nationality: patient?.nationality ?? null,
+    },
+    emergencyContact: emergency ? { name: emergency.name, relationship: emergency.relationship, phone: emergency.phone } : null,
+    admission: {
+      admissionDate: admissionDate ? admissionDate.toISOString() : null,
+      dischargeDate: dischargeDate ? dischargeDate.toISOString() : null,
+      lengthOfStayDays: los,
+      ward: summary.admission?.ward?.name ?? null,
+      bed: summary.admission?.bed?.bedNumber ?? null,
+      reason: summary.admission?.admissionReason ?? null,
+      chiefComplaint: summary.visit?.chiefComplaint ?? null,
+      attendingDoctor: attending,
+      specialization: summary.doctor?.specialization ?? null,
+    },
+    allergies: allergies.map((a) => ({ allergen: a.allergen, reaction: a.reaction ?? null })),
+    diagnoses: diagnoses.map((d) => ({ name: d.diagnosisName, type: String(d.diagnosisType), icdCode: d.icdCode ?? null })),
+    vitals: { admission: toVitalRow(vitals[0]), discharge: toVitalRow(vitals[vitals.length - 1]) },
+    procedures: otRequests.map((o) => ({
+      name: o.procedureName,
+      type: o.surgeryType ?? null,
+      date: (o.actualStartTime ?? o.scheduledDate)?.toISOString() ?? null,
+      status: String(o.status),
+      surgeon: o.surgeon?.user ? `Dr. ${o.surgeon.user.firstName} ${o.surgeon.user.lastName ?? ''}`.trim() : null,
+    })),
+    imaging: imaging
+      .filter((im) => im.imagingResult?.impression || im.completedAt)
+      .map((im) => ({ study: im.bodyPart ?? 'Imaging', indication: im.clinicalIndication ?? null, impression: im.imagingResult?.impression ?? null, date: im.completedAt ? im.completedAt.toISOString() : null })),
+    sections: {
+      diagnosesText: summary.diagnosesSummary ?? null,
+      hospitalCourse: summary.proceduresSummary ?? null,
+      keyLabs: summary.keyLabsSummary ?? null,
+      labResults: summary.labResultsSummary ?? null,
+      medicationsText: summary.medicationReconciliation ?? null,
+      dischargeInstructions: summary.dischargeInstructions ?? null,
+      followUpDate: summary.followUpDate ? summary.followUpDate.toISOString() : null,
+      followUpInstructions: summary.followUpInstructions ?? null,
+    },
+    medications: prescriptions.flatMap((p) =>
+      p.prescriptionItems.map((it) => ({
+        drug: it.drugName,
+        dosage: it.dosage,
+        frequency: it.frequency,
+        duration: it.duration ?? null,
+        route: String(it.route),
+        instructions: it.instructions ?? null,
+      })),
+    ),
+  };
+}
+
+/** Document for PDF/print export — blocks drafts (same rule as the PDF). */
+export async function getDischargeDocumentForExport(tenantId: string, id: string) {
+  const summary = await getDischargeSummaryById(tenantId, id);
+  if (summary.status === 'draft') {
+    throw AppError.badRequest('Cannot export a draft discharge summary — sign it first.');
+  }
+  return buildDischargeDocument(tenantId, id);
 }
 
 /**

@@ -208,8 +208,25 @@ export async function downloadDischargeSummaryPdf(
   try {
     const tenantId = req.user!.tenantId;
     const id = req.params.id as string;
-    const summary = await mrdService.getDischargeSummaryForPdf(tenantId, id);
-    streamDischargeSummaryPdf(res, summary as any);
+    const document = await mrdService.getDischargeDocumentForExport(tenantId, id);
+    streamDischargeSummaryPdf(res, document);
+  } catch (err) {
+    next(err);
+  }
+}
+
+// The full, fully-detailed discharge document (JSON) for the on-screen print
+// view — allowed for any status so a draft can be previewed before signing.
+export async function getDischargeDocument(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const id = req.params.id as string;
+    const document = await mrdService.buildDischargeDocument(tenantId, id);
+    sendResponse({ res, message: 'Discharge document', data: document });
   } catch (err) {
     next(err);
   }

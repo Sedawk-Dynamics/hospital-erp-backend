@@ -102,3 +102,12 @@ mrdRoutes.get(
   validate(dischargeSummaryIdParamSchema),
   controller.downloadDischargeSummaryPdf,
 );
+
+// Full fully-detailed discharge document (JSON) for the on-screen print view.
+mrdRoutes.get(
+  '/discharge-summary/:id/document',
+  authenticate,
+  requirePermission('admissions', 'read'),
+  validate(dischargeSummaryIdParamSchema),
+  controller.getDischargeDocument,
+);

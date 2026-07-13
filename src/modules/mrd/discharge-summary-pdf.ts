@@ -1,68 +1,339 @@
 import PDFDocument from 'pdfkit';
 import { Response } from 'express';
 
-interface SummaryLike {
-  id: string;
-  headerSummary?: string | null;
-  diagnosesSummary?: string | null;
-  proceduresSummary?: string | null;
-  keyLabsSummary?: string | null;
-  labResultsSummary?: string | null;
-  medicationReconciliation?: string | null;
-  dischargeInstructions?: string | null;
-  followUpDate?: Date | null;
-  followUpInstructions?: string | null;
-  signedAt?: Date | null;
-  status: string;
-  patient?: { firstName?: string; lastName?: string; mrn?: string; tenant?: { name?: string | null } | null } | null;
-  doctor?: { user?: { firstName: string; lastName: string } | null } | null;
+// ---------------------------------------------------------------------------
+// Shared shape for a fully-detailed IP discharge document. Assembled in
+// mrd.service.buildDischargeDocument and rendered here (PDF) and on the
+// frontend (print view) from the same structure.
+// ---------------------------------------------------------------------------
+
+export interface DischargeVitalRow {
+  at: string | null;
+  bp: string | null;
+  pulse: number | null;
+  temp: number | null;
+  rr: number | null;
+  spo2: number | null;
+  weight: number | null;
+  height: number | null;
+  bmi: number | null;
+  sugar: number | null;
 }
 
-function section(doc: PDFKit.PDFDocument, title: string, body?: string | null) {
-  if (!body) return;
-  doc.moveDown(0.6);
-  doc.font('Helvetica-Bold').fontSize(11).fillColor('#1a1a1a').text(title);
-  doc.moveDown(0.15);
-  doc.font('Helvetica').fontSize(10).fillColor('#2a2a2a').text(body, { align: 'left' });
+export interface DischargeDocument {
+  hospital: {
+    name: string;
+    address: string | null;
+    phone: string | null;
+    email: string | null;
+    website: string | null;
+    licenseNumber: string | null;
+    accreditation: string | null;
+  };
+  meta: {
+    id: string;
+    status: string;
+    signedAt: string | null;
+    signerName: string | null;
+    attestation: string | null;
+    generatedAt: string;
+  };
+  patient: {
+    name: string;
+    mrn: string | null;
+    age: number | null;
+    gender: string | null;
+    dob: string | null;
+    bloodGroup: string | null;
+    phone: string | null;
+    address: string | null;
+    maritalStatus: string | null;
+    nationality: string | null;
+  };
+  emergencyContact: { name: string; relationship: string; phone: string } | null;
+  admission: {
+    admissionDate: string | null;
+    dischargeDate: string | null;
+    lengthOfStayDays: number | null;
+    ward: string | null;
+    bed: string | null;
+    reason: string | null;
+    chiefComplaint: string | null;
+    attendingDoctor: string;
+    specialization: string | null;
+  };
+  allergies: Array<{ allergen: string; reaction: string | null }>;
+  diagnoses: Array<{ name: string; type: string; icdCode: string | null }>;
+  vitals: { admission: DischargeVitalRow | null; discharge: DischargeVitalRow | null };
+  procedures: Array<{ name: string; type: string | null; date: string | null; status: string; surgeon: string | null }>;
+  imaging: Array<{ study: string; indication: string | null; impression: string | null; date: string | null }>;
+  sections: {
+    diagnosesText: string | null;
+    hospitalCourse: string | null;
+    keyLabs: string | null;
+    labResults: string | null;
+    medicationsText: string | null;
+    dischargeInstructions: string | null;
+    followUpDate: string | null;
+    followUpInstructions: string | null;
+  };
+  medications: Array<{ drug: string; dosage: string; frequency: string; duration: string | null; route: string; instructions: string | null }>;
 }
 
-export function streamDischargeSummaryPdf(res: Response, summary: SummaryLike) {
-  const doc = new PDFDocument({ size: 'A4', margin: 50 });
-  const filename = `discharge-summary-${summary.id}.pdf`;
+// ---------------------------------------------------------------------------
+// Formatting helpers
+// ---------------------------------------------------------------------------
+
+const INK = '#1a2332';
+const MUTED = '#5b6472';
+const LINE = '#c9ced6';
+const ACCENT = '#0f766e';
+const LIGHT = '#eef2f5';
+
+const fmtDate = (v?: string | null) => (v ? new Date(v).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—');
+const fmtDateTime = (v?: string | null) => (v ? new Date(v).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—');
+const dash = (v?: string | number | null) => (v === null || v === undefined || v === '' ? '—' : String(v));
+
+const PAGE = { width: 595.28, height: 841.89, margin: 42 } as const;
+const CONTENT_W = PAGE.width - PAGE.margin * 2;
+
+export function streamDischargeSummaryPdf(res: Response, doc: DischargeDocument) {
+  const pdf = new PDFDocument({ size: 'A4', margin: PAGE.margin, bufferPages: true });
+  const filename = `discharge-summary-${doc.meta.id}.pdf`;
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
-  doc.pipe(res);
+  pdf.pipe(res);
 
-  const hospitalName = summary.patient?.tenant?.name || 'Hospital';
-  doc.font('Helvetica-Bold').fontSize(16).fillColor('#111').text(hospitalName, { align: 'center' });
-  doc.font('Helvetica').fontSize(12).fillColor('#333').text('Discharge Summary', { align: 'center' });
-  doc.moveDown(0.5);
-  doc.moveTo(50, doc.y).lineTo(545, doc.y).strokeColor('#bbb').stroke();
+  const left = PAGE.margin;
+  const right = PAGE.width - PAGE.margin;
 
-  section(doc, 'Patient & Admission Details', summary.headerSummary);
-  section(doc, 'Diagnoses', summary.diagnosesSummary);
-  section(doc, 'Clinical Course / Procedures', summary.proceduresSummary);
-  section(doc, 'Key Labs / Imaging (Significant Findings)', summary.keyLabsSummary);
-  section(doc, 'All Lab Results', summary.labResultsSummary);
-  section(doc, 'Medications', summary.medicationReconciliation);
-  section(doc, 'Discharge Instructions', summary.dischargeInstructions);
+  // Guard: if a block won't fit, start a new page.
+  const ensure = (needed: number) => {
+    if (pdf.y + needed > PAGE.height - PAGE.margin - 24) pdf.addPage();
+  };
 
-  if (summary.followUpDate || summary.followUpInstructions) {
-    const parts: string[] = [];
-    if (summary.followUpDate) parts.push(`Date: ${new Date(summary.followUpDate).toLocaleDateString('en-IN')}`);
-    if (summary.followUpInstructions) parts.push(summary.followUpInstructions);
-    section(doc, 'Follow-up', parts.join('\n'));
+  // ---- Letterhead ----
+  pdf.font('Helvetica-Bold').fontSize(17).fillColor(INK).text(doc.hospital.name, left, PAGE.margin, { width: CONTENT_W, align: 'center' });
+  const sub: string[] = [];
+  if (doc.hospital.address) sub.push(doc.hospital.address);
+  const contact = [doc.hospital.phone, doc.hospital.email, doc.hospital.website].filter(Boolean).join('  •  ');
+  pdf.font('Helvetica').fontSize(8.5).fillColor(MUTED);
+  if (sub.length) pdf.text(sub.join(''), { width: CONTENT_W, align: 'center' });
+  if (contact) pdf.text(contact, { width: CONTENT_W, align: 'center' });
+  const reg = [doc.hospital.licenseNumber ? `Reg. No: ${doc.hospital.licenseNumber}` : '', doc.hospital.accreditation ? doc.hospital.accreditation : ''].filter(Boolean).join('  •  ');
+  if (reg) pdf.text(reg, { width: CONTENT_W, align: 'center' });
+
+  pdf.moveDown(0.5);
+  pdf.rect(left, pdf.y, CONTENT_W, 20).fill(ACCENT);
+  pdf.fillColor('#ffffff').font('Helvetica-Bold').fontSize(11).text('DISCHARGE SUMMARY', left, pdf.y + 5, { width: CONTENT_W, align: 'center' });
+  pdf.y += 20;
+  pdf.moveDown(0.6);
+  pdf.fillColor(INK);
+
+  // ---- Patient / admission info card ----
+  const info: Array<[string, string]> = [
+    ['Patient Name', doc.patient.name],
+    ['MRN / UHID', dash(doc.patient.mrn)],
+    ['Age / Gender', `${dash(doc.patient.age)} ${doc.patient.gender ? '/ ' + doc.patient.gender : ''}`.trim()],
+    ['Blood Group', dash(doc.patient.bloodGroup)],
+    ['Phone', dash(doc.patient.phone)],
+    ['Address', dash(doc.patient.address)],
+    ['Admitted', fmtDateTime(doc.admission.admissionDate)],
+    ['Discharged', fmtDateTime(doc.admission.dischargeDate)],
+    ['Length of Stay', doc.admission.lengthOfStayDays != null ? `${doc.admission.lengthOfStayDays} day(s)` : '—'],
+    ['Ward / Bed', `${dash(doc.admission.ward)} / ${dash(doc.admission.bed)}`],
+    ['Attending Doctor', `${doc.admission.attendingDoctor}${doc.admission.specialization ? ' (' + doc.admission.specialization + ')' : ''}`],
+    ['Emergency Contact', doc.emergencyContact ? `${doc.emergencyContact.name} (${doc.emergencyContact.relationship}) ${doc.emergencyContact.phone}` : '—'],
+  ];
+  const colW = CONTENT_W / 2;
+  const rowH = 26;
+  const rows = Math.ceil(info.length / 2);
+  const cardTop = pdf.y;
+  pdf.rect(left, cardTop, CONTENT_W, rows * rowH).fillAndStroke(LIGHT, LINE);
+  info.forEach(([label, value], i) => {
+    const col = i % 2;
+    const row = Math.floor(i / 2);
+    const x = left + col * colW + 8;
+    const y = cardTop + row * rowH + 5;
+    pdf.font('Helvetica-Bold').fontSize(7).fillColor(MUTED).text(label.toUpperCase(), x, y, { width: colW - 16 });
+    pdf.font('Helvetica').fontSize(9).fillColor(INK).text(value, x, y + 9, { width: colW - 16, ellipsis: true, height: 12 });
+  });
+  pdf.y = cardTop + rows * rowH + 10;
+
+  // ---- Section helpers ----
+  const heading = (title: string) => {
+    ensure(34);
+    pdf.moveDown(0.3);
+    const y = pdf.y;
+    pdf.rect(left, y, 3, 12).fill(ACCENT);
+    pdf.font('Helvetica-Bold').fontSize(10.5).fillColor(INK).text(title.toUpperCase(), left + 8, y, { width: CONTENT_W - 8 });
+    pdf.moveTo(left, pdf.y + 2).lineTo(right, pdf.y + 2).strokeColor(LINE).lineWidth(0.5).stroke();
+    pdf.moveDown(0.35);
+  };
+  const paragraph = (text?: string | null) => {
+    if (!text || !text.trim()) return;
+    ensure(18);
+    pdf.font('Helvetica').fontSize(9).fillColor('#2a3240').text(text.trim(), left, pdf.y, { width: CONTENT_W, align: 'left', lineGap: 1.5 });
+    pdf.moveDown(0.2);
+  };
+  const emptyNote = (text: string) => {
+    pdf.font('Helvetica-Oblique').fontSize(8.5).fillColor(MUTED).text(text, left, pdf.y, { width: CONTENT_W });
+    pdf.moveDown(0.2);
+  };
+
+  // Generic table: headers + rows with fractional column widths.
+  const table = (headers: string[], data: string[][], fr: number[]) => {
+    const widths = fr.map((f) => (f / fr.reduce((a, b) => a + b, 0)) * CONTENT_W);
+    const drawHead = () => {
+      const y = pdf.y;
+      pdf.rect(left, y, CONTENT_W, 16).fill(ACCENT);
+      let x = left;
+      headers.forEach((h, i) => {
+        pdf.font('Helvetica-Bold').fontSize(7.5).fillColor('#ffffff').text(h.toUpperCase(), x + 4, y + 4.5, { width: widths[i] - 8, ellipsis: true });
+        x += widths[i];
+      });
+      pdf.y = y + 16;
+    };
+    ensure(30);
+    drawHead();
+    data.forEach((r, idx) => {
+      const cellHeights = r.map((c, i) => pdf.font('Helvetica').fontSize(8).heightOfString(c || '—', { width: widths[i] - 8 }));
+      const h = Math.max(16, Math.max(...cellHeights) + 6);
+      if (pdf.y + h > PAGE.height - PAGE.margin - 24) { pdf.addPage(); drawHead(); }
+      const y = pdf.y;
+      if (idx % 2 === 1) pdf.rect(left, y, CONTENT_W, h).fill(LIGHT);
+      let x = left;
+      r.forEach((c, i) => {
+        pdf.font('Helvetica').fontSize(8).fillColor(INK).text(c || '—', x + 4, y + 3.5, { width: widths[i] - 8 });
+        x += widths[i];
+      });
+      pdf.moveTo(left, y + h).lineTo(right, y + h).strokeColor(LINE).lineWidth(0.4).stroke();
+      pdf.y = y + h;
+    });
+    pdf.moveDown(0.3);
+  };
+
+  // ---- Diagnoses ----
+  heading('Diagnosis');
+  if (doc.sections.diagnosesText && doc.sections.diagnosesText.trim()) {
+    paragraph(doc.sections.diagnosesText);
+  } else if (doc.diagnoses.length) {
+    table(['Diagnosis', 'Type', 'ICD-10'], doc.diagnoses.map((d) => [d.name, d.type, d.icdCode ?? '—']), [6, 2, 2]);
+  } else emptyNote('No diagnoses recorded.');
+
+  // ---- Allergies ----
+  if (doc.allergies.length) {
+    heading('Allergies');
+    table(['Allergen', 'Reaction'], doc.allergies.map((a) => [a.allergen, a.reaction ?? '—']), [1, 1]);
   }
 
-  doc.moveDown(1.5);
-  const doctorName = summary.doctor?.user ? `Dr. ${summary.doctor.user.firstName} ${summary.doctor.user.lastName}` : 'Attending Physician';
-  doc.font('Helvetica-Bold').fontSize(10).fillColor('#111').text(doctorName, { align: 'right' });
-  if (summary.signedAt) {
-    doc.font('Helvetica').fontSize(9).fillColor('#555')
-      .text(`Signed: ${new Date(summary.signedAt).toLocaleString('en-IN')}`, { align: 'right' });
+  // ---- Presenting complaint / reason ----
+  if (doc.admission.chiefComplaint || doc.admission.reason) {
+    heading('Presenting Complaint / Reason for Admission');
+    paragraph([doc.admission.chiefComplaint, doc.admission.reason].filter(Boolean).join('\n'));
   }
-  doc.font('Helvetica').fontSize(8).fillColor('#888')
-    .text(`Status: ${summary.status.toUpperCase()}`, { align: 'right' });
 
-  doc.end();
+  // ---- Vitals ----
+  if (doc.vitals.admission || doc.vitals.discharge) {
+    heading('Vital Signs');
+    const vr = (v: DischargeVitalRow | null, label: string): string[] => [
+      label,
+      v?.bp ?? '—',
+      dash(v?.pulse),
+      v?.temp != null ? `${v.temp}°C` : '—',
+      dash(v?.rr),
+      v?.spo2 != null ? `${v.spo2}%` : '—',
+      v?.weight != null ? `${v.weight} kg` : '—',
+    ];
+    table(['At', 'BP', 'Pulse', 'Temp', 'RR', 'SpO₂', 'Weight'],
+      [vr(doc.vitals.admission, 'On admission'), vr(doc.vitals.discharge, 'At discharge')],
+      [2.2, 1.4, 1, 1, 0.8, 1, 1.2]);
+  }
+
+  // ---- Procedures / surgeries ----
+  if (doc.procedures.length) {
+    heading('Procedures / Surgeries');
+    table(['Procedure', 'Type', 'Surgeon', 'Date', 'Status'],
+      doc.procedures.map((p) => [p.name, p.type ?? '—', p.surgeon ?? '—', fmtDate(p.date), p.status]),
+      [3, 1.4, 2, 1.6, 1.2]);
+  }
+
+  // ---- Hospital course ----
+  if (doc.sections.hospitalCourse) {
+    heading('Hospital Course & Treatment');
+    paragraph(doc.sections.hospitalCourse);
+  }
+
+  // ---- Investigations ----
+  if (doc.sections.keyLabs || doc.sections.labResults || doc.imaging.length) {
+    heading('Investigations');
+    if (doc.sections.keyLabs) {
+      pdf.font('Helvetica-Bold').fontSize(8.5).fillColor(ACCENT).text('Significant / Abnormal Labs', left, pdf.y, { width: CONTENT_W });
+      pdf.moveDown(0.1);
+      paragraph(doc.sections.keyLabs);
+    }
+    if (doc.sections.labResults) {
+      pdf.font('Helvetica-Bold').fontSize(8.5).fillColor(ACCENT).text('All Lab Results', left, pdf.y, { width: CONTENT_W });
+      pdf.moveDown(0.1);
+      paragraph(doc.sections.labResults);
+    }
+    if (doc.imaging.length) {
+      pdf.font('Helvetica-Bold').fontSize(8.5).fillColor(ACCENT).text('Imaging', left, pdf.y, { width: CONTENT_W });
+      pdf.moveDown(0.1);
+      table(['Study', 'Indication', 'Impression', 'Date'],
+        doc.imaging.map((im) => [im.study, im.indication ?? '—', im.impression ?? '—', fmtDate(im.date)]),
+        [1.6, 2, 3, 1.4]);
+    }
+  }
+
+  // ---- Medications on discharge ----
+  heading('Medications on Discharge');
+  if (doc.medications.length) {
+    table(['Medication', 'Dose', 'Frequency', 'Duration', 'Route', 'Instructions'],
+      doc.medications.map((m) => [m.drug, m.dosage, m.frequency, m.duration ?? 'ongoing', m.route, m.instructions ?? '—']),
+      [2.4, 1.2, 1.6, 1.3, 1, 2]);
+  } else if (doc.sections.medicationsText) {
+    paragraph(doc.sections.medicationsText);
+  } else emptyNote('No discharge medications prescribed.');
+
+  // ---- Discharge instructions ----
+  if (doc.sections.dischargeInstructions) {
+    heading('Discharge Instructions / Advice');
+    paragraph(doc.sections.dischargeInstructions);
+  }
+
+  // ---- Follow-up ----
+  if (doc.sections.followUpDate || doc.sections.followUpInstructions) {
+    heading('Follow-up');
+    if (doc.sections.followUpDate) {
+      pdf.font('Helvetica-Bold').fontSize(9).fillColor(INK).text(`Next review: ${fmtDate(doc.sections.followUpDate)}`, left, pdf.y, { width: CONTENT_W });
+      pdf.moveDown(0.15);
+    }
+    paragraph(doc.sections.followUpInstructions);
+  }
+
+  // ---- Signature block ----
+  ensure(70);
+  pdf.moveDown(1.2);
+  const sy = pdf.y;
+  pdf.moveTo(right - 200, sy + 26).lineTo(right, sy + 26).strokeColor(INK).lineWidth(0.6).stroke();
+  pdf.font('Helvetica-Bold').fontSize(9.5).fillColor(INK).text(doc.admission.attendingDoctor, right - 200, sy + 30, { width: 200, align: 'right' });
+  if (doc.admission.specialization) pdf.font('Helvetica').fontSize(8).fillColor(MUTED).text(doc.admission.specialization, right - 200, pdf.y, { width: 200, align: 'right' });
+  if (doc.meta.signedAt) pdf.font('Helvetica').fontSize(8).fillColor(MUTED).text(`Electronically signed on ${fmtDateTime(doc.meta.signedAt)}`, right - 260, pdf.y + 2, { width: 260, align: 'right' });
+  if (doc.meta.attestation) pdf.font('Helvetica-Oblique').fontSize(8).fillColor(MUTED).text(`Attested as “${doc.meta.attestation}”`, right - 260, pdf.y, { width: 260, align: 'right' });
+
+  // ---- Footers (page numbers + disclaimer) on every page ----
+  const range = pdf.bufferedPageRange();
+  for (let i = 0; i < range.count; i++) {
+    pdf.switchToPage(range.start + i);
+    const fy = PAGE.height - PAGE.margin + 6;
+    pdf.font('Helvetica').fontSize(7).fillColor(MUTED);
+    pdf.text(`${doc.hospital.name} — Discharge Summary`, left, fy, { width: CONTENT_W / 2, align: 'left' });
+    pdf.text(`Page ${i + 1} of ${range.count}`, left + CONTENT_W / 2, fy, { width: CONTENT_W / 2, align: 'right' });
+    if (i === range.count - 1) {
+      pdf.fillColor(MUTED).fontSize(6.8).text('This is a computer-generated discharge summary. In case of any emergency, contact the hospital immediately.', left, fy + 9, { width: CONTENT_W, align: 'center' });
+    }
+  }
+
+  pdf.end();
 }
