@@ -42,10 +42,15 @@ async function drugMap(tenantId: string, ids: string[]) {
 async function hydrate(tenantId: string, indent: any) {
   const names = await drugMap(tenantId, indent.items.map((i: any) => i.drugFormularyId));
   const patient = await prisma.patient.findFirst({ where: { id: indent.patientId, tenantId }, select: { firstName: true, lastName: true, mrn: true } });
+  // Human-readable bill number for the "Billed to" line (billId is a UUID FK).
+  const bill = indent.billId
+    ? await prisma.bill.findFirst({ where: { id: indent.billId, tenantId }, select: { billNumber: true } })
+    : null;
   return {
     ...indent,
     patientName: patient ? `${patient.firstName} ${patient.lastName ?? ''}`.trim() : null,
     patientMrn: patient?.mrn ?? null,
+    billNumber: bill?.billNumber ?? null,
     items: indent.items.map((i: any) => ({
       ...i,
       drugName: names.get(i.drugFormularyId)?.drugName ?? '-',

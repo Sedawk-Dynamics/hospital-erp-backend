@@ -588,11 +588,15 @@ export async function listIssues(
   const patientIds = [...new Set(issues.map((i) => i.patientId))];
   const patients = await prisma.patient.findMany({ where: { tenantId, id: { in: patientIds } }, select: { id: true, firstName: true, lastName: true, mrn: true } });
   const pMap = new Map(patients.map((p) => [p.id, { name: `${p.firstName} ${p.lastName ?? ''}`.trim(), mrn: p.mrn }]));
+  const billIds = [...new Set(issues.map((i) => i.billId).filter(Boolean) as string[])];
+  const bills = billIds.length ? await prisma.bill.findMany({ where: { tenantId, id: { in: billIds } }, select: { id: true, billNumber: true } }) : [];
+  const billMap = new Map(bills.map((b) => [b.id, b.billNumber]));
   return {
     items: issues.map((i) => ({
       ...i,
       patientName: pMap.get(i.patientId)?.name ?? null,
       patientMrn: pMap.get(i.patientId)?.mrn ?? null,
+      billNumber: i.billId ? (billMap.get(i.billId) ?? null) : null,
       items: i.items.map((x) => ({
         ...x,
         drugName: names.get(x.drugFormularyId)?.drugName ?? '-',
@@ -610,10 +614,12 @@ export async function getIssueById(tenantId: string, id: string) {
   const names = await drugMap(tenantId, issue.items.map((i) => i.drugFormularyId));
   const batchNos = await batchNumberMap(tenantId, issue.items.map((i) => i.drugBatchId));
   const patient = await patientLabel(tenantId, issue.patientId);
+  const bill = issue.billId ? await prisma.bill.findFirst({ where: { id: issue.billId, tenantId }, select: { billNumber: true } }) : null;
   return {
     ...issue,
     patientName: patient.name,
     patientMrn: patient.mrn,
+    billNumber: bill?.billNumber ?? null,
     items: issue.items.map((x) => ({
       ...x,
       drugName: names.get(x.drugFormularyId)?.drugName ?? '-',
