@@ -249,7 +249,7 @@ export async function getPrescriptions(tenantId: string, query: GetPrescriptions
         // units per strip, looseUnitLabel = the sub-unit name).
         prescriptionItems: {
           include: {
-            drug: { select: { packSize: true, looseUnitLabel: true, dosageForm: true } },
+            drug: { select: { packSize: true, looseUnitLabel: true, dosageForm: true, price: true } },
           },
         },
       },
