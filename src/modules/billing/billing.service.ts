@@ -779,6 +779,9 @@ export async function getBills(tenantId: string, query: GetBillsQuery) {
 
   if (query.patientId) where.patientId = query.patientId;
   if (query.status) where.status = query.status;
+  // IP vs OP: IP bills are admission-scoped (admissionId set); OP are not.
+  if (query.billType === 'ip') where.admissionId = { not: null };
+  else if (query.billType === 'op') where.admissionId = null;
 
   if (query.fromDate) {
     where.createdAt = { ...where.createdAt, gte: new Date(query.fromDate) };
@@ -804,6 +807,26 @@ export async function getBills(tenantId: string, query: GetBillsQuery) {
       include: {
         patient: {
           select: { id: true, mrn: true, firstName: true, lastName: true, phone: true },
+        },
+        // IP context + insurance category so the billing counter knows an IP
+        // patient is "insurance"/"corporate" and can offer Transfer-to-TPA.
+        admission: {
+          select: {
+            id: true, billingCategory: true, status: true,
+            ward: { select: { name: true } },
+            bed: { select: { bedNumber: true } },
+          },
+        },
+        // Latest claim (if transferred to TPA) → covered / paid / outstanding.
+        insuranceClaims: {
+          select: {
+            id: true, claimNumber: true, status: true, claimAmount: true,
+            approvedAmount: true, coveredAmount: true, patientShare: true,
+            paidAmount: true, outstandingAmount: true,
+            policy: { select: { id: true, policyNumber: true, insurer: { select: { name: true } }, tpa: { select: { name: true } } } },
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 1,
         },
       },
       orderBy: { createdAt: 'desc' },
@@ -1854,9 +1877,142 @@ export async function pullChargesToBill(
 }
 
 /**
- * G5 (2.1) — Discharge final-bill assembly. On discharge, pull every charge that
- * is not yet on any bill (room/bed, consultation, lab, imaging, OT, pharmacy) onto
- * a fresh admission-scoped "final charges" bill and finalize it, then optionally
+ * Consolidate an IP admission onto its SINGLE running bill: pull every charge not
+ * yet on a bill (room/bed, consultation, lab, imaging, OT, pharmacy) onto the one
+ * running "IPW-" bill (which already holds the manual / nurse / doctor / pharmacy
+ * charges), so the admission has ONE bill with all costs — no separate "FIN-"
+ * bill. Idempotent (pullChargesToBill dedupes by referenceType:referenceId).
+ * Optionally finalizes the bill (draft → pending) once it has items.
+ */
+/**
+ * The admission's SINGLE bill for billing operations: a live draft if one exists
+ * (keep accumulating), else the latest already-finalized bill (don't mint a new
+ * one — that would break "IP = one bill"), else create the running draft.
+ */
+async function getAdmissionBillForBilling(tenantId: string, admissionId: string, userId: string) {
+  const draft = await prisma.bill.findFirst({ where: { tenantId, admissionId, status: 'draft' }, orderBy: { createdAt: 'desc' } });
+  if (draft) return draft;
+  const finalized = await prisma.bill.findFirst({
+    where: { tenantId, admissionId, status: { notIn: ['cancelled', 'refunded'] } },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (finalized) return finalized;
+  return getOrCreateRunningIpBill(tenantId, admissionId, userId);
+}
+
+export async function consolidateAdmissionBill(
+  tenantId: string,
+  userId: string,
+  admissionId: string,
+  opts: { finalize?: boolean } = {},
+) {
+  const admission = await prisma.admission.findFirst({
+    where: { id: admissionId, tenantId },
+    select: { id: true, patientId: true },
+  });
+  if (!admission) throw AppError.notFound('Admission not found');
+
+  const bill = await getAdmissionBillForBilling(tenantId, admissionId, userId);
+
+  // Only a draft can still accept charges / be finalized. A bill already
+  // finalized (e.g. transferred to TPA earlier) is left as-is.
+  if (bill.status === 'draft') {
+    const { charges } = await getPatientCharges(tenantId, { patientId: admission.patientId });
+    if (charges.length > 0) {
+      await pullChargesToBill(
+        tenantId,
+        bill.id,
+        charges.map((c) => ({
+          referenceType: c.referenceType,
+          referenceId: c.referenceId,
+          description: c.description,
+          quantity: c.quantity,
+          unitPrice: c.unitPrice,
+          taxRate: c.taxRate,
+          category: c.category,
+        })),
+      );
+    }
+    await recalculateBillTotals(bill.id);
+    const draftItems = await prisma.billItem.count({ where: { billId: bill.id } });
+    if (opts.finalize && draftItems > 0) {
+      await finalizeBill(tenantId, bill.id);
+    }
+  }
+
+  const fresh = await prisma.bill.findFirst({ where: { id: bill.id, tenantId } });
+  const itemCount = await prisma.billItem.count({ where: { billId: bill.id } });
+  return { bill: fresh!, itemCount, finalized: fresh!.status !== 'draft' };
+}
+
+/**
+ * Billing-counter action: transfer an IP admission's consolidated bill to the
+ * TPA / insurer. Consolidates + finalizes the single IP bill, finds the patient's
+ * active policy, raises an insurance claim against the bill (via the insurance
+ * module) and reflects the insurer / patient split on the bill. From here the
+ * insurance / TPA team processes the claim (approve → settle, paid/remaining) and
+ * the billing admin can see the claim status against the bill.
+ *
+ * Gated at the route by billing permission — so a billing admin / cashier can
+ * trigger it even though they only have insurance:read (the claim is created via
+ * the service layer, not the permission-gated insurance HTTP route).
+ */
+export async function transferAdmissionToTpa(tenantId: string, userId: string, admissionId: string) {
+  const admission = await prisma.admission.findFirst({
+    where: { id: admissionId, tenantId },
+    select: { id: true, patientId: true, billingCategory: true },
+  });
+  if (!admission) throw AppError.notFound('Admission not found');
+
+  // 1. Consolidate all charges onto the SINGLE IP bill and finalize it.
+  const { bill, itemCount } = await consolidateAdmissionBill(tenantId, userId, admissionId, { finalize: true });
+  if (itemCount === 0) throw AppError.badRequest('No charges to bill yet — nothing to transfer to TPA.');
+  const claimAmount = Number(bill.totalAmount);
+  if (!(claimAmount > 0)) throw AppError.badRequest('Bill total is zero — nothing to claim.');
+
+  // 2. Block a duplicate transfer (a live claim already exists for this bill).
+  const existing = await prisma.insuranceClaim.findFirst({
+    where: { billId: bill.id, status: { notIn: ['cancelled', 'rejected'] } },
+    select: { id: true, claimNumber: true, status: true },
+  });
+  if (existing) {
+    throw AppError.badRequest(`This bill is already with the TPA (claim ${existing.claimNumber ?? existing.id}, ${existing.status}).`);
+  }
+
+  // 3. Find the patient's active policy + raise + split (via the insurance module).
+  const insurance = await import('../insurance/insurance.service');
+  const policy = await insurance.findActivePolicyForPatient(tenantId, admission.patientId);
+  if (!policy) {
+    throw AppError.badRequest('No active insurance policy found for this patient. Add / verify a policy in the Insurance module first.');
+  }
+
+  const claim = await insurance.createClaim(tenantId, userId, {
+    policyId: policy.id,
+    patientId: admission.patientId,
+    billId: bill.id,
+    claimAmount,
+  });
+  // Reflect the insurer-covered / patient-payable split on the bill.
+  await insurance.splitBill(tenantId, bill.id, { policyId: policy.id });
+
+  const updatedBill = await prisma.bill.findFirst({
+    where: { id: bill.id, tenantId },
+    select: {
+      id: true, billNumber: true, status: true, totalAmount: true,
+      insuranceCoveredAmount: true, patientPayableAmount: true, amountPaid: true, balanceDue: true,
+    },
+  });
+  logger.info({ tenantId, admissionId, billId: bill.id, claimId: claim.id, policyId: policy.id }, 'IP bill transferred to TPA');
+  return {
+    claim,
+    bill: updatedBill,
+    policy: { id: policy.id, policyNumber: policy.policyNumber, insurer: policy.insurer, tpa: policy.tpa },
+  };
+}
+
+/**
+ * G5 (2.1) — Discharge final-bill assembly. On discharge, consolidate every charge
+ * onto the admission's SINGLE running IP bill and finalize it, then optionally
  * apply the patient's advance balance. Pharmacy/indent charges already billed on
  * the running IP bill are NOT duplicated (getPatientCharges only surfaces unbilled
  * references). Returns an admission-wide financial summary (deposit is surfaced,
@@ -1876,46 +2032,10 @@ export async function assembleDischargeBill(
   if (!admission) throw AppError.notFound('Admission not found');
   const patientId = admission.patientId;
 
-  // 1. Discover charges not yet on any bill and pull them onto a fresh draft.
-  const { charges } = await getPatientCharges(tenantId, { patientId });
-  let finalBillId: string | null = null;
-  if (charges.length > 0) {
-    const now = new Date();
-    const ymd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
-    const prefix = `FIN-${ymd}-`;
-    const seq = await prisma.bill.count({ where: { tenantId, billNumber: { startsWith: prefix } } });
-    const draft = await prisma.bill.create({
-      data: {
-        tenantId,
-        billNumber: `${prefix}${String(seq + 1).padStart(4, '0')}`,
-        patientId,
-        admissionId,
-        billDate: new Date(),
-        status: 'draft',
-        generatedBy: userId,
-      },
-    });
-    await pullChargesToBill(
-      tenantId,
-      draft.id,
-      charges.map((c) => ({
-        referenceType: c.referenceType,
-        referenceId: c.referenceId,
-        description: c.description,
-        quantity: c.quantity,
-        unitPrice: c.unitPrice,
-        taxRate: c.taxRate,
-        category: c.category,
-      })),
-    );
-    const withItems = await prisma.billItem.count({ where: { billId: draft.id } });
-    if (withItems > 0) {
-      await finalizeBill(tenantId, draft.id);
-      finalBillId = draft.id;
-    } else {
-      await prisma.bill.delete({ where: { id: draft.id } });
-    }
-  }
+  // 1. Consolidate every charge onto the admission's SINGLE running IP bill and
+  //    finalize it — IP = one bill with all costs (no separate FIN- bill).
+  const consolidated = await consolidateAdmissionBill(tenantId, userId, admissionId, { finalize: true });
+  const finalBillId: string | null = consolidated.itemCount > 0 ? consolidated.bill.id : null;
 
   // 2. Optionally apply the patient's advance balance to the finalized bill.
   let advanceApplied = 0;
@@ -1981,10 +2101,26 @@ export async function getOrCreateRunningIpBill(tenantId: string, admissionId: st
     const now = new Date();
     const ymd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
     const prefix = `IPW-${ymd}-`;
-    const seq = await prisma.bill.count({ where: { tenantId, billNumber: { startsWith: prefix } } });
-    bill = await prisma.bill.create({
-      data: { tenantId, billNumber: `${prefix}${String(seq + 1).padStart(4, '0')}`, patientId: admission.patientId, admissionId, billDate: new Date(), status: 'draft', generatedBy: userId },
-    });
+    // Derive the next sequence from the MAX existing number (not count — a deleted
+    // bill would make count collide with a surviving higher number). Retry on the
+    // unique-constraint race.
+    for (let attempt = 0; attempt < 5 && !bill; attempt++) {
+      const last = await prisma.bill.findFirst({
+        where: { tenantId, billNumber: { startsWith: prefix } },
+        orderBy: { billNumber: 'desc' },
+        select: { billNumber: true },
+      });
+      const lastSeq = last ? parseInt(last.billNumber.slice(prefix.length), 10) || 0 : 0;
+      const billNumber = `${prefix}${String(lastSeq + 1 + attempt).padStart(4, '0')}`;
+      try {
+        bill = await prisma.bill.create({
+          data: { tenantId, billNumber, patientId: admission.patientId, admissionId, billDate: new Date(), status: 'draft', generatedBy: userId },
+        });
+      } catch (err: any) {
+        if (err?.code !== 'P2002') throw err; // only retry on billNumber collision
+      }
+    }
+    if (!bill) throw AppError.badRequest('Could not allocate a bill number. Please retry.');
   }
   return bill;
 }

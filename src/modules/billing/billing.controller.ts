@@ -565,6 +565,33 @@ export async function removeIpCharge(req: AuthenticatedRequest, res: Response, n
   }
 }
 
+export async function consolidateAdmissionBill(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await billingService.consolidateAdmissionBill(
+      req.user!.tenantId,
+      req.user!.userId,
+      req.params.admissionId as string,
+      { finalize: true },
+    );
+    sendResponse({ res, message: 'IP bill consolidated', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function transferAdmissionToTpa(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await billingService.transferAdmissionToTpa(
+      req.user!.tenantId,
+      req.user!.userId,
+      req.params.admissionId as string,
+    );
+    sendResponse({ res, statusCode: 201, message: 'Bill transferred to TPA — insurance claim raised', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getAdmissionLedger(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const data = await billingService.getAdmissionLedger(req.user!.tenantId, req.params.admissionId as string, {

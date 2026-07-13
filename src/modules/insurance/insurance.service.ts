@@ -1721,6 +1721,26 @@ export async function getPoliciesByPatient(tenantId: string, patientId: string) 
   });
 }
 
+/**
+ * The patient's active, currently-valid insurance policy — preferring one that
+ * has a TPA attached (so a "transfer to TPA" can route it), then the latest
+ * validity. Returns null when the patient has no usable policy.
+ */
+export async function findActivePolicyForPatient(tenantId: string, patientId: string) {
+  const now = new Date();
+  const policies = await prisma.insurancePolicy.findMany({
+    where: { tenantId, patientId, status: 'active', validFrom: { lte: now }, validTo: { gte: now } },
+    include: {
+      insurer: { select: { id: true, name: true } },
+      tpa: { select: { id: true, name: true } },
+    },
+    orderBy: { validTo: 'desc' },
+  });
+  if (policies.length === 0) return null;
+  // Prefer a policy with a TPA; otherwise the most-recently-valid one.
+  return policies.find((p) => p.tpaId) ?? policies[0];
+}
+
 // ============================================================
 // Expiry / sweeping
 // ============================================================

@@ -10,6 +10,7 @@ import {
   addBillItemSchema,
   addIpChargeSchema,
   admissionLedgerParamSchema,
+  admissionActionParamSchema,
   removeIpChargeSchema,
   recordDoctorVisitSchema,
   removeBillItemSchema,
@@ -370,6 +371,22 @@ billingRoutes.get(
   authenticate,
   validate(admissionLedgerParamSchema),
   controller.getAdmissionActivity,
+);
+// Billing-counter: consolidate the admission's charges onto its single IP bill
+// (+ finalize) and, for insurance patients, transfer that bill to the TPA.
+billingRoutes.post(
+  '/admissions/:admissionId/consolidate',
+  authenticate,
+  requirePermission('billing', 'update'),
+  validate(admissionActionParamSchema),
+  controller.consolidateAdmissionBill,
+);
+billingRoutes.post(
+  '/admissions/:admissionId/transfer-to-tpa',
+  authenticate,
+  requirePermission('billing', 'update'),
+  validate(admissionActionParamSchema),
+  controller.transferAdmissionToTpa,
 );
 
 billingRoutes.patch(

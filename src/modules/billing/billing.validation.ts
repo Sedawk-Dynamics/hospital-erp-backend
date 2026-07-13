@@ -161,9 +161,16 @@ export const getBillsQuerySchema = z.object({
   query: paginationSchema.extend({
     patientId: z.string().uuid().optional(),
     status: z.enum(['draft', 'pending', 'partially_paid', 'paid', 'overdue', 'cancelled', 'refunded']).optional(),
+    // ip = admission-scoped bills; op = the rest.
+    billType: z.enum(['ip', 'op']).optional(),
     fromDate: z.string().optional(),
     toDate: z.string().optional(),
   }),
+});
+
+// Consolidate / transfer-to-TPA operate on an admission.
+export const admissionActionParamSchema = z.object({
+  params: z.object({ admissionId: z.string().uuid('Invalid admission ID') }),
 });
 
 export const getPaymentsQuerySchema = z.object({
