@@ -867,6 +867,41 @@ export async function updateClaim(tenantId: string, id: string, data: UpdateClai
   return claim;
 }
 
+/**
+ * Re-sync a claim's amount + co-pay/deductible/coverage split from its policy as
+ * the underlying bill grows (used by the auto-TPA link for IP admissions, so the
+ * running claim tracks charges). Only touches PRE-processing claims (submitted /
+ * resubmitted) — once the TPA/insurance team picks it up (under_review+) it is
+ * left untouched.
+ */
+export async function resyncClaimAmount(tenantId: string, claimId: string, newClaimAmount: number) {
+  const claim = await prisma.insuranceClaim.findFirst({
+    where: { id: claimId, tenantId },
+    include: { policy: true },
+  });
+  if (!claim) return null;
+  if (claim.status !== 'submitted' && claim.status !== 'resubmitted') return claim;
+
+  const split = computeResponsibility(
+    Math.max(0, newClaimAmount),
+    decNum(claim.policy.coPayPercent),
+    decNum(claim.policy.deductibleAmount),
+    decNum(claim.policy.coverageAmount),
+  );
+  const updated = await prisma.insuranceClaim.update({
+    where: { id: claimId },
+    data: {
+      claimAmount: split.claimAmount,
+      copayAmount: split.copayAmount,
+      deductibleAmount: split.deductibleAmount,
+      coveredAmount: split.coveredAmount,
+      patientShare: split.patientResponsibility,
+      outstandingAmount: split.claimAmount,
+    },
+  });
+  return updated;
+}
+
 export async function submitClaim(tenantId: string, id: string) {
   const claim = await prisma.insuranceClaim.findFirst({
     where: { id, tenantId },

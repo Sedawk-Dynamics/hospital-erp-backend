@@ -510,7 +510,29 @@ export async function createAdmission(tenantId: string, userId: string, data: Cr
   });
 
   logger.info({ tenantId, admissionId: admission.id, bedId: data.bedId }, 'Admission created');
+  await autoConnectTpaOnAdmission(tenantId, userId, admission.id, (data as any).billingCategory);
   return admission;
+}
+
+/**
+ * When an IP patient is booked as insurance/corporate, connect them to the TPA
+ * straight away (link the policy) — so it's done from the start, not left to the
+ * billing desk. Runs after the admission commits; always non-fatal.
+ */
+async function autoConnectTpaOnAdmission(
+  tenantId: string,
+  userId: string,
+  admissionId: string,
+  billingCategory?: string | null,
+) {
+  const cat = (billingCategory ?? '').toLowerCase();
+  if (cat !== 'insurance' && cat !== 'corporate') return;
+  try {
+    const billing = await import('../billing/billing.service');
+    await billing.ensureAdmissionTpaLink(tenantId, userId, admissionId);
+  } catch (err) {
+    logger.warn({ tenantId, admissionId, err }, 'Auto TPA link on admission failed (non-fatal)');
+  }
 }
 
 /**

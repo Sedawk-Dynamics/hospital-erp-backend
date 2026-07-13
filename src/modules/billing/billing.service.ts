@@ -2164,6 +2164,12 @@ export async function assembleDischargeBill(
   const consolidated = await consolidateAdmissionBill(tenantId, userId, admissionId, { finalize: true });
   const finalBillId: string | null = consolidated.itemCount > 0 ? consolidated.bill.id : null;
 
+  // 1b. Insurance/corporate: make sure the TPA claim reflects the final bill (auto —
+  //     no manual "Transfer to TPA"). Runs after finalize so the split sticks.
+  try { await ensureAdmissionTpaLink(tenantId, userId, admissionId); } catch (err) {
+    logger.warn({ tenantId, admissionId, err }, 'Auto TPA link at discharge failed (non-fatal)');
+  }
+
   // 2. Optionally apply the patient's advance balance to the finalized bill.
   let advanceApplied = 0;
   if (opts.applyAdvance && finalBillId) {
@@ -2684,6 +2690,84 @@ export async function refundDeposit(
   return { refund, ledger: summary };
 }
 
+// Billing categories that settle through insurance / a TPA.
+const INSURANCE_CATEGORIES = new Set(['insurance', 'corporate']);
+
+/**
+ * Auto-connect an IP admission to its TPA — there is NO billing-admin "Transfer to
+ * TPA" step. Because the patient chose insurance at booking, this (1) links the
+ * patient to a TPA policy (the connection, from admission) and (2) once there are
+ * reimbursable charges, raises the insurance claim against the admission's running
+ * (draft) bill and keeps its amount + insurer/patient split in sync as charges
+ * grow. The bill is never finalized here (charges keep accruing) — it finalizes at
+ * discharge, by which point the claim already reflects the full amount. The claim
+ * is only auto-adjusted while it is still pre-processing (submitted / resubmitted);
+ * once the TPA team picks it up it is left alone. Idempotent + meant to be non-fatal.
+ */
+export async function ensureAdmissionTpaLink(tenantId: string, userId: string, admissionId: string) {
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  const admission = await prisma.admission.findFirst({
+    where: { id: admissionId, tenantId },
+    select: { id: true, patientId: true, billingCategory: true },
+  });
+  if (!admission) return null;
+  const cat = (admission.billingCategory ?? '').toLowerCase();
+  if (!INSURANCE_CATEGORIES.has(cat)) return null;
+
+  const insurance = await import('../insurance/insurance.service');
+
+  // 1) The connection: ensure the patient is linked to a TPA policy (from booking).
+  const policy = await resolveTransferPolicy(tenantId, admission.patientId, {});
+  if (!policy) return { policy: null, claim: null, connected: false };
+
+  // 2) The admission's bills — do NOT create one here; the connection stands even
+  //    before any bill/charges exist.
+  const bills = await prisma.bill.findMany({
+    where: { tenantId, admissionId, status: { not: 'cancelled' } },
+    orderBy: { createdAt: 'asc' },
+    select: { id: true, status: true, billItems: { select: { totalAmount: true, isReimbursable: true } } },
+  });
+
+  const existingClaim = await prisma.insuranceClaim.findFirst({
+    where: { tenantId, bill: { admissionId }, status: { notIn: ['cancelled', 'rejected'] } },
+    orderBy: { createdAt: 'desc' },
+    select: { id: true, billId: true, status: true, claimAmount: true, coveredAmount: true },
+  });
+
+  // The bill the claim is / should sit on: the claim's own bill, else the bill that
+  // actually has charges, else the latest bill.
+  const claimBill = existingClaim
+    ? bills.find((b) => b.id === existingClaim.billId) ?? null
+    : bills.find((b) => b.billItems.some((it) => Number(it.totalAmount) !== 0)) ?? bills[bills.length - 1] ?? null;
+  if (!claimBill) return { policy, claim: existingClaim, connected: true };
+
+  const claimAmount = r2(claimBill.billItems.filter((it) => it.isReimbursable !== false).reduce((s, it) => s + Number(it.totalAmount), 0));
+
+  if (!existingClaim) {
+    if (claimAmount <= 0) return { policy, claim: null, connected: true }; // linked, awaiting charges
+    const claim = await insurance.createClaim(tenantId, userId, {
+      policyId: policy.id, patientId: admission.patientId, billId: claimBill.id, claimAmount,
+    } as any);
+    const covered = Number(claim.coveredAmount ?? 0);
+    await insurance.applyBillSplit(tenantId, claimBill.id, covered, r2(claimAmount - covered));
+    logger.info({ tenantId, admissionId, claimId: claim.id, claimAmount }, 'IP admission auto-connected to TPA (claim raised)');
+    return { policy, claim, connected: true };
+  }
+
+  // Keep a still-pre-processing claim in step with the charges.
+  if (
+    (existingClaim.status === 'submitted' || existingClaim.status === 'resubmitted') &&
+    claimAmount > 0 &&
+    r2(Number(existingClaim.claimAmount)) !== claimAmount
+  ) {
+    const synced = await insurance.resyncClaimAmount(tenantId, existingClaim.id, claimAmount);
+    const covered = Number(synced?.coveredAmount ?? 0);
+    await insurance.applyBillSplit(tenantId, existingClaim.billId, covered, r2(claimAmount - covered));
+    return { policy, claim: synced, connected: true };
+  }
+  return { policy, claim: existingClaim, connected: true };
+}
+
 /**
  * The IP billing worklist — ONE row per admission, shown from the moment the
  * patient is admitted (not only once a bill exists). Every active admission gets
@@ -2733,6 +2817,11 @@ export async function getIpAdmissionsForBilling(
     // and charges have somewhere to post. Discharged keeps whatever bills it has.
     if (a.status === 'admitted') {
       try { await getOrCreateRunningIpBill(tenantId, a.id, userId); } catch { /* non-fatal */ }
+    }
+    // Insurance/corporate patients auto-connect to the TPA (no manual transfer) —
+    // link the policy and raise/keep the claim in sync as charges accrue.
+    if (INSURANCE_CATEGORIES.has((a.billingCategory ?? '').toLowerCase())) {
+      try { await ensureAdmissionTpaLink(tenantId, userId, a.id); } catch { /* non-fatal */ }
     }
     const bills = await prisma.bill.findMany({
       where: { tenantId, admissionId: a.id, status: { not: 'cancelled' } },
