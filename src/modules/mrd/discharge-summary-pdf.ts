@@ -1,5 +1,6 @@
 import PDFDocument from 'pdfkit';
 import { Response } from 'express';
+import { drawBrandedHeader, drawBrandedFooters, DEFAULT_ACCENT, type HospitalBranding } from '../../services/pdf-branding';
 
 // ---------------------------------------------------------------------------
 // Shared shape for a fully-detailed IP discharge document. Assembled in
@@ -21,15 +22,8 @@ export interface DischargeVitalRow {
 }
 
 export interface DischargeDocument {
-  hospital: {
-    name: string;
-    address: string | null;
-    phone: string | null;
-    email: string | null;
-    website: string | null;
-    licenseNumber: string | null;
-    accreditation: string | null;
-  };
+  // The hospital's configured PDF/print branding (letterhead, logo, colours).
+  hospital: HospitalBranding;
   meta: {
     id: string;
     status: string;
@@ -87,7 +81,6 @@ export interface DischargeDocument {
 const INK = '#1a2332';
 const MUTED = '#5b6472';
 const LINE = '#c9ced6';
-const ACCENT = '#0f766e';
 const LIGHT = '#eef2f5';
 
 const fmtDate = (v?: string | null) => (v ? new Date(v).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—');
@@ -106,29 +99,15 @@ export function streamDischargeSummaryPdf(res: Response, doc: DischargeDocument)
 
   const left = PAGE.margin;
   const right = PAGE.width - PAGE.margin;
+  const accent = /^#[0-9a-fA-F]{6}$/.test(doc.hospital.accentColor) ? doc.hospital.accentColor : DEFAULT_ACCENT;
 
   // Guard: if a block won't fit, start a new page.
   const ensure = (needed: number) => {
     if (pdf.y + needed > PAGE.height - PAGE.margin - 24) pdf.addPage();
   };
 
-  // ---- Letterhead ----
-  pdf.font('Helvetica-Bold').fontSize(17).fillColor(INK).text(doc.hospital.name, left, PAGE.margin, { width: CONTENT_W, align: 'center' });
-  const sub: string[] = [];
-  if (doc.hospital.address) sub.push(doc.hospital.address);
-  const contact = [doc.hospital.phone, doc.hospital.email, doc.hospital.website].filter(Boolean).join('  •  ');
-  pdf.font('Helvetica').fontSize(8.5).fillColor(MUTED);
-  if (sub.length) pdf.text(sub.join(''), { width: CONTENT_W, align: 'center' });
-  if (contact) pdf.text(contact, { width: CONTENT_W, align: 'center' });
-  const reg = [doc.hospital.licenseNumber ? `Reg. No: ${doc.hospital.licenseNumber}` : '', doc.hospital.accreditation ? doc.hospital.accreditation : ''].filter(Boolean).join('  •  ');
-  if (reg) pdf.text(reg, { width: CONTENT_W, align: 'center' });
-
-  pdf.moveDown(0.5);
-  pdf.rect(left, pdf.y, CONTENT_W, 20).fill(ACCENT);
-  pdf.fillColor('#ffffff').font('Helvetica-Bold').fontSize(11).text('DISCHARGE SUMMARY', left, pdf.y + 5, { width: CONTENT_W, align: 'center' });
-  pdf.y += 20;
-  pdf.moveDown(0.6);
-  pdf.fillColor(INK);
+  // ---- Branded letterhead + title (shared across every PDF in the app) ----
+  drawBrandedHeader(pdf, doc.hospital, { title: 'Discharge Summary', margin: PAGE.margin, contentWidth: CONTENT_W });
 
   // ---- Patient / admission info card ----
   const info: Array<[string, string]> = [
@@ -165,7 +144,7 @@ export function streamDischargeSummaryPdf(res: Response, doc: DischargeDocument)
     ensure(34);
     pdf.moveDown(0.3);
     const y = pdf.y;
-    pdf.rect(left, y, 3, 12).fill(ACCENT);
+    pdf.rect(left, y, 3, 12).fill(accent);
     pdf.font('Helvetica-Bold').fontSize(10.5).fillColor(INK).text(title.toUpperCase(), left + 8, y, { width: CONTENT_W - 8 });
     pdf.moveTo(left, pdf.y + 2).lineTo(right, pdf.y + 2).strokeColor(LINE).lineWidth(0.5).stroke();
     pdf.moveDown(0.35);
@@ -186,7 +165,7 @@ export function streamDischargeSummaryPdf(res: Response, doc: DischargeDocument)
     const widths = fr.map((f) => (f / fr.reduce((a, b) => a + b, 0)) * CONTENT_W);
     const drawHead = () => {
       const y = pdf.y;
-      pdf.rect(left, y, CONTENT_W, 16).fill(ACCENT);
+      pdf.rect(left, y, CONTENT_W, 16).fill(accent);
       let x = left;
       headers.forEach((h, i) => {
         pdf.font('Helvetica-Bold').fontSize(7.5).fillColor('#ffffff').text(h.toUpperCase(), x + 4, y + 4.5, { width: widths[i] - 8, ellipsis: true });
@@ -268,17 +247,17 @@ export function streamDischargeSummaryPdf(res: Response, doc: DischargeDocument)
   if (doc.sections.keyLabs || doc.sections.labResults || doc.imaging.length) {
     heading('Investigations');
     if (doc.sections.keyLabs) {
-      pdf.font('Helvetica-Bold').fontSize(8.5).fillColor(ACCENT).text('Significant / Abnormal Labs', left, pdf.y, { width: CONTENT_W });
+      pdf.font('Helvetica-Bold').fontSize(8.5).fillColor(accent).text('Significant / Abnormal Labs', left, pdf.y, { width: CONTENT_W });
       pdf.moveDown(0.1);
       paragraph(doc.sections.keyLabs);
     }
     if (doc.sections.labResults) {
-      pdf.font('Helvetica-Bold').fontSize(8.5).fillColor(ACCENT).text('All Lab Results', left, pdf.y, { width: CONTENT_W });
+      pdf.font('Helvetica-Bold').fontSize(8.5).fillColor(accent).text('All Lab Results', left, pdf.y, { width: CONTENT_W });
       pdf.moveDown(0.1);
       paragraph(doc.sections.labResults);
     }
     if (doc.imaging.length) {
-      pdf.font('Helvetica-Bold').fontSize(8.5).fillColor(ACCENT).text('Imaging', left, pdf.y, { width: CONTENT_W });
+      pdf.font('Helvetica-Bold').fontSize(8.5).fillColor(accent).text('Imaging', left, pdf.y, { width: CONTENT_W });
       pdf.moveDown(0.1);
       table(['Study', 'Indication', 'Impression', 'Date'],
         doc.imaging.map((im) => [im.study, im.indication ?? '—', im.impression ?? '—', fmtDate(im.date)]),
@@ -322,18 +301,8 @@ export function streamDischargeSummaryPdf(res: Response, doc: DischargeDocument)
   if (doc.meta.signedAt) pdf.font('Helvetica').fontSize(8).fillColor(MUTED).text(`Electronically signed on ${fmtDateTime(doc.meta.signedAt)}`, right - 260, pdf.y + 2, { width: 260, align: 'right' });
   if (doc.meta.attestation) pdf.font('Helvetica-Oblique').fontSize(8).fillColor(MUTED).text(`Attested as “${doc.meta.attestation}”`, right - 260, pdf.y, { width: 260, align: 'right' });
 
-  // ---- Footers (page numbers + disclaimer) on every page ----
-  const range = pdf.bufferedPageRange();
-  for (let i = 0; i < range.count; i++) {
-    pdf.switchToPage(range.start + i);
-    const fy = PAGE.height - PAGE.margin + 6;
-    pdf.font('Helvetica').fontSize(7).fillColor(MUTED);
-    pdf.text(`${doc.hospital.name} — Discharge Summary`, left, fy, { width: CONTENT_W / 2, align: 'left' });
-    pdf.text(`Page ${i + 1} of ${range.count}`, left + CONTENT_W / 2, fy, { width: CONTENT_W / 2, align: 'right' });
-    if (i === range.count - 1) {
-      pdf.fillColor(MUTED).fontSize(6.8).text('This is a computer-generated discharge summary. In case of any emergency, contact the hospital immediately.', left, fy + 9, { width: CONTENT_W, align: 'center' });
-    }
-  }
+  // ---- Branded footers (hospital name • page X of Y • disclaimer) ----
+  drawBrandedFooters(pdf, doc.hospital, { margin: PAGE.margin, contentWidth: CONTENT_W });
 
   pdf.end();
 }

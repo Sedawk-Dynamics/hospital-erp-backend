@@ -4,6 +4,7 @@ import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
 import { sendDischargeSummaryPublishedEmail } from '../../services/email.service';
 import type { DischargeDocument, DischargeVitalRow } from './discharge-summary-pdf';
+import { getHospitalBranding } from '../hospital-branding/hospital-branding.service';
 
 interface GetMrdQuery {
   page?: number;
@@ -747,7 +748,7 @@ export async function buildDischargeDocument(tenantId: string, id: string): Prom
   const { visitId, patientId } = summary;
   const num = (v: unknown) => (v === null || v === undefined ? null : Number(v));
 
-  const [patient, tenant, emergency, allergies, diagnoses, vitalsAll, otRequests, imaging, prescriptions] = await Promise.all([
+  const [patient, branding, emergency, allergies, diagnoses, vitalsAll, otRequests, imaging, prescriptions] = await Promise.all([
     prisma.patient.findFirst({
       where: { id: patientId },
       select: {
@@ -756,10 +757,8 @@ export async function buildDischargeDocument(tenantId: string, id: string): Prom
         state: true, maritalStatus: true, nationality: true,
       },
     }),
-    prisma.tenant.findFirst({
-      where: { id: tenantId },
-      select: { name: true, address: true, city: true, state: true, country: true, phone: true, email: true, website: true, licenseNumber: true, accreditationInfo: true },
-    }),
+    // The hospital's configured PDF/print branding (letterhead, logo, colours).
+    getHospitalBranding(tenantId),
     prisma.patientEmergencyContact.findFirst({
       where: { patientId },
       orderBy: [{ isPrimary: 'desc' }, { createdAt: 'asc' }],
@@ -813,15 +812,7 @@ export async function buildDischargeDocument(tenantId: string, id: string): Prom
   const attending = summary.doctor?.user ? `Dr. ${summary.doctor.user.firstName} ${summary.doctor.user.lastName ?? ''}`.trim() : 'Attending Physician';
 
   return {
-    hospital: {
-      name: tenant?.name ?? 'Hospital',
-      address: [tenant?.address, tenant?.city, tenant?.state, tenant?.country].filter(Boolean).join(', ') || null,
-      phone: tenant?.phone ?? null,
-      email: tenant?.email ?? null,
-      website: tenant?.website ?? null,
-      licenseNumber: tenant?.licenseNumber ?? null,
-      accreditation: tenant?.accreditationInfo ?? null,
-    },
+    hospital: branding,
     meta: {
       id: summary.id,
       status: summary.status,
