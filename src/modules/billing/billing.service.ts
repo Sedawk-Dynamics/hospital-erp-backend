@@ -2281,12 +2281,19 @@ async function assertIpLedgerAccess(
   tenantId: string,
   admissionId: string,
   actor: { userId: string; roles: string[] },
-  opts: { write: boolean },
+  opts: { write: boolean; nurseWrite?: boolean },
 ) {
   if ((actor.roles ?? []).some((r) => IP_LEDGER_FULL_ROLES.has(r))) return;
-  // Nurses may VIEW the ledger + activity log for any IP patient; posting or
-  // removing charges still requires an active assignment (checked below).
-  if (!opts.write && (actor.roles ?? []).some((r) => IP_LEDGER_NURSE_ROLES.has(r))) return;
+  // Nurses may VIEW any IP patient's ledger + activity, and — when the caller
+  // sets nurseWrite (addIpCharge / removeIpCharge) — post charges too. Removal is
+  // further restricted to the nurse's OWN charges by removeIpCharge. Calls WITHOUT
+  // nurseWrite (e.g. recordDoctorVisit) stay doctor/assigned-nurse/billing-only.
+  if (
+    (actor.roles ?? []).some((r) => IP_LEDGER_NURSE_ROLES.has(r)) &&
+    (!opts.write || opts.nurseWrite)
+  ) {
+    return;
+  }
 
   const admission = await prisma.admission.findFirst({ where: { id: admissionId, tenantId }, select: { doctorId: true, patientId: true } });
   if (!admission) throw AppError.notFound('Admission not found');
@@ -2320,7 +2327,7 @@ export async function addIpCharge(
   data: { category: string; description: string; quantity?: number; unitPrice: number; taxRate?: number; serviceTariffId?: string; notes?: string },
   roles: string[] = [],
 ) {
-  await assertIpLedgerAccess(tenantId, admissionId, { userId, roles }, { write: true });
+  await assertIpLedgerAccess(tenantId, admissionId, { userId, roles }, { write: true, nurseWrite: true });
   const r2 = (n: number) => Math.round(n * 100) / 100;
   const category = IP_CHARGE_CATEGORIES.has(data.category) ? data.category : 'other';
   const bill = await getOrCreateRunningIpBill(tenantId, admissionId, userId);
@@ -2367,11 +2374,11 @@ export async function removeIpCharge(
   itemId: string,
   roles: string[] = [],
 ) {
-  await assertIpLedgerAccess(tenantId, admissionId, { userId, roles }, { write: true });
+  await assertIpLedgerAccess(tenantId, admissionId, { userId, roles }, { write: true, nurseWrite: true });
 
   const item = await prisma.billItem.findFirst({
     where: { id: itemId, bill: { tenantId, admissionId } },
-    select: { id: true, billId: true, isAutoPulled: true, bill: { select: { status: true } } },
+    select: { id: true, billId: true, isAutoPulled: true, referenceType: true, referenceId: true, bill: { select: { status: true } } },
   });
   if (!item) throw AppError.notFound('Ledger charge not found');
   if (item.isAutoPulled) {
@@ -2379,6 +2386,18 @@ export async function removeIpCharge(
   }
   if (item.bill.status !== 'draft') {
     throw AppError.badRequest('This charge is on a finalized bill and can no longer be removed.');
+  }
+
+  // A nurse (without a billing/admin role) may only remove a manual charge THEY
+  // added — addIpCharge stamps referenceId as `<userId>:<ts>`. Doctor visits and
+  // other users' charges are off-limits.
+  const isPrivileged = (roles ?? []).some((r) => IP_LEDGER_FULL_ROLES.has(r));
+  const isNurse = (roles ?? []).some((r) => IP_LEDGER_NURSE_ROLES.has(r));
+  if (isNurse && !isPrivileged) {
+    const creatorId = (item.referenceId ?? '').split(':')[0];
+    if (item.referenceType !== 'manual_clinical' || creatorId !== userId) {
+      throw AppError.forbidden('You can only remove charges you added yourself.');
+    }
   }
 
   await prisma.billItem.delete({ where: { id: itemId } });
@@ -2494,6 +2513,9 @@ export async function getAdmissionLedger(tenantId: string, admissionId: string, 
       description: it.description, category: String(it.category),
       quantity: it.quantity, unitPrice: Number(it.unitPrice), totalAmount: Number(it.totalAmount),
       isReimbursable: it.isReimbursable, isAutoPulled: it.isAutoPulled,
+      // Was this manual charge added by the current user? Lets the UI show a
+      // remove button only for one's own charges (nurses can delete only theirs).
+      addedByMe: it.referenceType === 'manual_clinical' && (it.referenceId ?? '').split(':')[0] === actor.userId,
       status: 'posted' as const, at: it.createdAt.toISOString(),
     })),
   );
@@ -2507,6 +2529,7 @@ export async function getAdmissionLedger(tenantId: string, admissionId: string, 
       description: c.description, category: String(c.category),
       quantity: c.quantity, unitPrice: c.unitPrice, totalAmount: c.totalAmount,
       isReimbursable: null as any, isAutoPulled: true,
+      addedByMe: false,
       status: 'pending' as any, at: c.occurredAt,
     }));
   } catch { /* patient missing → no pending */ }
