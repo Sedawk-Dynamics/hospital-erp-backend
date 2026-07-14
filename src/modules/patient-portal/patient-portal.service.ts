@@ -1176,6 +1176,200 @@ export async function getPatientDischargeSummaryById(userId: string, email: stri
   return getPublishedDischargeSummaryForPatient(patientIds, id);
 }
 
+// ────────────────────────────────────────────────────────────
+// Hospitalizations (IP admissions) — the patient's own in-patient stays with
+// all their details: admission info, diagnoses, vitals, medications,
+// procedures, the IP bill and (once published) the discharge summary.
+// Everything is scoped to the patient's own records via resolvePatientIds.
+// ────────────────────────────────────────────────────────────
+
+const daysBetween = (start: Date, end: Date | null): number => {
+  const from = new Date(start).getTime();
+  const to = (end ? new Date(end) : new Date()).getTime();
+  return Math.max(0, Math.round((to - from) / 86_400_000));
+};
+
+const drName = (u?: { firstName?: string | null; lastName?: string | null } | null): string | null =>
+  u ? `Dr. ${u.firstName ?? ''} ${u.lastName ?? ''}`.trim() : null;
+
+const numOrNull = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v));
+
+export async function getPatientAdmissions(
+  userId: string,
+  email: string,
+  query: { tenantId?: string; profileId?: string } = {},
+) {
+  const patientIds = await resolvePatientIds(userId, email, query.tenantId, query.profileId);
+  if (patientIds.length === 0) return { data: [] };
+
+  const admissions = await prisma.admission.findMany({
+    where: { patientId: { in: patientIds } },
+    orderBy: { admissionDate: 'desc' },
+    take: 50,
+    include: {
+      tenant: { select: { id: true, name: true } },
+      ward: { select: { name: true } },
+      bed: { select: { bedNumber: true } },
+      doctor: { select: { specialization: true, user: { select: { firstName: true, lastName: true } } } },
+      dischargeSummary: { select: { id: true, status: true } },
+      visit: { select: { diagnoses: { select: { diagnosisName: true, diagnosisType: true } } } },
+    },
+  });
+
+  return {
+    data: admissions.map((a) => {
+      const dx = a.visit?.diagnoses ?? [];
+      const primary = dx.find((d) => d.diagnosisType === 'primary')?.diagnosisName ?? dx[0]?.diagnosisName ?? null;
+      return {
+        id: a.id,
+        status: a.status,
+        admissionDate: a.admissionDate,
+        dischargeDate: a.dischargeDate,
+        expectedDischargeDate: a.expectedDischargeDate,
+        lengthOfStayDays: daysBetween(a.admissionDate, a.dischargeDate),
+        admissionReason: a.admissionReason,
+        ward: a.ward?.name ?? null,
+        bed: a.bed?.bedNumber ?? null,
+        hospital: a.tenant?.name ?? null,
+        doctor: drName(a.doctor?.user),
+        specialization: a.doctor?.specialization ?? null,
+        primaryDiagnosis: primary,
+        // Only surface the discharge summary once the doctor has PUBLISHED it.
+        dischargeSummaryId: a.dischargeSummary?.status === 'published' ? a.dischargeSummary.id : null,
+      };
+    }),
+  };
+}
+
+export async function getPatientAdmissionDetail(userId: string, email: string, admissionId: string) {
+  const patientIds = await resolvePatientIds(userId, email);
+  if (patientIds.length === 0) throw AppError.notFound('Admission not found');
+
+  const a = await prisma.admission.findFirst({
+    where: { id: admissionId, patientId: { in: patientIds } },
+    include: {
+      tenant: { select: { id: true, name: true } },
+      ward: { select: { name: true } },
+      bed: { select: { bedNumber: true } },
+      doctor: { select: { specialization: true, user: { select: { firstName: true, lastName: true } } } },
+      patient: { select: { mrn: true, firstName: true, lastName: true, dateOfBirth: true, gender: true, bloodGroup: true } },
+      dischargeSummary: { select: { id: true, status: true } },
+      visit: {
+        select: {
+          id: true,
+          chiefComplaint: true,
+          diagnoses: {
+            orderBy: { diagnosedAt: 'asc' },
+            select: { diagnosisName: true, diagnosisType: true, icdCode: true },
+          },
+          vitals: {
+            where: { isCorrection: false },
+            orderBy: { recordedAt: 'asc' },
+            select: {
+              recordedAt: true, bloodPressureSystolic: true, bloodPressureDiastolic: true, pulseRate: true,
+              temperature: true, respiratoryRate: true, oxygenSaturation: true, weightKg: true, heightCm: true, bmi: true, bloodSugar: true,
+            },
+          },
+          prescriptions: {
+            where: { status: { not: 'cancelled' } },
+            orderBy: { createdAt: 'desc' },
+            select: {
+              id: true, createdAt: true, notes: true, status: true, followUpDate: true,
+              doctor: { select: { user: { select: { firstName: true, lastName: true } } } },
+              prescriptionItems: { select: { drugName: true, dosage: true, frequency: true, duration: true, route: true, instructions: true, isPrn: true } },
+            },
+          },
+        },
+      },
+      clinicalProcedures: {
+        orderBy: { performedAt: 'desc' },
+        select: { procedureType: true, procedureSubtype: true, performedAt: true, status: true, site: true },
+      },
+      bills: {
+        orderBy: { createdAt: 'asc' },
+        select: {
+          id: true, billNumber: true, status: true, totalAmount: true, amountPaid: true, balanceDue: true,
+          billItems: { select: { description: true, quantity: true, totalAmount: true } },
+        },
+      },
+    },
+  });
+  if (!a) throw AppError.notFound('Admission not found');
+
+  const bills = a.bills.map((b) => ({
+    id: b.id,
+    billNumber: b.billNumber,
+    status: b.status,
+    total: Number(b.totalAmount),
+    paid: Number(b.amountPaid),
+    balance: Number(b.balanceDue),
+    items: b.billItems.map((it) => ({ description: it.description, quantity: it.quantity, amount: Number(it.totalAmount) })),
+  }));
+
+  return {
+    id: a.id,
+    status: a.status,
+    hospital: a.tenant?.name ?? null,
+    patient: {
+      name: `${a.patient.firstName} ${a.patient.lastName}`.trim(),
+      mrn: a.patient.mrn,
+      dateOfBirth: a.patient.dateOfBirth,
+      gender: a.patient.gender,
+      bloodGroup: a.patient.bloodGroup,
+    },
+    admission: {
+      admissionDate: a.admissionDate,
+      dischargeDate: a.dischargeDate,
+      expectedDischargeDate: a.expectedDischargeDate,
+      lengthOfStayDays: daysBetween(a.admissionDate, a.dischargeDate),
+      ward: a.ward?.name ?? null,
+      bed: a.bed?.bedNumber ?? null,
+      reason: a.admissionReason,
+      chiefComplaint: a.visit?.chiefComplaint ?? null,
+      doctor: drName(a.doctor?.user),
+      specialization: a.doctor?.specialization ?? null,
+    },
+    diagnoses: (a.visit?.diagnoses ?? []).map((d) => ({ name: d.diagnosisName, type: d.diagnosisType, icdCode: d.icdCode })),
+    vitals: (a.visit?.vitals ?? []).map((v) => ({
+      recordedAt: v.recordedAt,
+      bp: v.bloodPressureSystolic != null && v.bloodPressureDiastolic != null ? `${v.bloodPressureSystolic}/${v.bloodPressureDiastolic}` : null,
+      pulse: v.pulseRate,
+      temp: numOrNull(v.temperature),
+      rr: v.respiratoryRate,
+      spo2: numOrNull(v.oxygenSaturation),
+      weight: numOrNull(v.weightKg),
+      height: numOrNull(v.heightCm),
+      bmi: numOrNull(v.bmi),
+      sugar: numOrNull(v.bloodSugar),
+    })),
+    medications: (a.visit?.prescriptions ?? []).map((rx) => ({
+      id: rx.id,
+      prescribedAt: rx.createdAt,
+      status: rx.status,
+      notes: rx.notes,
+      followUpDate: rx.followUpDate,
+      doctor: drName(rx.doctor?.user),
+      items: rx.prescriptionItems.map((it) => ({
+        drug: it.drugName, dosage: it.dosage, frequency: it.frequency, duration: it.duration, route: it.route, instructions: it.instructions, isPrn: it.isPrn,
+      })),
+    })),
+    procedures: a.clinicalProcedures.map((p) => ({
+      name: [p.procedureType, p.procedureSubtype].filter(Boolean).join(' — '),
+      site: p.site,
+      at: p.performedAt,
+      status: p.status,
+    })),
+    billing: {
+      deposit: Number(a.depositAmount),
+      total: bills.reduce((s, b) => s + b.total, 0),
+      paid: bills.reduce((s, b) => s + b.paid, 0),
+      balance: bills.reduce((s, b) => s + b.balance, 0),
+      bills,
+    },
+    dischargeSummaryId: a.dischargeSummary?.status === 'published' ? a.dischargeSummary.id : null,
+  };
+}
+
 export async function getPatientDrugHistory(
   userId: string,
   email: string,

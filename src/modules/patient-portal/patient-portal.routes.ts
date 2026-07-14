@@ -480,6 +480,33 @@ router.get('/discharge-summaries/:id/pdf', async (req: AuthenticatedRequest, res
   }
 });
 
+// GET /patient-portal/admissions — the patient's IP hospitalizations
+router.get('/admissions', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const result = await patientPortalService.getPatientAdmissions(req.user!.userId, req.user!.email, {
+      tenantId: req.query.tenantId as string | undefined,
+      profileId: req.query.profileId as string | undefined,
+    });
+    sendResponse({ res, statusCode: 200, message: 'Hospitalizations', data: result.data });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /patient-portal/admissions/:id — full detail of one hospitalization
+router.get('/admissions/:id', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const data = await patientPortalService.getPatientAdmissionDetail(
+      req.user!.userId,
+      req.user!.email,
+      req.params.id as string,
+    );
+    sendResponse({ res, statusCode: 200, message: 'Hospitalization detail', data });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /patient-portal/drug-history
 router.get('/drug-history', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
