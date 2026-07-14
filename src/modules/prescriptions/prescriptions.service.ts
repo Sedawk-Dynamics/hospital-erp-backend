@@ -308,6 +308,58 @@ export async function getPrescriptionById(tenantId: string, id: string) {
 }
 
 /**
+ * Load a prescription with the full clinical context needed to render a
+ * detailed OP consultation/prescription document — patient contact + allergies,
+ * the visit's chief complaint, diagnoses and latest vitals, and the doctor's
+ * credentials. Everything is optional so the document degrades gracefully.
+ */
+export async function getPrescriptionForDocument(tenantId: string, id: string) {
+  const prescription = await prisma.prescription.findFirst({
+    where: { id, tenantId },
+    include: {
+      patient: {
+        select: {
+          id: true, mrn: true, firstName: true, lastName: true, dateOfBirth: true, gender: true,
+          bloodGroup: true, phone: true, addressLine1: true, addressLine2: true, city: true, state: true, postalCode: true,
+          allergies: { select: { allergen: true, reaction: true, severity: true, allergyType: true } },
+        },
+      },
+      doctor: {
+        include: {
+          user: { select: { firstName: true, lastName: true, email: true } },
+          department: { select: { id: true, name: true } },
+        },
+      },
+      visit: {
+        select: {
+          id: true, visitDate: true, visitType: true, chiefComplaint: true,
+          diagnoses: {
+            orderBy: { diagnosedAt: 'asc' },
+            select: { diagnosisName: true, diagnosisType: true, icdCode: true, notes: true },
+          },
+          vitals: {
+            where: { isCorrection: false },
+            orderBy: { recordedAt: 'desc' },
+            take: 1,
+            select: {
+              bloodPressureSystolic: true, bloodPressureDiastolic: true, pulseRate: true, temperature: true,
+              respiratoryRate: true, oxygenSaturation: true, weightKg: true, heightCm: true, bmi: true, bloodSugar: true,
+              recordedAt: true,
+            },
+          },
+        },
+      },
+      prescriptionItems: {
+        include: { drug: { select: { genericName: true, dosageForm: true } } },
+      },
+    },
+  });
+
+  if (!prescription) throw AppError.notFound('Prescription not found');
+  return prescription;
+}
+
+/**
  * Update a prescription (status, notes).
  */
 export async function updatePrescription(

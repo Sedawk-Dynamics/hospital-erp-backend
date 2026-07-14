@@ -107,7 +107,16 @@ export function streamDischargeSummaryPdf(res: Response, doc: DischargeDocument)
   };
 
   // ---- Branded letterhead + title (shared across every PDF in the app) ----
-  drawBrandedHeader(pdf, doc.hospital, { title: 'Discharge Summary', margin: PAGE.margin, contentWidth: CONTENT_W });
+  drawBrandedHeader(pdf, doc.hospital, {
+    title: 'Discharge Summary',
+    margin: PAGE.margin,
+    contentWidth: CONTENT_W,
+    subtitle: doc.meta.status !== 'published' ? `${doc.meta.status.toUpperCase()} — PREVIEW` : 'Inpatient (IP)',
+    meta: [
+      { label: 'MRN', value: doc.patient.mrn ?? '—' },
+      { label: 'Doc No', value: doc.meta.id.slice(0, 8).toUpperCase() },
+    ],
+  });
 
   // ---- Patient / admission info card ----
   const info: Array<[string, string]> = [
@@ -302,7 +311,11 @@ export function streamDischargeSummaryPdf(res: Response, doc: DischargeDocument)
   if (doc.meta.attestation) pdf.font('Helvetica-Oblique').fontSize(8).fillColor(MUTED).text(`Attested as “${doc.meta.attestation}”`, right - 260, pdf.y, { width: 260, align: 'right' });
 
   // ---- Branded footers (hospital name • page X of Y • disclaimer) ----
-  drawBrandedFooters(pdf, doc.hospital, { margin: PAGE.margin, contentWidth: CONTENT_W });
+  drawBrandedFooters(pdf, doc.hospital, {
+    margin: PAGE.margin,
+    contentWidth: CONTENT_W,
+    generatedAt: doc.meta.generatedAt ? new Date(doc.meta.generatedAt) : undefined,
+  });
 
   pdf.end();
 }

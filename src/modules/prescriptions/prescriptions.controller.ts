@@ -89,7 +89,7 @@ export async function downloadPrescriptionPdf(
   try {
     const tenantId = req.user!.tenantId;
     const [prescription, branding] = await Promise.all([
-      prescriptionsService.getPrescriptionById(tenantId, req.params.id as string),
+      prescriptionsService.getPrescriptionForDocument(tenantId, req.params.id as string),
       getHospitalBranding(tenantId),
     ]);
     streamPrescriptionPdf(res, prescription as never, branding);
