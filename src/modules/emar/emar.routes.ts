@@ -18,6 +18,7 @@ import {
   missedDoseSchema,
   amendDoseSchema,
   triggerPrnSchema,
+  catchUpDoseSchema,
   regenerateSchedulesSchema,
   auditQuerySchema,
 } from './emar.validation';
@@ -123,6 +124,15 @@ emarRoutes.post(
   requirePermission('prescriptions', 'update'),
   validate(triggerPrnSchema),
   ctrl.triggerPrn,
+);
+
+// ── Catch-up dose (record a skipped/elapsed slot) ──────────
+emarRoutes.post(
+  '/catch-up',
+  authenticate,
+  requirePermission('prescriptions', 'update'),
+  validate(catchUpDoseSchema),
+  ctrl.catchUpDose,
 );
 
 // ── Regenerate ─────────────────────────────────────────────

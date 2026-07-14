@@ -602,6 +602,181 @@ export async function triggerPrn(
 }
 
 // ============================================================
+// Catch-up dose (materialize + action in one shot)
+// ============================================================
+
+/**
+ * Record a status for a scheduled slot whose dose row was never generated —
+ * the classic case is a slot whose time had already passed when the order was
+ * written (the scheduler skips those so it doesn't backfill pre-admission
+ * doses). The nurse can still document it: this creates the row for
+ * (item, slot, date) AND applies the chosen outcome atomically, so the
+ * lifecycle tick can never race it to "missed" in between.
+ */
+export async function applyCatchUpDose(
+  tenantId: string,
+  userId: string,
+  data: {
+    prescriptionItemId: string;
+    slotCode: string;
+    date: string; // YYYY-MM-DD (local/IST)
+    action: 'give' | 'hold' | 'refuse' | 'missed';
+    actualGivenTime?: string;
+    reason?: string;
+    notes?: string;
+  },
+) {
+  const item = await prisma.prescriptionItem.findFirst({
+    where: { id: data.prescriptionItemId, prescription: { tenantId } },
+    include: {
+      prescription: { select: { id: true, status: true, patientId: true, visitId: true, prescriptionType: true } },
+    },
+  });
+  if (!item) throw AppError.notFound('Prescription item not found');
+  if (item.prescription.prescriptionType !== 'ip') {
+    throw AppError.badRequest('Only IP prescriptions have an eMAR schedule');
+  }
+  if (item.prescription.status === 'cancelled') {
+    throw AppError.badRequest('Prescription has been cancelled');
+  }
+  if (item.isPrn) {
+    throw AppError.badRequest('PRN orders are recorded via the PRN action, not the grid');
+  }
+  if ((data.action === 'hold' || data.action === 'refuse') && !data.reason?.trim()) {
+    throw AppError.badRequest('A reason is required to hold or refuse a dose');
+  }
+
+  const slot = await prisma.emarTimeSlot.findFirst({ where: { tenantId, code: data.slotCode } });
+  if (!slot) throw AppError.notFound('Time slot not found');
+
+  const [y, mo, d] = data.date.split('-').map((x) => parseInt(x, 10));
+  const [hh, mm] = slot.time.split(':').map((x) => parseInt(x, 10));
+  if ([y, mo, d, hh, mm].some((n) => Number.isNaN(n))) {
+    throw AppError.badRequest('Invalid date or slot time');
+  }
+  const scheduledAt = new Date(y, mo - 1, d, hh, mm, 0, 0);
+
+  // Don't duplicate a slot that already has a (non-cancelled) dose row.
+  const existing = await prisma.emarSchedule.findFirst({
+    where: { tenantId, prescriptionItemId: item.id, scheduledAt, status: { not: 'cancelled' } },
+  });
+  if (existing) {
+    throw AppError.badRequest('A dose already exists for this slot — act on it directly.');
+  }
+
+  const visit = await prisma.visit.findUnique({
+    where: { id: item.prescription.visitId },
+    select: { admission: { select: { id: true } } },
+  });
+  const admissionId = visit?.admission?.id ?? null;
+
+  // Reuse the frequencyCode the item's other rows carry, for a consistent record.
+  const sibling = await prisma.emarSchedule.findFirst({
+    where: { tenantId, prescriptionItemId: item.id, isPrn: false },
+    select: { frequencyCode: true },
+    orderBy: { scheduledAt: 'asc' },
+  });
+  const frequencyCode = sibling?.frequencyCode ?? null;
+
+  const grace = await getGracePeriod(tenantId);
+  const now = new Date();
+  const actualGivenTime =
+    data.action === 'give' ? (data.actualGivenTime ? new Date(data.actualGivenTime) : now) : null;
+  const delayMinutes = actualGivenTime ? diffMinutes(actualGivenTime, scheduledAt) : null;
+
+  let finalStatus: EmarDoseStatus;
+  if (data.action === 'give') finalStatus = delayMinutes! > grace ? 'given_late' : 'given';
+  else if (data.action === 'hold') finalStatus = 'held';
+  else if (data.action === 'refuse') finalStatus = 'refused';
+  else finalStatus = 'missed';
+
+  const created = await prisma.$transaction(async (tx) => {
+    const row = await tx.emarSchedule.create({
+      data: {
+        tenantId,
+        prescriptionId: item.prescriptionId,
+        prescriptionItemId: item.id,
+        patientId: item.prescription.patientId,
+        admissionId,
+        drugName: item.drugName,
+        dosage: item.dosage,
+        route: (item.route ?? 'oral') as MedicationRoute,
+        frequencyCode,
+        slotCode: slot.code,
+        scheduledAt,
+        isPrn: false,
+        status: finalStatus,
+        actionedAt: now,
+        actualGivenTime,
+        givenById: userId,
+        delayMinutes,
+        reason: data.reason ?? null,
+        notes: data.notes ?? null,
+      },
+    });
+    // Two audit rows: the materialization, then the applied outcome.
+    await tx.emarAuditLog.create({
+      data: {
+        tenantId,
+        scheduleId: row.id,
+        action: 'generated',
+        fromStatus: null,
+        toStatus: 'pending',
+        performedById: userId,
+        notes: 'Catch-up dose added for a slot whose time had already passed at ordering',
+      },
+    });
+    await tx.emarAuditLog.create({
+      data: {
+        tenantId,
+        scheduleId: row.id,
+        action: (finalStatus === 'given_late' ? 'late' : finalStatus) as any,
+        fromStatus: 'pending',
+        toStatus: finalStatus,
+        performedById: userId,
+        delayMinutes: delayMinutes ?? undefined,
+        reason: data.reason,
+        notes: data.notes,
+      },
+    });
+    return row;
+  });
+
+  // Mirror to legacy MedicationAdministration for compatibility.
+  if (finalStatus === 'given' || finalStatus === 'given_late') {
+    await prisma.medicationAdministration.create({
+      data: {
+        prescriptionItemId: item.id,
+        patientId: item.prescription.patientId,
+        administeredBy: userId,
+        administeredAt: actualGivenTime!,
+        doseGiven: item.dosage,
+        status: 'given',
+        notes: data.notes ?? null,
+      },
+    });
+  } else if (finalStatus === 'held' || finalStatus === 'refused' || finalStatus === 'missed') {
+    await prisma.medicationAdministration.create({
+      data: {
+        prescriptionItemId: item.id,
+        patientId: item.prescription.patientId,
+        administeredBy: userId,
+        administeredAt: now,
+        doseGiven: item.dosage,
+        status: finalStatus as any,
+        notes: [data.reason, data.notes].filter(Boolean).join(' — ') || null,
+      },
+    });
+  }
+
+  logger.info(
+    { tenantId, prescriptionItemId: item.id, slotCode: slot.code, action: data.action, status: finalStatus },
+    'eMAR catch-up dose recorded',
+  );
+  return created;
+}
+
+// ============================================================
 // Regenerate / cancel future schedules
 // ============================================================
 

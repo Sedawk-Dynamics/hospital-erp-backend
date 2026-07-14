@@ -144,6 +144,13 @@ export async function triggerPrn(req: AuthenticatedRequest, res: Response, next:
   } catch (err) { next(err); }
 }
 
+export async function catchUpDose(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await svc.applyCatchUpDose(req.user!.tenantId, req.user!.userId, req.body);
+    sendResponse({ res, message: 'Catch-up dose recorded', data, statusCode: 201 });
+  } catch (err) { next(err); }
+}
+
 // ── Schedule generation ─────────────────────────────────────
 
 export async function regenerate(req: AuthenticatedRequest, res: Response, next: NextFunction) {

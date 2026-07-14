@@ -139,6 +139,20 @@ export const triggerPrnSchema = z.object({
   }),
 });
 
+// ── Catch-up dose (materialize a skipped slot + record its outcome) ──
+
+export const catchUpDoseSchema = z.object({
+  body: z.object({
+    prescriptionItemId: z.string().uuid(),
+    slotCode: z.string().min(1).max(40),
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be YYYY-MM-DD'),
+    action: z.enum(['give', 'hold', 'refuse', 'missed']),
+    actualGivenTime: z.string().datetime().optional(),
+    reason: z.string().max(500).optional(),
+    notes: z.string().max(1000).optional(),
+  }),
+});
+
 // ── Regenerate schedules ─────────────────────────────────────
 
 export const regenerateSchedulesSchema = z.object({
@@ -162,3 +176,4 @@ export type HoldRefuseDoseInput = z.infer<typeof holdRefuseDoseSchema>['body'];
 export type MissedDoseInput = z.infer<typeof missedDoseSchema>['body'];
 export type AmendDoseInput = z.infer<typeof amendDoseSchema>['body'];
 export type TriggerPrnInput = z.infer<typeof triggerPrnSchema>['body'];
+export type CatchUpDoseInput = z.infer<typeof catchUpDoseSchema>['body'];
