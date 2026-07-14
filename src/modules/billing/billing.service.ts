@@ -2266,12 +2266,15 @@ const IP_CHARGE_CATEGORIES = new Set(['consultation', 'surgery', 'room', 'lab', 
 
 // Billing / hospital-admin roles that get full access to any IP ledger.
 const IP_LEDGER_FULL_ROLES = new Set(['super_admin', 'admin', 'billing_admin', 'front_desk', 'cashier']);
+// Nurse roles get READ-only access to any IP ledger + activity log (they need
+// the running clinical/financial picture for the patients they care for).
+const IP_LEDGER_NURSE_ROLES = new Set(['nurse', 'nurse_admin']);
 
 /**
  * Access to an admission's IP ledger is relationship-scoped:
  *  - full: billing / hospital-admin roles (super_admin, admin, billing_admin, …);
  *  - read + post charge: the admission's OWN doctor and the actively-assigned nurse;
- *  - read only: the patient (their own ledger);
+ *  - read only: any nurse (Billing/Ledger + Activity Log), and the patient (own ledger);
  *  - everyone else: denied.
  */
 async function assertIpLedgerAccess(
@@ -2281,6 +2284,9 @@ async function assertIpLedgerAccess(
   opts: { write: boolean },
 ) {
   if ((actor.roles ?? []).some((r) => IP_LEDGER_FULL_ROLES.has(r))) return;
+  // Nurses may VIEW the ledger + activity log for any IP patient; posting or
+  // removing charges still requires an active assignment (checked below).
+  if (!opts.write && (actor.roles ?? []).some((r) => IP_LEDGER_NURSE_ROLES.has(r))) return;
 
   const admission = await prisma.admission.findFirst({ where: { id: admissionId, tenantId }, select: { doctorId: true, patientId: true } });
   if (!admission) throw AppError.notFound('Admission not found');
