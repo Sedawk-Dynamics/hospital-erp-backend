@@ -96,7 +96,13 @@ export function resolveFrequency(
   freqs: EmarFrequency[],
 ): EmarFrequency | null {
   if (!raw) return null;
-  const norm = raw.trim().toLowerCase().replace(/[\s.]+/g, ' ');
+  let norm = raw.trim().toLowerCase().replace(/[.]+/g, '').replace(/\s+/g, ' ');
+  // Strip a trailing meal/food-timing note that doctors append to the frequency,
+  // e.g. "twice daily - after meal", "BD (with food)", "TID, before breakfast".
+  norm = norm
+    .replace(/\s*[-,(]\s*(after|before|with|without|empty|a\s*c|p\s*c|ac|pc)\b.*$/, '')
+    .replace(/\s*[-,(]\s*(meal|meals|food|breakfast|lunch|dinner|bedtime|stomach)\b.*$/, '')
+    .trim();
 
   // Direct code match
   const direct = freqs.find((f) => f.code.toLowerCase() === norm);
@@ -104,10 +110,10 @@ export function resolveFrequency(
 
   // Common synonyms → code
   const synonymToCode: Record<string, string> = {
-    'od': 'OD', 'qd': 'OD', 'once daily': 'OD', '1-0-0': 'MANE', '0-0-1': 'NOCTE',
+    'od': 'OD', 'qd': 'OD', 'once daily': 'OD', 'once a day': 'OD', 'once in a day': 'OD', '1-0-0': 'MANE', '0-0-1': 'NOCTE',
     'bd': 'BD', 'bid': 'BD', 'twice': 'BD', 'twice a day': 'BD', 'twice daily': 'BD', '1-0-1': 'BD',
-    'tid': 'TID', 'tds': 'TID', 'thrice': 'TID', 'thrice a day': 'TID', '1-1-1': 'TID',
-    'qid': 'QID', 'qds': 'QID', 'four times': 'QID', 'four times a day': 'QID',
+    'tid': 'TID', 'tds': 'TID', 'thrice': 'TID', 'thrice a day': 'TID', 'thrice daily': 'TID', 'three times': 'TID', 'three times a day': 'TID', 'three times daily': 'TID', '1-1-1': 'TID',
+    'qid': 'QID', 'qds': 'QID', 'four times': 'QID', 'four times a day': 'QID', 'four times daily': 'QID',
     'hs': 'HS', 'bedtime': 'HS', 'at night': 'NOCTE', 'night': 'NOCTE',
     'mane': 'MANE', 'morning': 'MANE',
     'nocte': 'NOCTE',
@@ -116,26 +122,38 @@ export function resolveFrequency(
     'q8h': 'Q8H', 'every 8 hours': 'Q8H', 'every 8 hour': 'Q8H', '8 hourly': 'Q8H',
     'q12h': 'Q12H', 'every 12 hours': 'Q12H', '12 hourly': 'Q12H',
     'stat': 'STAT', 'immediately': 'STAT', 'one time': 'ONCE', 'one dose': 'ONCE', 'once': 'ONCE',
-    'prn': 'PRN', 'as needed': 'PRN', 'when required': 'PRN', 'sos': 'SOS', 'as required': 'PRN',
+    'prn': 'PRN', 'as needed': 'PRN', 'when required': 'PRN', 'sos': 'SOS', 'as required': 'PRN', 'if required': 'PRN', 'when necessary': 'PRN',
   };
   const code = synonymToCode[norm];
   if (code) return freqs.find((f) => f.code === code) ?? null;
 
-  // Pattern-based fallback for "every N hours"
-  const intervalMatch = norm.match(/every\s+(\d+)\s*h/);
+  // Pattern-based fallback for "every N hours" / "N hourly"
+  const intervalMatch = norm.match(/every\s+(\d+)\s*h/) ?? norm.match(/(\d+)\s*hourly/);
   if (intervalMatch) {
     const hrs = parseInt(intervalMatch[1], 10);
     return freqs.find((f) => f.type === 'interval' && f.intervalHours === hrs) ?? null;
+  }
+
+  // Generic "N times a day / daily" (numeric or word). Maps 1→OD, 2→BD, 3→TID, 4→QID.
+  const WORD_NUM: Record<string, number> = { once: 1, one: 1, twice: 2, two: 2, thrice: 3, three: 3, four: 4, 'x1': 1 };
+  const timesMatch = norm.match(/\b(\d+|once|twice|thrice|one|two|three|four)\b\s*(?:times?|x)?\s*(?:a day|daily|per day|\/\s*day|in a day)/);
+  if (timesMatch) {
+    const n = WORD_NUM[timesMatch[1]] ?? parseInt(timesMatch[1], 10);
+    const codeByN: Record<number, string> = { 1: 'OD', 2: 'BD', 3: 'TID', 4: 'QID' };
+    const c = codeByN[n];
+    if (c) return freqs.find((f) => f.code === c) ?? null;
   }
 
   return null;
 }
 
 /**
- * Parse "1-0-1"/"1-1-1" style schedules → pick slots accordingly.
+ * Parse "1-0-1"/"1-1-1"/"1-1-1-1" style schedules → pick slots accordingly.
+ * Tolerates a trailing note (e.g. "1-1-1 - After Meal", "1-0-1 (SOS)") by
+ * matching the pattern at the START of the string rather than the whole string.
  */
 function parseDosagePattern(raw: string): string[] | null {
-  const m = raw.trim().match(/^(\d)\s*-\s*(\d)\s*-\s*(\d)(?:\s*-\s*(\d))?$/);
+  const m = raw.trim().match(/^(\d)\s*-\s*(\d)\s*-\s*(\d)(?:\s*-\s*(\d))?(?=$|[\s(,-])/);
   if (!m) return null;
   const slots: string[] = [];
   const map4 = ['MORNING', 'AFTERNOON', 'EVENING', 'NIGHT'];
