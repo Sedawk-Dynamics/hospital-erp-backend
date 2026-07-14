@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { authenticate } from '../../middleware/authenticate';
-import { requirePermission } from '../../middleware/authorize';
+import { requirePermission, requireRoles } from '../../middleware/authorize';
 import { validate } from '../../middleware/validate';
 import {
   createVisitSchema,
@@ -87,7 +87,10 @@ clinicalRoutes.post('/admissions', authenticate, requirePermission('admissions',
 clinicalRoutes.get('/admissions', authenticate, requirePermission('admissions', 'read'), validate(getAdmissionsQuerySchema), controller.getAdmissions);
 clinicalRoutes.get('/admissions/:id', authenticate, requirePermission('admissions', 'read'), validate(admissionIdParamSchema), controller.getAdmissionById);
 clinicalRoutes.put('/admissions/:id', authenticate, requirePermission('admissions', 'update'), validate(updateAdmissionSchema), controller.updateAdmission);
-clinicalRoutes.patch('/admissions/:id/discharge', authenticate, requirePermission('admissions', 'update'), validate(dischargePatientSchema), controller.dischargePatient);
+// Discharge is a doctor-only action (a nurse can prepare/record but not
+// discharge). super_admin/admin retain override. The auto-discharge on
+// discharge-summary publish runs at the service layer and is unaffected.
+clinicalRoutes.patch('/admissions/:id/discharge', authenticate, requirePermission('admissions', 'update'), requireRoles('doctor', 'admin', 'super_admin'), validate(dischargePatientSchema), controller.dischargePatient);
 
 // --- Transfers ---
 clinicalRoutes.post('/transfers', authenticate, requirePermission('admissions', 'create'), validate(createTransferSchema), controller.createTransfer);

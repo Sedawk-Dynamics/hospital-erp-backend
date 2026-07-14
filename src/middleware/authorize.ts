@@ -22,6 +22,24 @@ export function requireRoles(...roles: string[]) {
 }
 
 /**
+ * Block users who hold ANY of the given roles (deny-list). Used to enforce
+ * documentation ownership — e.g. a nurse cannot edit a doctor's prescription
+ * even though the nurse role holds the `prescriptions:update` permission for
+ * med-administration.
+ */
+export function denyRoles(...roles: string[]) {
+  return (req: AuthenticatedRequest, _res: Response, next: NextFunction) => {
+    if (!req.user) {
+      return next(AppError.unauthorized());
+    }
+    if (req.user.roles.some((r) => roles.includes(r))) {
+      return next(AppError.forbidden('This action is not permitted for your role'));
+    }
+    next();
+  };
+}
+
+/**
  * Check if the tenant has a feature enabled (via FeatureToggle table).
  * Super admins bypass this check. If no toggle row exists, the feature
  * is assumed to be enabled (backwards compatibility).

@@ -1,6 +1,10 @@
 import { Router } from 'express';
 import { authenticate } from '../../middleware/authenticate';
-import { requirePermission } from '../../middleware/authorize';
+import { requirePermission, denyRoles } from '../../middleware/authorize';
+
+// Prescriptions are the doctor's record: a nurse can view them and record med
+// administration (eMAR), but must NOT create or change the prescription itself.
+const noNurseWrite = denyRoles('nurse', 'nurse_admin');
 import { validate } from '../../middleware/validate';
 import * as controller from './prescriptions.controller';
 import {
@@ -31,18 +35,18 @@ prescriptionRoutes.post('/check-interactions', authenticate, requirePermission('
 prescriptionRoutes.get('/drug-history/:patientId', authenticate, requirePermission('prescriptions', 'read'), controller.getDrugHistory);
 
 // --- Prescriptions ---
-prescriptionRoutes.post('/', authenticate, requirePermission('prescriptions', 'create'), validate(createPrescriptionSchema), controller.createPrescription);
+prescriptionRoutes.post('/', authenticate, requirePermission('prescriptions', 'create'), noNurseWrite, validate(createPrescriptionSchema), controller.createPrescription);
 prescriptionRoutes.get('/', authenticate, requirePermission('prescriptions', 'read'), validate(getPrescriptionsQuerySchema), controller.getPrescriptions);
 prescriptionRoutes.get('/:id', authenticate, requirePermission('prescriptions', 'read'), validate(prescriptionIdParamSchema), controller.getPrescriptionById);
 prescriptionRoutes.get('/:id/pdf', authenticate, requirePermission('prescriptions', 'read'), validate(prescriptionIdParamSchema), controller.downloadPrescriptionPdf);
-prescriptionRoutes.put('/:id', authenticate, requirePermission('prescriptions', 'update'), validate(updatePrescriptionSchema), controller.updatePrescription);
-prescriptionRoutes.patch('/:id', authenticate, requirePermission('prescriptions', 'update'), validate(updatePrescriptionSchema), controller.updatePrescription);
-prescriptionRoutes.patch('/:id/cancel', authenticate, requirePermission('prescriptions', 'update'), validate(cancelPrescriptionSchema), controller.cancelPrescription);
+prescriptionRoutes.put('/:id', authenticate, requirePermission('prescriptions', 'update'), noNurseWrite, validate(updatePrescriptionSchema), controller.updatePrescription);
+prescriptionRoutes.patch('/:id', authenticate, requirePermission('prescriptions', 'update'), noNurseWrite, validate(updatePrescriptionSchema), controller.updatePrescription);
+prescriptionRoutes.patch('/:id/cancel', authenticate, requirePermission('prescriptions', 'update'), noNurseWrite, validate(cancelPrescriptionSchema), controller.cancelPrescription);
 
 // --- Prescription Items ---
-prescriptionRoutes.post('/:id/items', authenticate, requirePermission('prescriptions', 'create'), validate(addPrescriptionItemSchema), controller.addPrescriptionItem);
-prescriptionRoutes.put('/:id/items/:itemId', authenticate, requirePermission('prescriptions', 'update'), validate(updatePrescriptionItemSchema), controller.updatePrescriptionItem);
-prescriptionRoutes.delete('/:id/items/:itemId', authenticate, requirePermission('prescriptions', 'delete'), validate(removePrescriptionItemSchema), controller.removePrescriptionItem);
+prescriptionRoutes.post('/:id/items', authenticate, requirePermission('prescriptions', 'create'), noNurseWrite, validate(addPrescriptionItemSchema), controller.addPrescriptionItem);
+prescriptionRoutes.put('/:id/items/:itemId', authenticate, requirePermission('prescriptions', 'update'), noNurseWrite, validate(updatePrescriptionItemSchema), controller.updatePrescriptionItem);
+prescriptionRoutes.delete('/:id/items/:itemId', authenticate, requirePermission('prescriptions', 'delete'), noNurseWrite, validate(removePrescriptionItemSchema), controller.removePrescriptionItem);
 
 // --- Medication Administration ---
 prescriptionRoutes.post('/administration', authenticate, requirePermission('prescriptions', 'update'), validate(recordAdministrationSchema), controller.recordAdministration);
