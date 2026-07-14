@@ -1,9 +1,10 @@
 import PDFDocument from 'pdfkit';
 import { Response } from 'express';
+import { drawBrandedHeader, drawBrandedFooters, type HospitalBranding } from '../../services/pdf-branding';
 
-// Receipt PDF — minimal but production-shaped: hospital header, receipt ID,
-// patient/bill blocks, line-item table for the bill, then a payments table
-// showing what's been collected so far (the current receipt is bolded).
+// Receipt PDF — uses the hospital admin's PDF Builder letterhead/footer (same
+// look as every other document), then the receipt body: meta blocks, the bill
+// line-item table, a bill summary, and the current receipt's payment details.
 
 interface ReceiptLike {
   id: string;
@@ -58,8 +59,10 @@ interface ReceiptLike {
 const fmt = (n: number | string | null | undefined) =>
   `₹${Number(n ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 
-export function streamReceiptPdf(res: Response, receipt: ReceiptLike) {
-  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+export function streamReceiptPdf(res: Response, receipt: ReceiptLike, branding: HospitalBranding) {
+  const MARGIN = 42;
+  const doc = new PDFDocument({ size: 'A4', margin: MARGIN, bufferPages: true });
+  const contentWidth = doc.page.width - MARGIN * 2;
   const filename = `receipt-${receipt.receiptNumber}.pdf`;
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
@@ -68,26 +71,22 @@ export function streamReceiptPdf(res: Response, receipt: ReceiptLike) {
   const isCancellation = Number(receipt.amount) === 0 && receipt.payment.status === 'reversed';
   const isReversed = receipt.payment.status === 'reversed' && Number(receipt.amount) > 0;
 
-  // Hospital header
-  const hospitalName = receipt.tenant?.name ?? 'Hospital';
-  doc.font('Helvetica-Bold').fontSize(16).fillColor('#111').text(hospitalName, { align: 'center' });
-  const addr = [receipt.tenant?.address, receipt.tenant?.city].filter(Boolean).join(', ');
-  if (addr) doc.font('Helvetica').fontSize(9).fillColor('#444').text(addr, { align: 'center' });
-  const contact = [receipt.tenant?.phone, receipt.tenant?.email].filter(Boolean).join(' · ');
-  if (contact) doc.font('Helvetica').fontSize(9).fillColor('#444').text(contact, { align: 'center' });
-  if (receipt.tenant?.licenseNumber) {
-    doc.font('Helvetica').fontSize(9).fillColor('#444').text(`License: ${receipt.tenant.licenseNumber}`, { align: 'center' });
-  }
-  doc.moveDown(0.3);
-  doc.moveTo(40, doc.y).lineTo(555, doc.y).strokeColor('#bbb').stroke();
-  doc.moveDown(0.4);
+  // Receipt title as the branded header's document title.
+  let title = 'Payment Receipt';
+  if (isCancellation) title = 'Bill Cancellation Receipt';
+  else if (isReversed) title = 'Reversal Receipt';
 
-  // Receipt title
-  let title = 'PAYMENT RECEIPT';
-  if (isCancellation) title = 'BILL CANCELLATION RECEIPT';
-  else if (isReversed) title = 'REVERSAL RECEIPT';
-  doc.font('Helvetica-Bold').fontSize(14).fillColor('#111').text(title, { align: 'center' });
-  doc.moveDown(0.3);
+  // Branded letterhead + title bar + meta strip (Receipt no + Date).
+  drawBrandedHeader(doc, branding, {
+    title,
+    margin: MARGIN,
+    contentWidth,
+    subtitle: `Bill ${receipt.payment.bill.billNumber}`,
+    meta: [
+      { label: 'Receipt', value: receipt.receiptNumber },
+      { label: 'Date', value: new Date(receipt.receiptDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) },
+    ],
+  });
 
   // Meta — left/right blocks
   const startY = doc.y;
@@ -172,11 +171,7 @@ export function streamReceiptPdf(res: Response, receipt: ReceiptLike) {
     doc.font('Helvetica').fontSize(10).fillColor('#444').text(receipt.payment.bill.cancellationReason);
   }
 
-  doc.moveDown(1);
-  doc.font('Helvetica').fontSize(8).fillColor('#888').text(
-    'This is a computer-generated receipt. Retain for your records.',
-    { align: 'center' },
-  );
-
+  // Branded footer (hospital name • generated • page X of Y • disclaimer).
+  drawBrandedFooters(doc, branding, { margin: MARGIN, contentWidth });
   doc.end();
 }

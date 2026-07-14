@@ -173,9 +173,13 @@ export async function getReceiptPdf(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const receipt = await billingService.getReceiptById(tenantId, req.params.id as string);
+    const { getHospitalBranding } = await import('../hospital-branding/hospital-branding.service');
+    const [receipt, branding] = await Promise.all([
+      billingService.getReceiptById(tenantId, req.params.id as string),
+      getHospitalBranding(tenantId),
+    ]);
     const { streamReceiptPdf } = await import('./billing.receipt-pdf');
-    streamReceiptPdf(res, receipt as any);
+    streamReceiptPdf(res, receipt as any, branding);
   } catch (err) {
     next(err);
   }

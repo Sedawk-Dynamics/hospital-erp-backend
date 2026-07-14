@@ -1,8 +1,10 @@
 import PDFDocument from 'pdfkit';
 import { Response } from 'express';
+import { drawBrandedHeader, drawBrandedFooters, type HospitalBranding } from '../../services/pdf-branding';
 
-// Salary slip PDF — hospital header, slip meta block, earnings + deductions
-// two-column table, net pay highlight, and a signature footer.
+// Salary slip PDF — the hospital admin's PDF Builder letterhead/footer, then the
+// slip meta block, earnings + deductions two-column table, net-pay highlight and
+// a signature block.
 
 interface SalarySlipLike {
   slipNumber: string;
@@ -48,28 +50,26 @@ const monthLabel = (start: Date, end: Date) => {
   return sm === em ? sm : `${sm} – ${em}`;
 };
 
-export function streamSalarySlipPdf(res: Response, slip: SalarySlipLike) {
-  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+export function streamSalarySlipPdf(res: Response, branding: HospitalBranding, slip: SalarySlipLike) {
+  const MARGIN = 42;
+  const doc = new PDFDocument({ size: 'A4', margin: MARGIN, bufferPages: true });
+  const contentWidth = doc.page.width - MARGIN * 2;
   const filename = `salary-slip-${slip.slipNumber}.pdf`;
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
   doc.pipe(res);
 
-  // Hospital header
-  const hospitalName = slip.tenant?.name ?? 'Hospital';
-  doc.font('Helvetica-Bold').fontSize(16).fillColor('#111').text(hospitalName, { align: 'center' });
-  const addr = [slip.tenant?.address, slip.tenant?.city].filter(Boolean).join(', ');
-  if (addr) doc.font('Helvetica').fontSize(9).fillColor('#444').text(addr, { align: 'center' });
-  const contact = [slip.tenant?.phone, slip.tenant?.email].filter(Boolean).join(' · ');
-  if (contact) doc.font('Helvetica').fontSize(9).fillColor('#444').text(contact, { align: 'center' });
-  doc.moveDown(0.3);
-  doc.moveTo(40, doc.y).lineTo(555, doc.y).strokeColor('#bbb').stroke();
-  doc.moveDown(0.4);
-
-  // Title
-  doc.font('Helvetica-Bold').fontSize(14).fillColor('#111')
-    .text(`SALARY SLIP — ${monthLabel(slip.payroll.payPeriodStart, slip.payroll.payPeriodEnd)}`, { align: 'center' });
-  doc.moveDown(0.3);
+  // Branded letterhead + title + meta strip.
+  drawBrandedHeader(doc, branding, {
+    title: 'Salary Slip',
+    margin: MARGIN,
+    contentWidth,
+    subtitle: monthLabel(slip.payroll.payPeriodStart, slip.payroll.payPeriodEnd),
+    meta: [
+      { label: 'Slip', value: slip.slipNumber },
+      { label: 'Status', value: slip.payroll.status.toUpperCase() },
+    ],
+  });
 
   // Meta block (left = staff, right = pay period)
   const staff = slip.payroll.staff;
@@ -160,9 +160,7 @@ export function streamSalarySlipPdf(res: Response, slip: SalarySlipLike) {
   doc.text('_________________________', 380, doc.y - 24);
   doc.text('HR / Authorised Signatory', 380, doc.y);
 
-  doc.moveDown(2);
-  doc.font('Helvetica-Oblique').fontSize(8).fillColor('#888')
-    .text('This is a computer-generated salary slip and does not require a physical signature.', { align: 'center' });
-
+  // Branded footer (hospital name • generated • page X of Y • disclaimer).
+  drawBrandedFooters(doc, branding, { margin: MARGIN, contentWidth });
   doc.end();
 }

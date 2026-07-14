@@ -1465,12 +1465,10 @@ export async function getPayslip(tenantId: string, payrollId: string) {
 export async function streamSalarySlip(tenantId: string, payrollId: string, res: Response) {
   const { payroll, salarySlip } = await getPayslip(tenantId, payrollId);
 
-  const tenant = await prisma.tenant.findUnique({
-    where: { id: tenantId },
-    select: { name: true, address: true, city: true, phone: true, email: true },
-  });
+  const { getHospitalBranding } = await import('../hospital-branding/hospital-branding.service');
+  const branding = await getHospitalBranding(tenantId);
 
-  streamSalarySlipPdf(res, {
+  streamSalarySlipPdf(res, branding, {
     slipNumber: salarySlip.slipNumber ?? salarySlip.id,
     generatedAt: salarySlip.generatedAt,
     payroll: {
@@ -1494,7 +1492,6 @@ export async function streamSalarySlip(tenantId: string, payrollId: string, res:
         department: (payroll as any).staff.department ?? null,
       },
     },
-    tenant,
   });
 }
 
