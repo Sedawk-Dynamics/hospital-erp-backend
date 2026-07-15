@@ -4,6 +4,7 @@ import { env } from '../config/env';
 import { AppError } from '../shared/appError';
 import { AuthenticatedRequest, AuthenticatedUser } from '../shared/types';
 import { prisma } from '../config/database';
+import { patchRequestContext } from '../config/request-context';
 
 export async function authenticate(req: AuthenticatedRequest, _res: Response, next: NextFunction) {
   // Skip if already authenticated (e.g. router-level + route-level)
@@ -31,6 +32,10 @@ export async function authenticate(req: AuthenticatedRequest, _res: Response, ne
     email: payload.email,
     roles: payload.roles,
   };
+
+  // Stamp the request context so audit logs deep in the services capture the
+  // acting user (the IP + user-agent were already set by requestContext).
+  patchRequestContext({ userId: payload.userId, tenantId: payload.tenantId });
 
   // 2. Resolve tenant override (async) — non-blocking, errors are silently skipped
   //    so a DB hiccup doesn't break auth for every request.

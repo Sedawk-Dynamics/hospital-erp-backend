@@ -2,6 +2,21 @@ import { z } from 'zod';
 import { paginationSchema } from '../../shared/pagination';
 
 // ============================================================
+// Audit trail (read)
+// ============================================================
+
+export const getAuditTrailQuerySchema = z.object({
+  query: paginationSchema.extend({
+    action: z.enum(['create', 'read', 'update', 'delete']).optional(),
+    entityType: z.string().max(100).optional(),
+    userId: z.string().uuid().optional(),
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
+    search: z.string().max(200).optional(),
+  }),
+});
+
+// ============================================================
 // Formulary
 // ============================================================
 

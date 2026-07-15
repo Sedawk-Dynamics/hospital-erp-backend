@@ -15,6 +15,7 @@ import pinoHttp from 'pino-http';
 import { corsOptions } from './config/cors';
 import { env } from './config/env';
 import { logger } from './config/logger';
+import { runWithRequestContext } from './config/request-context';
 import { errorHandler } from './middleware/errorHandler';
 import { globalIpLimiter } from './middleware/rateLimiter';
 import { apiRouter } from './modules/router';
@@ -92,6 +93,16 @@ app.get('/health', (_req, res) => {
 
 // Serve uploaded files statically
 app.use('/uploads', express.static(path.resolve(process.cwd(), 'uploads')));
+
+// Per-request context (client IP + user-agent = the "Machine" of an action).
+// Runs the rest of the request inside an AsyncLocalStorage store so audit
+// writers deep in the services can stamp who/where without extra plumbing.
+// `authenticate` later adds userId to this same store.
+app.use('/api/v1', (req, res, next) => {
+  const ipAddress = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || req.socket.remoteAddress || undefined;
+  const userAgent = req.headers['user-agent'] as string | undefined;
+  runWithRequestContext({ ipAddress, userAgent }, () => next());
+});
 
 // API routes
 app.use('/api/v1', apiRouter);

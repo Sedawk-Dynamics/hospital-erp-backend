@@ -25,6 +25,7 @@ import {
   importFormularySchema,
   importFormularyBulkSchema,
   getCatalogQuerySchema,
+  getAuditTrailQuerySchema,
   createBatchSchema,
   getBatchesQuerySchema,
   getExpiringBatchesQuerySchema,
@@ -75,6 +76,9 @@ import {
 } from './pharmacy.validation';
 
 export const pharmacyRoutes = Router();
+
+// --- Audit trail (pharmacy + inventory register) ---
+pharmacyRoutes.get('/audit-trail', authenticate, requirePermission('pharmacy', 'read'), validate(getAuditTrailQuerySchema), controller.getAuditTrail);
 
 // --- Drug catalog (tenant-facing browse of the platform DrugMaster) ---
 pharmacyRoutes.get('/catalog', authenticate, requirePermission('pharmacy', 'read'), validate(getCatalogQuerySchema), controller.getTenantCatalog);

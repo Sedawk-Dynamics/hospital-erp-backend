@@ -370,6 +370,23 @@ export async function createFormularyItem(
   });
 
   logger.info({ tenantId, formularyId: formularyItem.id }, 'Formulary item created');
+  void safePharmacyAudit({
+    tenantId,
+    action: 'create',
+    entityType: 'drug_formulary',
+    entityId: formularyItem.id,
+    description: `Master drug mapped/created: ${formularyItem.drugName}${formularyItem.strength ? ' ' + formularyItem.strength : ''}`,
+    newValues: {
+      drugName: formularyItem.drugName,
+      genericName: formularyItem.genericName,
+      manufacturer: formularyItem.manufacturer,
+      strength: formularyItem.strength,
+      gtin: formularyItem.gtin,
+      hsnCode: formularyItem.hsnCode,
+      taxPercent: formularyItem.taxPercent,
+      price: formularyItem.price,
+    },
+  });
   return { status: 'created' as const, item: formularyItem };
 }
 
@@ -1060,6 +1077,28 @@ export async function commitInward(
     { tenantId, total: data.lines.length, createdDrugs, mappedDrugs, batchesIn, failed, billPct },
     'Bulk stock inward committed',
   );
+  // Top-level invoice audit (the "Invoice Import / Inventory Creation" event) —
+  // the per-drug mapping + per-batch receipts are already audited individually.
+  void safePharmacyAudit({
+    tenantId,
+    userId,
+    action: 'create',
+    entityType: 'inward_invoice',
+    entityId: data.invoiceNumber || `inward-${data.lines.length}-lines`,
+    description: `Stock inwarded${data.invoiceNumber ? ` · invoice ${data.invoiceNumber}` : ''}: ${data.lines.length} line(s) — ${createdDrugs} created, ${mappedDrugs} mapped, ${batchesIn} batch(es)${failed ? `, ${failed} failed` : ''}`,
+    newValues: {
+      invoiceNumber: data.invoiceNumber ?? null,
+      invoiceDate: data.invoiceDate ?? null,
+      supplierId: data.supplierId ?? null,
+      totalLines: data.lines.length,
+      createdDrugs,
+      mappedDrugs,
+      batchesIn,
+      failed,
+      grossValue,
+      netValue: r2(invoiceNet - invoiceDiscountValue),
+    },
+  });
   return {
     total: data.lines.length,
     createdDrugs,
@@ -1496,6 +1535,16 @@ export async function updateFormularyItem(
   });
 
   logger.info({ tenantId, formularyId: id }, 'Formulary item updated');
+  void safePharmacyAudit({
+    tenantId,
+    action: 'update',
+    entityType: 'drug_formulary',
+    entityId: id,
+    description: `Master drug edited: ${item.drugName}`,
+    // Only the fields that actually changed, old → new.
+    oldValues: Object.fromEntries(Object.keys(updateData).map((k) => [k, (existing as any)[k]])),
+    newValues: updateData,
+  });
   return item;
 }
 
@@ -1522,6 +1571,19 @@ export async function deleteFormularyItem(tenantId: string, id: string) {
   await prisma.drugFormulary.delete({ where: { id } });
 
   logger.info({ tenantId, formularyId: id }, 'Formulary item deleted');
+  void safePharmacyAudit({
+    tenantId,
+    action: 'delete',
+    entityType: 'drug_formulary',
+    entityId: id,
+    description: `Master drug deleted: ${existing.drugName}`,
+    oldValues: {
+      drugName: existing.drugName,
+      genericName: existing.genericName,
+      manufacturer: existing.manufacturer,
+      strength: existing.strength,
+    },
+  });
 }
 
 // ============================================================
@@ -1796,6 +1858,16 @@ export async function updateBatch(
   });
 
   logger.info({ tenantId, batchId: id }, 'Drug batch updated');
+  void safePharmacyAudit({
+    tenantId,
+    action: 'update',
+    entityType: 'drug_batch',
+    entityId: id,
+    description: `Batch modified: ${batch.drug?.drugName ?? 'drug'} (batch ${batch.batchNumber})`,
+    // Only the fields that changed, old → new.
+    oldValues: Object.fromEntries(Object.keys(updateData).map((k) => [k, (existing as any)[k]])),
+    newValues: updateData,
+  });
   return batch;
 }
 
@@ -6455,4 +6527,95 @@ export async function runPharmacyExpiryAlerts(
     'Pharmacy expiry alerts run complete',
   );
   return { expiredFlagged, expiryAlerts };
+}
+
+// ============================================================
+// Pharmacy & Inventory Audit Trail (read)
+//
+// A single, human-readable register of every pharmacy/inventory action —
+// invoice import, product mapping, inventory creation, batch modification,
+// stock adjustment/transfer, dispense, sale, return, GST exception, approvals.
+// Reads the shared AuditLog filtered to the pharmacy + inventory entity types.
+// ============================================================
+
+const PHARMACY_AUDIT_ENTITY_TYPES = [
+  'drug_formulary',
+  'drug_batch',
+  'dispensing_record',
+  'pharmacy_sale',
+  'drug_return',
+  'inward_invoice',
+  'gst_exception',
+  'inventory_item',
+  'inventory_setting',
+  'purchase_order',
+  'stock_transaction',
+  'stock_transfer',
+] as const;
+
+export async function getPharmacyAuditTrail(
+  tenantId: string,
+  query: {
+    page?: number;
+    limit?: number;
+    action?: string;
+    entityType?: string;
+    userId?: string;
+    fromDate?: string;
+    toDate?: string;
+    search?: string;
+  },
+) {
+  const { skip, take, page, limit } = getPaginationParams(query as any);
+
+  const where: any = {
+    tenantId,
+    entityType:
+      query.entityType && (PHARMACY_AUDIT_ENTITY_TYPES as readonly string[]).includes(query.entityType)
+        ? query.entityType
+        : { in: PHARMACY_AUDIT_ENTITY_TYPES as unknown as string[] },
+  };
+  if (query.action) where.action = query.action;
+  if (query.userId) where.userId = query.userId;
+  if (query.fromDate) where.createdAt = { ...where.createdAt, gte: new Date(query.fromDate) };
+  if (query.toDate) where.createdAt = { ...where.createdAt, lte: new Date(query.toDate) };
+  if (query.search) {
+    where.OR = [
+      { description: { contains: query.search, mode: 'insensitive' } },
+      { entityType: { contains: query.search, mode: 'insensitive' } },
+      { entityId: { contains: query.search, mode: 'insensitive' } },
+    ];
+  }
+
+  const [rows, total] = await Promise.all([
+    prisma.auditLog.findMany({
+      where,
+      skip,
+      take,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        user: { select: { id: true, firstName: true, lastName: true, email: true } },
+      },
+    }),
+    prisma.auditLog.count({ where }),
+  ]);
+
+  const items = rows.map((r) => ({
+    id: r.id,
+    action: r.action,
+    entityType: r.entityType,
+    entityId: r.entityId,
+    description: r.description,
+    oldValues: r.oldValues,
+    newValues: r.newValues,
+    // The "Machine" of the action.
+    ipAddress: r.ipAddress,
+    userAgent: r.userAgent,
+    createdAt: r.createdAt,
+    user: r.user
+      ? { id: r.user.id, name: `${r.user.firstName} ${r.user.lastName ?? ''}`.trim(), email: r.user.email }
+      : null,
+  }));
+
+  return { items, total, page, limit };
 }

@@ -790,6 +790,23 @@ export async function getFormulary(
   }
 }
 
+export async function getAuditTrail(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const { items, total, page, limit } = await pharmacyService.getPharmacyAuditTrail(
+      tenantId,
+      req.query as any,
+    );
+    sendPaginatedResponse(res, items, total, page, limit, 'Pharmacy audit trail retrieved');
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getFormularyItemById(
   req: AuthenticatedRequest,
   res: Response,
