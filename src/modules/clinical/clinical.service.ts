@@ -498,11 +498,13 @@ export async function createAdmission(tenantId: string, userId: string, data: Cr
       }
     }
 
-    // Update visit type to IP if not already.
-    if (visit.visitType !== 'ip') {
+    // Normalise the visit to an active IP encounter so downstream IP screens
+    // (which resolve the visit via ?status=active + prefer visitType 'ip') find
+    // exactly this visit.
+    if (visit.visitType !== 'ip' || visit.status !== 'active') {
       await tx.visit.update({
         where: { id: data.visitId },
-        data: { visitType: 'ip' },
+        data: { visitType: 'ip', status: 'active' },
       });
     }
 
@@ -2863,18 +2865,14 @@ export async function acceptAdmissionRequest(
       // Resolve the visit: prefer the request's linked visit, else any active
       // visit for the patient, else create an IP visit on the fly.
       let visitId = existing.visitId ?? null;
+      let createdFreshVisit = false;
       if (!visitId) {
         const activeVisit = await tx.visit.findFirst({
           where: { tenantId, patientId: existing.patientId, status: 'active' },
           orderBy: { visitDate: 'desc' },
-          select: { id: true, visitType: true },
+          select: { id: true },
         });
-        if (activeVisit) {
-          visitId = activeVisit.id;
-          if (activeVisit.visitType !== 'ip') {
-            await tx.visit.update({ where: { id: activeVisit.id }, data: { visitType: 'ip' } });
-          }
-        }
+        if (activeVisit) visitId = activeVisit.id;
       }
       if (!visitId) {
         const newVisit = await tx.visit.create({
@@ -2890,6 +2888,21 @@ export async function acceptAdmissionRequest(
           select: { id: true },
         });
         visitId = newVisit.id;
+        createdFreshVisit = true;
+      }
+
+      // Normalise the admission's visit to an ACTIVE, IP-typed encounter. The
+      // request's linked visit is usually the OP consultation — leaving it as
+      // visitType 'op' and/or status 'completed' meant the IP workspace (which
+      // resolves the visit via ?status=active + prefers visitType 'ip') either
+      // couldn't find it or picked a different visit, so every doctor write
+      // (Rx / progress note / order) failed with "No active IP visit" or
+      // "Admission does not belong to the supplied visit". Mirrors createAdmission.
+      if (!createdFreshVisit) {
+        await tx.visit.update({
+          where: { id: visitId },
+          data: { visitType: 'ip', status: 'active' },
+        });
       }
 
       // Block any duplicate admission against the same visit (Admission.visitId
