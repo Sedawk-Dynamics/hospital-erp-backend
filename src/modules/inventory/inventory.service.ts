@@ -1558,7 +1558,12 @@ export async function reconcilePurchaseOrderReceipt(
   tenantId: string,
   id: string,
   userId: string,
-  data: { items: { purchaseOrderItemId: string; quantityReceived: number; unitPrice?: number }[] },
+  data: {
+    items: { purchaseOrderItemId: string; quantityReceived: number; unitPrice?: number }[];
+    // Close the PO as delivered at whatever was received (partial deliveries are
+    // treated as final — the balance is not expected to arrive).
+    markDelivered?: boolean;
+  },
 ) {
   const order = await prisma.purchaseOrder.findFirst({ where: { id, tenantId }, include: { items: true } });
   if (!order) throw AppError.notFound('Purchase order not found');
@@ -1596,7 +1601,11 @@ export async function reconcilePurchaseOrderReceipt(
     });
     const allFull = fresh.every((it) => it.quantityReceived >= it.quantityOrdered);
     const anyReceived = fresh.some((it) => it.quantityReceived > 0);
-    const newStatus = allFull ? 'delivered' : anyReceived ? 'partially_delivered' : order.status;
+    // markDelivered force-closes the PO at whatever arrived; otherwise the status
+    // reflects the ledger (delivered only when every line is fully received).
+    const newStatus = data.markDelivered
+      ? 'delivered'
+      : allFull ? 'delivered' : anyReceived ? 'partially_delivered' : order.status;
     const totalAmount = fresh.reduce((s, it) => s + toNumber(it.totalPrice), 0);
 
     return tx.purchaseOrder.update({

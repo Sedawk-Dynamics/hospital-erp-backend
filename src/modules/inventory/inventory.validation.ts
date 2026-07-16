@@ -308,6 +308,7 @@ export const reconcilePurchaseOrderSchema = z.object({
         }),
       )
       .min(1, 'At least one item is required'),
+    markDelivered: z.boolean().optional(),
   }),
 });
 
