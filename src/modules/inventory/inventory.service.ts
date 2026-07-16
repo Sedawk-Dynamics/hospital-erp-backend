@@ -1545,6 +1545,88 @@ export async function receivePurchaseOrder(
   return result;
 }
 
+/**
+ * Reconcile a PO against stock that was ALREADY posted through the bulk-inward
+ * flow (OCR / datasheet / manual). Unlike receivePurchaseOrder, this does NOT
+ * post any stock — the inward already did — it only advances each PO line's
+ * quantityReceived (capped at the ordered qty), captures the arrival price, and
+ * recomputes the PO status (delivered / partially_delivered). This is the
+ * closing step of: add invoice → match to PO → verify received vs remaining →
+ * update PO.
+ */
+export async function reconcilePurchaseOrderReceipt(
+  tenantId: string,
+  id: string,
+  userId: string,
+  data: { items: { purchaseOrderItemId: string; quantityReceived: number; unitPrice?: number }[] },
+) {
+  const order = await prisma.purchaseOrder.findFirst({ where: { id, tenantId }, include: { items: true } });
+  if (!order) throw AppError.notFound('Purchase order not found');
+  if (order.status !== 'submitted' && order.status !== 'approved' && order.status !== 'partially_delivered') {
+    throw AppError.badRequest(`Purchase order cannot be reconciled — current status is ${order.status}`);
+  }
+
+  const orderItemIds = new Set(order.items.map((i) => i.id));
+  for (const ri of data.items) {
+    if (!orderItemIds.has(ri.purchaseOrderItemId)) {
+      throw AppError.badRequest(`Purchase order item ${ri.purchaseOrderItemId} does not belong to this order`);
+    }
+  }
+
+  const updated = await prisma.$transaction(async (tx) => {
+    for (const ri of data.items) {
+      if (ri.quantityReceived <= 0) continue;
+      const poItem = order.items.find((i) => i.id === ri.purchaseOrderItemId)!;
+      // Cap at ordered so an over-delivery never overshoots the PO ledger.
+      const newReceived = Math.min(poItem.quantityOrdered, poItem.quantityReceived + ri.quantityReceived);
+      await tx.purchaseOrderItem.update({
+        where: { id: poItem.id },
+        data: {
+          quantityReceived: newReceived,
+          ...(ri.unitPrice != null
+            ? { unitPrice: ri.unitPrice, totalPrice: ri.unitPrice * poItem.quantityOrdered }
+            : {}),
+        },
+      });
+    }
+
+    const fresh = await tx.purchaseOrderItem.findMany({
+      where: { purchaseOrderId: id },
+      select: { quantityOrdered: true, quantityReceived: true, totalPrice: true },
+    });
+    const allFull = fresh.every((it) => it.quantityReceived >= it.quantityOrdered);
+    const anyReceived = fresh.some((it) => it.quantityReceived > 0);
+    const newStatus = allFull ? 'delivered' : anyReceived ? 'partially_delivered' : order.status;
+    const totalAmount = fresh.reduce((s, it) => s + toNumber(it.totalPrice), 0);
+
+    return tx.purchaseOrder.update({
+      where: { id },
+      data: { status: newStatus as any, totalAmount: totalAmount || undefined },
+      include: {
+        supplier: { select: { id: true, name: true } },
+        items: {
+          include: {
+            inventoryItem: { select: { id: true, itemName: true } },
+            drug: { select: { id: true, drugName: true, strength: true } },
+          },
+        },
+      },
+    });
+  });
+
+  void safeInventoryAudit({
+    tenantId,
+    userId,
+    action: 'update',
+    entityType: 'purchase_order',
+    entityId: id,
+    description: `PO ${order.orderNumber} reconciled from stock inward → ${updated.status} (${data.items.length} line[s])`,
+    newValues: { status: updated.status, items: data.items },
+  });
+  logger.info({ tenantId, purchaseOrderId: id, userId, status: updated.status }, 'Purchase order reconciled from inward');
+  return updated;
+}
+
 export async function cancelPurchaseOrder(
   tenantId: string,
   id: string,

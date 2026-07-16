@@ -22,6 +22,7 @@ import {
   getPurchaseOrdersQuerySchema,
   approvePurchaseOrderSchema,
   receivePurchaseOrderSchema,
+  reconcilePurchaseOrderSchema,
   createSupplyRequestSchema,
   getSupplyRequestsQuerySchema,
   approveSupplyRequestSchema,
@@ -89,6 +90,7 @@ inventoryRoutes.get('/purchase-orders/:id', authenticate, requirePermission('inv
 inventoryRoutes.put('/purchase-orders/:id', authenticate, requirePermission('inventory', 'update'), validate(updatePurchaseOrderSchema), controller.updatePurchaseOrder);
 inventoryRoutes.patch('/purchase-orders/:id/approve', authenticate, requirePermission('inventory', 'approve'), validate(approvePurchaseOrderSchema), controller.approvePurchaseOrder);
 inventoryRoutes.patch('/purchase-orders/:id/receive', authenticate, requirePermission('inventory', 'update'), validate(receivePurchaseOrderSchema), controller.receivePurchaseOrder);
+inventoryRoutes.patch('/purchase-orders/:id/reconcile', authenticate, requirePermission('inventory', 'update'), validate(reconcilePurchaseOrderSchema), controller.reconcilePurchaseOrder);
 inventoryRoutes.patch('/purchase-orders/:id/cancel', authenticate, requirePermission('inventory', 'update'), validate(cancelPurchaseOrderSchema), controller.cancelPurchaseOrder);
 
 // --- Settings & Alerts (per-tenant module config + "alert inventory manager") ---

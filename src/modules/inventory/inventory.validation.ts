@@ -294,6 +294,23 @@ export const receivePurchaseOrderSchema = z.object({
   }),
 });
 
+// Reconcile a PO against stock already posted via the bulk-inward flow — only
+// advances quantityReceived + status; no stock is posted here.
+export const reconcilePurchaseOrderSchema = z.object({
+  params: z.object({ id: z.string().uuid('Invalid purchase order ID') }),
+  body: z.object({
+    items: z
+      .array(
+        z.object({
+          purchaseOrderItemId: z.string().uuid('Invalid purchase order item ID'),
+          quantityReceived: z.number().int().min(0),
+          unitPrice: z.number().min(0).optional(),
+        }),
+      )
+      .min(1, 'At least one item is required'),
+  }),
+});
+
 // ============================================================
 // Supply Requests
 // ============================================================

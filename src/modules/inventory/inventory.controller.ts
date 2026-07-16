@@ -223,6 +223,12 @@ export async function receivePurchaseOrder(req: AuthenticatedRequest, res: Respo
     sendResponse({ res, message: 'Purchase order received', data });
   } catch (err) { next(err); }
 }
+export async function reconcilePurchaseOrder(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.reconcilePurchaseOrderReceipt(req.user!.tenantId, req.params.id as string, req.user!.userId, req.body);
+    sendResponse({ res, message: 'Purchase order reconciled', data });
+  } catch (err) { next(err); }
+}
 export async function cancelPurchaseOrder(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const data = await service.cancelPurchaseOrder(req.user!.tenantId, req.params.id as string, req.user!.userId, req.body);
