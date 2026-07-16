@@ -14,7 +14,6 @@ import {
   transferToWard,
   dispenseFromWard,
   getWardStock,
-  createEmergencyPatient,
   mergeFormularyItems,
   getStockValuationReport,
   getVendorWiseReport,
@@ -321,17 +320,6 @@ describe('Pharmacy — feature coverage (G1–G17 + credit gate + GRN gaps)', ()
       const r = await dispenseFromWard(TENANT_ID, USER_ID, { wardId: 'ward-1', drugBatchId: 'b1', patientId: 'p1', quantity: 1 });
       expect(r.billId).toBe('bill-1');
       expect(tx.wardStock.update).toHaveBeenCalled();
-    });
-  });
-
-  // ── G16: emergency pre-registration ───────────────────────
-  describe('createEmergencyPatient (G16)', () => {
-    it('mints a TEMP-ER MRN', async () => {
-      (prisma.patient.count as any).mockResolvedValue(0);
-      (prisma.patient.create as any).mockImplementation((args: any) => Promise.resolve({ id: 'p1', mrn: args.data.mrn, firstName: args.data.firstName, lastName: args.data.lastName }));
-
-      const p = await createEmergencyPatient(TENANT_ID, USER_ID, {});
-      expect(p.mrn).toMatch(/^TEMP-ER-\d{8}-001$/);
     });
   });
 

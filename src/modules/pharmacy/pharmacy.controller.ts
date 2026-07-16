@@ -581,56 +581,7 @@ export async function getNarcoticRegister(
   }
 }
 
-// G16: mint a temporary emergency (Golden Hour) patient to dispense against.
-export async function createEmergencyPatient(
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction,
-) {
-  try {
-    const patient = await pharmacyService.createEmergencyPatient(
-      req.user!.tenantId,
-      req.user!.userId,
-      req.body,
-    );
-    sendResponse({ res, statusCode: 201, message: 'Emergency patient created', data: patient });
-  } catch (err) {
-    next(err);
-  }
-}
-
-// G16: list active emergency temp patients + their held pharmacy charges.
-export async function listEmergencyPatients(
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction,
-) {
-  try {
-    const data = await pharmacyService.listEmergencyPatients(req.user!.tenantId);
-    sendResponse({ res, message: 'Emergency patients retrieved', data });
-  } catch (err) {
-    next(err);
-  }
-}
-
-// G16: merge a temp emergency patient's pharmacy history into a permanent MRN.
-export async function mergeEmergencyPatient(
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction,
-) {
-  try {
-    const data = await pharmacyService.mergeEmergencyPatient(
-      req.user!.tenantId,
-      req.user!.userId,
-      req.params.id as string,
-      req.body.targetPatientId as string,
-    );
-    sendResponse({ res, message: 'Emergency record merged', data });
-  } catch (err) {
-    next(err);
-  }
-}
+// Emergency / Casualty patient flow moved to the front-desk `/emergency` module.
 
 // G12: advance an IP prescription through the ward→pharmacy fulfilment lifecycle.
 export async function setPrescriptionPharmacyStatus(

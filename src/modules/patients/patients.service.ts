@@ -16,7 +16,7 @@ import type {
  * Generate a unique MRN (Medical Record Number) for a tenant.
  * Format: MRN-YYYYMMDD-XXXX (e.g., MRN-20260307-0001)
  */
-async function generateMRN(tenantId: string): Promise<string> {
+export async function generateMRN(tenantId: string): Promise<string> {
   const today = new Date();
   const dateStr =
     today.getFullYear().toString() +

@@ -596,26 +596,7 @@ export const dispenseIdParamSchema = z.object({
   }),
 });
 
-// G16: mint a temporary emergency (Golden Hour) patient to dispense against.
-export const createEmergencyPatientSchema = z.object({
-  body: z.object({
-    firstName: z.string().max(100).optional(),
-    lastName: z.string().max(100).optional(),
-    phone: z.string().max(20).optional(),
-    gender: z.enum(['male', 'female', 'other']).optional(),
-    notes: z.string().max(500).optional(),
-  }),
-});
-
-// G16: merge a temp emergency patient's pharmacy history into a permanent MRN.
-export const mergeEmergencyPatientSchema = z.object({
-  body: z.object({
-    targetPatientId: z.string().uuid('Invalid target patient ID'),
-  }),
-  params: z.object({
-    id: z.string().uuid('Invalid emergency patient ID'),
-  }),
-});
+// Emergency / Casualty patient schemas moved to the front-desk `/emergency` module.
 
 // G12: advance an IP prescription through the ward→pharmacy fulfilment lifecycle.
 export const setPharmacyStatusSchema = z.object({

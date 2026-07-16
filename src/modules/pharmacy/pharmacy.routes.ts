@@ -36,8 +36,6 @@ import {
   getStockAdjustmentsQuerySchema,
   createDispenseSchema,
   setPharmacyStatusSchema,
-  createEmergencyPatientSchema,
-  mergeEmergencyPatientSchema,
   createPharmacySaleSchema,
   getPharmacySalesQuerySchema,
   cancelSaleSchema,
@@ -183,10 +181,9 @@ pharmacyRoutes.get('/credit-status', authenticate, requirePermission('pharmacy',
 // §4.1 Flow 2: consolidated IP billing / TPA-submission summary for a patient.
 pharmacyRoutes.get('/billing-summary', authenticate, requirePermission('pharmacy', 'read'), validate(creditStatusQuerySchema), controller.getIpBillingSummary);
 
-// --- G16: Emergency (Golden Hour) pre-registration buffer + retrospective merge ---
-pharmacyRoutes.post('/emergency-patients', authenticate, requirePermission('pharmacy', 'create'), validate(createEmergencyPatientSchema), controller.createEmergencyPatient);
-pharmacyRoutes.get('/emergency-patients', authenticate, requirePermission('pharmacy', 'read'), controller.listEmergencyPatients);
-pharmacyRoutes.post('/emergency-patients/:id/merge', authenticate, requirePermission('pharmacy', 'update'), validate(mergeEmergencyPatientSchema), controller.mergeEmergencyPatient);
+// Emergency / Casualty flow moved to the front-desk module: `/emergency/*`
+// (see modules/emergency). Pharmacy dispensing still recognises a TEMP-ER-…
+// patient via the shared `isEmergencyMrn` helper to bypass the credit gate.
 
 // --- Analytics (sales / expiry / stock usage / batch summary for the Reports page) ---
 pharmacyRoutes.get('/analytics', authenticate, requirePermission('pharmacy', 'read'), controller.getPharmacyAnalytics);

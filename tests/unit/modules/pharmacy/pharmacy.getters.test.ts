@@ -17,7 +17,6 @@ import {
   getReturns,
   getPharmacySales,
   cancelPharmacySale,
-  listEmergencyPatients,
   recallBatch,
   unrecallBatch,
   recallDrug,
@@ -289,16 +288,6 @@ describe('Pharmacy — getters / CRUD / recalls coverage', () => {
       (prisma.bill.findFirst as any).mockResolvedValue({ id: 'bill-1', status: 'paid' });
       (prisma.drugReturn.count as any).mockResolvedValue(1);
       await expect(cancelPharmacySale(TENANT_ID, USER_ID, 'bill-1', { reason: 'x' } as any)).rejects.toThrow('returns recorded');
-    });
-  });
-
-  // ── Emergency list ────────────────────────────────────────
-  describe('listEmergencyPatients (G16)', () => {
-    it('lists temp patients with their unpaid pharmacy hold', async () => {
-      (prisma.patient.findMany as any).mockResolvedValue([{ id: 'p1', mrn: 'TEMP-ER-1', firstName: 'E', lastName: 'P', phone: null, createdAt: new Date() }]);
-      (prisma.bill.groupBy as any).mockResolvedValue([{ patientId: 'p1', _sum: { totalAmount: 300, balanceDue: 300 }, _count: { _all: 2 } }]);
-      const r = await listEmergencyPatients(TENANT_ID);
-      expect(r.items[0]).toMatchObject({ id: 'p1', billCount: 2, heldAmount: 300, balanceDue: 300 });
     });
   });
 

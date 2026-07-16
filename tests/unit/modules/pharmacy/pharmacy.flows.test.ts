@@ -5,7 +5,6 @@ import {
   createPharmacySale,
   createReturn,
   processReturn,
-  mergeEmergencyPatient,
   getWardLedger,
   getPurchaseReport,
   getReturnById,
@@ -341,34 +340,7 @@ describe('Pharmacy — flow coverage (sale / returns / merge / reports)', () => 
     });
   });
 
-  // ── G16 retrospective merge ───────────────────────────────
-  describe('mergeEmergencyPatient (G16)', () => {
-    it('migrates the temp patient ledger to the permanent MRN and retires it', async () => {
-      (prisma.patient.findFirst as any)
-        .mockResolvedValueOnce({ id: 'temp', mrn: 'TEMP-ER-20260101-001' })
-        .mockResolvedValueOnce({ id: 'tgt', mrn: 'MRN001' });
-      const tx = txWith();
-      tx.bill.updateMany.mockResolvedValue({ count: 2 });
-      tx.payment.updateMany.mockResolvedValue({ count: 1 });
-      tx.dispensingRecord.updateMany.mockResolvedValue({ count: 3 });
-      tx.drugReturn.updateMany.mockResolvedValue({ count: 0 });
-      tx.refund.updateMany.mockResolvedValue({ count: 0 });
-      tx.prescription.updateMany.mockResolvedValue({ count: 1 });
-      tx.patient.update.mockResolvedValue({});
-
-      const r = await mergeEmergencyPatient(TENANT_ID, USER_ID, 'temp', 'tgt');
-      expect(r.bills).toBe(2);
-      expect(r.dispenses).toBe(3);
-      expect(tx.patient.update).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'temp' } }));
-    });
-
-    it('refuses to merge into a non-permanent target', async () => {
-      (prisma.patient.findFirst as any)
-        .mockResolvedValueOnce({ id: 'temp', mrn: 'TEMP-ER-1' })
-        .mockResolvedValueOnce({ id: 'tgt', mrn: 'TEMP-ER-2' });
-      await expect(mergeEmergencyPatient(TENANT_ID, USER_ID, 'temp', 'tgt')).rejects.toThrow('permanent');
-    });
-  });
+  // Emergency merge moved to modules/emergency (see emergency.service).
 
   // ── G13 ward ledger ───────────────────────────────────────
   describe('getWardLedger (G13)', () => {

@@ -3,6 +3,7 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
+import { isEmergencyMrn } from '../../shared/emergency';
 import { resolvePackSize, inferLooseUnitLabel } from '../drug-master/drug-master.dataset';
 import { getInventorySettingsSafe } from '../inventory/inventory.settings.service';
 import { notifyInventoryRecipients, hasOpenInventoryAlert } from '../inventory/inventory.notify';
@@ -2683,194 +2684,6 @@ async function getOrCreateWalkInPatient(tenantId: string): Promise<string> {
   }
 }
 
-// ============================================================
-// G16 — Emergency (Golden Hour) pre-registration buffer
-// ============================================================
-// An unidentified trauma patient is treated before any registration. The ER
-// can mint a temporary patient (TEMP-ER-…) to dispense against immediately;
-// the cost sits on that temp record's bills (the "deferred hold ledger"). Once
-// the patient is registered, the temp record's pharmacy history is merged into
-// the permanent MRN and the temp is retired.
-const EMERGENCY_MRN_PREFIX = 'TEMP-ER-';
-
-export async function createEmergencyPatient(
-  tenantId: string,
-  userId: string,
-  data: { firstName?: string; lastName?: string; phone?: string; gender?: string; notes?: string },
-) {
-  const now = new Date();
-  const ymd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
-  const dayPrefix = `${EMERGENCY_MRN_PREFIX}${ymd}-`;
-  const todays = await prisma.patient.count({
-    where: { tenantId, mrn: { startsWith: dayPrefix } },
-  });
-  const mrn = `${dayPrefix}${String(todays + 1).padStart(3, '0')}`;
-
-  const patient = await prisma.patient.create({
-    data: {
-      tenantId,
-      mrn,
-      firstName: data.firstName?.trim() || 'Emergency',
-      lastName: data.lastName?.trim() || 'Patient',
-      phone: data.phone?.trim() || null,
-      gender: (data.gender as any) || undefined,
-      notes: data.notes?.trim() || 'Emergency pre-registration buffer (Golden Hour)',
-      isNew: false,
-    },
-    select: { id: true, mrn: true, firstName: true, lastName: true },
-  });
-
-  // G6 (2.3): open a lightweight "pending-placement" IP admission so Golden-Hour
-  // charges scope to an admission from the first dose (bed / ward / treating
-  // doctor are all null until the patient is placed, or folded into the permanent
-  // admission at merge). The Visit shell needs a doctor FK, so reference any
-  // tenant doctor as a placeholder; the admission's treating doctor stays null.
-  let admissionId: string | null = null;
-  try {
-    const placeholderDoctor = await prisma.doctorProfile.findFirst({ where: { tenantId }, select: { id: true } });
-    if (placeholderDoctor) {
-      const admission = await prisma.$transaction(async (tx) => {
-        const visit = await tx.visit.create({
-          data: { tenantId, patientId: patient.id, doctorId: placeholderDoctor.id, visitType: 'ip', visitDate: now, status: 'active', chiefComplaint: 'Emergency / Casualty (Golden Hour)' },
-          select: { id: true },
-        });
-        return tx.admission.create({
-          data: { tenantId, visitId: visit.id, patientId: patient.id, admissionDate: now, status: 'admitted', admittedBy: userId, admissionReason: 'Emergency trauma admission (pending placement)' },
-          select: { id: true },
-        });
-      });
-      admissionId = admission.id;
-    } else {
-      logger.warn({ tenantId, patientId: patient.id }, 'Emergency admission skipped — no doctor in tenant for the visit shell');
-    }
-  } catch (err) {
-    // Never let admission creation block the Golden-Hour patient mint.
-    logger.error({ err, tenantId, patientId: patient.id }, 'Emergency pending-placement admission failed');
-  }
-
-  logger.info({ tenantId, patientId: patient.id, mrn, admissionId }, 'Emergency temp patient created');
-  return { ...patient, admissionId };
-}
-
-/** Active emergency temp patients + their unpaid pharmacy hold, for the merge picker. */
-export async function listEmergencyPatients(tenantId: string) {
-  const patients = await prisma.patient.findMany({
-    where: { tenantId, isActive: true, mrn: { startsWith: EMERGENCY_MRN_PREFIX } },
-    select: { id: true, mrn: true, firstName: true, lastName: true, phone: true, createdAt: true },
-    orderBy: { createdAt: 'desc' },
-    take: 100,
-  });
-  const ids = patients.map((p) => p.id);
-  const bills = ids.length
-    ? await prisma.bill.groupBy({
-        by: ['patientId'],
-        where: { tenantId, patientId: { in: ids }, status: { not: 'cancelled' } },
-        _sum: { totalAmount: true, balanceDue: true },
-        _count: { _all: true },
-      })
-    : [];
-  const byPatient = new Map(bills.map((b) => [b.patientId, b]));
-  const items = patients.map((p) => {
-    const agg = byPatient.get(p.id);
-    return {
-      ...p,
-      billCount: agg?._count._all ?? 0,
-      heldAmount: Number(agg?._sum.totalAmount ?? 0),
-      balanceDue: Number(agg?._sum.balanceDue ?? 0),
-    };
-  });
-  return { items, total: items.length };
-}
-
-/**
- * Retrospective merge: move a temp emergency patient's pharmacy history onto the
- * permanent MRN created at registration, then retire the temp record. Repoints
- * bills, payments, dispensing records, returns, refunds and prescriptions.
- */
-export async function mergeEmergencyPatient(
-  tenantId: string,
-  userId: string,
-  tempId: string,
-  targetPatientId: string,
-) {
-  if (tempId === targetPatientId) throw AppError.badRequest('Cannot merge a patient into itself');
-
-  const [temp, target] = await Promise.all([
-    prisma.patient.findFirst({ where: { id: tempId, tenantId }, select: { id: true, mrn: true } }),
-    prisma.patient.findFirst({ where: { id: targetPatientId, tenantId }, select: { id: true, mrn: true } }),
-  ]);
-  if (!temp) throw AppError.notFound('Emergency patient not found');
-  if (!target) throw AppError.notFound('Target patient not found');
-  if (!temp.mrn.startsWith(EMERGENCY_MRN_PREFIX)) {
-    throw AppError.badRequest('Source is not an emergency temp patient');
-  }
-  if (target.mrn.startsWith(EMERGENCY_MRN_PREFIX)) {
-    throw AppError.badRequest('Target must be a permanent (registered) patient');
-  }
-
-  const result = await prisma.$transaction(async (tx) => {
-    // Fold the migrated pharmacy bills onto the permanent patient's ACTIVE IPD
-    // admission ledger (design doc: "migrate line items onto the permanent IPD
-    // billing ledger") so the deferred-hold bills stop floating as standalone
-    // records and roll into the admission's running account.
-    const targetAdmission = await tx.admission.findFirst({
-      where: { tenantId, patientId: targetPatientId, status: 'admitted' },
-      orderBy: { admissionDate: 'desc' },
-      select: { id: true },
-    });
-    const bills = await tx.bill.updateMany({
-      where: { tenantId, patientId: tempId },
-      data: { patientId: targetPatientId, ...(targetAdmission ? { admissionId: targetAdmission.id } : {}) },
-    });
-    const payments = await tx.payment.updateMany({ where: { tenantId, patientId: tempId }, data: { patientId: targetPatientId } });
-    const dispenses = await tx.dispensingRecord.updateMany({ where: { tenantId, patientId: tempId }, data: { patientId: targetPatientId } });
-    const returns = await tx.drugReturn.updateMany({ where: { tenantId, patientId: tempId }, data: { patientId: targetPatientId } });
-    const refunds = await tx.refund.updateMany({ where: { tenantId, patientId: tempId }, data: { patientId: targetPatientId } });
-    const rx = await tx.prescription.updateMany({ where: { tenantId, patientId: tempId }, data: { patientId: targetPatientId } });
-    // Repoint the sub-module ledgers that key on patientId directly (scalar FKs).
-    const wardLedger = await tx.wardStockLedger.updateMany({ where: { tenantId, patientId: tempId }, data: { patientId: targetPatientId } });
-    const indents = await tx.medicationIndent.updateMany({ where: { tenantId, patientId: tempId }, data: { patientId: targetPatientId, ...(targetAdmission ? { admissionId: targetAdmission.id } : {}) } });
-    const otKits = await tx.otKitIssue.updateMany({ where: { tenantId, patientId: tempId }, data: { patientId: targetPatientId } });
-    // G6 (2.3): close the temp patient's pending-placement admission (its charges
-    // have been folded onto the target's ledger) so it stops counting as active.
-    await tx.admission.updateMany({
-      where: { tenantId, patientId: tempId, status: 'admitted' },
-      data: { status: 'discharged', dischargeDate: new Date(), dischargedBy: userId },
-    });
-    await tx.visit.updateMany({ where: { tenantId, patientId: tempId, status: 'active' }, data: { status: 'discharged' } });
-    // Retire the temp record (kept for audit; flagged inactive + MRN suffixed).
-    await tx.patient.update({
-      where: { id: tempId },
-      data: { isActive: false, mrn: `${temp.mrn}-MERGED`, notes: `Merged into ${target.mrn}` },
-    });
-    return {
-      bills: bills.count,
-      payments: payments.count,
-      dispenses: dispenses.count,
-      returns: returns.count,
-      refunds: refunds.count,
-      prescriptions: rx.count,
-      wardLedger: wardLedger.count,
-      indents: indents.count,
-      otKits: otKits.count,
-      admissionLinked: !!targetAdmission,
-    };
-  });
-
-  void safePharmacyAudit({
-    tenantId,
-    userId,
-    action: 'merge',
-    entityType: 'pharmacy_sale',
-    entityId: targetPatientId,
-    description: `Merged emergency patient ${temp.mrn} → ${target.mrn}`,
-    oldValues: { tempId, tempMrn: temp.mrn },
-    newValues: { targetPatientId, targetMrn: target.mrn, ...result },
-  });
-
-  logger.info({ tenantId, tempId, targetPatientId, ...result }, 'Emergency patient merged');
-  return { target, ...result };
-}
 
 export async function createPharmacySale(
   tenantId: string,
@@ -3973,7 +3786,7 @@ export async function getPatientCreditStatus(tenantId: string, patientId: string
   // G6 (2.3): an Emergency/Casualty temp patient (TEMP-ER-…) is in the Golden-Hour
   // bypass — never held by the credit gate, even though it may now carry a
   // pending-placement admission with a zero deposit.
-  const isEmergency = patient?.mrn?.startsWith(EMERGENCY_MRN_PREFIX) ?? false;
+  const isEmergency = isEmergencyMrn(patient?.mrn);
 
   // Running bill = the patient's currently-open (unsettled) bills.
   const agg = await prisma.bill.aggregate({
