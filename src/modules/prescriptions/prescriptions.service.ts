@@ -990,7 +990,25 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
     orderBy: { drugName: 'asc' },
   });
 
-  const formularyResults = formulary.map((f) => ({ ...f, source: 'formulary' as const }));
+  // Available pharmacy stock per formulary drug = Σ quantityInStock across the
+  // hospital's active (non-expired, non-recalled) batches — so the doctor sees
+  // what's actually on hand while prescribing.
+  const formularyIds = formulary.map((f) => f.id);
+  const stockByDrug = new Map<string, number>();
+  if (formularyIds.length) {
+    const grouped = await prisma.drugBatch.groupBy({
+      by: ['drugId'],
+      where: { tenantId, drugId: { in: formularyIds }, isExpired: false, isRecalled: false },
+      _sum: { quantityInStock: true },
+    });
+    for (const g of grouped) stockByDrug.set(g.drugId, g._sum.quantityInStock ?? 0);
+  }
+
+  const formularyResults = formulary.map((f) => ({
+    ...f,
+    source: 'formulary' as const,
+    availableStock: stockByDrug.get(f.id) ?? 0,
+  }));
 
   // 2. Fill the remaining slots with platform-catalog matches the hospital has
   //    NOT yet imported, so a doctor can still pick (and later stock) a drug
@@ -1007,6 +1025,8 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
     manufacturer: string | null;
     price: any;
     source: 'master';
+    // Master-catalog drugs the hospital hasn't stocked yet → no local stock.
+    availableStock: number;
   }> = [];
 
   if (remaining > 0) {
@@ -1080,6 +1100,7 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
       manufacturer: m.manufacturer,
       price: m.mrp,
       source: 'master' as const,
+      availableStock: 0,
     }));
   }
 
