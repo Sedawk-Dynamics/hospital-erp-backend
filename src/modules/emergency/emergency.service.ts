@@ -115,7 +115,10 @@ export async function createEmergencyPatient(
       lastName: data.lastName?.trim() || 'Patient',
       phone: data.phone?.trim() || null,
       gender: (data.gender as any) || undefined,
-      dateOfBirth: dobFromAge(data.age),
+      // An exact DOB beats an approximate age.
+      dateOfBirth: data.dateOfBirth ? new Date(data.dateOfBirth) : dobFromAge(data.age),
+      email: data.email?.trim() || null,
+      addressLine1: data.address?.trim() || null,
       notes: data.notes?.trim() || 'Emergency / Casualty (Golden Hour) — temporary patient',
       isNew: false,
     },

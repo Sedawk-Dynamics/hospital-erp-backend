@@ -16,7 +16,16 @@ export const createEmergencyPatientSchema = z.object({
     lastName: z.string().max(100).optional(),
     phone: z.string().max(20).optional(),
     gender: z.enum(['male', 'female', 'other']).optional(),
+    // Age OR an exact DOB — the front desk ticks "emergency" on the normal
+    // registration form, so whatever it already collected is kept rather than
+    // dropped. `age` wins only when no dateOfBirth is given.
     age: z.coerce.number().int().min(0).max(150).optional(),
+    dateOfBirth: z
+      .string()
+      .refine((v) => !isNaN(Date.parse(v)), { message: 'Invalid date of birth' })
+      .optional(),
+    email: z.string().email('Invalid email').optional().or(z.literal('')),
+    address: z.string().max(500).optional(),
     // DoctorProfile.id of the attending casualty doctor. Optional — an
     // unassigned emergency falls back to a placeholder doctor for the record's
     // required FK and can be reassigned later.
