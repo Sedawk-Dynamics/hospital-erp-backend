@@ -103,7 +103,6 @@ export const updateFormularySchema = z.object({
     isNarcotic: z.boolean().optional(),
     isReimbursable: z.boolean().optional(),
     isActive: z.boolean().optional(),
-    isRecalled: z.boolean().optional(),
   }),
   params: z.object({
     id: z.string().uuid('Invalid formulary item ID'),
@@ -734,14 +733,7 @@ export const unrecallBatchSchema = z.object({
   }),
 });
 
-export const recallDrugSchema = z.object({
-  body: z.object({
-    recallReason: z.string().min(1, 'Recall reason is required').max(1000),
-  }),
-  params: z.object({
-    id: z.string().uuid('Invalid drug ID'),
-  }),
-});
+// Whole-medicine recall removed — recalls are issued per batch (recallBatchSchema).
 
 export const getRecalledItemsQuerySchema = z.object({
   query: paginationSchema.extend({
@@ -941,7 +933,6 @@ export type CreateReturnInput = z.infer<typeof createReturnSchema>['body'];
 export type GetReturnsQuery = z.infer<typeof getReturnsQuerySchema>['query'];
 export type ProcessReturnInput = z.infer<typeof processReturnSchema>['body'];
 export type RecallBatchInput = z.infer<typeof recallBatchSchema>['body'];
-export type RecallDrugInput = z.infer<typeof recallDrugSchema>['body'];
 export type GetRecalledItemsQuery = z.infer<typeof getRecalledItemsQuerySchema>['query'];
 export type GetGstReportQuery = z.infer<typeof getGstReportQuerySchema>['query'];
 export type GetStockLedgerQuery = z.infer<typeof getStockLedgerQuerySchema>['query'];

@@ -1349,25 +1349,7 @@ export async function unrecallBatch(
   }
 }
 
-export async function recallDrug(
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction,
-) {
-  try {
-    const tenantId = req.user!.tenantId;
-    const userId = req.user!.userId;
-    const data = await pharmacyService.recallDrug(
-      tenantId,
-      req.params.id as string,
-      userId,
-      req.body,
-    );
-    sendResponse({ res, message: 'Drug recalled (all batches)', data });
-  } catch (err) {
-    next(err);
-  }
-}
+// Whole-medicine recall removed — recalls are issued per batch.
 
 export async function getRecallAffectedPatients(
   req: AuthenticatedRequest,

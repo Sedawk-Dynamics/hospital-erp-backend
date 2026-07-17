@@ -19,7 +19,6 @@ import {
   cancelPharmacySale,
   recallBatch,
   unrecallBatch,
-  recallDrug,
   getRecallAffectedPatients,
   getGstReport,
   getStockLedger,
@@ -304,13 +303,6 @@ describe('Pharmacy — getters / CRUD / recalls coverage', () => {
     it('unrecallBatch refuses when the batch is not recalled', async () => {
       (prisma.drugBatch.findFirst as any).mockResolvedValue({ id: 'b1', tenantId: TENANT_ID, isRecalled: false });
       await expect(unrecallBatch(TENANT_ID, 'b1')).rejects.toThrow('not recalled');
-    });
-
-    it('recallDrug cascades to all batches', async () => {
-      (prisma.drugFormulary.findFirst as any).mockResolvedValue({ id: 'd1', tenantId: TENANT_ID });
-      (prisma.$transaction as any).mockResolvedValue([{}, {}]);
-      const r = await recallDrug(TENANT_ID, 'd1', USER_ID, { recallReason: 'defect' } as any);
-      expect(r.batchesRecalled).toBe(true);
     });
 
     it('getRecallAffectedPatients lists who received a recalled batch', async () => {

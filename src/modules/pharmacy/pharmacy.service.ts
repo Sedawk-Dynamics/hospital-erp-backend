@@ -37,7 +37,6 @@ import type {
   GetReturnsQuery,
   ProcessReturnInput,
   RecallBatchInput,
-  RecallDrugInput,
   GetRecalledItemsQuery,
   GetGstReportQuery,
   GetStockLedgerQuery,
@@ -1528,7 +1527,6 @@ export async function updateFormularyItem(
   if ((data as any).isNarcotic !== undefined) updateData.isNarcotic = (data as any).isNarcotic;
   if ((data as any).isReimbursable !== undefined) updateData.isReimbursable = (data as any).isReimbursable;
   if (data.isActive !== undefined) updateData.isActive = data.isActive;
-  if (data.isRecalled !== undefined) updateData.isRecalled = data.isRecalled;
 
   const item = await prisma.drugFormulary.update({
     where: { id },
@@ -5038,7 +5036,7 @@ export async function resolveScan(tenantId: string, code: string) {
   const drugSelect = {
     id: true, drugName: true, genericName: true, strength: true, dosageForm: true,
     gtin: true, casePackGtin: true, unitsPerCase: true, packSize: true,
-    looseUnitLabel: true, price: true, hsnCode: true, taxPercent: true, isRecalled: true,
+    looseUnitLabel: true, price: true, hsnCode: true, taxPercent: true,
   } as const;
 
   let drug: any = null;
@@ -5918,10 +5916,10 @@ export async function getPharmacyAnalytics(
 // ============================================================
 // Recall Management
 // ============================================================
-// Marks a batch (or all batches of a drug) as recalled. The dispense path
-// already rejects recalled batches, so once flagged the stock is auto-blocked.
-// Returns the list of patients who received doses of the batch so the clinic
-// can contact them.
+// Marks a BATCH as recalled — a recall always names a specific batch, never a
+// whole medicine. The dispense path already rejects recalled batches, so once
+// flagged the stock is auto-blocked. Returns the list of patients who received
+// doses of the batch so the clinic can contact them.
 
 export async function recallBatch(
   tenantId: string,
@@ -5991,30 +5989,10 @@ export async function unrecallBatch(tenantId: string, batchId: string) {
   });
 }
 
-export async function recallDrug(
-  tenantId: string,
-  drugId: string,
-  userId: string,
-  data: RecallDrugInput,
-) {
-  const drug = await prisma.drugFormulary.findFirst({ where: { id: drugId, tenantId } });
-  if (!drug) throw AppError.notFound('Drug not found');
-
-  // Flag the formulary entry + cascade to every batch.
-  await prisma.$transaction([
-    prisma.drugFormulary.update({
-      where: { id: drugId },
-      data: { isRecalled: true },
-    }),
-    prisma.drugBatch.updateMany({
-      where: { tenantId, drugId },
-      data: { isRecalled: true, recallReason: data.recallReason },
-    }),
-  ]);
-
-  logger.info({ tenantId, drugId, userId }, 'Drug recalled (all batches)');
-  return { drugId, batchesRecalled: true };
-}
+// Whole-medicine recall was removed: a recall is always issued against a
+// specific batch (that is what a manufacturer recall identifies). To pull a
+// medicine entirely, recall each affected batch — every stock, FEFO and
+// dispensing path already keys off DrugBatch.isRecalled.
 
 /**
  * For a given recalled batch, return the patients (with dispense dates &
@@ -6105,39 +6083,22 @@ export async function getRecallAffectedPatients(tenantId: string, batchId: strin
 }
 
 /**
- * Combined view for the Pharmacy Recall page: recalled formulary drugs +
- * recalled batches with affected-patient counts.
+ * Recalled batches with affected-patient counts. Recall is batch-level only —
+ * there is no drug-wide recall to list.
  */
-export async function getRecalledItems(tenantId: string, query: GetRecalledItemsQuery) {
-  const showBatch = query.type === 'all' || query.type === 'batch';
-  const showDrug = query.type === 'all' || query.type === 'drug';
+export async function getRecalledItems(tenantId: string, _query: GetRecalledItemsQuery) {
+  const recalledBatches = await prisma.drugBatch.findMany({
+    where: { tenantId, isRecalled: true },
+    include: {
+      drug: { select: { id: true, drugName: true, genericName: true } },
+      supplier: { select: { id: true, name: true } },
+      _count: { select: { dispensingRecords: true } },
+    },
+    orderBy: { updatedAt: 'desc' },
+    take: 100,
+  });
 
-  const [recalledBatches, recalledDrugs] = await Promise.all([
-    showBatch
-      ? prisma.drugBatch.findMany({
-          where: { tenantId, isRecalled: true },
-          include: {
-            drug: { select: { id: true, drugName: true, genericName: true } },
-            supplier: { select: { id: true, name: true } },
-            _count: { select: { dispensingRecords: true } },
-          },
-          orderBy: { updatedAt: 'desc' },
-          take: 100,
-        })
-      : Promise.resolve([] as any[]),
-    showDrug
-      ? prisma.drugFormulary.findMany({
-          where: { tenantId, isRecalled: true },
-          include: {
-            _count: { select: { drugBatches: true } },
-          },
-          orderBy: { updatedAt: 'desc' },
-          take: 100,
-        })
-      : Promise.resolve([] as any[]),
-  ]);
-
-  return { recalledBatches, recalledDrugs };
+  return { recalledBatches };
 }
 
 // ============================================================

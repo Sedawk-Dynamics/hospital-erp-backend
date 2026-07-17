@@ -91,6 +91,7 @@ export async function createSupplier(tenantId: string, data: CreateSupplierInput
       gstNumber: data.gstNumber,
       licenseNumber: data.licenseNumber,
       supplyType: data.supplyType as any,
+      paymentTermDays: data.paymentTermDays,
       isActive: data.isActive ?? true,
     },
   });
@@ -163,6 +164,7 @@ export async function updateSupplier(tenantId: string, id: string, data: UpdateS
   if (data.gstNumber !== undefined) updateData.gstNumber = data.gstNumber;
   if (data.licenseNumber !== undefined) updateData.licenseNumber = data.licenseNumber;
   if (data.supplyType !== undefined) updateData.supplyType = data.supplyType;
+  if (data.paymentTermDays !== undefined) updateData.paymentTermDays = data.paymentTermDays;
   if (data.isActive !== undefined) updateData.isActive = data.isActive;
 
   const supplier = await prisma.supplier.update({
@@ -630,7 +632,9 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
         true AS tracks_batches,
         COALESCE(b.batch_count, 0)::int AS batch_count,
         b.nearest_expiry AS nearest_expiry,
-        df.is_recalled AS is_recalled,
+        -- Recall is batch-level: a drug reads as recalled while it still holds
+        -- stock in at least one recalled batch.
+        COALESCE(b.recalled_count, 0) > 0 AS is_recalled,
         df.created_at AS created_at
       FROM drug_formulary df
       LEFT JOIN (
@@ -638,6 +642,7 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
           drug_id,
           SUM(quantity_in_stock) AS qty,
           COUNT(*) FILTER (WHERE quantity_in_stock > 0 AND is_expired = false AND is_recalled = false) AS batch_count,
+          COUNT(*) FILTER (WHERE quantity_in_stock > 0 AND is_recalled = true) AS recalled_count,
           MIN(expiry_date) FILTER (WHERE quantity_in_stock > 0 AND is_expired = false) AS nearest_expiry,
           MAX(selling_price) AS max_selling,
           AVG(purchase_price) AS avg_purchase

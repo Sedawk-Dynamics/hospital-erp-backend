@@ -4214,7 +4214,8 @@ model DrugFormulary {
   indications       String?
   contraindications String?
   isActive          Boolean     @default(true) @map("is_active")
-  isRecalled        Boolean     @default(false) @map("is_recalled")
+  // NOTE: recall is batch-level only (see DrugBatch.isRecalled / recallReason).
+  // A medicine is never recalled as a whole — a recall names a specific batch.
   // Vital / life-saving drug. Per the IP design doc, the credit-clearance gate
   // (cash patient over deposit) is bypassed for these so emergency dosing is
   // never withheld for money. Defaults to false.
@@ -4626,6 +4627,9 @@ model Supplier {
   gstNumber     String?     @map("gst_number") @db.VarChar(50)
   licenseNumber String?     @map("license_number") @db.VarChar(100)
   supplyType    SupplyType? @map("supply_type")
+  // Credit period agreed with the vendor: how many days we have to pay them
+  // after an invoice. Plain reference figure captured at vendor creation.
+  paymentTermDays Int?      @map("payment_term_days")
   isActive      Boolean     @default(true) @map("is_active")
   createdAt     DateTime    @default(now()) @map("created_at")
 

@@ -50,7 +50,6 @@ import {
   processReturnSchema,
   recallBatchSchema,
   unrecallBatchSchema,
-  recallDrugSchema,
   recallAffectedPatientsParamSchema,
   getRecalledItemsQuerySchema,
   getGstReportQuerySchema,
@@ -209,7 +208,7 @@ pharmacyRoutes.get('/recalls', authenticate, requirePermission('pharmacy', 'read
 pharmacyRoutes.get('/recalls/batches/:id/affected-patients', authenticate, requirePermission('pharmacy', 'read'), validate(recallAffectedPatientsParamSchema), controller.getRecallAffectedPatients);
 pharmacyRoutes.patch('/recalls/batches/:id', authenticate, requirePermission('pharmacy', 'approve'), validate(recallBatchSchema), controller.recallBatch);
 pharmacyRoutes.delete('/recalls/batches/:id', authenticate, requirePermission('pharmacy', 'approve'), validate(unrecallBatchSchema), controller.unrecallBatch);
-pharmacyRoutes.patch('/recalls/drugs/:id', authenticate, requirePermission('pharmacy', 'approve'), validate(recallDrugSchema), controller.recallDrug);
+// Recall is batch-level only — the whole-medicine recall route was removed.
 
 // --- GST Report ---
 pharmacyRoutes.get('/gst', authenticate, requirePermission('pharmacy', 'read'), validate(getGstReportQuerySchema), controller.getGstReport);

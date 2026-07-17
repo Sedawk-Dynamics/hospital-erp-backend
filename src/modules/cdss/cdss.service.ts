@@ -61,12 +61,12 @@ export async function validatePrescription(
     ? Math.floor((Date.now() - new Date(patient.dateOfBirth).getTime()) / (365.25 * 24 * 60 * 60 * 1000))
     : null;
 
-  // Resolve drug names to formulary entries so we know generic + active-recall state.
+  // Resolve drug names to formulary entries so we know the generic name.
   const drugNames = data.items.map((i) => i.drugName);
   const formulary = await prisma.drugFormulary.findMany({
     where: { tenantId },
     select: {
-      drugName: true, genericName: true, contraindications: true, isRecalled: true,
+      drugName: true, genericName: true, contraindications: true,
     },
   });
 
@@ -134,14 +134,10 @@ export async function validatePrescription(
       }
     }
 
-    if (formularyHit?.isRecalled) {
-      blockers.push({
-        severity: 'contraindicated',
-        kind: 'recall',
-        drug: item.drugName,
-        message: `${item.drugName} is currently recalled in the formulary. Dispensing is blocked.`,
-      });
-    }
+    // No drug-wide recall check: a recall applies to a specific batch, which is
+    // only known at dispensing time. The pharmacy hard-blocks dispensing from a
+    // recalled batch, and recalled batches are excluded from the stock the
+    // prescriber sees, so a fully-recalled drug already reads as out of stock.
   }
 
   // ── Drug-drug interactions ────────────────────────────

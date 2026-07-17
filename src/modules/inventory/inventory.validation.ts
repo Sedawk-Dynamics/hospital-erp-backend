@@ -24,6 +24,8 @@ export const createSupplierSchema = z.object({
     gstNumber: z.string().max(50).optional(),
     licenseNumber: z.string().max(100).optional(),
     supplyType: z.enum(['drugs', 'consumables', 'equipment', 'all']).optional(),
+    // Credit period: days within which the vendor must be paid.
+    paymentTermDays: z.coerce.number().int().min(0).max(365).optional(),
     isActive: z.boolean().default(true),
   }),
 });
@@ -37,6 +39,8 @@ export const updateSupplierSchema = z.object({
     gstNumber: z.string().max(50).optional().nullable(),
     licenseNumber: z.string().max(100).optional().nullable(),
     supplyType: z.enum(['drugs', 'consumables', 'equipment', 'all']).optional().nullable(),
+    // Credit period: days within which the vendor must be paid.
+    paymentTermDays: z.coerce.number().int().min(0).max(365).optional().nullable(),
     isActive: z.boolean().optional(),
   }),
   params: z.object({

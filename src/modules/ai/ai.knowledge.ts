@@ -268,7 +268,7 @@ export const HOW_TO_DOCS: HowToDoc[] = [
     title: 'Recall a drug batch',
     roles: ['pharmacy_admin'],
     keywords: ['recall', 'drug recall', 'affected patients', 'lift recall', 'batch recall'],
-    body: 'Pharmacy/Inventory → Batches. Use the "Recall Drug" header button or a row\'s Recall action; filter with the Recalled chip. You can Lift a recall and see Affected Patients (who received the recalled batch).',
+    body: 'Inventory → Storage. Expand the medicine to see its batches, then use the row\'s Recall action and give a reason; filter with the Recalled chip. Recalls are issued per batch — to pull a medicine entirely, recall each affected batch. You can Lift a recall and see Affected Patients (who received the recalled batch).',
   },
   {
     title: 'Pharmacy statutory / NDPS reports',

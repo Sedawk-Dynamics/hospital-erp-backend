@@ -966,11 +966,13 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
 
   // 1. The hospital's own formulary (drugs it stocks) — these carry an `id`
   //    usable as PrescriptionItem.drugId.
+  // Recall is batch-level, so a drug is never hidden here: `availableStock`
+  // below already excludes recalled batches, so a fully-recalled drug simply
+  // shows as out of stock.
   const formulary = await prisma.drugFormulary.findMany({
     where: {
       tenantId,
       isActive: true,
-      isRecalled: false,
       OR: [
         { drugName: { contains: search, mode: 'insensitive' } },
         { genericName: { contains: search, mode: 'insensitive' } },
