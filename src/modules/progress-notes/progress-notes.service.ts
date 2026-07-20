@@ -127,12 +127,24 @@ export async function createProgressNote(
     }
   }
 
+  // Optional prescription link — must belong to the same patient + tenant so a
+  // note can't be attached to an unrelated patient's prescription.
+  let prescriptionId = data.prescriptionId ?? null;
+  if (prescriptionId) {
+    const rx = await prisma.prescription.findFirst({
+      where: { id: prescriptionId, tenantId, patientId: data.patientId },
+      select: { id: true },
+    });
+    if (!rx) throw AppError.badRequest('Prescription not found for this patient');
+  }
+
   const note = await prisma.progressNote.create({
     data: {
       visitId: data.visitId,
       admissionId,
       patientId: data.patientId,
       doctorId: doctorProfile.id,
+      prescriptionId,
       noteType: data.noteType as any,
       content: data.content,
       impressions: data.impressions ?? null,

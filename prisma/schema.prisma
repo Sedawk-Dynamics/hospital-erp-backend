@@ -2674,6 +2674,9 @@ model ProgressNote {
   admissionId           String?            @map("admission_id")
   patientId             String             @map("patient_id")
   doctorId              String             @map("doctor_id")
+  // Optional link to a prescription. When set, the note rides along with that
+  // prescription so anyone who can view the prescription also sees this note.
+  prescriptionId        String?            @map("prescription_id")
   noteType              ProgressNoteType?  @map("note_type")
   content               String
   impressions           String?
@@ -2699,16 +2702,18 @@ model ProgressNote {
   createdAt             DateTime           @default(now()) @map("created_at")
   updatedAt             DateTime           @default(now()) @updatedAt @map("updated_at")
 
-  visit      Visit                   @relation(fields: [visitId], references: [id])
-  admission  Admission?              @relation(fields: [admissionId], references: [id])
-  patient    Patient                 @relation(fields: [patientId], references: [id])
-  doctor     DoctorProfile           @relation(fields: [doctorId], references: [id])
-  signer     User?                   @relation("ProgressNoteSigner", fields: [signedById], references: [id])
-  amendments ProgressNoteAmendment[]
-  pins       ProgressNotePin[]
+  visit        Visit                   @relation(fields: [visitId], references: [id])
+  admission    Admission?              @relation(fields: [admissionId], references: [id])
+  patient      Patient                 @relation(fields: [patientId], references: [id])
+  doctor       DoctorProfile           @relation(fields: [doctorId], references: [id])
+  prescription Prescription?           @relation(fields: [prescriptionId], references: [id])
+  signer       User?                   @relation("ProgressNoteSigner", fields: [signedById], references: [id])
+  amendments   ProgressNoteAmendment[]
+  pins         ProgressNotePin[]
 
   @@index([status, createdAt])
   @@index([admissionId, createdAt])
+  @@index([prescriptionId])
   @@map("progress_notes")
 }
 
@@ -3206,6 +3211,7 @@ model Prescription {
   prescriptionItems PrescriptionItem[]
   dispensingRecords DispensingRecord[]
   emarSchedules     EmarSchedule[]
+  progressNotes     ProgressNote[]
 
   @@map("prescriptions")
 }

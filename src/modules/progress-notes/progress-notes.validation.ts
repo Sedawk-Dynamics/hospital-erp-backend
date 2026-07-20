@@ -49,6 +49,8 @@ export const createProgressNoteSchema = z.object({
     visitId: z.string().uuid('Invalid visit ID'),
     admissionId: z.string().uuid('Invalid admission ID').optional().nullable(),
     patientId: z.string().uuid('Invalid patient ID'),
+    // Optional: link this note to a prescription so prescription viewers see it.
+    prescriptionId: z.string().uuid('Invalid prescription ID').optional().nullable(),
     noteType: progressNoteTypeEnum.optional(),
     content: z.string().min(1, 'Content is required').max(10000),
     impressions: z.string().max(10000).optional().nullable(),

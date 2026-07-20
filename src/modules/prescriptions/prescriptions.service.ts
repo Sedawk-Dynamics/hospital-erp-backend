@@ -298,6 +298,21 @@ export async function getPrescriptionById(tenantId: string, id: string) {
           drug: { select: { packSize: true, looseUnitLabel: true, dosageForm: true } },
         },
       },
+      // Progress notes a doctor linked to this prescription — so anyone who can
+      // view the prescription (doctor, pharmacist, patient) also sees them.
+      progressNotes: {
+        where: { status: { not: 'archived' } },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          createdAt: true,
+          noteType: true,
+          content: true,
+          doctor: {
+            select: { user: { select: { firstName: true, lastName: true } } },
+          },
+        },
+      },
     },
   });
 
