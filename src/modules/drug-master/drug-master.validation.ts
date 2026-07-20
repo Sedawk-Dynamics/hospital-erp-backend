@@ -87,6 +87,37 @@ export const suggestDrugMasterSchema = z.object({
   }),
 });
 
+// ── HSN → GST tax reference (super-admin management) ──
+const hsnCategoryEnum = z.enum(['medicine', 'consumable', 'device', 'supplement', 'other']);
+
+export const createHsnGstRateSchema = z.object({
+  body: z.object({
+    // Digits only; 4-digit heading acts as a chapter default, 6/8-digit overrides.
+    hsnCode: z
+      .string()
+      .trim()
+      .min(2, 'HSN code is required')
+      .max(20)
+      .regex(/^[0-9]+$/, 'HSN code must be digits only'),
+    description: z.string().max(255).optional().nullable(),
+    gstRate: z.number({ message: 'GST rate is required' }).min(0).max(100),
+    category: hsnCategoryEnum.optional().nullable(),
+    isActive: z.boolean().optional(),
+  }),
+});
+
+export const updateHsnGstRateSchema = z.object({
+  body: createHsnGstRateSchema.shape.body.partial(),
+  params: z.object({ id: z.string().uuid('Invalid HSN rate ID') }),
+});
+
+export const hsnGstRateIdParamSchema = z.object({
+  params: z.object({ id: z.string().uuid('Invalid HSN rate ID') }),
+});
+
+export type CreateHsnGstRateInput = z.infer<typeof createHsnGstRateSchema>['body'];
+export type UpdateHsnGstRateInput = z.infer<typeof updateHsnGstRateSchema>['body'];
+
 export type SearchDrugMasterQuery = z.infer<typeof searchDrugMasterSchema>['query'];
 export type ListDrugMasterQuery = z.infer<typeof listDrugMasterSchema>['query'];
 export type CreateDrugMasterInput = z.infer<typeof createDrugMasterSchema>['body'];

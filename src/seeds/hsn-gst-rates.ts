@@ -46,6 +46,13 @@ const HSN_RATES: HsnSeed[] = [
   // ── Specific tariff items that override the heading default ──
   { hsn: '30049010', gst: 0, desc: 'Oral Rehydration Salts (ORS) — exempt / nil-rated', category: 'medicine' },
   { hsn: '30043110', gst: 5, desc: 'Insulin injections', category: 'medicine' },
+  // ── Medical devices / diagnostics / consumables. GST 2.0 cut virtually all of
+  //    Chapter 90 (and surgical gloves / diagnostic kits) from 12/18% to 5%. ──
+  { hsn: '9018', gst: 5, desc: 'Medical/surgical/dental instruments — syringes, needles, catheters', category: 'device' },
+  { hsn: '9021', gst: 5, desc: 'Orthopaedic appliances, splints, implants, hearing aids', category: 'device' },
+  { hsn: '9022', gst: 5, desc: 'X-ray / imaging apparatus & tubes', category: 'device' },
+  { hsn: '3822', gst: 5, desc: 'Diagnostic / laboratory reagents & in-vitro test kits', category: 'device' },
+  { hsn: '4015', gst: 5, desc: 'Surgical / examination gloves (vulcanised rubber)', category: 'consumable' },
   // ── 18% slab — nutraceuticals & nicotine replacement (not "medicaments") ──
   { hsn: '2106', gst: 18, desc: 'Food preparations / dietary supplements (nutraceuticals)', category: 'supplement' },
   { hsn: '21069099', gst: 18, desc: 'Nutraceuticals / health supplements — other', category: 'supplement' },

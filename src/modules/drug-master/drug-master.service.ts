@@ -10,6 +10,8 @@ import type {
   CreateDrugMasterInput,
   UpdateDrugMasterInput,
   SuggestDrugMasterInput,
+  CreateHsnGstRateInput,
+  UpdateHsnGstRateInput,
 } from './drug-master.validation';
 
 // Only super_admin authors / edits the platform-wide drug catalog. Hospitals
@@ -290,4 +292,75 @@ export async function listHsnGstRates() {
     select: { id: true, hsnCode: true, description: true, gstRate: true, category: true },
   });
   return rows.map((r) => ({ ...r, gstRate: Number(r.gstRate) }));
+}
+
+// ── Super-admin management of the HSN → GST reference ──
+
+/** Full list incl. inactive rows, for the super-admin management table. */
+export async function listAllHsnGstRates() {
+  const rows = await prisma.hsnGstRate.findMany({
+    orderBy: { hsnCode: 'asc' },
+  });
+  return rows.map((r) => ({ ...r, gstRate: Number(r.gstRate) }));
+}
+
+export async function createHsnGstRate(roles: string[], data: CreateHsnGstRateInput) {
+  assertCanManage(roles);
+  const hsnCode = normalizeHsn(data.hsnCode);
+  if (!hsnCode) throw AppError.badRequest('HSN code must contain digits');
+  try {
+    const row = await prisma.hsnGstRate.create({
+      data: {
+        hsnCode,
+        description: data.description ?? null,
+        gstRate: data.gstRate,
+        category: data.category ?? null,
+        isActive: data.isActive ?? true,
+      },
+    });
+    logger.info({ hsnGstRateId: row.id, hsnCode }, 'HSN → GST rate created');
+    return { ...row, gstRate: Number(row.gstRate) };
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      throw AppError.conflict(`An HSN → GST rate for "${hsnCode}" already exists`);
+    }
+    throw err;
+  }
+}
+
+export async function updateHsnGstRate(roles: string[], id: string, data: UpdateHsnGstRateInput) {
+  assertCanManage(roles);
+  const existing = await prisma.hsnGstRate.findUnique({ where: { id } });
+  if (!existing) throw AppError.notFound('HSN → GST rate not found');
+
+  const hsnCode = data.hsnCode !== undefined ? normalizeHsn(data.hsnCode) : undefined;
+  if (hsnCode !== undefined && !hsnCode) throw AppError.badRequest('HSN code must contain digits');
+  try {
+    const row = await prisma.hsnGstRate.update({
+      where: { id },
+      data: {
+        hsnCode,
+        description: data.description !== undefined ? data.description : undefined,
+        gstRate: data.gstRate !== undefined ? data.gstRate : undefined,
+        category: data.category !== undefined ? data.category : undefined,
+        isActive: data.isActive !== undefined ? data.isActive : undefined,
+      },
+    });
+    logger.info({ hsnGstRateId: id }, 'HSN → GST rate updated');
+    return { ...row, gstRate: Number(row.gstRate) };
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      throw AppError.conflict(`An HSN → GST rate for "${hsnCode}" already exists`);
+    }
+    throw err;
+  }
+}
+
+export async function deleteHsnGstRate(roles: string[], id: string) {
+  assertCanManage(roles);
+  const existing = await prisma.hsnGstRate.findUnique({ where: { id } });
+  if (!existing) throw AppError.notFound('HSN → GST rate not found');
+  await prisma.hsnGstRate.delete({ where: { id } });
+  logger.info({ hsnGstRateId: id }, 'HSN → GST rate deleted');
+  return { id };
 }

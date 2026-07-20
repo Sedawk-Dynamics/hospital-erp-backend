@@ -192,3 +192,56 @@ export async function lookupHsnGst(
     next(err);
   }
 }
+
+// ── Super-admin management of the HSN → GST reference ──
+
+export async function listAllHsnGstRates(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    sendResponse({ res, message: 'HSN → GST rates', data: await service.listAllHsnGstRates() });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function createHsnGstRate(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const row = await service.createHsnGstRate(req.user!.roles ?? [], req.body);
+    sendResponse({ res, statusCode: 201, message: 'HSN → GST rate added', data: row });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function updateHsnGstRate(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const row = await service.updateHsnGstRate(req.user!.roles ?? [], req.params.id as string, req.body);
+    sendResponse({ res, message: 'HSN → GST rate updated', data: row });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function deleteHsnGstRate(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const out = await service.deleteHsnGstRate(req.user!.roles ?? [], req.params.id as string);
+    sendResponse({ res, message: 'HSN → GST rate removed', data: out });
+  } catch (err) {
+    next(err);
+  }
+}

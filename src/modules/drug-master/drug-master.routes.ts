@@ -15,6 +15,9 @@ import {
   createDrugMasterSchema,
   updateDrugMasterSchema,
   suggestDrugMasterSchema,
+  createHsnGstRateSchema,
+  updateHsnGstRateSchema,
+  hsnGstRateIdParamSchema,
 } from './drug-master.validation';
 
 export const drugMasterRoutes = Router();
@@ -30,11 +33,34 @@ drugMasterRoutes.get(
   controller.searchDrugMaster,
 );
 
-// --- HSN → GST tax reference (any authenticated pharmacy/inventory user) ---
-// Non-sensitive platform reference data (like the catalog itself). Declared
-// before '/:id' so these literals aren't captured as an :id.
+// --- HSN → GST tax reference ---
+// Read is open to any authenticated pharmacy/inventory user (non-sensitive
+// platform reference data, like the catalog). Management is super-admin only.
+// All declared before '/:id' so these literals aren't captured as an :id.
 drugMasterRoutes.get('/hsn', authenticate, controller.listHsnGstRates);
 drugMasterRoutes.get('/hsn/lookup', authenticate, controller.lookupHsnGst);
+drugMasterRoutes.get('/hsn/all', authenticate, requireRoles('super_admin'), controller.listAllHsnGstRates);
+drugMasterRoutes.post(
+  '/hsn',
+  authenticate,
+  requireRoles('super_admin'),
+  validate(createHsnGstRateSchema),
+  controller.createHsnGstRate,
+);
+drugMasterRoutes.put(
+  '/hsn/:id',
+  authenticate,
+  requireRoles('super_admin'),
+  validate(updateHsnGstRateSchema),
+  controller.updateHsnGstRate,
+);
+drugMasterRoutes.delete(
+  '/hsn/:id',
+  authenticate,
+  requireRoles('super_admin'),
+  validate(hsnGstRateIdParamSchema),
+  controller.deleteHsnGstRate,
+);
 
 // --- Super-admin catalog refresh (upsert against a provider / CSV snapshot) ---
 // Declared before '/:id' so these literals aren't captured as an :id.
