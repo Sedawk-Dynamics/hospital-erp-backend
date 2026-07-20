@@ -19,7 +19,7 @@ import {
   MATCH_SUGGEST_THRESHOLD,
   MATCH_BLOCK_THRESHOLD,
 } from './pharmacy.matching';
-import { parseGs1, makeInternalBarcode, isInternalBarcode } from './pharmacy.barcode';
+import { parseGs1, makeInternalBarcode, isInternalBarcode, gtinVariants } from './pharmacy.barcode';
 import type {
   CreateFormularyInput,
   UpdateFormularyInput,
@@ -504,11 +504,12 @@ export async function resolveInwardLine(
   tenantId: string,
   line: InwardLineInput,
 ) {
-  // Tier 1 — GTIN (consumer unit or outer case).
+  // Tier 1 — GTIN (consumer unit or outer case), matched in either 13/14-digit form.
   const gtin = line.gtin?.trim();
   if (gtin) {
+    const variants = gtinVariants(gtin);
     const byGtin = await prisma.drugFormulary.findFirst({
-      where: { tenantId, isActive: true, OR: [{ gtin }, { casePackGtin: gtin }] },
+      where: { tenantId, isActive: true, OR: [{ gtin: { in: variants } }, { casePackGtin: { in: variants } }] },
       select: {
         id: true, drugName: true, genericName: true, manufacturer: true,
         dosageForm: true, strength: true, packSize: true, price: true,
@@ -516,7 +517,8 @@ export async function resolveInwardLine(
       },
     });
     if (byGtin) {
-      const isCase = byGtin.casePackGtin === gtin && byGtin.gtin !== gtin;
+      const isCase = byGtin.casePackGtin != null && variants.includes(byGtin.casePackGtin)
+        && !(byGtin.gtin != null && variants.includes(byGtin.gtin));
       return {
         resolvedVia: 'gtin' as ResolveVia,
         recommendation: 'map' as InwardRecommendation,
@@ -751,9 +753,12 @@ export async function resolveInwardScan(tenantId: string, code: string) {
   };
 
   if (gtin) {
+    // Match the GTIN in either its 13- or 14-digit form (a GS1 code is 14-digit,
+    // a typed/EAN one usually 13 — the same product).
+    const variants = gtinVariants(gtin);
     // Tier 1 — already in this hospital's formulary.
     const f = await prisma.drugFormulary.findFirst({
-      where: { tenantId, OR: [{ gtin }, { casePackGtin: gtin }] },
+      where: { tenantId, OR: [{ gtin: { in: variants } }, { casePackGtin: { in: variants } }] },
       select: {
         id: true, drugName: true, genericName: true, manufacturer: true,
         strength: true, dosageForm: true, packSize: true, hsnCode: true,
@@ -763,7 +768,9 @@ export async function resolveInwardScan(tenantId: string, code: string) {
     if (f) {
       via = 'formulary_gtin';
       suggestedFormularyId = f.id;
-      caseMultiplier = f.casePackGtin === gtin && f.gtin !== gtin ? Math.max(1, f.unitsPerCase ?? 1) : 1;
+      const isCase = f.casePackGtin != null && variants.includes(f.casePackGtin);
+      const isConsumer = f.gtin != null && variants.includes(f.gtin);
+      caseMultiplier = isCase && !isConsumer ? Math.max(1, f.unitsPerCase ?? 1) : 1;
       Object.assign(line, {
         drugName: f.drugName,
         genericName: f.genericName,
@@ -777,7 +784,7 @@ export async function resolveInwardScan(tenantId: string, code: string) {
       // Tier 2 — known in the platform catalog; pre-fill so the user can create
       // (or import) the formulary row with correct identity in one step.
       const m = await prisma.drugMaster.findFirst({
-        where: { OR: [{ gtin }, { casePackGtin: gtin }] },
+        where: { OR: [{ gtin: { in: variants } }, { casePackGtin: { in: variants } }] },
         select: {
           name: true, genericName: true, manufacturer: true, strength: true,
           dosageForm: true, packSize: true, hsnCode: true,
@@ -786,7 +793,9 @@ export async function resolveInwardScan(tenantId: string, code: string) {
       });
       if (m) {
         via = 'drugmaster_gtin';
-        caseMultiplier = m.casePackGtin === gtin && m.gtin !== gtin ? Math.max(1, m.unitsPerCase ?? 1) : 1;
+        const isCase = m.casePackGtin != null && variants.includes(m.casePackGtin);
+        const isConsumer = m.gtin != null && variants.includes(m.gtin);
+        caseMultiplier = isCase && !isConsumer ? Math.max(1, m.unitsPerCase ?? 1) : 1;
         Object.assign(line, {
           drugName: m.name,
           genericName: m.genericName,
@@ -5070,10 +5079,12 @@ export async function resolveScan(tenantId: string, code: string) {
   let drug: any = null;
   let batch: any = null;
 
-  // 1. GTIN → drug.
+  // 1. GTIN → drug. Match either the 13- or 14-digit form (GS1 codes are
+  // 14-digit; typed/EAN ones usually 13 — the same product).
   if (gtin) {
+    const variants = gtinVariants(gtin);
     drug = await prisma.drugFormulary.findFirst({
-      where: { tenantId, OR: [{ gtin }, { casePackGtin: gtin }] },
+      where: { tenantId, OR: [{ gtin: { in: variants } }, { casePackGtin: { in: variants } }] },
       select: drugSelect,
     });
   }

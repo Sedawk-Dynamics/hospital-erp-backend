@@ -4,6 +4,8 @@ import {
   parseGs1,
   makeInternalBarcode,
   isInternalBarcode,
+  gtinVariants,
+  isValidGtin,
 } from '../../../../src/modules/pharmacy/pharmacy.barcode';
 import {
   resolveScan,
@@ -54,6 +56,57 @@ describe('Pharmacy — barcode decoding (GS1 DataMatrix)', () => {
     expect(code).toBe('PHB1A2B3C4D5E6F');
     expect(isInternalBarcode(code)).toBe(true);
     expect(isInternalBarcode('8901234567890')).toBe(false);
+  });
+});
+
+describe('Pharmacy — GS1 Digital Link (URL / QR)', () => {
+  it('decodes GTIN + batch + serial from the path and expiry from the query', () => {
+    const r = parseGs1('https://id.gs1.org/01/08901012000014/10/BATCH-A/21/SN123?17=271231');
+    expect(r).not.toBeNull();
+    expect(r!.gtin).toBe('08901012000014');
+    expect(r!.batchNumber).toBe('BATCH-A');
+    expect(r!.serial).toBe('SN123');
+    expect(r!.expiryDate).toBe('2027-12-31');
+  });
+
+  it('ignores a brand-site path prefix before the /01/ primary key', () => {
+    const r = parseGs1('https://brand.example.com/products/01/08901012000014/10/L9');
+    expect(r!.gtin).toBe('08901012000014');
+    expect(r!.batchNumber).toBe('L9');
+  });
+
+  it('decodes expiry, mfg and batch all from the query string', () => {
+    const r = parseGs1('https://id.gs1.org/01/08901012000014?10=L1&17=281130&11=260101');
+    expect(r!.batchNumber).toBe('L1');
+    expect(r!.expiryDate).toBe('2028-11-30');
+    expect(r!.manufactureDate).toBe('2026-01-01');
+  });
+
+  it('percent-decodes qualifier values', () => {
+    const r = parseGs1('https://id.gs1.org/01/08901012000014/10/A%2FB%20C');
+    expect(r!.batchNumber).toBe('A/B C');
+  });
+
+  it('returns null for a URL that carries no GTIN', () => {
+    expect(parseGs1('https://example.com/about')).toBeNull();
+  });
+});
+
+describe('Pharmacy — GTIN normalisation + check digit', () => {
+  it('returns both 13- and 14-digit forms so GS1 (14) matches a stored EAN (13)', () => {
+    expect(gtinVariants('8901012000014')).toEqual(
+      expect.arrayContaining(['8901012000014', '08901012000014']),
+    );
+    expect(gtinVariants('08901012000014')).toEqual(
+      expect.arrayContaining(['08901012000014', '8901012000014']),
+    );
+  });
+
+  it('validates a correct EAN-13 / GTIN-14 check digit and rejects a typo', () => {
+    expect(isValidGtin('8901012000014')).toBe(true); // seeded Crocin GTIN
+    expect(isValidGtin('08901012000014')).toBe(true); // same, GTIN-14
+    expect(isValidGtin('8901012000015')).toBe(false); // wrong check digit
+    expect(isValidGtin('12345')).toBe(false); // wrong length
   });
 });
 
