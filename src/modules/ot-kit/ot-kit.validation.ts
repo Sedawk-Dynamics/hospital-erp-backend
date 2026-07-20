@@ -11,7 +11,6 @@ export const createTemplateSchema = z.object({
     name: z.string().min(1).max(160),
     procedureName: z.string().max(200).optional(),
     doctorId: z.string().uuid().optional(),
-    kitBarcode: z.string().max(64).optional(),
     notes: z.string().max(1000).optional(),
     items: z.array(templateItem).min(1),
   }),
@@ -23,7 +22,6 @@ export const updateTemplateSchema = z.object({
     name: z.string().min(1).max(160).optional(),
     procedureName: z.string().max(200).nullable().optional(),
     doctorId: z.string().uuid().nullable().optional(),
-    kitBarcode: z.string().max(64).nullable().optional(),
     notes: z.string().max(1000).nullable().optional(),
     items: z.array(templateItem).min(1).optional(),
   }),
@@ -59,7 +57,6 @@ export const issueKitSchema = z.object({
       patientId: z.string().uuid().optional(),
       visitId: z.string().uuid().optional(),
       templateId: z.string().uuid().optional(),
-      kitBarcode: z.string().max(64).optional(),
       items: z
         .array(z.object({ drugFormularyId: z.string().uuid(), quantity: z.number().int().positive() }))
         .optional(),

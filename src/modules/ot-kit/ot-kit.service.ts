@@ -80,7 +80,6 @@ export async function listTemplates(
     where.OR = [
       { name: { contains: s, mode: 'insensitive' } },
       { procedureName: { contains: s, mode: 'insensitive' } },
-      { kitBarcode: { equals: s } },
     ];
   }
   const templates = await prisma.surgicalTemplate.findMany({
@@ -123,7 +122,6 @@ interface TemplateInput {
   name: string;
   procedureName?: string;
   doctorId?: string;
-  kitBarcode?: string;
   notes?: string;
   items: TemplateItemInput[];
 }
@@ -138,17 +136,12 @@ export async function createTemplate(tenantId: string, userId: string, roles: st
   assertTemplateManager(roles, 'manage surgical templates');
   if (!data.items?.length) throw AppError.badRequest('A kit template needs at least one item');
   await assertDrugsExist(tenantId, data.items.map((i) => i.drugFormularyId));
-  if (data.kitBarcode) {
-    const dup = await prisma.surgicalTemplate.findFirst({ where: { tenantId, kitBarcode: data.kitBarcode } });
-    if (dup) throw AppError.conflict('That kit barcode is already used by another template');
-  }
   const created = await prisma.surgicalTemplate.create({
     data: {
       tenantId,
       name: data.name.trim(),
       procedureName: data.procedureName?.trim() || null,
       doctorId: data.doctorId || null,
-      kitBarcode: data.kitBarcode?.trim() || null,
       notes: data.notes?.trim() || null,
       createdById: userId,
       items: {
@@ -169,10 +162,6 @@ export async function updateTemplate(tenantId: string, roles: string[], id: stri
   assertTemplateManager(roles, 'manage surgical templates');
   const existing = await prisma.surgicalTemplate.findFirst({ where: { id, tenantId } });
   if (!existing) throw AppError.notFound('Surgical template not found');
-  if (data.kitBarcode) {
-    const dup = await prisma.surgicalTemplate.findFirst({ where: { tenantId, kitBarcode: data.kitBarcode, id: { not: id } } });
-    if (dup) throw AppError.conflict('That kit barcode is already used by another template');
-  }
   if (data.items) await assertDrugsExist(tenantId, data.items.map((i) => i.drugFormularyId));
 
   return prisma.$transaction(async (tx) => {
@@ -182,7 +171,6 @@ export async function updateTemplate(tenantId: string, roles: string[], id: stri
         name: data.name?.trim() ?? undefined,
         procedureName: data.procedureName !== undefined ? (data.procedureName?.trim() || null) : undefined,
         doctorId: data.doctorId !== undefined ? (data.doctorId || null) : undefined,
-        kitBarcode: data.kitBarcode !== undefined ? (data.kitBarcode?.trim() || null) : undefined,
         notes: data.notes !== undefined ? (data.notes?.trim() || null) : undefined,
       },
     });
@@ -255,8 +243,8 @@ export async function requestKit(
 /**
  * Pharmacy: bulk-issue a kit into the transit bucket bound to the OT session. FEFO
  * batches leave active pharmacy stock but are NOT billed. Accepts either an
- * existing `issueId` (a nurse request to fulfil), an explicit `items[]`, a
- * `templateId`, or a `kitBarcode` (one scan expands the whole bundle).
+ * existing `issueId` (a nurse request to fulfil), an explicit `items[]`, or a
+ * `templateId` (which expands to the whole bundle).
  */
 export async function issueKit(
   tenantId: string,
@@ -268,7 +256,6 @@ export async function issueKit(
     patientId?: string;
     visitId?: string;
     templateId?: string;
-    kitBarcode?: string;
     items?: Array<{ drugFormularyId: string; quantity: number }>;
     notes?: string;
   },
@@ -287,16 +274,11 @@ export async function issueKit(
   const patientId = issueRow?.patientId ?? data.patientId;
   if (!patientId) throw AppError.badRequest('patientId is required to issue a kit');
 
-  // Resolve the line list: explicit items > barcode > template (from data or request).
+  // Resolve the line list: explicit items > template (from data or request).
   let lines = data.items?.length ? data.items : null;
-  let templateId = data.templateId ?? issueRow?.templateId ?? null;
-  if (!lines && data.kitBarcode) {
-    const t = await prisma.surgicalTemplate.findFirst({ where: { tenantId, kitBarcode: data.kitBarcode.trim() }, select: { id: true } });
-    if (!t) throw AppError.notFound('No kit template matches that barcode');
-    templateId = t.id;
-  }
+  const templateId = data.templateId ?? issueRow?.templateId ?? null;
   if (!lines && templateId) lines = await expandTemplate(tenantId, templateId);
-  if (!lines?.length) throw AppError.badRequest('Nothing to issue — provide items, a template, or a kit barcode');
+  if (!lines?.length) throw AppError.badRequest('Nothing to issue — provide items or a template');
 
   const result = await prisma.$transaction(async (tx) => {
     // Create/reuse the issue header.
