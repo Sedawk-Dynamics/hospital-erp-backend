@@ -37,6 +37,7 @@ import { seedDrugMaster } from '../seeds/drug-master';
 import { seedPackSizes } from '../seeds/pack-sizes';
 import { seedPackPrices } from '../seeds/pack-prices';
 import { seedImagingModalities } from '../seeds/imaging-modalities';
+import { seedHsnGstRates } from '../seeds/hsn-gst-rates';
 
 // Arbitrary constant identifying our advisory lock.
 const LOCK_KEY = 4820257011;
@@ -109,6 +110,11 @@ export async function runSeeds(db: PrismaClient): Promise<void> {
     await step('pack-sizes', () => seedPackSizes(db));
     await step('pack-prices', () => seedPackPrices(db));
   }
+
+  // HSN → GST tax reference — small + idempotent, run every boot so a release
+  // that ships new/updated rates picks them up. Also tags a few common catalog
+  // medicines with their HSN + GST.
+  await step('hsn-gst-rates', () => seedHsnGstRates(db));
 
   // 5. Per-tenant seeds / RBAC sync. Internally idempotent and skip tenants
   //    that already have the data, so they self-heal tenants created between

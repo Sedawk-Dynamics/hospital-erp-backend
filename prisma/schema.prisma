@@ -4020,6 +4020,34 @@ model DrugMaster {
 }
 
 // ============================================================
+// HSN → GST reference (platform-wide tax master)
+// ============================================================
+// In India GST is legally determined by an item's HSN code, so this is the
+// single source of truth that turns an HSN code into a GST rate. It is platform
+// reference data (no tenantId — every hospital shares it, like the drug catalog
+// or ICD codes). At stock inward the entered/scanned HSN is looked up here by
+// LONGEST-PREFIX match (an 8-digit tariff item wins over its 4-digit chapter
+// heading) and the matching gstRate auto-fills the batch's GST, so the operator
+// never has to remember the rate for each medicine.
+model HsnGstRate {
+  id          String   @id @default(uuid())
+  // Digits only (spaces/dots stripped on write). 4-digit headings (e.g. "3004")
+  // act as a chapter-wide default; 6/8-digit entries override for specific items
+  // (e.g. "30049010" ORS is nil while the "3004" default is 5%).
+  hsnCode     String   @unique @map("hsn_code") @db.VarChar(20)
+  description String?  @db.VarChar(255)
+  gstRate     Decimal  @map("gst_rate") @db.Decimal(5, 2)
+  // Loose grouping for the reference UI ('medicine' | 'consumable' | 'device' | …).
+  category    String?  @db.VarChar(60)
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([isActive])
+  @@map("hsn_gst_rates")
+}
+
+// ============================================================
 // NDPS Narcotic Accounting (spec — Essential Narcotic Drug lifecycle)
 // ============================================================
 // Indian drug inspectors cross-reference physical narcotic stock against the
