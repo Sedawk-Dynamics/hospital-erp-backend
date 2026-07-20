@@ -7,6 +7,9 @@ import { uploadSingle } from '../../services/upload.service';
 import type { AuthenticatedRequest } from '../../shared/types';
 import * as controller from './pharmacy.controller';
 import {
+  createNicknameSchema,
+  updateNicknameSchema,
+  nicknameIdParamSchema,
   createFormularySchema,
   findFormularyMatchesSchema,
   mergeFormularySchema,
@@ -131,6 +134,12 @@ pharmacyRoutes.post(
 pharmacyRoutes.get('/inward/scan', authenticate, requirePermission('pharmacy', 'read'), validate(inwardScanQuerySchema), controller.resolveInwardScan);
 // Remember an unknown barcode against a chosen drug (stock-entry fallback).
 pharmacyRoutes.post('/barcodes/attach', authenticate, requirePermission('pharmacy', 'update'), validate(attachBarcodeSchema), controller.attachBarcode);
+
+// --- Personal medicine nicknames (per pharmacist) ---
+pharmacyRoutes.get('/nicknames', authenticate, requirePermission('pharmacy', 'read'), controller.listNicknames);
+pharmacyRoutes.post('/nicknames', authenticate, requirePermission('pharmacy', 'create'), validate(createNicknameSchema), controller.createNickname);
+pharmacyRoutes.put('/nicknames/:id', authenticate, requirePermission('pharmacy', 'create'), validate(updateNicknameSchema), controller.updateNickname);
+pharmacyRoutes.delete('/nicknames/:id', authenticate, requirePermission('pharmacy', 'create'), validate(nicknameIdParamSchema), controller.deleteNickname);
 
 // --- OP pre-packing: Stock Hold / Pre-Packed (spec OP Step 1) ---
 pharmacyRoutes.get('/holds', authenticate, requirePermission('pharmacy', 'read'), validate(holdsQuerySchema), controller.listStockHolds);

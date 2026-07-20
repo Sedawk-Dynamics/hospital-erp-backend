@@ -7,6 +7,7 @@ import {
   generateForPrescription as emarGenerateForPrescription,
   cancelFutureSchedules as emarCancelFutureSchedules,
 } from '../emar/emar.scheduler-engine';
+import { resolveNicknameMatches } from '../pharmacy/pharmacy.nicknames';
 import type {
   CreatePrescriptionInput,
   UpdatePrescriptionInput,
@@ -961,8 +962,12 @@ export async function checkAllergy(tenantId: string, query: AllergyCheckQuery) {
 /**
  * Lightweight formulary search returning only fields needed for prescriptions.
  */
-export async function searchFormulary(tenantId: string, query: FormularySearchQuery) {
+export async function searchFormulary(tenantId: string, query: FormularySearchQuery, userId?: string) {
   const { search } = query;
+
+  // The searcher's personal nicknames that match this term → linked drug ids, so
+  // typing a nickname surfaces its medicine even when the name doesn't match.
+  const nickMap = await resolveNicknameMatches(tenantId, userId, search);
 
   // 1. The hospital's own formulary (drugs it stocks) — these carry an `id`
   //    usable as PrescriptionItem.drugId.
@@ -976,6 +981,7 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
       OR: [
         { drugName: { contains: search, mode: 'insensitive' } },
         { genericName: { contains: search, mode: 'insensitive' } },
+        ...(nickMap.size ? [{ id: { in: [...nickMap.keys()] } }] : []),
       ],
     },
     select: {
@@ -1006,11 +1012,15 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
     for (const g of grouped) stockByDrug.set(g.drugId, g._sum.quantityInStock ?? 0);
   }
 
-  const formularyResults = formulary.map((f) => ({
-    ...f,
-    source: 'formulary' as const,
-    availableStock: stockByDrug.get(f.id) ?? 0,
-  }));
+  const formularyResults = formulary
+    .map((f) => ({
+      ...f,
+      source: 'formulary' as const,
+      availableStock: stockByDrug.get(f.id) ?? 0,
+      matchedNickname: nickMap.get(f.id) ?? null,
+    }))
+    // Nickname matches first so the linked drug surfaces at the top.
+    .sort((a, b) => Number(!!b.matchedNickname) - Number(!!a.matchedNickname));
 
   // 2. Fill the remaining slots with platform-catalog matches the hospital has
   //    NOT yet imported, so a doctor can still pick (and later stock) a drug

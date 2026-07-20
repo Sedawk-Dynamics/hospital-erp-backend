@@ -20,6 +20,7 @@ import {
   MATCH_BLOCK_THRESHOLD,
 } from './pharmacy.matching';
 import { parseGs1, makeInternalBarcode, isInternalBarcode, gtinVariants } from './pharmacy.barcode';
+import { resolveNicknameMatches } from './pharmacy.nicknames';
 import type {
   CreateFormularyInput,
   UpdateFormularyInput,
@@ -1365,10 +1366,16 @@ export async function getTenantCatalog(tenantId: string, query: any) {
   return { items, total, page, limit };
 }
 
-export async function getFormulary(tenantId: string, query: GetFormularyQuery) {
+export async function getFormulary(tenantId: string, query: GetFormularyQuery, userId?: string) {
   const { skip, take, page, limit } = getPaginationParams(query);
 
   const where: any = { tenantId };
+
+  // Personal nickname match: if the searcher has a nickname for a drug that
+  // matches this term, surface the linked drug even when its NAME doesn't match.
+  const nickMap = query.search
+    ? await resolveNicknameMatches(tenantId, userId, query.search)
+    : new Map<string, string>();
 
   if (query.dosageForm) where.dosageForm = query.dosageForm;
   if (query.isActive !== undefined) where.isActive = query.isActive;
@@ -1393,6 +1400,7 @@ export async function getFormulary(tenantId: string, query: GetFormularyQuery) {
       { drugName: { contains: query.search, mode: 'insensitive' } },
       { genericName: { contains: query.search, mode: 'insensitive' } },
       { manufacturer: { contains: query.search, mode: 'insensitive' } },
+      ...(nickMap.size ? [{ id: { in: [...nickMap.keys()] } }] : []),
     ];
   }
 
@@ -1429,8 +1437,12 @@ export async function getFormulary(tenantId: string, query: GetFormularyQuery) {
       batchCount: drugBatches.length,
       inStock: totalStock > 0,
       nearestExpiry,
+      // The pharmacist's own nickname that matched this drug (null otherwise).
+      matchedNickname: nickMap.get(it.id) ?? null,
     };
   });
+  // Float nickname matches to the top so typing a nickname surfaces its drug first.
+  if (nickMap.size) shaped.sort((a, b) => Number(!!b.matchedNickname) - Number(!!a.matchedNickname));
 
   return { items: shaped, total, page, limit };
 }

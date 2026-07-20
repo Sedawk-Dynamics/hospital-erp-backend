@@ -4,9 +4,51 @@ import { sendResponse, sendPaginatedResponse } from '../../shared/apiResponse';
 import { AppError } from '../../shared/appError';
 import { deleteFile } from '../../services/upload.service';
 import * as pharmacyService from './pharmacy.service';
+import * as nicknamesService from './pharmacy.nicknames';
 import { parseInvoiceFile } from './pharmacy.ocr';
 import { assertFeatureEnabled } from '../ai/ai.config.service';
 import { getPharmacyDetailedReport as getDetailedReport } from './pharmacy.detailed-report.service';
+
+// ============================================================
+// Personal medicine nicknames (scoped to the acting user)
+// ============================================================
+export async function listNicknames(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await nicknamesService.listNicknames(req.user!.tenantId, req.user!.userId);
+    sendResponse({ res, message: 'Nicknames', data });
+  } catch (err) {
+    next(err);
+  }
+}
+export async function createNickname(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await nicknamesService.createNickname(req.user!.tenantId, req.user!.userId, req.body);
+    sendResponse({ res, statusCode: 201, message: 'Nickname added', data });
+  } catch (err) {
+    next(err);
+  }
+}
+export async function updateNickname(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await nicknamesService.updateNickname(
+      req.user!.tenantId,
+      req.user!.userId,
+      req.params.id as string,
+      req.body,
+    );
+    sendResponse({ res, message: 'Nickname updated', data });
+  } catch (err) {
+    next(err);
+  }
+}
+export async function deleteNickname(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await nicknamesService.deleteNickname(req.user!.tenantId, req.user!.userId, req.params.id as string);
+    sendResponse({ res, message: 'Nickname removed', data });
+  } catch (err) {
+    next(err);
+  }
+}
 
 // ============================================================
 // Formulary
@@ -734,6 +776,7 @@ export async function getFormulary(
     const { items, total, page, limit } = await pharmacyService.getFormulary(
       tenantId,
       req.query as any,
+      req.user!.userId,
     );
     sendPaginatedResponse(res, items, total, page, limit, 'Formulary items retrieved');
   } catch (err) {

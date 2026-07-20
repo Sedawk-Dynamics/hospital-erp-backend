@@ -308,7 +308,7 @@ export async function searchFormulary(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const drugs = await prescriptionsService.searchFormulary(tenantId, req.query as any);
+    const drugs = await prescriptionsService.searchFormulary(tenantId, req.query as any, req.user!.userId);
     sendResponse({
       res,
       message: 'Formulary search results',
