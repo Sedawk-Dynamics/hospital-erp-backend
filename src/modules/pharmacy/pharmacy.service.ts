@@ -5,6 +5,7 @@ import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
 import { isEmergencyMrn } from '../../shared/emergency';
 import { resolvePackSize, inferLooseUnitLabel } from '../drug-master/drug-master.dataset';
+import { resolveHsnGst, getHsnGstRows, matchHsnGst } from '../drug-master/drug-master.service';
 import { getInventorySettingsSafe } from '../inventory/inventory.settings.service';
 import { notifyInventoryRecipients, hasOpenInventoryAlert } from '../inventory/inventory.notify';
 import {
@@ -898,6 +899,10 @@ export async function commitInward(
     message?: string;
   }> = [];
 
+  // Preload the HSN → GST tax master once so each medicine line can auto-fill a
+  // blank GST from its HSN code (longest-prefix match) with no query per line.
+  const hsnRows = await getHsnGstRows();
+
   for (let i = 0; i < data.lines.length; i++) {
     const line = data.lines[i];
     try {
@@ -965,6 +970,11 @@ export async function commitInward(
       let drugId: string;
       let drugName: string;
 
+      // In India GST is decided by the HSN code, so a line that carries an HSN
+      // but no explicit GST auto-fills its rate from the HSN → GST tax master.
+      // Feeds both the drug-level tax (formulary) and the batch's GST.
+      const lineGst = line.gstPercent ?? matchHsnGst(line.hsnCode, hsnRows)?.gstRate;
+
       if (line.action === 'map') {
         // Reuse an existing formulary row — this is what keeps the 200 tablets
         // under ONE entry instead of splitting into two 100s.
@@ -991,7 +1001,7 @@ export async function commitInward(
           packSize: line.packSize,
           looseUnitLabel: line.looseUnitLabel,
           minStock: line.minStock,
-          taxPercent: line.gstPercent,
+          taxPercent: lineGst,
           // Carry the invoice's GTIN / HSN / manufacturer code onto the new drug
           // so subsequent imports resolve it via GTIN (Product Resolution Engine).
           gtin: line.gtin ?? undefined,
@@ -1029,7 +1039,7 @@ export async function commitInward(
           purchasePrice: line.purchasePrice,
           // Per-line discount combined with the apportioned total-bill discount.
           purchaseDiscountPercent: effectiveDiscount(line.purchaseDiscountPercent),
-          gstPercent: line.gstPercent,
+          gstPercent: lineGst,
           sellingPrice: line.sellingPrice,
           supplierId: line.supplierId ?? data.supplierId,
           invoiceNumber: line.invoiceNumber ?? data.invoiceNumber,
@@ -1600,6 +1610,15 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
     throw AppError.notFound('Drug not found in formulary');
   }
 
+  // Auto-apply GST from the drug's HSN code when the caller didn't specify one.
+  // In India the rate is decided by the HSN, so a blank GST at stock-in resolves
+  // from the HSN → GST tax master (longest-prefix match).
+  let gstPercent = data.gstPercent;
+  if (gstPercent == null && drug.hsnCode) {
+    const hit = await resolveHsnGst(drug.hsnCode);
+    if (hit) gstPercent = hit.gstRate;
+  }
+
   // Validate supplier if provided
   if (data.supplierId) {
     const supplier = await prisma.supplier.findFirst({
@@ -1642,7 +1661,7 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
         mrp: data.mrp ?? existingBatch.mrp,
         purchasePrice: data.purchasePrice ?? existingBatch.purchasePrice,
         purchaseDiscountPercent: data.purchaseDiscountPercent ?? existingBatch.purchaseDiscountPercent,
-        gstPercent: data.gstPercent ?? existingBatch.gstPercent,
+        gstPercent: gstPercent ?? existingBatch.gstPercent,
         sellingPrice: data.sellingPrice ?? existingBatch.sellingPrice,
         invoiceNumber: (data as any).invoiceNumber ?? existingBatch.invoiceNumber,
         invoiceDate: (data as any).invoiceDate ? new Date((data as any).invoiceDate) : existingBatch.invoiceDate,
@@ -1683,7 +1702,7 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
       mrp: data.mrp,
       purchasePrice: data.purchasePrice,
       purchaseDiscountPercent: data.purchaseDiscountPercent,
-      gstPercent: data.gstPercent,
+      gstPercent,
       freeQuantity: freeQty,
       sellingPrice: data.sellingPrice,
       invoiceNumber: (data as any).invoiceNumber ?? null,

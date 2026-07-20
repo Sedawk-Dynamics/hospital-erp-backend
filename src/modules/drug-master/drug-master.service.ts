@@ -231,3 +231,63 @@ export async function deleteDrugMaster(roles: string[], id: string) {
   logger.info({ drugMasterId: id }, 'Drug master entry deleted');
   return { id };
 }
+
+// ─────────────────────────────────────────────────────────────
+// HSN → GST tax reference (platform-wide, shared by all tenants)
+// ─────────────────────────────────────────────────────────────
+
+/** Digits only — "3004.90.99" / "3004 9099" all normalise identically. */
+export function normalizeHsn(code: string | null | undefined): string {
+  return (code ?? '').replace(/\D/g, '');
+}
+
+export interface HsnGstMatch {
+  hsnCode: string; // the (normalised) code that was looked up
+  matchedCode: string; // the reference row that matched (may be a shorter heading)
+  gstRate: number;
+  description: string | null;
+}
+
+type HsnRow = { hsnCode: string; gstRate: unknown; description: string | null };
+
+/** Full active reference — small table, safe to load and match in-memory. */
+export async function getHsnGstRows(): Promise<HsnRow[]> {
+  return prisma.hsnGstRate.findMany({
+    where: { isActive: true },
+    select: { hsnCode: true, gstRate: true, description: true },
+  });
+}
+
+/**
+ * Longest-prefix match: an 8-digit tariff item (e.g. ORS 30049010 → nil) wins
+ * over its 4-digit chapter heading (3004 → 5%). Pure, so the inward loop can
+ * match many lines against one preloaded row set. Returns null when no seeded
+ * row is a prefix of the input.
+ */
+export function matchHsnGst(code: string | null | undefined, rows: HsnRow[]): HsnGstMatch | null {
+  const input = normalizeHsn(code);
+  if (!input) return null;
+  let best: HsnRow | null = null;
+  for (const r of rows) {
+    if (input === r.hsnCode || input.startsWith(r.hsnCode)) {
+      if (!best || r.hsnCode.length > best.hsnCode.length) best = r;
+    }
+  }
+  if (!best) return null;
+  return { hsnCode: input, matchedCode: best.hsnCode, gstRate: Number(best.gstRate), description: best.description };
+}
+
+/** Convenience wrapper — one lookup, its own query. */
+export async function resolveHsnGst(code: string | null | undefined): Promise<HsnGstMatch | null> {
+  return matchHsnGst(code, await getHsnGstRows());
+}
+
+/** List for the reference UI / frontend cache (rates as numbers). */
+export async function listHsnGstRates() {
+  const rows = await prisma.hsnGstRate.findMany({
+    where: { isActive: true },
+    orderBy: { hsnCode: 'asc' },
+    select: { id: true, hsnCode: true, description: true, gstRate: true, category: true },
+  });
+  return rows.map((r) => ({ ...r, gstRate: Number(r.gstRate) }));
+}

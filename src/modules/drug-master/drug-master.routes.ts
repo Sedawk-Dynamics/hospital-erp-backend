@@ -30,6 +30,12 @@ drugMasterRoutes.get(
   controller.searchDrugMaster,
 );
 
+// --- HSN → GST tax reference (any authenticated pharmacy/inventory user) ---
+// Non-sensitive platform reference data (like the catalog itself). Declared
+// before '/:id' so these literals aren't captured as an :id.
+drugMasterRoutes.get('/hsn', authenticate, controller.listHsnGstRates);
+drugMasterRoutes.get('/hsn/lookup', authenticate, controller.lookupHsnGst);
+
 // --- Super-admin catalog refresh (upsert against a provider / CSV snapshot) ---
 // Declared before '/:id' so these literals aren't captured as an :id.
 drugMasterRoutes.get(

@@ -160,3 +160,35 @@ export async function refreshStatus(
     next(err);
   }
 }
+
+// ── HSN → GST tax reference (any authenticated pharmacy/inventory user) ──
+
+// The full reference, so the stock-inward UI can cache it and auto-fill GST
+// locally without a round trip per keystroke.
+export async function listHsnGstRates(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    sendResponse({ res, message: 'HSN → GST reference', data: await service.listHsnGstRates() });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Resolve one HSN code → GST rate (longest-prefix match). Returns null match
+// (not a 404) so the caller can fall back to manual entry gracefully.
+export async function lookupHsnGst(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const code = String(req.query.code ?? '');
+    const match = await service.resolveHsnGst(code);
+    sendResponse({ res, message: 'HSN → GST lookup', data: match });
+  } catch (err) {
+    next(err);
+  }
+}
