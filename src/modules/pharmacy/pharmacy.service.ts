@@ -989,6 +989,15 @@ export async function commitInward(
         drugId = existing.id;
         drugName = existing.drugName;
         mappedDrugs++;
+        // Persist any GTIN / HSN / manufacturer code this receiving line carries
+        // onto the existing drug (fills only empty fields), so a barcode entered
+        // while restocking a known drug makes future scans + GST auto-fill resolve
+        // it instantly. Best-effort — never blocks the inward.
+        await backfillFormularyIdentity(tenantId, existing.id, {
+          gtin: line.gtin,
+          hsnCode: line.hsnCode,
+          manufacturerCode: line.manufacturerCode,
+        });
       } else {
         // Genuinely new drug — create it (force past the duplicate guard since the
         // user reviewed the suggestions and chose "create new").
