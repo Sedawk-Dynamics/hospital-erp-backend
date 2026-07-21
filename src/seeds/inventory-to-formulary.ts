@@ -24,6 +24,8 @@
  */
 
 import { PrismaClient } from '@prisma/client';
+import { randomUUID } from 'crypto';
+import { makeInternalBarcode } from '../modules/pharmacy/pharmacy.barcode';
 
 let prisma!: PrismaClient;
 
@@ -87,8 +89,10 @@ async function main() {
 
     // Carry opening stock over as one batch so the quantity is actually sellable.
     if (it.currentStock > 0) {
+      const batchId = randomUUID();
       await prisma.drugBatch.create({
         data: {
+          id: batchId,
           tenantId: it.tenantId,
           drugId: drug.id,
           batchNumber: 'OPENING',
@@ -97,6 +101,8 @@ async function main() {
           quantityInStock: it.currentStock,
           purchasePrice: it.costPerUnit,
           sellingPrice: it.sellingPricePerUnit,
+          // Migrated stock sits on a shelf like anything else — give it a label.
+          barcode: makeInternalBarcode(batchId),
         },
       });
       batched += 1;

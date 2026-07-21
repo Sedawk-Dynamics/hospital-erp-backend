@@ -188,6 +188,87 @@ export function isInternalBarcode(code: string): boolean {
   return /^PHB[0-9A-F]{6,}$/.test(code.trim());
 }
 
+// ── Printed label payloads ──────────────────────────────────
+// A label carries TWO symbols, which is what pharmacy label software does:
+//
+//  • Code-128 — the short internal key (PHB…). Reads on any scanner, including
+//    the cheap 1D lasers still on most counters. It is a pointer: everything
+//    about the batch is resolved from the record, so nothing printed can go
+//    stale.
+//  • DataMatrix — carries product + batch + expiry so the label self-describes
+//    without a lookup. GS1 DataMatrix is the healthcare standard for exactly
+//    this (small footprint, Reed-Solomon error correction).
+//
+// Storage location is deliberately in NEITHER symbol — it is the one field that
+// changes when stock moves, so an encoded copy would start lying. It is printed
+// as text and re-read from the record on every scan.
+
+/** A GS1 date (YYMMDD) from an ISO date or Date. */
+function toYymmdd(d: Date | string): string {
+  const dt = typeof d === 'string' ? new Date(d) : d;
+  const yy = String(dt.getUTCFullYear() % 100).padStart(2, '0');
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getUTCDate()).padStart(2, '0');
+  return `${yy}${mm}${dd}`;
+}
+
+export interface LabelPayload {
+  /** Code-128 content — the internal key. */
+  code128: string;
+  /** DataMatrix content. */
+  dataMatrix: string;
+  /**
+   * bwip-js symbology for the 2D symbol. A real GS1 GTIN earns a true
+   * `gs1datamatrix` with AI elements; without one we must NOT fabricate an AI 01
+   * (a GTIN we do not own would collide with somebody's real product), so the
+   * payload is our own delimited internal form in a plain `datamatrix`.
+   */
+  dataMatrixFormat: 'gs1datamatrix' | 'datamatrix';
+}
+
+export function buildLabelPayload(input: {
+  barcode: string;
+  batchNumber: string;
+  expiryDate: Date | string;
+  gtin?: string | null;
+}): LabelPayload {
+  const code128 = input.barcode;
+  const expiry = toYymmdd(input.expiryDate);
+  const gtin = (input.gtin ?? '').replace(/\D/g, '');
+
+  // Only a GTIN that passes its mod-10 check digit earns a real GS1 symbol. A
+  // mistyped or synthetic GTIN would produce an element string that GS1 encoders
+  // reject outright — so the label would come out with a hole in it. Falling
+  // back to the internal form always yields something scannable.
+  if ((gtin.length === 13 || gtin.length === 14) && isValidGtin(gtin)) {
+    // Proper GS1 element string, bracket notation (bwip-js expands the AIs).
+    const gtin14 = gtin.padStart(14, '0');
+    return {
+      code128,
+      dataMatrix: `(01)${gtin14}(10)${input.batchNumber}(17)${expiry}`,
+      dataMatrixFormat: 'gs1datamatrix',
+    };
+  }
+
+  // Internal form: key | batch | expiry. Pipe-delimited so `resolveScan` can
+  // split it and fall back to the key, which it already knows how to resolve.
+  return {
+    code128,
+    dataMatrix: `${code128}|${input.batchNumber}|${expiry}`,
+    dataMatrixFormat: 'datamatrix',
+  };
+}
+
+/**
+ * The leading internal key from a scanned string. Our DataMatrix payload is
+ * `PHB…|batch|expiry`, so a 2D scan of our own label still resolves through the
+ * same path as a 1D scan of the Code-128 beside it.
+ */
+export function internalKeyFromScan(code: string): string | null {
+  const first = (code ?? '').trim().split('|')[0]?.trim() ?? '';
+  return isInternalBarcode(first) ? first : null;
+}
+
 /**
  * Equivalent forms of a GTIN so a lookup matches regardless of how it was
  * stored. A GS1 DataMatrix / Digital Link always carries a 14-digit GTIN, while

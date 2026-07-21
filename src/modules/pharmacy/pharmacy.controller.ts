@@ -248,6 +248,25 @@ export async function attachBarcode(
 }
 
 // Barcode scan resolve (spec Section 2): one scan → product + batch + expiry + stock.
+// Label data for one or many batches — `?batchIds=a,b,c` so a whole inward run
+// can be printed as one sheet without a request per label.
+export async function getBatchLabels(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const ids = String(req.query.batchIds ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const data = await pharmacyService.getBatchLabels(req.user!.tenantId, ids);
+    sendResponse({ res, message: 'Batch labels retrieved', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function resolveScan(
   req: AuthenticatedRequest,
   res: Response,

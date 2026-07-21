@@ -199,6 +199,9 @@ export const createBatchSchema = z.object({
     barcode: z.string().max(64).optional(),
     // GS1 DataMatrix serial (AI 21) read from the 2D scan, kept for traceability.
     serialNumber: z.string().max(80).optional(),
+    // Where the batch physically sits — printed on the label as text, never
+    // encoded into it (see pharmacy.barcode.ts).
+    storageLocation: z.string().max(100).optional().nullable(),
     // Manual GRN Step 6: when a batch with this number already exists, set this
     // to fold the received quantity into the existing batch (Increase Quantity)
     // instead of erroring.
@@ -271,6 +274,8 @@ export const updateBatchSchema = z.object({
     isExpired: z.boolean().optional(),
     isRecalled: z.boolean().optional(),
     recallReason: z.string().optional().nullable(),
+    // Re-racking is routine, so location must be editable after receipt.
+    storageLocation: z.string().max(100).optional().nullable(),
   }),
   params: z.object({
     id: z.string().uuid('Invalid batch ID'),
@@ -418,6 +423,9 @@ const commitInwardLineSchema = inwardMatchLineSchema
     minStock: z.number().int().nonnegative().optional(),
     description: z.string().max(2000).optional(),
     barcode: z.string().max(64).optional(),
+    // Where this line is being put away — captured at inward so the label can
+    // be printed with a shelf position straight off the receiving bench.
+    storageLocation: z.string().max(100).optional(),
     // Batch / stock-in (mirrors createBatchSchema). Batch + expiry are required
     // only when actually receiving stock for a medicine (qty > 0); see refine.
     batchNumber: z.string().max(100).optional(),

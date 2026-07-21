@@ -19,7 +19,7 @@ import {
   MATCH_SUGGEST_THRESHOLD,
   MATCH_BLOCK_THRESHOLD,
 } from './pharmacy.matching';
-import { parseGs1, makeInternalBarcode, isInternalBarcode, gtinVariants } from './pharmacy.barcode';
+import { parseGs1, makeInternalBarcode, isInternalBarcode, internalKeyFromScan, buildLabelPayload, gtinVariants } from './pharmacy.barcode';
 import { resolveNicknameMatches, getNicknamesForDrugs } from './pharmacy.nicknames';
 import type {
   CreateFormularyInput,
@@ -1012,6 +1012,7 @@ export async function commitInward(
           // Scanned pack barcode carries through; absent barcode is minted
           // internally by createBatch.
           barcode: line.barcode,
+          storageLocation: line.storageLocation,
           addToExisting: line.addToExisting ?? data.addToExisting,
         } as CreateBatchInput);
         batchId = batch.id;
@@ -1592,13 +1593,82 @@ export async function deleteFormularyItem(tenantId: string, id: string) {
 // Mirrors the OPENING batch the legacy-inventory migration creates.
 const NO_EXPIRY = new Date('2099-12-31');
 
+/**
+ * Everything a printed shelf label needs, for one or many batches.
+ *
+ * Mints a barcode for any batch still missing one (older rows, and the two
+ * creation paths that used to skip it) so "Print label" always yields a
+ * scannable code rather than a blank — a label with no barcode is worse than no
+ * label, because it looks done.
+ */
+export async function getBatchLabels(tenantId: string, batchIds: string[]) {
+  const batches = await prisma.drugBatch.findMany({
+    where: { tenantId, id: { in: batchIds } },
+    select: {
+      id: true, batchNumber: true, expiryDate: true, mrp: true, sellingPrice: true,
+      barcode: true, storageLocation: true,
+      drug: {
+        select: {
+          id: true, drugName: true, genericName: true, strength: true,
+          dosageForm: true, manufacturer: true, gtin: true, category: true,
+        },
+      },
+    },
+  });
+  if (!batches.length) throw AppError.notFound('No batches found');
+
+  const missing = batches.filter((b) => !b.barcode);
+  if (missing.length) {
+    await Promise.all(
+      missing.map((b) =>
+        prisma.drugBatch.update({
+          where: { id: b.id },
+          data: { barcode: makeInternalBarcode(b.id) },
+        }),
+      ),
+    );
+  }
+
+  return batches.map((b) => {
+    const barcode = b.barcode ?? makeInternalBarcode(b.id);
+    const payload = buildLabelPayload({
+      barcode,
+      batchNumber: b.batchNumber,
+      expiryDate: b.expiryDate,
+      gtin: b.drug.gtin,
+    });
+    return {
+      batchId: b.id,
+      drugName: b.drug.drugName,
+      genericName: b.drug.genericName,
+      strength: b.drug.strength,
+      dosageForm: b.drug.dosageForm,
+      manufacturer: b.drug.manufacturer,
+      category: b.drug.category,
+      batchNumber: b.batchNumber,
+      expiryDate: b.expiryDate,
+      mrp: b.mrp != null ? Number(b.mrp) : null,
+      sellingPrice: b.sellingPrice != null ? Number(b.sellingPrice) : null,
+      storageLocation: b.storageLocation,
+      ...payload,
+    };
+  });
+}
+
 export async function createOpeningBatch(
   tenantId: string,
   drugId: string,
-  opts: { quantity: number; purchasePrice?: number | null; sellingPrice?: number | null },
+  opts: {
+    quantity: number;
+    purchasePrice?: number | null;
+    sellingPrice?: number | null;
+    storageLocation?: string | null;
+  },
 ) {
+  const batchId = randomUUID();
   return prisma.drugBatch.create({
     data: {
+      id: batchId,
       tenantId,
       drugId,
       batchNumber: 'OPENING',
@@ -1607,6 +1677,9 @@ export async function createOpeningBatch(
       quantityInStock: opts.quantity,
       purchasePrice: opts.purchasePrice ?? undefined,
       sellingPrice: opts.sellingPrice ?? undefined,
+      storageLocation: opts.storageLocation ?? undefined,
+      // Opening stock is stock — it needs a scannable label like any other batch.
+      barcode: makeInternalBarcode(batchId),
     },
   });
 }
@@ -1722,6 +1795,7 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
       quantityReceived: data.quantityReceived,
       quantityInStock: data.quantityReceived,
       serialNumber: (data as any).serialNumber ?? null,
+      storageLocation: ((data as any).storageLocation as string | undefined)?.trim() || null,
       barcode: ((data as any).barcode as string | undefined)?.trim() || makeInternalBarcode(batchId),
     },
     include: {
@@ -1859,6 +1933,9 @@ export async function updateBatch(
 
   const updateData: any = {};
   if (data.batchNumber !== undefined) updateData.batchNumber = data.batchNumber;
+  if ((data as any).storageLocation !== undefined) {
+    updateData.storageLocation = (data as any).storageLocation || null;
+  }
   if (data.manufacturingDate !== undefined) {
     updateData.manufacturingDate = data.manufacturingDate ? new Date(data.manufacturingDate) : null;
   }
@@ -5083,10 +5160,13 @@ export async function resolveScan(tenantId: string, code: string) {
     });
   }
 
-  // 2. Internal/known batch barcode → batch directly (then its drug).
-  if (!drug && (isInternalBarcode(raw) || !gs1)) {
+  // 2. Internal/known batch barcode → batch directly (then its drug). Accepts
+  //    both symbols on our own label: the Code-128 (the bare key) and the
+  //    DataMatrix beside it (`KEY|batch|expiry`), which reduces to the same key.
+  const internalKey = internalKeyFromScan(raw);
+  if (!drug && (internalKey || !gs1)) {
     batch = await prisma.drugBatch.findFirst({
-      where: { tenantId, barcode: raw },
+      where: { tenantId, barcode: internalKey ?? raw },
       include: { drug: { select: drugSelect } },
     });
     if (batch) drug = batch.drug;
@@ -5149,6 +5229,9 @@ export async function resolveScan(tenantId: string, code: string) {
           mrp: batch.mrp != null ? Number(batch.mrp) : null,
           quantityInStock: batch.quantityInStock,
           barcode: batch.barcode ?? null,
+          // Read live, never from the scanned code — so a picker is told where
+          // the stock is NOW, even if the label was printed before it moved.
+          storageLocation: batch.storageLocation ?? null,
         }
       : null,
     totalStock: stock._sum.quantityInStock ?? 0,
@@ -5429,8 +5512,10 @@ export async function processReturn(
               where: { id: drugReturn.drugId },
               select: { price: true },
             });
+            const restockId = randomUUID();
             const created = await tx.drugBatch.create({
               data: {
+                id: restockId,
                 tenantId,
                 drugId: drugReturn.drugId,
                 batchNumber: drugReturn.batchNumber,
@@ -5438,6 +5523,8 @@ export async function processReturn(
                 sellingPrice: drug?.price ?? null,
                 quantityReceived: 0,
                 quantityInStock: 0,
+                // Returned stock goes back on the shelf, so it needs a label too.
+                barcode: makeInternalBarcode(restockId),
               },
               select: { id: true },
             });

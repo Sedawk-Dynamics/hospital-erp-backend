@@ -108,6 +108,10 @@ pharmacyRoutes.get('/batches', authenticate, requirePermission('pharmacy', 'read
 pharmacyRoutes.get('/batches/expiring', authenticate, requirePermission('pharmacy', 'read'), validate(getExpiringBatchesQuerySchema), controller.getExpiringBatches);
 // G4: stock discrepancy report (manual count corrections). Before '/batches/:id'.
 pharmacyRoutes.get('/batches/adjustments', authenticate, requirePermission('pharmacy', 'read'), validate(getStockAdjustmentsQuerySchema), controller.getStockAdjustments);
+// Printable shelf-label data for one or many batches (?batchIds=a,b,c) — the
+// Code-128 + DataMatrix payloads plus the human-readable text. Literal subpath,
+// so it must sit before '/batches/:id' or it is captured as id='labels'.
+pharmacyRoutes.get('/batches/labels', authenticate, requirePermission('pharmacy', 'read'), controller.getBatchLabels);
 pharmacyRoutes.get('/batches/:id', authenticate, requirePermission('pharmacy', 'read'), validate(batchIdParamSchema), controller.getBatchById);
 pharmacyRoutes.put('/batches/:id', authenticate, requirePermission('pharmacy', 'update'), validate(updateBatchSchema), controller.updateBatch);
 // G4: deliberate stock-count correction (reason-stamped + audited).

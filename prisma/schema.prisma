@@ -4355,6 +4355,12 @@ model DrugBatch {
   barcode                 String?   @map("barcode") @db.VarChar(64)
   // GS1 DataMatrix serial (AI 21) captured at receipt for track-and-trace.
   serialNumber            String?   @map("serial_number") @db.VarChar(80)
+  // Where this batch physically sits — "Rack A3 / Shelf 2", "Cold room".
+  // Deliberately NOT encoded into the printed barcode: it is the one label field
+  // that changes (ward transfers, re-racking), so an encoded copy would start
+  // lying the moment stock moves. Printed as text and resolved live on scan, so
+  // a picker is always told where the stock actually is.
+  storageLocation         String?   @map("storage_location") @db.VarChar(100)
   createdAt               DateTime  @default(now()) @map("created_at")
   updatedAt               DateTime  @default(now()) @updatedAt @map("updated_at")
 
