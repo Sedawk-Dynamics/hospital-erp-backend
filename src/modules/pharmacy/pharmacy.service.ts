@@ -20,7 +20,7 @@ import {
   MATCH_BLOCK_THRESHOLD,
 } from './pharmacy.matching';
 import { parseGs1, makeInternalBarcode, isInternalBarcode, gtinVariants } from './pharmacy.barcode';
-import { resolveNicknameMatches } from './pharmacy.nicknames';
+import { resolveNicknameMatches, getNicknamesForDrugs } from './pharmacy.nicknames';
 import type {
   CreateFormularyInput,
   UpdateFormularyInput,
@@ -1366,6 +1366,11 @@ export async function getFormulary(tenantId: string, query: GetFormularyQuery, u
     prisma.drugFormulary.count({ where }),
   ]);
 
+  // Whatever the search matched on, surface the user's own nickname for each
+  // product so an existing shorthand is always visible — not only when it was
+  // the thing typed.
+  const nicknameByDrug = await getNicknamesForDrugs(tenantId, userId, items.map((i) => i.id));
+
   // Roll batch rows up into a stock summary so the formulary list can show
   // In Stock (qty) / Out of Stock without a second round-trip.
   const shaped = items.map((it) => {
@@ -1382,8 +1387,11 @@ export async function getFormulary(tenantId: string, query: GetFormularyQuery, u
       batchCount: drugBatches.length,
       inStock: totalStock > 0,
       nearestExpiry,
-      // The pharmacist's own nickname that matched this drug (null otherwise).
+      // The pharmacist's own nickname that MATCHED this search (null otherwise).
       matchedNickname: nickMap.get(it.id) ?? null,
+      // The pharmacist's nickname for this drug, if any — shown regardless of
+      // whether the search matched on it.
+      nickname: nicknameByDrug.get(it.id) ?? null,
     };
   });
   // Float nickname matches to the top so typing a nickname surfaces its drug first.

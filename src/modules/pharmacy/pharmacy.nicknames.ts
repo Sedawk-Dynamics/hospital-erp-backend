@@ -101,6 +101,26 @@ export async function deleteNickname(tenantId: string, userId: string, id: strin
 }
 
 /**
+ * The user's nickname for each of the given drugs → Map<drugId, nickname>. Used
+ * to show an existing nickname on a product even when the search matched on the
+ * real name (so the shorthand is always visible, not only when it was typed).
+ */
+export async function getNicknamesForDrugs(
+  tenantId: string,
+  userId: string | undefined,
+  drugIds: string[],
+): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  if (!userId || !drugIds.length) return map;
+  const rows = await prisma.drugNickname.findMany({
+    where: { tenantId, userId, drugFormularyId: { in: drugIds } },
+    select: { drugFormularyId: true, nickname: true },
+  });
+  for (const r of rows) if (!map.has(r.drugFormularyId)) map.set(r.drugFormularyId, r.nickname);
+  return map;
+}
+
+/**
  * Nicknames (for THIS user) whose text matches the search term → a map of the
  * linked formulary drugId to the nickname that matched. Used by the drug-search
  * endpoints to surface the linked medicine when its owner types the nickname.
