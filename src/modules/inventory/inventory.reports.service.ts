@@ -261,7 +261,7 @@ export async function getDepartmentConsumptionReport(tenantId: string, query: De
         drugBatch: {
           select: {
             purchasePrice: true,
-            drug: { select: { id: true, drugName: true, unitOfMeasurement: true } },
+            drug: { select: { id: true, drugName: true, unitOfMeasurement: true, category: true } },
           },
         },
       },
@@ -277,7 +277,9 @@ export async function getDepartmentConsumptionReport(tenantId: string, query: De
           itemId: drug.id,
           itemName: drug.drugName,
           itemCode: null,
-          category: 'medication',
+          // The formulary holds every type of stock now, so report the row's real
+          // category rather than assuming everything dispensed is a medicine.
+          category: drug.category,
           unit: drug.unitOfMeasurement ?? null,
           quantity: 0,
           totalCost: 0,

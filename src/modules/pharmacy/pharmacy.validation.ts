@@ -81,6 +81,10 @@ export const mergeFormularySchema = z.object({
 export const updateFormularySchema = z.object({
   body: z.object({
     drugName: z.string().min(1).max(255).optional(),
+    // What KIND of stock this is. Correctable after the fact: everything created
+    // before the formulary held non-medicines defaulted to 'drug', so a
+    // consumable or a piece of equipment must be re-typeable.
+    category: z.enum(['drug', 'consumable', 'surgical_supply', 'equipment', 'other']).optional(),
     genericName: z.string().max(255).optional().nullable(),
     manufacturer: z.string().max(255).optional().nullable(),
     dosageForm: z

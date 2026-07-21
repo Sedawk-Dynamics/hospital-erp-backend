@@ -1499,6 +1499,7 @@ export async function updateFormularyItem(
 
   const updateData: any = {};
   if (data.drugName !== undefined) updateData.drugName = data.drugName;
+  if ((data as any).category !== undefined) updateData.category = (data as any).category;
   if (data.genericName !== undefined) updateData.genericName = data.genericName;
   if (data.manufacturer !== undefined) updateData.manufacturer = data.manufacturer;
   if (data.dosageForm !== undefined) updateData.dosageForm = data.dosageForm;
