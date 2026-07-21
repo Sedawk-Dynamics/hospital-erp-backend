@@ -3,7 +3,19 @@ import { getPaginationParams } from '../../shared/pagination';
 
 // ============================================================
 // Stock Balance Report — daily or monthly snapshot of inflow / outflow / net
-// per item. We derive movement from StockTransaction rows in the date window.
+// per product.
+//
+// Stock lives in TWO systems: the legacy InventoryItem + StockTransaction pair,
+// and the formulary + batches that every type of stock now uses. Reading only
+// StockTransaction (as this once did) made the report almost empty — it showed
+// a handful of legacy rows while the real movement sat in batches, which reads
+// as "no stock" rather than "wrong report". So we normalise both into one
+// movement stream and roll that up.
+//
+// Drug-side flows covered: batch receipts (in), dispensing (out), processed
+// returns (in), expired batches (out). Manual batch adjustments live in the
+// audit log rather than a movement table, so they are counted for legacy items
+// only — noted in `adjustmentsCoverLegacyOnly` on the response.
 // ============================================================
 
 export interface StockBalanceQuery {
@@ -12,6 +24,18 @@ export interface StockBalanceQuery {
   groupBy?: 'day' | 'month';
   inventoryItemId?: string;
   category?: string;
+}
+
+// One normalised stock movement, whichever system it came from.
+interface Movement {
+  refId: string;
+  name: string;
+  code: string | null;
+  category: string;
+  unit: string | null;
+  date: Date;
+  kind: 'in' | 'out' | 'return' | 'expired' | 'adjustment';
+  qty: number;
 }
 
 export async function getStockBalanceReport(tenantId: string, query: StockBalanceQuery) {
@@ -24,22 +48,114 @@ export async function getStockBalanceReport(tenantId: string, query: StockBalanc
         return d;
       })();
 
-  const where: any = {
-    tenantId,
-    createdAt: { gte: fromDate, lte: toDate },
-  };
+  const window = { gte: fromDate, lte: toDate };
+
+  const where: any = { tenantId, createdAt: window };
   if (query.inventoryItemId) where.inventoryItemId = query.inventoryItemId;
   if (query.category) where.inventoryItem = { category: query.category };
 
-  const transactions = await prisma.stockTransaction.findMany({
-    where,
-    include: {
-      inventoryItem: {
-        select: { id: true, itemName: true, itemCode: true, category: true, currentStock: true, unitOfMeasurement: true },
-      },
-    },
-    orderBy: { createdAt: 'asc' },
+  // A drug filter reuses `inventoryItemId` as "the product id" — the caller has
+  // one id field and a formulary row is just as valid a product as a legacy item.
+  const drugId = query.inventoryItemId;
+  const drugWhere = query.category ? { category: query.category as any } : {};
+  // Dispenses and returns reach the product through their batch, so BOTH the
+  // product filter and the category filter have to be expressed there — filtering
+  // only by drugId would let every other category's outflow leak into a
+  // category-filtered report.
+  const batchDrugFilter =
+    drugId || query.category
+      ? {
+          drugBatch: {
+            ...(drugId ? { drugId } : {}),
+            ...(query.category ? { drug: drugWhere } : {}),
+          },
+        }
+      : {};
+  const drugSelect = {
+    id: true, drugName: true, category: true, hsnCode: true, looseUnitLabel: true,
+  } as const;
+
+  const [transactions, batches, dispenses, returns, expiredBatches, stockByDrug] =
+    await Promise.all([
+      prisma.stockTransaction.findMany({
+        where,
+        include: {
+          inventoryItem: {
+            select: { id: true, itemName: true, itemCode: true, category: true, currentStock: true, unitOfMeasurement: true },
+          },
+        },
+        orderBy: { createdAt: 'asc' },
+      }),
+      // Receipts — a batch row IS the inward movement.
+      prisma.drugBatch.findMany({
+        where: { tenantId, createdAt: window, ...(drugId ? { drugId } : {}), drug: drugWhere },
+        select: { createdAt: true, quantityReceived: true, drug: { select: drugSelect } },
+      }),
+      prisma.dispensingRecord.findMany({
+        where: { tenantId, dispensedAt: window, ...batchDrugFilter },
+        select: {
+          dispensedAt: true, quantityDispensed: true,
+          drugBatch: { select: { drug: { select: drugSelect } } },
+        },
+      }),
+      prisma.drugReturn.findMany({
+        where: { tenantId, status: 'processed', createdAt: window, drugBatchId: { not: null }, ...batchDrugFilter },
+        select: {
+          createdAt: true, quantity: true,
+          drugBatch: { select: { drug: { select: drugSelect } } },
+        },
+      }),
+      // Expiry is a write-off out of stock; date it by when it was flagged.
+      prisma.drugBatch.findMany({
+        where: { tenantId, isExpired: true, updatedAt: window, ...(drugId ? { drugId } : {}), drug: drugWhere },
+        select: { updatedAt: true, quantityInStock: true, drug: { select: drugSelect } },
+      }),
+      prisma.drugBatch.groupBy({
+        by: ['drugId'],
+        where: { tenantId, isExpired: false },
+        _sum: { quantityInStock: true },
+      }),
+    ]);
+
+  const stockFor = new Map(stockByDrug.map((g) => [g.drugId, g._sum.quantityInStock ?? 0]));
+  const fromDrug = (d: { id: string; drugName: string; category: string; hsnCode: string | null; looseUnitLabel: string | null }) => ({
+    refId: d.id, name: d.drugName, code: d.hsnCode, category: d.category, unit: d.looseUnitLabel,
   });
+
+  const movements: Movement[] = [
+    ...transactions.map((tx): Movement => ({
+      refId: tx.inventoryItem.id,
+      name: tx.inventoryItem.itemName,
+      code: tx.inventoryItem.itemCode,
+      category: tx.inventoryItem.category,
+      unit: tx.inventoryItem.unitOfMeasurement,
+      date: tx.createdAt,
+      kind:
+        tx.transactionType === 'stock_in' ? 'in'
+        : tx.transactionType === 'stock_out' ? 'out'
+        : tx.transactionType === 'return_stock' ? 'return'
+        : tx.transactionType === 'expired_removal' ? 'expired'
+        : 'adjustment',
+      qty: tx.quantity,
+    })),
+    ...batches.map((b): Movement => ({ ...fromDrug(b.drug), date: b.createdAt, kind: 'in', qty: b.quantityReceived })),
+    ...dispenses
+      .filter((d) => d.drugBatch?.drug)
+      .map((d): Movement => ({ ...fromDrug(d.drugBatch!.drug), date: d.dispensedAt, kind: 'out', qty: d.quantityDispensed })),
+    ...returns
+      .filter((r) => r.drugBatch?.drug)
+      .map((r): Movement => ({ ...fromDrug(r.drugBatch!.drug), date: r.createdAt, kind: 'return', qty: r.quantity })),
+    ...expiredBatches
+      .filter((b) => b.quantityInStock > 0)
+      .map((b): Movement => ({ ...fromDrug(b.drug), date: b.updatedAt, kind: 'expired', qty: b.quantityInStock })),
+  ].sort((a, b) => a.date.getTime() - b.date.getTime());
+
+  // Current on-hand per product: legacy items carry it on the row, formulary
+  // products derive it from their live (non-expired) batches.
+  const currentStockFor = (refId: string) =>
+    stockFor.get(refId) ??
+    transactions.find((t) => t.inventoryItem.id === refId)?.inventoryItem.currentStock ??
+    0;
 
   // Roll up per item × bucket
   const buckets = new Map<
@@ -64,16 +180,16 @@ export async function getStockBalanceReport(tenantId: string, query: StockBalanc
       ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
       : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
-  for (const tx of transactions) {
-    const bucket = bucketKey(tx.createdAt);
-    const key = `${tx.inventoryItemId}|${bucket}`;
+  for (const m of movements) {
+    const bucket = bucketKey(m.date);
+    const key = `${m.refId}|${bucket}`;
     let row = buckets.get(key);
     if (!row) {
       row = {
-        itemId: tx.inventoryItem.id,
-        itemName: tx.inventoryItem.itemName,
-        itemCode: tx.inventoryItem.itemCode,
-        category: tx.inventoryItem.category,
+        itemId: m.refId,
+        itemName: m.name,
+        itemCode: m.code,
+        category: m.category,
         bucket,
         stockIn: 0,
         stockOut: 0,
@@ -84,25 +200,25 @@ export async function getStockBalanceReport(tenantId: string, query: StockBalanc
       };
       buckets.set(key, row);
     }
-    switch (tx.transactionType) {
-      case 'stock_in':
-        row.stockIn += tx.quantity;
-        row.net += tx.quantity;
+    switch (m.kind) {
+      case 'in':
+        row.stockIn += m.qty;
+        row.net += m.qty;
         break;
-      case 'stock_out':
-        row.stockOut += tx.quantity;
-        row.net -= tx.quantity;
+      case 'out':
+        row.stockOut += m.qty;
+        row.net -= m.qty;
         break;
-      case 'return_stock':
-        row.returns += tx.quantity;
-        row.net += tx.quantity;
+      case 'return':
+        row.returns += m.qty;
+        row.net += m.qty;
         break;
-      case 'expired_removal':
-        row.expiredRemoval += tx.quantity;
-        row.net -= tx.quantity;
+      case 'expired':
+        row.expiredRemoval += m.qty;
+        row.net -= m.qty;
         break;
       case 'adjustment':
-        row.adjustments += tx.quantity;
+        row.adjustments += m.qty;
         break;
     }
   }
@@ -118,28 +234,28 @@ export async function getStockBalanceReport(tenantId: string, query: StockBalanc
     { itemId: string; itemName: string; itemCode: string | null; category: string; currentStock: number; totalIn: number; totalOut: number; net: number; unit: string | null }
   >();
 
-  for (const tx of transactions) {
-    let row = itemSummary.get(tx.inventoryItemId);
+  for (const m of movements) {
+    let row = itemSummary.get(m.refId);
     if (!row) {
       row = {
-        itemId: tx.inventoryItem.id,
-        itemName: tx.inventoryItem.itemName,
-        itemCode: tx.inventoryItem.itemCode,
-        category: tx.inventoryItem.category,
-        currentStock: tx.inventoryItem.currentStock,
-        unit: tx.inventoryItem.unitOfMeasurement,
+        itemId: m.refId,
+        itemName: m.name,
+        itemCode: m.code,
+        category: m.category,
+        currentStock: currentStockFor(m.refId),
+        unit: m.unit,
         totalIn: 0,
         totalOut: 0,
         net: 0,
       };
-      itemSummary.set(tx.inventoryItemId, row);
+      itemSummary.set(m.refId, row);
     }
-    if (tx.transactionType === 'stock_in' || tx.transactionType === 'return_stock') {
-      row.totalIn += tx.quantity;
-      row.net += tx.quantity;
-    } else if (tx.transactionType === 'stock_out' || tx.transactionType === 'expired_removal') {
-      row.totalOut += tx.quantity;
-      row.net -= tx.quantity;
+    if (m.kind === 'in' || m.kind === 'return') {
+      row.totalIn += m.qty;
+      row.net += m.qty;
+    } else if (m.kind === 'out' || m.kind === 'expired') {
+      row.totalOut += m.qty;
+      row.net -= m.qty;
     }
   }
 
@@ -155,6 +271,10 @@ export async function getStockBalanceReport(tenantId: string, query: StockBalanc
       returns: rows.reduce((s, r) => s + r.returns, 0),
       expiredRemoval: rows.reduce((s, r) => s + r.expiredRemoval, 0),
     },
+    // Manual batch adjustments are audit-log entries, not movement rows, so the
+    // adjustments column reflects legacy items only. Surfaced so the UI can say
+    // so rather than implying drug adjustments were nil.
+    adjustmentsCoverLegacyOnly: true,
   };
 }
 
@@ -498,7 +618,102 @@ export async function getExpiryWasteReport(tenantId: string, query: ExpiryWasteQ
     orderBy: { createdAt: 'desc' },
   });
 
-  const wasteValue = expiredRemovals.reduce((s, tx) => {
+  // 4. The same three things from the batch-tracked side, where nearly all stock
+  //    now lives. Expiry is first-class there — a DrugBatch carries its own
+  //    expiryDate, remaining quantity and cost — so no reconstruction from
+  //    movement rows is needed. Shaped to match the legacy rows above so the
+  //    report renders one combined list.
+  const drugFilter = query.inventoryItemId ? { drugId: query.inventoryItemId } : {};
+  const drugCols = {
+    id: true, drugName: true, hsnCode: true, looseUnitLabel: true, category: true,
+  } as const;
+
+  const [drugExpiring, drugExpired, drugReturns] = await Promise.all([
+    prisma.drugBatch.findMany({
+      where: {
+        tenantId, isExpired: false, quantityInStock: { gt: 0 },
+        expiryDate: { gte: today, lte: threshold }, ...drugFilter,
+      },
+      select: {
+        id: true, batchNumber: true, expiryDate: true, createdAt: true,
+        quantityReceived: true, quantityInStock: true, purchasePrice: true,
+        drug: { select: drugCols },
+      },
+      orderBy: { expiryDate: 'asc' },
+    }),
+    prisma.drugBatch.findMany({
+      where: { tenantId, isExpired: true, updatedAt: { gte: fromDate, lte: toDate }, ...drugFilter },
+      select: {
+        id: true, batchNumber: true, quantityInStock: true, updatedAt: true,
+        purchasePrice: true, drug: { select: drugCols },
+      },
+      orderBy: { updatedAt: 'desc' },
+    }),
+    prisma.drugReturn.findMany({
+      where: { tenantId, status: 'processed', createdAt: { gte: fromDate, lte: toDate } },
+      select: {
+        id: true, quantity: true, createdAt: true, batchNumber: true,
+        supplier: { select: { id: true, name: true } },
+        drug: { select: drugCols },
+        drugBatch: { select: { batchNumber: true, drug: { select: drugCols } } },
+      },
+      orderBy: { createdAt: 'desc' },
+    }),
+  ]);
+
+  const asItem = (d: { id: string; drugName: string; hsnCode: string | null; looseUnitLabel: string | null; category: string }) => ({
+    id: d.id, itemName: d.drugName, itemCode: d.hsnCode,
+    unitOfMeasurement: d.looseUnitLabel, category: d.category,
+  });
+
+  const allExpiring = [
+    ...expiringBatches.filter((b) => b.remainingQuantity > 0),
+    ...drugExpiring.map((b) => ({
+      transactionId: b.id,
+      item: asItem(b.drug),
+      batchNumber: b.batchNumber,
+      expiryDate: b.expiryDate,
+      receivedAt: b.createdAt,
+      receivedQuantity: b.quantityReceived,
+      remainingQuantity: b.quantityInStock,
+      unitCost: b.purchasePrice ? Number(b.purchasePrice) : 0,
+    })),
+  ].sort((a, b) => (a.expiryDate?.getTime() ?? 0) - (b.expiryDate?.getTime() ?? 0));
+
+  const allExpired = [
+    ...expiredRemovals,
+    ...drugExpired
+      .filter((b) => b.quantityInStock > 0)
+      .map((b) => ({
+        id: b.id,
+        inventoryItem: asItem(b.drug),
+        batchNumber: b.batchNumber,
+        quantity: b.quantityInStock,
+        createdAt: b.updatedAt,
+        // Expiry is flagged by the scheduled expiry job, not a person.
+        performer: null,
+        unitCost: b.purchasePrice,
+        totalCost: b.purchasePrice ? Number(b.purchasePrice) * b.quantityInStock : null,
+      })),
+  ];
+
+  const allReturns = [
+    ...returns,
+    ...drugReturns.map((r) => {
+      const drug = r.drugBatch?.drug ?? r.drug;
+      return {
+        id: r.id,
+        inventoryItem: drug ? asItem(drug) : null,
+        batchNumber: r.drugBatch?.batchNumber ?? r.batchNumber,
+        quantity: r.quantity,
+        supplier: r.supplier,
+        createdAt: r.createdAt,
+        performer: null,
+      };
+    }),
+  ];
+
+  const legacyWaste = expiredRemovals.reduce((s, tx) => {
     const cost = tx.totalCost
       ? Number(tx.totalCost)
       : tx.unitCost
@@ -508,21 +723,25 @@ export async function getExpiryWasteReport(tenantId: string, query: ExpiryWasteQ
           : 0;
     return s + cost;
   }, 0);
+  const drugWaste = drugExpired.reduce(
+    (s, b) => s + (b.purchasePrice ? Number(b.purchasePrice) * b.quantityInStock : 0),
+    0,
+  );
 
   return {
     fromDate: fromDate.toISOString(),
     toDate: toDate.toISOString(),
     windowMonths,
-    expiringBatches: expiringBatches.filter((b) => b.remainingQuantity > 0),
-    expiredRemovals,
-    returns,
+    expiringBatches: allExpiring,
+    expiredRemovals: allExpired,
+    returns: allReturns,
     summary: {
-      expiringCount: expiringBatches.filter((b) => b.remainingQuantity > 0).length,
-      expiredCount: expiredRemovals.length,
-      returnCount: returns.length,
-      wasteValue,
-      expiredQuantity: expiredRemovals.reduce((s, t) => s + t.quantity, 0),
-      returnQuantity: returns.reduce((s, t) => s + t.quantity, 0),
+      expiringCount: allExpiring.length,
+      expiredCount: allExpired.length,
+      returnCount: allReturns.length,
+      wasteValue: legacyWaste + drugWaste,
+      expiredQuantity: allExpired.reduce((s, t) => s + t.quantity, 0),
+      returnQuantity: allReturns.reduce((s, t) => s + t.quantity, 0),
     },
   };
 }
