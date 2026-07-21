@@ -143,6 +143,17 @@ export const createUnifiedStockSchema = z.object({
       drug: z
         .object({
           drugName: z.string().min(1).max(255),
+          // Type of stock. Every type is stocked as a formulary row with
+          // batches, so a consumable takes this same path — it just carries a
+          // different category. Defaults to medicine.
+          category: z
+            .enum(['drug', 'consumable', 'surgical_supply', 'equipment', 'other'])
+            .optional(),
+          // Opening stock, carried over as a single no-expiry OPENING batch so
+          // the quantity is actually sellable (formulary stock lives in batches).
+          openingStock: z.number().int().min(0).optional(),
+          costPerUnit: z.number().min(0).optional(),
+          description: z.string().max(2000).optional(),
           genericName: z.string().max(255).optional(),
           manufacturer: z.string().max(255).optional(),
           dosageForm: z

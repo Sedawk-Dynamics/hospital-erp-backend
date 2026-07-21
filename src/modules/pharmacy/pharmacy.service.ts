@@ -166,6 +166,7 @@ export async function findFormularyMatches(
     select: {
       id: true,
       drugName: true,
+      category: true,
       genericName: true,
       manufacturer: true,
       dosageForm: true,
@@ -515,7 +516,7 @@ export async function resolveInwardLine(
     const byGtin = await prisma.drugFormulary.findFirst({
       where: { tenantId, isActive: true, OR: [{ gtin: { in: variants } }, { casePackGtin: { in: variants } }] },
       select: {
-        id: true, drugName: true, genericName: true, manufacturer: true,
+        id: true, drugName: true, category: true, genericName: true, manufacturer: true,
         dosageForm: true, strength: true, packSize: true, price: true,
         gtin: true, casePackGtin: true, unitsPerCase: true,
       },
@@ -752,7 +753,7 @@ export async function resolveInwardScan(tenantId: string, code: string) {
     const f = await prisma.drugFormulary.findFirst({
       where: { tenantId, OR: [{ gtin: { in: variants } }, { casePackGtin: { in: variants } }] },
       select: {
-        id: true, drugName: true, genericName: true, manufacturer: true,
+        id: true, drugName: true, category: true, genericName: true, manufacturer: true,
         strength: true, dosageForm: true, packSize: true, hsnCode: true,
         gtin: true, casePackGtin: true, unitsPerCase: true,
       },
@@ -1451,6 +1452,7 @@ export async function getFormularyAlternatives(tenantId: string, id: string) {
     select: {
       id: true,
       drugName: true,
+      category: true,
       genericName: true,
       manufacturer: true,
       dosageForm: true,
@@ -1583,6 +1585,32 @@ export async function deleteFormularyItem(tenantId: string, id: string) {
 // Batches
 // ============================================================
 
+// Opening stock for a newly-created product → one no-expiry batch. Formulary
+// stock lives in batches (the sale engine always picks a batch, never a bare
+// product), so a quantity typed at creation has to land somewhere real or it
+// would show in the stock column while being impossible to dispense or bill.
+// Mirrors the OPENING batch the legacy-inventory migration creates.
+const NO_EXPIRY = new Date('2099-12-31');
+
+export async function createOpeningBatch(
+  tenantId: string,
+  drugId: string,
+  opts: { quantity: number; purchasePrice?: number | null; sellingPrice?: number | null },
+) {
+  return prisma.drugBatch.create({
+    data: {
+      tenantId,
+      drugId,
+      batchNumber: 'OPENING',
+      expiryDate: NO_EXPIRY,
+      quantityReceived: opts.quantity,
+      quantityInStock: opts.quantity,
+      purchasePrice: opts.purchasePrice ?? undefined,
+      sellingPrice: opts.sellingPrice ?? undefined,
+    },
+  });
+}
+
 export async function createBatch(tenantId: string, userId: string, roles: string[], data: CreateBatchInput) {
   assertPharmacyAdmin(roles, 'add stock batches');
   // Validate drug exists
@@ -1652,7 +1680,7 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
         supplierId: data.supplierId ?? existingBatch.supplierId,
       },
       include: {
-        drug: { select: { id: true, drugName: true, genericName: true } },
+        drug: { select: { id: true, drugName: true, category: true, genericName: true } },
         supplier: { select: { id: true, name: true } },
       },
     });
@@ -1697,7 +1725,7 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
       barcode: ((data as any).barcode as string | undefined)?.trim() || makeInternalBarcode(batchId),
     },
     include: {
-      drug: { select: { id: true, drugName: true, genericName: true } },
+      drug: { select: { id: true, drugName: true, category: true, genericName: true } },
       supplier: { select: { id: true, name: true } },
     },
   });
@@ -1792,7 +1820,7 @@ export async function getBatchById(tenantId: string, id: string) {
   const batch = await prisma.drugBatch.findFirst({
     where: { id, tenantId },
     include: {
-      drug: { select: { id: true, drugName: true, genericName: true, strength: true, dosageForm: true } },
+      drug: { select: { id: true, drugName: true, category: true, genericName: true, strength: true, dosageForm: true } },
       supplier: { select: { id: true, name: true } },
     },
   });
@@ -1854,7 +1882,7 @@ export async function updateBatch(
     where: { id },
     data: updateData,
     include: {
-      drug: { select: { id: true, drugName: true, genericName: true } },
+      drug: { select: { id: true, drugName: true, category: true, genericName: true } },
       supplier: { select: { id: true, name: true } },
     },
   });
@@ -1890,7 +1918,7 @@ export async function adjustBatchStock(
   assertPharmacyAdmin(roles, 'adjust stock counts');
   const batch = await prisma.drugBatch.findFirst({
     where: { id, tenantId },
-    include: { drug: { select: { id: true, drugName: true } } },
+    include: { drug: { select: { id: true, drugName: true, category: true } } },
   });
   if (!batch) throw AppError.notFound('Drug batch not found');
 
@@ -1905,7 +1933,7 @@ export async function adjustBatchStock(
     where: { id },
     data: { quantityInStock: target },
     include: {
-      drug: { select: { id: true, drugName: true } },
+      drug: { select: { id: true, drugName: true, category: true } },
       supplier: { select: { id: true, name: true } },
     },
   });
@@ -2019,7 +2047,7 @@ export async function reconcileStockTake(
   const batchIds = data.lines.map((l) => l.batchId);
   const batches = await prisma.drugBatch.findMany({
     where: { id: { in: batchIds }, tenantId },
-    include: { drug: { select: { drugName: true } } },
+    include: { drug: { select: { drugName: true, category: true } } },
   });
   const byId = new Map(batches.map((b) => [b.id, b]));
 
@@ -2178,7 +2206,7 @@ export async function getIpDispensedMedicines(
       id: true, quantityDispensed: true, saleUnit: true, unitPrice: true, lineTotal: true,
       isTto: true, dispensedAt: true, billId: true,
       patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
-      drugBatch: { select: { batchNumber: true, drug: { select: { drugName: true, dosageForm: true, looseUnitLabel: true } } } },
+      drugBatch: { select: { batchNumber: true, drug: { select: { drugName: true, category: true, dosageForm: true, looseUnitLabel: true } } } },
       dispenser: { select: { firstName: true, lastName: true } },
     },
     orderBy: { dispensedAt: 'desc' },
@@ -2252,7 +2280,7 @@ export async function getExpiringBatches(tenantId: string, query: GetExpiringBat
       skip,
       take,
       include: {
-        drug: { select: { id: true, drugName: true, genericName: true, strength: true } },
+        drug: { select: { id: true, drugName: true, category: true, genericName: true, strength: true } },
         supplier: { select: { id: true, name: true } },
       },
       orderBy: { expiryDate: 'asc' },
@@ -2381,7 +2409,7 @@ export async function autoLinkDispenseToBill(
         prescription: { select: { visitId: true } },
         drugBatch: {
           select: {
-            drug: { select: { drugName: true, price: true, isReimbursable: true } },
+            drug: { select: { drugName: true, category: true, price: true, isReimbursable: true } },
             sellingPrice: true,
             purchasePrice: true,
             batchNumber: true,
@@ -2544,7 +2572,7 @@ export async function createDispense(tenantId: string, userId: string, data: Cre
           select: {
             id: true,
             batchNumber: true,
-            drug: { select: { id: true, drugName: true } },
+            drug: { select: { id: true, drugName: true, category: true } },
           },
         },
       },
@@ -3304,7 +3332,7 @@ export async function getDispenseRecords(tenantId: string, query: GetDispenseQue
           select: {
             id: true,
             batchNumber: true,
-            drug: { select: { id: true, drugName: true, genericName: true } },
+            drug: { select: { id: true, drugName: true, category: true, genericName: true } },
           },
         },
         dispenser: { select: { id: true, firstName: true, lastName: true } },
@@ -3328,7 +3356,7 @@ export async function getDispenseById(tenantId: string, id: string) {
           id: true,
           batchNumber: true,
           expiryDate: true,
-          drug: { select: { id: true, drugName: true, genericName: true, strength: true, dosageForm: true } },
+          drug: { select: { id: true, drugName: true, category: true, genericName: true, strength: true, dosageForm: true } },
         },
       },
       dispenser: { select: { id: true, firstName: true, lastName: true } },
@@ -3369,7 +3397,7 @@ export async function verifyDispense(tenantId: string, id: string, verifiedBy: s
         select: {
           id: true,
           batchNumber: true,
-          drug: { select: { id: true, drugName: true } },
+          drug: { select: { id: true, drugName: true, category: true } },
         },
       },
       dispenser: { select: { id: true, firstName: true, lastName: true } },
@@ -3435,9 +3463,9 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
         status: 'pending',
       },
       include: {
-        drug: { select: { id: true, drugName: true } },
+        drug: { select: { id: true, drugName: true, category: true } },
         drugBatch: {
-          select: { id: true, batchNumber: true, drug: { select: { id: true, drugName: true } } },
+          select: { id: true, batchNumber: true, drug: { select: { id: true, drugName: true, category: true } } },
         },
       },
     });
@@ -3586,10 +3614,10 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
         select: {
           id: true,
           batchNumber: true,
-          drug: { select: { id: true, drugName: true } },
+          drug: { select: { id: true, drugName: true, category: true } },
         },
       },
-      drug: { select: { id: true, drugName: true } },
+      drug: { select: { id: true, drugName: true, category: true } },
       patient: { select: { id: true, firstName: true, lastName: true } },
       supplier: { select: { id: true, name: true } },
     },
@@ -3698,7 +3726,7 @@ export async function getWardStock(tenantId: string, wardId: string) {
   const batches = batchIds.length
     ? await prisma.drugBatch.findMany({
         where: { id: { in: batchIds } },
-        select: { id: true, batchNumber: true, expiryDate: true, sellingPrice: true, drug: { select: { id: true, drugName: true, looseUnitLabel: true } } },
+        select: { id: true, batchNumber: true, expiryDate: true, sellingPrice: true, drug: { select: { id: true, drugName: true, category: true, looseUnitLabel: true } } },
       })
     : [];
   const byId = new Map(batches.map((b) => [b.id, b]));
@@ -3739,7 +3767,7 @@ export async function getWardLedger(
   const patientIds = [...new Set(rows.map((r) => r.patientId).filter((x): x is string => !!x))];
   const [batches, patients] = await Promise.all([
     batchIds.length
-      ? prisma.drugBatch.findMany({ where: { id: { in: batchIds } }, select: { id: true, batchNumber: true, drug: { select: { drugName: true } } } })
+      ? prisma.drugBatch.findMany({ where: { id: { in: batchIds } }, select: { id: true, batchNumber: true, drug: { select: { drugName: true, category: true } } } })
       : Promise.resolve([]),
     patientIds.length
       ? prisma.patient.findMany({ where: { id: { in: patientIds } }, select: { id: true, mrn: true, firstName: true, lastName: true } })
@@ -3970,7 +3998,7 @@ export async function prePackHold(
       if (item.quantity <= 0) throw AppError.badRequest('Quantity must be positive');
       const batch = await tx.drugBatch.findFirst({
         where: { id: item.drugBatchId, tenantId },
-        include: { drug: { select: { drugName: true, price: true, taxPercent: true } } },
+        include: { drug: { select: { drugName: true, category: true, price: true, taxPercent: true } } },
       });
       if (!batch) throw AppError.notFound(`Drug batch ${item.drugBatchId} not found`);
       if (isBatchExpired(batch)) throw AppError.badRequest('Cannot pre-pack from an expired batch');
@@ -3998,7 +4026,7 @@ export async function prePackHold(
         notes: data.notes ?? null,
         items: { create: holdItems },
       },
-      include: { items: { include: { drug: { select: { drugName: true, strength: true } }, drugBatch: { select: { batchNumber: true } } } } },
+      include: { items: { include: { drug: { select: { drugName: true, category: true, strength: true } }, drugBatch: { select: { batchNumber: true } } } } },
     });
     logger.info({ tenantId, holdId: hold.id, items: holdItems.length }, 'Pharmacy stock pre-packed (held)');
     return hold;
@@ -4076,7 +4104,7 @@ export async function listStockHolds(tenantId: string, query: { status?: string;
     take: 1000,
     include: {
       patient: { select: { mrn: true, firstName: true, lastName: true } },
-      items: { include: { drug: { select: { drugName: true, strength: true } }, drugBatch: { select: { batchNumber: true } } } },
+      items: { include: { drug: { select: { drugName: true, category: true, strength: true } }, drugBatch: { select: { batchNumber: true } } } },
     },
   });
   return {
@@ -4130,7 +4158,7 @@ export async function dispenseFromWard(
 
     const batch = await tx.drugBatch.findUnique({
       where: { id: data.drugBatchId },
-      include: { drug: { select: { drugName: true, price: true, taxPercent: true, isLifeSaving: true, isNarcotic: true, isReimbursable: true } } },
+      include: { drug: { select: { drugName: true, category: true, price: true, taxPercent: true, isLifeSaving: true, isNarcotic: true, isReimbursable: true } } },
     });
     if (!batch) throw AppError.notFound('Drug batch not found');
     // NDPS "Locked in Main Safe": narcotics are dispensed only via the NDPS vault
@@ -4433,7 +4461,7 @@ export async function getPurchaseReport(
       freeQuantity: true,
       invoiceNumber: true,
       invoiceDate: true,
-      drug: { select: { id: true, drugName: true } },
+      drug: { select: { id: true, drugName: true, category: true } },
       supplier: { select: { id: true, name: true } },
     },
     orderBy: { createdAt: 'desc' },
@@ -4485,7 +4513,7 @@ export async function getStockValuationReport(tenantId: string) {
       purchasePrice: true,
       sellingPrice: true,
       expiryDate: true,
-      drug: { select: { id: true, drugName: true } },
+      drug: { select: { id: true, drugName: true, category: true } },
     },
     orderBy: { drug: { drugName: 'asc' } },
     take: 5000,
@@ -4685,7 +4713,7 @@ export async function getCreditNotesReport(
       creditAmount: true,
       reason: true,
       supplier: { select: { id: true, name: true } },
-      drugBatch: { select: { batchNumber: true, drug: { select: { drugName: true } } } },
+      drugBatch: { select: { batchNumber: true, drug: { select: { drugName: true, category: true } } } },
     },
     orderBy: { createdAt: 'desc' },
     take: 2000,
@@ -4793,7 +4821,7 @@ export async function getReorderList(tenantId: string) {
 const DRUG_PO_INCLUDE = {
   supplier: { select: { id: true, name: true, gstNumber: true, phone: true } },
   items: {
-    include: { drug: { select: { id: true, drugName: true, strength: true, manufacturer: true } } },
+    include: { drug: { select: { id: true, drugName: true, category: true, strength: true, manufacturer: true } } },
   },
 } as const;
 
@@ -5206,10 +5234,10 @@ export async function getReturns(tenantId: string, query: GetReturnsQuery) {
           select: {
             id: true,
             batchNumber: true,
-            drug: { select: { id: true, drugName: true } },
+            drug: { select: { id: true, drugName: true, category: true } },
           },
         },
-        drug: { select: { id: true, drugName: true } },
+        drug: { select: { id: true, drugName: true, category: true } },
         patient: { select: { id: true, firstName: true, lastName: true } },
         supplier: { select: { id: true, name: true } },
         processor: { select: { id: true, firstName: true, lastName: true } },
@@ -5233,9 +5261,9 @@ export async function getReturnById(tenantId: string, id: string) {
     where: { id, tenantId },
     include: {
       drugBatch: {
-        select: { id: true, batchNumber: true, expiryDate: true, drug: { select: { id: true, drugName: true, looseUnitLabel: true } } },
+        select: { id: true, batchNumber: true, expiryDate: true, drug: { select: { id: true, drugName: true, category: true, looseUnitLabel: true } } },
       },
-      drug: { select: { id: true, drugName: true, looseUnitLabel: true } },
+      drug: { select: { id: true, drugName: true, category: true, looseUnitLabel: true } },
       patient: { select: { id: true, mrn: true, firstName: true, lastName: true, phone: true } },
       supplier: { select: { id: true, name: true } },
       processor: { select: { id: true, firstName: true, lastName: true } },
@@ -5312,7 +5340,7 @@ export async function getReturnableDispenses(
       drugBatch: {
         select: {
           batchNumber: true,
-          drug: { select: { drugName: true, looseUnitLabel: true } },
+          drug: { select: { drugName: true, category: true, looseUnitLabel: true } },
         },
       },
       drugReturns: { where: { status: { not: 'rejected' } }, select: { quantity: true } },
@@ -5525,10 +5553,10 @@ export async function processReturn(
             select: {
               id: true,
               batchNumber: true,
-              drug: { select: { id: true, drugName: true } },
+              drug: { select: { id: true, drugName: true, category: true } },
             },
           },
-          drug: { select: { id: true, drugName: true } },
+          drug: { select: { id: true, drugName: true, category: true } },
           patient: { select: { id: true, firstName: true, lastName: true } },
           supplier: { select: { id: true, name: true } },
           processor: { select: { id: true, firstName: true, lastName: true } },
@@ -5588,10 +5616,10 @@ export async function processReturn(
         select: {
           id: true,
           batchNumber: true,
-          drug: { select: { id: true, drugName: true } },
+          drug: { select: { id: true, drugName: true, category: true } },
         },
       },
-      drug: { select: { id: true, drugName: true } },
+      drug: { select: { id: true, drugName: true, category: true } },
       patient: { select: { id: true, firstName: true, lastName: true } },
       supplier: { select: { id: true, name: true } },
       processor: { select: { id: true, firstName: true, lastName: true } },
@@ -5652,14 +5680,14 @@ export async function getStockLedger(tenantId: string, query: GetStockLedgerQuer
     prisma.drugBatch.findMany({
       where: { tenantId, createdAt: window, ...(query.drugId ? { drugId: query.drugId } : {}) },
       include: {
-        drug: { select: { id: true, drugName: true } },
+        drug: { select: { id: true, drugName: true, category: true } },
         supplier: { select: { name: true } },
       },
     }),
     prisma.dispensingRecord.findMany({
       where: { tenantId, dispensedAt: window, ...batchDrugFilter },
       include: {
-        drugBatch: { select: { batchNumber: true, drug: { select: { id: true, drugName: true } } } },
+        drugBatch: { select: { batchNumber: true, drug: { select: { id: true, drugName: true, category: true } } } },
         patient: { select: { firstName: true, lastName: true, mrn: true } },
       },
     }),
@@ -5671,8 +5699,8 @@ export async function getStockLedger(tenantId: string, query: GetStockLedgerQuer
     prisma.drugReturn.findMany({
       where: { tenantId, status: 'processed', createdAt: window, drugBatchId: { not: null }, ...batchDrugFilter },
       include: {
-        drugBatch: { select: { batchNumber: true, drug: { select: { id: true, drugName: true } } } },
-        drug: { select: { id: true, drugName: true } },
+        drugBatch: { select: { batchNumber: true, drug: { select: { id: true, drugName: true, category: true } } } },
+        drug: { select: { id: true, drugName: true, category: true } },
         supplier: { select: { name: true } },
       },
     }),
@@ -5782,7 +5810,7 @@ export async function getPharmacyAnalytics(
           select: {
             sellingPrice: true,
             purchasePrice: true,
-            drug: { select: { id: true, drugName: true } },
+            drug: { select: { id: true, drugName: true, category: true } },
           },
         },
       },
@@ -5807,17 +5835,17 @@ export async function getPharmacyAnalytics(
         expiryDate: { gte: today, lte: ninetyDaysFromNow },
         quantityInStock: { gt: 0 },
       },
-      include: { drug: { select: { drugName: true } } },
+      include: { drug: { select: { drugName: true, category: true } } },
       orderBy: { expiryDate: 'asc' },
     }),
     prisma.drugBatch.findMany({
       where: { tenantId, OR: [{ isExpired: true }, { expiryDate: { lt: today } }] },
-      include: { drug: { select: { drugName: true } } },
+      include: { drug: { select: { drugName: true, category: true } } },
       take: 50,
     }),
     prisma.drugBatch.findMany({
       where: { tenantId, isExpired: false, isRecalled: false, quantityInStock: { gt: 0 } },
-      include: { drug: { select: { drugName: true } } },
+      include: { drug: { select: { drugName: true, category: true } } },
     }),
   ]);
 
@@ -5944,7 +5972,7 @@ export async function recallBatch(
       recallReason: data.recallReason,
     },
     include: {
-      drug: { select: { id: true, drugName: true, genericName: true } },
+      drug: { select: { id: true, drugName: true, category: true, genericName: true } },
       supplier: { select: { id: true, name: true } },
     },
   });
@@ -5989,7 +6017,7 @@ export async function unrecallBatch(tenantId: string, batchId: string) {
     where: { id: batchId },
     data: { isRecalled: false, recallReason: null },
     include: {
-      drug: { select: { id: true, drugName: true, genericName: true } },
+      drug: { select: { id: true, drugName: true, category: true, genericName: true } },
     },
   });
 }
@@ -6007,7 +6035,7 @@ export async function getRecallAffectedPatients(tenantId: string, batchId: strin
   const batch = await prisma.drugBatch.findFirst({
     where: { id: batchId, tenantId },
     include: {
-      drug: { select: { id: true, drugName: true, genericName: true } },
+      drug: { select: { id: true, drugName: true, category: true, genericName: true } },
     },
   });
   if (!batch) throw AppError.notFound('Drug batch not found');
@@ -6095,7 +6123,7 @@ export async function getRecalledItems(tenantId: string, _query: GetRecalledItem
   const recalledBatches = await prisma.drugBatch.findMany({
     where: { tenantId, isRecalled: true },
     include: {
-      drug: { select: { id: true, drugName: true, genericName: true } },
+      drug: { select: { id: true, drugName: true, category: true, genericName: true } },
       supplier: { select: { id: true, name: true } },
       _count: { select: { dispensingRecords: true } },
     },
@@ -6282,7 +6310,7 @@ export async function runPharmacyExpiryAlerts(
       },
       take: 1000,
       orderBy: { expiryDate: 'asc' },
-      include: { drug: { select: { drugName: true } } },
+      include: { drug: { select: { drugName: true, category: true } } },
     });
 
     for (const b of batches) {

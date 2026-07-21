@@ -111,8 +111,9 @@ export async function createUnifiedStock(req: AuthenticatedRequest, res: Respons
     const body = req.body;
 
     if (body.kind === 'drug') {
+      const { openingStock, costPerUnit, ...drugInput } = body.drug ?? {};
       const result = await pharmacyService.createFormularyItem(tenantId, roles, {
-        ...body.drug,
+        ...drugInput,
         force: body.force,
       });
       // A near-duplicate medicine already exists — hand the suggestions back so the
@@ -125,10 +126,20 @@ export async function createUnifiedStock(req: AuthenticatedRequest, res: Respons
         });
         return;
       }
+      // Opening stock becomes one no-expiry OPENING batch — formulary stock
+      // lives in batches, so without this the quantity would exist on paper but
+      // be undispensable (the sale engine picks a batch, never a bare product).
+      if (openingStock && openingStock > 0 && result.item?.id) {
+        await pharmacyService.createOpeningBatch(tenantId, result.item.id, {
+          quantity: openingStock,
+          purchasePrice: costPerUnit,
+          sellingPrice: body.drug?.price,
+        });
+      }
       sendResponse({
         res,
         statusCode: 201,
-        message: 'Medicine added to storage',
+        message: 'Added to storage',
         data: { kind: 'drug', status: 'created', item: result.item },
       });
       return;
