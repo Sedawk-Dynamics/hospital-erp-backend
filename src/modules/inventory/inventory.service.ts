@@ -623,7 +623,7 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
         df.id AS ref_id,
         df.drug_name AS name,
         df.hsn_code AS code,
-        'drug'::text AS category,
+        df.category::text AS category,
         df.loose_unit_label AS unit,
         COALESCE(b.qty, 0)::int AS current_stock,
         df.min_stock AS reorder_level,

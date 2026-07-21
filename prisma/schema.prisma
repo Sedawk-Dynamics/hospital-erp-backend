@@ -4221,6 +4221,10 @@ model DrugFormulary {
   drugName          String      @map("drug_name") @db.VarChar(255)
   genericName       String?     @map("generic_name") @db.VarChar(255)
   manufacturer      String?     @db.VarChar(255)
+  // What KIND of stock this is. Every type (medicine, consumable, surgical,
+  // equipment, other) lives here so they all share one flow: batches, expiry,
+  // search, prescribing and counter billing. Defaults to `drug` (medicine).
+  category          InventoryCategory @default(drug)
   dosageForm        DosageForm? @map("dosage_form")
   strength          String?     @db.VarChar(100)
   unitOfMeasurement String?     @map("unit_of_measurement") @db.VarChar(20)

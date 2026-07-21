@@ -345,6 +345,9 @@ export async function createFormularyItem(
       drugName: data.drugName,
       genericName: data.genericName,
       manufacturer: data.manufacturer,
+      // What KIND of stock this is (medicine / consumable / surgical / …). All
+      // types live here so they share one flow; defaults to medicine.
+      category: ((data as any).category ?? 'drug') as any,
       // Coerce free-form inward/OCR forms ("Tablet", "INJ", …) to the enum.
       dosageForm: normalizeDosageForm(data.dosageForm) as any,
       strength: data.strength,
@@ -661,21 +664,9 @@ export async function matchInwardLines(
 ) {
   const results = await Promise.all(
     lines.map(async (line, index) => {
-      // Non-drug items resolve against inventory_items, not the formulary.
-      if (line.kind === 'item') {
-        const m = await matchInventoryItemLine(tenantId, line.drugName);
-        return {
-          index,
-          incoming: line,
-          matches: m.matches,
-          recommendation: m.recommendation,
-          resolvedVia: (m.suggestedId ? 'similarity' : 'none') as ResolveVia,
-          confidence: m.confidence,
-          caseMultiplier: 1,
-          // Reused field — carries the suggested target id (item) for the UI.
-          suggestedFormularyId: m.suggestedId,
-        };
-      }
+      // EVERY type (medicine, consumable, surgical, equipment, other) resolves
+      // against the formulary — they all share one flow now, distinguished by
+      // `category` rather than by living in a separate table.
       // Header supplier falls through to every line (for the distributor mapping
       // lookup) unless the line overrides it.
       const resolved = await resolveInwardLine(tenantId, {
@@ -916,66 +907,16 @@ export async function commitInward(
   for (let i = 0; i < data.lines.length; i++) {
     const line = data.lines[i];
     try {
-      // ── Non-drug item line ────────────────────────────────────────────────
-      // Find/create the generic inventory item, then post a stock-in. No batch
-      // entity — expiry/batch (if given) ride on the stock transaction.
-      if (line.kind === 'item') {
-        let itemId: string;
-        let itemName: string;
-        if (line.action === 'map') {
-          if (!line.targetInventoryItemId) {
-            throw AppError.badRequest('A mapped item line needs a target item');
-          }
-          const existing = await prisma.inventoryItem.findFirst({
-            where: { id: line.targetInventoryItemId, tenantId },
-            select: { id: true, itemName: true },
-          });
-          if (!existing) throw AppError.notFound('Mapped item not found in inventory');
-          itemId = existing.id;
-          itemName = existing.itemName;
-          mappedDrugs++;
-        } else {
-          const created = await createInventoryItem(tenantId, {
-            itemName: line.drugName,
-            itemCode: line.gtin ?? undefined,
-            category: (line.category as 'consumable') ?? 'other',
-            unitOfMeasurement: line.looseUnitLabel ?? undefined,
-            costPerUnit: line.purchasePrice,
-            sellingPricePerUnit: line.sellingPrice,
-            minimumStockThreshold: line.minStock,
-            description: line.description ?? undefined,
-            currentStock: 0,
-            isActive: true,
-          });
-          itemId = created.id;
-          itemName = created.itemName;
-          createdDrugs++;
-        }
-        // Only post stock when a quantity is given — qty 0/absent just registers
-        // the item (the old "New Item" behaviour).
-        const itemQty = line.quantityReceived ?? 0;
-        if (itemQty > 0) {
-          const eff = effectiveDiscount(line.purchaseDiscountPercent) ?? 0;
-          const netUnit =
-            line.purchasePrice != null ? r2(line.purchasePrice * (1 - eff / 100)) : undefined;
-          await createInventoryStockTransaction(tenantId, userId, {
-            inventoryItemId: itemId,
-            transactionType: 'stock_in',
-            quantity: itemQty,
-            batchNumber: line.batchNumber || undefined,
-            expiryDate: line.expiryDate || undefined,
-            supplierId: line.supplierId ?? data.supplierId,
-            unitCost: netUnit,
-            referenceType: 'bulk_inward',
-            notes: data.invoiceNumber ? `Bulk inward · invoice ${data.invoiceNumber}` : 'Bulk inward',
-          });
-          batchesIn++;
-        }
-        results.push({ index: i, drugName: itemName, action: line.action, status: 'ok', formularyId: itemId });
-        continue;
-      }
+      // ── Stock line (any type) ─────────────────────────────────────────────
+      // EVERY type — medicine, consumable, surgical supply, equipment, other —
+      // is stocked the same way: a formulary row plus batches. The type is kept
+      // as `category`, so they all share one flow (search, prescribing, counter
+      // billing, expiry, GST) instead of consumables sitting in a side table
+      // that the pharmacy could never bill from.
+      const lineCategory = (line.kind === 'item'
+        ? (line.category || 'other')
+        : 'drug') as 'drug' | 'consumable' | 'surgical_supply' | 'equipment' | 'other';
 
-      // ── Medicine line ─────────────────────────────────────────────────────
       const drugQty = line.quantityReceived ?? 0;
       let drugId: string;
       let drugName: string;
@@ -987,12 +928,14 @@ export async function commitInward(
 
       if (line.action === 'map') {
         // Reuse an existing formulary row — this is what keeps the 200 tablets
-        // under ONE entry instead of splitting into two 100s.
-        if (!line.targetFormularyId) {
-          throw AppError.badRequest('A mapped line needs a target drug');
+        // under ONE entry instead of splitting into two 100s. (targetInventoryItemId
+        // is accepted for older clients that still split by kind.)
+        const mapTargetId = line.targetFormularyId ?? line.targetInventoryItemId;
+        if (!mapTargetId) {
+          throw AppError.badRequest('A mapped line needs a target product');
         }
         const existing = await prisma.drugFormulary.findFirst({
-          where: { id: line.targetFormularyId, tenantId },
+          where: { id: mapTargetId, tenantId },
           select: { id: true, drugName: true },
         });
         if (!existing) throw AppError.notFound('Mapped drug not found in formulary');
@@ -1013,6 +956,8 @@ export async function commitInward(
         // user reviewed the suggestions and chose "create new").
         const created = await createFormularyItem(tenantId, roles, {
           drugName: line.drugName,
+          // Carries the "Type" chosen at stock entry (medicine / consumable / …).
+          category: lineCategory,
           genericName: line.genericName ?? undefined,
           manufacturer: line.manufacturer ?? undefined,
           dosageForm: line.dosageForm as CreateFormularyInput['dosageForm'],
@@ -1045,7 +990,7 @@ export async function commitInward(
       let batchId: string | undefined;
       if (drugQty > 0) {
         if (!line.batchNumber || !line.expiryDate) {
-          throw AppError.badRequest('Batch number and expiry date are required when receiving a medicine');
+          throw AppError.badRequest('Batch number and expiry date are required when receiving stock');
         }
         const batch = await createBatch(tenantId, userId, roles, {
           drugId,

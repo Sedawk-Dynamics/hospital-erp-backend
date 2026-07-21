@@ -25,6 +25,8 @@ export const createFormularySchema = z.object({
     drugName: z.string().min(1, 'Drug name is required').max(255),
     genericName: z.string().max(255).optional(),
     manufacturer: z.string().max(255).optional(),
+    // Stock type — every kind lives in the formulary and shares one flow.
+    category: z.enum(['drug', 'consumable', 'surgical_supply', 'equipment', 'other']).optional(),
     dosageForm: z
       .enum(['tablet', 'capsule', 'syrup', 'injection', 'cream', 'drops', 'inhaler', 'other'])
       .optional(),

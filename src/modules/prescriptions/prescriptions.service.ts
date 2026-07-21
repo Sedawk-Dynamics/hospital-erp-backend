@@ -1008,6 +1008,8 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
       manufacturer: true,
       price: true,
       drugMasterId: true,
+      // Stock type (medicine / consumable / surgical / …) so the pad can badge it.
+      category: true,
     },
     take: 30,
     orderBy: { drugName: 'asc' },
