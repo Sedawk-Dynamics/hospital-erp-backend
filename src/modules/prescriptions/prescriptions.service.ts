@@ -1037,11 +1037,48 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
     // Nickname matches first so the linked drug surfaces at the top.
     .sort((a, b) => Number(!!b.matchedNickname) - Number(!!a.matchedNickname));
 
-  // 2. Fill the remaining slots with platform-catalog matches the hospital has
+  // 2. The hospital's OWN non-medicine stock — consumables, surgical supplies,
+  //    equipment. These live in InventoryItem and never exist in the platform
+  //    drug master, so without this pass they were invisible here even though
+  //    the hospital stocks them. Like catalog rows they carry no formulary `id`
+  //    (drugId stays null → free-text line) but expose `inventoryItemId`.
+  const inventoryMatches = await prisma.inventoryItem.findMany({
+    where: {
+      tenantId,
+      isActive: true,
+      itemName: { contains: search, mode: 'insensitive' },
+    },
+    select: {
+      id: true,
+      itemName: true,
+      category: true,
+      unitOfMeasurement: true,
+      currentStock: true,
+      sellingPricePerUnit: true,
+    },
+    take: 10,
+    orderBy: { itemName: 'asc' },
+  });
+  const inventoryResults = inventoryMatches.map((i) => ({
+    id: null as null,
+    inventoryItemId: i.id,
+    drugName: i.itemName,
+    genericName: null as string | null,
+    dosageForm: null as any,
+    strength: null as string | null,
+    manufacturer: null as string | null,
+    price: i.sellingPricePerUnit,
+    unitOfMeasurement: i.unitOfMeasurement,
+    category: i.category as string | null,
+    source: 'inventory' as const,
+    availableStock: i.currentStock ?? 0,
+  }));
+
+  // 3. Fill the remaining slots with platform-catalog matches the hospital has
   //    NOT yet imported, so a doctor can still pick (and later stock) a drug
   //    that isn't in the local formulary. These carry no `id` (drugId stays
   //    null → free-text path) but expose `drugMasterId` for one-click import.
-  const remaining = 30 - formularyResults.length;
+  const remaining = 30 - formularyResults.length - inventoryResults.length;
   let masterResults: Array<{
     id: null;
     drugMasterId: string;
@@ -1131,7 +1168,8 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
     }));
   }
 
-  return [...formularyResults, ...masterResults];
+  // Hospital's own stock (formulary + inventory) ranks above the global catalog.
+  return [...formularyResults, ...inventoryResults, ...masterResults];
 }
 
 // ============================================================
