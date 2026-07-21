@@ -38,6 +38,7 @@ import { seedPackSizes } from '../seeds/pack-sizes';
 import { seedPackPrices } from '../seeds/pack-prices';
 import { seedImagingModalities } from '../seeds/imaging-modalities';
 import { seedHsnGstRates } from '../seeds/hsn-gst-rates';
+import { migrateInventoryToFormulary } from '../seeds/inventory-to-formulary';
 
 // Arbitrary constant identifying our advisory lock.
 const LOCK_KEY = 4820257011;
@@ -115,6 +116,11 @@ export async function runSeeds(db: PrismaClient): Promise<void> {
   // that ships new/updated rates picks them up. Also tags a few common catalog
   // medicines with their HSN + GST.
   await step('hsn-gst-rates', () => seedHsnGstRates(db));
+
+  // Legacy stock unification — give every InventoryItem a formulary product so
+  // all types behave like medicines (searchable + billable). Additive and
+  // idempotent: no-ops once every item is linked.
+  await step('inventory→formulary', () => migrateInventoryToFormulary(db));
 
   // 5. Per-tenant seeds / RBAC sync. Internally idempotent and skip tenants
   //    that already have the data, so they self-heal tenants created between
