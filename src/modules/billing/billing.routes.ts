@@ -339,6 +339,16 @@ billingRoutes.patch(
   controller.finalizeBill,
 );
 
+// Undo an accidental finalize while nothing has been collected yet, so the
+// counter can add the missing items to the same bill.
+billingRoutes.patch(
+  '/:id/reopen',
+  authenticate,
+  requirePermission('billing', 'approve'),
+  validate(billIdParamSchema),
+  controller.reopenBill,
+);
+
 // G5 (2.1): assemble an admission's discharge bill (pull outstanding charges +
 // finalize; optional advance application).
 billingRoutes.post(

@@ -526,6 +526,20 @@ export async function finalizeBill(req: AuthenticatedRequest, res: Response, nex
   }
 }
 
+export async function reopenBill(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const bill = await billingService.reopenBill(tenantId, req.params.id as string);
+    sendResponse({
+      res,
+      message: 'Bill reopened for editing',
+      data: bill,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // G5 (2.1): assemble an admission's discharge bill — pull outstanding charges onto
 // a finalized final-charges bill, optionally applying the patient's advance.
 export async function assembleDischargeBill(req: AuthenticatedRequest, res: Response, next: NextFunction) {

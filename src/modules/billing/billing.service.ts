@@ -996,6 +996,60 @@ export async function finalizeBill(tenantId: string, billId: string) {
   return updatedBill;
 }
 
+/**
+ * Undo an accidental finalize: `pending` → `draft` so the counter can keep
+ * adding items to the same bill instead of abandoning it and starting a new
+ * one. Only safe while nothing has been collected against it — once a payment
+ * (or an insurance claim) exists the bill has left the counter's hands and must
+ * be adjusted/cancelled through the normal routes instead.
+ */
+export async function reopenBill(tenantId: string, billId: string) {
+  const bill = await prisma.bill.findFirst({
+    where: { id: billId, tenantId },
+    include: {
+      _count: { select: { payments: true, insuranceClaims: true } },
+    },
+  });
+
+  if (!bill) {
+    throw AppError.notFound('Bill not found');
+  }
+
+  if (bill.status === 'draft') {
+    return bill; // already editable — idempotent
+  }
+
+  if (bill.status !== 'pending') {
+    throw AppError.badRequest(
+      `Cannot reopen a ${bill.status.replace(/_/g, ' ')} bill`,
+    );
+  }
+
+  if (Number(bill.amountPaid) > 0 || bill._count.payments > 0) {
+    throw AppError.badRequest(
+      'Cannot reopen a bill that already has payments. Reverse the payment first.',
+    );
+  }
+
+  if (bill._count.insuranceClaims > 0) {
+    throw AppError.badRequest(
+      'Cannot reopen a bill that has been transferred to insurance/TPA.',
+    );
+  }
+
+  const updated = await prisma.bill.update({
+    where: { id: billId },
+    data: { status: 'draft' },
+    include: {
+      patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+      billItems: true,
+    },
+  });
+
+  logger.info({ tenantId, billId }, 'Bill reopened for editing');
+  return updated;
+}
+
 // --- Payments ---
 
 export async function createPayment(tenantId: string, data: CreatePaymentInput) {
