@@ -11,6 +11,8 @@ export interface UpsertPersonalHistoryInput {
   diet?: string | null;
   sleepPattern?: string | null;
   disorders?: string | null;
+  pastMedicalHistory?: string | null;
+  pastSurgicalHistory?: string | null;
   exerciseHabits?: string | null;
   smokingStatus?: 'never' | 'former' | 'current' | null;
   alcoholConsumption?: 'none' | 'occasional' | 'moderate' | 'heavy' | null;
@@ -31,6 +33,8 @@ export async function upsertPersonalHistory(
     diet: data.diet ?? null,
     sleepPattern: data.sleepPattern ?? null,
     disorders: data.disorders ?? null,
+    pastMedicalHistory: data.pastMedicalHistory ?? null,
+    pastSurgicalHistory: data.pastSurgicalHistory ?? null,
     exerciseHabits: data.exerciseHabits ?? null,
     smokingStatus: data.smokingStatus ?? null,
     alcoholConsumption: data.alcoholConsumption ?? null,
@@ -44,6 +48,88 @@ export async function upsertPersonalHistory(
   });
   logger.info({ patientId, updatedBy: userId }, 'Personal history updated');
   return result;
+}
+
+// ============================================================
+// Medical & Surgical History (assembled read model)
+// ============================================================
+
+/**
+ * Everything the doctor's "Medical & Surgical History" tab shows, in one call:
+ * the past medical / surgical narrative, every diagnosis ever recorded, and
+ * the consultation notes and summaries the doctors have written.
+ *
+ * Previously the tab only rendered the lifestyle fields (appetite, diet,
+ * sleep…), so past illnesses, past surgeries, the diagnosis list and the
+ * doctors' own consultation notes had no home anywhere in the history view.
+ */
+export async function getMedicalSurgicalHistory(tenantId: string, patientId: string) {
+  const [personal, diagnoses, notes] = await Promise.all([
+    prisma.patientPersonalHistory.findUnique({ where: { patientId } }),
+
+    // Every diagnosis on file, newest first, with the visit it came from.
+    prisma.diagnosis.findMany({
+      where: { patientId, visit: { tenantId } },
+      orderBy: { diagnosedAt: 'desc' },
+      take: 100,
+      include: {
+        visit: { select: { id: true, visitType: true, visitDate: true } },
+        diagnoser: { select: { firstName: true, lastName: true } },
+      },
+    }),
+
+    // Doctor-authored consultation notes and summaries. Archived notes are
+    // excluded — an amended note is superseded, not history.
+    prisma.progressNote.findMany({
+      where: { patientId, status: { not: 'archived' }, visit: { tenantId } },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+      select: {
+        id: true,
+        noteType: true,
+        content: true,
+        impressions: true,
+        conclusions: true,
+        createdAt: true,
+        visit: { select: { id: true, visitType: true, visitDate: true } },
+        admissionId: true,
+        doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
+      },
+    }),
+  ]);
+
+  const doctorName = (u?: { firstName: string; lastName: string | null } | null) =>
+    u ? `Dr. ${u.firstName} ${u.lastName ?? ''}`.trim() : null;
+
+  return {
+    pastMedicalHistory: personal?.pastMedicalHistory ?? null,
+    pastSurgicalHistory: personal?.pastSurgicalHistory ?? null,
+    // Chronic/known disorders already lived on the personal-history record.
+    disorders: personal?.disorders ?? null,
+    diagnoses: diagnoses.map((d) => ({
+      id: d.id,
+      diagnosisName: d.diagnosisName,
+      icdCode: d.icdCode,
+      diagnosisType: d.diagnosisType,
+      notes: d.notes,
+      recordedAt: d.diagnosedAt,
+      visitType: d.visit?.visitType ?? null,
+      visitDate: d.visit?.visitDate ?? null,
+      doctorName: doctorName(d.diagnoser),
+    })),
+    consultationNotes: notes.map((n) => ({
+      id: n.id,
+      noteType: n.noteType,
+      content: n.content,
+      impressions: n.impressions,
+      conclusions: n.conclusions,
+      recordedAt: n.createdAt,
+      visitType: n.visit?.visitType ?? null,
+      visitDate: n.visit?.visitDate ?? null,
+      isInpatient: !!n.admissionId,
+      doctorName: doctorName(n.doctor?.user),
+    })),
+  };
 }
 
 // ============================================================

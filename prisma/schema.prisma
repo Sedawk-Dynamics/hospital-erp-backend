@@ -2061,6 +2061,11 @@ model PatientPersonalHistory {
   diet               String?
   sleepPattern       String?             @map("sleep_pattern")
   disorders          String?
+  // Past medical illnesses/treatments and past surgical procedures. These sit
+  // with the rest of the narrative history so the doctor's Medical & Surgical
+  // History tab has one place to read and write them.
+  pastMedicalHistory  String?            @map("past_medical_history")
+  pastSurgicalHistory String?            @map("past_surgical_history")
   exerciseHabits     String?             @map("exercise_habits")
   smokingStatus      SmokingStatus?      @map("smoking_status")
   alcoholConsumption AlcoholConsumption? @map("alcohol_consumption")

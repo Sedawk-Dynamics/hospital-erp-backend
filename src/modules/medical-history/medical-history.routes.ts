@@ -39,6 +39,18 @@ router.put('/:patientId/personal', requirePermission('patients', 'update'), vali
   } catch (err) { next(err); }
 });
 
+// ── Medical & Surgical History (assembled read model) ─────────
+// Past medical + surgical narrative, every diagnosis on file, and the
+// doctors' own consultation notes/summaries — the tab used to show none of it.
+router.get('/:patientId/medical-surgical', requirePermission('patients', 'read'), async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const tenantId = req.user!.tenantId;
+    await svc.verifyPatientTenant(tenantId, p(req.params.patientId));
+    const data = await svc.getMedicalSurgicalHistory(tenantId, p(req.params.patientId));
+    sendResponse({ res, message: 'Medical & surgical history', data });
+  } catch (err) { next(err); }
+});
+
 // ── Family History (patient-only edit — doctor can read) ───────
 router.get('/:patientId/family', requirePermission('patients', 'read'), async (req: AuthenticatedRequest, res, next) => {
   try {

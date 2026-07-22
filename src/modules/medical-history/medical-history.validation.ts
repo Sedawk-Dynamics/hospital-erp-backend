@@ -8,6 +8,8 @@ export const upsertPersonalHistorySchema = z.object({
     diet: nullableStr(500),
     sleepPattern: nullableStr(500),
     disorders: nullableStr(2000),
+    pastMedicalHistory: nullableStr(5000),
+    pastSurgicalHistory: nullableStr(5000),
     exerciseHabits: nullableStr(500),
     smokingStatus: z.enum(['never', 'former', 'current']).optional().nullable(),
     alcoholConsumption: z.enum(['none', 'occasional', 'moderate', 'heavy']).optional().nullable(),
