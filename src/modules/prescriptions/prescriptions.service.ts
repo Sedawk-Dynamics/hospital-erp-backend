@@ -1036,8 +1036,17 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
       availableStock: stockByDrug.get(f.id) ?? 0,
       matchedNickname: nickMap.get(f.id) ?? null,
     }))
-    // Nickname matches first so the linked drug surfaces at the top.
-    .sort((a, b) => Number(!!b.matchedNickname) - Number(!!a.matchedNickname));
+    // Rank: personal nickname match → in stock → alphabetical. Stock used to be
+    // computed for display only, so an out-of-stock drug outranked an in-stock
+    // one purely on alphabetical order and the doctor kept prescribing items
+    // the pharmacy could not dispense.
+    .sort((a, b) => {
+      const byNickname = Number(!!b.matchedNickname) - Number(!!a.matchedNickname);
+      if (byNickname !== 0) return byNickname;
+      const byStock = Number(b.availableStock > 0) - Number(a.availableStock > 0);
+      if (byStock !== 0) return byStock;
+      return a.drugName.localeCompare(b.drugName);
+    });
 
   // 2. The hospital's OWN non-medicine stock — consumables, surgical supplies,
   //    equipment. These live in InventoryItem and never exist in the platform
@@ -1074,7 +1083,12 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
     category: i.category as string | null,
     source: 'inventory' as const,
     availableStock: i.currentStock ?? 0,
-  }));
+  }))
+  // Same rule as the formulary tier — what's on the shelf comes first.
+  .sort((a, b) => {
+    const byStock = Number(a.availableStock <= 0) - Number(b.availableStock <= 0);
+    return byStock !== 0 ? byStock : a.drugName.localeCompare(b.drugName);
+  });
 
   // 3. Fill the remaining slots with platform-catalog matches the hospital has
   //    NOT yet imported, so a doctor can still pick (and later stock) a drug

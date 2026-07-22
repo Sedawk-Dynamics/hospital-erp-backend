@@ -22,6 +22,10 @@ export const PERMISSION_MODULES = [
   'imaging', 'pharmacy', 'inventory', 'billing', 'payments', 'insurance',
   'blood_bank', 'hr', 'notifications', 'tickets', 'reports', 'audit_logs', 'compliance',
   'forms', 'nurse_assignments', 'duty_rosters',
+  // OT bookings. The clinical OT routes already gated on this name, but it was
+  // never declared here so no RolePermission row could exist and every doctor
+  // got "Missing permission: ot_requests:create".
+  'ot_requests',
 ] as const;
 
 export const PERMISSION_ACTIONS = ['create', 'read', 'update', 'delete', 'export', 'approve'] as const;
@@ -69,6 +73,10 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'imaging', action: 'read' }, { module: 'imaging', action: 'create' },
       { module: 'billing', action: 'read' }, { module: 'payments', action: 'read' },
       { module: 'forms', action: 'read' }, { module: 'forms', action: 'create' }, { module: 'forms', action: 'approve' },
+      // Surgeons raise and track their own OT bookings; scheduling a theatre
+      // stays with the OT/hospital admin.
+      { module: 'ot_requests', action: 'read' }, { module: 'ot_requests', action: 'create' },
+      { module: 'ot_requests', action: 'update' },
     ],
 
     patient: [
@@ -85,6 +93,8 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'admissions', action: 'read' }, { module: 'admissions', action: 'update' },
       { module: 'vitals', action: 'read' }, { module: 'vitals', action: 'create' }, { module: 'vitals', action: 'update' },
       { module: 'diagnoses', action: 'read' },
+      // Read-through on OT bookings so the theatre list is visible here.
+      { module: 'ot_requests', action: 'read' },
       { module: 'nursing_notes', action: 'read' }, { module: 'nursing_notes', action: 'create' }, { module: 'nursing_notes', action: 'update' },
       { module: 'progress_notes', action: 'read' },
       // §4.2 ward→pharmacy flow: the ward nurse enters the doctor's key-sheet
@@ -142,6 +152,8 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'forms', action: 'read' }, { module: 'forms', action: 'approve' },
       { module: 'audit_logs', action: 'read' },
       { module: 'reports', action: 'read' }, { module: 'reports', action: 'create' }, { module: 'reports', action: 'export' },
+      // Read-through on OT bookings so the theatre list is visible here.
+      { module: 'ot_requests', action: 'read' },
     ],
 
     front_desk: [
@@ -155,6 +167,8 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'floors', action: 'read' },
       { module: 'wards', action: 'read' },
       { module: 'beds', action: 'read' },
+      // Read-through on OT bookings so the theatre list is visible here.
+      { module: 'ot_requests', action: 'read' },
       // Front desk is the billing/cash counter — it owns IP billing end to end:
       // generate the bill (create), apply concessions (update), finalize it so
       // it becomes payable (approve), and collect (payments create). approve
@@ -236,6 +250,8 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'pharmacy', action: 'read' }, { module: 'pharmacy', action: 'create' }, { module: 'pharmacy', action: 'update' },
       { module: 'prescriptions', action: 'read' }, { module: 'prescriptions', action: 'update' },
       { module: 'inventory', action: 'read' }, { module: 'patients', action: 'read' },
+      // OT kit issue is raised against a scheduled surgery.
+      { module: 'ot_requests', action: 'read' },
     ],
 
     // Full pharmacy management + the inventory module (suppliers, purchase
@@ -248,6 +264,8 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       // transfer source / destination.
       { module: 'departments', action: 'read' }, { module: 'wards', action: 'read' },
       { module: 'patients', action: 'read' }, { module: 'reports', action: 'read' }, { module: 'reports', action: 'export' },
+      // OT kit issue is raised against a scheduled surgery.
+      { module: 'ot_requests', action: 'read' },
     ],
 
     // Inventory module + the pharmacy drug-stock surfaces (Drug Catalog,

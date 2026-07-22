@@ -2,6 +2,7 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { checkInteractions } from '../prescriptions/prescriptions.service';
+import { buildDrugHistory } from '../prescriptions/drug-history.service';
 import {
   evaluatePanic,
   findDosageLimit,
@@ -141,23 +142,55 @@ export async function validatePrescription(
   }
 
   // ── Drug-drug interactions ────────────────────────────
-  if (data.items.length > 1) {
-    try {
-      const interactionResult = await checkInteractions(tenantId, { drugs: drugNames });
+  //
+  // Checked against the patient's CURRENT medications as well as the drugs on
+  // this form. Two bugs used to make this look dead: the check only ran when
+  // the form itself had 2+ items (so adding a single new drug was never
+  // checked at all), and drugs the patient is already on were never in the
+  // set — which is the interaction that actually matters clinically.
+  try {
+    const history = await buildDrugHistory({
+      patientIds: [data.patientId],
+      tenantId,
+      limit: 50,
+    });
+    const existingNames = history.current.map((i: { drugName: string }) => i.drugName);
+
+    // De-dupe case-insensitively, keeping the form's spelling.
+    const seen = new Set<string>();
+    const allDrugs: string[] = [];
+    for (const name of [...drugNames, ...existingNames]) {
+      const key = name?.trim().toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      allDrugs.push(name.trim());
+    }
+
+    if (allDrugs.length > 1) {
+      const newOnForm = new Set(drugNames.map((n) => n.trim().toLowerCase()));
+      const interactionResult = await checkInteractions(tenantId, { drugs: allDrugs });
       for (const pair of interactionResult.pairs) {
+        // A pair where neither drug is being prescribed now is pre-existing —
+        // surface it as info rather than blocking this prescription on it.
+        const touchesForm = pair.drugs.some((d) => newOnForm.has(d.trim().toLowerCase()));
+        const onFileOnly = pair.drugs.filter((d) => !newOnForm.has(d.trim().toLowerCase()));
+        const suffix = onFileOnly.length
+          ? ` (already on ${onFileOnly.join(', ')})`
+          : '';
+
         const alert: CdssWarning = {
           severity: pair.severity === 'minor' ? 'minor' : pair.severity,
           kind: 'interaction',
           pair: pair.drugs,
-          message: `${pair.drugs[0]} + ${pair.drugs[1]}: ${pair.description}`,
+          message: `${pair.drugs[0]} + ${pair.drugs[1]}: ${pair.description}${suffix}`,
           overridable: pair.severity === 'contraindicated',
         };
-        if (pair.severity === 'contraindicated') blockers.push(alert);
+        if (pair.severity === 'contraindicated' && touchesForm) blockers.push(alert);
         else warnings.push(alert);
       }
-    } catch (err) {
-      logger.warn({ err }, 'CDSS interaction check failed; continuing without');
     }
+  } catch (err) {
+    logger.warn({ err }, 'CDSS interaction check failed; continuing without');
   }
 
   // ── Dosage validation ─────────────────────────────────

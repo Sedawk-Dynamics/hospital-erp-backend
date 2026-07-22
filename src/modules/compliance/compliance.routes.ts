@@ -70,14 +70,18 @@ complianceRoutes.put('/documents/:id', authenticate, requirePermission('complian
 complianceRoutes.patch('/documents/:id/approve', authenticate, requirePermission('compliance', 'approve'), validate(approveComplianceDocSchema), controller.approveComplianceDoc);
 
 // --- OT Requests ---
+// This is the live OT booking system: the OT module, the doctor's OT list and
+// OT kit issue all read from here. (The parallel /clinical/ot-requests routes
+// write the same table but nothing reads them.)
 // Analytics endpoint comes first so it's not shadowed by the `:id` matcher.
-complianceRoutes.get('/ot-requests/analytics', authenticate, validate(otAnalyticsQuerySchema), controller.otAnalytics);
-complianceRoutes.post('/ot-requests', authenticate, validate(createOtRequestSchema), controller.createOTRequest);
-complianceRoutes.get('/ot-requests', authenticate, validate(getOtRequestsQuerySchema), controller.getOTRequests);
-complianceRoutes.get('/ot-requests/:id', authenticate, validate(otRequestIdParamSchema), controller.getOTRequestById);
-complianceRoutes.patch('/ot-requests/:id', authenticate, validate(updateOtRequestSchema), controller.updateOTRequest);
-complianceRoutes.patch('/ot-requests/:id/approve', authenticate, validate(approveOtRequestSchema), controller.approveOTRequest);
-complianceRoutes.patch('/ot-requests/:id/schedule', authenticate, validate(scheduleOtSchema), controller.scheduleOT);
+complianceRoutes.get('/ot-requests/analytics', authenticate, requirePermission('ot_requests', 'read'), validate(otAnalyticsQuerySchema), controller.otAnalytics);
+complianceRoutes.post('/ot-requests', authenticate, requirePermission('ot_requests', 'create'), validate(createOtRequestSchema), controller.createOTRequest);
+complianceRoutes.get('/ot-requests', authenticate, requirePermission('ot_requests', 'read'), validate(getOtRequestsQuerySchema), controller.getOTRequests);
+complianceRoutes.get('/ot-requests/:id', authenticate, requirePermission('ot_requests', 'read'), validate(otRequestIdParamSchema), controller.getOTRequestById);
+complianceRoutes.patch('/ot-requests/:id', authenticate, requirePermission('ot_requests', 'update'), validate(updateOtRequestSchema), controller.updateOTRequest);
+// Approving and scheduling a theatre stay with the OT / hospital admin.
+complianceRoutes.patch('/ot-requests/:id/approve', authenticate, requirePermission('ot_requests', 'approve'), validate(approveOtRequestSchema), controller.approveOTRequest);
+complianceRoutes.patch('/ot-requests/:id/schedule', authenticate, requirePermission('ot_requests', 'approve'), validate(scheduleOtSchema), controller.scheduleOT);
 
 // --- OT scheduling preferences (per tenant) ---
 complianceRoutes.get('/ot-settings', authenticate, controller.getOtSchedulingSettings);
