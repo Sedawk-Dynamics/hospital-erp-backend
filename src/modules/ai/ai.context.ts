@@ -1,5 +1,6 @@
 import { prisma } from '../../config/database';
 import { AppError } from '../../shared/appError';
+import { buildDrugHistory } from '../prescriptions/drug-history.service';
 
 // Aggregates a patient's clinical record into a compact text block for the
 // patient AI chatbot (Use Case 2, Level 1 — text only, no radiology image
@@ -123,26 +124,58 @@ export async function buildPatientContext(
   }
 
   if (visits.length) {
+    // The newest visit is the encounter in progress; label it so the model
+    // reasons about *this* visit against the ones before it instead of
+    // treating the whole list as undifferentiated history.
+    const [currentVisit, ...priorVisits] = visits;
+
+    const describeVisit = (v: (typeof visits)[number]) => {
+      let out = `- ${new Date(v.visitDate).toISOString().slice(0, 10)} ${v.visitType}`;
+      if (v.chiefComplaint) out += ` — ${v.chiefComplaint}`;
+      const dx = v.diagnoses
+        .map((d) => `${d.diagnosisName}${d.icdCode ? ` [${d.icdCode}]` : ''}`)
+        .join(', ');
+      if (dx) out += `\n  Dx: ${dx}`;
+      return out;
+    };
+
+    sections.push('## CURRENT VISIT\n' + describeVisit(currentVisit));
+
+    if (priorVisits.length) {
+      sections.push(
+        '## PAST VISIT HISTORY (most recent first)\n' +
+          priorVisits.map(describeVisit).join('\n'),
+      );
+    }
+  }
+
+  // Medications split the same way the doctor's Drug History panel splits them,
+  // so the assistant stops presenting a finished course as "current medication"
+  // (and vice-versa) — both views now read from one source of truth.
+  const drugHistory = await buildDrugHistory({ patientIds: [patientId], tenantId, limit: 50 });
+
+  const formatMed = (i: {
+    drugName: string;
+    dosage?: string | null;
+    frequency?: string | null;
+    duration?: string | null;
+    route?: string | null;
+  }) =>
+    `- ${i.drugName}${i.dosage ? ` ${i.dosage}` : ''}${i.frequency ? ` ${i.frequency}` : ''}` +
+    `${i.duration ? ` x${i.duration}` : ''}${i.route ? ` (${i.route})` : ''}`;
+
+  if (drugHistory.current.length) {
     sections.push(
-      '## CONSULTATION HISTORY (recent)\n' +
-        visits
-          .map(
-            (v) =>
-              `- ${new Date(v.visitDate).toISOString().slice(0, 10)} ${v.visitType}${v.chiefComplaint ? ` — ${v.chiefComplaint}` : ''}`,
-          )
-          .join('\n'),
+      '## CURRENT MEDICATIONS (patient is still on these)\n' +
+        drugHistory.current.slice(0, 25).map(formatMed).join('\n'),
     );
   }
 
-  if (prescriptions.length) {
-    const meds = prescriptions
-      .flatMap((p) => p.prescriptionItems)
-      .slice(0, 25)
-      .map(
-        (i) =>
-          `- ${i.drugName} ${i.dosage} ${i.frequency}${i.duration ? ` x${i.duration}` : ''} (${i.route})`,
-      );
-    if (meds.length) sections.push('## MEDICATIONS (recent prescriptions)\n' + meds.join('\n'));
+  if (drugHistory.past.length) {
+    sections.push(
+      '## PAST MEDICATIONS (course finished or replaced by a newer script)\n' +
+        drugHistory.past.slice(0, 25).map(formatMed).join('\n'),
+    );
   }
 
   if (labResults.length) {
