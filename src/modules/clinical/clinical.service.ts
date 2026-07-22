@@ -574,6 +574,18 @@ export async function getAdmissions(tenantId: string, query: GetAdmissionsQuery)
       end.setUTCHours(23, 59, 59, 999);
       where.admissionDate = { gte: start, lte: end };
     }
+  } else {
+    // Date-range window (reports screen). `date` wins when both are supplied.
+    if ((query as any).fromDate) {
+      const from = new Date((query as any).fromDate);
+      from.setUTCHours(0, 0, 0, 0);
+      where.admissionDate = { ...where.admissionDate, gte: from };
+    }
+    if ((query as any).toDate) {
+      const to = new Date((query as any).toDate);
+      to.setUTCHours(23, 59, 59, 999);
+      where.admissionDate = { ...where.admissionDate, lte: to };
+    }
   }
 
   if (query.search) {

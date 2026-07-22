@@ -92,6 +92,9 @@ export const getAdmissionsQuerySchema = z.object({
     status: z.enum(['admitted', 'discharged', 'transferred', 'absconded']).optional(),
     search: z.string().max(255).optional(),
     date: z.string().optional(),
+    // Date-range window on admissionDate — used by the hospital reports screen.
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
   }),
 });
 
