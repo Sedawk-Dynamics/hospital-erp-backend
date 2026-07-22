@@ -15,7 +15,9 @@ import type {
   GetAppointmentsQuery,
   GetDoctorProfilesQuery,
   RescheduleAppointmentInput,
+  FrontdeskCheckoutInput,
 } from './appointments.validation';
+import { createPayment } from '../billing/billing.service';
 
 // Valid status transitions
 const STATUS_TRANSITIONS: Record<string, string[]> = {
@@ -1713,10 +1715,18 @@ export async function cancelAppointment(
  * gated by tenant ownership instead of patient connection — used by the
  * Front Desk Dashboard's "Collect Payment" action on `pending_payment` rows.
  */
-export async function initiateFrontdeskPayment(
+/**
+ * Find or create the consultation bill attached to an appointment.
+ *
+ * Deliberately creates the bill as `pending`, not `draft`: a draft bill cannot
+ * be paid (`createPayment` rejects it) and never shows as revenue. Idempotent —
+ * a second call returns the bill that already references this appointment.
+ */
+async function ensureAppointmentBill(
   tenantId: string,
   appointmentId: string,
   userId: string,
+  description = 'Consultation Fee (Pay at Front Desk)',
 ) {
   const appointment = await prisma.appointment.findFirst({
     where: { id: appointmentId, tenantId },
@@ -1727,8 +1737,6 @@ export async function initiateFrontdeskPayment(
     throw AppError.badRequest(`Cannot collect payment for ${appointment.status} appointment`);
   }
 
-  // Reuse an existing bill if one is already linked to this appointment
-  // (idempotent — second click should just return the existing bill).
   const existingBill = await prisma.bill.findFirst({
     where: {
       tenantId,
@@ -1737,52 +1745,61 @@ export async function initiateFrontdeskPayment(
     },
   });
 
-  let bill = existingBill;
-  if (!bill) {
-    const consultationFee = appointment.doctor.consultationFee
-      ? Number(appointment.doctor.consultationFee)
-      : 0;
-    const amount = consultationFee > 0 ? consultationFee : 0;
-    const billNumber = await generateFrontdeskBillNumber(tenantId);
+  if (existingBill) return { appointment, bill: existingBill };
 
-    bill = await prisma.bill.create({
-      data: {
-        tenantId,
-        patientId: appointment.patientId,
-        billNumber,
-        billDate: new Date(),
-        subtotal: amount,
-        discountAmount: 0,
-        taxAmount: 0,
-        totalAmount: amount,
-        insuranceCoveredAmount: 0,
-        patientPayableAmount: amount,
-        amountPaid: 0,
-        balanceDue: amount,
-        status: 'pending',
-        generatedBy: userId,
-        billItems: {
-          create: {
-            description: 'Consultation Fee (Pay at Front Desk)',
-            category: 'consultation',
-            quantity: 1,
-            unitPrice: amount,
-            discountPercent: 0,
-            discountAmount: 0,
-            taxPercent: 0,
-            taxAmount: 0,
-            totalAmount: amount,
-            referenceType: 'appointment',
-            referenceId: appointment.id,
-          },
+  const consultationFee = appointment.doctor.consultationFee
+    ? Number(appointment.doctor.consultationFee)
+    : 0;
+  const amount = consultationFee > 0 ? consultationFee : 0;
+  const billNumber = await generateFrontdeskBillNumber(tenantId);
+
+  const bill = await prisma.bill.create({
+    data: {
+      tenantId,
+      patientId: appointment.patientId,
+      billNumber,
+      billDate: new Date(),
+      subtotal: amount,
+      discountAmount: 0,
+      taxAmount: 0,
+      totalAmount: amount,
+      insuranceCoveredAmount: 0,
+      patientPayableAmount: amount,
+      amountPaid: 0,
+      balanceDue: amount,
+      status: 'pending',
+      generatedBy: userId,
+      billItems: {
+        create: {
+          description,
+          category: 'consultation',
+          quantity: 1,
+          unitPrice: amount,
+          discountPercent: 0,
+          discountAmount: 0,
+          taxPercent: 0,
+          taxAmount: 0,
+          totalAmount: amount,
+          referenceType: 'appointment',
+          referenceId: appointment.id,
         },
       },
-    });
-    logger.info(
-      { tenantId, appointmentId, billId: bill.id, by: userId },
-      'Frontdesk payment bill created by staff',
-    );
-  }
+    },
+  });
+
+  logger.info(
+    { tenantId, appointmentId, billId: bill.id, amount, by: userId },
+    'Consultation bill created for appointment',
+  );
+  return { appointment, bill };
+}
+
+export async function initiateFrontdeskPayment(
+  tenantId: string,
+  appointmentId: string,
+  userId: string,
+) {
+  const { appointment, bill } = await ensureAppointmentBill(tenantId, appointmentId, userId);
 
   // Move pending_payment → booked. Other statuses are left alone — the bill
   // is what the cashier needs; the appointment may already be booked/confirmed
@@ -1801,6 +1818,82 @@ export async function initiateFrontdeskPayment(
     amountPaid: Number(bill.amountPaid),
     balanceDue: Number(bill.balanceDue),
     status: bill.status,
+  };
+}
+
+/**
+ * Walk-in / register-patient checkout: raise the consultation bill and, when
+ * the counter takes the money there and then, record the payment against it.
+ *
+ * The registration dialog used to do this itself with `POST /billing`, which
+ * creates a DRAFT bill and records no Payment at all — so counter takings never
+ * reached billing, transactions or the day-end sheet, and the `paymentMode` it
+ * sent was silently dropped by the validators. This mirrors what the patient
+ * portal does (bill → payment → advance status) so both routes settle the same
+ * way.
+ */
+export async function frontdeskCheckout(
+  tenantId: string,
+  appointmentId: string,
+  userId: string,
+  data: FrontdeskCheckoutInput,
+) {
+  const { appointment, bill } = await ensureAppointmentBill(
+    tenantId,
+    appointmentId,
+    userId,
+    data.collectNow ? 'Consultation Fee' : 'Consultation Fee (Pay at Front Desk)',
+  );
+
+  const balanceDue = Number(bill.balanceDue);
+  let paymentId: string | null = null;
+  let receiptNumber: string | null = null;
+
+  if (data.collectNow && balanceDue > 0) {
+    // Reuse the billing module's payment path so the Payment row, the receipt
+    // and the bill's amountPaid/balanceDue/status all move together.
+    const amount = data.amount != null ? data.amount : balanceDue;
+    const { payment, receipt } = await createPayment(tenantId, {
+      billId: bill.id,
+      amount,
+      paymentMethod: data.paymentMethod ?? 'cash',
+      referenceNumber: data.referenceNumber,
+      notes: data.notes,
+    } as any);
+    paymentId = payment.id;
+    receiptNumber = receipt.receiptNumber;
+  }
+
+  // A paid walk-in is confirmed; an unpaid one stays where it is so the
+  // counter still sees it in the "collect payment" queue.
+  if (data.collectNow && ['pending_payment', 'booked'].includes(appointment.status)) {
+    await prisma.appointment.update({
+      where: { id: appointmentId },
+      data: { status: 'confirmed' },
+    });
+  } else if (appointment.status === 'pending_payment') {
+    await prisma.appointment.update({
+      where: { id: appointmentId },
+      data: { status: 'booked' },
+    });
+  }
+
+  const refreshed = await prisma.bill.findUnique({ where: { id: bill.id } });
+
+  logger.info(
+    { tenantId, appointmentId, billId: bill.id, collected: data.collectNow, paymentId },
+    'Front-desk checkout completed',
+  );
+
+  return {
+    billId: bill.id,
+    billNumber: bill.billNumber,
+    totalAmount: Number(refreshed?.totalAmount ?? bill.totalAmount),
+    amountPaid: Number(refreshed?.amountPaid ?? 0),
+    balanceDue: Number(refreshed?.balanceDue ?? balanceDue),
+    status: refreshed?.status ?? bill.status,
+    paymentId,
+    receiptNumber,
   };
 }
 

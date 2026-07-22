@@ -21,6 +21,7 @@ import {
   doctorIdParamSchema,
   appointmentIdParamSchema,
   rescheduleAppointmentSchema,
+  frontdeskCheckoutSchema,
   slotsQuerySchema,
   queueQuerySchema,
 } from './appointments.validation';
@@ -237,6 +238,16 @@ appointmentRoutes.patch(
   authenticate,
   validate(appointmentIdParamSchema),
   controller.cancelAppointment,
+);
+
+// Walk-in / register-patient checkout: raise the consultation bill and, when
+// the counter takes the money now, record the payment against it in one call.
+appointmentRoutes.post(
+  '/:id/frontdesk-checkout',
+  authenticate,
+  requirePermission('billing', 'create'),
+  validate(frontdeskCheckoutSchema),
+  controller.frontdeskCheckout,
 );
 
 // Staff-side: convert a `pending_payment` appointment into a booked one with a

@@ -216,6 +216,26 @@ export const rescheduleAppointmentSchema = z.object({
   }),
 });
 
+/**
+ * Walk-in / register-patient checkout. `collectNow` false means the counter
+ * raises the bill but takes the money later — it stays payable from the queue.
+ */
+export const frontdeskCheckoutSchema = z.object({
+  body: z.object({
+    collectNow: z.boolean().default(true),
+    paymentMethod: z
+      .enum(['cash', 'credit_card', 'debit_card', 'upi', 'net_banking', 'cheque', 'other'])
+      .optional(),
+    /** Defaults to the full balance due when omitted (part-payment otherwise). */
+    amount: z.number().positive().optional(),
+    referenceNumber: z.string().max(100).optional(),
+    notes: z.string().max(500).optional(),
+  }),
+  params: z.object({
+    id: z.string().uuid('Invalid appointment ID'),
+  }),
+});
+
 export const getAppointmentsQuerySchema = z.object({
   query: paginationSchema.extend({
     date: z.string().optional(),
@@ -299,3 +319,4 @@ export type UpdateAppointmentStatusInput = z.infer<typeof updateAppointmentStatu
 export type GetAppointmentsQuery = z.infer<typeof getAppointmentsQuerySchema>['query'];
 export type GetDoctorProfilesQuery = z.infer<typeof getDoctorProfilesQuerySchema>['query'];
 export type RescheduleAppointmentInput = z.infer<typeof rescheduleAppointmentSchema>['body'];
+export type FrontdeskCheckoutInput = z.infer<typeof frontdeskCheckoutSchema>['body'];

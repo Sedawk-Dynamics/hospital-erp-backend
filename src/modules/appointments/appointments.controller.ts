@@ -454,6 +454,36 @@ export async function rescheduleAppointment(
   }
 }
 
+export async function frontdeskCheckout(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const result = await appointmentsService.frontdeskCheckout(
+      tenantId,
+      req.params.id as string,
+      userId,
+      req.body,
+    );
+    const message = result.paymentId
+      ? 'Payment collected and bill updated'
+      : result.balanceDue <= 0
+        // Nothing left to collect — either already settled, or the doctor has
+        // no consultation fee configured so the bill is a zero-value record.
+        ? result.totalAmount > 0
+          ? 'This bill is already fully paid'
+          : 'Consultation bill raised (no fee configured for this doctor)'
+        : 'Consultation bill raised — payable at the counter';
+
+    sendResponse({ res, message, data: result });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function initiateFrontdeskPayment(
   req: AuthenticatedRequest,
   res: Response,
