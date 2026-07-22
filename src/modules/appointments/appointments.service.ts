@@ -14,10 +14,14 @@ import type {
   UpdateAppointmentStatusInput,
   GetAppointmentsQuery,
   GetDoctorProfilesQuery,
+  RescheduleAppointmentInput,
 } from './appointments.validation';
 
 // Valid status transitions
 const STATUS_TRANSITIONS: Record<string, string[]> = {
+  // Patient-app bookings land here until the fee is settled. Front desk can
+  // take the money (→ booked/confirmed) or drop the request (→ cancelled).
+  pending_payment: ['booked', 'confirmed', 'cancelled', 'no_show'],
   booked: ['confirmed', 'cancelled', 'no_show'],
   confirmed: ['checked_in', 'cancelled', 'no_show'],
   checked_in: ['in_consultation', 'cancelled'],
@@ -1309,6 +1313,8 @@ export async function getAppointmentStats(tenantId: string, date?: string) {
 
   return {
     all: appointments.length,
+    // Patient-app bookings awaiting a fee — front desk must action these.
+    pendingPayment: appointments.filter((a) => a.status === 'pending_payment').length,
     booked: appointments.filter((a) => a.status === 'booked' || a.status === 'confirmed').length,
     ipAppointments: 0,
     arrived: appointments.filter((a) => a.status === 'checked_in').length,
@@ -1571,6 +1577,111 @@ export async function updateAppointmentStatus(
   logger.info(
     { tenantId, appointmentId: id, from: currentStatus, to: newStatus },
     'Appointment status updated',
+  );
+  return updated;
+}
+
+/**
+ * Reschedule an appointment in place.
+ *
+ * Deliberately an UPDATE, not a cancel + re-book: the appointment keeps its id,
+ * so the linked bill / payment, queue token, consultation record and audit
+ * history all stay attached. Runs the same guards as `bookAppointment`
+ * (past date, doctor leave, slot conflict) against the new slot.
+ */
+export async function rescheduleAppointment(
+  tenantId: string,
+  id: string,
+  data: RescheduleAppointmentInput,
+  userId: string,
+) {
+  const appointment = await prisma.appointment.findFirst({ where: { id, tenantId } });
+  if (!appointment) {
+    throw AppError.notFound('Appointment not found');
+  }
+
+  const RESCHEDULABLE = ['pending_payment', 'booked', 'confirmed', 'no_show'];
+  if (!RESCHEDULABLE.includes(appointment.status)) {
+    throw AppError.badRequest(
+      `Cannot reschedule an appointment that is '${appointment.status.replace(/_/g, ' ')}'`,
+    );
+  }
+
+  const doctorId = data.doctorId || appointment.doctorId;
+  const doctor = await prisma.doctorProfile.findFirst({
+    where: { id: doctorId, tenantId },
+  });
+  if (!doctor) {
+    throw AppError.notFound('Doctor not found');
+  }
+
+  const appointmentDate = new Date(data.appointmentDate);
+  appointmentDate.setUTCHours(0, 0, 0, 0);
+
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0);
+  if (appointmentDate < today) {
+    throw AppError.badRequest('Cannot reschedule an appointment into the past');
+  }
+
+  const leave = await prisma.doctorLeave.findFirst({
+    where: { doctorId, leaveDate: appointmentDate },
+  });
+  if (leave && !leave.startTime && !leave.endTime) {
+    throw AppError.badRequest('Doctor is on leave on the selected date');
+  }
+
+  const startTimeDate = new Date(`1970-01-01T${data.startTime}:00.000Z`);
+  const endTimeDate = new Date(`1970-01-01T${data.endTime}:00.000Z`);
+
+  const dayStart = new Date(appointmentDate);
+  dayStart.setUTCHours(0, 0, 0, 0);
+  const dayEnd = new Date(appointmentDate);
+  dayEnd.setUTCHours(23, 59, 59, 999);
+
+  const conflicting = await prisma.appointment.findFirst({
+    where: {
+      id: { not: id }, // the row being moved never conflicts with itself
+      doctorId,
+      appointmentDate: { gte: dayStart, lte: dayEnd },
+      status: { notIn: ['cancelled', 'no_show', 'pending_payment'] },
+      startTime: { lt: endTimeDate },
+      endTime: { gt: startTimeDate },
+    },
+  });
+  if (conflicting) {
+    throw AppError.conflict('This time slot is already booked');
+  }
+
+  const previous = `${appointment.appointmentDate.toISOString().slice(0, 10)} ${appointment.startTime
+    .toISOString()
+    .slice(11, 16)}`;
+  const note = `Rescheduled from ${previous}${data.reason ? ` — ${data.reason}` : ''}`;
+
+  const updated = await prisma.appointment.update({
+    where: { id },
+    data: {
+      doctorId,
+      appointmentDate,
+      startTime: startTimeDate,
+      endTime: endTimeDate,
+      // A no-show that gets a new slot goes back into the booked queue.
+      ...(appointment.status === 'no_show' ? { status: 'booked' } : {}),
+      notes: appointment.notes ? `${appointment.notes}\n${note}` : note,
+    },
+    include: {
+      patient: {
+        select: { id: true, mrn: true, firstName: true, lastName: true, phone: true },
+      },
+      doctor: {
+        include: { user: { select: { firstName: true, lastName: true } } },
+      },
+    },
+  });
+
+  logger.info(
+    { tenantId, appointmentId: id, userId, to: `${data.appointmentDate} ${data.startTime}` },
+    'Appointment rescheduled',
   );
   return updated;
 }

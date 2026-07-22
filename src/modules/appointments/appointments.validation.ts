@@ -173,6 +173,7 @@ export const bookAppointmentSchema = z.object({
 export const updateAppointmentStatusSchema = z.object({
   body: z.object({
     status: z.enum([
+      'pending_payment',
       'booked',
       'confirmed',
       'checked_in',
@@ -195,6 +196,26 @@ export const createQueueTokenSchema = z.object({
   }),
 });
 
+/**
+ * In-place reschedule: move an existing appointment to a new date/slot without
+ * cancelling + re-creating it, so the bill, queue token and history stay
+ * attached to the same appointment row.
+ */
+export const rescheduleAppointmentSchema = z.object({
+  body: z.object({
+    appointmentDate: z.string().refine((val) => !isNaN(Date.parse(val)), {
+      message: 'Invalid appointment date',
+    }),
+    startTime: z.string().regex(/^\d{2}:\d{2}$/, 'Time must be in HH:MM format'),
+    endTime: z.string().regex(/^\d{2}:\d{2}$/, 'Time must be in HH:MM format'),
+    doctorId: z.string().uuid('Invalid doctor ID').optional(),
+    reason: z.string().max(500).optional(),
+  }),
+  params: z.object({
+    id: z.string().uuid('Invalid appointment ID'),
+  }),
+});
+
 export const getAppointmentsQuerySchema = z.object({
   query: paginationSchema.extend({
     date: z.string().optional(),
@@ -207,6 +228,7 @@ export const getAppointmentsQuerySchema = z.object({
     search: z.string().optional(),
     status: z
       .enum([
+        'pending_payment',
         'booked',
         'confirmed',
         'checked_in',
@@ -276,3 +298,4 @@ export type BookAppointmentInput = z.infer<typeof bookAppointmentSchema>['body']
 export type UpdateAppointmentStatusInput = z.infer<typeof updateAppointmentStatusSchema>['body'];
 export type GetAppointmentsQuery = z.infer<typeof getAppointmentsQuerySchema>['query'];
 export type GetDoctorProfilesQuery = z.infer<typeof getDoctorProfilesQuerySchema>['query'];
+export type RescheduleAppointmentInput = z.infer<typeof rescheduleAppointmentSchema>['body'];

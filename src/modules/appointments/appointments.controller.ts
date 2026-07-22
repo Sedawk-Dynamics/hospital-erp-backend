@@ -430,6 +430,30 @@ export async function cancelAppointment(
   }
 }
 
+export async function rescheduleAppointment(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const appointment = await appointmentsService.rescheduleAppointment(
+      tenantId,
+      req.params.id as string,
+      req.body,
+      userId,
+    );
+    sendResponse({
+      res,
+      message: 'Appointment rescheduled successfully',
+      data: appointment,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function initiateFrontdeskPayment(
   req: AuthenticatedRequest,
   res: Response,

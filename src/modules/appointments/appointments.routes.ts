@@ -20,6 +20,7 @@ import {
   getDoctorProfilesQuerySchema,
   doctorIdParamSchema,
   appointmentIdParamSchema,
+  rescheduleAppointmentSchema,
   slotsQuerySchema,
   queueQuerySchema,
 } from './appointments.validation';
@@ -219,6 +220,15 @@ appointmentRoutes.patch(
   authenticate,
   validate(updateAppointmentStatusSchema),
   controller.updateAppointmentStatus,
+);
+
+// Reschedule appointment in place (keeps the same appointment id, bill + token)
+appointmentRoutes.patch(
+  '/:id/reschedule',
+  authenticate,
+  requirePermission('appointments', 'update'),
+  validate(rescheduleAppointmentSchema),
+  controller.rescheduleAppointment,
 );
 
 // Cancel appointment
