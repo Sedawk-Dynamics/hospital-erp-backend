@@ -21,16 +21,17 @@ import type {
   ListFormsQuery,
 } from './nursing-forms.validation';
 
-// Nursing forms are owned by the bedside nursing team (mirrors vitals).
-// `super_admin` retains write access for support/data correction. Doctors,
-// nurse_admin, and other clinical roles can read but never write — same
-// guarantee Vitals enforces.
-const FORM_WRITER_ROLES = new Set(['nurse', 'super_admin']);
+// Bedside charting (observations, devices, procedures) is primarily nursing
+// work, but the treating doctor charts at the bedside too — they hold
+// `forms:create` already, and blocking them here was the source of the 403 on
+// the doctor-side charting screens. Every entry records its author.
+// `super_admin` retains write access for support/data correction.
+const FORM_WRITER_ROLES = new Set(['nurse', 'doctor', 'super_admin']);
 
 function assertCanWriteForms(roles: string[]): void {
   if (!roles.some((r) => FORM_WRITER_ROLES.has(r))) {
     throw AppError.forbidden(
-      'Only nursing staff can record patient forms. Doctors and managers have read-only access.',
+      'Only clinical staff (nursing or medical) can record patient charting.',
     );
   }
 }

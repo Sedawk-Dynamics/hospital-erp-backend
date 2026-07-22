@@ -47,23 +47,25 @@ import type {
 export const VITAL_SELF_CORRECTION_WINDOW_MS = 15 * 60 * 1000;
 
 /**
- * Roles permitted to record or correct vitals. Vitals are nursing-owned —
- * doctors, nurse_admin, and other clinical staff can read but never write.
- * Super admin keeps write access for support / data correction scenarios.
+ * Roles permitted to record or correct vitals. Nursing runs the routine rounds,
+ * but a doctor examining a patient must be able to take and correct a reading
+ * too — every Vital stores `recordedBy` and corrections are append-only, so
+ * authorship stays unambiguous either way. Super admin keeps write access for
+ * support / data correction scenarios.
  */
-const VITAL_RECORDER_ROLES = new Set(['nurse', 'super_admin']);
+const VITAL_RECORDER_ROLES = new Set(['nurse', 'doctor', 'super_admin']);
 
 /**
  * Subset of recorder roles allowed to silently self-correct within the grace
  * window. `super_admin` always goes through the audited append-only path even
  * if they were the original recorder.
  */
-const VITAL_SELF_CORRECT_ROLES = new Set(['nurse']);
+const VITAL_SELF_CORRECT_ROLES = new Set(['nurse', 'doctor']);
 
 function assertCanWriteVitals(roles: string[]): void {
   if (!roles.some((r) => VITAL_RECORDER_ROLES.has(r))) {
     throw AppError.forbidden(
-      'Vitals are recorded by the nursing team. Doctors and other roles cannot create or correct vitals.',
+      'Only clinical staff (nursing or medical) can record or correct vitals.',
     );
   }
 }
