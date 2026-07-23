@@ -10,7 +10,6 @@ import { userRouter, roleRouter } from './users/users.routes';
 
 // Fully implemented modules
 import { patientRoutes } from './patients/patients.routes';
-import { emergencyRoutes } from './emergency/emergency.routes';
 import { appointmentRoutes } from './appointments/appointments.routes';
 import { billingRoutes } from './billing/billing.routes';
 
@@ -71,11 +70,6 @@ apiRouter.use('/tenants', authenticate, userTierLimiter, tenantRoutes);
 apiRouter.use('/users', authenticate, userTierLimiter, userRouter);
 apiRouter.use('/roles', authenticate, userTierLimiter, roleRouter);
 apiRouter.use('/patients', authenticate, userTierLimiter, patientRoutes);
-// Front-desk Emergency / Casualty flow (temp patient → OP/IP → register-or-connect).
-// Core, un-feature-gated: a casualty must never be blocked, and it spans both the
-// appointments (OP) and ip_management (IP) features. Per-route permission checks
-// (patients create/read/update) still apply.
-apiRouter.use('/emergency', authenticate, userTierLimiter, emergencyRoutes);
 apiRouter.use('/dashboard', authenticate, userTierLimiter, dashboardRoutes);
 apiRouter.use('/infrastructure', authenticate, userTierLimiter, infrastructureRoutes);
 apiRouter.use('/communication', authenticate, userTierLimiter, communicationRoutes);

@@ -3,7 +3,6 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
-import { isEmergencyMrn } from '../../shared/emergency';
 import { resolvePackSize, inferLooseUnitLabel } from '../drug-master/drug-master.dataset';
 import { resolveHsnGst, getHsnGstRows, matchHsnGst } from '../drug-master/drug-master.service';
 import { getInventorySettingsSafe } from '../inventory/inventory.settings.service';
@@ -3981,20 +3980,13 @@ export async function getWardLedger(
  * gated here; life-saving drugs bypass the gate entirely.
  */
 export async function getPatientCreditStatus(tenantId: string, patientId: string) {
-  const [admission, patient] = await Promise.all([
-    prisma.admission.findFirst({
-      where: { tenantId, patientId, status: 'admitted' },
-      orderBy: { admissionDate: 'desc' },
-      select: { id: true, billingCategory: true, depositAmount: true },
-    }),
-    prisma.patient.findFirst({ where: { id: patientId, tenantId }, select: { mrn: true } }),
-  ]);
+  const admission = await prisma.admission.findFirst({
+    where: { tenantId, patientId, status: 'admitted' },
+    orderBy: { admissionDate: 'desc' },
+    select: { id: true, billingCategory: true, depositAmount: true },
+  });
   const category = (admission?.billingCategory ?? 'cash').toLowerCase();
   const deposit = admission ? Number(admission.depositAmount) : 0;
-  // G6 (2.3): an Emergency/Casualty temp patient (TEMP-ER-…) is in the Golden-Hour
-  // bypass — never held by the credit gate, even though it may now carry a
-  // pending-placement admission with a zero deposit.
-  const isEmergency = isEmergencyMrn(patient?.mrn);
 
   // Running bill = the patient's currently-open (unsettled) bills.
   const agg = await prisma.bill.aggregate({
@@ -4005,8 +3997,8 @@ export async function getPatientCreditStatus(tenantId: string, patientId: string
   const balanceDue = round2(Number(agg._sum.balanceDue ?? 0));
   const available = round2(deposit - billed);
   const exceeded = billed > deposit;
-  // Only cash IP patients are held; everyone else (and emergency) settles elsewhere.
-  const requiresClearance = !isEmergency && !!admission && category === 'cash' && exceeded;
+  // Only cash IP patients are held; everyone else settles elsewhere.
+  const requiresClearance = !!admission && category === 'cash' && exceeded;
 
   return {
     patientId,

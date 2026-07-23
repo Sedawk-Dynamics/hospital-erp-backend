@@ -609,7 +609,6 @@ export const dispenseIdParamSchema = z.object({
   }),
 });
 
-// Emergency / Casualty patient schemas moved to the front-desk `/emergency` module.
 
 // G12: advance an IP prescription through the ward→pharmacy fulfilment lifecycle.
 export const setPharmacyStatusSchema = z.object({

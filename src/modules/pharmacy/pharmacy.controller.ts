@@ -642,7 +642,6 @@ export async function getNarcoticRegister(
   }
 }
 
-// Emergency / Casualty patient flow moved to the front-desk `/emergency` module.
 
 // G12: advance an IP prescription through the ward→pharmacy fulfilment lifecycle.
 export async function setPrescriptionPharmacyStatus(

@@ -193,9 +193,6 @@ pharmacyRoutes.get('/credit-status', authenticate, requirePermission('pharmacy',
 // §4.1 Flow 2: consolidated IP billing / TPA-submission summary for a patient.
 pharmacyRoutes.get('/billing-summary', authenticate, requirePermission('pharmacy', 'read'), validate(creditStatusQuerySchema), controller.getIpBillingSummary);
 
-// Emergency / Casualty flow moved to the front-desk module: `/emergency/*`
-// (see modules/emergency). Pharmacy dispensing still recognises a TEMP-ER-…
-// patient via the shared `isEmergencyMrn` helper to bypass the credit gate.
 
 // --- Analytics (sales / expiry / stock usage / batch summary for the Reports page) ---
 pharmacyRoutes.get('/analytics', authenticate, requirePermission('pharmacy', 'read'), controller.getPharmacyAnalytics);
