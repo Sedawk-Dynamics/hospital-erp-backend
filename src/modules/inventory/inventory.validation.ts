@@ -26,6 +26,9 @@ export const createSupplierSchema = z.object({
     supplyType: z.enum(['drugs', 'consumables', 'equipment', 'all']).optional(),
     // Credit period: days within which the vendor must be paid.
     paymentTermDays: z.coerce.number().int().min(0).max(365).optional(),
+    // Max ₹ outstanding credit for this vendor + how they're usually settled.
+    creditLimit: z.coerce.number().min(0).max(1_000_000_000).optional(),
+    paymentMode: z.enum(['cash', 'cheque', 'bank_transfer', 'upi', 'credit']).optional(),
     isActive: z.boolean().default(true),
   }),
 });
@@ -41,6 +44,8 @@ export const updateSupplierSchema = z.object({
     supplyType: z.enum(['drugs', 'consumables', 'equipment', 'all']).optional().nullable(),
     // Credit period: days within which the vendor must be paid.
     paymentTermDays: z.coerce.number().int().min(0).max(365).optional().nullable(),
+    creditLimit: z.coerce.number().min(0).max(1_000_000_000).optional().nullable(),
+    paymentMode: z.enum(['cash', 'cheque', 'bank_transfer', 'upi', 'credit']).optional().nullable(),
     isActive: z.boolean().optional(),
   }),
   params: z.object({

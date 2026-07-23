@@ -92,6 +92,8 @@ export async function createSupplier(tenantId: string, data: CreateSupplierInput
       licenseNumber: data.licenseNumber,
       supplyType: data.supplyType as any,
       paymentTermDays: data.paymentTermDays,
+      creditLimit: data.creditLimit,
+      paymentMode: data.paymentMode,
       isActive: data.isActive ?? true,
     },
   });
@@ -165,6 +167,8 @@ export async function updateSupplier(tenantId: string, id: string, data: UpdateS
   if (data.licenseNumber !== undefined) updateData.licenseNumber = data.licenseNumber;
   if (data.supplyType !== undefined) updateData.supplyType = data.supplyType;
   if (data.paymentTermDays !== undefined) updateData.paymentTermDays = data.paymentTermDays;
+  if (data.creditLimit !== undefined) updateData.creditLimit = data.creditLimit;
+  if (data.paymentMode !== undefined) updateData.paymentMode = data.paymentMode;
   if (data.isActive !== undefined) updateData.isActive = data.isActive;
 
   const supplier = await prisma.supplier.update({
@@ -1216,6 +1220,7 @@ export async function getPurchaseOrderById(tenantId: string, id: string) {
         select: {
           id: true, name: true, phone: true, email: true, address: true,
           gstNumber: true, licenseNumber: true, supplyType: true, paymentTermDays: true,
+          creditLimit: true, paymentMode: true,
         },
       },
       approver: {
