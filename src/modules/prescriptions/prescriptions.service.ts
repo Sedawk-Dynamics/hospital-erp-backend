@@ -7,7 +7,7 @@ import {
   generateForPrescription as emarGenerateForPrescription,
   cancelFutureSchedules as emarCancelFutureSchedules,
 } from '../emar/emar.scheduler-engine';
-import { resolveNicknameMatches } from '../pharmacy/pharmacy.nicknames';
+import { makeMedicineRankComparator } from '../../shared/medicine-search-rank';
 import type {
   CreatePrescriptionInput,
   UpdatePrescriptionInput,
@@ -977,12 +977,8 @@ export async function checkAllergy(tenantId: string, query: AllergyCheckQuery) {
 /**
  * Lightweight formulary search returning only fields needed for prescriptions.
  */
-export async function searchFormulary(tenantId: string, query: FormularySearchQuery, userId?: string) {
+export async function searchFormulary(tenantId: string, query: FormularySearchQuery, _userId?: string) {
   const { search } = query;
-
-  // The searcher's personal nicknames that match this term → linked drug ids, so
-  // typing a nickname surfaces its medicine even when the name doesn't match.
-  const nickMap = await resolveNicknameMatches(tenantId, userId, search);
 
   // 1. The hospital's own formulary (drugs it stocks) — these carry an `id`
   //    usable as PrescriptionItem.drugId.
@@ -996,7 +992,6 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
       OR: [
         { drugName: { contains: search, mode: 'insensitive' } },
         { genericName: { contains: search, mode: 'insensitive' } },
-        ...(nickMap.size ? [{ id: { in: [...nickMap.keys()] } }] : []),
       ],
     },
     select: {
@@ -1011,7 +1006,8 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
       // Stock type (medicine / consumable / surgical / …) so the pad can badge it.
       category: true,
     },
-    take: 30,
+    // Wider window so JS relevance ranking below can see all near matches.
+    take: 100,
     orderBy: { drugName: 'asc' },
   });
 
@@ -1034,19 +1030,18 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
       ...f,
       source: 'formulary' as const,
       availableStock: stockByDrug.get(f.id) ?? 0,
-      matchedNickname: nickMap.get(f.id) ?? null,
     }))
-    // Rank: personal nickname match → in stock → alphabetical. Stock used to be
-    // computed for display only, so an out-of-stock drug outranked an in-stock
-    // one purely on alphabetical order and the doctor kept prescribing items
-    // the pharmacy could not dispense.
-    .sort((a, b) => {
-      const byNickname = Number(!!b.matchedNickname) - Number(!!a.matchedNickname);
-      if (byNickname !== 0) return byNickname;
-      const byStock = Number(b.availableStock > 0) - Number(a.availableStock > 0);
-      if (byStock !== 0) return byStock;
-      return a.drugName.localeCompare(b.drugName);
-    });
+    // Rank: textual relevance (exact/prefix/word-start before substring) → in
+    // stock → alphabetical, so typing "DOLO" surfaces "DOLO 650" first and the
+    // doctor is nudged toward drugs the pharmacy can actually dispense.
+    .sort(
+      makeMedicineRankComparator(search, (f) => ({
+        name: f.drugName,
+        generic: f.genericName,
+        inStock: f.availableStock > 0,
+      })),
+    )
+    .slice(0, 30);
 
   // 2. The hospital's OWN non-medicine stock — consumables, surgical supplies,
   //    equipment. These live in InventoryItem and never exist in the platform

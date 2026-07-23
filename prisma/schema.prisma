@@ -1330,7 +1330,6 @@ model Tenant {
   dicomStudies               DicomStudy[]
   dicomSeries                DicomSeries[]
   dicomInstances             DicomInstance[]
-  drugNicknames              DrugNickname[]
 
   @@map("tenants")
 }
@@ -4297,7 +4296,6 @@ model DrugFormulary {
   ndpsTransactions    NdpsTransaction[]
   ndpsDailyBalances   NdpsDailyBalance[]
   stockHoldItems      PharmacyStockHoldItem[]
-  nicknames           DrugNickname[]
 
   // A GTIN identifies one product, so within a hospital's formulary it belongs
   // to at most one drug (else a counter/inward scan is ambiguous). Scoped per
@@ -4308,30 +4306,6 @@ model DrugFormulary {
   @@map("drug_formulary")
 }
 
-/// Personal medicine shortcut: a pharmacist links their own nickname ("bp med",
-/// "para") to a formulary drug. When THAT user types the nickname in any drug
-/// search, the linked medicine surfaces first. Scoped per (tenant, user), so
-/// each pharmacist's shorthand is private and never clashes with another's.
-model DrugNickname {
-  id              String   @id @default(uuid())
-  tenantId        String   @map("tenant_id")
-  userId          String   @map("user_id")
-  drugFormularyId String   @map("drug_formulary_id")
-  nickname        String   @db.VarChar(60)
-  // Lowercased/trimmed form used for case-insensitive matching + the uniqueness
-  // guard (a user can't map the same nickname to two drugs).
-  nicknameNorm    String   @map("nickname_norm") @db.VarChar(60)
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
-
-  tenant Tenant        @relation(fields: [tenantId], references: [id])
-  drug   DrugFormulary @relation(fields: [drugFormularyId], references: [id], onDelete: Cascade)
-
-  @@unique([tenantId, userId, nicknameNorm])
-  @@index([tenantId, userId])
-  @@index([drugFormularyId])
-  @@map("drug_nicknames")
-}
 
 model DrugBatch {
   id                      String    @id @default(uuid())

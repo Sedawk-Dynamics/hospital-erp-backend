@@ -19,7 +19,7 @@ import {
   MATCH_BLOCK_THRESHOLD,
 } from './pharmacy.matching';
 import { parseGs1, makeInternalBarcode, isInternalBarcode, internalKeyFromScan, buildLabelPayload, gtinVariants, normalizeGtin } from './pharmacy.barcode';
-import { resolveNicknameMatches, getNicknamesForDrugs } from './pharmacy.nicknames';
+import { makeMedicineRankComparator } from '../../shared/medicine-search-rank';
 import type {
   CreateFormularyInput,
   UpdateFormularyInput,
@@ -1402,16 +1402,10 @@ export async function getTenantCatalog(tenantId: string, query: any) {
   return { items, total, page, limit };
 }
 
-export async function getFormulary(tenantId: string, query: GetFormularyQuery, userId?: string) {
+export async function getFormulary(tenantId: string, query: GetFormularyQuery, _userId?: string) {
   const { skip, take, page, limit } = getPaginationParams(query);
 
   const where: any = { tenantId };
-
-  // Personal nickname match: if the searcher has a nickname for a drug that
-  // matches this term, surface the linked drug even when its NAME doesn't match.
-  const nickMap = query.search
-    ? await resolveNicknameMatches(tenantId, userId, query.search)
-    : new Map<string, string>();
 
   if (query.dosageForm) where.dosageForm = query.dosageForm;
   if (query.isActive !== undefined) where.isActive = query.isActive;
@@ -1431,20 +1425,24 @@ export async function getFormulary(tenantId: string, query: GetFormularyQuery, u
     where.drugBatches = { none: availableBatchFilter };
   }
 
+  const isSearch = !!query.search;
   if (query.search) {
     where.OR = [
       { drugName: { contains: query.search, mode: 'insensitive' } },
       { genericName: { contains: query.search, mode: 'insensitive' } },
       { manufacturer: { contains: query.search, mode: 'insensitive' } },
-      ...(nickMap.size ? [{ id: { in: [...nickMap.keys()] } }] : []),
     ];
   }
 
+  // On a search we pull a wider candidate window and re-rank by relevance
+  // (exact/prefix/word-start before substring) in JS, since Postgres can't
+  // express that ordering. On a plain list we keep normal SQL pagination.
+  const SEARCH_WINDOW = 100;
   const [items, total] = await Promise.all([
     prisma.drugFormulary.findMany({
       where,
-      skip,
-      take,
+      skip: isSearch ? 0 : skip,
+      take: isSearch ? SEARCH_WINDOW : take,
       include: {
         // Only the in-stock batches — drives the per-row stock summary.
         drugBatches: {
@@ -1457,14 +1455,9 @@ export async function getFormulary(tenantId: string, query: GetFormularyQuery, u
     prisma.drugFormulary.count({ where }),
   ]);
 
-  // Whatever the search matched on, surface the user's own nickname for each
-  // product so an existing shorthand is always visible — not only when it was
-  // the thing typed.
-  const nicknameByDrug = await getNicknamesForDrugs(tenantId, userId, items.map((i) => i.id));
-
   // Roll batch rows up into a stock summary so the formulary list can show
   // In Stock (qty) / Out of Stock without a second round-trip.
-  const shaped = items.map((it) => {
+  let shaped = items.map((it) => {
     const { drugBatches, ...rest } = it;
     const totalStock = drugBatches.reduce((s, b) => s + b.quantityInStock, 0);
     const nearestExpiry = drugBatches.length
@@ -1478,15 +1471,17 @@ export async function getFormulary(tenantId: string, query: GetFormularyQuery, u
       batchCount: drugBatches.length,
       inStock: totalStock > 0,
       nearestExpiry,
-      // The pharmacist's own nickname that MATCHED this search (null otherwise).
-      matchedNickname: nickMap.get(it.id) ?? null,
-      // The pharmacist's nickname for this drug, if any — shown regardless of
-      // whether the search matched on it.
-      nickname: nicknameByDrug.get(it.id) ?? null,
     };
   });
-  // Float nickname matches to the top so typing a nickname surfaces its drug first.
-  if (nickMap.size) shaped.sort((a, b) => Number(!!b.matchedNickname) - Number(!!a.matchedNickname));
+
+  if (isSearch) {
+    const cmp = makeMedicineRankComparator<(typeof shaped)[number]>(query.search!, (r) => ({
+      name: r.drugName,
+      generic: r.genericName,
+      inStock: r.inStock,
+    }));
+    shaped = shaped.sort(cmp).slice(skip, skip + take);
+  }
 
   return { items: shaped, total, page, limit };
 }

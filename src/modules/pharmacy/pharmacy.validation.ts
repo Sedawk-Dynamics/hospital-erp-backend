@@ -949,21 +949,3 @@ export type RecallBatchInput = z.infer<typeof recallBatchSchema>['body'];
 export type GetRecalledItemsQuery = z.infer<typeof getRecalledItemsQuerySchema>['query'];
 export type GetGstReportQuery = z.infer<typeof getGstReportQuerySchema>['query'];
 export type GetStockLedgerQuery = z.infer<typeof getStockLedgerQuerySchema>['query'];
-
-// ── Personal medicine nicknames ──
-export const createNicknameSchema = z.object({
-  body: z.object({
-    drugFormularyId: z.string().uuid('Invalid medicine id'),
-    nickname: z.string().trim().min(1, 'Nickname is required').max(60),
-  }),
-});
-export const updateNicknameSchema = z.object({
-  body: z.object({
-    drugFormularyId: z.string().uuid('Invalid medicine id').optional(),
-    nickname: z.string().trim().min(1).max(60).optional(),
-  }),
-  params: z.object({ id: z.string().uuid('Invalid nickname id') }),
-});
-export const nicknameIdParamSchema = z.object({
-  params: z.object({ id: z.string().uuid('Invalid nickname id') }),
-});

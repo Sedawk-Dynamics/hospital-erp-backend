@@ -3,6 +3,7 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
+import { makeMedicineRankComparator } from '../../shared/medicine-search-rank';
 import { buildDrugSearchTokens } from './drug-master.dataset';
 import { gtinVariants, normalizeGtin } from '../pharmacy/pharmacy.barcode';
 import type {
@@ -61,11 +62,19 @@ export async function searchDrugMaster(query: SearchDrugMasterQuery) {
       type: true,
       schedule: true,
     },
-    take: query.limit ?? 20,
+    // Wider window so JS relevance ranking can see all near matches; sliced back
+    // to the requested limit after ranking.
+    take: Math.max(query.limit ?? 20, 100),
     orderBy: { name: 'asc' },
   });
 
-  return drugs;
+  // Rank by textual relevance against the full query so an exact/prefix match
+  // (e.g. "DOLO" → "DOLO 650") comes before a mere substring ("PARADOLO").
+  const cmp = makeMedicineRankComparator<(typeof drugs)[number]>(query.q, (d) => ({
+    name: d.name,
+    generic: d.genericName,
+  }));
+  return drugs.sort(cmp).slice(0, query.limit ?? 20);
 }
 
 // ─────────────────────────────────────────────────────────────
