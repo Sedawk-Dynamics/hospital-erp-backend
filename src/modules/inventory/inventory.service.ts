@@ -1212,7 +1212,11 @@ export async function getPurchaseOrderById(tenantId: string, id: string) {
     where: { id, tenantId },
     include: {
       supplier: {
-        select: { id: true, name: true, phone: true, email: true },
+        // Full vendor context for the PO detail card (contact + tax + credit term).
+        select: {
+          id: true, name: true, phone: true, email: true, address: true,
+          gstNumber: true, licenseNumber: true, supplyType: true, paymentTermDays: true,
+        },
       },
       approver: {
         select: { id: true, firstName: true, lastName: true },
@@ -1220,10 +1224,13 @@ export async function getPurchaseOrderById(tenantId: string, id: string) {
       items: {
         include: {
           inventoryItem: {
-            select: { id: true, itemName: true, itemCode: true, unitOfMeasurement: true },
+            select: { id: true, itemName: true, itemCode: true, unitOfMeasurement: true, currentStock: true },
           },
           drug: {
-            select: { id: true, drugName: true, genericName: true, manufacturer: true, strength: true, dosageForm: true },
+            select: {
+              id: true, drugName: true, genericName: true, manufacturer: true,
+              strength: true, dosageForm: true, unitOfMeasurement: true, packSize: true,
+            },
           },
         },
       },
