@@ -9,6 +9,9 @@ import {
   addEmergencyContactSchema,
   addDocumentSchema,
   patientIdParamSchema,
+  createTemporaryPatientSchema,
+  registerTemporaryPatientSchema,
+  mergeTemporaryPatientSchema,
 } from './patients.validation';
 import * as controller from './patients.controller';
 
@@ -21,6 +24,15 @@ patientRoutes.post(
   requirePermission('patients', 'create'),
   validate(createPatientSchema),
   controller.create,
+);
+
+// Create a temporary (provisional) patient — literal path before '/:id'
+patientRoutes.post(
+  '/temporary',
+  authenticate,
+  requirePermission('patients', 'create'),
+  validate(createTemporaryPatientSchema),
+  controller.createTemporary,
 );
 
 // List patients (paginated)
@@ -65,6 +77,24 @@ patientRoutes.put(
   requirePermission('patients', 'update'),
   validate(updatePatientSchema),
   controller.update,
+);
+
+// Register a temporary patient in place — permanent MRN + real details, same row
+patientRoutes.post(
+  '/:id/register-in-place',
+  authenticate,
+  requirePermission('patients', 'update'),
+  validate(registerTemporaryPatientSchema),
+  controller.registerTemporary,
+);
+
+// Merge a temporary patient into an existing registered patient (repoint + retire)
+patientRoutes.post(
+  '/:id/merge',
+  authenticate,
+  requirePermission('patients', 'update'),
+  validate(mergeTemporaryPatientSchema),
+  controller.mergeTemporary,
 );
 
 // Add emergency contact

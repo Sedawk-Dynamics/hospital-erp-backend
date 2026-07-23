@@ -2,6 +2,7 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
+import { TEMP_MRN_PREFIX } from '../../shared/temporary-patient';
 import type {
   CreatePatientInput,
   UpdatePatientInput,
@@ -235,6 +236,17 @@ export async function findAll(tenantId: string, query: SearchPatientsQuery) {
 
   if (query.isActive !== undefined) {
     where.isActive = query.isActive;
+  }
+
+  // Front Desk directory tabs. A temporary patient is an ACTIVE row whose MRN
+  // still has the TEMP- prefix; once registered-in-place it gets a permanent MRN,
+  // and once merged it is retired (inactive, MRN suffixed -MERGED) — both drop
+  // out of this tab automatically. A registered patient is anything non-TEMP.
+  if ((query as any).category === 'temporary') {
+    where.mrn = { startsWith: TEMP_MRN_PREFIX, not: { endsWith: '-MERGED' } };
+    if (where.isActive === undefined) where.isActive = true;
+  } else if ((query as any).category === 'registered') {
+    where.NOT = [...(where.NOT ?? []), { mrn: { startsWith: TEMP_MRN_PREFIX } }];
   }
 
   if (query.fromDate) {

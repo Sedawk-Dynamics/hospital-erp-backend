@@ -3,6 +3,7 @@ import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse, sendPaginatedResponse } from '../../shared/apiResponse';
 import { AppError } from '../../shared/appError';
 import * as patientsService from './patients.service';
+import * as tempService from './patients.temporary.service';
 
 export async function create(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
@@ -179,6 +180,74 @@ export async function findByUser(
       res,
       message: 'User patient profiles',
       data: profiles,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ── Temporary (provisional) patient ─────────────────────────
+
+export async function createTemporary(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const patient = await tempService.createTemporaryPatient(
+      req.user!.tenantId,
+      req.user!.userId,
+      req.body,
+    );
+    sendResponse({
+      res,
+      statusCode: 201,
+      message: 'Temporary patient created successfully',
+      data: patient,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function registerTemporary(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const patient = await tempService.registerTemporaryPatient(
+      req.user!.tenantId,
+      req.user!.userId,
+      req.params.id as string,
+      req.body,
+    );
+    sendResponse({
+      res,
+      message: 'Temporary patient registered successfully',
+      data: patient,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function mergeTemporary(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const result = await tempService.mergeTemporaryPatient(
+      req.user!.tenantId,
+      req.user!.userId,
+      req.params.id as string,
+      req.body.targetPatientId,
+    );
+    sendResponse({
+      res,
+      message: 'Temporary patient connected to existing patient successfully',
+      data: result,
     });
   } catch (err) {
     next(err);

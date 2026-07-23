@@ -105,9 +105,59 @@ export const searchPatientsSchema = z.object({
       .string()
       .transform((val) => val === 'true')
       .optional(),
+    // Front Desk patient directory tabs: all | registered (permanent MRN) |
+    // temporary (TEMP-… MRN, not yet registered/merged).
+    category: z.enum(['all', 'registered', 'temporary']).optional(),
     fromDate: z.string().optional(),
     toDate: z.string().optional(),
   }),
+});
+
+// ── Temporary (provisional) patient ─────────────────────────
+
+/** Create a temp patient from whatever is known — everything is optional. */
+export const createTemporaryPatientSchema = z.object({
+  body: z.object({
+    firstName: z.string().max(100).optional(),
+    lastName: z.string().max(100).optional(),
+    gender: z.enum(['male', 'female', 'other', 'prefer_not_to_say']).optional(),
+    dateOfBirth: z.string().optional(),
+    age: z.coerce.number().int().min(0).max(150).optional(),
+    phone: z.string().max(20).optional(),
+    email: z.string().email('Invalid email').max(255).optional().or(z.literal('')),
+    bloodGroup: z.enum(['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-']).optional(),
+    address: z.string().max(255).optional(),
+    city: z.string().max(100).optional(),
+    state: z.string().max(100).optional(),
+    zipCode: z.string().max(20).optional(),
+    notes: z.string().max(1000).optional(),
+  }),
+});
+
+/** Register a temp patient in place — a real first name is now required. */
+export const registerTemporaryPatientSchema = z.object({
+  body: z.object({
+    firstName: z.string().min(1, 'First name is required').max(100),
+    lastName: z.string().max(100).optional(),
+    gender: z.enum(['male', 'female', 'other', 'prefer_not_to_say']).optional(),
+    dateOfBirth: z.string().optional(),
+    phone: z.string().max(20).optional(),
+    email: z.string().email('Invalid email').max(255).optional().or(z.literal('')),
+    bloodGroup: z.enum(['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-']).optional(),
+    address: z.string().max(255).optional(),
+    city: z.string().max(100).optional(),
+    state: z.string().max(100).optional(),
+    zipCode: z.string().max(20).optional(),
+  }),
+  params: z.object({ id: z.string().uuid('Invalid patient ID') }),
+});
+
+/** Merge a temp patient into an existing registered one. */
+export const mergeTemporaryPatientSchema = z.object({
+  body: z.object({
+    targetPatientId: z.string().uuid('Invalid target patient ID'),
+  }),
+  params: z.object({ id: z.string().uuid('Invalid patient ID') }),
 });
 
 export const addEmergencyContactSchema = z.object({
@@ -193,6 +243,8 @@ export const patientIdParamSchema = z.object({
 export type CreatePatientInput = z.infer<typeof createPatientSchema>['body'];
 export type UpdatePatientInput = z.infer<typeof updatePatientSchema>['body'];
 export type SearchPatientsQuery = z.infer<typeof searchPatientsSchema>['query'];
+export type CreateTemporaryPatientInput = z.infer<typeof createTemporaryPatientSchema>['body'];
+export type RegisterTemporaryPatientInput = z.infer<typeof registerTemporaryPatientSchema>['body'];
 export type AddEmergencyContactInput = z.infer<typeof addEmergencyContactSchema>['body'];
 export type AddAllergyInput = z.infer<typeof addAllergySchema>['body'];
 export type AddDocumentInput = z.infer<typeof addDocumentSchema>['body'];
