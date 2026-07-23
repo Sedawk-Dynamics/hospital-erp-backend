@@ -220,6 +220,24 @@ export async function createHsnGstRate(
   }
 }
 
+export async function bulkUpsertHsnGstRates(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const out = await service.bulkUpsertHsnGstRates(req.user!.roles ?? [], req.body.rows);
+    sendResponse({
+      res,
+      statusCode: 201,
+      message: `Imported ${out.created} new and updated ${out.updated} HSN → GST rate(s)`,
+      data: out,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function updateHsnGstRate(
   req: AuthenticatedRequest,
   res: Response,

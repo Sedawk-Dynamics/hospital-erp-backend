@@ -413,6 +413,70 @@ export async function updateHsnGstRate(roles: string[], id: string, data: Update
   }
 }
 
+/**
+ * Bulk create/update HSN → GST rates. Each row is upserted by its HSN code, so
+ * re-importing a code updates its rate rather than erroring on the unique
+ * constraint. Returns how many were created vs updated (and any skipped rows).
+ */
+export async function bulkUpsertHsnGstRates(
+  roles: string[],
+  rows: CreateHsnGstRateInput[],
+) {
+  assertCanManage(roles);
+  let created = 0;
+  let updated = 0;
+  const skipped: Array<{ hsnCode: string; reason: string }> = [];
+
+  // De-dup within the payload (last one wins) so two rows for the same HSN in a
+  // single paste don't fight each other.
+  const byCode = new Map<string, CreateHsnGstRateInput>();
+  for (const r of rows) {
+    const code = normalizeHsn(r.hsnCode);
+    if (!code) {
+      skipped.push({ hsnCode: r.hsnCode, reason: 'HSN code must contain digits' });
+      continue;
+    }
+    byCode.set(code, r);
+  }
+
+  for (const [hsnCode, r] of byCode) {
+    try {
+      const existing = await prisma.hsnGstRate.findUnique({ where: { hsnCode } });
+      if (existing) {
+        await prisma.hsnGstRate.update({
+          where: { hsnCode },
+          data: {
+            gstRate: r.gstRate,
+            description: r.description ?? existing.description,
+            category: r.category ?? existing.category,
+            isActive: r.isActive ?? existing.isActive,
+          },
+        });
+        updated++;
+      } else {
+        await prisma.hsnGstRate.create({
+          data: {
+            hsnCode,
+            description: r.description ?? null,
+            gstRate: r.gstRate,
+            category: r.category ?? null,
+            isActive: r.isActive ?? true,
+          },
+        });
+        created++;
+      }
+    } catch (err) {
+      skipped.push({
+        hsnCode,
+        reason: err instanceof Error ? err.message : 'Failed to save',
+      });
+    }
+  }
+
+  logger.info({ created, updated, skipped: skipped.length }, 'HSN → GST rates bulk upserted');
+  return { created, updated, skipped };
+}
+
 export async function deleteHsnGstRate(roles: string[], id: string) {
   assertCanManage(roles);
   const existing = await prisma.hsnGstRate.findUnique({ where: { id } });

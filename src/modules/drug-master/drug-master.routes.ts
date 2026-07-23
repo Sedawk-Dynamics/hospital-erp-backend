@@ -17,6 +17,7 @@ import {
   suggestDrugMasterSchema,
   createHsnGstRateSchema,
   updateHsnGstRateSchema,
+  bulkHsnGstRateSchema,
   hsnGstRateIdParamSchema,
 } from './drug-master.validation';
 
@@ -46,6 +47,14 @@ drugMasterRoutes.post(
   requireRoles('super_admin'),
   validate(createHsnGstRateSchema),
   controller.createHsnGstRate,
+);
+// Bulk create/update — literal path before '/hsn/:id'.
+drugMasterRoutes.post(
+  '/hsn/bulk',
+  authenticate,
+  requireRoles('super_admin'),
+  validate(bulkHsnGstRateSchema),
+  controller.bulkUpsertHsnGstRates,
 );
 drugMasterRoutes.put(
   '/hsn/:id',

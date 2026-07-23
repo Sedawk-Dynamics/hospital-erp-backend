@@ -111,12 +111,23 @@ export const updateHsnGstRateSchema = z.object({
   params: z.object({ id: z.string().uuid('Invalid HSN rate ID') }),
 });
 
+// Bulk create/update: each row is upserted by HSN code (existing rows updated).
+export const bulkHsnGstRateSchema = z.object({
+  body: z.object({
+    rows: z
+      .array(createHsnGstRateSchema.shape.body)
+      .min(1, 'At least one row is required')
+      .max(2000, 'At most 2000 rows at a time'),
+  }),
+});
+
 export const hsnGstRateIdParamSchema = z.object({
   params: z.object({ id: z.string().uuid('Invalid HSN rate ID') }),
 });
 
 export type CreateHsnGstRateInput = z.infer<typeof createHsnGstRateSchema>['body'];
 export type UpdateHsnGstRateInput = z.infer<typeof updateHsnGstRateSchema>['body'];
+export type BulkHsnGstRateInput = z.infer<typeof bulkHsnGstRateSchema>['body'];
 
 export type SearchDrugMasterQuery = z.infer<typeof searchDrugMasterSchema>['query'];
 export type ListDrugMasterQuery = z.infer<typeof listDrugMasterSchema>['query'];
