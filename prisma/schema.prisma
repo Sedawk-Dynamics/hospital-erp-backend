@@ -4003,8 +4003,11 @@ model DrugMaster {
   // wholesale case, and unitsPerCase translates a scanned case into N consumer
   // units. manufacturerCode is the maker's own product code (second-tier match).
   // hsnCode / gstRate drive tax + compliance validation at inward and billing.
-  gtin             String?     @db.VarChar(20)
-  casePackGtin     String?     @map("case_pack_gtin") @db.VarChar(20)
+  // A GTIN identifies one product, so it is unique across the whole platform
+  // catalog. Nulls are allowed to repeat (Postgres treats them as distinct);
+  // writes normalise a blank to NULL so an empty field never trips the index.
+  gtin             String?     @unique @db.VarChar(20)
+  casePackGtin     String?     @unique @map("case_pack_gtin") @db.VarChar(20)
   unitsPerCase     Int?        @map("units_per_case")
   manufacturerCode String?     @map("manufacturer_code") @db.VarChar(100)
   hsnCode          String?     @map("hsn_code") @db.VarChar(20)
@@ -4296,6 +4299,12 @@ model DrugFormulary {
   stockHoldItems      PharmacyStockHoldItem[]
   nicknames           DrugNickname[]
 
+  // A GTIN identifies one product, so within a hospital's formulary it belongs
+  // to at most one drug (else a counter/inward scan is ambiguous). Scoped per
+  // tenant — two hospitals can each stock the same product. Nulls repeat freely;
+  // writes normalise a blank to NULL so empty fields never collide.
+  @@unique([tenantId, gtin])
+  @@unique([tenantId, casePackGtin])
   @@map("drug_formulary")
 }
 

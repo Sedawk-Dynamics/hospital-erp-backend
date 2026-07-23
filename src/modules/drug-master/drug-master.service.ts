@@ -4,6 +4,7 @@ import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
 import { buildDrugSearchTokens } from './drug-master.dataset';
+import { gtinVariants, normalizeGtin } from '../pharmacy/pharmacy.barcode';
 import type {
   SearchDrugMasterQuery,
   ListDrugMasterQuery,
@@ -95,12 +96,47 @@ export async function getDrugMasterById(id: string) {
   return drug;
 }
 
+/**
+ * The catalog is platform-wide, so a GTIN identifies one product across every
+ * hospital — it may belong to at most one DrugMaster row. Guards both the
+ * consumer and case-pack GTIN, across both columns and 13-/14-digit forms.
+ * Throws a 409 naming the clashing catalog entry. `excludeId` skips self on edit.
+ */
+async function assertDrugMasterGtinUnique(
+  gtin: string | null | undefined,
+  casePackGtin: string | null | undefined,
+  excludeId?: string,
+) {
+  for (const [label, value] of [
+    ['GTIN', normalizeGtin(gtin)],
+    ['case-pack GTIN', normalizeGtin(casePackGtin)],
+  ] as const) {
+    if (!value) continue;
+    const variants = gtinVariants(value);
+    if (!variants.length) continue;
+    const clash = await prisma.drugMaster.findFirst({
+      where: {
+        id: excludeId ? { not: excludeId } : undefined,
+        OR: [{ gtin: { in: variants } }, { casePackGtin: { in: variants } }],
+      },
+      select: { name: true, strength: true },
+    });
+    if (clash) {
+      const who = `${clash.name}${clash.strength ? ' ' + clash.strength : ''}`;
+      throw AppError.conflict(
+        `${label} ${value} is already assigned to "${who}" in the catalog. Each medicine must have a unique GTIN.`,
+      );
+    }
+  }
+}
+
 export async function createDrugMaster(
   roles: string[],
   userId: string,
   data: CreateDrugMasterInput,
 ) {
   assertCanManage(roles);
+  await assertDrugMasterGtinUnique(data.gtin, data.casePackGtin);
 
   const aliases = data.aliases ?? [];
   const tags = data.tags ?? [];
@@ -116,8 +152,8 @@ export async function createDrugMaster(
       mrp: data.mrp ?? null,
       isDiscontinued: data.isDiscontinued ?? false,
       schedule: data.schedule ?? null,
-      gtin: data.gtin ?? null,
-      casePackGtin: data.casePackGtin ?? null,
+      gtin: normalizeGtin(data.gtin),
+      casePackGtin: normalizeGtin(data.casePackGtin),
       unitsPerCase: data.unitsPerCase ?? null,
       manufacturerCode: data.manufacturerCode ?? null,
       hsnCode: data.hsnCode ?? null,
@@ -184,6 +220,18 @@ export async function updateDrugMaster(
   const existing = await prisma.drugMaster.findUnique({ where: { id } });
   if (!existing) throw AppError.notFound('Drug not found in catalog');
 
+  // Normalise + uniqueness-check any GTIN change before writing.
+  const nextGtin = data.gtin !== undefined ? normalizeGtin(data.gtin) : undefined;
+  const nextCaseGtin =
+    data.casePackGtin !== undefined ? normalizeGtin(data.casePackGtin) : undefined;
+  if (nextGtin !== undefined || nextCaseGtin !== undefined) {
+    await assertDrugMasterGtinUnique(
+      nextGtin !== undefined ? nextGtin : existing.gtin,
+      nextCaseGtin !== undefined ? nextCaseGtin : existing.casePackGtin,
+      id,
+    );
+  }
+
   const name = data.name ?? existing.name;
   const genericName = data.genericName !== undefined ? data.genericName : existing.genericName;
   const manufacturer =
@@ -204,8 +252,8 @@ export async function updateDrugMaster(
       mrp: data.mrp !== undefined ? data.mrp : undefined,
       isDiscontinued: data.isDiscontinued ?? undefined,
       schedule: data.schedule !== undefined ? data.schedule : undefined,
-      gtin: data.gtin !== undefined ? data.gtin : undefined,
-      casePackGtin: data.casePackGtin !== undefined ? data.casePackGtin : undefined,
+      gtin: nextGtin,
+      casePackGtin: nextCaseGtin,
       unitsPerCase: data.unitsPerCase !== undefined ? data.unitsPerCase : undefined,
       manufacturerCode: data.manufacturerCode !== undefined ? data.manufacturerCode : undefined,
       hsnCode: data.hsnCode !== undefined ? data.hsnCode : undefined,

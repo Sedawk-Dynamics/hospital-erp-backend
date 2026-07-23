@@ -19,7 +19,7 @@ import {
   MATCH_SUGGEST_THRESHOLD,
   MATCH_BLOCK_THRESHOLD,
 } from './pharmacy.matching';
-import { parseGs1, makeInternalBarcode, isInternalBarcode, internalKeyFromScan, buildLabelPayload, gtinVariants } from './pharmacy.barcode';
+import { parseGs1, makeInternalBarcode, isInternalBarcode, internalKeyFromScan, buildLabelPayload, gtinVariants, normalizeGtin } from './pharmacy.barcode';
 import { resolveNicknameMatches, getNicknamesForDrugs } from './pharmacy.nicknames';
 import type {
   CreateFormularyInput,
@@ -316,12 +316,76 @@ export function normalizeDosageForm(raw: unknown): string | undefined {
   return 'other';
 }
 
+/**
+ * A GTIN identifies exactly one product, so within a hospital's formulary it may
+ * belong to at most one drug — otherwise a counter/inward scan is ambiguous.
+ * This guards BOTH the consumer GTIN and the outer-case GTIN, and matches across
+ * both columns (a code used as a consumer GTIN on one drug must not reappear as
+ * anyone's case GTIN) and across 13-/14-digit forms of the same number.
+ *
+ * Throws a 409 naming the drug that already holds the code so the desk can see
+ * exactly what clashes. `excludeId` skips the row being edited.
+ */
+/**
+ * Non-throwing variant: returns the normalised GTIN if no other drug in the
+ * tenant holds it (or any of its variants), else null. Used where a colliding
+ * code should be dropped rather than error (e.g. carrying a catalog GTIN over
+ * on import).
+ */
+async function gtinFreeForTenant(
+  tenantId: string,
+  gtin: string | null | undefined,
+): Promise<string | null> {
+  const value = normalizeGtin(gtin);
+  if (!value) return null;
+  const variants = gtinVariants(value);
+  const owner = await prisma.drugFormulary.findFirst({
+    where: {
+      tenantId,
+      OR: [{ gtin: { in: variants } }, { casePackGtin: { in: variants } }],
+    },
+    select: { id: true },
+  });
+  return owner ? null : value;
+}
+
+async function assertFormularyGtinUnique(
+  tenantId: string,
+  gtin: string | null | undefined,
+  casePackGtin: string | null | undefined,
+  excludeId?: string,
+) {
+  for (const [label, value] of [
+    ['GTIN', normalizeGtin(gtin)],
+    ['case-pack GTIN', normalizeGtin(casePackGtin)],
+  ] as const) {
+    if (!value) continue;
+    const variants = gtinVariants(value);
+    if (!variants.length) continue;
+    const clash = await prisma.drugFormulary.findFirst({
+      where: {
+        tenantId,
+        id: excludeId ? { not: excludeId } : undefined,
+        OR: [{ gtin: { in: variants } }, { casePackGtin: { in: variants } }],
+      },
+      select: { drugName: true, strength: true },
+    });
+    if (clash) {
+      const who = `${clash.drugName}${clash.strength ? ' ' + clash.strength : ''}`;
+      throw AppError.conflict(
+        `${label} ${value} is already assigned to "${who}". Each medicine must have a unique GTIN.`,
+      );
+    }
+  }
+}
+
 export async function createFormularyItem(
   tenantId: string,
   roles: string[],
   data: CreateFormularyInput & { force?: boolean },
 ) {
   assertPharmacyAdmin(roles, 'add formulary drugs');
+  await assertFormularyGtinUnique(tenantId, (data as any).gtin, (data as any).casePackGtin);
   // G1 duplicate guard: unless the user explicitly forced creation, refuse to
   // silently add a new row when a high-confidence near-duplicate already exists
   // (e.g. "Telmac 40 Tab" when "Telmac 40" is on file). The caller gets the
@@ -359,8 +423,10 @@ export async function createFormularyItem(
       taxPercent: data.taxPercent,
       minStock: (data as any).minStock,
       // Product Resolution Engine identity (carried from the catalog or typed).
-      gtin: (data as any).gtin ?? undefined,
-      casePackGtin: (data as any).casePackGtin ?? undefined,
+      // Normalised to digits-or-null so a blank never stores "" (which would
+      // collide under the unique index).
+      gtin: normalizeGtin((data as any).gtin),
+      casePackGtin: normalizeGtin((data as any).casePackGtin),
       unitsPerCase: (data as any).unitsPerCase ?? undefined,
       hsnCode: (data as any).hsnCode ?? undefined,
       manufacturerCode: (data as any).manufacturerCode ?? undefined,
@@ -596,7 +662,24 @@ async function backfillFormularyIdentity(
     });
     if (!f) return;
     const data: any = {};
-    if (ids.gtin?.trim() && !f.gtin) data.gtin = ids.gtin.trim();
+    const incomingGtin = normalizeGtin(ids.gtin);
+    if (incomingGtin && !f.gtin) {
+      // Never backfill a code that already belongs to a different drug — that
+      // would make a scan ambiguous. Silently skip (best-effort path); the
+      // operator can map it deliberately via the formulary edit, which reports
+      // the clash.
+      const variants = gtinVariants(incomingGtin);
+      const owner = await prisma.drugFormulary.findFirst({
+        where: {
+          tenantId,
+          id: { not: formularyId },
+          OR: [{ gtin: { in: variants } }, { casePackGtin: { in: variants } }],
+        },
+        select: { id: true },
+      });
+      if (!owner) data.gtin = incomingGtin;
+      else logger.warn({ tenantId, formularyId, gtin: incomingGtin }, 'GTIN backfill skipped — already assigned to another drug');
+    }
     if (ids.hsnCode?.trim() && !f.hsnCode) data.hsnCode = ids.hsnCode.trim();
     if (ids.manufacturerCode?.trim() && !f.manufacturerCode) data.manufacturerCode = ids.manufacturerCode.trim();
     if (Object.keys(data).length) {
@@ -1142,6 +1225,13 @@ export async function importFormularyItem(
   const looseUnitLabel =
     packSize && packSize > 1 ? inferLooseUnitLabel(master.dosageForm, master.name) : null;
 
+  // The catalog GTIN is normally free to carry over, but this tenant may already
+  // hold that code on a manually-added drug. Rather than fail the import, drop
+  // the colliding code(s) — the drug still imports, and the operator can resolve
+  // the clash from the formulary edit if they want the GTIN on this row instead.
+  const carryGtin = await gtinFreeForTenant(tenantId, master.gtin);
+  const carryCaseGtin = await gtinFreeForTenant(tenantId, master.casePackGtin);
+
   const item = await prisma.drugFormulary.create({
     data: {
       tenantId,
@@ -1159,8 +1249,8 @@ export async function importFormularyItem(
       // Carry the catalog's GTIN / case-pack / HSN / GST / manufacturer code so
       // the imported drug resolves by GTIN at inward and bills with the right HSN
       // + GST out of the box (Product Resolution Engine + compliance fields).
-      gtin: master.gtin ?? undefined,
-      casePackGtin: master.casePackGtin ?? undefined,
+      gtin: carryGtin,
+      casePackGtin: carryCaseGtin,
       unitsPerCase: master.unitsPerCase ?? undefined,
       hsnCode: master.hsnCode ?? undefined,
       manufacturerCode: master.manufacturerCode ?? undefined,
@@ -1513,8 +1603,20 @@ export async function updateFormularyItem(
   if (data.looseUnitLabel !== undefined) updateData.looseUnitLabel = data.looseUnitLabel;
   if (data.taxPercent !== undefined) updateData.taxPercent = data.taxPercent;
   if ((data as any).minStock !== undefined) updateData.minStock = (data as any).minStock;
-  if ((data as any).gtin !== undefined) updateData.gtin = (data as any).gtin;
-  if ((data as any).casePackGtin !== undefined) updateData.casePackGtin = (data as any).casePackGtin;
+  if ((data as any).gtin !== undefined) updateData.gtin = normalizeGtin((data as any).gtin);
+  if ((data as any).casePackGtin !== undefined) updateData.casePackGtin = normalizeGtin((data as any).casePackGtin);
+
+  // Reject a GTIN that already belongs to another drug before writing. Uses the
+  // incoming value where provided, otherwise the drug's current one, so editing
+  // an unrelated field never trips over the drug's own code.
+  if (updateData.gtin !== undefined || updateData.casePackGtin !== undefined) {
+    await assertFormularyGtinUnique(
+      tenantId,
+      updateData.gtin !== undefined ? updateData.gtin : existing.gtin,
+      updateData.casePackGtin !== undefined ? updateData.casePackGtin : existing.casePackGtin,
+      id,
+    );
+  }
   if ((data as any).unitsPerCase !== undefined) updateData.unitsPerCase = (data as any).unitsPerCase;
   if ((data as any).hsnCode !== undefined) updateData.hsnCode = (data as any).hsnCode;
   if ((data as any).manufacturerCode !== undefined) updateData.manufacturerCode = (data as any).manufacturerCode;

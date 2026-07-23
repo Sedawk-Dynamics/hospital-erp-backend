@@ -285,6 +285,17 @@ export function gtinVariants(gtin: string | null | undefined): string[] {
 }
 
 /**
+ * Canonicalise a typed/scanned GTIN for STORAGE: keep digits only, and collapse
+ * an empty result to null so a blank field never stores "" (which, unlike NULL,
+ * would collide under a unique index and block a second blank drug). Callers use
+ * this on every write so uniqueness comparisons are apples-to-apples.
+ */
+export function normalizeGtin(raw: string | null | undefined): string | null {
+  const g = (raw ?? '').replace(/\D/g, '');
+  return g.length ? g : null;
+}
+
+/**
  * Validate a GTIN's GS1 mod-10 check digit (accepts GTIN-8/12/13/14). Useful to
  * reject a mis-scanned/typo'd barcode before trusting it.
  */
