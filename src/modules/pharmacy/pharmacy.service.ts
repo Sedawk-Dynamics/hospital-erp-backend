@@ -1139,8 +1139,9 @@ export async function commitInward(
 
       // Remember this incoming-name → drug decision so the same vendor / invoice
       // name auto-resolves to the same drug on the next stock entry (the
-      // pharmacist can still change it during review). Best-effort.
-      void saveNameMapping(tenantId, line.drugName, drugId);
+      // pharmacist can still change it during review). Keyed on the ORIGINAL typed
+      // text (externalName), not a name adopted from a match. Best-effort.
+      void saveNameMapping(tenantId, line.externalName || line.drugName, drugId);
 
       results.push({
         index: i,

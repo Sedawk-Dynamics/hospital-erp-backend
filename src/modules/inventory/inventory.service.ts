@@ -687,6 +687,21 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
     ? Prisma.sql`WHERE ${Prisma.join(filters, ' AND ')}`
     : Prisma.empty;
 
+  // On a search, rank by textual relevance so an exact/prefix/word-start match
+  // (typing "dolo" → "Dolo 650") beats an incidental substring ("Adoloc").
+  let orderSql = Prisma.sql`ORDER BY name ASC`;
+  if (query.search) {
+    const q = query.search.toLowerCase().trim();
+    orderSql = Prisma.sql`ORDER BY (
+      CASE
+        WHEN lower(name) = ${q} THEN 0
+        WHEN lower(name) LIKE ${q + '%'} THEN 1
+        WHEN lower(name) LIKE ${'% ' + q + '%'} THEN 2
+        ELSE 3
+      END
+    ), name ASC`;
+  }
+
   const rows = await prisma.$queryRaw<
     Array<{
       kind: string;
@@ -708,7 +723,7 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
     ${base}
     SELECT * FROM unified_stock
     ${whereSql}
-    ORDER BY name ASC
+    ${orderSql}
     LIMIT ${take} OFFSET ${skip}
   `);
 
