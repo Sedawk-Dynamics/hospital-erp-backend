@@ -1330,6 +1330,7 @@ model Tenant {
   dicomStudies               DicomStudy[]
   dicomSeries                DicomSeries[]
   dicomInstances             DicomInstance[]
+  drugNameMappings           DrugNameMapping[]
 
   @@map("tenants")
 }
@@ -4296,6 +4297,7 @@ model DrugFormulary {
   ndpsTransactions    NdpsTransaction[]
   ndpsDailyBalances   NdpsDailyBalance[]
   stockHoldItems      PharmacyStockHoldItem[]
+  nameMappings        DrugNameMapping[]
 
   // A GTIN identifies one product, so within a hospital's formulary it belongs
   // to at most one drug (else a counter/inward scan is ambiguous). Scoped per
@@ -4304,6 +4306,30 @@ model DrugFormulary {
   @@unique([tenantId, gtin])
   @@unique([tenantId, casePackGtin])
   @@map("drug_formulary")
+}
+
+/// Learned stock-entry mapping: when a pharmacist confirms that an incoming
+/// vendor/invoice product name resolves to a particular formulary drug, we
+/// remember it here. On the next stock entry the same incoming name auto-maps to
+/// the same drug by default (the pharmacist can still choose another). Scoped per
+/// tenant; the normalised incoming name is unique so the newest choice wins.
+model DrugNameMapping {
+  id               String   @id @default(uuid())
+  tenantId         String   @map("tenant_id")
+  incomingNameNorm String   @map("incoming_name_norm") @db.VarChar(255)
+  drugFormularyId  String   @map("drug_formulary_id")
+  // Last-seen raw incoming name, for display/debugging.
+  incomingNameRaw  String?  @map("incoming_name_raw") @db.VarChar(255)
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant Tenant        @relation(fields: [tenantId], references: [id])
+  drug   DrugFormulary @relation(fields: [drugFormularyId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, incomingNameNorm])
+  @@index([tenantId])
+  @@index([drugFormularyId])
+  @@map("drug_name_mappings")
 }
 
 

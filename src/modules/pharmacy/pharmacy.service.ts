@@ -20,6 +20,7 @@ import {
 } from './pharmacy.matching';
 import { parseGs1, makeInternalBarcode, isInternalBarcode, internalKeyFromScan, buildLabelPayload, gtinVariants, normalizeGtin } from './pharmacy.barcode';
 import { makeMedicineRankComparator } from '../../shared/medicine-search-rank';
+import { lookupNameMapping, saveNameMapping } from './pharmacy.name-mapping';
 import type {
   CreateFormularyInput,
   UpdateFormularyInput,
@@ -559,7 +560,7 @@ export interface InwardLineInput {
 export type InwardRecommendation = 'map' | 'review' | 'create';
 
 /** How an inward line was resolved to a formulary drug, highest-confidence first. */
-export type ResolveVia = 'gtin' | 'similarity' | 'none';
+export type ResolveVia = 'gtin' | 'mapping' | 'similarity' | 'none';
 
 /**
  * Product Resolution Engine (design-doc Section 2). Resolve a single incoming
@@ -596,6 +597,31 @@ export async function resolveInwardLine(
         suggestedFormularyId: byGtin.id,
         caseMultiplier: isCase ? Math.max(1, byGtin.unitsPerCase ?? 1) : 1,
         matches: [{ ...byGtin, totalStock: 0, score: 100 }],
+      };
+    }
+  }
+
+  // Tier 1.5 — learned name mapping. If this pharmacy has previously confirmed
+  // that this exact incoming name maps to a drug, honour that as the default map
+  // (the pharmacist can still change it during review).
+  const mappedId = await lookupNameMapping(tenantId, line.drugName);
+  if (mappedId) {
+    const mapped = await prisma.drugFormulary.findFirst({
+      where: { id: mappedId, tenantId, isActive: true },
+      select: {
+        id: true, drugName: true, category: true, genericName: true, manufacturer: true,
+        dosageForm: true, strength: true, packSize: true, price: true,
+        gtin: true, casePackGtin: true, unitsPerCase: true,
+      },
+    });
+    if (mapped) {
+      return {
+        resolvedVia: 'mapping' as ResolveVia,
+        recommendation: 'map' as InwardRecommendation,
+        confidence: 100,
+        suggestedFormularyId: mapped.id,
+        caseMultiplier: 1,
+        matches: [{ ...mapped, totalStock: 0, score: 100, source: 'formulary' as const }],
       };
     }
   }
@@ -1110,6 +1136,11 @@ export async function commitInward(
           manufacturerCode: line.manufacturerCode,
         });
       }
+
+      // Remember this incoming-name → drug decision so the same vendor / invoice
+      // name auto-resolves to the same drug on the next stock entry (the
+      // pharmacist can still change it during review). Best-effort.
+      void saveNameMapping(tenantId, line.drugName, drugId);
 
       results.push({
         index: i,
