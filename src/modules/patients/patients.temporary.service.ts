@@ -70,10 +70,33 @@ async function generateTemporaryMrn(tenantId: string): Promise<string> {
 }
 
 /**
+ * A friendly placeholder name for an unnamed temporary patient: `Temporary 1`,
+ * `Temporary 2`, … The number is the next after the highest existing
+ * `Temporary <n>` name for the tenant, so it reads as a simple running counter
+ * (gaps from merges are ignored — the label is cosmetic, the MRN is the key).
+ */
+async function generateTemporaryName(tenantId: string): Promise<string> {
+  const existing = await prisma.patient.findMany({
+    where: { tenantId, firstName: { startsWith: 'Temporary ' } },
+    select: { firstName: true },
+  });
+  let max = 0;
+  for (const p of existing) {
+    const m = /^Temporary (\d+)$/.exec(p.firstName ?? '');
+    if (m) {
+      const n = parseInt(m[1], 10);
+      if (!Number.isNaN(n) && n > max) max = n;
+    }
+  }
+  return `Temporary ${max + 1}`;
+}
+
+/**
  * Create a temporary patient from whatever the front desk knows. Only a first
- * name is stored as a hard field (defaulted when blank); everything else is
- * optional. Returns a plain Patient — routing to OP (appointment) or IP
- * (admission) then happens through the normal flows, since it is a normal row.
+ * name is stored as a hard field (defaulted to `Temporary <n>` when blank);
+ * everything else is optional. Returns a plain Patient — routing to OP
+ * (appointment) or IP (admission) then happens through the normal flows, since
+ * it is a normal row.
  */
 export async function createTemporaryPatient(
   tenantId: string,
@@ -81,12 +104,13 @@ export async function createTemporaryPatient(
   data: CreateTemporaryPatientInput,
 ) {
   const mrn = await generateTemporaryMrn(tenantId);
+  const fallbackName = await generateTemporaryName(tenantId);
 
   const patient = await prisma.patient.create({
     data: {
       tenantId,
       mrn,
-      firstName: data.firstName?.trim() || 'Temporary',
+      firstName: data.firstName?.trim() || fallbackName,
       lastName: data.lastName?.trim() || null,
       phone: data.phone?.trim() || null,
       gender: (data.gender as any) || undefined,
