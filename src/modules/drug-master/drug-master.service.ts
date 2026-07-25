@@ -58,6 +58,10 @@ export async function searchDrugMaster(query: SearchDrugMasterQuery) {
       dosageForm: true,
       strength: true,
       packSizeLabel: true,
+      // Identity fields so a catalog pick can fill the stock-entry boxes fully.
+      packSize: true,
+      hsnCode: true,
+      gtin: true,
       mrp: true,
       type: true,
       schedule: true,
