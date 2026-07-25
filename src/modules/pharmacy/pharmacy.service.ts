@@ -1072,25 +1072,41 @@ export async function commitInward(
       } else {
         // Genuinely new drug — create it (force past the duplicate guard since the
         // user reviewed the suggestions and chose "create new").
+        //
+        // When the line is LINKED to a catalog drug (drugMasterId), the pharmacist
+        // did NOT fill the identity boxes — they just picked the catalog item — so
+        // build the new formulary row from the CATALOG MASTER's identity, letting
+        // any box the user did type override it.
+        const master = line.drugMasterId
+          ? await prisma.drugMaster.findUnique({
+              where: { id: line.drugMasterId },
+              select: {
+                name: true, genericName: true, manufacturer: true, dosageForm: true,
+                strength: true, packSize: true, hsnCode: true, gtin: true,
+              },
+            })
+          : null;
+        // GST from the effective HSN (master's when the box is blank).
+        const effHsn = line.hsnCode || master?.hsnCode || null;
+        const createGst = line.gstPercent ?? matchHsnGst(effHsn, hsnRows)?.gstRate;
         const created = await createFormularyItem(tenantId, roles, {
-          drugName: line.drugName,
+          drugName: master?.name ?? line.drugName,
           // Carries the "Type" chosen at stock entry (medicine / consumable / …).
           category: lineCategory,
-          genericName: line.genericName ?? undefined,
-          manufacturer: line.manufacturer ?? undefined,
-          dosageForm: line.dosageForm as CreateFormularyInput['dosageForm'],
-          strength: line.strength ?? undefined,
-          packSize: line.packSize,
+          genericName: line.genericName ?? master?.genericName ?? undefined,
+          manufacturer: line.manufacturer ?? master?.manufacturer ?? undefined,
+          dosageForm: (line.dosageForm ?? master?.dosageForm) as CreateFormularyInput['dosageForm'],
+          strength: line.strength ?? master?.strength ?? undefined,
+          packSize: line.packSize ?? master?.packSize ?? undefined,
           looseUnitLabel: line.looseUnitLabel,
           minStock: line.minStock,
-          taxPercent: lineGst,
-          // Carry the invoice's GTIN / HSN / manufacturer code onto the new drug
-          // so subsequent imports resolve it via GTIN (Product Resolution Engine).
-          gtin: line.gtin ?? undefined,
-          hsnCode: line.hsnCode ?? undefined,
+          taxPercent: createGst,
+          // Carry the invoice's / master's GTIN / HSN / manufacturer code onto the
+          // new drug so subsequent imports resolve it via GTIN.
+          gtin: line.gtin ?? master?.gtin ?? undefined,
+          hsnCode: effHsn ?? undefined,
           manufacturerCode: line.manufacturerCode ?? undefined,
-          // When the line was seeded from the DrugMaster catalog, link the new
-          // formulary row back to the catalog drug.
+          // Link the new formulary row back to the catalog drug.
           drugMasterId: line.drugMasterId ?? undefined,
           // Default selling price per base unit; MRP (per pack) is kept on the batch.
           price: line.sellingPrice,
