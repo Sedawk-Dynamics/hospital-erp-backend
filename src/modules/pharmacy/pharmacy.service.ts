@@ -654,8 +654,20 @@ export async function resolveInwardLine(
     });
     if (mapped) {
       const others = matches.filter((m) => m.id !== mapped.id);
+      // Real available stock for the remembered drug (Σ non-expired, non-recalled
+      // batch quantities) — reuse the similarity row's figure if we already have
+      // it, else aggregate. Otherwise the chip always read "stock 0".
+      const existing = matches.find((m) => m.id === mapped.id) as { totalStock?: number } | undefined;
+      let mappedStock = existing?.totalStock;
+      if (mappedStock == null) {
+        const agg = await prisma.drugBatch.aggregate({
+          where: { tenantId, drugId: mapped.id, isExpired: false, isRecalled: false },
+          _sum: { quantityInStock: true },
+        });
+        mappedStock = agg._sum.quantityInStock ?? 0;
+      }
       matches = [
-        { ...mapped, totalStock: 0, score: 100, source: 'formulary' as const, remembered: true },
+        { ...mapped, totalStock: mappedStock, score: 100, source: 'formulary' as const, remembered: true },
         ...others,
       ];
       return {
