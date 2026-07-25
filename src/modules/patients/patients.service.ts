@@ -1,4 +1,6 @@
+import bcrypt from 'bcryptjs';
 import { prisma } from '../../config/database';
+import { env } from '../../config/env';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
@@ -85,18 +87,129 @@ function mapDocumentType(type: string): string {
 }
 
 /**
+ * Normalise a phone number for matching/storage: drop spaces, dashes and
+ * brackets but keep a leading + and the digits. Front-desk operators type the
+ * same number many ways ("+91 98765 43210", "(098765) 43210") — this collapses
+ * them so the same number always resolves to the same account holder.
+ */
+function normalizePhone(phone: string): string {
+  return phone.replace(/[\s()\-.]/g, '').trim();
+}
+
+/**
+ * Phone is the account-holder key. Every registered patient belongs to an
+ * account (a User) identified by their phone number:
+ *   - if a User already owns that number, this profile is added under them
+ *     (as a family member — e.g. the account holder's son);
+ *   - if no User owns it, a fresh account holder is auto-created for the number.
+ *
+ * The account holder lives on the platform tenant (like a patient self-signup)
+ * so it can later be claimed/logged into. A random password is set and, since
+ * the desk rarely has an email, a synthetic phone-based email fills the
+ * required-but-tenant-unique `email` column. OTP verification of the number is
+ * a later hardening step; for now the linkage is created directly.
+ *
+ * Returns the resolved/created User id to link the patient to.
+ */
+async function resolveOrCreateAccountHolder(input: {
+  phone: string;
+  firstName?: string;
+  lastName?: string | null;
+  email?: string;
+}): Promise<string> {
+  const normalized = normalizePhone(input.phone);
+  if (!normalized) throw AppError.badRequest('A phone number is required to register a patient');
+
+  // Match an existing account holder by number (normalised or raw). Prefer the
+  // platform-tenant copy — that is the one a patient can actually log into.
+  const candidates = await prisma.user.findMany({
+    where: { phone: { in: [normalized, input.phone] }, isActive: true },
+    select: { id: true, tenant: { select: { slug: true } } },
+    orderBy: { createdAt: 'asc' },
+  });
+  if (candidates.length > 0) {
+    const platform = candidates.find((u) => u.tenant?.slug === '__platform__');
+    return (platform ?? candidates[0]).id;
+  }
+
+  // No account holder yet → create one on the platform tenant.
+  const tenant = await prisma.tenant.findFirst({ where: { slug: '__platform__' } });
+  if (!tenant) throw AppError.internal('Platform tenant not found');
+
+  // Find or lazily create the tenant's "patient" role (mirrors self-signup).
+  let patientRole = await prisma.role.findFirst({
+    where: { tenantId: tenant.id, name: 'patient' },
+  });
+  if (!patientRole) {
+    patientRole = await prisma.role.create({
+      data: {
+        name: 'patient',
+        description: 'Patient user with access to patient portal',
+        tenantId: tenant.id,
+        isSystemRole: true,
+      },
+    });
+  }
+
+  // Random password (unusable until reset/OTP) + synthetic unique email.
+  const randomSecret = `${normalized}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const passwordHash = await bcrypt.hash(randomSecret, env.BCRYPT_SALT_ROUNDS);
+  const digits = normalized.replace(/\D/g, '') || 'unknown';
+  const synthEmail = input.email?.trim()
+    ? input.email.trim()
+    : `phone-${digits}@auto.hospital.local`;
+
+  // Guard the tenant-unique email — if the synthetic/real email already exists
+  // on the platform tenant, fall back to a guaranteed-unique variant.
+  const emailClash = await prisma.user.findFirst({
+    where: { tenantId: tenant.id, email: synthEmail },
+    select: { id: true },
+  });
+  const email = emailClash ? `phone-${digits}-${Date.now()}@auto.hospital.local` : synthEmail;
+
+  const user = await prisma.user.create({
+    data: {
+      email,
+      passwordHash,
+      firstName: input.firstName?.trim() || 'Patient',
+      lastName: input.lastName?.trim() || null,
+      phone: normalized,
+      tenantId: tenant.id,
+      isActive: true,
+      userRoles: { create: { roleId: patientRole.id } },
+    },
+    select: { id: true },
+  });
+
+  logger.info({ userId: user.id, phone: normalized }, 'Auto-created patient account holder');
+  return user.id;
+}
+
+/**
  * Create a new patient record.
  *
- * A patient profile can be:
- *   - standalone (no userId) — a walk-in registered by front-desk with no account
- *   - linked to a User via userId — one of multiple profiles owned by that account-holder
- *     (e.g. spouse/child family member)
+ * Every patient belongs to a phone-keyed account holder (a User): the number is
+ * looked up and, if it already belongs to someone, this profile is added under
+ * that account (as a family member with `relationship`); otherwise an account
+ * holder is auto-created for the number. Callers may instead pass an explicit
+ * `userId` to link under a known account, which skips the phone resolution.
  *
- * When linked, phone/email duplicate checks are scoped to OTHER account-holders' patients
+ * Phone/email duplicate checks are scoped to OTHER account-holders' patients
  * only — a user's own family members may legitimately share a phone or email.
  */
 export async function create(tenantId: string, data: CreatePatientInput) {
   const mrn = await generateMRN(tenantId);
+
+  // Phone-driven account holder: resolve or auto-create unless the caller has
+  // already pinned an explicit account (e.g. portal family-profile creation).
+  if (!data.userId && data.phone) {
+    data.userId = await resolveOrCreateAccountHolder({
+      phone: data.phone,
+      firstName: data.firstName,
+      lastName: data.lastName,
+      email: data.email || undefined,
+    });
+  }
 
   // If linking to a user, verify the user exists
   if (data.userId) {
