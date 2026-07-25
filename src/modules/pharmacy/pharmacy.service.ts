@@ -1403,11 +1403,15 @@ export async function getTenantCatalog(tenantId: string, query: any) {
     where.id = { notIn: importedIds };
   }
 
+  // On a search, pull a wider window and re-rank by relevance in JS (exact/prefix/
+  // word-start before substring); on a plain browse keep SQL pagination.
+  const isSearch = !!query.search;
+  const CATALOG_SEARCH_WINDOW = 100;
   const [rows, total] = await Promise.all([
     prisma.drugMaster.findMany({
       where,
-      skip,
-      take,
+      skip: isSearch ? 0 : skip,
+      take: isSearch ? CATALOG_SEARCH_WINDOW : take,
       orderBy: { name: 'asc' },
       select: {
         id: true,
@@ -1425,7 +1429,16 @@ export async function getTenantCatalog(tenantId: string, query: any) {
     prisma.drugMaster.count({ where }),
   ]);
 
-  const items = rows.map((r) => ({
+  let ranked = rows;
+  if (isSearch) {
+    const cmp = makeMedicineRankComparator<(typeof rows)[number]>(String(query.search), (r) => ({
+      name: r.name,
+      generic: r.genericName,
+    }));
+    ranked = [...rows].sort(cmp).slice(skip, skip + take);
+  }
+
+  const items = ranked.map((r) => ({
     ...r,
     imported: importedMap.has(r.id),
     formularyId: importedMap.get(r.id) ?? null,
