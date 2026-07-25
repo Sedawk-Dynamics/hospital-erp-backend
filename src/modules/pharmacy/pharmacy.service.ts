@@ -1103,6 +1103,13 @@ export async function commitInward(
         createdDrugs++;
       }
 
+      // Remember this incoming-name → drug decision as soon as the drug is
+      // resolved — BEFORE the batch step, so the mapping still sticks even if
+      // receiving the batch later fails (e.g. missing batch/expiry). Keyed on the
+      // ORIGINAL typed text (externalName), not a name adopted from a match.
+      // Best-effort — never blocks the line.
+      void saveNameMapping(tenantId, line.externalName || line.drugName, drugId);
+
       // Only receive a batch when a quantity is given — qty 0/absent just
       // registers the medicine in the formulary (the old "New Item" behaviour).
       let batchId: string | undefined;
@@ -1145,12 +1152,6 @@ export async function commitInward(
           manufacturerCode: line.manufacturerCode,
         });
       }
-
-      // Remember this incoming-name → drug decision so the same vendor / invoice
-      // name auto-resolves to the same drug on the next stock entry (the
-      // pharmacist can still change it during review). Keyed on the ORIGINAL typed
-      // text (externalName), not a name adopted from a match. Best-effort.
-      void saveNameMapping(tenantId, line.externalName || line.drugName, drugId);
 
       results.push({
         index: i,
