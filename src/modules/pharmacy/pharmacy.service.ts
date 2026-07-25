@@ -601,30 +601,10 @@ export async function resolveInwardLine(
     }
   }
 
-  // Tier 1.5 — learned name mapping. If this pharmacy has previously confirmed
-  // that this exact incoming name maps to a drug, honour that as the default map
-  // (the pharmacist can still change it during review).
+  // Tier 1.5 — learned name mapping. Looked up now, but applied as the DEFAULT
+  // target only after the similarity/catalog matches are gathered below, so a
+  // "Remembered" line still shows the other suggestions to pick from.
   const mappedId = await lookupNameMapping(tenantId, line.drugName);
-  if (mappedId) {
-    const mapped = await prisma.drugFormulary.findFirst({
-      where: { id: mappedId, tenantId, isActive: true },
-      select: {
-        id: true, drugName: true, category: true, genericName: true, manufacturer: true,
-        dosageForm: true, strength: true, packSize: true, price: true,
-        gtin: true, casePackGtin: true, unitsPerCase: true,
-      },
-    });
-    if (mapped) {
-      return {
-        resolvedVia: 'mapping' as ResolveVia,
-        recommendation: 'map' as InwardRecommendation,
-        confidence: 100,
-        suggestedFormularyId: mapped.id,
-        caseMultiplier: 1,
-        matches: [{ ...mapped, totalStock: 0, score: 100, source: 'formulary' as const }],
-      };
-    }
-  }
 
   // Tier 2 — multi-factor similarity against THIS hospital's formulary.
   const { matches: formularyMatches } = await findFormularyMatches(tenantId, {
@@ -658,6 +638,35 @@ export async function resolveInwardLine(
     });
     const haveMaster = new Set(matches.map((m) => m.drugMasterId).filter(Boolean));
     matches = [...matches, ...catalog.filter((c) => !haveMaster.has(c.drugMasterId))];
+  }
+
+  // Apply the learned mapping (if any) as the default map target, floating the
+  // remembered drug to the top of the matches while KEEPING the other
+  // suggestions visible so the pharmacist can still choose a different one.
+  if (mappedId) {
+    const mapped = await prisma.drugFormulary.findFirst({
+      where: { id: mappedId, tenantId, isActive: true },
+      select: {
+        id: true, drugName: true, category: true, genericName: true, manufacturer: true,
+        dosageForm: true, strength: true, packSize: true, price: true,
+        gtin: true, casePackGtin: true, unitsPerCase: true,
+      },
+    });
+    if (mapped) {
+      const others = matches.filter((m) => m.id !== mapped.id);
+      matches = [
+        { ...mapped, totalStock: 0, score: 100, source: 'formulary' as const, remembered: true },
+        ...others,
+      ];
+      return {
+        resolvedVia: 'mapping' as ResolveVia,
+        recommendation: 'map' as InwardRecommendation,
+        confidence: 100,
+        suggestedFormularyId: mapped.id,
+        caseMultiplier: 1,
+        matches,
+      };
+    }
   }
 
   return {
