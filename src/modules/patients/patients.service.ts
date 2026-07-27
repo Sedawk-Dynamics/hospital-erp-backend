@@ -319,6 +319,58 @@ export async function findByUser(userId: string, tenantId?: string) {
 }
 
 /**
+ * Find patient ids in a tenant whose phone matches a run of digits, comparing on
+ * the DIGITS ONLY (any stored formatting/country-code punctuation is stripped).
+ * So "9999999945" matches "+91 99999-99945" and "+919999999945", and — being a
+ * substring match on the national digits — surfaces every country-code variant
+ * of the same 10-digit number. A longer query that includes the country code
+ * (e.g. "9199…") narrows to that country.
+ */
+async function patientIdsByPhoneDigits(tenantId: string, digits: string): Promise<string[]> {
+  if (digits.length < 3) return [];
+  const rows = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT id FROM patients
+    WHERE tenant_id = ${tenantId}
+      AND regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g') LIKE ${'%' + digits + '%'}
+    LIMIT 500
+  `;
+  return rows.map((r) => r.id);
+}
+
+/**
+ * Build the search OR-conditions for patients: name, MRN, email as text, plus a
+ * digits-normalised phone match (ids resolved separately). One global search
+ * that handles name / MRN / phone in every format.
+ */
+async function buildPatientSearchOr(tenantId: string, rawSearch: string) {
+  const search = rawSearch.trim();
+  const or: any[] = [
+    { firstName: { contains: search, mode: 'insensitive' } },
+    { lastName: { contains: search, mode: 'insensitive' } },
+    { mrn: { contains: search, mode: 'insensitive' } },
+    { email: { contains: search, mode: 'insensitive' } },
+  ];
+  // Full-name search ("john doe") — split across first/last name.
+  const parts = search.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    or.push({
+      AND: [
+        { firstName: { contains: parts[0], mode: 'insensitive' } },
+        { lastName: { contains: parts.slice(1).join(' '), mode: 'insensitive' } },
+      ],
+    });
+  }
+  const digits = search.replace(/\D/g, '');
+  if (digits.length >= 3) {
+    const ids = await patientIdsByPhoneDigits(tenantId, digits);
+    if (ids.length) or.push({ id: { in: ids } });
+  } else {
+    or.push({ phone: { contains: search } });
+  }
+  return or;
+}
+
+/**
  * Get paginated list of patients for a tenant.
  */
 export async function findAll(tenantId: string, query: SearchPatientsQuery) {
@@ -327,14 +379,7 @@ export async function findAll(tenantId: string, query: SearchPatientsQuery) {
   const where: any = { tenantId };
 
   if (query.search) {
-    const search = query.search.trim();
-    where.OR = [
-      { firstName: { contains: search, mode: 'insensitive' } },
-      { lastName: { contains: search, mode: 'insensitive' } },
-      { mrn: { contains: search, mode: 'insensitive' } },
-      { phone: { contains: search } },
-      { email: { contains: search, mode: 'insensitive' } },
-    ];
+    where.OR = await buildPatientSearchOr(tenantId, query.search);
   }
 
   if (query.gender) {
@@ -510,12 +555,7 @@ export async function search(tenantId: string, query: SearchPatientsQuery) {
     where: {
       tenantId,
       isActive: true,
-      OR: [
-        { firstName: { contains: searchTerm, mode: 'insensitive' } },
-        { lastName: { contains: searchTerm, mode: 'insensitive' } },
-        { mrn: { contains: searchTerm, mode: 'insensitive' } },
-        { phone: { contains: searchTerm } },
-      ],
+      OR: await buildPatientSearchOr(tenantId, searchTerm),
     },
     select: {
       id: true,

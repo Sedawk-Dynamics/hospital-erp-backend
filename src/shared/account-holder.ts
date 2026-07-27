@@ -44,14 +44,19 @@ export function phoneLast10(phone: string): string {
 }
 
 /**
- * Canonical storage form: +91 followed by the 10-digit number. Everything the
- * app captures (front desk, portal signup) is stored this way so numbers are
- * consistent. Falls back to the cleaned input when fewer than 10 digits.
+ * Canonical storage form: `+<countryCode><nationalNumber>`, digits only after
+ * the plus. The country code is preserved when the caller provides one (so
+ * international numbers survive); a bare 10-digit number defaults to +91 (India).
+ * Everything captured (front desk, portal signup) is stored this way so numbers
+ * are consistent, while equivalence is still judged by the last 10 digits.
  */
 export function canonicalPhone(phone: string): string {
-  const last10 = phoneLast10(phone);
-  if (last10.length === 10) return `+91${last10}`;
-  return normalizeAccountPhone(phone);
+  const trimmed = (phone || '').trim();
+  const digits = phoneDigits(trimmed);
+  if (!digits) return '';
+  if (trimmed.startsWith('+')) return `+${digits}`; // explicit country code kept
+  if (digits.length <= 10) return `+91${digits}`; // bare national → default +91
+  return `+${digits}`; // already includes a country code
 }
 
 /**
