@@ -10,8 +10,10 @@ import { AppError } from '../../shared/appError';
 import { REDIS_PREFIXES } from '../../shared/constants';
 import {
   AUTO_ACCOUNT_EMAIL_DOMAIN,
+  canonicalPhone,
   isPlaceholderAccountEmail,
   normalizeAccountPhone,
+  phoneMatchFilter,
   placeholderAccountEmail,
 } from '../../shared/account-holder';
 import { recordFailedLogin, clearLoginFailures } from '../../middleware/rateLimiter';
@@ -158,12 +160,12 @@ export const authService = {
     // account is never taken over. (Phone ownership is trusted for now; OTP
     // verification is a planned hardening step.)
     if (!data.tenantSlug && data.phone) {
-      const normalizedPhone = normalizeAccountPhone(data.phone);
+      const normalizedPhone = canonicalPhone(data.phone);
       const placeholder = normalizedPhone
         ? await prisma.user.findFirst({
             where: {
               tenantId: tenant.id,
-              phone: { in: [normalizedPhone, data.phone] },
+              phone: phoneMatchFilter(data.phone),
             },
             orderBy: { createdAt: 'asc' },
           })
@@ -418,7 +420,7 @@ export const authService = {
    * the client knows whether to collect a name (new signup) on verify.
    */
   async requestPhoneOtp(data: RequestOtpInput) {
-    const phone = normalizeAccountPhone(data.phone);
+    const phone = canonicalPhone(data.phone);
     if (!phone) throw AppError.badRequest('Enter a valid phone number');
 
     const userId = await this.findAccountUserIdByPhone(phone, data.phone);
@@ -438,8 +440,10 @@ export const authService = {
    * Returns null only when the number is genuinely new.
    */
   async findAccountUserIdByPhone(phone: string, rawPhone: string): Promise<string | null> {
+    // Match on the last 10 digits so any stored format (+91…, 0…, bare) resolves.
+    const filter = phoneMatchFilter(rawPhone || phone);
     const users = await prisma.user.findMany({
-      where: { phone: { in: [phone, rawPhone] }, isActive: true },
+      where: { phone: filter, isActive: true },
       select: { id: true, tenant: { select: { slug: true } } },
       orderBy: { createdAt: 'asc' },
     });
@@ -449,7 +453,7 @@ export const authService = {
     }
 
     const patient = await prisma.patient.findFirst({
-      where: { phone: { in: [phone, rawPhone] }, userId: { not: null } },
+      where: { phone: filter, userId: { not: null } },
       select: { userId: true },
       orderBy: { createdAt: 'asc' },
     });
@@ -466,7 +470,7 @@ export const authService = {
     if (data.otp !== HARDCODED_OTP) {
       throw AppError.unauthorized('Invalid or expired code');
     }
-    const phone = normalizeAccountPhone(data.phone);
+    const phone = canonicalPhone(data.phone);
     if (!phone) throw AppError.badRequest('Enter a valid phone number');
 
     // Resolve the existing account for this number (User phone, or an existing

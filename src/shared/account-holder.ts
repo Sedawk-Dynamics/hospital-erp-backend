@@ -33,6 +33,39 @@ export function normalizeAccountPhone(phone: string): string {
   return phone.replace(/[\s()\-.]/g, '').trim();
 }
 
+/** Just the digits of a phone number. */
+export function phoneDigits(phone: string): string {
+  return (phone || '').replace(/\D/g, '');
+}
+
+/** The last 10 digits — the stable identity of an Indian mobile number. */
+export function phoneLast10(phone: string): string {
+  return phoneDigits(phone).slice(-10);
+}
+
+/**
+ * Canonical storage form: +91 followed by the 10-digit number. Everything the
+ * app captures (front desk, portal signup) is stored this way so numbers are
+ * consistent. Falls back to the cleaned input when fewer than 10 digits.
+ */
+export function canonicalPhone(phone: string): string {
+  const last10 = phoneLast10(phone);
+  if (last10.length === 10) return `+91${last10}`;
+  return normalizeAccountPhone(phone);
+}
+
+/**
+ * Prisma string filter that matches a number regardless of the format it was
+ * stored in (+91…, 0…, bare 10 digits) by comparing the last 10 digits.
+ * Falls back to a few exact variants when the input isn't a full 10-digit number.
+ */
+export function phoneMatchFilter(phone: string): { endsWith: string } | { in: string[] } {
+  const last10 = phoneLast10(phone);
+  if (last10.length === 10) return { endsWith: last10 };
+  const d = phoneDigits(phone);
+  return { in: [phone.trim(), d, `+${d}`].filter(Boolean) };
+}
+
 /** Build the synthetic placeholder email for a (normalised) phone number. */
 export function placeholderAccountEmail(normalizedPhone: string): string {
   const digits = normalizedPhone.replace(/\D/g, '') || 'unknown';
@@ -53,8 +86,8 @@ export function isAutoAssignedPhone(phone?: string | null): boolean {
   return !!phone && phone.startsWith(AUTO_PHONE_PREFIX);
 }
 
-/** Generate a random, obviously-synthetic placeholder phone number. */
+/** Generate a random, obviously-synthetic placeholder phone (+91 + 10 digits, 0000-prefixed). */
 export function randomAutoPhone(): string {
-  const suffix = Math.floor(1_000_000 + Math.random() * 9_000_000); // 7 digits
-  return `${AUTO_PHONE_PREFIX}${suffix}`;
+  const suffix = Math.floor(100_000 + Math.random() * 900_000); // 6 digits
+  return `${AUTO_PHONE_PREFIX}${suffix}`; // +910000 + 6 = +91 followed by 10 digits
 }
