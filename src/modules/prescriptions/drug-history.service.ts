@@ -7,13 +7,6 @@ import { AppError } from '../../shared/appError';
  */
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/**
- * How long a course with no usable duration is assumed to run. Deliberately
- * short: guessing "still taking it" for too long is what makes drug history
- * read as noise.
- */
-const UNKNOWN_DURATION_MS = 30 * DAY_MS;
-
 function parseDurationMs(raw?: string | null): number | null {
   if (!raw) return null;
   const text = raw.trim().toLowerCase();
@@ -51,23 +44,32 @@ function courseEnd(prescribedAt: Date, itemDuration?: string | null): number | n
  *
  * Only `cancelled` rules a drug out on status alone. It previously required
  * status === 'active', which meant the moment the pharmacy dispensed a script
- * (status → dispensed / partially_dispensed) the drug the patient had just
- * been handed dropped into "past medication" — the exact inversion QA reported.
+ * the drug the patient had just been handed dropped into "past medication".
+ *
  * Whether a course is still running is a function of its duration, not of
- * whether the pharmacy has handed it over.
+ * whether the pharmacy has handed it over:
+ *   - a FINITE written course (e.g. "5 days") is current until it ends, or until
+ *     a later follow-up/review date if one is set;
+ *   - a course with NO finite duration — blank, PRN, "as directed", "continue",
+ *     "ongoing", "lifelong" — is treated as ONGOING (current). A chronic/
+ *     maintenance drug must not silently drop to "past". De-duplication keeps
+ *     only the latest script per drug, so an ongoing drug shows once and moves
+ *     to past only when it is re-prescribed with a finite course, or cancelled.
  */
 function isItemCurrent(
-  prescription: { status: string; createdAt: Date },
+  prescription: { status: string; createdAt: Date; followUpDate?: Date | null },
   itemDuration?: string | null,
 ): boolean {
   if (prescription.status === 'cancelled') return false;
 
-  const now = Date.now();
   const end = courseEnd(prescription.createdAt, itemDuration);
-  if (end !== null) return end > now;
+  if (end === null) return true; // no finite course → ongoing
 
-  // No usable duration (PRN, "as directed", blank) — assume a standard course.
-  return now - new Date(prescription.createdAt).getTime() < UNKNOWN_DURATION_MS;
+  const now = Date.now();
+  if (end > now) return true; // still within the written course
+  // Written course lapsed, but a future follow-up/review keeps it live.
+  const followUp = prescription.followUpDate ? new Date(prescription.followUpDate).getTime() : null;
+  return followUp !== null && followUp > now;
 }
 
 /** Normalised key for "the same drug" across prescriptions. */
@@ -138,7 +140,9 @@ export async function buildDrugHistory({ patientIds, tenantId, limit = 100 }: Dr
       };
       const key = drugKey(item);
       const superseded = seenDrugs.has(key);
-      seenDrugs.add(key);
+      // Only a LIVE (non-cancelled) script replaces an earlier course. A newer
+      // cancelled script must not bury an older, still-running course into past.
+      if (rx.status !== 'cancelled') seenDrugs.add(key);
 
       if (!superseded && isItemCurrent(rx, item.duration)) {
         current.push(entry);
