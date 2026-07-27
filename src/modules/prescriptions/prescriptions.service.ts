@@ -7,7 +7,8 @@ import {
   generateForPrescription as emarGenerateForPrescription,
   cancelFutureSchedules as emarCancelFutureSchedules,
 } from '../emar/emar.scheduler-engine';
-import { makeMedicineRankComparator } from '../../shared/medicine-search-rank';
+import { Prisma } from '@prisma/client';
+import { makeMedicineRankComparator, mergePrefixFirst } from '../../shared/medicine-search-rank';
 import type {
   CreatePrescriptionInput,
   UpdatePrescriptionInput,
@@ -985,31 +986,54 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
   // Recall is batch-level, so a drug is never hidden here: `availableStock`
   // below already excludes recalled batches, so a fully-recalled drug simply
   // shows as out of stock.
-  const formulary = await prisma.drugFormulary.findMany({
-    where: {
-      tenantId,
-      isActive: true,
-      OR: [
-        { drugName: { contains: search, mode: 'insensitive' } },
-        { genericName: { contains: search, mode: 'insensitive' } },
-      ],
-    },
-    select: {
-      id: true,
-      drugName: true,
-      genericName: true,
-      dosageForm: true,
-      strength: true,
-      manufacturer: true,
-      price: true,
-      drugMasterId: true,
-      // Stock type (medicine / consumable / surgical / …) so the pad can badge it.
-      category: true,
-    },
-    // Wider window so JS relevance ranking below can see all near matches.
-    take: 100,
-    orderBy: { drugName: 'asc' },
-  });
+  const formularySelect = {
+    id: true,
+    drugName: true,
+    genericName: true,
+    dosageForm: true,
+    strength: true,
+    manufacturer: true,
+    price: true,
+    drugMasterId: true,
+    // Stock type (medicine / consumable / surgical / …) so the pad can badge it.
+    category: true,
+  } as const;
+  const q = (search ?? '').trim();
+  // Prefix window (name/generic starts with query) fetched alongside the
+  // substring window, so a drug actually named like the query is never clipped
+  // out by alphabetically-earlier substring matches before JS ranking runs.
+  const [prefixFormulary, substringFormulary] = await Promise.all([
+    q
+      ? prisma.drugFormulary.findMany({
+          where: {
+            tenantId,
+            isActive: true,
+            OR: [
+              { drugName: { startsWith: q, mode: 'insensitive' } },
+              { genericName: { startsWith: q, mode: 'insensitive' } },
+            ],
+          },
+          select: formularySelect,
+          take: 100,
+          orderBy: { drugName: 'asc' },
+        })
+      : Promise.resolve([] as Prisma.DrugFormularyGetPayload<{ select: typeof formularySelect }>[]),
+    prisma.drugFormulary.findMany({
+      where: {
+        tenantId,
+        isActive: true,
+        OR: [
+          { drugName: { contains: search, mode: 'insensitive' } },
+          { genericName: { contains: search, mode: 'insensitive' } },
+        ],
+      },
+      select: formularySelect,
+      // Wider window so JS relevance ranking below can see all near matches.
+      take: 100,
+      orderBy: { drugName: 'asc' },
+    }),
+  ]);
+  const formulary = mergePrefixFirst(prefixFormulary, substringFormulary, (f) => f.id);
 
   // Available pharmacy stock per formulary drug = Σ quantityInStock across the
   // hospital's active (non-expired, non-recalled) batches — so the doctor sees
@@ -1165,18 +1189,21 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
       });
     }
 
-    masterResults = [...prefixMatches, ...extra].map((m) => ({
-      id: null,
-      drugMasterId: m.id,
-      drugName: m.name,
-      genericName: m.genericName,
-      dosageForm: m.dosageForm,
-      strength: m.strength,
-      manufacturer: m.manufacturer,
-      price: m.mrp,
-      source: 'master' as const,
-      availableStock: 0,
-    }));
+    masterResults = [...prefixMatches, ...extra]
+      .map((m) => ({
+        id: null,
+        drugMasterId: m.id,
+        drugName: m.name,
+        genericName: m.genericName,
+        dosageForm: m.dosageForm,
+        strength: m.strength,
+        manufacturer: m.manufacturer,
+        price: m.mrp,
+        source: 'master' as const,
+        availableStock: 0,
+      }))
+      // Relevance order within the catalog: prefix → word-start → substring.
+      .sort(makeMedicineRankComparator(search, (m) => ({ name: m.drugName, generic: m.genericName })));
   }
 
   // Hospital's own stock (formulary + inventory) ranks above the global catalog.

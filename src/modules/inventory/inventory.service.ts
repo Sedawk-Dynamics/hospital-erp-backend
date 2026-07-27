@@ -696,7 +696,13 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
       CASE
         WHEN lower(name) = ${q} THEN 0
         WHEN lower(name) LIKE ${q + '%'} THEN 1
-        WHEN lower(name) LIKE ${'% ' + q + '%'} THEN 2
+        -- word-start: query begins a later word (after space / hyphen / slash /
+        -- paren / comma), matching the JS ranker's word boundaries.
+        WHEN lower(name) LIKE ${'% ' + q + '%'}
+          OR lower(name) LIKE ${'%-' + q + '%'}
+          OR lower(name) LIKE ${'%/' + q + '%'}
+          OR lower(name) LIKE ${'%(' + q + '%'}
+          OR lower(name) LIKE ${'%,' + q + '%'} THEN 2
         ELSE 3
       END
     ), name ASC`;

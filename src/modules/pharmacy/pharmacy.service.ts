@@ -19,7 +19,8 @@ import {
   MATCH_BLOCK_THRESHOLD,
 } from './pharmacy.matching';
 import { parseGs1, makeInternalBarcode, isInternalBarcode, internalKeyFromScan, buildLabelPayload, gtinVariants, normalizeGtin } from './pharmacy.barcode';
-import { makeMedicineRankComparator } from '../../shared/medicine-search-rank';
+import { Prisma } from '@prisma/client';
+import { makeMedicineRankComparator, mergePrefixFirst } from '../../shared/medicine-search-rank';
 import { lookupNameMapping, saveNameMapping } from './pharmacy.name-mapping';
 import type {
   CreateFormularyInput,
@@ -1445,27 +1446,48 @@ export async function getTenantCatalog(tenantId: string, query: any) {
   // word-start before substring); on a plain browse keep SQL pagination.
   const isSearch = !!query.search;
   const CATALOG_SEARCH_WINDOW = 100;
-  const [rows, total] = await Promise.all([
+  const catalogSelect = {
+    id: true,
+    name: true,
+    genericName: true,
+    manufacturer: true,
+    dosageForm: true,
+    strength: true,
+    packSizeLabel: true,
+    packSize: true,
+    mrp: true,
+    schedule: true,
+  } as const;
+  const q = isSearch ? String(query.search).trim() : '';
+  // On search, also fetch a name/generic PREFIX window (same filters) so a drug
+  // named like the query survives the window instead of being clipped out by
+  // alphabetically-earlier substring matches before JS ranking.
+  const [prefixRows, mainRows, total] = await Promise.all([
+    isSearch && q
+      ? prisma.drugMaster.findMany({
+          where: {
+            ...where,
+            AND: undefined,
+            OR: [
+              { name: { startsWith: q, mode: 'insensitive' as const } },
+              { genericName: { startsWith: q, mode: 'insensitive' as const } },
+            ],
+          },
+          take: CATALOG_SEARCH_WINDOW,
+          orderBy: { name: 'asc' },
+          select: catalogSelect,
+        })
+      : Promise.resolve([] as Prisma.DrugMasterGetPayload<{ select: typeof catalogSelect }>[]),
     prisma.drugMaster.findMany({
       where,
       skip: isSearch ? 0 : skip,
       take: isSearch ? CATALOG_SEARCH_WINDOW : take,
       orderBy: { name: 'asc' },
-      select: {
-        id: true,
-        name: true,
-        genericName: true,
-        manufacturer: true,
-        dosageForm: true,
-        strength: true,
-        packSizeLabel: true,
-        packSize: true,
-        mrp: true,
-        schedule: true,
-      },
+      select: catalogSelect,
     }),
     prisma.drugMaster.count({ where }),
   ]);
+  const rows = isSearch ? mergePrefixFirst(prefixRows, mainRows, (r) => r.id) : mainRows;
 
   let ranked = rows;
   if (isSearch) {
@@ -1521,22 +1543,44 @@ export async function getFormulary(tenantId: string, query: GetFormularyQuery, _
   // (exact/prefix/word-start before substring) in JS, since Postgres can't
   // express that ordering. On a plain list we keep normal SQL pagination.
   const SEARCH_WINDOW = 100;
-  const [items, total] = await Promise.all([
-    prisma.drugFormulary.findMany({
-      where,
-      skip: isSearch ? 0 : skip,
-      take: isSearch ? SEARCH_WINDOW : take,
-      include: {
-        // Only the in-stock batches — drives the per-row stock summary.
-        drugBatches: {
-          where: availableBatchFilter,
-          select: { quantityInStock: true, expiryDate: true },
-        },
-      },
-      orderBy: { drugName: 'asc' },
-    }),
+  const formularyInclude = {
+    // Only the in-stock batches — drives the per-row stock summary.
+    drugBatches: {
+      where: availableBatchFilter,
+      select: { quantityInStock: true, expiryDate: true },
+    },
+  };
+  const q = query.search ? query.search.trim() : '';
+  const mainItemsP = prisma.drugFormulary.findMany({
+    where,
+    skip: isSearch ? 0 : skip,
+    take: isSearch ? SEARCH_WINDOW : take,
+    include: formularyInclude,
+    orderBy: { drugName: 'asc' },
+  });
+  // On search, also fetch a name/generic PREFIX window (same filters) so a drug
+  // named like the query isn't clipped out before JS ranking.
+  const prefixItemsP =
+    isSearch && q
+      ? prisma.drugFormulary.findMany({
+          where: {
+            ...where,
+            OR: [
+              { drugName: { startsWith: q, mode: 'insensitive' as const } },
+              { genericName: { startsWith: q, mode: 'insensitive' as const } },
+            ],
+          },
+          take: SEARCH_WINDOW,
+          include: formularyInclude,
+          orderBy: { drugName: 'asc' },
+        })
+      : mainItemsP.then(() => [] as Awaited<typeof mainItemsP>);
+  const [prefixItems, mainItems, total] = await Promise.all([
+    prefixItemsP,
+    mainItemsP,
     prisma.drugFormulary.count({ where }),
   ]);
+  const items = isSearch ? mergePrefixFirst(prefixItems, mainItems, (i) => i.id) : mainItems;
 
   // Roll batch rows up into a stock summary so the formulary list can show
   // In Stock (qty) / Out of Stock without a second round-trip.

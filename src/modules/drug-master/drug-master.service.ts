@@ -3,7 +3,7 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
-import { makeMedicineRankComparator } from '../../shared/medicine-search-rank';
+import { makeMedicineRankComparator, mergePrefixFirst } from '../../shared/medicine-search-rank';
 import { buildDrugSearchTokens } from './drug-master.dataset';
 import { gtinVariants, normalizeGtin } from '../pharmacy/pharmacy.barcode';
 import type {
@@ -38,9 +38,12 @@ export async function searchDrugMaster(query: SearchDrugMasterQuery) {
     .map((t) => t.trim())
     .filter(Boolean);
 
-  const where: Prisma.DrugMasterWhereInput = {
+  const published: Prisma.DrugMasterWhereInput = {
     isPublished: true,
     ...(query.includeDiscontinued ? {} : { isDiscontinued: false }),
+  };
+  const where: Prisma.DrugMasterWhereInput = {
+    ...published,
     // Every term must appear somewhere in the token blob (AND), so
     // "para 500" narrows rather than widens.
     AND: terms.map((term) => ({
@@ -48,29 +51,51 @@ export async function searchDrugMaster(query: SearchDrugMasterQuery) {
     })),
   };
 
-  const drugs = await prisma.drugMaster.findMany({
-    where,
-    select: {
-      id: true,
-      name: true,
-      genericName: true,
-      manufacturer: true,
-      dosageForm: true,
-      strength: true,
-      packSizeLabel: true,
-      // Identity fields so a catalog pick can fill the stock-entry boxes fully.
-      packSize: true,
-      hsnCode: true,
-      gtin: true,
-      mrp: true,
-      type: true,
-      schedule: true,
-    },
-    // Wider window so JS relevance ranking can see all near matches; sliced back
-    // to the requested limit after ranking.
-    take: Math.max(query.limit ?? 20, 100),
-    orderBy: { name: 'asc' },
-  });
+  const select = {
+    id: true,
+    name: true,
+    genericName: true,
+    manufacturer: true,
+    dosageForm: true,
+    strength: true,
+    packSizeLabel: true,
+    // Identity fields so a catalog pick can fill the stock-entry boxes fully.
+    packSize: true,
+    hsnCode: true,
+    gtin: true,
+    mrp: true,
+    type: true,
+    schedule: true,
+  } as const;
+
+  // Wider window so JS relevance ranking can see all near matches; sliced back
+  // to the requested limit after ranking.
+  const window = Math.max(query.limit ?? 20, 100);
+  const q = query.q.trim();
+
+  // Fetch a dedicated name/generic PREFIX window alongside the token search, so
+  // a drug actually named like the query (e.g. "Ca…" for "ca") is guaranteed to
+  // be a candidate even though it sorts after the many alphabetically-earlier
+  // substring matches that would otherwise fill the window.
+  const [prefixRows, tokenRows] = await Promise.all([
+    q
+      ? prisma.drugMaster.findMany({
+          where: {
+            ...published,
+            OR: [
+              { name: { startsWith: q, mode: 'insensitive' } },
+              { genericName: { startsWith: q, mode: 'insensitive' } },
+            ],
+          },
+          select,
+          take: window,
+          orderBy: { name: 'asc' },
+        })
+      : Promise.resolve([] as Prisma.DrugMasterGetPayload<{ select: typeof select }>[]),
+    prisma.drugMaster.findMany({ where, select, take: window, orderBy: { name: 'asc' } }),
+  ]);
+
+  const drugs = mergePrefixFirst(prefixRows, tokenRows, (d) => d.id);
 
   // Rank by textual relevance against the full query so an exact/prefix match
   // (e.g. "DOLO" → "DOLO 650") comes before a mere substring ("PARADOLO").

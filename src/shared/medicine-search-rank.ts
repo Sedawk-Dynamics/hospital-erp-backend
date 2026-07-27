@@ -13,13 +13,41 @@
 
 const WORD_SPLIT = /[\s,\-/()+.]+/;
 
+/**
+ * Dosage-form / unit words that appear in almost every drug name. A query that
+ * only matches one of these ("ca" → "Capsule", "ta" → "Tablet") is noise, not a
+ * meaningful name match, so such words are ignored for the word-start tier
+ * (they can still match as a plain substring, the lowest tier). Numeric/strength
+ * tokens ("100mg", "500") are ignored for the same reason.
+ */
+const FORM_UNIT_WORDS = new Set([
+  'capsule', 'capsules', 'cap', 'caps', 'caplet', 'caplets',
+  'tablet', 'tablets', 'tab', 'tabs', 'pill', 'pills',
+  'syrup', 'syrups', 'suspension', 'susp', 'solution', 'soln', 'sol',
+  'injection', 'injections', 'inj', 'infusion', 'vial', 'vials', 'ampoule', 'ampoules', 'amp',
+  'cream', 'gel', 'ointment', 'oint', 'lotion', 'paste', 'foam',
+  'drops', 'drop', 'spray', 'inhaler', 'rotacap', 'respule', 'respules', 'nebuliser', 'nebulizer',
+  'powder', 'granules', 'sachet', 'sachets', 'suppository', 'suppositories', 'pessary',
+  'elixir', 'mouthwash', 'gargle', 'shampoo', 'soap', 'patch', 'kit', 'tube', 'bottle', 'strip', 'pack',
+  'mg', 'mcg', 'ug', 'g', 'gm', 'gms', 'kg', 'ml', 'l', 'iu', 'unit', 'units',
+]);
+
+function isMeaningfulWord(w: string): boolean {
+  if (!w) return false;
+  if (FORM_UNIT_WORDS.has(w)) return false;
+  if (/\d/.test(w)) return false; // strength tokens like "100mg", "500"
+  return true;
+}
+
 function fieldScore(value: string | null | undefined, query: string, base: number): number {
   if (!value) return 100;
   const v = value.toLowerCase();
   if (v === query) return base; // exact
-  if (v.startsWith(query)) return base + 1; // whole-string prefix
-  if (v.split(WORD_SPLIT).some((w) => w && w.startsWith(query))) return base + 2; // word-start
-  if (v.includes(query)) return base + 3; // substring
+  if (v.startsWith(query)) return base + 1; // whole-string prefix (name starts with query)
+  // word-start, but only on meaningful words — a match inside "Capsule"/"Tablet"
+  // or a strength token doesn't earn this tier.
+  if (v.split(WORD_SPLIT).some((w) => isMeaningfulWord(w) && w.startsWith(query))) return base + 2;
+  if (v.includes(query)) return base + 3; // substring (anywhere, incl. form words)
   return 100; // no match on this field
 }
 
@@ -35,6 +63,32 @@ export function medicineSearchScore(
   const q = (query || '').trim().toLowerCase();
   if (!q) return 100;
   return Math.min(fieldScore(name, q, 0), fieldScore(generic, q, 10));
+}
+
+/**
+ * Merge two candidate lists de-duplicated by key, prefix rows first.
+ *
+ * Callers fetch a bounded window ordered alphabetically, then re-rank in JS.
+ * With a big catalog that clips real prefix matches: searching "ca" fills the
+ * window with alphabetically-earlier "A… (…Capsule)" substring rows, so a drug
+ * actually named "Ca…" (sorted under C) never enters the window and can't be
+ * ranked to the top. Fetching a dedicated prefix window and prepending it here
+ * guarantees name-prefix matches are always present before ranking.
+ */
+export function mergePrefixFirst<T>(
+  prefixRows: T[],
+  otherRows: T[],
+  key: (row: T) => string,
+): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const row of [...prefixRows, ...otherRows]) {
+    const k = key(row);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(row);
+  }
+  return out;
 }
 
 /**
