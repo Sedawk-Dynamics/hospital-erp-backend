@@ -423,10 +423,19 @@ export const authService = {
     const phone = canonicalPhone(data.phone);
     if (!phone) throw AppError.badRequest('Enter a valid phone number');
 
-    const userId = await this.findAccountUserIdByPhone(phone, data.phone);
+    // "Existing" means the number can sign in: a linked account OR a patient
+    // record already carrying the number (a legacy standalone patient we adopt).
+    let exists = !!(await this.findAccountUserIdByPhone(phone, data.phone));
+    if (!exists) {
+      const patient = await prisma.patient.findFirst({
+        where: { phone: phoneMatchFilter(data.phone), isActive: true },
+        select: { id: true },
+      });
+      exists = !!patient;
+    }
 
     logger.info({ phone }, 'Phone OTP requested (dev mode — fixed code)');
-    return { success: true, isExistingUser: !!userId };
+    return { success: true, isExistingUser: exists };
   },
 
   /**
@@ -473,20 +482,32 @@ export const authService = {
     const phone = canonicalPhone(data.phone);
     if (!phone) throw AppError.badRequest('Enter a valid phone number');
 
-    // Resolve the existing account for this number (User phone, or an existing
-    // patient record that carries it), so old patients reach their own account.
+    // Resolve the existing account for this number: a User carrying the phone,
+    // or a Patient already linked to a User. Legacy standalone patients (a
+    // Patient row with the number but userId=null — e.g. registered at the front
+    // desk before phone accounts existed) have no account yet; detect those so
+    // we can adopt them on login/signup instead of reporting "no account".
     let userId = await this.findAccountUserIdByPhone(phone, data.phone);
 
+    const orphanPatients = userId
+      ? []
+      : await prisma.patient.findMany({
+          where: { phone: phoneMatchFilter(data.phone), userId: null, isActive: true },
+          select: { id: true, firstName: true, lastName: true },
+          orderBy: { createdAt: 'asc' },
+        });
+    const hasExisting = !!userId || orphanPatients.length > 0;
+
     // Enforce the separate patient flows.
-    if (data.intent === 'login' && !userId) {
+    if (data.intent === 'login' && !hasExisting) {
       throw AppError.notFound('No account found for this number. Please sign up first.');
     }
-    if (data.intent === 'signup' && userId) {
+    if (data.intent === 'signup' && hasExisting) {
       throw AppError.conflict('An account already exists for this number. Please sign in instead.');
     }
 
     if (!userId) {
-      // Brand-new number → create the account holder on the platform tenant.
+      // Create the account holder on the platform tenant.
       const tenant = await prisma.tenant.findFirst({ where: { slug: '__platform__' } });
       if (!tenant) throw AppError.internal('Platform tenant not found');
 
@@ -515,12 +536,15 @@ export const authService = {
         ? `phone-${phone.replace(/\D/g, '')}-${Date.now()}@${AUTO_ACCOUNT_EMAIL_DOMAIN}`
         : synth;
 
+      // Name the account from signup details, else from an existing patient
+      // record already carrying this number.
+      const firstOrphan = orphanPatients[0];
       const created = await prisma.user.create({
         data: {
           email,
           passwordHash,
-          firstName: data.firstName?.trim() || 'Patient',
-          lastName: data.lastName?.trim() || null,
+          firstName: data.firstName?.trim() || firstOrphan?.firstName || 'Patient',
+          lastName: data.lastName?.trim() || firstOrphan?.lastName || null,
           phone,
           tenantId: tenant.id,
           isActive: true,
@@ -530,26 +554,42 @@ export const authService = {
       });
       userId = created.id;
 
-      // Give the new patient their own (self) profile so the portal has content
-      // immediately — booking and records key off a Patient row, not the User.
-      const selfMrn = await generateMRN(tenant.id);
-      await prisma.patient.create({
-        data: {
-          mrn: selfMrn,
-          tenantId: tenant.id,
-          userId,
-          relationship: 'self' as never,
-          isSelf: true,
-          firstName: data.firstName?.trim() || 'Patient',
-          lastName: data.lastName?.trim() || null,
-          gender: (data.gender ?? undefined) as never,
-          dateOfBirth: data.dateOfBirth ? new Date(data.dateOfBirth) : undefined,
-          phone,
-          isActive: true,
-        },
-      });
-
-      logger.info({ userId }, 'Patient account + self profile created via phone OTP');
+      if (orphanPatients.length > 0) {
+        // Adopt the existing standalone patient record(s) for this number into
+        // the new account, so the person sees their history immediately.
+        await prisma.patient.updateMany({
+          where: { id: { in: orphanPatients.map((p) => p.id) } },
+          data: { userId },
+        });
+        await prisma.patient.update({
+          where: { id: firstOrphan.id },
+          data: { relationship: 'self' as never, isSelf: true },
+        });
+        logger.info(
+          { userId, adopted: orphanPatients.length },
+          'Adopted standalone patient(s) into new phone account',
+        );
+      } else {
+        // Brand-new number → give the patient their own (self) profile so the
+        // portal has content immediately (booking/records key off a Patient row).
+        const selfMrn = await generateMRN(tenant.id);
+        await prisma.patient.create({
+          data: {
+            mrn: selfMrn,
+            tenantId: tenant.id,
+            userId,
+            relationship: 'self' as never,
+            isSelf: true,
+            firstName: data.firstName?.trim() || 'Patient',
+            lastName: data.lastName?.trim() || null,
+            gender: (data.gender ?? undefined) as never,
+            dateOfBirth: data.dateOfBirth ? new Date(data.dateOfBirth) : undefined,
+            phone,
+            isActive: true,
+          },
+        });
+        logger.info({ userId }, 'Patient account + self profile created via phone OTP');
+      }
     } else {
       // Existing account. Backfill the phone if it was only on the patient
       // record (so future lookups are direct), and capture the owner's name on
