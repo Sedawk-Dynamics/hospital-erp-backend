@@ -42,6 +42,8 @@ export const verifyOtpSchema = z.object({
     // Collected only when the number has no account yet (new patient signup).
     firstName: z.string().min(1).max(100).optional(),
     lastName: z.string().max(100).optional(),
+    gender: z.enum(['male', 'female', 'other']).optional(),
+    dateOfBirth: z.string().optional(),
   }),
 });
 

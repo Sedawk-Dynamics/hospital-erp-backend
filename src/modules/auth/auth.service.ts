@@ -15,6 +15,7 @@ import {
   placeholderAccountEmail,
 } from '../../shared/account-holder';
 import { recordFailedLogin, clearLoginFailures } from '../../middleware/rateLimiter';
+import { generateMRN } from '../patients/patients.service';
 import type {
   RegisterInput,
   LoginInput,
@@ -516,7 +517,27 @@ export const authService = {
         select: { id: true },
       });
       userId = created.id;
-      logger.info({ userId }, 'Patient account created via phone OTP');
+
+      // Give the new patient their own (self) profile so the portal has content
+      // immediately — booking and records key off a Patient row, not the User.
+      const selfMrn = await generateMRN(tenant.id);
+      await prisma.patient.create({
+        data: {
+          mrn: selfMrn,
+          tenantId: tenant.id,
+          userId,
+          relationship: 'self' as never,
+          isSelf: true,
+          firstName: data.firstName?.trim() || 'Patient',
+          lastName: data.lastName?.trim() || null,
+          gender: (data.gender ?? undefined) as never,
+          dateOfBirth: data.dateOfBirth ? new Date(data.dateOfBirth) : undefined,
+          phone,
+          isActive: true,
+        },
+      });
+
+      logger.info({ userId }, 'Patient account + self profile created via phone OTP');
     } else {
       // Existing account. Backfill the phone if it was only on the patient
       // record (so future lookups are direct), and capture the owner's name on
