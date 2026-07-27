@@ -31,6 +31,7 @@
     "db:seed:demo-gtins": "tsx src/seeds/demo-drug-gtins.ts",
     "db:seed:inventory-to-formulary": "tsx src/seeds/inventory-to-formulary.ts",
     "db:seed:icd": "tsx src/seeds/icd-codes.ts",
+    "db:seed:patient-phones": "tsx prisma/scripts/backfill-patient-phones.ts",
     "db:seed:prod": "node dist-seed/prisma/seed.js",
     "db:studio": "prisma studio",
     "lint": "eslint src --ext .ts",

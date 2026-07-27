@@ -38,3 +38,23 @@ export function placeholderAccountEmail(normalizedPhone: string): string {
   const digits = normalizedPhone.replace(/\D/g, '') || 'unknown';
   return `phone-${digits}@${AUTO_ACCOUNT_EMAIL_DOMAIN}`;
 }
+
+/**
+ * Prefix that marks an auto-assigned (placeholder) phone number. Patients now
+ * sign in only by phone, so every patient account needs one; when a legacy
+ * account has none we assign a random number carrying this prefix. The prefix
+ * keeps it obviously synthetic and out of the real Indian mobile range (6-9),
+ * so it never collides with a genuine number a new patient might use.
+ */
+export const AUTO_PHONE_PREFIX = '+910000';
+
+/** True when a phone number was auto-assigned (not a real number the patient knows). */
+export function isAutoAssignedPhone(phone?: string | null): boolean {
+  return !!phone && phone.startsWith(AUTO_PHONE_PREFIX);
+}
+
+/** Generate a random, obviously-synthetic placeholder phone number. */
+export function randomAutoPhone(): string {
+  const suffix = Math.floor(1_000_000 + Math.random() * 9_000_000); // 7 digits
+  return `${AUTO_PHONE_PREFIX}${suffix}`;
+}

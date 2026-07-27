@@ -293,6 +293,16 @@ export const authService = {
     // Credentials (and 2FA if required) all passed — reset the counter.
     await clearLoginFailures(data.email);
 
+    // Patients don't use email/password — they sign in with phone + OTP only.
+    // (Staff roles never carry the 'patient' role, so this only blocks patients.)
+    const roleNames = user.userRoles.map((ur) => ur.role.name);
+    if (roleNames.includes('patient')) {
+      throw AppError.badRequest(
+        'Patients sign in with their phone number. Please use phone (OTP) login.',
+        'USE_PHONE_LOGIN',
+      );
+    }
+
     logger.info({ userId: user.id, tenantId: user.tenantId }, 'User logged in');
 
     return this.buildAuthResult(user);
