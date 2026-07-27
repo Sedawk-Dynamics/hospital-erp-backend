@@ -39,6 +39,9 @@ export const verifyOtpSchema = z.object({
   body: z.object({
     phone: z.string().min(7, 'Enter a valid phone number').max(20),
     otp: z.string().min(4, 'Enter the code').max(8),
+    // Separate patient flows: 'login' must find an existing account (never
+    // creates one), 'signup' must NOT find one (creates it). Omitted → allow both.
+    intent: z.enum(['login', 'signup']).optional(),
     // Collected only when the number has no account yet (new patient signup).
     firstName: z.string().min(1).max(100).optional(),
     lastName: z.string().max(100).optional(),

@@ -477,6 +477,14 @@ export const authService = {
     // patient record that carries it), so old patients reach their own account.
     let userId = await this.findAccountUserIdByPhone(phone, data.phone);
 
+    // Enforce the separate patient flows.
+    if (data.intent === 'login' && !userId) {
+      throw AppError.notFound('No account found for this number. Please sign up first.');
+    }
+    if (data.intent === 'signup' && userId) {
+      throw AppError.conflict('An account already exists for this number. Please sign in instead.');
+    }
+
     if (!userId) {
       // Brand-new number → create the account holder on the platform tenant.
       const tenant = await prisma.tenant.findFirst({ where: { slug: '__platform__' } });
