@@ -410,13 +410,39 @@ export const authService = {
     const phone = normalizeAccountPhone(data.phone);
     if (!phone) throw AppError.badRequest('Enter a valid phone number');
 
-    const existing = await prisma.user.findFirst({
-      where: { phone: { in: [phone, data.phone] }, isActive: true },
-      select: { id: true },
-    });
+    const userId = await this.findAccountUserIdByPhone(phone, data.phone);
 
     logger.info({ phone }, 'Phone OTP requested (dev mode — fixed code)');
-    return { success: true, isExistingUser: !!existing };
+    return { success: true, isExistingUser: !!userId };
+  },
+
+  /**
+   * Resolve the account (User id) that owns a phone number, so that an OLD
+   * patient logs into their existing account instead of getting a duplicate:
+   *   1. a User whose own phone is the number (prefer the platform copy);
+   *   2. failing that, any existing Patient record that carries the number and
+   *      is already linked to an account — this covers patients who signed up
+   *      before phone was captured on the User (phone was on their patient
+   *      record all along) and front-desk registrations.
+   * Returns null only when the number is genuinely new.
+   */
+  async findAccountUserIdByPhone(phone: string, rawPhone: string): Promise<string | null> {
+    const users = await prisma.user.findMany({
+      where: { phone: { in: [phone, rawPhone] }, isActive: true },
+      select: { id: true, tenant: { select: { slug: true } } },
+      orderBy: { createdAt: 'asc' },
+    });
+    if (users.length) {
+      const platform = users.find((u) => u.tenant.slug === '__platform__');
+      return (platform ?? users[0]).id;
+    }
+
+    const patient = await prisma.patient.findFirst({
+      where: { phone: { in: [phone, rawPhone] }, userId: { not: null } },
+      select: { userId: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    return patient?.userId ?? null;
   },
 
   /**
@@ -432,17 +458,11 @@ export const authService = {
     const phone = normalizeAccountPhone(data.phone);
     if (!phone) throw AppError.badRequest('Enter a valid phone number');
 
-    // Find the account holder for this number, preferring the platform copy
-    // (the one that can actually be logged into).
-    const candidates = await prisma.user.findMany({
-      where: { phone: { in: [phone, data.phone] }, isActive: true },
-      select: { id: true, email: true, firstName: true, tenant: { select: { slug: true } } },
-      orderBy: { createdAt: 'asc' },
-    });
-    const match = candidates.find((u) => u.tenant.slug === '__platform__') ?? candidates[0] ?? null;
+    // Resolve the existing account for this number (User phone, or an existing
+    // patient record that carries it), so old patients reach their own account.
+    let userId = await this.findAccountUserIdByPhone(phone, data.phone);
 
-    let userId: string;
-    if (!match) {
+    if (!userId) {
       // Brand-new number → create the account holder on the platform tenant.
       const tenant = await prisma.tenant.findFirst({ where: { slug: '__platform__' } });
       if (!tenant) throw AppError.internal('Platform tenant not found');
@@ -488,20 +508,27 @@ export const authService = {
       userId = created.id;
       logger.info({ userId }, 'Patient account created via phone OTP');
     } else {
-      userId = match.id;
-      // First real login onto an unnamed placeholder → capture the owner's name.
-      if (
-        data.firstName?.trim() &&
-        isPlaceholderAccountEmail(match.email) &&
-        (!match.firstName || match.firstName === 'Patient')
-      ) {
-        await prisma.user.update({
-          where: { id: match.id },
-          data: {
-            firstName: data.firstName.trim(),
-            ...(data.lastName?.trim() ? { lastName: data.lastName.trim() } : {}),
-          },
-        });
+      // Existing account. Backfill the phone if it was only on the patient
+      // record (so future lookups are direct), and capture the owner's name on
+      // first login onto an unnamed front-desk placeholder.
+      const u = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { email: true, firstName: true, phone: true },
+      });
+      if (u) {
+        const patch: { phone?: string; firstName?: string; lastName?: string } = {};
+        if (!u.phone) patch.phone = phone;
+        if (
+          data.firstName?.trim() &&
+          isPlaceholderAccountEmail(u.email) &&
+          (!u.firstName || u.firstName === 'Patient')
+        ) {
+          patch.firstName = data.firstName.trim();
+          if (data.lastName?.trim()) patch.lastName = data.lastName.trim();
+        }
+        if (Object.keys(patch).length) {
+          await prisma.user.update({ where: { id: userId }, data: patch });
+        }
       }
     }
 
