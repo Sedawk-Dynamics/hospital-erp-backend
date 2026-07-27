@@ -10,6 +10,7 @@ import { getInventorySettings, getInventorySettingsSafe } from './inventory.sett
 import { notifyInventoryRecipients, hasOpenInventoryAlert } from './inventory.notify';
 import { makeInternalBarcode } from '../pharmacy/pharmacy.barcode';
 import { safePharmacyAudit } from '../pharmacy/pharmacy.audit';
+import { makeMedicineRankComparator, mergePrefixFirst } from '../../shared/medicine-search-rank';
 import type {
   CreateSupplierInput,
   UpdateSupplierInput,
@@ -241,28 +242,44 @@ export async function createItem(tenantId: string, data: CreateItemInput) {
 export async function getItems(tenantId: string, query: GetItemsQuery) {
   const { skip, take, page, limit } = getPaginationParams(query);
 
-  const where: any = { tenantId };
+  const baseWhere: any = { tenantId };
+  if (query.category) baseWhere.category = query.category;
+  if (query.isActive !== undefined) baseWhere.isActive = query.isActive;
 
-  if (query.category) where.category = query.category;
-  if (query.isActive !== undefined) where.isActive = query.isActive;
-
-  if (query.search) {
-    where.OR = [
-      { itemName: { contains: query.search, mode: 'insensitive' } },
-      { itemCode: { contains: query.search, mode: 'insensitive' } },
-      { description: { contains: query.search, mode: 'insensitive' } },
-    ];
+  const q = query.search ? query.search.trim() : '';
+  if (!q) {
+    const [items, total] = await Promise.all([
+      prisma.inventoryItem.findMany({ where: baseWhere, skip, take, orderBy: { itemName: 'asc' } }),
+      prisma.inventoryItem.count({ where: baseWhere }),
+    ]);
+    return { items, total, page, limit };
   }
 
-  const [items, total] = await Promise.all([
+  // On search, rank by name relevance (name-prefix → word-start → substring),
+  // same as the drug pickers, so typing "gl" surfaces "Gloves" before an item
+  // that merely contains "gl". Prefix window guards against alphabetical clipping.
+  const where: any = {
+    ...baseWhere,
+    OR: [
+      { itemName: { contains: q, mode: 'insensitive' } },
+      { itemCode: { contains: q, mode: 'insensitive' } },
+      { description: { contains: q, mode: 'insensitive' } },
+    ],
+  };
+  const WINDOW = 100;
+  const [namePrefix, mainRows, total] = await Promise.all([
     prisma.inventoryItem.findMany({
-      where,
-      skip,
-      take,
+      where: { ...baseWhere, itemName: { startsWith: q, mode: 'insensitive' } },
+      take: WINDOW,
       orderBy: { itemName: 'asc' },
     }),
+    prisma.inventoryItem.findMany({ where, take: WINDOW, orderBy: { itemName: 'asc' } }),
     prisma.inventoryItem.count({ where }),
   ]);
+  const cmp = makeMedicineRankComparator<(typeof mainRows)[number]>(q, (i) => ({ name: i.itemName }));
+  const items = mergePrefixFirst(namePrefix, mainRows, (i) => i.id)
+    .sort(cmp)
+    .slice(skip, skip + take);
 
   return { items, total, page, limit };
 }
