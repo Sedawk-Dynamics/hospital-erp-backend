@@ -304,6 +304,7 @@ billingRoutes.get(
 billingRoutes.post(
   '/:id/items',
   authenticate,
+  requirePermission('billing', 'create'),
   validate(addBillItemSchema),
   controller.addBillItem,
 );
@@ -327,6 +328,7 @@ billingRoutes.patch(
 billingRoutes.delete(
   '/:id/items/:itemId',
   authenticate,
+  requirePermission('billing', 'update'),
   validate(removeBillItemSchema),
   controller.removeBillItem,
 );
@@ -340,11 +342,13 @@ billingRoutes.patch(
 );
 
 // Undo an accidental finalize while nothing has been collected yet, so the
-// counter can add the missing items to the same bill.
+// counter can add the missing items to the same bill. Allowed at billing:update
+// (not approve) so a cashier can recover their own mistake — the service still
+// guards it (only an unpaid, claim-free 'pending' bill can be reopened).
 billingRoutes.patch(
   '/:id/reopen',
   authenticate,
-  requirePermission('billing', 'approve'),
+  requirePermission('billing', 'update'),
   validate(billIdParamSchema),
   controller.reopenBill,
 );
