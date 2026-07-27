@@ -999,25 +999,30 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
     category: true,
   } as const;
   const q = (search ?? '').trim();
-  // Prefix window (name/generic starts with query) fetched alongside the
-  // substring window, so a drug actually named like the query is never clipped
-  // out by alphabetically-earlier substring matches before JS ranking runs.
-  const [prefixFormulary, substringFormulary] = await Promise.all([
+  // Name and generic PREFIX windows kept SEPARATE (a combined OR ordered by name
+  // lets generic-prefix "A…" rows clip the real name-prefix rows), fetched
+  // alongside the substring window so a drug named like the query is never
+  // clipped out before JS ranking runs.
+  const emptyFormulary = Promise.resolve(
+    [] as Prisma.DrugFormularyGetPayload<{ select: typeof formularySelect }>[],
+  );
+  const [namePrefix, genericPrefix, substringFormulary] = await Promise.all([
     q
       ? prisma.drugFormulary.findMany({
-          where: {
-            tenantId,
-            isActive: true,
-            OR: [
-              { drugName: { startsWith: q, mode: 'insensitive' } },
-              { genericName: { startsWith: q, mode: 'insensitive' } },
-            ],
-          },
+          where: { tenantId, isActive: true, drugName: { startsWith: q, mode: 'insensitive' } },
           select: formularySelect,
           take: 100,
           orderBy: { drugName: 'asc' },
         })
-      : Promise.resolve([] as Prisma.DrugFormularyGetPayload<{ select: typeof formularySelect }>[]),
+      : emptyFormulary,
+    q
+      ? prisma.drugFormulary.findMany({
+          where: { tenantId, isActive: true, genericName: { startsWith: q, mode: 'insensitive' } },
+          select: formularySelect,
+          take: 100,
+          orderBy: { drugName: 'asc' },
+        })
+      : emptyFormulary,
     prisma.drugFormulary.findMany({
       where: {
         tenantId,
@@ -1033,7 +1038,7 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
       orderBy: { drugName: 'asc' },
     }),
   ]);
-  const formulary = mergePrefixFirst(prefixFormulary, substringFormulary, (f) => f.id);
+  const formulary = mergePrefixFirst([...namePrefix, ...genericPrefix], substringFormulary, (f) => f.id);
 
   // Available pharmacy stock per formulary drug = Σ quantityInStock across the
   // hospital's active (non-expired, non-recalled) batches — so the doctor sees
@@ -1153,15 +1158,15 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
       ...(importedMasterIds.length ? { id: { notIn: importedMasterIds } } : {}),
     };
 
-    // PASS 1 — brand / generic PREFIX matches first so a half-typed name (e.g.
-    // "para") surfaces "Paracetamol…" brands at the top, not a flat A-Z list.
+    // PASS 1 — brand NAME prefix matches first so a half-typed name (e.g. "para")
+    // surfaces "Paracetamol…" brands at the top, not a flat A-Z list. Name-only
+    // (not generic-OR): a combined window ordered by name lets generic-prefix
+    // "A…" rows clip the real name-prefix rows. Generic matches still arrive via
+    // PASS 2 (contains) and are scored correctly by the comparator below.
     const prefixMatches = await prisma.drugMaster.findMany({
       where: {
         ...baseWhere,
-        OR: [
-          { name: { startsWith: search, mode: 'insensitive' as const } },
-          { genericName: { startsWith: search, mode: 'insensitive' as const } },
-        ],
+        name: { startsWith: search, mode: 'insensitive' as const },
       },
       select,
       take: remaining,

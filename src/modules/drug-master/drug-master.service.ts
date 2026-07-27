@@ -73,29 +73,34 @@ export async function searchDrugMaster(query: SearchDrugMasterQuery) {
   const window = Math.max(query.limit ?? 20, 100);
   const q = query.q.trim();
 
-  // Fetch a dedicated name/generic PREFIX window alongside the token search, so
-  // a drug actually named like the query (e.g. "Ca…" for "ca") is guaranteed to
-  // be a candidate even though it sorts after the many alphabetically-earlier
-  // substring matches that would otherwise fill the window.
-  const [prefixRows, tokenRows] = await Promise.all([
+  // Fetch dedicated PREFIX windows (name and generic kept SEPARATE) alongside
+  // the token search. They must be separate: a single `name startsWith OR
+  // generic startsWith` window ordered by name lets drugs whose *generic* starts
+  // with the query but whose *name* starts with "A" (e.g. "A-Cet" → Cetirizine)
+  // fill the window and clip the real "C…" name-prefix drugs. Separate windows
+  // guarantee both are candidates; the comparator then scores name-prefix top.
+  const emptyRows = Promise.resolve([] as Prisma.DrugMasterGetPayload<{ select: typeof select }>[]);
+  const [namePrefixRows, genericPrefixRows, tokenRows] = await Promise.all([
     q
       ? prisma.drugMaster.findMany({
-          where: {
-            ...published,
-            OR: [
-              { name: { startsWith: q, mode: 'insensitive' } },
-              { genericName: { startsWith: q, mode: 'insensitive' } },
-            ],
-          },
+          where: { ...published, name: { startsWith: q, mode: 'insensitive' } },
           select,
           take: window,
           orderBy: { name: 'asc' },
         })
-      : Promise.resolve([] as Prisma.DrugMasterGetPayload<{ select: typeof select }>[]),
+      : emptyRows,
+    q
+      ? prisma.drugMaster.findMany({
+          where: { ...published, genericName: { startsWith: q, mode: 'insensitive' } },
+          select,
+          take: window,
+          orderBy: { name: 'asc' },
+        })
+      : emptyRows,
     prisma.drugMaster.findMany({ where, select, take: window, orderBy: { name: 'asc' } }),
   ]);
 
-  const drugs = mergePrefixFirst(prefixRows, tokenRows, (d) => d.id);
+  const drugs = mergePrefixFirst([...namePrefixRows, ...genericPrefixRows], tokenRows, (d) => d.id);
 
   // Rank by textual relevance against the full query so an exact/prefix match
   // (e.g. "DOLO" → "DOLO 650") comes before a mere substring ("PARADOLO").

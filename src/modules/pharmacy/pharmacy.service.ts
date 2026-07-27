@@ -1459,25 +1459,29 @@ export async function getTenantCatalog(tenantId: string, query: any) {
     schedule: true,
   } as const;
   const q = isSearch ? String(query.search).trim() : '';
-  // On search, also fetch a name/generic PREFIX window (same filters) so a drug
-  // named like the query survives the window instead of being clipped out by
-  // alphabetically-earlier substring matches before JS ranking.
-  const [prefixRows, mainRows, total] = await Promise.all([
+  // On search, also fetch name and generic PREFIX windows (same filters, kept
+  // SEPARATE so generic-prefix "A…" rows don't clip real name-prefix rows) so a
+  // drug named like the query survives the window before JS ranking.
+  const emptyCatalog = Promise.resolve(
+    [] as Prisma.DrugMasterGetPayload<{ select: typeof catalogSelect }>[],
+  );
+  const [namePrefixRows, genericPrefixRows, mainRows, total] = await Promise.all([
     isSearch && q
       ? prisma.drugMaster.findMany({
-          where: {
-            ...where,
-            AND: undefined,
-            OR: [
-              { name: { startsWith: q, mode: 'insensitive' as const } },
-              { genericName: { startsWith: q, mode: 'insensitive' as const } },
-            ],
-          },
+          where: { ...where, AND: undefined, name: { startsWith: q, mode: 'insensitive' as const } },
           take: CATALOG_SEARCH_WINDOW,
           orderBy: { name: 'asc' },
           select: catalogSelect,
         })
-      : Promise.resolve([] as Prisma.DrugMasterGetPayload<{ select: typeof catalogSelect }>[]),
+      : emptyCatalog,
+    isSearch && q
+      ? prisma.drugMaster.findMany({
+          where: { ...where, AND: undefined, genericName: { startsWith: q, mode: 'insensitive' as const } },
+          take: CATALOG_SEARCH_WINDOW,
+          orderBy: { name: 'asc' },
+          select: catalogSelect,
+        })
+      : emptyCatalog,
     prisma.drugMaster.findMany({
       where,
       skip: isSearch ? 0 : skip,
@@ -1487,7 +1491,9 @@ export async function getTenantCatalog(tenantId: string, query: any) {
     }),
     prisma.drugMaster.count({ where }),
   ]);
-  const rows = isSearch ? mergePrefixFirst(prefixRows, mainRows, (r) => r.id) : mainRows;
+  const rows = isSearch
+    ? mergePrefixFirst([...namePrefixRows, ...genericPrefixRows], mainRows, (r) => r.id)
+    : mainRows;
 
   let ranked = rows;
   if (isSearch) {
@@ -1558,29 +1564,36 @@ export async function getFormulary(tenantId: string, query: GetFormularyQuery, _
     include: formularyInclude,
     orderBy: { drugName: 'asc' },
   });
-  // On search, also fetch a name/generic PREFIX window (same filters) so a drug
-  // named like the query isn't clipped out before JS ranking.
-  const prefixItemsP =
+  const emptyItemsP = mainItemsP.then(() => [] as Awaited<typeof mainItemsP>);
+  // On search, fetch name and generic PREFIX windows separately (same filters)
+  // so generic-prefix "A…" rows don't clip real name-prefix rows before ranking.
+  const namePrefixP =
     isSearch && q
       ? prisma.drugFormulary.findMany({
-          where: {
-            ...where,
-            OR: [
-              { drugName: { startsWith: q, mode: 'insensitive' as const } },
-              { genericName: { startsWith: q, mode: 'insensitive' as const } },
-            ],
-          },
+          where: { ...where, drugName: { startsWith: q, mode: 'insensitive' as const } },
           take: SEARCH_WINDOW,
           include: formularyInclude,
           orderBy: { drugName: 'asc' },
         })
-      : mainItemsP.then(() => [] as Awaited<typeof mainItemsP>);
-  const [prefixItems, mainItems, total] = await Promise.all([
-    prefixItemsP,
+      : emptyItemsP;
+  const genericPrefixP =
+    isSearch && q
+      ? prisma.drugFormulary.findMany({
+          where: { ...where, genericName: { startsWith: q, mode: 'insensitive' as const } },
+          take: SEARCH_WINDOW,
+          include: formularyInclude,
+          orderBy: { drugName: 'asc' },
+        })
+      : emptyItemsP;
+  const [namePrefixItems, genericPrefixItems, mainItems, total] = await Promise.all([
+    namePrefixP,
+    genericPrefixP,
     mainItemsP,
     prisma.drugFormulary.count({ where }),
   ]);
-  const items = isSearch ? mergePrefixFirst(prefixItems, mainItems, (i) => i.id) : mainItems;
+  const items = isSearch
+    ? mergePrefixFirst([...namePrefixItems, ...genericPrefixItems], mainItems, (i) => i.id)
+    : mainItems;
 
   // Roll batch rows up into a stock summary so the formulary list can show
   // In Stock (qty) / Out of Stock without a second round-trip.
