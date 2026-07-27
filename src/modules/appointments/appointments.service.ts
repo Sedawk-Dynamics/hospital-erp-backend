@@ -1365,6 +1365,9 @@ export async function getAppointments(tenantId: string, query: GetAppointmentsQu
   }
   if (query.patientId) where.patientId = query.patientId;
   if (query.status) where.status = query.status;
+  // Consultation kind: consultation | follow_up | procedure (stored in
+  // consultationType at booking). Used by the Referral / follow-up report.
+  if ((query as any).type) where.consultationType = (query as any).type;
 
   if ((query as any).search) {
     const s = (query as any).search;

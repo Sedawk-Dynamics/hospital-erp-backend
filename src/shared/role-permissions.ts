@@ -178,6 +178,9 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'billing', action: 'update' }, { module: 'billing', action: 'approve' },
       { module: 'payments', action: 'read' }, { module: 'payments', action: 'create' },
       { module: 'departments', action: 'read' },
+      // Read-through on insurance so the front-desk reports screen (Insurance
+      // Patient Bill report) and TPA-patient billing are visible at the counter.
+      { module: 'insurance', action: 'read' },
       { module: 'forms', action: 'read' }, { module: 'forms', action: 'create' }, { module: 'forms', action: 'approve' },
     ],
 
