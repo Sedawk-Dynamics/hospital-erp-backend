@@ -704,60 +704,23 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
     ? Prisma.sql`WHERE ${Prisma.join(filters, ' AND ')}`
     : Prisma.empty;
 
-  // On a search, rank by textual relevance so an exact/prefix/word-start match
-  // (typing "dolo" → "Dolo 650") beats an incidental substring ("Adoloc").
-  let orderSql = Prisma.sql`ORDER BY name ASC`;
-  if (query.search) {
-    const q = query.search.toLowerCase().trim();
-    orderSql = Prisma.sql`ORDER BY (
-      CASE
-        WHEN lower(name) = ${q} THEN 0
-        WHEN lower(name) LIKE ${q + '%'} THEN 1
-        -- word-start: query begins a later word (after space / hyphen / slash /
-        -- paren / comma), matching the JS ranker's word boundaries.
-        WHEN lower(name) LIKE ${'% ' + q + '%'}
-          OR lower(name) LIKE ${'%-' + q + '%'}
-          OR lower(name) LIKE ${'%/' + q + '%'}
-          OR lower(name) LIKE ${'%(' + q + '%'}
-          OR lower(name) LIKE ${'%,' + q + '%'} THEN 2
-        ELSE 3
-      END
-    ), name ASC`;
-  }
-
-  const rows = await prisma.$queryRaw<
-    Array<{
-      kind: string;
-      ref_id: string;
-      name: string;
-      code: string | null;
-      category: string;
-      unit: string | null;
-      current_stock: number;
-      reorder_level: number | null;
-      cost_per_unit: string | number | null;
-      selling_price: string | number | null;
-      tracks_batches: boolean;
-      batch_count: number;
-      nearest_expiry: Date | null;
-      is_recalled: boolean;
-    }>
-  >(Prisma.sql`
-    ${base}
-    SELECT * FROM unified_stock
-    ${whereSql}
-    ${orderSql}
-    LIMIT ${take} OFFSET ${skip}
-  `);
-
-  const countRows = await prisma.$queryRaw<Array<{ count: number }>>(Prisma.sql`
-    ${base}
-    SELECT COUNT(*)::int AS count FROM unified_stock
-    ${whereSql}
-  `);
-  const total = Number(countRows[0]?.count ?? 0);
-
-  const data: UnifiedStockRow[] = rows.map((r) => ({
+  type UnifiedRaw = {
+    kind: string;
+    ref_id: string;
+    name: string;
+    code: string | null;
+    category: string;
+    unit: string | null;
+    current_stock: number;
+    reorder_level: number | null;
+    cost_per_unit: string | number | null;
+    selling_price: string | number | null;
+    tracks_batches: boolean;
+    batch_count: number;
+    nearest_expiry: Date | null;
+    is_recalled: boolean;
+  };
+  const mapRow = (r: UnifiedRaw): UnifiedStockRow => ({
     kind: r.kind as 'item' | 'drug',
     refId: r.ref_id,
     name: r.name,
@@ -772,7 +735,43 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
     batchCount: Number(r.batch_count),
     nearestExpiry: r.nearest_expiry,
     isRecalled: r.is_recalled,
-  }));
+  });
+
+  // On a search we fetch ALL matching rows (the hospital's own stock — a bounded
+  // set) and rank them in JS with the shared ranker, so the ordering matches the
+  // drug pickers exactly: name-prefix → word-start (form/unit words like
+  // "Capsule"/"Tablet" excluded) → substring, then alphabetical. On a plain
+  // browse we keep the original SQL pagination untouched.
+  if (query.search) {
+    const allRows = await prisma.$queryRaw<UnifiedRaw[]>(Prisma.sql`
+      ${base}
+      SELECT * FROM unified_stock
+      ${whereSql}
+      ORDER BY name ASC
+    `);
+    const ranked = allRows
+      .map(mapRow)
+      .sort(makeMedicineRankComparator(query.search, (r) => ({ name: r.name })));
+    const data = ranked.slice(skip, skip + take);
+    return { data, total: ranked.length, page, limit, expiryAlertMonths };
+  }
+
+  const rows = await prisma.$queryRaw<UnifiedRaw[]>(Prisma.sql`
+    ${base}
+    SELECT * FROM unified_stock
+    ${whereSql}
+    ORDER BY name ASC
+    LIMIT ${take} OFFSET ${skip}
+  `);
+
+  const countRows = await prisma.$queryRaw<Array<{ count: number }>>(Prisma.sql`
+    ${base}
+    SELECT COUNT(*)::int AS count FROM unified_stock
+    ${whereSql}
+  `);
+  const total = Number(countRows[0]?.count ?? 0);
+
+  const data: UnifiedStockRow[] = rows.map(mapRow);
 
   return { data, total, page, limit, expiryAlertMonths };
 }
