@@ -8,6 +8,10 @@ import { env } from '../../config/env';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { REDIS_PREFIXES } from '../../shared/constants';
+import {
+  isPlaceholderAccountEmail,
+  normalizeAccountPhone,
+} from '../../shared/account-holder';
 import { recordFailedLogin, clearLoginFailures } from '../../middleware/rateLimiter';
 import type {
   RegisterInput,
@@ -111,6 +115,79 @@ export const authService = {
       });
     }
 
+    const registeredUserSelect = {
+      id: true,
+      email: true,
+      firstName: true,
+      lastName: true,
+      phone: true,
+      tenantId: true,
+      isActive: true,
+      createdAt: true,
+      userRoles: {
+        select: {
+          role: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+        },
+      },
+    } as const;
+
+    // Claim an unclaimed placeholder account holder that the front desk
+    // auto-created earlier for this phone number. Doing so attaches every
+    // patient already linked to it (the owner plus any relatives the desk
+    // registered under the number) to the real login being created now, instead
+    // of spawning a duplicate account and orphaning those records. Guardrails:
+    // only patient self-signup (platform tenant) claims, and only a *placeholder*
+    // account (synthetic email) is ever claimed — a real, already-claimed
+    // account is never taken over. (Phone ownership is trusted for now; OTP
+    // verification is a planned hardening step.)
+    if (!data.tenantSlug && data.phone) {
+      const normalizedPhone = normalizeAccountPhone(data.phone);
+      const placeholder = normalizedPhone
+        ? await prisma.user.findFirst({
+            where: {
+              tenantId: tenant.id,
+              phone: { in: [normalizedPhone, data.phone] },
+            },
+            orderBy: { createdAt: 'asc' },
+          })
+        : null;
+
+      if (placeholder && isPlaceholderAccountEmail(placeholder.email)) {
+        const claimed = await prisma.user.update({
+          where: { id: placeholder.id },
+          data: {
+            email: data.email,
+            passwordHash: hashedPassword,
+            firstName: data.firstName,
+            lastName: data.lastName,
+            phone: normalizedPhone,
+            isActive: true,
+            // Placeholder already carries the patient role; be defensive anyway.
+            ...(defaultRole && {
+              userRoles: {
+                connectOrCreate: {
+                  where: { userId_roleId: { userId: placeholder.id, roleId: defaultRole.id } },
+                  create: { roleId: defaultRole.id },
+                },
+              },
+            }),
+          },
+          select: registeredUserSelect,
+        });
+
+        logger.info(
+          { userId: claimed.id, tenantId: tenant.id },
+          'Placeholder account holder claimed at signup',
+        );
+        return claimed;
+      }
+    }
+
     const user = await prisma.user.create({
       data: {
         email: data.email,
@@ -128,26 +205,7 @@ export const authService = {
           },
         }),
       },
-      select: {
-        id: true,
-        email: true,
-        firstName: true,
-        lastName: true,
-        phone: true,
-        tenantId: true,
-        isActive: true,
-        createdAt: true,
-        userRoles: {
-          select: {
-            role: {
-              select: {
-                id: true,
-                name: true,
-              },
-            },
-          },
-        },
-      },
+      select: registeredUserSelect,
     });
 
     logger.info({ userId: user.id, tenantId: tenant.id }, 'User registered');

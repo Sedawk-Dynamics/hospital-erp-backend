@@ -5,6 +5,11 @@ import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
 import { TEMP_MRN_PREFIX } from '../../shared/temporary-patient';
+import {
+  AUTO_ACCOUNT_EMAIL_DOMAIN,
+  normalizeAccountPhone,
+  placeholderAccountEmail,
+} from '../../shared/account-holder';
 import type {
   CreatePatientInput,
   UpdatePatientInput,
@@ -87,16 +92,6 @@ function mapDocumentType(type: string): string {
 }
 
 /**
- * Normalise a phone number for matching/storage: drop spaces, dashes and
- * brackets but keep a leading + and the digits. Front-desk operators type the
- * same number many ways ("+91 98765 43210", "(098765) 43210") — this collapses
- * them so the same number always resolves to the same account holder.
- */
-function normalizePhone(phone: string): string {
-  return phone.replace(/[\s()\-.]/g, '').trim();
-}
-
-/**
  * Phone is the account-holder key. Every registered patient belongs to an
  * account (a User) identified by their phone number:
  *   - if a User already owns that number, this profile is added under them
@@ -117,7 +112,7 @@ async function resolveOrCreateAccountHolder(input: {
   lastName?: string | null;
   email?: string;
 }): Promise<string> {
-  const normalized = normalizePhone(input.phone);
+  const normalized = normalizeAccountPhone(input.phone);
   if (!normalized) throw AppError.badRequest('A phone number is required to register a patient');
 
   // Match an existing account holder by number (normalised or raw). Prefer the
@@ -151,21 +146,24 @@ async function resolveOrCreateAccountHolder(input: {
     });
   }
 
-  // Random password (unusable until reset/OTP) + synthetic unique email.
+  // Random password (unusable until the owner claims the account by signing up)
+  // + synthetic unique email. We deliberately do NOT use a real email here even
+  // if one was given: the synthetic address marks the account as an unclaimed
+  // placeholder, and keeps a real email free for the owner's own signup.
   const randomSecret = `${normalized}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const passwordHash = await bcrypt.hash(randomSecret, env.BCRYPT_SALT_ROUNDS);
-  const digits = normalized.replace(/\D/g, '') || 'unknown';
-  const synthEmail = input.email?.trim()
-    ? input.email.trim()
-    : `phone-${digits}@auto.hospital.local`;
+  const synthEmail = placeholderAccountEmail(normalized);
 
-  // Guard the tenant-unique email — if the synthetic/real email already exists
-  // on the platform tenant, fall back to a guaranteed-unique variant.
+  // Guard the tenant-unique email — if that synthetic email is somehow taken,
+  // fall back to a guaranteed-unique variant.
+  const digits = normalized.replace(/\D/g, '') || 'unknown';
   const emailClash = await prisma.user.findFirst({
     where: { tenantId: tenant.id, email: synthEmail },
     select: { id: true },
   });
-  const email = emailClash ? `phone-${digits}-${Date.now()}@auto.hospital.local` : synthEmail;
+  const email = emailClash
+    ? `phone-${digits}-${Date.now()}@${AUTO_ACCOUNT_EMAIL_DOMAIN}`
+    : synthEmail;
 
   const user = await prisma.user.create({
     data: {
