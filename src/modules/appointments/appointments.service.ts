@@ -1602,7 +1602,9 @@ export async function rescheduleAppointment(
     throw AppError.notFound('Appointment not found');
   }
 
-  const RESCHEDULABLE = ['pending_payment', 'booked', 'confirmed', 'no_show'];
+  // `checked_in` is reschedulable too: a patient who has arrived may need to be
+  // moved to another slot/day from the front desk. Not in-consultation/completed.
+  const RESCHEDULABLE = ['pending_payment', 'booked', 'confirmed', 'no_show', 'checked_in'];
   if (!RESCHEDULABLE.includes(appointment.status)) {
     throw AppError.badRequest(
       `Cannot reschedule an appointment that is '${appointment.status.replace(/_/g, ' ')}'`,
@@ -1668,7 +1670,13 @@ export async function rescheduleAppointment(
       startTime: startTimeDate,
       endTime: endTimeDate,
       // A no-show that gets a new slot goes back into the booked queue.
-      ...(appointment.status === 'no_show' ? { status: 'booked' } : {}),
+      // A checked-in patient moved to another slot is no longer "arrived", but
+      // keeps their settled fee → back to confirmed (not unpaid 'booked').
+      ...(appointment.status === 'no_show'
+        ? { status: 'booked' }
+        : appointment.status === 'checked_in'
+          ? { status: 'confirmed' }
+          : {}),
       notes: appointment.notes ? `${appointment.notes}\n${note}` : note,
     },
     include: {
