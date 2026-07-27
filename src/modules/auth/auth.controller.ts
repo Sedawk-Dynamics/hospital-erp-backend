@@ -32,6 +32,33 @@ export const authController = {
     }
   },
 
+  // ── Patient phone-OTP auth ───────────────────────────────
+  async requestOtp(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const result = await authService.requestPhoneOtp(req.body);
+      sendResponse({
+        res,
+        message: 'Verification code sent',
+        data: result,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async verifyOtp(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const result = await authService.loginWithPhoneOtp(req.body);
+      sendResponse({
+        res,
+        message: 'Login successful',
+        data: result,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+
   async refresh(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
       const { refreshToken } = req.body;

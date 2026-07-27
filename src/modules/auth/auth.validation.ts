@@ -26,6 +26,25 @@ export const loginSchema = z.object({
   }),
 });
 
+// ── Patient phone-OTP auth ───────────────────────────────────
+// Patients sign in / sign up with just their phone number + a one-time code.
+// (The code is a fixed dev value for now; real SMS delivery is a later step.)
+export const requestOtpSchema = z.object({
+  body: z.object({
+    phone: z.string().min(7, 'Enter a valid phone number').max(20),
+  }),
+});
+
+export const verifyOtpSchema = z.object({
+  body: z.object({
+    phone: z.string().min(7, 'Enter a valid phone number').max(20),
+    otp: z.string().min(4, 'Enter the code').max(8),
+    // Collected only when the number has no account yet (new patient signup).
+    firstName: z.string().min(1).max(100).optional(),
+    lastName: z.string().max(100).optional(),
+  }),
+});
+
 export const refreshTokenSchema = z.object({
   body: z.object({
     refreshToken: z.string().min(1, 'Refresh token is required'),
@@ -70,6 +89,8 @@ export const registerAdminSchema = z.object({
   }),
 });
 
+export type RequestOtpInput = z.infer<typeof requestOtpSchema>['body'];
+export type VerifyOtpInput = z.infer<typeof verifyOtpSchema>['body'];
 export type RegisterInput = z.infer<typeof registerSchema>['body'];
 export type RegisterAdminInput = z.infer<typeof registerAdminSchema>['body'];
 export type LoginInput = z.infer<typeof loginSchema>['body'];

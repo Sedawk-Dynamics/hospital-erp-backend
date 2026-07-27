@@ -11,6 +11,8 @@ import { validate } from '../../middleware/validate';
 import {
   registerSchema,
   loginSchema,
+  requestOtpSchema,
+  verifyOtpSchema,
   refreshTokenSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
@@ -32,6 +34,10 @@ router.post(
   validate(loginSchema),
   authController.login,
 );
+
+// Patient phone-OTP auth — per-IP limiter, same as login.
+router.post('/otp/request', authLimiter, validate(requestOtpSchema), authController.requestOtp);
+router.post('/otp/verify', authLimiter, validate(verifyOtpSchema), authController.verifyOtp);
 
 // Refresh — looser limit; browsers can legitimately burst refreshes on tab wake.
 router.post('/refresh', refreshLimiter, validate(refreshTokenSchema), authController.refresh);

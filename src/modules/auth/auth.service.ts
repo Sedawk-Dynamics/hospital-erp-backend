@@ -9,17 +9,28 @@ import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { REDIS_PREFIXES } from '../../shared/constants';
 import {
+  AUTO_ACCOUNT_EMAIL_DOMAIN,
   isPlaceholderAccountEmail,
   normalizeAccountPhone,
+  placeholderAccountEmail,
 } from '../../shared/account-holder';
 import { recordFailedLogin, clearLoginFailures } from '../../middleware/rateLimiter';
 import type {
   RegisterInput,
   LoginInput,
+  RequestOtpInput,
+  VerifyOtpInput,
   ForgotPasswordInput,
   ResetPasswordInput,
   Verify2FAInput,
 } from './auth.validation';
+
+/**
+ * Fixed one-time code accepted for patient phone login while SMS delivery is not
+ * wired up yet. Replace this with a real generate-store-send-verify flow when
+ * an SMS provider is added. Every phone "receives" this same code for now.
+ */
+const HARDCODED_OTP = '123123';
 
 interface TokenPayload {
   userId: string;
@@ -282,6 +293,27 @@ export const authService = {
     // Credentials (and 2FA if required) all passed — reset the counter.
     await clearLoginFailures(data.email);
 
+    logger.info({ userId: user.id, tenantId: user.tenantId }, 'User logged in');
+
+    return this.buildAuthResult(user);
+  },
+
+  /**
+   * Issue tokens and assemble the login response for an already-authenticated
+   * user. Shared by password login and patient phone-OTP login. `user` must
+   * include its `tenant` and `userRoles.role`.
+   */
+  async buildAuthResult(user: {
+    id: string;
+    email: string;
+    firstName: string;
+    lastName: string | null;
+    phone: string | null;
+    tenantId: string;
+    isActive: boolean;
+    userRoles: { role: { id: string; name: string } }[];
+    tenant: { id: string; name: string; slug: string };
+  }) {
     const roles = user.userRoles.map((ur) => ur.role.name);
 
     const tokenPayload: TokenPayload = {
@@ -311,8 +343,6 @@ export const authService = {
     }).catch((err: unknown) => {
       logger.warn({ err }, 'Failed to create login audit log');
     });
-
-    logger.info({ userId: user.id, tenantId: user.tenantId }, 'User logged in');
 
     // Build a single role object the frontend expects (role.slug)
     const primaryRole = user.userRoles[0]?.role;
@@ -351,6 +381,132 @@ export const authService = {
         },
       },
     };
+  },
+
+  /** Fetch a user with everything {@link buildAuthResult} needs. */
+  async fetchAuthUser(userId: string) {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      include: {
+        tenant: true,
+        userRoles: { include: { role: { select: { id: true, name: true } } } },
+      },
+    });
+    if (!user) throw AppError.notFound('User not found');
+    return user;
+  },
+
+  // ── Patient phone-OTP auth ─────────────────────────────────
+  // Patients authenticate with just their phone number + a one-time code, so a
+  // number the front desk already registered (the owner + their relatives) is
+  // reachable with no email/password. The code is a fixed dev value for now.
+
+  /**
+   * "Send" an OTP to a phone. No SMS is dispatched yet — the code is
+   * {@link HARDCODED_OTP}. Returns whether the number already has an account so
+   * the client knows whether to collect a name (new signup) on verify.
+   */
+  async requestPhoneOtp(data: RequestOtpInput) {
+    const phone = normalizeAccountPhone(data.phone);
+    if (!phone) throw AppError.badRequest('Enter a valid phone number');
+
+    const existing = await prisma.user.findFirst({
+      where: { phone: { in: [phone, data.phone] }, isActive: true },
+      select: { id: true },
+    });
+
+    logger.info({ phone }, 'Phone OTP requested (dev mode — fixed code)');
+    return { success: true, isExistingUser: !!existing };
+  },
+
+  /**
+   * Verify a phone OTP and log the patient in. If the number has no account
+   * yet, one is created on the platform tenant (patient role); if it maps to an
+   * unclaimed placeholder created by the front desk, the owner's name is
+   * captured on first login. Then a normal session is issued.
+   */
+  async loginWithPhoneOtp(data: VerifyOtpInput) {
+    if (data.otp !== HARDCODED_OTP) {
+      throw AppError.unauthorized('Invalid or expired code');
+    }
+    const phone = normalizeAccountPhone(data.phone);
+    if (!phone) throw AppError.badRequest('Enter a valid phone number');
+
+    // Find the account holder for this number, preferring the platform copy
+    // (the one that can actually be logged into).
+    const candidates = await prisma.user.findMany({
+      where: { phone: { in: [phone, data.phone] }, isActive: true },
+      select: { id: true, email: true, firstName: true, tenant: { select: { slug: true } } },
+      orderBy: { createdAt: 'asc' },
+    });
+    const match = candidates.find((u) => u.tenant.slug === '__platform__') ?? candidates[0] ?? null;
+
+    let userId: string;
+    if (!match) {
+      // Brand-new number → create the account holder on the platform tenant.
+      const tenant = await prisma.tenant.findFirst({ where: { slug: '__platform__' } });
+      if (!tenant) throw AppError.internal('Platform tenant not found');
+
+      let patientRole = await prisma.role.findFirst({
+        where: { tenantId: tenant.id, name: 'patient' },
+      });
+      if (!patientRole) {
+        patientRole = await prisma.role.create({
+          data: {
+            name: 'patient',
+            description: 'Patient user with access to patient portal',
+            tenantId: tenant.id,
+            isSystemRole: true,
+          },
+        });
+      }
+
+      const randomSecret = `${phone}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const passwordHash = await bcrypt.hash(randomSecret, env.BCRYPT_SALT_ROUNDS);
+      const synth = placeholderAccountEmail(phone);
+      const clash = await prisma.user.findFirst({
+        where: { tenantId: tenant.id, email: synth },
+        select: { id: true },
+      });
+      const email = clash
+        ? `phone-${phone.replace(/\D/g, '')}-${Date.now()}@${AUTO_ACCOUNT_EMAIL_DOMAIN}`
+        : synth;
+
+      const created = await prisma.user.create({
+        data: {
+          email,
+          passwordHash,
+          firstName: data.firstName?.trim() || 'Patient',
+          lastName: data.lastName?.trim() || null,
+          phone,
+          tenantId: tenant.id,
+          isActive: true,
+          userRoles: { create: { roleId: patientRole.id } },
+        },
+        select: { id: true },
+      });
+      userId = created.id;
+      logger.info({ userId }, 'Patient account created via phone OTP');
+    } else {
+      userId = match.id;
+      // First real login onto an unnamed placeholder → capture the owner's name.
+      if (
+        data.firstName?.trim() &&
+        isPlaceholderAccountEmail(match.email) &&
+        (!match.firstName || match.firstName === 'Patient')
+      ) {
+        await prisma.user.update({
+          where: { id: match.id },
+          data: {
+            firstName: data.firstName.trim(),
+            ...(data.lastName?.trim() ? { lastName: data.lastName.trim() } : {}),
+          },
+        });
+      }
+    }
+
+    logger.info({ userId }, 'User logged in via phone OTP');
+    return this.buildAuthResult(await this.fetchAuthUser(userId));
   },
 
   async refreshToken(token: string) {
