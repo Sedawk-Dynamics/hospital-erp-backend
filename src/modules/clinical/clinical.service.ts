@@ -1114,10 +1114,10 @@ export async function approveTransfer(
  * Record vital signs for a patient.
  * Scoped by tenant through the visit relation since Vital has no tenantId.
  *
- * Vitals are nursing-owned: only `nurse` (plus `super_admin` for support
- * flows) may write. The route is also gated on `vitals:create`, but we
- * re-check here because permissions may drift between tenants and the role
- * rule is stricter than the permission alias.
+ * Nursing owns routine vitals rounds, but the treating doctor examines the
+ * patient too and may record their own reading (VITAL_RECORDER_ROLES = nurse,
+ * doctor, super_admin). The route is also gated on `vitals:create`; we re-check
+ * the role here because permissions can drift between tenants.
  */
 export async function recordVitals(
   tenantId: string,
@@ -1340,15 +1340,13 @@ export async function getLatestVitals(tenantId: string, patientId: string) {
 }
 
 /**
- * Append-only correction for a vital. Three paths:
- *   1. Self-correction within the grace window by the original recorder (must
- *      be a nurse) — in-place update, no audit row created.
- *   2. Any other write by a nurse — creates a new Vital row with
- *      supersedesVitalId, isCorrection=true, correctionReason required.
- *   3. Doctors, nurse_admin, and any other non-nursing role are rejected
- *      outright. Vitals are owned by the nursing team; if a doctor or
- *      manager disputes a reading they ask a nurse to re-measure rather
- *      than correcting silently.
+ * Append-only correction for a vital. Writers = the clinical recorders
+ * (nurse, doctor, super_admin — VITAL_RECORDER_ROLES):
+ *   1. Self-correction within the grace window by the original recorder
+ *      (nurse or doctor) — in-place update, no audit row created.
+ *   2. Any other correction — creates a new Vital row with supersedesVitalId,
+ *      isCorrection=true, correctionReason required (append-only history).
+ *   3. Non-clinical roles are rejected outright.
  */
 export async function correctVital(
   tenantId: string,
