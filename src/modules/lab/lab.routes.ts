@@ -44,6 +44,7 @@ import {
 } from './lab.validation';
 import * as controller from './lab.controller';
 import * as attachmentService from './lab-attachments.service';
+import * as labService from './lab.service';
 import { uploadSingle } from '../../services/upload.service';
 import type { AuthenticatedRequest } from '../../shared/types';
 import type { Response, NextFunction } from 'express';
@@ -160,6 +161,8 @@ labRoutes.post(
       const tenantId = req.user!.tenantId;
       const userId = req.user!.userId;
       const orderId = req.params.orderId as string;
+      // Payment gate — OP orders must be paid before a result is uploaded (LP5).
+      await labService.assertLabOrderPaymentCleared(tenantId, orderId);
       const { labReportId, labOrderItemId, category, description } = (req.body ?? {}) as Record<string, string>;
       const data = await attachmentService.createLabAttachment(tenantId, userId, orderId, file, {
         labReportId: labReportId || undefined,

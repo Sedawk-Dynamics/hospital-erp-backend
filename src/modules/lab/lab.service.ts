@@ -178,6 +178,62 @@ export async function autoLinkLabOrderToBill(tenantId: string, labOrderId: strin
   }
 }
 
+/**
+ * Payment gate for lab result work. An outpatient order must have its linked
+ * bill settled before a technician may enter values, upload a result, or mark a
+ * test done — mirroring the radiology payment-verify gate. Inpatient orders are
+ * billed on the consolidated stay bill (settled later), so they are not gated.
+ */
+async function assertLabOrderPaid(
+  tenantId: string,
+  order: { id: string; visitId: string },
+): Promise<void> {
+  // Inpatient? Lab is part of the admission bill — don't block at the counter.
+  const admission = await prisma.admission.findFirst({
+    where: { visitId: order.visitId, status: { not: 'discharged' } },
+    select: { id: true },
+  });
+  if (admission) return;
+
+  const items = await prisma.labOrderItem.findMany({
+    where: { labOrderId: order.id },
+    select: { id: true },
+  });
+  if (!items.length) return;
+
+  const billItems = await prisma.billItem.findMany({
+    where: {
+      referenceType: 'lab_order_item',
+      referenceId: { in: items.map((i) => i.id) },
+      bill: { tenantId },
+    },
+    include: { bill: { select: { status: true, balanceDue: true } } },
+  });
+  if (!billItems.length) return; // not billed yet — nothing to gate on
+
+  const unpaid = billItems.some(
+    (bi) => bi.bill.status !== 'paid' && Number(bi.bill.balanceDue ?? 0) > 0,
+  );
+  if (unpaid) {
+    throw AppError.badRequest(
+      'Payment is pending for this lab order. Collect payment at the front desk before entering or uploading results.',
+    );
+  }
+}
+
+/** Public payment gate by orderId — for the result-file upload route (LP5). */
+export async function assertLabOrderPaymentCleared(
+  tenantId: string,
+  orderId: string,
+): Promise<void> {
+  const order = await prisma.labOrder.findFirst({
+    where: { id: orderId, tenantId },
+    select: { id: true, visitId: true },
+  });
+  if (!order) return; // downstream will surface not-found
+  await assertLabOrderPaid(tenantId, order);
+}
+
 // ============================================================
 // Test Catalog
 // ============================================================
@@ -781,7 +837,7 @@ export async function acceptLabOrder(
   return updated;
 }
 
-export async function cancelLabOrder(tenantId: string, id: string) {
+export async function cancelLabOrder(tenantId: string, id: string, reason?: string) {
   const order = await prisma.labOrder.findFirst({
     where: { id, tenantId },
   });
@@ -798,6 +854,13 @@ export async function cancelLabOrder(tenantId: string, id: string) {
     throw AppError.badRequest('Cannot cancel a completed order');
   }
 
+  // Persist the cancellation reason (stored inline in notes — there is no
+  // dedicated column). This is what the worklist shows against a cancelled order.
+  const trimmedReason = reason?.trim();
+  const notesWithReason = trimmedReason
+    ? `${order.notes ? `${order.notes}\n` : ''}[Cancelled: ${trimmedReason}]`
+    : order.notes;
+
   const updated = await prisma.$transaction(async (tx) => {
     // Cancel all pending order items
     await tx.labOrderItem.updateMany({
@@ -807,7 +870,7 @@ export async function cancelLabOrder(tenantId: string, id: string) {
 
     return tx.labOrder.update({
       where: { id },
-      data: { status: 'cancelled' },
+      data: { status: 'cancelled', ...(trimmedReason ? { notes: notesWithReason } : {}) },
       include: {
         patient: {
           select: { id: true, mrn: true, firstName: true, lastName: true },
@@ -1101,15 +1164,35 @@ export async function enterResults(tenantId: string, userId: string, data: Enter
     throw AppError.badRequest('Cannot enter results for a cancelled order item');
   }
 
+  // Payment gate — OP orders must be paid before results are entered (LP5).
+  await assertLabOrderPaid(tenantId, {
+    id: data.labOrderId,
+    visitId: orderItem.labOrder.visitId,
+  });
+
   // Block in-place edits once the supervisor has finalized the report.
   await assertOrderReportEditable(tenantId, data.labOrderId);
 
   const results = await prisma.$transaction(async (tx) => {
-    const created = await Promise.all(
-      data.results.map((result) => {
-        const auto = evaluateAbnormal(result.value, result.normalRange);
-        const isAbnormal = auto !== null ? auto : !!result.isAbnormal;
-        return tx.labResult.create({
+    // Re-entering a parameter must REPLACE its value, not add a second row.
+    // Without this, correcting a flagged value (e.g. a wrong RBC in a CBC) via
+    // the entry grid created a duplicate LabResult, so the report printed the
+    // parameter twice with neither flagged. Dedup the incoming payload by
+    // parameter (keep the last), then delete any existing row for that
+    // parameter before inserting the fresh (status='entered') one — which also
+    // clears a 'corrected' flag once the technician re-enters the value.
+    const byParam = new Map<string, (typeof data.results)[number]>();
+    for (const r of data.results) byParam.set(r.parameterName, r);
+
+    const created = [];
+    for (const result of byParam.values()) {
+      const auto = evaluateAbnormal(result.value, result.normalRange);
+      const isAbnormal = auto !== null ? auto : !!result.isAbnormal;
+      await tx.labResult.deleteMany({
+        where: { labOrderItemId: data.labOrderItemId, parameterName: result.parameterName },
+      });
+      created.push(
+        await tx.labResult.create({
           data: {
             labOrderItemId: data.labOrderItemId,
             labOrderId: data.labOrderId,
@@ -1123,9 +1206,9 @@ export async function enterResults(tenantId: string, userId: string, data: Enter
             enteredBy: userId,
             enteredAt: new Date(),
           },
-        });
-      }),
-    );
+        }),
+      );
+    }
 
     // Update order item status to in_progress
     if (orderItem.status === 'pending') {
@@ -1772,13 +1855,16 @@ export async function completeLabOrderItem(
   const item = await prisma.labOrderItem.findFirst({
     where: { id: itemId, labOrderId: orderId, labOrder: { tenantId } },
     include: {
-      labOrder: { select: { id: true, status: true, patientId: true, orderedBy: true } },
+      labOrder: { select: { id: true, status: true, patientId: true, orderedBy: true, visitId: true } },
     },
   });
   if (!item) throw AppError.notFound('Lab order item not found');
   if (item.status === 'cancelled') {
     throw AppError.badRequest('Cancelled tests cannot be marked done');
   }
+
+  // Payment gate — OP orders must be paid before a test is marked done (LP5).
+  await assertLabOrderPaid(tenantId, { id: orderId, visitId: item.labOrder.visitId });
 
   // Require at least one attachment on this item — the upload IS the report,
   // so a "done" with no file would queue an empty report for the supervisor.
