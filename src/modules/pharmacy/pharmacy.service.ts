@@ -2672,6 +2672,18 @@ async function recomputePrescriptionStatus(
       // No explicit quantity means PRN / continuous — treat any dispense as
       // fulfilled for queue-clearing purposes.
       fullyDispensedItems += 1;
+    } else if (dispensed > 0 && it.drugId) {
+      // Short dispense: the pharmacist handed over everything on hand but stock
+      // ran short of the ordered quantity. If NO sellable stock of this drug
+      // remains, the line is as fulfilled as it can be — count it as done so it
+      // leaves the pending queue instead of sticking at "partially dispensed"
+      // forever. It reverts automatically if the drug is restocked (this
+      // recompute runs again on the next dispense).
+      const avail = await tx.drugBatch.aggregate({
+        where: { tenantId: rx.tenantId, drugId: it.drugId, isExpired: false, isRecalled: false },
+        _sum: { quantityInStock: true },
+      });
+      if ((avail._sum.quantityInStock ?? 0) <= 0) fullyDispensedItems += 1;
     }
   }
 
