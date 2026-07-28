@@ -109,6 +109,10 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       // hours instead of the hardcoded clock fallback.
       { module: 'duty_rosters', action: 'read' },
       { module: 'forms', action: 'read' }, { module: 'forms', action: 'create' }, { module: 'forms', action: 'approve' },
+      // Shift handover notes (from-nurse → to-nurse) live under the
+      // communication/notifications module — nurses must read, write and
+      // acknowledge them at shift change.
+      { module: 'notifications', action: 'read' }, { module: 'notifications', action: 'create' }, { module: 'notifications', action: 'update' },
     ],
 
     // Single nursing-management role. Owns nurse-to-doctor assignment,
@@ -154,6 +158,8 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'reports', action: 'read' }, { module: 'reports', action: 'create' }, { module: 'reports', action: 'export' },
       // Read-through on OT bookings so the theatre list is visible here.
       { module: 'ot_requests', action: 'read' },
+      // Shift handover notes (owns shift handover per this role's remit).
+      { module: 'notifications', action: 'read' }, { module: 'notifications', action: 'create' }, { module: 'notifications', action: 'update' },
     ],
 
     front_desk: [
