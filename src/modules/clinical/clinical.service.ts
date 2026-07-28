@@ -357,6 +357,30 @@ export async function closeVisit(tenantId: string, id: string) {
     throw AppError.badRequest('Visit has already been discharged');
   }
 
+  // An admission reuses the same Visit row (Admission.visitId is 1:1). If this
+  // visit backs a still-admitted patient, completing it here — e.g. when the
+  // doctor finishes the OP consultation *after* the patient was admitted — would
+  // flip the shared IP visit to 'completed' and lock the treating doctor out of
+  // writing IP prescriptions / progress notes (those resolve the patient's
+  // "active" visit). Keep it active; the visit is closed at discharge instead.
+  const backingAdmission = await prisma.admission.findFirst({
+    where: { visitId: id, status: { not: 'discharged' } },
+    select: { id: true },
+  });
+  if (backingAdmission) {
+    logger.info(
+      { tenantId, visitId: id, admissionId: backingAdmission.id },
+      'Visit close skipped — visit backs an active admission (kept active for IP)',
+    );
+    return prisma.visit.findFirstOrThrow({
+      where: { id },
+      include: {
+        patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+        doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
+      },
+    });
+  }
+
   const updated = await prisma.visit.update({
     where: { id },
     data: { status: 'completed' },
