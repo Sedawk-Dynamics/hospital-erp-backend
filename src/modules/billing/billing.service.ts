@@ -1786,6 +1786,7 @@ export async function getPatientCharges(
 export async function billOtRequest(
   tenantId: string,
   otRequestId: string,
+  userId: string,
   opts: { collectPayment?: boolean; paymentMethod?: string } = {},
 ) {
   const req = await prisma.otRequest.findFirst({
@@ -1811,24 +1812,41 @@ export async function billOtRequest(
     select: { billId: true },
   });
 
+  // If the patient is currently admitted, the surgery belongs on the admission's
+  // running IP bill (one consolidated bill, settled at discharge) — NOT a
+  // standalone OP invoice — so it appears on the IP ledger alongside every other
+  // charge for the stay.
+  const activeAdmission = await prisma.admission.findFirst({
+    where: { tenantId, patientId: req.patientId, status: 'admitted' },
+    orderBy: { admissionDate: 'desc' },
+    select: { id: true },
+  });
+
+  const sUser = req.surgeon?.user ?? req.doctor?.user;
+  const surgeon = sUser ? `Dr. ${sUser.firstName} ${sUser.lastName}` : null;
+  const otCharge = {
+    referenceType: 'ot_request',
+    referenceId: otRequestId,
+    description: `Surgery — ${req.procedureName}${surgeon ? ` (${surgeon})` : ''}`,
+    quantity: 1,
+    unitPrice: amount,
+    taxRate: CHARGE_TAX_RATES.ot,
+    category: 'surgery',
+  };
+
   let billId: string;
   if (existingItem) {
     billId = existingItem.billId;
+  } else if (activeAdmission) {
+    // IP: add onto the running (draft) IP bill and leave it running — payment is
+    // taken with the consolidated bill at discharge, so no finalize / no charge here.
+    const ipBill = await getOrCreateRunningIpBill(tenantId, activeAdmission.id, userId);
+    await pullChargesToBill(tenantId, ipBill.id, [otCharge]);
+    billId = ipBill.id;
   } else {
-    const sUser = req.surgeon?.user ?? req.doctor?.user;
-    const surgeon = sUser ? `Dr. ${sUser.firstName} ${sUser.lastName}` : null;
+    // OP: a dedicated, finalized surgery invoice (optionally collect payment below).
     const bill = await createBill(tenantId, { patientId: req.patientId, visitId: req.visitId ?? undefined });
-    await pullChargesToBill(tenantId, bill.id, [
-      {
-        referenceType: 'ot_request',
-        referenceId: otRequestId,
-        description: `Surgery — ${req.procedureName}${surgeon ? ` (${surgeon})` : ''}`,
-        quantity: 1,
-        unitPrice: amount,
-        taxRate: CHARGE_TAX_RATES.ot,
-        category: 'surgery',
-      },
-    ]);
+    await pullChargesToBill(tenantId, bill.id, [otCharge]);
     await finalizeBill(tenantId, bill.id);
     billId = bill.id;
   }

@@ -264,7 +264,7 @@ export async function billOtRequest(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const result = await billingService.billOtRequest(tenantId, req.params.otRequestId as string, {
+    const result = await billingService.billOtRequest(tenantId, req.params.otRequestId as string, req.user!.userId, {
       collectPayment: req.body?.collectPayment === true,
       paymentMethod: req.body?.paymentMethod,
     });
