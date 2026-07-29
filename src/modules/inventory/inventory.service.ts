@@ -601,6 +601,10 @@ export interface UnifiedStockRow {
   batchCount: number;
   nearestExpiry: Date | string | null;
   isRecalled: boolean;
+  // Drug composition (generic/salt name) and learned vendor/invoice names that
+  // resolve to this drug — both shown in the list and included in search.
+  composition: string | null;
+  mappingNames: string | null;
 }
 
 /**
@@ -644,6 +648,9 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
         0 AS batch_count,
         NULL::date AS nearest_expiry,
         false AS is_recalled,
+        -- Generic items have no drug composition / vendor-name mappings.
+        NULL::text AS composition,
+        NULL::text AS mapping_names,
         ii.created_at AS created_at
       FROM inventory_items ii
       WHERE ii.tenant_id = ${tenantId}
@@ -672,6 +679,12 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
         -- Recall is batch-level: a drug reads as recalled while it still holds
         -- stock in at least one recalled batch.
         COALESCE(b.recalled_count, 0) > 0 AS is_recalled,
+        -- Composition = the drug's generic/salt name; mapping_names = the
+        -- learned vendor/invoice names that resolve to this drug. Both are shown
+        -- and searchable so staff can find a medicine by its salt or the name a
+        -- supplier prints on the invoice.
+        df.generic_name AS composition,
+        mn.mapping_names AS mapping_names,
         df.created_at AS created_at
       FROM drug_formulary df
       LEFT JOIN (
@@ -687,6 +700,12 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
         WHERE tenant_id = ${tenantId}
         GROUP BY drug_id
       ) b ON b.drug_id = df.id
+      LEFT JOIN (
+        SELECT drug_formulary_id, string_agg(DISTINCT incoming_name_raw, ', ') AS mapping_names
+        FROM drug_name_mappings
+        WHERE tenant_id = ${tenantId} AND incoming_name_raw IS NOT NULL
+        GROUP BY drug_formulary_id
+      ) mn ON mn.drug_formulary_id = df.id
       WHERE df.tenant_id = ${tenantId}
         AND df.is_active = true
     )
@@ -712,10 +731,16 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
     const parts: Prisma.Sql[] = [
       Prisma.sql`lower(name) LIKE ${like}`,
       Prisma.sql`lower(COALESCE(code, '')) LIKE ${like}`,
+      // Also match on the drug's composition (salt) and any learned vendor names.
+      Prisma.sql`lower(COALESCE(composition, '')) LIKE ${like}`,
+      Prisma.sql`lower(COALESCE(mapping_names, '')) LIKE ${like}`,
     ];
-    // Typo-tolerant fill: trigram-similar names ("parcetamol" → "Paracetamol").
-    // The JS ranker below scores these below every substring match.
-    if (fuzzyReady) parts.push(Prisma.sql`lower(name) % ${s}`);
+    // Typo-tolerant fill: trigram-similar names/composition ("parcetamol" →
+    // "Paracetamol"). The JS ranker below scores these below every substring match.
+    if (fuzzyReady) {
+      parts.push(Prisma.sql`lower(name) % ${s}`);
+      parts.push(Prisma.sql`lower(COALESCE(composition, '')) % ${s}`);
+    }
     filters.push(Prisma.sql`(${Prisma.join(parts, ' OR ')})`);
   }
   if (query.stockStatus === 'out') {
@@ -750,6 +775,8 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
     batch_count: number;
     nearest_expiry: Date | null;
     is_recalled: boolean;
+    composition: string | null;
+    mapping_names: string | null;
   };
   const mapRow = (r: UnifiedRaw): UnifiedStockRow => ({
     kind: r.kind as 'item' | 'drug',
@@ -766,6 +793,8 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
     batchCount: Number(r.batch_count),
     nearestExpiry: r.nearest_expiry,
     isRecalled: r.is_recalled,
+    composition: r.composition,
+    mappingNames: r.mapping_names,
   });
 
   // On a search we fetch ALL matching rows (the hospital's own stock — a bounded
