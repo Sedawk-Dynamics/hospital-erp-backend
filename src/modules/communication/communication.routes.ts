@@ -25,12 +25,16 @@ import {
 export const communicationRoutes = Router();
 
 // --- Notifications ---
+// The read/update endpoints below are inherently scoped to the caller's own
+// userId (service filters `where: { tenantId, userId }`), so they only need
+// authentication — NOT a `notifications` module permission. Doctors have no
+// `notifications` perms, so gating these blocked their own mention alerts.
 communicationRoutes.post('/notifications', authenticate, requirePermission('notifications', 'create'), validate(createNotificationSchema), controller.createNotification);
-communicationRoutes.get('/notifications', authenticate, requirePermission('notifications', 'read'), validate(getNotificationsQuerySchema), controller.getNotifications);
-communicationRoutes.get('/notifications/unread-count', authenticate, requirePermission('notifications', 'read'), controller.getUnreadCount);
-communicationRoutes.patch('/notifications/:id/read', authenticate, requirePermission('notifications', 'update'), validate(notificationIdParamSchema), controller.markNotificationRead);
-communicationRoutes.patch('/notifications/read-all', authenticate, requirePermission('notifications', 'update'), controller.markAllNotificationsRead);
-communicationRoutes.delete('/notifications/:id', authenticate, requirePermission('notifications', 'delete'), validate(notificationIdParamSchema), controller.deleteNotification);
+communicationRoutes.get('/notifications', authenticate, validate(getNotificationsQuerySchema), controller.getNotifications);
+communicationRoutes.get('/notifications/unread-count', authenticate, controller.getUnreadCount);
+communicationRoutes.patch('/notifications/:id/read', authenticate, validate(notificationIdParamSchema), controller.markNotificationRead);
+communicationRoutes.patch('/notifications/read-all', authenticate, controller.markAllNotificationsRead);
+communicationRoutes.delete('/notifications/:id', authenticate, validate(notificationIdParamSchema), controller.deleteNotification);
 
 // --- Messages ---
 communicationRoutes.post('/messages', authenticate, requirePermission('notifications', 'create'), validate(sendMessageSchema), controller.sendMessage);
