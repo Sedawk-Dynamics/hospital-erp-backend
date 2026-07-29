@@ -11,6 +11,7 @@ import { notifyInventoryRecipients, hasOpenInventoryAlert } from './inventory.no
 import { makeInternalBarcode } from '../pharmacy/pharmacy.barcode';
 import { safePharmacyAudit } from '../pharmacy/pharmacy.audit';
 import { makeMedicineRankComparator, mergePrefixFirst } from '../../shared/medicine-search-rank';
+import { fuzzyMatchIds, ensureTrgmReady, FUZZY_MIN_QUERY_LEN } from '../../shared/medicine-fuzzy';
 import type {
   CreateSupplierInput,
   UpdateSupplierInput,
@@ -276,8 +277,23 @@ export async function getItems(tenantId: string, query: GetItemsQuery) {
     prisma.inventoryItem.findMany({ where, take: WINDOW, orderBy: { itemName: 'asc' } }),
     prisma.inventoryItem.count({ where }),
   ]);
+
+  // Fuzzy (typo-tolerant) fill — items trigram-similar to the query with no
+  // substring hit ("bandge" → "Bandage"). Additive; ranked below substring hits.
+  const fuzzyIds = await fuzzyMatchIds({
+    table: 'inventory_items',
+    query: q,
+    where: Prisma.sql`tenant_id = ${tenantId}`,
+    limit: WINDOW,
+  });
+  const known = new Set([...namePrefix, ...mainRows].map((i) => i.id));
+  const fuzzyNewIds = fuzzyIds.filter((id) => !known.has(id));
+  const fuzzyRows = fuzzyNewIds.length
+    ? await prisma.inventoryItem.findMany({ where: { ...baseWhere, id: { in: fuzzyNewIds } } })
+    : [];
+
   const cmp = makeMedicineRankComparator<(typeof mainRows)[number]>(q, (i) => ({ name: i.itemName }));
-  const items = mergePrefixFirst(namePrefix, mainRows, (i) => i.id)
+  const items = mergePrefixFirst(namePrefix, [...mainRows, ...fuzzyRows], (i) => i.id)
     .sort(cmp)
     .slice(skip, skip + take);
 
@@ -676,6 +692,13 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
     )
   `;
 
+  // Enable fuzzy only for real-word searches, and only if pg_trgm is ready — the
+  // `%` operator throws without the extension, so degrade to LIKE-only on failure.
+  const fuzzyReady =
+    query.search && query.search.trim().length >= FUZZY_MIN_QUERY_LEN
+      ? await ensureTrgmReady().then(() => true).catch(() => false)
+      : false;
+
   const filters: Prisma.Sql[] = [];
   if (query.type === 'item' || query.type === 'drug') {
     filters.push(Prisma.sql`kind = ${query.type}`);
@@ -684,8 +707,16 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
     filters.push(Prisma.sql`category = ${query.category}`);
   }
   if (query.search) {
-    const like = `%${query.search.toLowerCase()}%`;
-    filters.push(Prisma.sql`(lower(name) LIKE ${like} OR lower(COALESCE(code, '')) LIKE ${like})`);
+    const s = query.search.trim().toLowerCase();
+    const like = `%${s}%`;
+    const parts: Prisma.Sql[] = [
+      Prisma.sql`lower(name) LIKE ${like}`,
+      Prisma.sql`lower(COALESCE(code, '')) LIKE ${like}`,
+    ];
+    // Typo-tolerant fill: trigram-similar names ("parcetamol" → "Paracetamol").
+    // The JS ranker below scores these below every substring match.
+    if (fuzzyReady) parts.push(Prisma.sql`lower(name) % ${s}`);
+    filters.push(Prisma.sql`(${Prisma.join(parts, ' OR ')})`);
   }
   if (query.stockStatus === 'out') {
     filters.push(Prisma.sql`current_stock <= 0`);

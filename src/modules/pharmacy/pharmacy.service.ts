@@ -21,6 +21,7 @@ import {
 import { parseGs1, makeInternalBarcode, isInternalBarcode, internalKeyFromScan, buildLabelPayload, gtinVariants, normalizeGtin } from './pharmacy.barcode';
 import { Prisma } from '@prisma/client';
 import { makeMedicineRankComparator, mergePrefixFirst } from '../../shared/medicine-search-rank';
+import { fuzzyMatchIds } from '../../shared/medicine-fuzzy';
 import { lookupNameMapping, saveNameMapping } from './pharmacy.name-mapping';
 import type {
   CreateFormularyInput,
@@ -1491,8 +1492,39 @@ export async function getTenantCatalog(tenantId: string, query: any) {
     }),
     prisma.drugMaster.count({ where }),
   ]);
+  // Fuzzy (typo-tolerant) fill — catalog rows trigram-similar to the query but
+  // with no substring hit. Honours the same catalog filters EXCEPT the text-token
+  // filter (fuzzy rows deliberately don't token-match). Additive: merged after
+  // the strict pool, ranked below every substring match.
+  let fuzzyRows: typeof mainRows = [];
+  if (isSearch && q) {
+    const fuzzyIds = await fuzzyMatchIds({
+      table: 'drug_master',
+      query: q,
+      where: Prisma.sql`is_published = true AND is_discontinued = false`,
+      limit: CATALOG_SEARCH_WINDOW,
+    });
+    const known = new Set([...namePrefixRows, ...genericPrefixRows, ...mainRows].map((r) => r.id));
+    const fuzzyNewIds = fuzzyIds.filter((id) => !known.has(id));
+    if (fuzzyNewIds.length) {
+      const { AND: _tokenFilter, id: existingIdFilter, ...catalogFilters } = where as any;
+      fuzzyRows = await prisma.drugMaster.findMany({
+        where: {
+          ...catalogFilters,
+          AND: [
+            ...(existingIdFilter ? [{ id: existingIdFilter }] : []),
+            { id: { in: fuzzyNewIds } },
+          ],
+        },
+        take: CATALOG_SEARCH_WINDOW,
+        orderBy: { name: 'asc' },
+        select: catalogSelect,
+      });
+    }
+  }
+
   const rows = isSearch
-    ? mergePrefixFirst([...namePrefixRows, ...genericPrefixRows], mainRows, (r) => r.id)
+    ? mergePrefixFirst([...namePrefixRows, ...genericPrefixRows], [...mainRows, ...fuzzyRows], (r) => r.id)
     : mainRows;
 
   let ranked = rows;
@@ -1591,8 +1623,42 @@ export async function getFormulary(tenantId: string, query: GetFormularyQuery, _
     mainItemsP,
     prisma.drugFormulary.count({ where }),
   ]);
+
+  // Fuzzy (typo-tolerant) fill — formulary drugs trigram-similar to the query
+  // with no substring hit. Re-fetched with the same non-text filters so stock
+  // status / dosage form still apply; merged after the strict pool.
+  let fuzzyItems: typeof mainItems = [];
+  if (isSearch && q) {
+    const fuzzyIds = await fuzzyMatchIds({
+      table: 'drug_formulary',
+      query: q,
+      where:
+        query.isActive !== undefined
+          ? Prisma.sql`tenant_id = ${tenantId} AND is_active = ${query.isActive}`
+          : Prisma.sql`tenant_id = ${tenantId}`,
+      limit: SEARCH_WINDOW,
+    });
+    const known = new Set(
+      [...namePrefixItems, ...genericPrefixItems, ...mainItems].map((i) => i.id),
+    );
+    const fuzzyNewIds = fuzzyIds.filter((id) => !known.has(id));
+    if (fuzzyNewIds.length) {
+      const { OR: _search, ...restWhere } = where as any;
+      fuzzyItems = await prisma.drugFormulary.findMany({
+        where: { ...restWhere, id: { in: fuzzyNewIds } },
+        take: SEARCH_WINDOW,
+        include: formularyInclude,
+        orderBy: { drugName: 'asc' },
+      });
+    }
+  }
+
   const items = isSearch
-    ? mergePrefixFirst([...namePrefixItems, ...genericPrefixItems], mainItems, (i) => i.id)
+    ? mergePrefixFirst(
+        [...namePrefixItems, ...genericPrefixItems],
+        [...mainItems, ...fuzzyItems],
+        (i) => i.id,
+      )
     : mainItems;
 
   // Roll batch rows up into a stock summary so the formulary list can show

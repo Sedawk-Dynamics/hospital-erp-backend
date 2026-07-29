@@ -39,6 +39,45 @@ function isMeaningfulWord(w: string): boolean {
   return true;
 }
 
+// ── Fuzzy (typo-tolerant) tier ──────────────────────────────────────────────
+// Below this length a query is served fine by prefix/substring and fuzzy is
+// noise. Kept in sync with `medicine-fuzzy.ts` FUZZY_MIN_QUERY_LEN.
+const FUZZY_MIN_QUERY_LEN = 4;
+// Minimum trigram similarity for a word/name to count as a fuzzy match. Mirrors
+// the Postgres pg_trgm default (0.3) so JS ranking agrees with the DB fetch.
+const FUZZY_MIN_SIM = 0.3;
+
+/** Trigram set of a string, space-padded like pg_trgm so word edges count. */
+function trigrams(s: string): Set<string> {
+  const t = `  ${s} `;
+  const out = new Set<string>();
+  for (let i = 0; i < t.length - 2; i++) out.add(t.slice(i, i + 3));
+  return out;
+}
+
+/** Jaccard trigram similarity in [0,1], matching pg_trgm `similarity()`. */
+function trigramSimilarity(a: string, b: string): number {
+  if (!a || !b) return 0;
+  const A = trigrams(a);
+  const B = trigrams(b);
+  if (!A.size || !B.size) return 0;
+  let inter = 0;
+  for (const g of A) if (B.has(g)) inter++;
+  return inter / (A.size + B.size - inter);
+}
+
+/**
+ * Best fuzzy similarity of `query` against the whole value and its meaningful
+ * words (so "cetrizine" matches the "Cetirizine" word inside a longer name).
+ */
+function fuzzyBestSimilarity(value: string, query: string): number {
+  let best = trigramSimilarity(value, query);
+  for (const w of value.split(WORD_SPLIT)) {
+    if (isMeaningfulWord(w)) best = Math.max(best, trigramSimilarity(w, query));
+  }
+  return best;
+}
+
 function fieldScore(value: string | null | undefined, query: string, base: number): number {
   if (!value) return 100;
   const v = value.toLowerCase();
@@ -48,6 +87,14 @@ function fieldScore(value: string | null | undefined, query: string, base: numbe
   // or a strength token doesn't earn this tier.
   if (v.split(WORD_SPLIT).some((w) => isMeaningfulWord(w) && w.startsWith(query))) return base + 2;
   if (v.includes(query)) return base + 3; // substring (anywhere, incl. form words)
+  // Fuzzy tier — only for real words (len ≥ 4) with no substring hit at all, so
+  // it never reorders existing exact/prefix/substring results, only fills slots
+  // that would otherwise be empty. Score sits in (base+3, 100): worse than any
+  // substring match, better than "no match", with closer matches scoring lower.
+  if (query.length >= FUZZY_MIN_QUERY_LEN) {
+    const sim = fuzzyBestSimilarity(v, query);
+    if (sim >= FUZZY_MIN_SIM) return base + 4 + (1 - sim) * 3; // ≈ base+4 … base+6.1
+  }
   return 100; // no match on this field
 }
 

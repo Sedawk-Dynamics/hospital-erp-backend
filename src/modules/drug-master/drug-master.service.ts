@@ -4,6 +4,7 @@ import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
 import { makeMedicineRankComparator, mergePrefixFirst } from '../../shared/medicine-search-rank';
+import { fuzzyMatchIds } from '../../shared/medicine-fuzzy';
 import { buildDrugSearchTokens } from './drug-master.dataset';
 import { gtinVariants, normalizeGtin } from '../pharmacy/pharmacy.barcode';
 import type {
@@ -100,7 +101,29 @@ export async function searchDrugMaster(query: SearchDrugMasterQuery) {
     prisma.drugMaster.findMany({ where, select, take: window, orderBy: { name: 'asc' } }),
   ]);
 
-  const drugs = mergePrefixFirst([...namePrefixRows, ...genericPrefixRows], tokenRows, (d) => d.id);
+  // Fuzzy (typo-tolerant) fill: rows whose name/generic are trigram-similar to
+  // the query but contain no substring match ("parcetamol" → "Paracetamol").
+  // Additive — appended after the strict pool and ranked below every substring
+  // match by the comparator, so exact/prefix/substring ordering is unchanged.
+  const fuzzyIds = await fuzzyMatchIds({
+    table: 'drug_master',
+    query: q,
+    where: query.includeDiscontinued
+      ? Prisma.sql`is_published = true`
+      : Prisma.sql`is_published = true AND is_discontinued = false`,
+    limit: window,
+  });
+  const knownIds = new Set([...namePrefixRows, ...genericPrefixRows, ...tokenRows].map((d) => d.id));
+  const fuzzyNewIds = fuzzyIds.filter((id) => !knownIds.has(id));
+  const fuzzyRows = fuzzyNewIds.length
+    ? await prisma.drugMaster.findMany({ where: { ...published, id: { in: fuzzyNewIds } }, select })
+    : [];
+
+  const drugs = mergePrefixFirst(
+    [...namePrefixRows, ...genericPrefixRows],
+    [...tokenRows, ...fuzzyRows],
+    (d) => d.id,
+  );
 
   // Rank by textual relevance against the full query so an exact/prefix match
   // (e.g. "DOLO" → "DOLO 650") comes before a mere substring ("PARADOLO").

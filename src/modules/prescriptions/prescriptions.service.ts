@@ -9,6 +9,7 @@ import {
 } from '../emar/emar.scheduler-engine';
 import { Prisma } from '@prisma/client';
 import { makeMedicineRankComparator, mergePrefixFirst } from '../../shared/medicine-search-rank';
+import { fuzzyMatchIds } from '../../shared/medicine-fuzzy';
 import type {
   CreatePrescriptionInput,
   UpdatePrescriptionInput,
@@ -1038,7 +1039,31 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
       orderBy: { drugName: 'asc' },
     }),
   ]);
-  const formulary = mergePrefixFirst([...namePrefix, ...genericPrefix], substringFormulary, (f) => f.id);
+  // Fuzzy (typo-tolerant) fill — formulary drugs trigram-similar to the query
+  // with no substring hit ("parcetamol" → "Paracetamol"). Additive: merged after
+  // the strict matches and ranked below them by the comparator further down.
+  let fuzzyFormulary: typeof substringFormulary = [];
+  if (q) {
+    const fuzzyIds = await fuzzyMatchIds({
+      table: 'drug_formulary',
+      query: q,
+      where: Prisma.sql`tenant_id = ${tenantId} AND is_active = true`,
+      limit: 40,
+    });
+    const known = new Set([...namePrefix, ...genericPrefix, ...substringFormulary].map((f) => f.id));
+    const fuzzyNewIds = fuzzyIds.filter((id) => !known.has(id));
+    if (fuzzyNewIds.length) {
+      fuzzyFormulary = await prisma.drugFormulary.findMany({
+        where: { tenantId, isActive: true, id: { in: fuzzyNewIds } },
+        select: formularySelect,
+      });
+    }
+  }
+  const formulary = mergePrefixFirst(
+    [...namePrefix, ...genericPrefix],
+    [...substringFormulary, ...fuzzyFormulary],
+    (f) => f.id,
+  );
 
   // Available pharmacy stock per formulary drug = Σ quantityInStock across the
   // hospital's active (non-expired, non-recalled) batches — so the doctor sees
@@ -1194,7 +1219,26 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
       });
     }
 
-    masterResults = [...prefixMatches, ...extra]
+    // Fuzzy (typo-tolerant) fill for the catalog tier — misspelled brand/generic
+    // names that no PASS-1/PASS-2 substring caught. Excludes already-imported and
+    // already-seen ids; ranked below the substring matches by the comparator.
+    let fuzzyMaster: typeof prefixMatches = [];
+    const fuzzyIds = await fuzzyMatchIds({
+      table: 'drug_master',
+      query: search.trim(),
+      where: Prisma.sql`is_published = true AND is_discontinued = false`,
+      limit: remaining,
+    });
+    const excluded = new Set<string>([...importedMasterIds, ...seen, ...extra.map((e) => e.id)]);
+    const fuzzyNewIds = fuzzyIds.filter((id) => !excluded.has(id));
+    if (fuzzyNewIds.length) {
+      fuzzyMaster = await prisma.drugMaster.findMany({
+        where: { isPublished: true, isDiscontinued: false, id: { in: fuzzyNewIds } },
+        select,
+      });
+    }
+
+    masterResults = [...prefixMatches, ...extra, ...fuzzyMaster]
       .map((m) => ({
         id: null,
         drugMasterId: m.id,
@@ -1207,8 +1251,10 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
         source: 'master' as const,
         availableStock: 0,
       }))
-      // Relevance order within the catalog: prefix → word-start → substring.
-      .sort(makeMedicineRankComparator(search, (m) => ({ name: m.drugName, generic: m.genericName })));
+      // Relevance order within the catalog: prefix → word-start → substring → fuzzy.
+      .sort(makeMedicineRankComparator(search, (m) => ({ name: m.drugName, generic: m.genericName })))
+      // Keep the original catalog budget (fuzzy only fills leftover slots).
+      .slice(0, Math.max(remaining, 0));
   }
 
   // Hospital's own stock (formulary + inventory) ranks above the global catalog.
