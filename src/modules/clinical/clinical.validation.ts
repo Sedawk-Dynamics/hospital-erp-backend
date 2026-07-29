@@ -157,12 +157,14 @@ export const createTransferSchema = z.object({
     patientId: z.string().uuid('Invalid patient ID'),
     visitId: z.string().uuid('Invalid visit ID'),
     transferType: z.enum(['doctor_to_doctor', 'ward_to_ward', 'bed_to_bed']),
-    fromDoctorId: z.string().uuid('Invalid from doctor ID').optional(),
-    toDoctorId: z.string().uuid('Invalid to doctor ID').optional(),
-    fromBedId: z.string().uuid('Invalid from bed ID').optional(),
-    toBedId: z.string().uuid('Invalid to bed ID').optional(),
-    fromWardId: z.string().uuid('Invalid from ward ID').optional(),
-    toWardId: z.string().uuid('Invalid to ward ID').optional(),
+    // from* may be null now that a patient can be admitted with no bed/ward, so
+    // accept both null and undefined (nullish).
+    fromDoctorId: z.string().uuid('Invalid from doctor ID').nullish(),
+    toDoctorId: z.string().uuid('Invalid to doctor ID').nullish(),
+    fromBedId: z.string().uuid('Invalid from bed ID').nullish(),
+    toBedId: z.string().uuid('Invalid to bed ID').nullish(),
+    fromWardId: z.string().uuid('Invalid from ward ID').nullish(),
+    toWardId: z.string().uuid('Invalid to ward ID').nullish(),
     reason: z.string().max(2000).optional(),
   }),
 });
