@@ -2551,28 +2551,56 @@ export async function getAdmissionLedger(tenantId: string, admissionId: string, 
   const r2 = (n: number) => Math.round(n * 100) / 100;
   const admission = await prisma.admission.findFirst({
     where: { id: admissionId, tenantId },
-    select: { id: true, patientId: true, depositAmount: true, billingCategory: true, admissionDate: true },
+    select: { id: true, patientId: true, depositAmount: true, billingCategory: true, admissionDate: true, visitId: true },
   });
   if (!admission) throw AppError.notFound('Admission not found');
 
+  // Charges for this stay live on two kinds of bill: the admission's own IP
+  // bills (admissionId set), AND orphan bills auto-created for the admission's
+  // VISIT with no admissionId — this is where lab (autoLinkLabOrderToBill) and
+  // imaging charges land. Without the visit branch those never appear here.
   const bills = await prisma.bill.findMany({
-    where: { tenantId, admissionId, status: { not: 'cancelled' } },
+    where: {
+      tenantId,
+      status: { not: 'cancelled' },
+      OR: [
+        { admissionId },
+        ...(admission.visitId ? [{ visitId: admission.visitId, admissionId: null }] : []),
+      ],
+    },
     orderBy: { createdAt: 'asc' },
     include: { billItems: { orderBy: { createdAt: 'asc' } } },
   });
 
-  const posted = bills.flatMap((b) =>
-    b.billItems.map((it) => ({
-      id: it.id, billId: b.id, billNumber: b.billNumber,
-      description: it.description, category: String(it.category),
-      quantity: it.quantity, unitPrice: Number(it.unitPrice), totalAmount: Number(it.totalAmount),
-      isReimbursable: it.isReimbursable, isAutoPulled: it.isAutoPulled,
-      // Was this manual charge added by the current user? Lets the UI show a
-      // remove button only for one's own charges (nurses can delete only theirs).
-      addedByMe: it.referenceType === 'manual_clinical' && (it.referenceId ?? '').split(':')[0] === actor.userId,
-      status: 'posted' as const, at: it.createdAt.toISOString(),
-    })),
-  );
+  // Dedupe by charge reference so a charge that somehow sits on both an IP bill
+  // and a visit bill is only counted once.
+  const seenRef = new Set<string>();
+  const posted: Array<{
+    id: string; billId: string; billNumber: string;
+    description: string; category: string;
+    quantity: number; unitPrice: number; totalAmount: number;
+    isReimbursable: boolean | null; isAutoPulled: boolean;
+    addedByMe: boolean; status: 'posted'; at: string;
+  }> = [];
+  for (const b of bills) {
+    for (const it of b.billItems) {
+      const refKey = it.referenceType && it.referenceId ? `${it.referenceType}:${it.referenceId}` : null;
+      if (refKey) {
+        if (seenRef.has(refKey)) continue;
+        seenRef.add(refKey);
+      }
+      posted.push({
+        id: it.id, billId: b.id, billNumber: b.billNumber,
+        description: it.description, category: String(it.category),
+        quantity: it.quantity, unitPrice: Number(it.unitPrice), totalAmount: Number(it.totalAmount),
+        isReimbursable: it.isReimbursable, isAutoPulled: it.isAutoPulled,
+        // Was this manual charge added by the current user? Lets the UI show a
+        // remove button only for one's own charges (nurses can delete only theirs).
+        addedByMe: it.referenceType === 'manual_clinical' && (it.referenceId ?? '').split(':')[0] === actor.userId,
+        status: 'posted' as const, at: it.createdAt.toISOString(),
+      });
+    }
+  }
 
   // Pending auto-charges not yet on any bill (room days, doctor fee, lab, imaging, OT).
   let pending: typeof posted = [];
