@@ -166,6 +166,9 @@ export const createTransferSchema = z.object({
     fromWardId: z.string().uuid('Invalid from ward ID').nullish(),
     toWardId: z.string().uuid('Invalid to ward ID').nullish(),
     reason: z.string().max(2000).optional(),
+    // Front desk applies bed/ward moves INSTANTLY (no separate approval step):
+    // the transfer is created and immediately approved in one call.
+    autoApprove: z.boolean().optional(),
   }),
 });
 

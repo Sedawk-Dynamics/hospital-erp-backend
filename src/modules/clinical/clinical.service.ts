@@ -993,6 +993,13 @@ export async function createTransfer(tenantId: string, userId: string, data: Cre
   });
 
   logger.info({ tenantId, transferId: transfer.id }, 'Transfer request created');
+
+  // Front-desk "instant" transfer — immediately approve so the bed/ward (or
+  // doctor) actually moves, no pending step. Keeps the PatientTransfer record for
+  // audit. approveTransfer is hoisted (function declaration below).
+  if ((data as any).autoApprove) {
+    return approveTransfer(tenantId, transfer.id, userId, { status: 'approved' });
+  }
   return transfer;
 }
 
