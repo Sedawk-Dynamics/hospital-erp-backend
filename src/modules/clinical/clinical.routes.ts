@@ -13,6 +13,7 @@ import {
   getAdmissionsQuerySchema,
   admissionIdParamSchema,
   updateAdmissionSchema,
+  assignAdmissionBedSchema,
   dischargePatientSchema,
   createTransferSchema,
   getTransfersQuerySchema,
@@ -87,6 +88,7 @@ clinicalRoutes.post('/admissions', authenticate, requirePermission('admissions',
 clinicalRoutes.get('/admissions', authenticate, requirePermission('admissions', 'read'), validate(getAdmissionsQuerySchema), controller.getAdmissions);
 clinicalRoutes.get('/admissions/:id', authenticate, requirePermission('admissions', 'read'), validate(admissionIdParamSchema), controller.getAdmissionById);
 clinicalRoutes.put('/admissions/:id', authenticate, requirePermission('admissions', 'update'), validate(updateAdmissionSchema), controller.updateAdmission);
+clinicalRoutes.patch('/admissions/:id/assign-bed', authenticate, requirePermission('admissions', 'update'), validate(assignAdmissionBedSchema), controller.assignAdmissionBed);
 // Discharge is a doctor-only action (a nurse can prepare/record but not
 // discharge). super_admin/admin retain override. The auto-discharge on
 // discharge-summary publish runs at the service layer and is unaffected.

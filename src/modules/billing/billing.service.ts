@@ -2343,11 +2343,14 @@ const IP_LEDGER_FULL_ROLES = new Set(['super_admin', 'admin', 'billing_admin', '
 const IP_LEDGER_NURSE_ROLES = new Set(['nurse', 'nurse_admin']);
 
 /**
- * Access to an admission's IP ledger is relationship-scoped:
+ * Access to an admission's IP ledger:
  *  - full: billing / hospital-admin roles (super_admin, admin, billing_admin, …);
- *  - read + post charge: the admission's OWN doctor and the actively-assigned nurse;
- *  - read only: any nurse (Billing/Ledger + Activity Log), and the patient (own ledger);
+ *  - full (read + post charge): ANY doctor — every IP patient is shared across all
+ *    doctors, so any doctor has the same ledger power as the admission's main doctor;
+ *  - read + post charge: the actively-assigned nurse; read only: any nurse + the patient;
  *  - everyone else: denied.
+ * (Deposits / refunds are additionally route-gated by billing:update, which doctors
+ *  and nurses lack — so those stay front-desk/billing regardless.)
  */
 async function assertIpLedgerAccess(
   tenantId: string,
@@ -2367,14 +2370,19 @@ async function assertIpLedgerAccess(
     return;
   }
 
+  // ANY doctor (identified by holding a DoctorProfile in this tenant) gets the
+  // same read + write access as the admission's main doctor — IP patients are
+  // shared across all doctors. Checked before loading the admission so a doctor
+  // passes regardless of who the main doctor is.
+  const actorDoctor = await prisma.doctorProfile.findFirst({
+    where: { userId: actor.userId, tenantId },
+    select: { id: true },
+  });
+  if (actorDoctor) return;
+
   const admission = await prisma.admission.findFirst({ where: { id: admissionId, tenantId }, select: { doctorId: true, patientId: true } });
   if (!admission) throw AppError.notFound('Admission not found');
 
-  // The admission's own doctor (Admission.doctorId is a DoctorProfile.id).
-  if (admission.doctorId) {
-    const dp = await prisma.doctorProfile.findFirst({ where: { userId: actor.userId, tenantId }, select: { id: true } });
-    if (dp && dp.id === admission.doctorId) return;
-  }
   // The actively-assigned nurse for this admission.
   const nurse = await prisma.nurseAssignment.findFirst({ where: { tenantId, admissionId, status: 'active', nurseId: actor.userId }, select: { id: true } });
   if (nurse) return;

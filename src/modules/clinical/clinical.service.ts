@@ -438,20 +438,24 @@ export async function createAdmission(tenantId: string, userId: string, data: Cr
     throw AppError.notFound('Doctor not found');
   }
 
-  const bed = await prisma.bed.findFirst({
-    where: { id: data.bedId, wardId: data.wardId, tenantId },
-  });
-  if (!bed) {
-    throw AppError.notFound('Bed not found in the specified ward');
-  }
-
-  // The bed must be free, or reserved/occupied for THIS patient already
-  // (e.g. a reservation getting converted into an admission).
-  const bedHeldByThisPatient =
-    bed.currentPatientId === data.patientId &&
-    (bed.status === 'reserved' || bed.status === 'occupied');
-  if (bed.status !== 'available' && !bedHeldByThisPatient) {
-    throw AppError.conflict(`Bed ${bed.bedNumber} is not available (status: ${bed.status})`);
+  // Bed & ward are optional at registration — front desk assigns/changes them
+  // later from the IP ledger. Only validate + occupy a bed when one is supplied.
+  let bed: Awaited<ReturnType<typeof prisma.bed.findFirst>> = null;
+  if (data.bedId) {
+    bed = await prisma.bed.findFirst({
+      where: { id: data.bedId, tenantId, ...(data.wardId ? { wardId: data.wardId } : {}) },
+    });
+    if (!bed) {
+      throw AppError.notFound('Bed not found in the specified ward');
+    }
+    // The bed must be free, or reserved/occupied for THIS patient already
+    // (e.g. a reservation getting converted into an admission).
+    const bedHeldByThisPatient =
+      bed.currentPatientId === data.patientId &&
+      (bed.status === 'reserved' || bed.status === 'occupied');
+    if (bed.status !== 'available' && !bedHeldByThisPatient) {
+      throw AppError.conflict(`Bed ${bed.bedNumber} is not available (status: ${bed.status})`);
+    }
   }
 
   const admission = await prisma.$transaction(async (tx) => {
@@ -461,8 +465,9 @@ export async function createAdmission(tenantId: string, userId: string, data: Cr
         visitId: data.visitId,
         patientId: data.patientId,
         doctorId: data.doctorId,
-        wardId: data.wardId,
-        bedId: data.bedId,
+        // Derive ward from the bed if only a bed was passed; both may be null.
+        wardId: data.wardId ?? bed?.wardId ?? undefined,
+        bedId: data.bedId ?? undefined,
         admissionDate: new Date(data.admissionDate),
         expectedDischargeDate: data.expectedDischargeDate
           ? new Date(data.expectedDischargeDate)
@@ -488,11 +493,13 @@ export async function createAdmission(tenantId: string, userId: string, data: Cr
       },
     });
 
-    // Occupy the bed atomically.
-    await tx.bed.update({
-      where: { id: data.bedId },
-      data: { status: 'occupied', currentPatientId: data.patientId },
-    });
+    // Occupy the bed atomically (only when a bed was assigned at registration).
+    if (data.bedId) {
+      await tx.bed.update({
+        where: { id: data.bedId },
+        data: { status: 'occupied', currentPatientId: data.patientId },
+      });
+    }
 
     // If the patient had active reservations, close them out and free any
     // reserved-but-different bed so it doesn't leak in the 'reserved' state.
@@ -764,6 +771,75 @@ export async function updateAdmission(tenantId: string, id: string, data: Update
   });
 
   logger.info({ tenantId, admissionId: id }, 'Admission updated');
+  return updated;
+}
+
+/**
+ * Front-desk "assign / change bed" from the IP ledger — applied INSTANTLY (no
+ * transfer-approval step). Beds are no longer picked at registration, so this is
+ * the primary way a patient gets (or moves) a bed during the stay. Frees the old
+ * bed and occupies the new one atomically; ward is derived from the chosen bed.
+ * Pass `bedId: null` to unassign (free the current bed, leave the patient bedless).
+ */
+export async function assignAdmissionBed(
+  tenantId: string,
+  id: string,
+  data: { bedId: string | null },
+) {
+  const admission = await prisma.admission.findFirst({
+    where: { id, tenantId },
+    select: { id: true, patientId: true, bedId: true, status: true },
+  });
+  if (!admission) throw AppError.notFound('Admission not found');
+  if (admission.status === 'discharged') {
+    throw AppError.badRequest('Cannot change the bed of a discharged admission');
+  }
+
+  let newWardId: string | null = null;
+  if (data.bedId) {
+    const bed = await prisma.bed.findFirst({
+      where: { id: data.bedId, tenantId },
+      select: { id: true, bedNumber: true, status: true, currentPatientId: true, wardId: true },
+    });
+    if (!bed) throw AppError.notFound('Bed not found');
+    const heldForThisPatient =
+      bed.currentPatientId === admission.patientId &&
+      (bed.status === 'reserved' || bed.status === 'occupied');
+    // A no-op re-assign to the same bed is fine; otherwise the bed must be free.
+    if (bed.id !== admission.bedId && bed.status !== 'available' && !heldForThisPatient) {
+      throw AppError.conflict(`Bed ${bed.bedNumber} is not available (status: ${bed.status})`);
+    }
+    newWardId = bed.wardId;
+  }
+
+  const updated = await prisma.$transaction(async (tx) => {
+    // Free the previously-occupied bed if we're moving off it.
+    if (admission.bedId && admission.bedId !== data.bedId) {
+      await tx.bed.updateMany({
+        where: { id: admission.bedId, currentPatientId: admission.patientId },
+        data: { status: 'available', currentPatientId: null },
+      });
+    }
+    // Occupy the new bed.
+    if (data.bedId) {
+      await tx.bed.update({
+        where: { id: data.bedId },
+        data: { status: 'occupied', currentPatientId: admission.patientId },
+      });
+    }
+    return tx.admission.update({
+      where: { id },
+      data: { bedId: data.bedId, wardId: newWardId },
+      include: {
+        patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+        doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
+        ward: { select: { id: true, name: true } },
+        bed: { select: { id: true, bedNumber: true } },
+      },
+    });
+  });
+
+  logger.info({ tenantId, admissionId: id, bedId: data.bedId }, 'Admission bed assigned/changed');
   return updated;
 }
 
@@ -2822,18 +2898,18 @@ export async function acceptAdmissionRequest(
     throw AppError.badRequest('Pick either reserve-now or direct-admit, not both');
   }
 
-  // Pre-flight bed/ward checks — same logic shared by both branches so the
-  // service rejects bad input before we open the transaction.
+  // Pre-flight bed/ward checks. For a DIRECT ADMIT, bed & ward are OPTIONAL now —
+  // front desk assigns them from the ledger after admitting. A RESERVATION still
+  // needs a ward (its whole purpose is to hold a slot/bed), bed optional.
   if (data.createReservation) {
     if (!data.wardId) {
       throw AppError.badRequest('wardId is required when creating a reservation');
     }
     const ward = await prisma.ward.findFirst({ where: { id: data.wardId, tenantId } });
     if (!ward) throw AppError.notFound('Ward not found');
-
     if (data.bedId) {
       const bed = await prisma.bed.findFirst({
-        where: { id: data.bedId, wardId: data.wardId, tenantId },
+        where: { id: data.bedId, tenantId, ...(data.wardId ? { wardId: data.wardId } : {}) },
       });
       if (!bed) throw AppError.notFound('Bed not found in the specified ward');
       if (bed.status !== 'available') {
@@ -2843,22 +2919,24 @@ export async function acceptAdmissionRequest(
   }
 
   if (data.directAdmit) {
-    if (!data.wardId) throw AppError.badRequest('wardId is required for direct admit');
-    if (!data.bedId) throw AppError.badRequest('bedId is required for direct admit');
-    const ward = await prisma.ward.findFirst({ where: { id: data.wardId, tenantId } });
-    if (!ward) throw AppError.notFound('Ward not found');
-    const bed = await prisma.bed.findFirst({
-      where: { id: data.bedId, wardId: data.wardId, tenantId },
-    });
-    if (!bed) throw AppError.notFound('Bed not found in the specified ward');
-    // Mirror createAdmission: the bed must be free OR already held for THIS
-    // patient via an existing reservation (in which case admission flips it
-    // to occupied without breaking ownership).
-    const heldForThisPatient =
-      bed.currentPatientId === existing.patientId &&
-      (bed.status === 'reserved' || bed.status === 'occupied');
-    if (bed.status !== 'available' && !heldForThisPatient) {
-      throw AppError.conflict(`Bed ${bed.bedNumber} is not available (status: ${bed.status})`);
+    if (data.wardId) {
+      const ward = await prisma.ward.findFirst({ where: { id: data.wardId, tenantId } });
+      if (!ward) throw AppError.notFound('Ward not found');
+    }
+    if (data.bedId) {
+      const bed = await prisma.bed.findFirst({
+        where: { id: data.bedId, tenantId, ...(data.wardId ? { wardId: data.wardId } : {}) },
+      });
+      if (!bed) throw AppError.notFound('Bed not found in the specified ward');
+      // Mirror createAdmission: the bed must be free OR already held for THIS
+      // patient via an existing reservation (in which case admission flips it
+      // to occupied without breaking ownership).
+      const heldForThisPatient =
+        bed.currentPatientId === existing.patientId &&
+        (bed.status === 'reserved' || bed.status === 'occupied');
+      if (bed.status !== 'available' && !heldForThisPatient) {
+        throw AppError.conflict(`Bed ${bed.bedNumber} is not available (status: ${bed.status})`);
+      }
     }
   }
 
@@ -2897,7 +2975,7 @@ export async function acceptAdmissionRequest(
       }
     }
 
-    if (data.directAdmit && data.wardId && data.bedId) {
+    if (data.directAdmit) {
       // Resolve the visit: prefer the request's linked visit, else any active
       // visit for the patient, else create an IP visit on the fly.
       let visitId = existing.visitId ?? null;
@@ -2954,8 +3032,8 @@ export async function acceptAdmissionRequest(
           visitId,
           patientId: existing.patientId,
           doctorId: existing.doctorId,
-          wardId: data.wardId,
-          bedId: data.bedId,
+          wardId: data.wardId ?? undefined,
+          bedId: data.bedId ?? undefined,
           admissionDate: data.admissionDate ? new Date(data.admissionDate) : new Date(),
           expectedDischargeDate: data.expectedDischargeDate
             ? new Date(data.expectedDischargeDate)
@@ -2968,11 +3046,14 @@ export async function acceptAdmissionRequest(
       });
       admissionId = adm.id;
 
-      // Bed → occupied. Tolerate the "reserved for this patient" pre-state.
-      await tx.bed.update({
-        where: { id: data.bedId },
-        data: { status: 'occupied', currentPatientId: existing.patientId },
-      });
+      // Bed → occupied (only when a bed was chosen). Tolerate the "reserved for
+      // this patient" pre-state.
+      if (data.bedId) {
+        await tx.bed.update({
+          where: { id: data.bedId },
+          data: { status: 'occupied', currentPatientId: existing.patientId },
+        });
+      }
 
       // Sweep up any other open reservations for this patient — they're
       // satisfied by this admission. Mirrors the cleanup in createAdmission.
@@ -3051,20 +3132,21 @@ export async function admitFromReservation(
     );
   }
 
-  const targetBedId = data.bedId ?? reservation.bedId;
-  if (!targetBedId) {
-    throw AppError.badRequest('A bed must be selected to admit this reservation');
-  }
-
-  const bed = await prisma.bed.findFirst({
-    where: { id: targetBedId, wardId: reservation.wardId, tenantId },
-  });
-  if (!bed) throw AppError.notFound('Bed not found in the reservation ward');
-  const heldForThisPatient =
-    bed.currentPatientId === reservation.patientId &&
-    (bed.status === 'reserved' || bed.status === 'occupied');
-  if (bed.status !== 'available' && !heldForThisPatient) {
-    throw AppError.conflict(`Bed ${bed.bedNumber} is not available (status: ${bed.status})`);
+  // A bed is OPTIONAL — if the reservation blocked one (or one is passed) we use
+  // it, otherwise the patient is admitted without a bed and front desk assigns it
+  // later from the ledger.
+  const targetBedId = data.bedId ?? reservation.bedId ?? null;
+  if (targetBedId) {
+    const bed = await prisma.bed.findFirst({
+      where: { id: targetBedId, tenantId, ...(reservation.wardId ? { wardId: reservation.wardId } : {}) },
+    });
+    if (!bed) throw AppError.notFound('Bed not found in the reservation ward');
+    const heldForThisPatient =
+      bed.currentPatientId === reservation.patientId &&
+      (bed.status === 'reserved' || bed.status === 'occupied');
+    if (bed.status !== 'available' && !heldForThisPatient) {
+      throw AppError.conflict(`Bed ${bed.bedNumber} is not available (status: ${bed.status})`);
+    }
   }
 
   return prisma.$transaction(async (tx) => {
@@ -3104,8 +3186,8 @@ export async function admitFromReservation(
         visitId,
         patientId: reservation.patientId,
         doctorId: reservation.doctorId,
-        wardId: reservation.wardId,
-        bedId: targetBedId,
+        wardId: reservation.wardId ?? undefined,
+        bedId: targetBedId ?? undefined,
         admissionDate: data.admissionDate ? new Date(data.admissionDate) : new Date(),
         expectedDischargeDate: data.expectedDischargeDate
           ? new Date(data.expectedDischargeDate)
@@ -3124,10 +3206,12 @@ export async function admitFromReservation(
     });
 
     // Bed → occupied (tolerates the reserved-for-this-patient pre-state).
-    await tx.bed.update({
-      where: { id: targetBedId },
-      data: { status: 'occupied', currentPatientId: reservation.patientId },
-    });
+    if (targetBedId) {
+      await tx.bed.update({
+        where: { id: targetBedId },
+        data: { status: 'occupied', currentPatientId: reservation.patientId },
+      });
+    }
 
     // Free up the originally-blocked bed if we admitted into a different one.
     if (reservation.bedId && reservation.bedId !== targetBedId) {

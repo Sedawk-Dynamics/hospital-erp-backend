@@ -189,6 +189,28 @@ export async function updateAdmission(
   }
 }
 
+export async function assignAdmissionBed(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const admission = await clinicalService.assignAdmissionBed(
+      tenantId,
+      req.params.id as string,
+      { bedId: (req.body?.bedId as string | null) ?? null },
+    );
+    sendResponse({
+      res,
+      message: admission.bedId ? 'Bed assigned' : 'Bed cleared',
+      data: admission,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function dischargePatient(
   req: AuthenticatedRequest,
   res: Response,

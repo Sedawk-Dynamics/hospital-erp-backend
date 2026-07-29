@@ -63,8 +63,10 @@ export const createAdmissionSchema = z.object({
     visitId: z.string().uuid('Invalid visit ID'),
     patientId: z.string().uuid('Invalid patient ID'),
     doctorId: z.string().uuid('Invalid doctor ID'),
-    wardId: z.string().uuid('Invalid ward ID'),
-    bedId: z.string().uuid('Invalid bed ID'),
+    // Bed & ward are NOT set at registration — front desk assigns/changes them
+    // later from the IP ledger (beds move around during a stay).
+    wardId: z.string().uuid('Invalid ward ID').optional(),
+    bedId: z.string().uuid('Invalid bed ID').optional(),
     admissionDate: z.string().refine((val) => !isNaN(Date.parse(val)), {
       message: 'Invalid admission date',
     }),
@@ -118,6 +120,17 @@ export const updateAdmissionSchema = z.object({
     admissionReason: z.string().max(2000).optional(),
     depositAmount: z.number().min(0).optional(),
     billingCategory: z.enum(['cash', 'package', 'insurance', 'corporate']).optional(),
+  }),
+});
+
+// Front-desk instant bed assign / change / clear from the IP ledger.
+export const assignAdmissionBedSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid admission ID'),
+  }),
+  body: z.object({
+    // A bed id to assign/move to, or null to unassign (leave the patient bedless).
+    bedId: z.string().uuid('Invalid bed ID').nullable(),
   }),
 });
 
