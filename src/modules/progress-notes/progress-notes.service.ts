@@ -193,7 +193,9 @@ export async function createProgressNote(
   });
 
   // Notify each tagged doctor (fire-and-forget — a failed notification must never
-  // fail the note). referenceType/referenceId deep-link to the patient.
+  // fail the note). Deep-link target depends on the note's context: an IP note
+  // (admissionId present) opens the IP workspace `/<role>/ip/:admissionId`; an OP
+  // note opens the patient's consultation. The frontend resolves each variant.
   if (mentionedUserIds.length) {
     const author = note.doctor?.user
       ? `Dr. ${note.doctor.user.firstName ?? ''} ${note.doctor.user.lastName ?? ''}`.trim()
@@ -201,6 +203,9 @@ export async function createProgressNote(
     const patientName = note.patient
       ? `${note.patient.firstName} ${note.patient.lastName ?? ''}`.trim()
       : 'a patient';
+    const isIp = !!admissionId;
+    const referenceType = isIp ? 'progress_note_mention_ip' : 'progress_note_mention';
+    const referenceId = isIp ? admissionId : note.patientId;
     await Promise.all(
       mentionedUserIds.map((uid) =>
         prisma.notification
@@ -211,8 +216,8 @@ export async function createProgressNote(
               title: 'You were mentioned in a progress note',
               message: `${author} tagged you on ${patientName}'s progress note.`,
               notificationType: 'alert' as any,
-              referenceType: 'progress_note_mention',
-              referenceId: note.patientId,
+              referenceType,
+              referenceId,
             },
           })
           .catch((err) => logger.warn({ err, userId: uid, noteId: note.id }, 'Mention notification failed')),
