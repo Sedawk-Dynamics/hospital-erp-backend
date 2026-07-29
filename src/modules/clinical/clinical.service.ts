@@ -86,12 +86,38 @@ export async function createVisit(tenantId: string, data: CreateVisitInput) {
     throw AppError.notFound('Patient not found');
   }
 
-  // Verify doctor belongs to tenant
-  const doctor = await prisma.doctorProfile.findFirst({
-    where: { id: data.doctorId, tenantId },
-  });
-  if (!doctor) {
-    throw AppError.notFound('Doctor not found');
+  // Verify doctor belongs to tenant — only when supplied (doctor optional now).
+  if (data.doctorId) {
+    const doctor = await prisma.doctorProfile.findFirst({
+      where: { id: data.doctorId, tenantId },
+    });
+    if (!doctor) {
+      throw AppError.notFound('Doctor not found');
+    }
+  }
+
+  // No doctor → insert via raw SQL. The (unregenerated) Prisma client still
+  // types doctorId as required and rejects a null/omitted value, so we bypass it.
+  if (!data.doctorId) {
+    const rows = await prisma.$queryRaw<{ id: string }[]>`
+      INSERT INTO visits (id, tenant_id, patient_id, doctor_id, appointment_id, visit_type, visit_date, chief_complaint, status, created_at, updated_at)
+      VALUES (gen_random_uuid()::text, ${tenantId}, ${data.patientId}, NULL, ${data.appointmentId ?? null}, ${data.visitType}::"VisitType", ${new Date(data.visitDate)}, ${data.chiefComplaint ?? null}, 'active'::"VisitStatus", now(), now())
+      RETURNING id
+    `;
+    const patient = await prisma.patient.findFirst({
+      where: { id: data.patientId, tenantId },
+      select: { id: true, mrn: true, firstName: true, lastName: true },
+    });
+    logger.info({ tenantId, visitId: rows[0].id, doctorless: true }, 'Visit created');
+    return {
+      id: rows[0].id,
+      tenantId,
+      patientId: data.patientId,
+      doctorId: null,
+      visitType: data.visitType,
+      status: 'active',
+      patient,
+    };
   }
 
   const visit = await prisma.visit.create({

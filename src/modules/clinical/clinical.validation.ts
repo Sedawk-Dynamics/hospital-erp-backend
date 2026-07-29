@@ -6,7 +6,8 @@ import { paginationSchema } from '../../shared/pagination';
 export const createVisitSchema = z.object({
   body: z.object({
     patientId: z.string().uuid('Invalid patient ID'),
-    doctorId: z.string().uuid('Invalid doctor ID'),
+    // Optional — a patient can be admitted before a doctor is assigned.
+    doctorId: z.string().uuid('Invalid doctor ID').optional(),
     appointmentId: z.string().uuid('Invalid appointment ID').optional(),
     visitType: z.enum(['op', 'ip']),
     visitDate: z.string().refine((val) => !isNaN(Date.parse(val)), {

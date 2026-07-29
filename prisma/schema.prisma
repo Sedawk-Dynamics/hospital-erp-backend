@@ -2389,7 +2389,9 @@ model Visit {
   id             String      @id @default(uuid())
   tenantId       String      @map("tenant_id")
   patientId      String      @map("patient_id")
-  doctorId       String      @map("doctor_id")
+  // Nullable — a patient can be admitted (IP/Emergency/Day Care) before a
+  // consultation doctor is assigned; the doctor is filled in later.
+  doctorId       String?     @map("doctor_id")
   appointmentId  String?     @map("appointment_id")
   visitType      VisitType   @map("visit_type")
   visitDate      DateTime    @map("visit_date")
@@ -2400,7 +2402,7 @@ model Visit {
 
   tenant               Tenant                       @relation(fields: [tenantId], references: [id])
   patient              Patient                      @relation(fields: [patientId], references: [id])
-  doctor               DoctorProfile                @relation(fields: [doctorId], references: [id])
+  doctor               DoctorProfile?               @relation(fields: [doctorId], references: [id])
   appointment          Appointment?                 @relation(fields: [appointmentId], references: [id])
   admission            Admission?
   patientTransfers     PatientTransfer[]
