@@ -138,6 +138,21 @@ export async function createProgressNote(
     if (!rx) throw AppError.badRequest('Prescription not found for this patient');
   }
 
+  // @mentioned doctors (User ids) — dedupe, drop the author, keep only real
+  // tenant users. Delivered as a notification so the tagged doctor can jump to
+  // the patient + note (not persisted on the note row — customFields is a typed
+  // array used for structured fields, so we don't overload it).
+  const rawMentions = Array.from(
+    new Set((data.mentionedUserIds ?? []).filter((uid) => uid && uid !== userId)),
+  );
+  const mentionedUsers = rawMentions.length
+    ? await prisma.user.findMany({
+        where: { id: { in: rawMentions }, tenantId },
+        select: { id: true },
+      })
+    : [];
+  const mentionedUserIds = mentionedUsers.map((u) => u.id);
+
   const note = await prisma.progressNote.create({
     data: {
       visitId: data.visitId,
@@ -177,7 +192,38 @@ export async function createProgressNote(
     },
   });
 
-  logger.info({ tenantId, noteId: note.id, visitId: data.visitId }, 'Progress note created');
+  // Notify each tagged doctor (fire-and-forget — a failed notification must never
+  // fail the note). referenceType/referenceId deep-link to the patient.
+  if (mentionedUserIds.length) {
+    const author = note.doctor?.user
+      ? `Dr. ${note.doctor.user.firstName ?? ''} ${note.doctor.user.lastName ?? ''}`.trim()
+      : 'A doctor';
+    const patientName = note.patient
+      ? `${note.patient.firstName} ${note.patient.lastName ?? ''}`.trim()
+      : 'a patient';
+    await Promise.all(
+      mentionedUserIds.map((uid) =>
+        prisma.notification
+          .create({
+            data: {
+              tenantId,
+              userId: uid,
+              title: 'You were mentioned in a progress note',
+              message: `${author} tagged you on ${patientName}'s progress note.`,
+              notificationType: 'alert' as any,
+              referenceType: 'progress_note_mention',
+              referenceId: note.patientId,
+            },
+          })
+          .catch((err) => logger.warn({ err, userId: uid, noteId: note.id }, 'Mention notification failed')),
+      ),
+    );
+  }
+
+  logger.info(
+    { tenantId, noteId: note.id, visitId: data.visitId, mentions: mentionedUserIds.length },
+    'Progress note created',
+  );
   return note;
 }
 

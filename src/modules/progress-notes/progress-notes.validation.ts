@@ -64,6 +64,8 @@ export const createProgressNoteSchema = z.object({
     weightKgAtEntry: z.number().positive().max(999.99).optional().nullable(),
     pinToDischargeSummary: z.boolean().default(false),
     pins: z.array(pinInputSchema).max(20).optional(),
+    // @mentioned doctors (User ids) — each gets a notification linking to the patient.
+    mentionedUserIds: z.array(z.string().uuid()).max(20).optional(),
   }),
 });
 
