@@ -14,6 +14,7 @@ import {
   admissionIdParamSchema,
   updateAdmissionSchema,
   assignAdmissionBedSchema,
+  changeAdmissionTypeSchema,
   dischargePatientSchema,
   createTransferSchema,
   getTransfersQuerySchema,
@@ -89,6 +90,9 @@ clinicalRoutes.get('/admissions', authenticate, requirePermission('admissions', 
 clinicalRoutes.get('/admissions/:id', authenticate, requirePermission('admissions', 'read'), validate(admissionIdParamSchema), controller.getAdmissionById);
 clinicalRoutes.put('/admissions/:id', authenticate, requirePermission('admissions', 'update'), validate(updateAdmissionSchema), controller.updateAdmission);
 clinicalRoutes.patch('/admissions/:id/assign-bed', authenticate, requirePermission('admissions', 'update'), validate(assignAdmissionBedSchema), controller.assignAdmissionBed);
+// Convert care type (ip/emergency/daycare) — front desk, doctors AND nurses may
+// flip it (nurses lack admissions:update, so gate by role, not permission).
+clinicalRoutes.patch('/admissions/:id/type', authenticate, requireRoles('front_desk', 'admin', 'super_admin', 'doctor', 'nurse', 'nurse_admin'), validate(changeAdmissionTypeSchema), controller.changeAdmissionType);
 // Discharge is a doctor-only action (a nurse can prepare/record but not
 // discharge). super_admin/admin retain override. The auto-discharge on
 // discharge-summary publish runs at the service layer and is unaffected.

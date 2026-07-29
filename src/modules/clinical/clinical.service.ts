@@ -1,7 +1,9 @@
+import { Prisma } from '@prisma/client';
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
+import { normalizeAdmissionType, type AdmissionType } from '../../shared/admission-type';
 import type {
   CreateVisitInput,
   GetVisitsQuery,
@@ -430,12 +432,14 @@ export async function createAdmission(tenantId: string, userId: string, data: Cr
     throw AppError.notFound('Patient not found');
   }
 
-  // Verify doctor belongs to tenant
-  const doctor = await prisma.doctorProfile.findFirst({
-    where: { id: data.doctorId, tenantId },
-  });
-  if (!doctor) {
-    throw AppError.notFound('Doctor not found');
+  // Verify doctor belongs to tenant — only when one is supplied (optional now).
+  if (data.doctorId) {
+    const doctor = await prisma.doctorProfile.findFirst({
+      where: { id: data.doctorId, tenantId },
+    });
+    if (!doctor) {
+      throw AppError.notFound('Doctor not found');
+    }
   }
 
   // Bed & ward are optional at registration — front desk assigns/changes them
@@ -544,9 +548,14 @@ export async function createAdmission(tenantId: string, userId: string, data: Cr
     return created;
   });
 
-  logger.info({ tenantId, admissionId: admission.id, bedId: data.bedId }, 'Admission created');
+  // Care type (ip | emergency | daycare) — set via raw SQL since the Prisma
+  // client isn't regenerated yet. Defaults to 'ip'.
+  const admissionType = normalizeAdmissionType((data as any).admissionType);
+  await prisma.$executeRaw`UPDATE admissions SET admission_type = ${admissionType} WHERE id = ${admission.id}`;
+
+  logger.info({ tenantId, admissionId: admission.id, bedId: data.bedId, admissionType }, 'Admission created');
   await autoConnectTpaOnAdmission(tenantId, userId, admission.id, (data as any).billingCategory);
-  return admission;
+  return { ...admission, admissionType };
 }
 
 /**
@@ -630,6 +639,19 @@ export async function getAdmissions(tenantId: string, query: GetAdmissionsQuery)
     ];
   }
 
+  // Care-type filter (ip | emergency | daycare). The column isn't in the
+  // (unregenerated) Prisma client, so pre-fetch matching ids by raw SQL and
+  // intersect via where.id. 'ip' also matches legacy NULLs.
+  const typeFilter = (query as any).admissionType as string | undefined;
+  if (typeFilter && ['ip', 'emergency', 'daycare'].includes(typeFilter)) {
+    const idRows = await prisma.$queryRaw<{ id: string }[]>`
+      SELECT id FROM admissions
+      WHERE tenant_id = ${tenantId}
+        AND (admission_type = ${typeFilter}${typeFilter === 'ip' ? Prisma.sql` OR admission_type IS NULL` : Prisma.empty})
+    `;
+    where.id = { in: idRows.map((r) => r.id) };
+  }
+
   const [admissions, total] = await Promise.all([
     prisma.admission.findMany({
       where,
@@ -652,7 +674,11 @@ export async function getAdmissions(tenantId: string, query: GetAdmissionsQuery)
     prisma.admission.count({ where }),
   ]);
 
-  return { admissions, total, page, limit };
+  // Attach admission_type (raw column) to each row.
+  const typeMap = await fetchAdmissionTypes(admissions.map((a) => a.id));
+  const withType = admissions.map((a) => ({ ...a, admissionType: typeMap.get(a.id) ?? 'ip' }));
+
+  return { admissions: withType, total, page, limit };
 }
 
 /**
@@ -711,7 +737,8 @@ export async function getAdmissionById(tenantId: string, id: string) {
     throw AppError.notFound('Admission not found');
   }
 
-  return admission;
+  const typeMap = await fetchAdmissionTypes([admission.id]);
+  return { ...admission, admissionType: typeMap.get(admission.id) ?? 'ip' };
 }
 
 /**
@@ -841,6 +868,37 @@ export async function assignAdmissionBed(
 
   logger.info({ tenantId, admissionId: id, bedId: data.bedId }, 'Admission bed assigned/changed');
   return updated;
+}
+
+/**
+ * Convert an admission's care TYPE (ip ⇄ emergency ⇄ daycare). All three share
+ * the same IP flow, so this only changes the tag. Front desk, doctors and nurses
+ * can flip it. Written via raw SQL (client not regenerated for this column yet).
+ */
+export async function changeAdmissionType(tenantId: string, id: string, type: string) {
+  const admissionType = normalizeAdmissionType(type);
+  const adm = await prisma.admission.findFirst({
+    where: { id, tenantId },
+    select: { id: true, status: true },
+  });
+  if (!adm) throw AppError.notFound('Admission not found');
+  if (adm.status === 'discharged') {
+    throw AppError.badRequest('Cannot change the type of a discharged admission');
+  }
+  await prisma.$executeRaw`UPDATE admissions SET admission_type = ${admissionType}, updated_at = now() WHERE id = ${id} AND tenant_id = ${tenantId}`;
+  logger.info({ tenantId, admissionId: id, admissionType }, 'Admission type changed');
+  return { id, admissionType };
+}
+
+/** Fetch admission_type for a set of admission ids (raw — client not regenerated). */
+async function fetchAdmissionTypes(ids: string[]): Promise<Map<string, AdmissionType>> {
+  const map = new Map<string, AdmissionType>();
+  if (ids.length === 0) return map;
+  const rows = await prisma.$queryRaw<{ id: string; admission_type: string | null }[]>`
+    SELECT id, admission_type FROM admissions WHERE id IN (${Prisma.join(ids)})
+  `;
+  for (const r of rows) map.set(r.id, normalizeAdmissionType(r.admission_type));
+  return map;
 }
 
 /**

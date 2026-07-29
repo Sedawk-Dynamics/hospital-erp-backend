@@ -62,7 +62,8 @@ export const createAdmissionSchema = z.object({
   body: z.object({
     visitId: z.string().uuid('Invalid visit ID'),
     patientId: z.string().uuid('Invalid patient ID'),
-    doctorId: z.string().uuid('Invalid doctor ID'),
+    // Consultation doctor is optional now — can be assigned later.
+    doctorId: z.string().uuid('Invalid doctor ID').optional(),
     // Bed & ward are NOT set at registration — front desk assigns/changes them
     // later from the IP ledger (beds move around during a stay).
     wardId: z.string().uuid('Invalid ward ID').optional(),
@@ -78,6 +79,8 @@ export const createAdmissionSchema = z.object({
     depositAmount: z.number().min(0).optional(),
     // G12: how this IP patient settles charges.
     billingCategory: z.enum(['cash', 'package', 'insurance', 'corporate']).optional(),
+    // Care type — all three run the same IP flow; this is a tag/filter.
+    admissionType: z.enum(['ip', 'emergency', 'daycare']).optional(),
   }),
 });
 
@@ -92,6 +95,7 @@ export const getAdmissionsQuerySchema = z.object({
     nurseId: z.string().uuid().optional(),
     wardId: z.string().uuid().optional(),
     status: z.enum(['admitted', 'discharged', 'transferred', 'absconded']).optional(),
+    admissionType: z.enum(['ip', 'emergency', 'daycare']).optional(),
     search: z.string().max(255).optional(),
     date: z.string().optional(),
     // Date-range window on admissionDate — used by the hospital reports screen.
@@ -120,6 +124,16 @@ export const updateAdmissionSchema = z.object({
     admissionReason: z.string().max(2000).optional(),
     depositAmount: z.number().min(0).optional(),
     billingCategory: z.enum(['cash', 'package', 'insurance', 'corporate']).optional(),
+  }),
+});
+
+// Convert an admission's care type (ip ⇄ emergency ⇄ daycare).
+export const changeAdmissionTypeSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid admission ID'),
+  }),
+  body: z.object({
+    admissionType: z.enum(['ip', 'emergency', 'daycare']),
   }),
 });
 

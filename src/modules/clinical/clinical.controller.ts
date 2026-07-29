@@ -211,6 +211,24 @@ export async function assignAdmissionBed(
   }
 }
 
+export async function changeAdmissionType(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const result = await clinicalService.changeAdmissionType(
+      tenantId,
+      req.params.id as string,
+      req.body.admissionType as string,
+    );
+    sendResponse({ res, message: 'Admission type updated', data: result });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function dischargePatient(
   req: AuthenticatedRequest,
   res: Response,

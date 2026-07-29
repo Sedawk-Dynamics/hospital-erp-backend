@@ -2452,6 +2452,10 @@ model Admission {
   // "collect payment?" decision. cash | package | insurance | corporate.
   // Null is treated as 'cash'. Set by the front desk at admission.
   billingCategory       String?         @map("billing_category") @db.VarChar(20)
+  // Admission care type — ip | emergency | daycare. All three share the same IP
+  // flow; this is just a tag + filter dimension. Null is treated as 'ip'. Access
+  // is via raw SQL until the Prisma client is regenerated (dev server locks it).
+  admissionType         String?         @map("admission_type") @db.VarChar(20)
   status                AdmissionStatus @default(admitted)
   admittedBy            String?         @map("admitted_by")
   dischargedBy          String?         @map("discharged_by")
