@@ -461,7 +461,14 @@ export async function createFormularyItem(
       price: formularyItem.price,
     },
   });
-  return { status: 'created' as const, item: formularyItem };
+
+  // Composition is a raw-SQL column (migration-free) — write it after the typed
+  // create and merge it onto the returned object.
+  const composition = (data as any).composition?.trim() || null;
+  if (composition !== null) {
+    await prisma.$executeRaw`UPDATE drug_formulary SET composition = ${composition} WHERE id = ${formularyItem.id}`;
+  }
+  return { status: 'created' as const, item: { ...formularyItem, composition } };
 }
 
 /**
@@ -1689,6 +1696,16 @@ export async function getFormulary(tenantId: string, query: GetFormularyQuery, _
     shaped = shaped.sort(cmp).slice(skip, skip + take);
   }
 
+  // Attach the raw-SQL `composition` column (the typed client may not be
+  // regenerated for it yet) so the list + edit form can show/prefill it.
+  const compIds = shaped.map((s) => s.id);
+  if (compIds.length) {
+    const compRows = await prisma.$queryRaw<Array<{ id: string; composition: string | null }>>`
+      SELECT id, composition FROM drug_formulary WHERE id IN (${Prisma.join(compIds)})`;
+    const compMap = new Map(compRows.map((r) => [r.id, r.composition]));
+    shaped = shaped.map((s) => ({ ...s, composition: compMap.get(s.id) ?? null }));
+  }
+
   return { items: shaped, total, page, limit };
 }
 
@@ -1832,6 +1849,14 @@ export async function updateFormularyItem(
     data: updateData,
   });
 
+  // Composition is a raw-SQL column (migration-free). undefined = leave as-is;
+  // null/'' = clear; string = set.
+  let composition = (existing as any).composition ?? null;
+  if ((data as any).composition !== undefined) {
+    composition = (data as any).composition?.trim() || null;
+    await prisma.$executeRaw`UPDATE drug_formulary SET composition = ${composition} WHERE id = ${id}`;
+  }
+
   logger.info({ tenantId, formularyId: id }, 'Formulary item updated');
   void safePharmacyAudit({
     tenantId,
@@ -1843,7 +1868,7 @@ export async function updateFormularyItem(
     oldValues: Object.fromEntries(Object.keys(updateData).map((k) => [k, (existing as any)[k]])),
     newValues: updateData,
   });
-  return item;
+  return { ...item, composition };
 }
 
 export async function deleteFormularyItem(tenantId: string, id: string) {

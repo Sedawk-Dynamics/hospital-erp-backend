@@ -4233,7 +4233,12 @@ model DrugFormulary {
   id                String      @id @default(uuid())
   tenantId          String      @map("tenant_id")
   drugName          String      @map("drug_name") @db.VarChar(255)
+  // genericName may hold ONE or MORE generic/molecule names (comma-separated
+  // when a brand maps to several). `composition` is the salt composition, a
+  // separate concept — sometimes identical to the generic name, sometimes not.
+  // composition is written/read via raw SQL (added live, migration-free).
   genericName       String?     @map("generic_name") @db.VarChar(255)
+  composition       String?     @map("composition") @db.VarChar(500)
   manufacturer      String?     @db.VarChar(255)
   // What KIND of stock this is. Every type (medicine, consumable, surgical,
   // equipment, other) lives here so they all share one flow: batches, expiry,

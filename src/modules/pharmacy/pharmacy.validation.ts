@@ -23,7 +23,10 @@ export const getAuditTrailQuerySchema = z.object({
 export const createFormularySchema = z.object({
   body: z.object({
     drugName: z.string().min(1, 'Drug name is required').max(255),
+    // One or more generic names (comma-separated when multiple).
     genericName: z.string().max(255).optional(),
+    // Salt composition — a separate field from the generic name.
+    composition: z.string().max(500).optional(),
     manufacturer: z.string().max(255).optional(),
     // Stock type — every kind lives in the formulary and shares one flow.
     category: z.enum(['drug', 'consumable', 'surgical_supply', 'equipment', 'other']).optional(),
@@ -86,6 +89,7 @@ export const updateFormularySchema = z.object({
     // consumable or a piece of equipment must be re-typeable.
     category: z.enum(['drug', 'consumable', 'surgical_supply', 'equipment', 'other']).optional(),
     genericName: z.string().max(255).optional().nullable(),
+    composition: z.string().max(500).optional().nullable(),
     manufacturer: z.string().max(255).optional().nullable(),
     dosageForm: z
       .enum(['tablet', 'capsule', 'syrup', 'injection', 'cream', 'drops', 'inhaler', 'other'])
