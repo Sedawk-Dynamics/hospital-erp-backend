@@ -495,6 +495,21 @@ export async function addBillItem(req: AuthenticatedRequest, res: Response, next
   }
 }
 
+export async function updateBillItem(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const item = await billingService.updateBillItem(
+      tenantId,
+      req.params.id as string,
+      req.params.itemId as string,
+      req.body,
+    );
+    sendResponse({ res, message: 'Bill item updated successfully', data: item });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function removeBillItem(
   req: AuthenticatedRequest,
   res: Response,

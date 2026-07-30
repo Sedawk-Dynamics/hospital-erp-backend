@@ -10,6 +10,7 @@ import type {
   UpdateServiceTariffInput,
   CreateBillInput,
   AddBillItemInput,
+  UpdateBillItemInput,
   CreatePaymentInput,
   CreateRefundInput,
   ApplyDiscountInput,
@@ -927,6 +928,49 @@ export async function addBillItem(tenantId: string, billId: string, data: AddBil
 
   logger.info({ tenantId, billId, itemId: item.id }, 'Bill item added');
   return item;
+}
+
+// Front-desk edit of a draft bill's line — change any of description / qty /
+// unit price / discount / tax, then recompute the line and the bill totals.
+export async function updateBillItem(
+  tenantId: string,
+  billId: string,
+  itemId: string,
+  data: UpdateBillItemInput,
+) {
+  const bill = await prisma.bill.findFirst({ where: { id: billId, tenantId } });
+  if (!bill) throw AppError.notFound('Bill not found');
+  if (bill.status !== 'draft') throw AppError.badRequest('Can only edit items on draft bills');
+
+  const item = await prisma.billItem.findFirst({ where: { id: itemId, billId } });
+  if (!item) throw AppError.notFound('Bill item not found');
+
+  const quantity = data.quantity ?? item.quantity;
+  const unitPrice = data.unitPrice ?? Number(item.unitPrice);
+  const discountAmount = data.discount ?? Number(item.discountAmount);
+  const taxPercent = data.taxRate ?? Number(item.taxPercent);
+  const lineBeforeTax = quantity * unitPrice - discountAmount;
+  const taxAmount = lineBeforeTax * (taxPercent / 100);
+  const totalAmount = lineBeforeTax + taxAmount;
+  const discountPercent = unitPrice > 0 ? (discountAmount / (quantity * unitPrice)) * 100 : 0;
+
+  const updated = await prisma.billItem.update({
+    where: { id: itemId },
+    data: {
+      description: data.description ?? item.description,
+      quantity,
+      unitPrice,
+      discountPercent,
+      discountAmount,
+      taxPercent,
+      taxAmount,
+      totalAmount,
+    },
+  });
+
+  await recalculateBillTotals(billId);
+  logger.info({ tenantId, billId, itemId }, 'Bill item updated');
+  return updated;
 }
 
 export async function removeBillItem(tenantId: string, billId: string, itemId: string) {

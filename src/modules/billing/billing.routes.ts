@@ -17,6 +17,7 @@ import {
   removeIpChargeSchema,
   recordDoctorVisitSchema,
   removeBillItemSchema,
+  updateBillItemSchema,
   createPaymentSchema,
   createRefundSchema,
   applyDiscountSchema,
@@ -323,6 +324,14 @@ billingRoutes.patch(
   requirePermission('billing', 'update'),
   validate(setBillDiscountSchema),
   controller.setBillDiscount,
+);
+
+billingRoutes.patch(
+  '/:id/items/:itemId',
+  authenticate,
+  requirePermission('billing', 'update'),
+  validate(updateBillItemSchema),
+  controller.updateBillItem,
 );
 
 billingRoutes.delete(

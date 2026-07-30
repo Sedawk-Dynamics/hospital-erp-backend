@@ -117,6 +117,22 @@ export const removeBillItemSchema = z.object({
   }),
 });
 
+// Front-desk edit of a draft bill's line — change price/qty/discount/tax/label.
+// All fields optional (patch); unitPrice can be 0 to zero-out a charge.
+export const updateBillItemSchema = z.object({
+  body: z.object({
+    description: z.string().min(1, 'Description is required').max(500).optional(),
+    quantity: z.number().int().positive('Quantity must be positive').optional(),
+    unitPrice: z.number().min(0, 'Unit price cannot be negative').optional(),
+    discount: z.number().min(0).optional(),
+    taxRate: z.number().min(0).max(100).optional(),
+  }),
+  params: z.object({
+    id: z.string().uuid('Invalid bill ID'),
+    itemId: z.string().uuid('Invalid item ID'),
+  }),
+});
+
 export const createPaymentSchema = z.object({
   body: z.object({
     billId: z.string().uuid('Invalid bill ID'),
@@ -494,6 +510,7 @@ export type CreateServiceTariffInput = z.infer<typeof createServiceTariffSchema>
 export type UpdateServiceTariffInput = z.infer<typeof updateServiceTariffSchema>['body'];
 export type CreateBillInput = z.infer<typeof createBillSchema>['body'];
 export type AddBillItemInput = z.infer<typeof addBillItemSchema>['body'];
+export type UpdateBillItemInput = z.infer<typeof updateBillItemSchema>['body'];
 export type CreatePaymentInput = z.infer<typeof createPaymentSchema>['body'];
 export type CreateRefundInput = z.infer<typeof createRefundSchema>['body'];
 export type ApplyDiscountInput = z.infer<typeof applyDiscountSchema>['body'];
