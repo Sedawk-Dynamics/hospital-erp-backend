@@ -210,6 +210,7 @@ export async function createDrugMaster(
     data: {
       name: data.name,
       genericName: data.genericName ?? null,
+      saltComposition: (data as any).saltComposition ?? null,
       manufacturer: data.manufacturer ?? null,
       type: data.type ?? null,
       dosageForm: (data.dosageForm ?? null) as any,
@@ -310,6 +311,7 @@ export async function updateDrugMaster(
     data: {
       name,
       genericName,
+      saltComposition: (data as any).saltComposition !== undefined ? (data as any).saltComposition : undefined,
       manufacturer,
       type: data.type !== undefined ? data.type : undefined,
       dosageForm: data.dosageForm !== undefined ? (data.dosageForm as any) : undefined,

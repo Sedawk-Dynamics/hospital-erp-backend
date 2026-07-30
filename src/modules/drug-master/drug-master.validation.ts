@@ -45,7 +45,10 @@ export const drugMasterIdParamSchema = z.object({
 export const createDrugMasterSchema = z.object({
   body: z.object({
     name: z.string().min(1, 'Drug name is required').max(255),
+    // One or more generic/molecule names (comma-separated when multiple).
     genericName: z.string().max(500).optional().nullable(),
+    // Salt composition — a separate field from the generic name.
+    saltComposition: z.string().max(500).optional().nullable(),
     manufacturer: z.string().max(255).optional().nullable(),
     type: z.string().max(50).optional().nullable(),
     dosageForm: dosageFormEnum.optional().nullable(),
