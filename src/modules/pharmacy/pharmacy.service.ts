@@ -176,6 +176,10 @@ export async function findFormularyMatches(
       packSize: true,
       price: true,
       drugMasterId: true,
+      // Identity fields the inward review adopts onto a mapped line (read-only,
+      // DB-sourced): GTIN + HSN alongside strength/generic.
+      gtin: true,
+      hsnCode: true,
       drugBatches: {
         where: { isExpired: false, isRecalled: false, quantityInStock: { gt: 0 } },
         select: { quantityInStock: true },
