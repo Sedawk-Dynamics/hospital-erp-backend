@@ -61,6 +61,16 @@ patientRoutes.get(
   controller.findByUser,
 );
 
+// GLOBAL cross-hospital lookup by phone/ABHA (registered before literal subpaths
+// so it isn't shadowed by /:id). Patients are one person across the whole ERP —
+// this finds them so the desk pre-fills instead of re-registering.
+patientRoutes.get(
+  '/global-lookup',
+  authenticate,
+  requirePermission('patients', 'read'),
+  controller.globalLookup,
+);
+
 // Get patient by ID
 patientRoutes.get(
   '/:id',

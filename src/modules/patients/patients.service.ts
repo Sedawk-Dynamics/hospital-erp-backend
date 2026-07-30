@@ -575,6 +575,80 @@ export async function search(tenantId: string, query: SearchPatientsQuery) {
 }
 
 /**
+ * GLOBAL patient lookup — across EVERY hospital on the ERP (NOT tenant-scoped).
+ * A patient is one person: they can walk into any hospital and we just mint a
+ * new per-hospital MRN, never re-register their identity. Front desk calls this
+ * by phone (+ ABHA) BEFORE registering; if the person already exists anywhere,
+ * their demographics are pre-filled and the new record links to the same
+ * account holder (`userId`). Returns identity/demographic fields only — no
+ * clinical data — plus the hospitals where they're already registered.
+ */
+export async function globalLookup(params: { phone?: string; abha?: string }) {
+  const phone = params.phone?.trim();
+  const abha = params.abha?.trim();
+  if (!phone && !abha) return { found: false, patient: null, hospitals: [], count: 0 };
+
+  const or: any[] = [];
+  if (phone) {
+    const norm = normalizeAccountPhone(phone);
+    const variants = Array.from(new Set([phone, norm].filter(Boolean))) as string[];
+    or.push({ phone: { in: variants } });
+    // Also match via the shared account-holder User's phone (the global anchor).
+    or.push({ user: { phone: { in: variants } } });
+  }
+  if (abha) or.push({ abhaNumber: abha });
+
+  const rows = await prisma.patient.findMany({
+    where: { isActive: true, OR: or },
+    orderBy: { updatedAt: 'desc' },
+    take: 50,
+    select: {
+      id: true, tenantId: true, userId: true, isSelf: true, relationship: true,
+      firstName: true, lastName: true, dateOfBirth: true, gender: true, bloodGroup: true,
+      phone: true, email: true, addressLine1: true, city: true, state: true, country: true,
+      postalCode: true, maritalStatus: true, nationality: true, occupation: true,
+      abhaNumber: true, abhaAddress: true, idProofNumber: true,
+      tenant: { select: { id: true, name: true } },
+    },
+  });
+  if (!rows.length) return { found: false, patient: null, hospitals: [], count: 0 };
+
+  // Representative identity: prefer the account holder's own ('self') profile,
+  // else the most-recently-updated row.
+  const rep = rows.find((r) => r.isSelf) ?? rows[0];
+  const hospitals = Array.from(
+    new Map(rows.map((r) => [r.tenantId, r.tenant?.name ?? 'Hospital'])).entries(),
+  ).map(([id, name]) => ({ tenantId: id, name }));
+
+  return {
+    found: true,
+    userId: rep.userId,
+    patient: {
+      firstName: rep.firstName,
+      lastName: rep.lastName,
+      dateOfBirth: rep.dateOfBirth,
+      gender: rep.gender,
+      bloodGroup: rep.bloodGroup,
+      phone: rep.phone,
+      email: rep.email,
+      address: rep.addressLine1,
+      city: rep.city,
+      state: rep.state,
+      country: rep.country,
+      zipCode: rep.postalCode,
+      maritalStatus: rep.maritalStatus,
+      nationality: rep.nationality,
+      occupation: rep.occupation,
+      abhaNumber: rep.abhaNumber,
+      abhaAddress: rep.abhaAddress,
+      nationalId: rep.idProofNumber,
+    },
+    hospitals,
+    count: rows.length,
+  };
+}
+
+/**
  * Add an emergency contact to a patient.
  */
 export async function addEmergencyContact(patientId: string, data: AddEmergencyContactInput) {

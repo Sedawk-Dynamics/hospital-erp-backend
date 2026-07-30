@@ -79,6 +79,20 @@ export async function searchPatients(
   }
 }
 
+// Global (cross-hospital) lookup by phone/ABHA — find a person already on the
+// ERP so the desk pre-fills instead of re-registering. Not tenant-scoped.
+export async function globalLookup(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const result = await patientsService.globalLookup({
+      phone: (req.query.phone as string) || undefined,
+      abha: (req.query.abha as string) || undefined,
+    });
+    sendResponse({ res, message: 'Global patient lookup', data: result });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function addEmergencyContact(
   req: AuthenticatedRequest,
   res: Response,
