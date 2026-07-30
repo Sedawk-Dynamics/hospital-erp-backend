@@ -1662,59 +1662,142 @@ async function getRoomCharges(
 ): Promise<ChargeRow[]> {
   const admissions = await prisma.admission.findMany({
     where: { tenantId, patientId },
-    include: {
-      bed: { select: { bedNumber: true, bedType: true } },
-      ward: { select: { name: true, dailyCharge: true } },
+    select: {
+      id: true,
+      visitId: true,
+      admissionDate: true,
+      dischargeDate: true,
+      status: true,
+      bedId: true,
+      wardId: true,
     },
     orderBy: { admissionDate: 'desc' },
     take: 20,
   });
+  if (admissions.length === 0) return [];
 
-  // Per-day room rate from ServiceTariff (category=room). Match by bedType
-  // as serviceCode (e.g. "general", "icu", "private") — fallback to first
-  // active room tariff.
-  const roomTariffs = await prisma.serviceTariff.findMany({
-    where: { tenantId, category: 'room', isActive: true },
+  // Bed-occupancy history: every approved bed/ward move for these stays. Each
+  // transfer is a boundary between one bed's charges and the next, so a patient
+  // who moves beds mid-stay is billed each bed for the days it was actually
+  // occupied — NOT the current bed's rate applied retroactively to the whole stay.
+  const transfers = await prisma.patientTransfer.findMany({
+    where: {
+      tenantId,
+      visitId: { in: admissions.map((a) => a.visitId) },
+      status: { in: ['approved', 'completed'] as any },
+      transferType: { in: ['bed_to_bed', 'ward_to_ward'] as any },
+    },
+    select: {
+      id: true,
+      visitId: true,
+      fromBedId: true,
+      toBedId: true,
+      fromWardId: true,
+      toWardId: true,
+      createdAt: true,
+    },
+    orderBy: { createdAt: 'asc' },
   });
+  const transfersByVisit = new Map<string, typeof transfers>();
+  for (const t of transfers) {
+    const list = transfersByVisit.get(t.visitId) ?? [];
+    list.push(t);
+    transfersByVisit.set(t.visitId, list);
+  }
 
-  return admissions.map((adm) => {
-    const start = new Date(adm.admissionDate);
-    const end = adm.dischargeDate ? new Date(adm.dischargeDate) : new Date();
-    // Calendar-day billing: a new day accrues at IST midnight (12 AM), not per
-    // rolling 24h. Count the distinct IST calendar dates the stay touches
-    // (inclusive) — admission day = day 1, then +1 each midnight crossed.
-    const days = Math.max(1, istDayNumber(end) - istDayNumber(start) + 1);
+  // Resolve bed/ward details for every bed/ward that appears anywhere in the
+  // timeline (current + historical) — a past bed may differ from the current one.
+  const bedIds = new Set<string>();
+  const wardIds = new Set<string>();
+  for (const a of admissions) {
+    if (a.bedId) bedIds.add(a.bedId);
+    if (a.wardId) wardIds.add(a.wardId);
+  }
+  for (const t of transfers) {
+    for (const b of [t.fromBedId, t.toBedId]) if (b) bedIds.add(b);
+    for (const w of [t.fromWardId, t.toWardId]) if (w) wardIds.add(w);
+  }
+  const [beds, wards, roomTariffs] = await Promise.all([
+    bedIds.size
+      ? prisma.bed.findMany({ where: { id: { in: [...bedIds] } }, select: { id: true, bedNumber: true, bedType: true } })
+      : Promise.resolve([]),
+    wardIds.size
+      ? prisma.ward.findMany({ where: { id: { in: [...wardIds] } }, select: { id: true, name: true, dailyCharge: true } })
+      : Promise.resolve([]),
+    // Per-day room rate from ServiceTariff (category=room), matched by bedType.
+    prisma.serviceTariff.findMany({ where: { tenantId, category: 'room', isActive: true } }),
+  ]);
+  const bedById = new Map(beds.map((b) => [b.id, b]));
+  const wardById = new Map(wards.map((w) => [w.id, w]));
 
-    const bedType = adm.bed?.bedType ?? null;
+  // The ward's admin-set per-day charge wins; otherwise the room ServiceTariff
+  // matched by the bed's type (fallback: first active room tariff).
+  const rateFor = (bedId: string | null, wardId: string | null): number => {
+    const wardRate = toNumber((wardId ? wardById.get(wardId)?.dailyCharge : null) ?? 0);
+    if (wardRate > 0) return wardRate;
+    const bedType = bedId ? bedById.get(bedId)?.bedType ?? null : null;
     const tariff =
       roomTariffs.find((t) => (t.serviceCode ?? '').toLowerCase() === String(bedType ?? '').toLowerCase()) ||
       roomTariffs[0];
+    return toNumber(tariff?.basePrice ?? 0);
+  };
 
-    // The ward's admin-set per-day bed charge takes precedence; otherwise fall
-    // back to the room ServiceTariff (matched by bed type).
-    const wardRate = toNumber(adm.ward?.dailyCharge ?? 0);
-    const unit = wardRate > 0 ? wardRate : toNumber(tariff?.basePrice ?? 0);
-    const total = unit * days;
-    const wardName = adm.ward?.name ?? 'Ward';
-    const bedNumber = adm.bed?.bedNumber ?? '-';
-    const billed = billedIndex.get(`admission:${adm.id}`);
-    return {
-      source: 'room' as const,
-      referenceType: 'admission',
-      referenceId: adm.id,
-      description: `Room (${wardName} / Bed ${bedNumber}) — ${days} day${days === 1 ? '' : 's'}`,
-      quantity: days,
-      unitPrice: unit,
-      totalAmount: total,
-      taxRate: CHARGE_TAX_RATES.room,
-      category: 'room',
-      occurredAt: formatDateTimeIST(adm.admissionDate),
-      status: adm.status,
-      alreadyBilled: !!billed,
-      billItemId: billed?.billItemId,
-      billId: billed?.billId,
-    };
-  });
+  type Seg = { bedId: string | null; wardId: string | null; startDay: number; startAt: Date; refId: string };
+  const rows: ChargeRow[] = [];
+
+  for (const adm of admissions) {
+    const tlist = transfersByVisit.get(adm.visitId) ?? [];
+    const end = adm.dischargeDate ? new Date(adm.dischargeDate) : new Date();
+    const endDay = istDayNumber(end);
+    const admDay = istDayNumber(adm.admissionDate);
+
+    // Ordered occupancy segments. Segment 0 = the bed held at admission (the
+    // first transfer's `from`, or the current bed when there were no moves).
+    // Each subsequent transfer opens a new segment at its timestamp; its own
+    // id keys the charge so it bills — and marks billed — independently.
+    const segs: Seg[] = [];
+    if (tlist.length === 0) {
+      segs.push({ bedId: adm.bedId, wardId: adm.wardId, startDay: admDay, startAt: adm.admissionDate, refId: adm.id });
+    } else {
+      segs.push({ bedId: tlist[0].fromBedId, wardId: tlist[0].fromWardId, startDay: admDay, startAt: adm.admissionDate, refId: adm.id });
+      for (const t of tlist) {
+        segs.push({ bedId: t.toBedId, wardId: t.toWardId, startDay: istDayNumber(t.createdAt), startAt: t.createdAt, refId: `${adm.id}:${t.id}` });
+      }
+    }
+
+    segs.forEach((seg, i) => {
+      // Calendar-day allocation at IST midnight: a segment owns the days from its
+      // start up to (but not including) the next segment's start — so the day of a
+      // transfer belongs to the new bed. The last segment runs inclusively to
+      // discharge/now. Days with no bed assigned aren't billable → skipped.
+      const nextStart = i < segs.length - 1 ? segs[i + 1].startDay : null;
+      const days = nextStart !== null ? nextStart - seg.startDay : endDay - seg.startDay + 1;
+      if (days <= 0 || !seg.bedId) return;
+
+      const unit = rateFor(seg.bedId, seg.wardId);
+      const wardName = (seg.wardId ? wardById.get(seg.wardId)?.name : null) ?? 'Ward';
+      const bedNumber = (seg.bedId ? bedById.get(seg.bedId)?.bedNumber : null) ?? '-';
+      const billed = billedIndex.get(`admission:${seg.refId}`);
+      rows.push({
+        source: 'room' as const,
+        referenceType: 'admission',
+        referenceId: seg.refId,
+        description: `Room (${wardName} / Bed ${bedNumber}) — ${days} day${days === 1 ? '' : 's'}`,
+        quantity: days,
+        unitPrice: unit,
+        totalAmount: unit * days,
+        taxRate: CHARGE_TAX_RATES.room,
+        category: 'room',
+        occurredAt: formatDateTimeIST(seg.startAt),
+        status: adm.status,
+        alreadyBilled: !!billed,
+        billItemId: billed?.billItemId,
+        billId: billed?.billId,
+      });
+    });
+  }
+
+  return rows;
 }
 
 /**

@@ -841,7 +841,7 @@ export async function assignAdmissionBed(
 ) {
   const admission = await prisma.admission.findFirst({
     where: { id, tenantId },
-    select: { id: true, patientId: true, bedId: true, status: true },
+    select: { id: true, patientId: true, visitId: true, bedId: true, wardId: true, status: true },
   });
   if (!admission) throw AppError.notFound('Admission not found');
   if (admission.status === 'discharged') {
@@ -878,6 +878,26 @@ export async function assignAdmissionBed(
       await tx.bed.update({
         where: { id: data.bedId },
         data: { status: 'occupied', currentPatientId: admission.patientId },
+      });
+    }
+    // Record the bed/ward move as a PatientTransfer so per-bed billing can
+    // reconstruct the occupancy timeline (each bed billed for the days it was
+    // actually occupied). Only when the bed genuinely changes — a no-op
+    // re-assign to the same bed writes nothing. Marked approved (instant move);
+    // createdAt is the boundary time between the old and new bed's charges.
+    if (admission.bedId !== data.bedId) {
+      await tx.patientTransfer.create({
+        data: {
+          tenantId,
+          patientId: admission.patientId,
+          visitId: admission.visitId,
+          transferType: newWardId !== admission.wardId ? 'ward_to_ward' : 'bed_to_bed',
+          fromBedId: admission.bedId,
+          toBedId: data.bedId,
+          fromWardId: admission.wardId,
+          toWardId: newWardId,
+          status: 'approved',
+        },
       });
     }
     return tx.admission.update({
