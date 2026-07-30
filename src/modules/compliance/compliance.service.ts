@@ -628,20 +628,36 @@ export async function createOTRequest(tenantId: string, userId: string, data: Cr
     throw AppError.notFound('Patient not found');
   }
 
-  // Visit is normally required (legacy schema) but in EmedHub the OT booking
-  // can predate a Visit. If the caller didn't pass one, attach the most-recent
-  // visit for this patient; otherwise we error out.
+  // OT is in-patient only: the patient must be currently admitted (every
+  // admission is IP / Emergency / Day Care) so the surgery charge routes onto
+  // their running IP bill (ledger). OP / walk-in patients cannot be booked.
+  const activeAdmission = await prisma.admission.findFirst({
+    where: { tenantId, patientId: data.patientId, status: 'admitted' },
+    orderBy: { admissionDate: 'desc' },
+    select: { id: true, visitId: true },
+  });
+  if (!activeAdmission) {
+    throw AppError.badRequest(
+      'Only admitted patients (IP / Emergency / Day Care) can be booked for OT',
+    );
+  }
+
+  // Tie the OT to the admission's visit when the caller didn't pass one, so the
+  // surgery sits on the same in-patient episode (and its bill hits the ledger).
   let visitId = data.visitId;
   if (!visitId) {
-    const latestVisit = await prisma.visit.findFirst({
-      where: { tenantId, patientId: data.patientId },
-      orderBy: { visitDate: 'desc' },
-      select: { id: true },
-    });
-    if (!latestVisit) {
-      throw AppError.badRequest('No active visit found for patient — please create a visit first');
+    visitId = activeAdmission.visitId;
+    if (!visitId) {
+      const latestVisit = await prisma.visit.findFirst({
+        where: { tenantId, patientId: data.patientId },
+        orderBy: { visitDate: 'desc' },
+        select: { id: true },
+      });
+      if (!latestVisit) {
+        throw AppError.badRequest('No active visit found for patient — please create a visit first');
+      }
+      visitId = latestVisit.id;
     }
-    visitId = latestVisit.id;
   } else {
     const visit = await prisma.visit.findFirst({ where: { id: visitId, tenantId } });
     if (!visit) throw AppError.notFound('Visit not found');
