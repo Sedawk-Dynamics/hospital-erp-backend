@@ -71,6 +71,23 @@ patientRoutes.get(
   controller.globalLookup,
 );
 
+// GLOBAL patient search for the pickers — finds a person at ANY hospital so the
+// appointment/admit desk can select them (and provision a local MRN on pick).
+patientRoutes.get(
+  '/global-search',
+  authenticate,
+  requirePermission('patients', 'read'),
+  controller.globalSearch,
+);
+
+// Provision a local record (new MRN) for a cross-hospital patient the desk picked.
+patientRoutes.post(
+  '/provision-local',
+  authenticate,
+  requirePermission('patients', 'create'),
+  controller.provisionLocal,
+);
+
 // Get patient by ID
 patientRoutes.get(
   '/:id',

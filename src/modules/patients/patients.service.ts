@@ -678,6 +678,151 @@ export async function globalLookup(params: { phone?: string; abha?: string }) {
 }
 
 /**
+ * GLOBAL patient search for the pickers (new appointment / admit / etc.). A
+ * patient is one person across the whole ERP, so this searches EVERY hospital by
+ * name / phone(last-10) / MRN / ABHA, then dedupes to one row PER PERSON. Each
+ * result says whether the person already has a record IN THE CALLER'S hospital
+ * (`localPatientId`), or exists only elsewhere (`isLocal:false`) — in which case
+ * the picker provisions a local MRN on selection. No re-registration.
+ */
+export async function globalPatientSearch(tenantId: string, rawSearch: string) {
+  const q = rawSearch?.trim();
+  if (!q || q.length < 2) return [];
+
+  const or: any[] = [
+    { firstName: { contains: q, mode: 'insensitive' } },
+    { lastName: { contains: q, mode: 'insensitive' } },
+    { mrn: { contains: q, mode: 'insensitive' } },
+    { abhaNumber: { contains: q } },
+  ];
+  const parts = q.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    or.push({
+      AND: [
+        { firstName: { contains: parts[0], mode: 'insensitive' } },
+        { lastName: { contains: parts.slice(1).join(' '), mode: 'insensitive' } },
+      ],
+    });
+  }
+  const digits = q.replace(/\D/g, '');
+  if (digits.length >= 7) {
+    const last10 = digits.slice(-10);
+    const idRows = await prisma.$queryRaw<{ id: string }[]>`
+      SELECT p.id FROM patients p LEFT JOIN users u ON u.id = p.user_id
+      WHERE p.is_active = true AND (
+        right(regexp_replace(coalesce(p.phone, ''), '[^0-9]', '', 'g'), 10) = ${last10}
+        OR right(regexp_replace(coalesce(u.phone, ''), '[^0-9]', '', 'g'), 10) = ${last10}
+      ) LIMIT 200`;
+    if (idRows.length) or.push({ id: { in: idRows.map((r) => r.id) } });
+  }
+
+  const rows = await prisma.patient.findMany({
+    where: { isActive: true, OR: or },
+    orderBy: { updatedAt: 'desc' },
+    take: 80,
+    select: {
+      id: true, tenantId: true, userId: true, mrn: true, firstName: true, lastName: true,
+      dateOfBirth: true, gender: true, phone: true, abhaNumber: true,
+      tenant: { select: { name: true } },
+    },
+  });
+
+  // One entry per PERSON: userId > ABHA > phone-last10 > row id.
+  const personKey = (r: (typeof rows)[number]) =>
+    r.userId ? `u:${r.userId}` : r.abhaNumber ? `a:${r.abhaNumber}` : r.phone ? `p:${phoneLast10(r.phone)}` : `id:${r.id}`;
+
+  const localByPerson = new Map<string, string>();
+  for (const r of rows) if (r.tenantId === tenantId) localByPerson.set(personKey(r), r.id);
+
+  const seen = new Set<string>();
+  const out: any[] = [];
+  for (const r of rows) {
+    const k = personKey(r);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const localId = localByPerson.get(k) ?? null;
+    out.push({
+      sourcePatientId: r.id,
+      localPatientId: localId,
+      isLocal: !!localId,
+      firstName: r.firstName,
+      lastName: r.lastName,
+      dateOfBirth: r.dateOfBirth,
+      gender: r.gender,
+      phone: r.phone,
+      mrn: localId ? localByPerson.get(k) : r.mrn,
+      hospital: r.tenant?.name ?? 'Hospital',
+    });
+    if (out.length >= 25) break;
+  }
+  return out;
+}
+
+/**
+ * Provision a LOCAL patient record (new MRN in the caller's hospital) for a
+ * person who exists elsewhere on the ERP — copying their identity and linking to
+ * the same account holder. Idempotent: if they already have a local record, it's
+ * returned instead of creating a duplicate. This is what the appointment/admit
+ * pickers call when the desk selects a cross-hospital patient.
+ */
+export async function provisionLocalPatient(tenantId: string, sourcePatientId: string) {
+  const src = await prisma.patient.findUnique({
+    where: { id: sourcePatientId },
+    select: {
+      id: true, tenantId: true, userId: true, firstName: true, lastName: true,
+      dateOfBirth: true, gender: true, bloodGroup: true, phone: true, email: true,
+      addressLine1: true, city: true, state: true, country: true, postalCode: true,
+      maritalStatus: true, nationality: true, occupation: true,
+      abhaNumber: true, idProofNumber: true,
+    },
+  });
+  if (!src) throw AppError.notFound('Source patient not found');
+
+  // Already registered here? Return the existing local row (match by account
+  // holder / ABHA / phone-last10) — never create a duplicate.
+  const orExisting: any[] = [];
+  if (src.userId) orExisting.push({ userId: src.userId });
+  if (src.abhaNumber) orExisting.push({ abhaNumber: src.abhaNumber });
+  if (orExisting.length || src.phone) {
+    if (src.phone) {
+      const last10 = phoneLast10(src.phone);
+      const idRows = await prisma.$queryRaw<{ id: string }[]>`
+        SELECT id FROM patients WHERE tenant_id = ${tenantId} AND is_active = true
+          AND right(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), 10) = ${last10}
+        LIMIT 5`;
+      if (idRows.length) orExisting.push({ id: { in: idRows.map((r) => r.id) } });
+    }
+    if (orExisting.length) {
+      const existing = await prisma.patient.findFirst({ where: { tenantId, isActive: true, OR: orExisting } });
+      if (existing) return existing;
+    }
+  }
+
+  // Otherwise create a fresh local record (new MRN), linked to the same account
+  // holder (userId carries over → shared identity), no re-entry needed.
+  return create(tenantId, {
+    userId: src.userId ?? undefined,
+    firstName: src.firstName,
+    lastName: src.lastName ?? undefined,
+    dateOfBirth: src.dateOfBirth ? src.dateOfBirth.toISOString() : undefined,
+    gender: (src.gender as string) ?? undefined,
+    bloodGroup: src.bloodGroup ?? undefined,
+    phone: src.phone ?? undefined,
+    email: src.email ?? undefined,
+    address: src.addressLine1 ?? undefined,
+    city: src.city ?? undefined,
+    state: src.state ?? undefined,
+    country: src.country ?? undefined,
+    zipCode: src.postalCode ?? undefined,
+    maritalStatus: src.maritalStatus ?? undefined,
+    nationality: src.nationality ?? undefined,
+    occupation: src.occupation ?? undefined,
+    abhaNumber: src.abhaNumber ?? undefined,
+    nationalId: src.idProofNumber ?? undefined,
+  } as CreatePatientInput);
+}
+
+/**
  * UNIFIED cross-hospital patient history. A patient is one person across the
  * whole ERP; this aggregates their records from EVERY hospital they've visited
  * (same person = linked by account-holder userId / phone-last10 / ABHA) into one

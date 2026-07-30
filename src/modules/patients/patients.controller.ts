@@ -93,6 +93,33 @@ export async function globalLookup(req: AuthenticatedRequest, res: Response, nex
   }
 }
 
+// Global (cross-hospital) patient search for the pickers — finds a person at any
+// hospital; each result flags whether they already have a local record here.
+export async function globalSearch(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const results = await patientsService.globalPatientSearch(
+      req.user!.tenantId,
+      (req.query.search as string) || '',
+    );
+    sendResponse({ res, message: 'Global patient search', data: results });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Provision a local record (new MRN) for a cross-hospital patient the desk picked.
+export async function provisionLocal(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const patient = await patientsService.provisionLocalPatient(
+      req.user!.tenantId,
+      req.body.sourcePatientId as string,
+    );
+    sendResponse({ res, statusCode: 201, message: 'Local patient record ready', data: patient });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // Unified cross-hospital history for a patient (read-only, aggregates every
 // hospital the same person has visited).
 export async function globalHistory(req: AuthenticatedRequest, res: Response, next: NextFunction) {
