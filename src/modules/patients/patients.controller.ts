@@ -93,6 +93,17 @@ export async function globalLookup(req: AuthenticatedRequest, res: Response, nex
   }
 }
 
+// Unified cross-hospital history for a patient (read-only, aggregates every
+// hospital the same person has visited).
+export async function globalHistory(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await patientsService.getGlobalPatientHistory(req.user!.tenantId, req.params.id as string);
+    sendResponse({ res, message: 'Unified patient history', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function addEmergencyContact(
   req: AuthenticatedRequest,
   res: Response,

@@ -133,3 +133,12 @@ patientRoutes.get(
   validate(patientIdParamSchema),
   controller.getVisitHistory,
 );
+
+// Unified cross-hospital history (aggregates every hospital this person visited)
+patientRoutes.get(
+  '/:id/global-history',
+  authenticate,
+  requirePermission('patients', 'read'),
+  validate(patientIdParamSchema),
+  controller.globalHistory,
+);

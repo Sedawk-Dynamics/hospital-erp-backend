@@ -8,6 +8,7 @@ import { TEMP_MRN_PREFIX } from '../../shared/temporary-patient';
 import {
   AUTO_ACCOUNT_EMAIL_DOMAIN,
   normalizeAccountPhone,
+  phoneLast10,
   placeholderAccountEmail,
 } from '../../shared/account-holder';
 import type {
@@ -236,10 +237,17 @@ export async function create(tenantId: string, data: CreatePatientInput) {
     : {};
 
   if (data.phone) {
-    const existingByPhone = await prisma.patient.findFirst({
-      where: { tenantId, phone: data.phone, ...exclusionFilter },
-    });
-    if (existingByPhone) {
+    // Compare on the last 10 digits so +91XXXXXXXXXX and XXXXXXXXXX collide as
+    // one number; still allow the account holder's own family to share a phone.
+    const last10 = phoneLast10(data.phone);
+    const rows = await prisma.$queryRaw<{ id: string; user_id: string | null }[]>`
+      SELECT id, user_id FROM patients
+      WHERE tenant_id = ${tenantId}
+        AND right(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), 10) = ${last10}
+      LIMIT 10
+    `;
+    const clash = rows.find((r) => !data.userId || r.user_id !== data.userId);
+    if (clash) {
       throw AppError.conflict('A patient with this phone number already exists');
     }
   }
@@ -328,10 +336,18 @@ export async function findByUser(userId: string, tenantId?: string) {
  */
 async function patientIdsByPhoneDigits(tenantId: string, digits: string): Promise<string[]> {
   if (digits.length < 3) return [];
+  // Two matchers, so +91XXXXXXXXXX and XXXXXXXXXX (and 0-prefixed) are the SAME
+  // number regardless of which side carries the country code:
+  //   • substring on the normalised digits (partial typing), AND
+  //   • last-10-digit equality once a full mobile number is entered.
+  const last10 = digits.slice(-10);
   const rows = await prisma.$queryRaw<{ id: string }[]>`
     SELECT id FROM patients
     WHERE tenant_id = ${tenantId}
-      AND regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g') LIKE ${'%' + digits + '%'}
+      AND (
+        regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g') LIKE ${'%' + digits + '%'}
+        OR (${digits.length >= 10} AND right(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), 10) = ${last10})
+      )
     LIMIT 500
   `;
   return rows.map((r) => r.id);
@@ -590,13 +606,26 @@ export async function globalLookup(params: { phone?: string; abha?: string }) {
 
   const or: any[] = [];
   if (phone) {
-    const norm = normalizeAccountPhone(phone);
-    const variants = Array.from(new Set([phone, norm].filter(Boolean))) as string[];
-    or.push({ phone: { in: variants } });
-    // Also match via the shared account-holder User's phone (the global anchor).
-    or.push({ user: { phone: { in: variants } } });
+    // Match on the LAST 10 DIGITS so +91XXXXXXXXXX and XXXXXXXXXX are the same
+    // number — on the patient's own phone OR the linked account-holder's phone.
+    const last10 = phoneLast10(phone);
+    if (last10.length >= 7) {
+      const idRows = await prisma.$queryRaw<{ id: string }[]>`
+        SELECT p.id FROM patients p
+        LEFT JOIN users u ON u.id = p.user_id
+        WHERE p.is_active = true
+          AND (
+            right(regexp_replace(coalesce(p.phone, ''), '[^0-9]', '', 'g'), 10) = ${last10}
+            OR right(regexp_replace(coalesce(u.phone, ''), '[^0-9]', '', 'g'), 10) = ${last10}
+          )
+        LIMIT 200
+      `;
+      const ids = idRows.map((r) => r.id);
+      if (ids.length) or.push({ id: { in: ids } });
+    }
   }
   if (abha) or.push({ abhaNumber: abha });
+  if (!or.length) return { found: false, patient: null, hospitals: [], count: 0 };
 
   const rows = await prisma.patient.findMany({
     where: { isActive: true, OR: or },
@@ -645,6 +674,125 @@ export async function globalLookup(params: { phone?: string; abha?: string }) {
     },
     hospitals,
     count: rows.length,
+  };
+}
+
+/**
+ * UNIFIED cross-hospital patient history. A patient is one person across the
+ * whole ERP; this aggregates their records from EVERY hospital they've visited
+ * (same person = linked by account-holder userId / phone-last10 / ABHA) into one
+ * read-only timeline, each row tagged with the hospital it came from. This is a
+ * deliberate cross-tenant READ (writes stay tenant-scoped). The caller must hold
+ * the patient in their own tenant + patients:read to reach it.
+ */
+export async function getGlobalPatientHistory(tenantId: string, patientId: string) {
+  const base = await prisma.patient.findFirst({
+    where: { id: patientId, tenantId },
+    select: {
+      id: true, userId: true, phone: true, abhaNumber: true,
+      firstName: true, lastName: true, dateOfBirth: true, gender: true,
+    },
+  });
+  if (!base) throw AppError.notFound('Patient not found');
+
+  // Resolve every linked Patient row across ALL hospitals (the same human).
+  const orConds: any[] = [];
+  if (base.userId) orConds.push({ userId: base.userId });
+  if (base.abhaNumber) orConds.push({ abhaNumber: base.abhaNumber });
+  if (base.phone) {
+    const last10 = phoneLast10(base.phone);
+    if (last10.length >= 7) {
+      const rows = await prisma.$queryRaw<{ id: string }[]>`
+        SELECT p.id FROM patients p LEFT JOIN users u ON u.id = p.user_id
+        WHERE p.is_active = true AND (
+          right(regexp_replace(coalesce(p.phone, ''), '[^0-9]', '', 'g'), 10) = ${last10}
+          OR right(regexp_replace(coalesce(u.phone, ''), '[^0-9]', '', 'g'), 10) = ${last10}
+        ) LIMIT 200`;
+      const ids = rows.map((r) => r.id);
+      if (ids.length) orConds.push({ id: { in: ids } });
+    }
+  }
+  const linked = await prisma.patient.findMany({
+    where: orConds.length ? { OR: [{ id: patientId }, ...orConds] } : { id: patientId },
+    select: { id: true, tenantId: true, mrn: true, tenant: { select: { name: true } } },
+  });
+  const idList = linked.map((l) => l.id);
+  const byId = new Map(linked.map((l) => [l.id, l]));
+  const hosp = (pid: string) => byId.get(pid)?.tenant?.name ?? 'Hospital';
+  const docName = (d: any) =>
+    d?.user ? `Dr. ${d.user.firstName ?? ''} ${d.user.lastName ?? ''}`.trim() : null;
+
+  const [visits, admissions, prescriptions, labOrders, imaging, bills] = await Promise.all([
+    prisma.visit.findMany({
+      where: { patientId: { in: idList } },
+      include: { doctor: { include: { user: { select: { firstName: true, lastName: true } } } } },
+      orderBy: { visitDate: 'desc' }, take: 40,
+    }),
+    prisma.admission.findMany({
+      where: { patientId: { in: idList } },
+      include: {
+        ward: { select: { name: true } }, bed: { select: { bedNumber: true } },
+        doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
+      },
+      orderBy: { admissionDate: 'desc' }, take: 40,
+    }),
+    prisma.prescription.findMany({
+      where: { patientId: { in: idList } },
+      include: {
+        doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
+        _count: { select: { prescriptionItems: true } },
+      },
+      orderBy: { createdAt: 'desc' }, take: 40,
+    }),
+    prisma.labOrder.findMany({
+      where: { patientId: { in: idList } },
+      include: { labOrderItems: { include: { test: { select: { testName: true } } } } },
+      orderBy: { createdAt: 'desc' }, take: 40,
+    }),
+    prisma.imagingRequest.findMany({
+      where: { patientId: { in: idList } },
+      orderBy: { createdAt: 'desc' }, take: 40,
+    }),
+    prisma.bill.findMany({
+      where: { patientId: { in: idList }, status: { not: 'cancelled' } },
+      orderBy: { createdAt: 'desc' }, take: 60,
+    }),
+  ]);
+
+  return {
+    person: {
+      firstName: base.firstName, lastName: base.lastName,
+      dateOfBirth: base.dateOfBirth, gender: base.gender,
+    },
+    hospitals: linked.map((l) => ({
+      tenantId: l.tenantId, name: l.tenant?.name ?? 'Hospital', mrn: l.mrn,
+      isCurrent: l.tenantId === tenantId,
+    })),
+    visits: visits.map((v) => ({
+      hospital: hosp(v.patientId), date: v.visitDate, type: v.visitType,
+      status: v.status, chiefComplaint: v.chiefComplaint, doctor: docName((v as any).doctor),
+    })),
+    admissions: admissions.map((a) => ({
+      hospital: hosp(a.patientId), admittedAt: a.admissionDate, dischargedAt: a.dischargeDate,
+      status: a.status, ward: (a as any).ward?.name ?? null, bed: (a as any).bed?.bedNumber ?? null,
+      doctor: docName((a as any).doctor),
+    })),
+    prescriptions: prescriptions.map((p) => ({
+      hospital: hosp(p.patientId), date: p.createdAt, status: p.status,
+      doctor: docName((p as any).doctor), items: (p as any)._count?.prescriptionItems ?? 0,
+    })),
+    labOrders: labOrders.map((o) => ({
+      hospital: hosp(o.patientId), date: o.createdAt, status: o.status,
+      tests: (o as any).labOrderItems.map((i: any) => i.test?.testName).filter(Boolean),
+    })),
+    imaging: imaging.map((r) => ({
+      hospital: hosp(r.patientId), date: r.createdAt,
+      modality: (r as any).imagingType, bodyPart: (r as any).bodyPart, status: r.status,
+    })),
+    bills: bills.map((b) => ({
+      hospital: hosp(b.patientId), billNumber: b.billNumber, date: (b as any).billDate ?? b.createdAt,
+      status: b.status, total: Number(b.totalAmount), paid: Number(b.amountPaid), balance: Number(b.balanceDue),
+    })),
   };
 }
 
