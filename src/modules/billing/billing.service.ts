@@ -4,7 +4,7 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
-import { getISTDateStr, formatDateTimeIST } from '../../shared/date.utils';
+import { getISTDateStr, formatDateTimeIST, istDayNumber } from '../../shared/date.utils';
 import type {
   CreateServiceTariffInput,
   UpdateServiceTariffInput,
@@ -1680,7 +1680,10 @@ async function getRoomCharges(
   return admissions.map((adm) => {
     const start = new Date(adm.admissionDate);
     const end = adm.dischargeDate ? new Date(adm.dischargeDate) : new Date();
-    const days = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)));
+    // Calendar-day billing: a new day accrues at IST midnight (12 AM), not per
+    // rolling 24h. Count the distinct IST calendar dates the stay touches
+    // (inclusive) — admission day = day 1, then +1 each midnight crossed.
+    const days = Math.max(1, istDayNumber(end) - istDayNumber(start) + 1);
 
     const bedType = adm.bed?.bedType ?? null;
     const tariff =

@@ -37,6 +37,20 @@ export function formatDateTimeIST(date: Date | string): string {
   return `${day}/${month}/${year} ${hours}:${minutes}`;
 }
 
+/**
+ * Integer index of a date's IST *calendar day* (days since the Unix epoch,
+ * counted in the Asia/Kolkata timezone). Two timestamps on the same IST date
+ * share the same number; each IST midnight increments it by one. Used for
+ * calendar-day billing (e.g. room/bed charges that add a day at 12 AM IST).
+ */
+export function istDayNumber(date: Date | string): number {
+  const d = typeof date === 'string' ? new Date(date) : date;
+  // 'en-CA' yields YYYY-MM-DD; formatting in IST gives the IST calendar date.
+  const ymd = d.toLocaleDateString('en-CA', { timeZone: IST_TIMEZONE });
+  const [y, m, day] = ymd.split('-').map(Number);
+  return Math.floor(Date.UTC(y, m - 1, day) / 86_400_000);
+}
+
 /** Get YYYYMMDD string in IST (for bill numbers, IDs, etc.) */
 export function getISTDateStr(): string {
   const ist = nowIST();
