@@ -1362,6 +1362,8 @@ interface ChargeRow {
   taxRate: number;
   category: string;
   occurredAt: string;
+  /** Raw ISO timestamp for chronological sorting (occurredAt is display-only). */
+  occurredAtISO: string;
   status: string;
   alreadyBilled: boolean;
   billItemId?: string;
@@ -1449,6 +1451,7 @@ async function getOtCharges(
       taxRate: CHARGE_TAX_RATES.ot,
       category: 'surgery',
       occurredAt: formatDateTimeIST(r.scheduledDate ?? r.createdAt),
+      occurredAtISO: new Date(r.scheduledDate ?? r.createdAt).toISOString(),
       status: r.status,
       alreadyBilled: !!billed,
       billItemId: billed?.billItemId,
@@ -1497,6 +1500,7 @@ async function getConsultationCharges(
         taxRate: CHARGE_TAX_RATES.consultation,
         category: 'consultation',
         occurredAt: formatDateTimeIST(v.visitDate),
+        occurredAtISO: new Date(v.visitDate).toISOString(),
         status: v.status,
         alreadyBilled: !!billed,
         billItemId: billed?.billItemId,
@@ -1545,6 +1549,7 @@ async function getLabCharges(
         taxRate: CHARGE_TAX_RATES.lab,
         category: 'lab',
         occurredAt: formatDateTimeIST(order.createdAt),
+        occurredAtISO: new Date(order.createdAt).toISOString(),
         status: item.status,
         alreadyBilled: !!billed,
         billItemId: billed?.billItemId,
@@ -1596,6 +1601,7 @@ async function getPharmacyCharges(
       taxRate: CHARGE_TAX_RATES.pharmacy,
       category: 'pharmacy',
       occurredAt: formatDateTimeIST(r.dispensedAt),
+      occurredAtISO: new Date(r.dispensedAt).toISOString(),
       status: 'dispensed',
       alreadyBilled: !!billed,
       billItemId: billed?.billItemId,
@@ -1647,6 +1653,7 @@ async function getImagingCharges(
       taxRate,
       category: 'radiology',
       occurredAt: formatDateTimeIST(req.createdAt),
+      occurredAtISO: new Date(req.createdAt).toISOString(),
       status: req.status,
       alreadyBilled: !!billed,
       billItemId: billed?.billItemId,
@@ -1789,6 +1796,7 @@ async function getRoomCharges(
         taxRate: CHARGE_TAX_RATES.room,
         category: 'room',
         occurredAt: formatDateTimeIST(seg.startAt),
+        occurredAtISO: new Date(seg.startAt).toISOString(),
         status: adm.status,
         alreadyBilled: !!billed,
         billItemId: billed?.billItemId,
@@ -2724,7 +2732,9 @@ export async function getAdmissionLedger(tenantId: string, admissionId: string, 
       quantity: c.quantity, unitPrice: c.unitPrice, totalAmount: c.totalAmount,
       isReimbursable: null as any, isAutoPulled: true,
       addedByMe: false,
-      status: 'pending' as any, at: c.occurredAt,
+      // Sort on the raw ISO timestamp — c.occurredAt is a display string
+      // (dd/MM/yyyy HH:mm) that Date can't parse, which scrambled the order.
+      status: 'pending' as any, at: c.occurredAtISO,
     }));
   } catch { /* patient missing → no pending */ }
 
