@@ -11,7 +11,7 @@ import { getAvailableSlots } from '../appointments/appointments.service';
 // MRN Generation (mirrors patients.service.ts)
 // ────────────────────────────────────────────────────────────
 
-async function generateMRN(tenantId: string): Promise<string> {
+async function generateMRN(_tenantId?: string): Promise<string> {
   const today = new Date();
   const dateStr =
     today.getFullYear().toString() +
@@ -20,8 +20,9 @@ async function generateMRN(tenantId: string): Promise<string> {
 
   const prefix = `MRN-${dateStr}-`;
 
+  // MRN is GLOBAL (one person, one number ERP-wide) → count across all hospitals.
   const latestPatient = await prisma.patient.findFirst({
-    where: { tenantId, mrn: { startsWith: prefix } },
+    where: { mrn: { startsWith: prefix } },
     orderBy: { mrn: 'desc' },
     select: { mrn: true },
   });
@@ -34,10 +35,8 @@ async function generateMRN(tenantId: string): Promise<string> {
 
   const mrn = `${prefix}${nextNumber.toString().padStart(4, '0')}`;
 
-  const existing = await prisma.patient.findFirst({
-    where: { tenantId, mrn },
-  });
-  if (existing) return generateMRN(tenantId);
+  const existing = await prisma.patient.findFirst({ where: { mrn }, select: { id: true } });
+  if (existing) return generateMRN();
 
   return mrn;
 }
@@ -469,12 +468,29 @@ async function createPatientInTenant(userId: string, email: string, tenantId: st
   });
   if (!user) throw AppError.notFound('User not found');
 
-  const mrn = await generateMRN(tenantId);
+  // ONE global MRN per person: reuse this user's existing MRN (any hospital) so
+  // the number is the same everywhere; only mint a new one for a brand-new
+  // person. Guard the per-tenant unique index against a legacy MRN collision.
+  const existingMrn = await prisma.patient.findFirst({
+    where: {
+      OR: [{ userId }, ...(user.phone ? [{ phone: user.phone }] : [])],
+      NOT: { mrn: { startsWith: 'TEMP-' } },
+    },
+    orderBy: { createdAt: 'asc' },
+    select: { mrn: true },
+  });
+  let mrn = existingMrn?.mrn ?? null;
+  if (mrn) {
+    const clash = await prisma.patient.findFirst({ where: { tenantId, mrn }, select: { id: true } });
+    if (clash) mrn = null;
+  }
+  if (!mrn) mrn = await generateMRN(tenantId);
 
   const patient = await prisma.patient.create({
     data: {
       tenantId,
       mrn,
+      userId,
       firstName: user.firstName,
       lastName: user.lastName,
       email: user.email,

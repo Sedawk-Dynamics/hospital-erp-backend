@@ -25,7 +25,7 @@ import type {
  * Generate a unique MRN (Medical Record Number) for a tenant.
  * Format: MRN-YYYYMMDD-XXXX (e.g., MRN-20260307-0001)
  */
-export async function generateMRN(tenantId: string): Promise<string> {
+export async function generateMRN(_tenantId?: string): Promise<string> {
   const today = new Date();
   const dateStr =
     today.getFullYear().toString() +
@@ -34,12 +34,12 @@ export async function generateMRN(tenantId: string): Promise<string> {
 
   const prefix = `MRN-${dateStr}-`;
 
-  // Find the latest MRN created today for this tenant
+  // A patient is ONE person across the whole ERP → the MRN is GLOBAL. Count over
+  // every hospital (no tenant filter) so the number is unique platform-wide and
+  // the same person carries it wherever they go. (tenantId kept for call-site
+  // compatibility but no longer scopes the sequence.)
   const latestPatient = await prisma.patient.findFirst({
-    where: {
-      tenantId,
-      mrn: { startsWith: prefix },
-    },
+    where: { mrn: { startsWith: prefix } },
     orderBy: { mrn: 'desc' },
     select: { mrn: true },
   });
@@ -52,15 +52,9 @@ export async function generateMRN(tenantId: string): Promise<string> {
 
   const mrn = `${prefix}${nextNumber.toString().padStart(4, '0')}`;
 
-  // Verify uniqueness (race condition safety)
-  const existing = await prisma.patient.findFirst({
-    where: { tenantId, mrn },
-  });
-
-  if (existing) {
-    // Recurse to get next available number
-    return generateMRN(tenantId);
-  }
+  // Verify global uniqueness (race-condition safety).
+  const existing = await prisma.patient.findFirst({ where: { mrn }, select: { id: true } });
+  if (existing) return generateMRN();
 
   return mrn;
 }
@@ -196,9 +190,39 @@ async function resolveOrCreateAccountHolder(input: {
  * Phone/email duplicate checks are scoped to OTHER account-holders' patients
  * only — a user's own family members may legitimately share a phone or email.
  */
-export async function create(tenantId: string, data: CreatePatientInput) {
-  const mrn = await generateMRN(tenantId);
+/**
+ * The person's existing GLOBAL MRN, if they're already on the ERP anywhere —
+ * matched by account holder (userId), ABHA, or phone (last 10 digits). Returns
+ * their earliest real (non-TEMP) MRN so every hospital shares one number.
+ */
+async function resolveExistingGlobalMrn(p: {
+  userId?: string | null;
+  phone?: string | null;
+  abhaNumber?: string | null;
+}): Promise<string | null> {
+  const or: any[] = [];
+  if (p.userId) or.push({ userId: p.userId });
+  if (p.abhaNumber) or.push({ abhaNumber: p.abhaNumber });
+  if (p.phone) {
+    const last10 = phoneLast10(p.phone);
+    if (last10.length >= 7) {
+      const rows = await prisma.$queryRaw<{ id: string }[]>`
+        SELECT id FROM patients WHERE is_active = true
+          AND right(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), 10) = ${last10}
+        LIMIT 50`;
+      if (rows.length) or.push({ id: { in: rows.map((r) => r.id) } });
+    }
+  }
+  if (!or.length) return null;
+  const existing = await prisma.patient.findFirst({
+    where: { OR: or, NOT: { mrn: { startsWith: TEMP_MRN_PREFIX } } },
+    orderBy: { createdAt: 'asc' },
+    select: { mrn: true },
+  });
+  return existing?.mrn ?? null;
+}
 
+export async function create(tenantId: string, data: CreatePatientInput) {
   // Phone-driven account holder: resolve or auto-create unless the caller has
   // already pinned an explicit account (e.g. portal family-profile creation).
   if (!data.userId && data.phone) {
@@ -209,6 +233,24 @@ export async function create(tenantId: string, data: CreatePatientInput) {
       email: data.email || undefined,
     });
   }
+
+  // ONE global MRN per person: if this human is already on the ERP (by account
+  // holder / ABHA / phone-last10), reuse their existing MRN so every hospital
+  // shows the same number; otherwise mint a new global MRN. Existing patients
+  // keep whatever MRN they already have — nothing is rewritten here.
+  let mrn = await resolveExistingGlobalMrn({
+    userId: data.userId,
+    phone: data.phone,
+    abhaNumber: (data as any).abhaNumber,
+  });
+  // Guard the per-tenant unique index: a LEGACY per-tenant MRN could already
+  // belong to a different patient in THIS hospital — if so, mint a fresh global
+  // number instead of colliding.
+  if (mrn) {
+    const clash = await prisma.patient.findFirst({ where: { tenantId, mrn }, select: { id: true } });
+    if (clash) mrn = null;
+  }
+  if (!mrn) mrn = await generateMRN();
 
   // If linking to a user, verify the user exists
   if (data.userId) {
