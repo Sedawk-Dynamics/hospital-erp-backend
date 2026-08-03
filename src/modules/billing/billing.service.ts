@@ -2796,7 +2796,16 @@ export async function getAdmissionLedger(tenantId: string, admissionId: string, 
   const totalPending = r2(pending.reduce((s, l) => s + l.totalAmount, 0));
   const paid = r2(bills.reduce((s, b) => s + Number(b.amountPaid), 0));
   const insuranceCovered = r2(bills.reduce((s, b) => s + Number(b.insuranceCoveredAmount ?? 0), 0));
-  const grandTotal = r2(totalPosted + totalPending);
+
+  // A concession granted at the counter (PATCH /billing/:id/discount) is recorded
+  // on the BILL HEADER — `applyDiscount` writes bill.discountAmount and reduces
+  // bill.totalAmount, and never touches the line items. Summing item totals alone
+  // therefore ignored it completely: a stay billed 3,500 with a 500 concession and
+  // paid 3,000 in full still showed 500 outstanding here, blocked the deposit
+  // refund (which is capped by `refundable` below) and printed a wrong bill.
+  // Item-level tax is already inside item.totalAmount, so tax is NOT re-added.
+  const billDiscount = r2(bills.reduce((s, b) => s + Number(b.discountAmount ?? 0), 0));
+  const grandTotal = r2(Math.max(0, totalPosted + totalPending - billDiscount));
   const reimbursable = r2(posted.filter((l) => l.isReimbursable === true).reduce((s, l) => s + l.totalAmount, 0));
   const nonReimbursable = r2(posted.filter((l) => l.isReimbursable === false).reduce((s, l) => s + l.totalAmount, 0));
 
@@ -2828,6 +2837,8 @@ export async function getAdmissionLedger(tenantId: string, admissionId: string, 
     totals: {
       posted: totalPosted,
       pending: totalPending,
+      /** Bill-header concession already deducted from `grandTotal`. */
+      discount: billDiscount,
       grandTotal,
       paid,
       cashPaid,
@@ -3005,7 +3016,10 @@ export async function ensureAdmissionTpaLink(tenantId: string, userId: string, a
   const bills = await prisma.bill.findMany({
     where: { tenantId, admissionId, status: { not: 'cancelled' } },
     orderBy: { createdAt: 'asc' },
-    select: { id: true, status: true, billItems: { select: { totalAmount: true, isReimbursable: true } } },
+    select: {
+      id: true, status: true, totalAmount: true, discountAmount: true,
+      billItems: { select: { totalAmount: true, isReimbursable: true } },
+    },
   });
 
   const existingClaim = await prisma.insuranceClaim.findFirst({
@@ -3021,7 +3035,25 @@ export async function ensureAdmissionTpaLink(tenantId: string, userId: string, a
     : bills.find((b) => b.billItems.some((it) => Number(it.totalAmount) !== 0)) ?? bills[bills.length - 1] ?? null;
   if (!claimBill) return { policy, claim: existingClaim, connected: true };
 
-  const claimAmount = r2(claimBill.billItems.filter((it) => it.isReimbursable !== false).reduce((s, it) => s + Number(it.totalAmount), 0));
+  // Reimbursable line items — but never more than the bill actually came to.
+  // A concession is recorded on the bill HEADER (applyDiscount), not on the
+  // lines, so summing lines alone would raise a claim for the pre-discount
+  // amount and ask the insurer for more than the hospital billed. Capping at
+  // bill.totalAmount is the one allocation that is unarguable; how a concession
+  // should otherwise be split between insurer and patient is a policy call, not
+  // something to invent here.
+  const reimbursableTotal = r2(
+    claimBill.billItems.filter((it) => it.isReimbursable !== false).reduce((s, it) => s + Number(it.totalAmount), 0),
+  );
+  const billCeiling = r2(Number(claimBill.totalAmount ?? 0));
+  const claimAmount =
+    billCeiling > 0 ? r2(Math.min(reimbursableTotal, billCeiling)) : reimbursableTotal;
+  if (reimbursableTotal > claimAmount) {
+    logger.info(
+      { tenantId, admissionId, billId: claimBill.id, reimbursableTotal, claimAmount },
+      'Claim capped at the bill total — a bill-level concession is in play',
+    );
+  }
 
   if (!existingClaim) {
     if (claimAmount <= 0) return { policy, claim: null, connected: true }; // linked, awaiting charges

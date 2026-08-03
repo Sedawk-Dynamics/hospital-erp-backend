@@ -234,13 +234,11 @@ export async function buildAdmissionBillDocument(
   const t = ledger.totals;
   const isDischarged = admission.status === 'discharged';
 
-  // The ledger totals its LINE ITEMS, which excludes the bill-header discount
-  // and tax — fine for the running ledger, wrong on a printed bill: a stay
-  // billed 3500 less a 500 concession and paid 3000 in full would otherwise
-  // print as 500 still outstanding, contradicting the receipt in the patient's
-  // hand. The document therefore does its own arithmetic, using the same shape
-  // as the ledger but with the header adjustments folded in.
-  const netPayable = r2(Math.max(0, t.grandTotal - discount + tax - t.insuranceCovered));
+  // `grandTotal` already has the bill-header concession deducted (see
+  // getAdmissionLedger). Item-level tax is already inside each line's
+  // totalAmount, so tax must NOT be added again here — it is reported below
+  // purely as "of which tax".
+  const netPayable = r2(Math.max(0, t.grandTotal - t.insuranceCovered));
   // Money the hospital is holding from this patient (mirrors the ledger).
   const moneyFromPatient = r2(t.cashPaid + t.deposit - t.depositRefunded);
   const balanceDue = r2(Math.max(0, netPayable - moneyFromPatient));
@@ -297,7 +295,8 @@ export async function buildAdmissionBillDocument(
       receiptNumber: pay.receipt?.receiptNumber ?? null,
     })),
     totals: {
-      grossCharges: t.grandTotal,
+      // Pre-concession, so the printed summary reads gross → discount → net.
+      grossCharges: r2(t.grandTotal + discount),
       posted: t.posted,
       pending: t.pending,
       discount,

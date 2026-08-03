@@ -174,7 +174,8 @@ export function streamAdmissionBillPdf(
   const t = doc.totals;
   row('Gross charges', fmt(t.grossCharges));
   if (t.discount > 0) row('Discount', `- ${fmt(t.discount)}`);
-  if (t.tax > 0) row('Tax', fmt(t.tax));
+  // Tax is already inside the line amounts — shown for information, not added.
+  if (t.tax > 0) row('(of which tax)', fmt(t.tax));
   if (t.insuranceCovered > 0) row('Covered by insurer / TPA', `- ${fmt(t.insuranceCovered)}`);
   pdf.moveTo(sLabel, pdf.y).lineTo(right, pdf.y).strokeColor('#d1d5db').stroke();
   pdf.moveDown(0.3);
