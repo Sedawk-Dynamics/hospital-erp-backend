@@ -23,30 +23,53 @@ export async function getPersonalHistory(patientId: string) {
   return prisma.patientPersonalHistory.findUnique({ where: { patientId } });
 }
 
+const PERSONAL_HISTORY_FIELDS = [
+  'appetite',
+  'diet',
+  'sleepPattern',
+  'disorders',
+  'pastMedicalHistory',
+  'pastSurgicalHistory',
+  'exerciseHabits',
+  'smokingStatus',
+  'alcoholConsumption',
+  'notes',
+] as const;
+
+/**
+ * Partial merge — only the keys actually present in `data` are written.
+ *
+ * This record has three authors: the patient (portal), the doctor and the
+ * nurse. It used to rewrite all ten columns on every save, defaulting anything
+ * absent to null, so whoever saved last silently erased the other side's
+ * fields — a patient updating their diet wiped the doctor's past-medical /
+ * past-surgical narrative, and a doctor saving the narrative wiped the
+ * patient's habits. Merging also means two people editing *different* fields
+ * no longer clobber each other, even from a stale page.
+ *
+ * Clearing a field is still possible: send it explicitly as null or ''.
+ */
 export async function upsertPersonalHistory(
   patientId: string,
   userId: string,
   data: UpsertPersonalHistoryInput,
 ) {
-  const payload: any = {
-    appetite: data.appetite ?? null,
-    diet: data.diet ?? null,
-    sleepPattern: data.sleepPattern ?? null,
-    disorders: data.disorders ?? null,
-    pastMedicalHistory: data.pastMedicalHistory ?? null,
-    pastSurgicalHistory: data.pastSurgicalHistory ?? null,
-    exerciseHabits: data.exerciseHabits ?? null,
-    smokingStatus: data.smokingStatus ?? null,
-    alcoholConsumption: data.alcoholConsumption ?? null,
-    notes: data.notes ?? null,
-    updatedBy: userId,
-  };
+  const payload: Record<string, unknown> = { updatedBy: userId };
+  for (const key of PERSONAL_HISTORY_FIELDS) {
+    if (data[key] === undefined) continue;
+    // '' from a cleared input means "remove this", not "store an empty string".
+    payload[key] = data[key] === '' ? null : data[key];
+  }
+
   const result = await prisma.patientPersonalHistory.upsert({
     where: { patientId },
     create: { patientId, ...payload },
     update: payload,
   });
-  logger.info({ patientId, updatedBy: userId }, 'Personal history updated');
+  logger.info(
+    { patientId, updatedBy: userId, fields: Object.keys(payload).filter((k) => k !== 'updatedBy') },
+    'Personal history updated',
+  );
   return result;
 }
 

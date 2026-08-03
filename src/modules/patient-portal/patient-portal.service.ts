@@ -999,17 +999,49 @@ export async function listMyCurrentMedications(userId: string, email: string, te
 // For personal history we use the most recently updated one (single record per patient).
 // For family history & allergies we aggregate across all linked records, tagging by tenant.
 
+/**
+ * The patient record the portal writes to.
+ *
+ * `resolvePatientIds` builds its result from an unordered Set, so `ids[0]` was
+ * effectively arbitrary and could differ between two requests from the same
+ * user — the portal could read one record and write another, which is why a
+ * doctor's edit sometimes never appeared to the patient (and vice versa) for
+ * anyone holding more than one patient row.
+ *
+ * Deterministic order: the record that already carries personal history wins,
+ * then the most recently updated, then the oldest by id as a stable tiebreak.
+ */
 async function resolvePrimaryPatientId(userId: string, email: string, tenantId?: string) {
   const ids = await resolvePatientIds(userId, email, tenantId);
   if (ids.length === 0) return null;
-  return ids[0];
+  if (ids.length === 1) return ids[0];
+
+  const withHistory = await prisma.patientPersonalHistory.findMany({
+    where: { patientId: { in: ids } },
+    select: { patientId: true, updatedAt: true },
+    orderBy: { updatedAt: 'desc' },
+  });
+  if (withHistory.length > 0) return withHistory[0].patientId;
+
+  const rows = await prisma.patient.findMany({
+    where: { id: { in: ids } },
+    select: { id: true },
+    orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+  });
+  return rows[0]?.id ?? ids[0];
 }
 
 export async function getMyPersonalHistory(userId: string, email: string, tenantId?: string) {
-  const patientId = await resolvePrimaryPatientId(userId, email, tenantId);
-  if (!patientId) return null;
-  const { getPersonalHistory } = await import('../medical-history/medical-history.service');
-  return getPersonalHistory(patientId);
+  const ids = await resolvePatientIds(userId, email, tenantId);
+  if (ids.length === 0) return null;
+  // Read across every record this person owns, newest first, so a doctor's
+  // edit shows up in the portal no matter which record they made it against.
+  const rows = await prisma.patientPersonalHistory.findMany({
+    where: { patientId: { in: ids } },
+    orderBy: { updatedAt: 'desc' },
+    take: 1,
+  });
+  return rows[0] ?? null;
 }
 
 export async function upsertMyPersonalHistory(userId: string, email: string, data: any, tenantId?: string) {

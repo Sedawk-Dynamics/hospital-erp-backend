@@ -4,6 +4,15 @@ import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse } from '../../shared/apiResponse';
 import * as patientPortalService from './patient-portal.service';
 import { uploadSingle } from '../../services/upload.service';
+import { validate } from '../../middleware/validate';
+// Patient and clinician write the SAME medical-history rows, so the portal
+// validates against the same schemas the clinical routes use — otherwise a
+// patient could push a value the enum columns reject and get a 500.
+import {
+  upsertPersonalHistorySchema,
+  familyHistorySchema,
+  allergySchema,
+} from '../medical-history/medical-history.validation';
 
 const router = Router();
 
@@ -342,7 +351,7 @@ router.get('/medical-history/personal', async (req: AuthenticatedRequest, res: R
   } catch (err) { next(err); }
 });
 
-router.put('/medical-history/personal', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+router.put('/medical-history/personal', validate(upsertPersonalHistorySchema), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
     const data = await patientPortalService.upsertMyPersonalHistory(req.user!.userId, req.user!.email, req.body, req.query.tenantId as string | undefined);
     sendResponse({ res, message: 'Personal history saved', data });
@@ -356,7 +365,7 @@ router.get('/medical-history/family', async (req: AuthenticatedRequest, res: Res
   } catch (err) { next(err); }
 });
 
-router.post('/medical-history/family', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+router.post('/medical-history/family', validate(familyHistorySchema), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
     const data = await patientPortalService.createMyFamilyHistory(req.user!.userId, req.user!.email, req.body, req.query.tenantId as string | undefined);
     sendResponse({ res, statusCode: 201, message: 'Family history added', data });
@@ -384,7 +393,7 @@ router.get('/medical-history/allergies', async (req: AuthenticatedRequest, res: 
   } catch (err) { next(err); }
 });
 
-router.post('/medical-history/allergies', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+router.post('/medical-history/allergies', validate(allergySchema), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
     const data = await patientPortalService.createMyAllergy(req.user!.userId, req.user!.email, req.body, req.query.tenantId as string | undefined);
     sendResponse({ res, statusCode: 201, message: 'Allergy added', data });
