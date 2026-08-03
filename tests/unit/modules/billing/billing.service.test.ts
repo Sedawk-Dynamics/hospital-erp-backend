@@ -77,11 +77,21 @@ const mockBillItem = {
 
 // ─── Helper: set up recalculateBillTotals dependencies ───
 
-function mockRecalculate(items: any[], payments: any[] = [], billStatus = 'draft') {
+function mockRecalculate(
+  items: any[],
+  payments: any[] = [],
+  billStatus = 'draft',
+  // Bill-level concessions live in the Discount table, not on the items, and
+  // recalculateBillTotals folds them in — default none.
+  billLevelDiscount = 0,
+) {
   vi.mocked((prisma.billItem as any).findMany).mockResolvedValue(items);
   vi.mocked(prisma.payment.findMany).mockResolvedValue(payments);
   vi.mocked(prisma.bill.findUnique).mockResolvedValue({ status: billStatus } as any);
   vi.mocked(prisma.bill.update).mockResolvedValue({} as any);
+  vi.mocked((prisma.discount as any).aggregate).mockResolvedValue({
+    _sum: { value: billLevelDiscount },
+  } as any);
 }
 
 // ─── Tests ───
@@ -269,6 +279,40 @@ describe('BillingService', () => {
       expect((prisma.billItem as any).findMany).toHaveBeenCalledWith({
         where: { billId: 'bill-1' },
       });
+    });
+
+    // Regression: a counter concession is a BILL-LEVEL Discount row, not a line
+    // discount. recalculateBillTotals used to rebuild discountAmount from the
+    // items alone, so posting any further charge silently erased the
+    // concession and re-billed the patient the full amount.
+    it('keeps a bill-level concession when a later charge is posted', async () => {
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue(mockBillDraft as any);
+      vi.mocked(prisma.billItem.create).mockResolvedValue({ id: 'item-new' } as any);
+      mockRecalculate(
+        [
+          { quantity: 1, unitPrice: 3500, discountAmount: 0, taxAmount: 0 },
+          { quantity: 1, unitPrice: 200, discountAmount: 0, taxAmount: 0 },
+        ],
+        [],
+        'draft',
+        500, // the concession already granted at the counter
+      );
+
+      await addBillItem(TENANT_ID, 'bill-1', {
+        description: 'Dressing',
+        quantity: 1,
+        unitPrice: 200,
+      });
+
+      expect(prisma.bill.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            subtotal: 3700,
+            discountAmount: 500,
+            totalAmount: 3200,
+          }),
+        }),
+      );
     });
 
     it('should throw badRequest when adding item to non-draft bill', async () => {
@@ -710,6 +754,12 @@ describe('BillingService', () => {
       vi.mocked((prisma.discount as any).findMany).mockResolvedValue([
         { value: 100 },
       ]);
+      // applyDiscount now also folds in any item-level discounts, so
+      // bill.discountAmount means the same thing here as it does in
+      // setBillDiscount and recalculateBillTotals.
+      vi.mocked((prisma.billItem as any).aggregate).mockResolvedValue({
+        _sum: { discountAmount: 0 },
+      } as any);
       vi.mocked(prisma.bill.update).mockResolvedValue({} as any);
 
       const result = await applyDiscount(TENANT_ID, 'bill-1', {

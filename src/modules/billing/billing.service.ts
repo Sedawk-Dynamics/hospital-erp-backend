@@ -187,7 +187,19 @@ async function recalculateBillTotals(billId: string) {
     totalTax += itemTax;
   }
 
-  const total = subtotal - totalDiscount + totalTax;
+  // A concession granted at the counter is a BILL-LEVEL discount: it lives as a
+  // `Discount` row, not on any line item. Recomputing from the items alone
+  // silently erased it — and this runs on every charge added or removed, every
+  // deposit applied, every doctor visit recorded. On an IP stay, where charges
+  // accrue daily, a concession given on day one was guaranteed to vanish and
+  // the patient got billed the full amount again.
+  const billLevel = await prisma.discount.aggregate({
+    where: { billId },
+    _sum: { value: true },
+  });
+  totalDiscount += toNumber(billLevel._sum.value);
+
+  const total = Math.max(0, subtotal - totalDiscount + totalTax);
 
   // Get total paid
   const payments = await prisma.payment.findMany({
@@ -1367,7 +1379,16 @@ export async function applyDiscount(tenantId: string, billId: string, data: Appl
     where: { billId },
   });
 
-  const totalDiscountValue = allDiscounts.reduce((sum: number, d: { value: Decimal }) => sum + toNumber(d.value), 0);
+  // Item-level discounts count too — `setBillDiscount` and recalculateBillTotals
+  // both treat bill.discountAmount as (item discounts + bill-level rows), and
+  // the three must agree or whichever runs last changes the payable amount.
+  const itemDiscounts = await prisma.billItem.aggregate({
+    where: { billId },
+    _sum: { discountAmount: true },
+  });
+  const totalDiscountValue =
+    allDiscounts.reduce((sum: number, d: { value: Decimal }) => sum + toNumber(d.value), 0) +
+    toNumber(itemDiscounts._sum.discountAmount);
   const taxAmount = toNumber(bill.taxAmount);
   const totalAmount = subtotal - totalDiscountValue + taxAmount;
 

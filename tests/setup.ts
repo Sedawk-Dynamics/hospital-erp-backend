@@ -43,7 +43,7 @@ vi.mock('../src/config/database', () => ({
     billItem: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), deleteMany: vi.fn(), aggregate: vi.fn() },
     payment: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), count: vi.fn() },
     refund: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    discount: { create: vi.fn() },
+    discount: { create: vi.fn(), findMany: vi.fn(), deleteMany: vi.fn(), aggregate: vi.fn() },
     receipt: { create: vi.fn() },
     labTestCatalog: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), count: vi.fn() },
     labOrder: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
