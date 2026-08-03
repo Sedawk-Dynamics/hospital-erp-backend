@@ -1,6 +1,12 @@
 import { Router } from 'express';
 import { authenticate } from '../../middleware/authenticate';
-import { requireRoles, requirePermission } from '../../middleware/authorize';
+import { requireRoles, requirePermission, denyRoles } from '../../middleware/authorize';
+
+// Patient forms are nursing documentation: the nurse records them at the
+// bedside and the doctor reads them. A doctor must not file a submission in
+// the nurse's name, even though the role holds `forms:create` for the
+// hospital-form catalogue. Mirrors the nurse-cannot-write-prescriptions rule.
+const noDoctorSubmit = denyRoles('doctor');
 import { validate } from '../../middleware/validate';
 import * as controller from './forms.controller';
 import {
@@ -68,11 +74,12 @@ formsRoutes.delete(
 // not swallowed by Express matching `submissions` against `:id`
 // (which previously rejected with "Invalid uuid").
 //
-// Anyone with `forms:create` can submit (nurse, admin, doctor,
-// super_admin, front_desk per role-permissions). Service layer
+// Submitting needs `forms:create` — nurse, admin, front_desk, patient,
+// super_admin — but NOT doctor: see `noDoctorSubmit` above. Service layer
 // enforces patient + tenant scoping via resolveVisitContext.
 // Submission list/get is `forms:read` — same audience as patient
-// detail (doctor, nurse, nurse_admin, admin, etc.).
+// detail (doctor, nurse, nurse_admin, admin, etc.), so doctors read
+// everything the nurse files.
 
 formsRoutes.get(
   '/submissions',
@@ -120,6 +127,7 @@ formsRoutes.post(
   '/:id/submissions',
   authenticate,
   requirePermission('forms', 'create'),
+  noDoctorSubmit,
   validate(createSubmissionSchema),
   controller.createSubmission,
 );
