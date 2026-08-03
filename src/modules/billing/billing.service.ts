@@ -1541,6 +1541,9 @@ async function getConsultationCharges(
         },
       },
       appointment: { select: { id: true, appointmentDate: true } },
+      // Does this visit back an admission? Used to skip the admission's own
+      // anchor visit below.
+      admission: { select: { id: true } },
     },
     orderBy: { visitDate: 'desc' },
     take: 50,
@@ -1548,6 +1551,16 @@ async function getConsultationCharges(
 
   return visits
     .filter((v) => v.visitType === 'op' || v.visitType === 'ip')
+    // An admission creates a Visit purely to anchor the stay — nobody has
+    // consulted at that point. Charging a consultation for it put a phantom
+    // "Consultation — Doctor" line on the ledger the instant an IP / Emergency
+    // / Day Care patient was admitted, and would have double-charged once the
+    // doctor actually recorded a round (recordDoctorVisit posts its own fee).
+    //
+    // The OP→IP flow REUSES the OP visit and flips it to `ip`, and that one is
+    // a real consultation — it is told apart by having an appointment behind
+    // it, which an admission-created visit never does.
+    .filter((v) => !(v.admission && !v.appointmentId))
     .map((v) => {
       const fee = toNumber(v.doctor?.consultationFee ?? 0);
       const doctorName = v.doctor?.user
@@ -1572,7 +1585,11 @@ async function getConsultationCharges(
         billId: billed?.billId,
       };
     })
-    .filter((r) => r.unitPrice > 0 || !r.alreadyBilled);
+    // A zero-rupee consultation is not a charge — it means the doctor has no
+    // fee configured, or none is attached yet. Listing it as a pending charge
+    // is noise on the ledger and prints a ₹0.00 line on the patient's bill.
+    // (The old condition `unitPrice > 0 || !alreadyBilled` kept exactly those.)
+    .filter((r) => r.totalAmount > 0);
 }
 
 async function getLabCharges(
