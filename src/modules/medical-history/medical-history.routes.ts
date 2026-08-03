@@ -51,12 +51,43 @@ router.get('/:patientId/medical-surgical', requirePermission('patients', 'read')
   } catch (err) { next(err); }
 });
 
-// ── Family History (patient-only edit — doctor can read) ───────
+// ── Family History ─────────────────────────────────────────────
+// The patient portal was the only place this could ever be entered, so for
+// IP / emergency / day-care / temporary patients — who rarely have a portal
+// login — the doctor's and nurse's Family tab was permanently empty. Clinical
+// staff with `patients:update` can now record it at the bedside too; the
+// portal endpoints are unchanged and write to the same rows.
 router.get('/:patientId/family', requirePermission('patients', 'read'), async (req: AuthenticatedRequest, res, next) => {
   try {
     await svc.verifyPatientTenant(req.user!.tenantId, p(req.params.patientId));
     const data = await svc.listFamilyHistory(p(req.params.patientId));
     sendResponse({ res, message: 'Family history', data });
+  } catch (err) { next(err); }
+});
+
+router.post('/:patientId/family', requirePermission('patients', 'update'), validate(familyHistorySchema), async (req: AuthenticatedRequest, res, next) => {
+  try {
+    await svc.verifyPatientTenant(req.user!.tenantId, p(req.params.patientId));
+    const data = await svc.createFamilyHistory(p(req.params.patientId), req.user!.userId, req.body);
+    sendResponse({ res, statusCode: 201, message: 'Family history added', data });
+  } catch (err) { next(err); }
+});
+
+router.put('/:patientId/family/:id', requirePermission('patients', 'update'), validate(familyHistoryUpdateSchema), async (req: AuthenticatedRequest, res, next) => {
+  try {
+    await svc.verifyPatientTenant(req.user!.tenantId, p(req.params.patientId));
+    const data = await svc.updateFamilyHistory(p(req.params.patientId), req.user!.userId, p(req.params.id), req.body);
+    sendResponse({ res, message: 'Family history updated', data });
+  } catch (err) { next(err); }
+});
+
+// Removing a mis-keyed entry is part of recording it — gated on `update`, not
+// `delete`, since neither doctor nor nurse carries `patients:delete`.
+router.delete('/:patientId/family/:id', requirePermission('patients', 'update'), async (req: AuthenticatedRequest, res, next) => {
+  try {
+    await svc.verifyPatientTenant(req.user!.tenantId, p(req.params.patientId));
+    await svc.deleteFamilyHistory(p(req.params.patientId), p(req.params.id));
+    sendResponse({ res, message: 'Family history removed' });
   } catch (err) { next(err); }
 });
 
@@ -85,7 +116,10 @@ router.put('/:patientId/allergies/:id', requirePermission('patients', 'update'),
   } catch (err) { next(err); }
 });
 
-router.delete('/:patientId/allergies/:id', requirePermission('patients', 'delete'), async (req: AuthenticatedRequest, res, next) => {
+// Same rationale as family history above: doctors and nurses hold
+// `patients:update` but not `patients:delete`, so the panel's remove button
+// used to 403 for exactly the people who record allergies.
+router.delete('/:patientId/allergies/:id', requirePermission('patients', 'update'), async (req: AuthenticatedRequest, res, next) => {
   try {
     await svc.verifyPatientTenant(req.user!.tenantId, p(req.params.patientId));
     await svc.deleteAllergy(p(req.params.patientId), p(req.params.id));

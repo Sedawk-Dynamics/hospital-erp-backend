@@ -396,6 +396,51 @@ export async function restoreHospitalForm(
 // Submissions
 // ─────────────────────────────────────────────────────────────
 
+/**
+ * Resolve the encounter a submission hangs off.
+ *
+ * When the caller names a visit / admission / appointment we delegate to the
+ * shared resolver (which also tenant-checks and auto-opens the OPD visit).
+ *
+ * When it names none — a temporary / provisional patient the front desk has
+ * not routed to OP or IP yet — we fall back to the patient's own most recent
+ * encounter, and finally to no encounter at all. `visit_id` on the submission
+ * is nullable, so a patient-scoped form entry is legitimate; refusing it was
+ * what left temporary patients with no way to record a form.
+ */
+async function resolveSubmissionContext(
+  tenantId: string,
+  patientId: string,
+  raw: { visitId?: string; admissionId?: string; appointmentId?: string },
+): Promise<{ visitId?: string; admissionId?: string; appointmentId?: string }> {
+  if (raw.visitId || raw.admissionId || raw.appointmentId) {
+    return resolveVisitContext(tenantId, patientId, raw);
+  }
+
+  const patient = await prisma.patient.findFirst({
+    where: { id: patientId, tenantId },
+    select: { id: true },
+  });
+  if (!patient) throw AppError.notFound('Patient not found');
+
+  // Prefer a live admission (IP / emergency / day-care), then the newest visit.
+  const admission = await prisma.admission.findFirst({
+    where: { tenantId, patientId, status: 'admitted' },
+    orderBy: { admissionDate: 'desc' },
+    select: { id: true, visitId: true },
+  });
+  if (admission) return { visitId: admission.visitId, admissionId: admission.id };
+
+  const visit = await prisma.visit.findFirst({
+    where: { tenantId, patientId },
+    orderBy: { createdAt: 'desc' },
+    select: { id: true, appointmentId: true },
+  });
+  if (visit) return { visitId: visit.id, appointmentId: visit.appointmentId ?? undefined };
+
+  return {};
+}
+
 export async function createSubmission(
   tenantId: string,
   userId: string,
@@ -417,7 +462,7 @@ export async function createSubmission(
   if (form.archivedAt) throw AppError.badRequest('This form has been archived and is no longer accepting submissions');
   if (!form.isPublished) throw AppError.badRequest('This form is a draft and is not accepting submissions');
 
-  const ctx = await resolveVisitContext(tenantId, body.patientId, {
+  const ctx = await resolveSubmissionContext(tenantId, body.patientId, {
     visitId: body.visitId,
     admissionId: body.admissionId,
     appointmentId: body.appointmentId,
@@ -438,7 +483,7 @@ export async function createSubmission(
       formVersion: form.version,
       formSnapshot: snapshot,
       patientId: body.patientId,
-      visitId: ctx.visitId,
+      visitId: ctx.visitId ?? null,
       admissionId: ctx.admissionId ?? null,
       appointmentId: ctx.appointmentId ?? null,
       submittedById: userId,
