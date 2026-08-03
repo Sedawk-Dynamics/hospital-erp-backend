@@ -5982,6 +5982,27 @@ model OtRequest {
   billingStatus      String?          @map("billing_status") @db.VarChar(20)
   cancellationReason String?          @map("cancellation_reason")
   status             OtRequestStatus  @default(requested)
+
+  // ── Reschedule ↔ doctor-confirmation loop ───────────────────────────────
+  // The doctor books a *preferred* slot; the OT admin schedules the real one.
+  // When the admin's slot differs from what the doctor asked for, the booking
+  // is not final until the doctor accepts it — modelled as a sub-state on top
+  // of `status` so the OtRequestStatus enum (and its migration) stays put.
+  //   scheduleState: null | 'awaiting_doctor' | 'confirmed'
+  //   doctorResponse: null | 'accepted' | 'rejected'
+  // Accessed via raw SQL until the Prisma client is regenerated (the Windows
+  // dev server locks the engine DLL) — see shared/ot-schedule.ts.
+  scheduleState         String?   @map("schedule_state") @db.VarChar(24)
+  rescheduleReason      String?   @map("reschedule_reason")
+  rescheduledBy         String?   @map("rescheduled_by")
+  rescheduledAt         DateTime? @map("rescheduled_at")
+  previousScheduledDate DateTime? @map("previous_scheduled_date") @db.Date
+  previousScheduledTime String?   @map("previous_scheduled_time") @db.VarChar(10)
+  doctorResponse        String?   @map("doctor_response") @db.VarChar(20)
+  doctorResponseNote    String?   @map("doctor_response_note")
+  doctorRespondedAt     DateTime? @map("doctor_responded_at")
+  rescheduleCount       Int       @default(0) @map("reschedule_count")
+
   createdAt          DateTime         @default(now()) @map("created_at")
   updatedAt          DateTime         @default(now()) @updatedAt @map("updated_at")
 

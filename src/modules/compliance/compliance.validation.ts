@@ -264,6 +264,20 @@ export const getOtRequestsQuerySchema = z.object({
     patientId: z.string().uuid().optional(),
     fromDate: z.string().optional(),
     toDate: z.string().optional(),
+    // The three filters below were read by the service but missing here, so
+    // `validate()` — which replaces req.query with the parsed object — silently
+    // dropped them: the OT date filter and the doctor's own-list filter were
+    // both dead. Declared now so they actually reach the query builder.
+    date: z.string().optional(),
+    otId: z.string().uuid().optional(),
+    surgeonId: z.string().uuid().optional(),
+    /** Doctor's own OT list — resolved server-side from the caller's profile. */
+    mine: z
+      .union([z.boolean(), z.enum(['true', 'false'])])
+      .transform((v) => v === true || v === 'true')
+      .optional(),
+    /** Post-fetch filter on the raw `schedule_state` column. */
+    scheduleState: z.enum(['awaiting_doctor', 'confirmed']).optional(),
   }),
 });
 
@@ -300,6 +314,28 @@ export const scheduleOtSchema = z.object({
     surgeonId: z.string().uuid().optional(),
     anaesthetistId: z.string().uuid().optional(),
     durationMinutes: z.number().int().positive().max(1440).optional(),
+    // Required by the service whenever the booked slot is not the one the
+    // doctor asked for (or moves an existing booking) — the doctor is told
+    // why, and has to accept it before the surgery can start.
+    rescheduleReason: z.string().max(2000).optional(),
+  }),
+});
+
+// The doctor's answer to a slot the OT admin proposed.
+export const otScheduleResponseSchema = z.object({
+  params: z.object({ id: z.string().uuid('Invalid OT request ID') }),
+  body: z.object({
+    action: z.enum(['accept', 'reschedule', 'cancel']),
+    /** Reason / remark. Required for `reschedule` and `cancel`. */
+    note: z.string().max(2000).optional(),
+    /** New preferred slot — required for `reschedule`. */
+    preferredDate: z.string().optional(),
+    preferredTime: z
+      .string()
+      .regex(/^\d{2}:\d{2}$/, 'Time must be HH:MM')
+      .optional(),
+    /** OT desk recording a verbal answer on the doctor's behalf. */
+    onBehalf: z.boolean().optional(),
   }),
 });
 
@@ -469,6 +505,7 @@ export type GetComplianceDocsQuery = z.infer<typeof getComplianceDocsQuerySchema
 
 export type CreateOtRequestInput = z.infer<typeof createOtRequestSchema>['body'];
 export type ScheduleOtInput = z.infer<typeof scheduleOtSchema>['body'];
+export type OtScheduleResponseInput = z.infer<typeof otScheduleResponseSchema>['body'];
 export type GetOtRequestsQuery = z.infer<typeof getOtRequestsQuerySchema>['query'];
 
 export type ReportIncidentInput = z.infer<typeof reportIncidentSchema>['body'];

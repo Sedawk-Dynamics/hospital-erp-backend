@@ -26,6 +26,7 @@ import {
   otRequestIdParamSchema,
   approveOtRequestSchema,
   scheduleOtSchema,
+  otScheduleResponseSchema,
   updateOtRequestSchema,
   otAnalyticsQuerySchema,
   createOtSchema,
@@ -82,6 +83,11 @@ complianceRoutes.patch('/ot-requests/:id', authenticate, requirePermission('ot_r
 // Approving and scheduling a theatre stay with the OT / hospital admin.
 complianceRoutes.patch('/ot-requests/:id/approve', authenticate, requirePermission('ot_requests', 'approve'), validate(approveOtRequestSchema), controller.approveOTRequest);
 complianceRoutes.patch('/ot-requests/:id/schedule', authenticate, requirePermission('ot_requests', 'approve'), validate(scheduleOtSchema), controller.scheduleOT);
+// The doctor's side of the reschedule loop — accept the proposed slot, ask for
+// another time, or cancel. Gated on `update` (which doctors hold) rather than
+// `approve` (which they do not); the service checks the caller actually owns
+// the request.
+complianceRoutes.patch('/ot-requests/:id/respond', authenticate, requirePermission('ot_requests', 'update'), validate(otScheduleResponseSchema), controller.respondToOtSchedule);
 
 // --- OT scheduling preferences (per tenant) ---
 complianceRoutes.get('/ot-settings', authenticate, controller.getOtSchedulingSettings);

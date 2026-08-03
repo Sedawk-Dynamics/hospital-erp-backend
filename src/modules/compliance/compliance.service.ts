@@ -28,7 +28,21 @@ import type {
   InvestigateIncidentInput,
   CloseIncidentInput,
   GetIncidentsQuery,
+  OtScheduleResponseInput,
 } from './compliance.validation';
+import {
+  SCHEDULE_AWAITING_DOCTOR,
+  SCHEDULE_CONFIRMED,
+  attachOtScheduleMeta,
+  clearScheduleProposal,
+  getOneOtScheduleMeta,
+  getOtScheduleMeta,
+  recordDoctorResponse,
+  recordReschedule,
+  sameSlot,
+  toDateKey,
+  toTimeKey,
+} from '../../shared/ot-schedule';
 
 // ============================================================
 // Tickets
@@ -599,25 +613,90 @@ function mapPriorityToUrgency(p?: string): 'elective' | 'urgent' | 'emergency' |
 
 // Shape the OtRequest response so the frontend's `surgeryName`/`priority`
 // expectations work without forcing the frontend to know the DB columns.
-function shapeOtRequest<T extends { procedureName: string; urgency: string }>(r: T): T & {
-  surgeryName: string;
-  priority: string;
-} {
+function shapeOtRequest<T extends { procedureName: string; urgency: string }>(
+  r: T,
+  meta?: object,
+): T & { surgeryName: string; priority: string } {
   return {
     ...r,
+    ...(meta ?? {}),
     surgeryName: r.procedureName,
     priority: r.urgency === 'elective' ? 'routine' : r.urgency,
-  };
+  } as T & { surgeryName: string; priority: string };
 }
 
 const OT_REQUEST_INCLUDE = {
   patient: { select: { id: true, mrn: true, firstName: true, lastName: true, phone: true, dateOfBirth: true, gender: true } },
-  doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
-  surgeon: { include: { user: { select: { firstName: true, lastName: true } } } },
-  anaesthetist: { include: { user: { select: { firstName: true, lastName: true } } } },
+  doctor: { include: { user: { select: { id: true, firstName: true, lastName: true } } } },
+  surgeon: { include: { user: { select: { id: true, firstName: true, lastName: true } } } },
+  anaesthetist: { include: { user: { select: { id: true, firstName: true, lastName: true } } } },
   visit: { select: { id: true, visitType: true, visitDate: true } },
   ot: { select: { id: true, name: true, location: true, status: true } },
 } as const;
+
+/**
+ * Callers hand us either a DoctorProfile id or the doctor's User id — the
+ * doctor-side OT form only knows the logged-in user. Resolve both to the
+ * DoctorProfile id the OtRequest columns actually store, rather than 404ing.
+ */
+async function resolveDoctorProfileId(
+  tenantId: string,
+  id: string | undefined | null,
+  label: string,
+): Promise<string | undefined> {
+  if (!id) return undefined;
+  const profile = await prisma.doctorProfile.findFirst({
+    where: { tenantId, OR: [{ id }, { userId: id }] },
+    select: { id: true },
+  });
+  if (!profile) throw AppError.notFound(`${label} not found`);
+  return profile.id;
+}
+
+/** DoctorProfile ids belonging to the calling user, if they are a doctor. */
+async function callerDoctorProfileId(tenantId: string, userId: string): Promise<string | null> {
+  const profile = await prisma.doctorProfile.findFirst({
+    where: { tenantId, userId },
+    select: { id: true },
+  });
+  return profile?.id ?? null;
+}
+
+/** Fire-and-forget in-app notification — a failed notify must never fail the booking. */
+function notify(args: {
+  tenantId: string;
+  userId: string | null | undefined;
+  title: string;
+  message: string;
+  referenceType: string;
+  referenceId: string;
+}): void {
+  if (!args.userId) return;
+  void prisma.notification
+    .create({
+      data: {
+        tenantId: args.tenantId,
+        userId: args.userId,
+        title: args.title,
+        message: args.message,
+        notificationType: 'alert' as any,
+        referenceType: args.referenceType,
+        referenceId: args.referenceId,
+      },
+    })
+    .catch((err) =>
+      logger.warn({ err, userId: args.userId }, 'OT notification failed'),
+    );
+}
+
+/** "12/08/2026 at 09:30" — the wording used in every OT notification. */
+function slotLabel(date: Date | string | null | undefined, time: string | null | undefined): string {
+  const d = toDateKey(date);
+  if (!d) return 'an unscheduled slot';
+  const [y, m, dd] = d.split('-');
+  const t = toTimeKey(time);
+  return `${dd}/${m}/${y}${t ? ` at ${t}` : ''}`;
+}
 
 export async function createOTRequest(tenantId: string, userId: string, data: CreateOtRequestInput) {
   // Verify patient exists
@@ -663,24 +742,29 @@ export async function createOTRequest(tenantId: string, userId: string, data: Cr
     if (!visit) throw AppError.notFound('Visit not found');
   }
 
+  // Every id below may arrive as a DoctorProfile id or as the doctor's User id
+  // (the doctor-side OT form only has the logged-in user), so normalise first.
+  const surgeonId = await resolveDoctorProfileId(tenantId, data.surgeonId, 'Surgeon');
+  const anaesthetistId = await resolveDoctorProfileId(
+    tenantId,
+    data.anaesthetistId,
+    'Anaesthetist',
+  );
+
   // doctorId is the requesting doctor (required by schema). Surgeon defaults
-  // to the same doctor when not explicitly different.
-  let doctorId = data.doctorId ?? data.surgeonId;
+  // to the same doctor when not explicitly different, and a doctor raising the
+  // request from their own OT list is the requester even if they named nobody.
+  let doctorId =
+    (await resolveDoctorProfileId(tenantId, data.doctorId, 'Doctor')) ??
+    surgeonId ??
+    (await callerDoctorProfileId(tenantId, userId)) ??
+    undefined;
   if (!doctorId) {
     // Fall back to the visit's doctor.
     const v = await prisma.visit.findFirst({ where: { id: visitId, tenantId }, select: { doctorId: true } });
     doctorId = v?.doctorId ?? undefined;
   }
   if (!doctorId) throw AppError.badRequest('doctorId or surgeonId is required');
-
-  if (data.surgeonId) {
-    const s = await prisma.doctorProfile.findFirst({ where: { id: data.surgeonId, tenantId } });
-    if (!s) throw AppError.notFound('Surgeon not found');
-  }
-  if (data.anaesthetistId) {
-    const a = await prisma.doctorProfile.findFirst({ where: { id: data.anaesthetistId, tenantId } });
-    if (!a) throw AppError.notFound('Anaesthetist not found');
-  }
 
   const procedureName = data.procedureName ?? data.surgeryName!;
   const urgency = data.urgency ?? mapPriorityToUrgency(data.priority) ?? 'elective';
@@ -692,8 +776,8 @@ export async function createOTRequest(tenantId: string, userId: string, data: Cr
       patientId: data.patientId,
       visitId,
       doctorId,
-      surgeonId: data.surgeonId,
-      anaesthetistId: data.anaesthetistId,
+      surgeonId,
+      anaesthetistId,
       otId: data.otId,
       procedureName,
       procedureDetails: data.procedureDetails,
@@ -710,19 +794,35 @@ export async function createOTRequest(tenantId: string, userId: string, data: Cr
       preOpChecklist: data.preOpChecklist as Prisma.InputJsonValue | undefined,
       preOpDiagnosis: data.preOpDiagnosis,
       notes: data.notes,
-      // If the caller provided a schedule up-front, jump straight to scheduled.
+      // If the caller booked a firm slot up-front (the OT admin's own Book-OT
+      // dialog), jump straight to scheduled. A doctor's request carries only a
+      // *preferred* slot and must stay `requested` so it lands in the OT
+      // admin's pending queue for scheduling.
       status: data.scheduledDate ? 'scheduled' : 'requested',
     },
     include: OT_REQUEST_INCLUDE,
   });
 
+  // A slot the OT team booked themselves needs no doctor sign-off.
+  if (data.scheduledDate) {
+    await recordReschedule(otRequest.id, {
+      state: SCHEDULE_CONFIRMED,
+      reason: null,
+      byUserId: userId,
+      previousDate: null,
+      previousTime: null,
+      countsAsReschedule: false,
+    });
+  }
+
   logger.info({ tenantId, otRequestId: otRequest.id, userId }, 'OT request created');
-  return shapeOtRequest(otRequest as any);
+  return shapeOtRequest(otRequest as any, await getOneOtScheduleMeta(otRequest.id));
 }
 
 export async function getOTRequests(
   tenantId: string,
   query: GetOtRequestsQuery & { date?: string; otId?: string; surgeonId?: string },
+  callerUserId?: string,
 ) {
   const { skip, take, page, limit } = getPaginationParams(query);
 
@@ -735,15 +835,34 @@ export async function getOTRequests(
   if ((query as any).otId) where.otId = (query as any).otId;
   if (query.patientId) where.patientId = query.patientId;
 
+  // Both of the blocks below are OR-groups. They go through `AND` so they
+  // compose — assigning `where.OR` twice would silently drop the first one.
+  where.AND = where.AND ?? [];
+
+  // `mine=true` — the doctor's own OT list. Resolved server-side because the
+  // client only knows the User id, while the columns store DoctorProfile ids.
+  // Matches whether the caller raised the request or is the named surgeon.
+  if (query.mine && callerUserId) {
+    const profileId = await callerDoctorProfileId(tenantId, callerUserId);
+    where.AND.push(
+      profileId
+        ? { OR: [{ doctorId: profileId }, { surgeonId: profileId }] }
+        // Not a doctor → nothing is "mine".
+        : { id: '00000000-0000-0000-0000-000000000000' },
+    );
+  }
+
   // `date` filter searches both scheduled and preferred date (for unscheduled requests)
   if ((query as any).date) {
     const day = new Date((query as any).date);
     const next = new Date(day);
     next.setDate(next.getDate() + 1);
-    where.OR = [
-      { scheduledDate: { gte: day, lt: next } },
-      { AND: [{ scheduledDate: null }, { preferredDate: { gte: day, lt: next } }] },
-    ];
+    where.AND.push({
+      OR: [
+        { scheduledDate: { gte: day, lt: next } },
+        { AND: [{ scheduledDate: null }, { preferredDate: { gte: day, lt: next } }] },
+      ],
+    });
   }
 
   if (query.fromDate) {
@@ -781,7 +900,16 @@ export async function getOTRequests(
     prisma.otRequest.count({ where }),
   ]);
 
-  return { requests: requests.map((r) => shapeOtRequest(r as any)), total, page, limit };
+  const meta = await getOtScheduleMeta(requests.map((r) => r.id));
+  let shaped = requests.map((r) => shapeOtRequest(attachOtScheduleMeta(r as any, meta)));
+
+  // `scheduleState` lives in a raw column, so it is filtered after the fetch.
+  // Only used by the doctor's "Awaiting my approval" tab, which is a small set.
+  if (query.scheduleState) {
+    shaped = shaped.filter((r: any) => r.scheduleState === query.scheduleState);
+  }
+
+  return { requests: shaped, total, page, limit };
 }
 
 export async function getOTRequestById(tenantId: string, id: string) {
@@ -794,7 +922,7 @@ export async function getOTRequestById(tenantId: string, id: string) {
     throw AppError.notFound('OT request not found');
   }
 
-  return shapeOtRequest(request as any);
+  return shapeOtRequest(request as any, await getOneOtScheduleMeta(id));
 }
 
 export async function approveOTRequest(tenantId: string, id: string, userId: string) {
@@ -822,9 +950,24 @@ export async function approveOTRequest(tenantId: string, id: string, userId: str
   return shapeOtRequest(updated as any);
 }
 
-export async function scheduleOT(tenantId: string, id: string, data: ScheduleOtInput) {
+/**
+ * OT admin books (or moves) the theatre slot.
+ *
+ * The doctor raised the request with a *preferred* slot. If the admin honours
+ * it exactly the booking is final. If the admin picks anything else — or moves
+ * an already-scheduled surgery — it is a **reschedule**: a reason is required,
+ * the request goes to `awaiting_doctor`, and the requesting doctor (plus the
+ * named surgeon) is notified so they can accept, counter-propose or cancel.
+ */
+export async function scheduleOT(
+  tenantId: string,
+  id: string,
+  userId: string,
+  data: ScheduleOtInput,
+) {
   const request = await prisma.otRequest.findFirst({
     where: { id, tenantId },
+    include: OT_REQUEST_INCLUDE,
   });
 
   if (!request) {
@@ -837,6 +980,34 @@ export async function scheduleOT(tenantId: string, id: string, data: ScheduleOtI
 
   // Either of scheduledTime or scheduledStartTime is acceptable
   const startTimeStr = (data as any).scheduledStartTime ?? data.scheduledTime;
+
+  const proposed = { date: data.scheduledDate, time: startTimeStr };
+  const doctorPreferred = { date: request.preferredDate, time: request.preferredTime };
+  const currentlyScheduled = { date: request.scheduledDate, time: request.scheduledStartTime };
+
+  const hadSchedule = !!request.scheduledDate;
+  const matchesDoctorsChoice = sameSlot(proposed, doctorPreferred);
+  const movesExistingBooking = hadSchedule && !sameSlot(proposed, currentlyScheduled);
+  // Anything other than "give the doctor exactly what they asked for" is a
+  // reschedule the doctor has to be told about — including the very first
+  // scheduling, because the doctor already stated a preference.
+  const isReschedule =
+    movesExistingBooking || (!!request.preferredDate && !matchesDoctorsChoice);
+
+  const reason = data.rescheduleReason?.trim() || null;
+  if (isReschedule && !reason) {
+    throw AppError.badRequest(
+      'A reason is required when the surgery is not booked at the time the doctor asked for.',
+    );
+  }
+
+  const surgeonId = await resolveDoctorProfileId(tenantId, (data as any).surgeonId, 'Surgeon');
+  const anaesthetistId = await resolveDoctorProfileId(
+    tenantId,
+    (data as any).anaesthetistId,
+    'Anaesthetist',
+  );
+
   const updated = await prisma.otRequest.update({
     where: { id },
     data: {
@@ -845,16 +1016,173 @@ export async function scheduleOT(tenantId: string, id: string, data: ScheduleOtI
       scheduledTime: startTimeStr ? new Date(`1970-01-01T${startTimeStr}:00Z`) : undefined,
       scheduledStartTime: (data as any).scheduledStartTime ?? data.scheduledTime,
       scheduledEndTime: (data as any).scheduledEndTime,
-      surgeonId: (data as any).surgeonId,
-      anaesthetistId: (data as any).anaesthetistId,
+      surgeonId,
+      anaesthetistId,
       durationMinutes: data.durationMinutes,
       status: 'scheduled',
     },
     include: OT_REQUEST_INCLUDE,
   });
 
-  logger.info({ tenantId, otRequestId: id }, 'OT request scheduled');
-  return shapeOtRequest(updated as any);
+  await recordReschedule(id, {
+    state: isReschedule ? SCHEDULE_AWAITING_DOCTOR : SCHEDULE_CONFIRMED,
+    reason,
+    byUserId: userId,
+    previousDate: hadSchedule ? request.scheduledDate : request.preferredDate,
+    previousTime: hadSchedule
+      ? request.scheduledStartTime
+      : toTimeKey(request.preferredTime),
+    countsAsReschedule: isReschedule,
+  });
+
+  if (isReschedule) {
+    const patientName = `${updated.patient?.firstName ?? ''} ${updated.patient?.lastName ?? ''}`.trim();
+    const asked = slotLabel(
+      hadSchedule ? request.scheduledDate : request.preferredDate,
+      hadSchedule ? request.scheduledStartTime : toTimeKey(request.preferredTime),
+    );
+    const now = slotLabel(updated.scheduledDate, updated.scheduledStartTime);
+    const targets = new Set(
+      [updated.doctor?.user?.id, updated.surgeon?.user?.id].filter(Boolean) as string[],
+    );
+    for (const uid of targets) {
+      notify({
+        tenantId,
+        userId: uid,
+        title: 'Surgery rescheduled — your confirmation needed',
+        message:
+          `${updated.procedureName} for ${patientName || 'a patient'} was moved from ${asked} to ${now}. ` +
+          `Reason: ${reason}. Accept it, propose another time, or cancel.`,
+        referenceType: 'ot_reschedule',
+        referenceId: id,
+      });
+    }
+  }
+
+  logger.info(
+    { tenantId, otRequestId: id, isReschedule, by: userId },
+    isReschedule ? 'OT request rescheduled — awaiting doctor' : 'OT request scheduled',
+  );
+  return shapeOtRequest(updated as any, await getOneOtScheduleMeta(id));
+}
+
+/**
+ * The doctor's answer to a rescheduled slot:
+ *   accept     → booking confirmed, surgery may start
+ *   reschedule → counter-proposal; back to `requested` with a new preferred
+ *                slot for the OT admin to work from
+ *   cancel     → surgery called off with a reason
+ * Whichever way it goes, whoever proposed the move is notified.
+ */
+export async function respondToOtSchedule(
+  tenantId: string,
+  id: string,
+  userId: string,
+  roles: string[],
+  data: OtScheduleResponseInput,
+) {
+  const request = await prisma.otRequest.findFirst({
+    where: { id, tenantId },
+    include: OT_REQUEST_INCLUDE,
+  });
+  if (!request) throw AppError.notFound('OT request not found');
+  if (request.status === 'completed') {
+    throw AppError.badRequest('This surgery is already completed');
+  }
+  if (request.status === 'cancelled') {
+    throw AppError.badRequest('This surgery is already cancelled');
+  }
+
+  // Only the doctor who raised it or the named surgeon may answer. The OT desk
+  // (hospital admin) may record a verbal confirmation with `onBehalf` — but
+  // another doctor must never be able to answer for a colleague, so the bypass
+  // is gated on role, not on the flag alone.
+  const profileId = await callerDoctorProfileId(tenantId, userId);
+  const isOwner =
+    !!profileId && (profileId === request.doctorId || profileId === request.surgeonId);
+  const canActOnBehalf =
+    !!data.onBehalf && roles.some((r) => r === 'admin' || r === 'super_admin' || r === 'ot_admin');
+  if (!isOwner && !canActOnBehalf) {
+    throw AppError.forbidden('Only the requesting doctor or the surgeon can respond to this booking');
+  }
+
+  const meta = await getOneOtScheduleMeta(id);
+  const note = data.note?.trim() || null;
+  const patientName = `${request.patient?.firstName ?? ''} ${request.patient?.lastName ?? ''}`.trim();
+  const proposer = meta.rescheduledBy;
+
+  if (data.action === 'accept') {
+    await recordDoctorResponse(id, { response: 'accepted', note, state: SCHEDULE_CONFIRMED });
+    notify({
+      tenantId,
+      userId: proposer,
+      title: 'Surgery time accepted',
+      message: `${request.procedureName} for ${patientName || 'a patient'} on ${slotLabel(request.scheduledDate, request.scheduledStartTime)} was accepted by the doctor.`,
+      referenceType: 'ot_response',
+      referenceId: id,
+    });
+    logger.info({ tenantId, otRequestId: id, userId }, 'OT reschedule accepted by doctor');
+    return shapeOtRequest(request as any, await getOneOtScheduleMeta(id));
+  }
+
+  if (data.action === 'cancel') {
+    if (!note) throw AppError.badRequest('A reason is required to cancel the surgery');
+    const updated = await prisma.otRequest.update({
+      where: { id },
+      data: { status: 'cancelled', cancellationReason: note },
+      include: OT_REQUEST_INCLUDE,
+    });
+    await recordDoctorResponse(id, { response: 'rejected', note, state: null });
+    notify({
+      tenantId,
+      userId: proposer,
+      title: 'Surgery cancelled by the doctor',
+      message: `${request.procedureName} for ${patientName || 'a patient'} was cancelled. Reason: ${note}`,
+      referenceType: 'ot_response',
+      referenceId: id,
+    });
+    logger.info({ tenantId, otRequestId: id, userId }, 'OT request cancelled by doctor');
+    return shapeOtRequest(updated as any, await getOneOtScheduleMeta(id));
+  }
+
+  // action === 'reschedule' — the doctor counter-proposes a new preferred slot
+  // and the request returns to the OT admin's pending queue.
+  if (!data.preferredDate) {
+    throw AppError.badRequest('A new preferred date is required to request another time');
+  }
+  if (!note) {
+    throw AppError.badRequest('A reason is required when asking for another time');
+  }
+  const updated = await prisma.otRequest.update({
+    where: { id },
+    data: {
+      status: 'requested',
+      preferredDate: new Date(data.preferredDate),
+      preferredTime: data.preferredTime
+        ? new Date(`1970-01-01T${data.preferredTime}:00Z`)
+        : null,
+      // The old booking no longer stands — free the slot.
+      scheduledDate: null,
+      scheduledTime: null,
+      scheduledStartTime: null,
+      scheduledEndTime: null,
+    },
+    include: OT_REQUEST_INCLUDE,
+  });
+  await recordDoctorResponse(id, { response: 'rejected', note, state: null });
+  await clearScheduleProposal(id);
+  notify({
+    tenantId,
+    userId: proposer,
+    title: 'Doctor asked for a different surgery time',
+    message:
+      `${request.procedureName} for ${patientName || 'a patient'} — the doctor asked for ` +
+      `${slotLabel(data.preferredDate, data.preferredTime ?? null)} instead. Reason: ${note}`,
+    referenceType: 'ot_response',
+    referenceId: id,
+  });
+  logger.info({ tenantId, otRequestId: id, userId }, 'Doctor counter-proposed an OT slot');
+  return shapeOtRequest(updated as any, await getOneOtScheduleMeta(id));
 }
 
 export async function updateOTRequest(
@@ -871,6 +1199,16 @@ export async function updateOTRequest(
   const now = new Date();
   const patch: any = {};
   if (data.status) {
+    // A rescheduled surgery is only a proposal until the doctor accepts it —
+    // the theatre must not start on a slot the surgeon has not agreed to.
+    if (data.status === 'in_progress') {
+      const meta = await getOneOtScheduleMeta(id);
+      if (meta.scheduleState === SCHEDULE_AWAITING_DOCTOR) {
+        throw AppError.badRequest(
+          'The doctor has not yet accepted the rescheduled time. Wait for their confirmation before starting.',
+        );
+      }
+    }
     patch.status = data.status;
     if (data.status === 'in_progress' && !existing.actualStartTime) {
       patch.actualStartTime = data.actualStartTime ? new Date(data.actualStartTime) : now;
@@ -897,7 +1235,28 @@ export async function updateOTRequest(
     include: OT_REQUEST_INCLUDE,
   });
 
-  return shapeOtRequest(updated as any);
+  // Tell the doctor when the OT desk calls off a surgery they raised.
+  if (data.status === 'cancelled') {
+    const patientName = `${updated.patient?.firstName ?? ''} ${updated.patient?.lastName ?? ''}`.trim();
+    const targets = new Set(
+      [updated.doctor?.user?.id, updated.surgeon?.user?.id].filter(Boolean) as string[],
+    );
+    for (const uid of targets) {
+      if (uid === _userId) continue;
+      notify({
+        tenantId,
+        userId: uid,
+        title: 'Surgery cancelled',
+        message:
+          `${updated.procedureName} for ${patientName || 'a patient'} was cancelled.` +
+          (data.cancellationReason ? ` Reason: ${data.cancellationReason}` : ''),
+        referenceType: 'ot_response',
+        referenceId: id,
+      });
+    }
+  }
+
+  return shapeOtRequest(updated as any, await getOneOtScheduleMeta(id));
 }
 
 // ============================================================

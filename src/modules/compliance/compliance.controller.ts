@@ -230,7 +230,11 @@ export async function createOTRequest(req: AuthenticatedRequest, res: Response, 
 export async function getOTRequests(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const tenantId = req.user!.tenantId;
-    const { requests, total, page, limit } = await complianceService.getOTRequests(tenantId, req.query as any);
+    const { requests, total, page, limit } = await complianceService.getOTRequests(
+      tenantId,
+      req.query as any,
+      req.user!.userId,
+    );
     sendPaginatedResponse(res, requests, total, page, limit, 'OT requests retrieved successfully');
   } catch (err) {
     next(err);
@@ -261,8 +265,45 @@ export async function approveOTRequest(req: AuthenticatedRequest, res: Response,
 export async function scheduleOT(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const tenantId = req.user!.tenantId;
-    const request = await complianceService.scheduleOT(tenantId, req.params.id as string, req.body);
-    sendResponse({ res, message: 'OT scheduled successfully', data: request });
+    const request = await complianceService.scheduleOT(
+      tenantId,
+      req.params.id as string,
+      req.user!.userId,
+      req.body,
+    );
+    sendResponse({
+      res,
+      message:
+        (request as { scheduleState?: string | null }).scheduleState === 'awaiting_doctor'
+          ? 'Surgery rescheduled — the doctor has been notified for confirmation'
+          : 'OT scheduled successfully',
+      data: request,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** Doctor accepts / counter-proposes / cancels a rescheduled surgery slot. */
+export async function respondToOtSchedule(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const request = await complianceService.respondToOtSchedule(
+      req.user!.tenantId,
+      req.params.id as string,
+      req.user!.userId,
+      req.user!.roles ?? [],
+      req.body,
+    );
+    const messages: Record<string, string> = {
+      accept: 'Surgery time confirmed',
+      reschedule: 'New time requested — the OT desk has been notified',
+      cancel: 'Surgery cancelled',
+    };
+    sendResponse({ res, message: messages[req.body.action] ?? 'Response recorded', data: request });
   } catch (err) {
     next(err);
   }
