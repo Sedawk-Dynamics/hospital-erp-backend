@@ -5990,8 +5990,8 @@ model OtRequest {
   // of `status` so the OtRequestStatus enum (and its migration) stays put.
   //   scheduleState: null | 'awaiting_doctor' | 'confirmed'
   //   doctorResponse: null | 'accepted' | 'rejected'
-  // Accessed via raw SQL until the Prisma client is regenerated (the Windows
-  // dev server locks the engine DLL) — see shared/ot-schedule.ts.
+  // Read and written through shared/ot-schedule.ts, which also carries the
+  // self-healing DDL for databases that predate the feature.
   scheduleState         String?   @map("schedule_state") @db.VarChar(24)
   rescheduleReason      String?   @map("reschedule_reason")
   rescheduledBy         String?   @map("rescheduled_by")

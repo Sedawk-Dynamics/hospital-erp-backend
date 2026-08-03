@@ -14,11 +14,18 @@ import { logger } from '../config/logger';
 //
 // This lives in columns on `ot_requests` rather than in the OtRequestStatus
 // enum, so no enum migration is needed and every existing status transition
-// keeps working untouched. The columns are read and written with raw SQL
-// because the Prisma client is not regenerated while the Windows dev server
-// holds the query-engine DLL (same pattern as `admissions.admission_type`).
-// Once `prisma generate` runs, typed access becomes available and these
-// helpers can be simplified.
+// keeps working untouched.
+//
+// Access is raw SQL. The columns are in schema.prisma and the client HAS been
+// regenerated, so typed access would work too — but keeping every read and
+// write funnelled through this one module means the self-healing DDL below is
+// guaranteed to have run first, which is what lets a database that predates
+// the feature heal itself instead of erroring on an unknown column.
+//
+// Two traps if you edit the SQL: `ot_requests.id` and `users.id` are TEXT, not
+// UUID (Prisma maps String ids to TEXT), so never cast a parameter `::uuid`;
+// and a bare placeholder inside `reschedule_count + $n` needs an explicit
+// `::int` or Postgres cannot infer its type.
 
 /** Booking is final — either the admin took the doctor's slot, or the doctor accepted. */
 export const SCHEDULE_CONFIRMED = 'confirmed';
