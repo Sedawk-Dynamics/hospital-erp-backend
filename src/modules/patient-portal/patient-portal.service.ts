@@ -1031,17 +1031,27 @@ async function resolvePrimaryPatientId(userId: string, email: string, tenantId?:
   return rows[0]?.id ?? ids[0];
 }
 
+/**
+ * Every patient row belonging to the portal user's own person — the union of
+ * the rows their account owns and the rows the clinical side considers the
+ * same human. Used to authorise edits to entries that may have been filed
+ * against a different hospital's record.
+ */
+async function resolveMyPersonPatientIds(userId: string, email: string) {
+  const owned = await resolvePatientIds(userId, email);
+  if (owned.length === 0) return [];
+  const { resolvePersonPatientIds } = await import('../../shared/patient-identity');
+  const sets = await Promise.all(owned.map((id) => resolvePersonPatientIds(id)));
+  return Array.from(new Set(sets.flat()));
+}
+
 export async function getMyPersonalHistory(userId: string, email: string, tenantId?: string) {
-  const ids = await resolvePatientIds(userId, email, tenantId);
-  if (ids.length === 0) return null;
-  // Read across every record this person owns, newest first, so a doctor's
-  // edit shows up in the portal no matter which record they made it against.
-  const rows = await prisma.patientPersonalHistory.findMany({
-    where: { patientId: { in: ids } },
-    orderBy: { updatedAt: 'desc' },
-    take: 1,
-  });
-  return rows[0] ?? null;
+  const patientId = await resolvePrimaryPatientId(userId, email, tenantId);
+  if (!patientId) return null;
+  // Delegate to the clinical service so the portal and the doctor resolve the
+  // SAME person and read the SAME record — the two must never disagree.
+  const { getPersonalHistory } = await import('../medical-history/medical-history.service');
+  return getPersonalHistory(patientId);
 }
 
 export async function upsertMyPersonalHistory(userId: string, email: string, data: any, tenantId?: string) {
@@ -1052,12 +1062,10 @@ export async function upsertMyPersonalHistory(userId: string, email: string, dat
 }
 
 export async function listMyFamilyHistory(userId: string, email: string, tenantId?: string) {
-  const ids = await resolvePatientIds(userId, email, tenantId);
-  if (ids.length === 0) return [];
-  return prisma.patientFamilyHistory.findMany({
-    where: { patientId: { in: ids } },
-    orderBy: [{ relationSide: 'asc' }, { createdAt: 'desc' }],
-  });
+  const patientId = await resolvePrimaryPatientId(userId, email, tenantId);
+  if (!patientId) return [];
+  const { listFamilyHistory } = await import('../medical-history/medical-history.service');
+  return listFamilyHistory(patientId);
 }
 
 export async function createMyFamilyHistory(userId: string, email: string, data: any, tenantId?: string) {
@@ -1068,7 +1076,7 @@ export async function createMyFamilyHistory(userId: string, email: string, data:
 }
 
 export async function updateMyFamilyHistory(userId: string, email: string, id: string, data: any) {
-  const ids = await resolvePatientIds(userId, email);
+  const ids = await resolveMyPersonPatientIds(userId, email);
   if (ids.length === 0) throw new Error('No patient record found');
   const entry = await prisma.patientFamilyHistory.findFirst({ where: { id, patientId: { in: ids } } });
   if (!entry) throw new Error('Family history entry not found');
@@ -1077,7 +1085,7 @@ export async function updateMyFamilyHistory(userId: string, email: string, id: s
 }
 
 export async function deleteMyFamilyHistory(userId: string, email: string, id: string) {
-  const ids = await resolvePatientIds(userId, email);
+  const ids = await resolveMyPersonPatientIds(userId, email);
   if (ids.length === 0) throw new Error('No patient record found');
   const entry = await prisma.patientFamilyHistory.findFirst({ where: { id, patientId: { in: ids } } });
   if (!entry) throw new Error('Family history entry not found');
@@ -1086,12 +1094,10 @@ export async function deleteMyFamilyHistory(userId: string, email: string, id: s
 }
 
 export async function listMyAllergies(userId: string, email: string, tenantId?: string) {
-  const ids = await resolvePatientIds(userId, email, tenantId);
-  if (ids.length === 0) return [];
-  return prisma.patientAllergy.findMany({
-    where: { patientId: { in: ids } },
-    orderBy: { createdAt: 'desc' },
-  });
+  const patientId = await resolvePrimaryPatientId(userId, email, tenantId);
+  if (!patientId) return [];
+  const { listAllergies } = await import('../medical-history/medical-history.service');
+  return listAllergies(patientId);
 }
 
 export async function createMyAllergy(userId: string, email: string, data: any, tenantId?: string) {
@@ -1102,7 +1108,7 @@ export async function createMyAllergy(userId: string, email: string, data: any, 
 }
 
 export async function updateMyAllergy(userId: string, email: string, id: string, data: any) {
-  const ids = await resolvePatientIds(userId, email);
+  const ids = await resolveMyPersonPatientIds(userId, email);
   const entry = await prisma.patientAllergy.findFirst({ where: { id, patientId: { in: ids } } });
   if (!entry) throw new Error('Allergy not found');
   const { updateAllergy } = await import('../medical-history/medical-history.service');
@@ -1110,7 +1116,7 @@ export async function updateMyAllergy(userId: string, email: string, id: string,
 }
 
 export async function deleteMyAllergy(userId: string, email: string, id: string) {
-  const ids = await resolvePatientIds(userId, email);
+  const ids = await resolveMyPersonPatientIds(userId, email);
   const entry = await prisma.patientAllergy.findFirst({ where: { id, patientId: { in: ids } } });
   if (!entry) throw new Error('Allergy not found');
   const { deleteAllergy } = await import('../medical-history/medical-history.service');

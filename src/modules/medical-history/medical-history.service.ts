@@ -1,6 +1,10 @@
 import { prisma } from '../../config/database';
 import { AppError } from '../../shared/appError';
 import { logger } from '../../config/logger';
+import {
+  resolvePersonPatientIds,
+  resolvePersonCanonicalPatientId,
+} from '../../shared/patient-identity';
 
 // ============================================================
 // Personal History
@@ -20,7 +24,17 @@ export interface UpsertPersonalHistoryInput {
 }
 
 export async function getPersonalHistory(patientId: string) {
-  return prisma.patientPersonalHistory.findUnique({ where: { patientId } });
+  // Personal history belongs to the human, not to the per-hospital patient
+  // row. Read across every row that IS this person, newest first, so habits
+  // recorded at one hospital (or by the patient in their portal) show up
+  // everywhere.
+  const ids = await resolvePersonPatientIds(patientId);
+  const rows = await prisma.patientPersonalHistory.findMany({
+    where: { patientId: { in: ids } },
+    orderBy: { updatedAt: 'desc' },
+    take: 1,
+  });
+  return rows[0] ?? null;
 }
 
 const PERSONAL_HISTORY_FIELDS = [
@@ -61,9 +75,12 @@ export async function upsertPersonalHistory(
     payload[key] = data[key] === '' ? null : data[key];
   }
 
+  // Write to the person's canonical row so they never accumulate one
+  // lifestyle record per hospital.
+  const canonicalId = await resolvePersonCanonicalPatientId(patientId);
   const result = await prisma.patientPersonalHistory.upsert({
-    where: { patientId },
-    create: { patientId, ...payload },
+    where: { patientId: canonicalId },
+    create: { patientId: canonicalId, ...payload },
     update: payload,
   });
   logger.info(
@@ -167,8 +184,11 @@ export interface FamilyHistoryInput {
 }
 
 export async function listFamilyHistory(patientId: string) {
+  // Whose parents had what is a fact about the person, not about the hospital
+  // that happened to record it.
+  const ids = await resolvePersonPatientIds(patientId);
   return prisma.patientFamilyHistory.findMany({
-    where: { patientId },
+    where: { patientId: { in: ids } },
     orderBy: [{ relationSide: 'asc' }, { createdAt: 'desc' }],
   });
 }
@@ -178,9 +198,18 @@ export async function createFamilyHistory(
   userId: string,
   data: FamilyHistoryInput,
 ) {
+  const canonicalId = await resolvePersonCanonicalPatientId(patientId);
+  const duplicate = await prisma.patientFamilyHistory.findFirst({
+    where: {
+      patientId: { in: await resolvePersonPatientIds(patientId) },
+      conditionName: { equals: data.conditionName, mode: 'insensitive' },
+      relationSide: data.relationSide as any,
+    },
+  });
+  if (duplicate) throw AppError.conflict('This family condition is already recorded');
   const entry = await prisma.patientFamilyHistory.create({
     data: {
-      patientId,
+      patientId: canonicalId,
       conditionName: data.conditionName,
       relationSide: data.relationSide as any,
       relationship: data.relationship,
@@ -198,7 +227,9 @@ export async function updateFamilyHistory(
   id: string,
   data: Partial<FamilyHistoryInput>,
 ) {
-  const existing = await prisma.patientFamilyHistory.findFirst({ where: { id, patientId } });
+  const existing = await prisma.patientFamilyHistory.findFirst({
+    where: { id, patientId: { in: await resolvePersonPatientIds(patientId) } },
+  });
   if (!existing) throw AppError.notFound('Family history entry not found');
   const update: any = { updatedBy: userId };
   if (data.conditionName !== undefined) update.conditionName = data.conditionName;
@@ -209,7 +240,9 @@ export async function updateFamilyHistory(
 }
 
 export async function deleteFamilyHistory(patientId: string, id: string) {
-  const existing = await prisma.patientFamilyHistory.findFirst({ where: { id, patientId } });
+  const existing = await prisma.patientFamilyHistory.findFirst({
+    where: { id, patientId: { in: await resolvePersonPatientIds(patientId) } },
+  });
   if (!existing) throw AppError.notFound('Family history entry not found');
   await prisma.patientFamilyHistory.delete({ where: { id } });
 }
@@ -226,20 +259,27 @@ export interface AllergyInput {
 }
 
 export async function listAllergies(patientId: string) {
+  // An allergy recorded at one hospital MUST be visible at the next one —
+  // this list drives the prescribing safety checks.
+  const ids = await resolvePersonPatientIds(patientId);
   return prisma.patientAllergy.findMany({
-    where: { patientId },
+    where: { patientId: { in: ids } },
     orderBy: { createdAt: 'desc' },
   });
 }
 
 export async function createAllergy(patientId: string, userId: string, data: AllergyInput) {
+  const canonicalId = await resolvePersonCanonicalPatientId(patientId);
   const duplicate = await prisma.patientAllergy.findFirst({
-    where: { patientId, allergen: { equals: data.allergen, mode: 'insensitive' } },
+    where: {
+      patientId: { in: await resolvePersonPatientIds(patientId) },
+      allergen: { equals: data.allergen, mode: 'insensitive' },
+    },
   });
   if (duplicate) throw AppError.conflict('This allergy is already recorded');
   const allergy = await prisma.patientAllergy.create({
     data: {
-      patientId,
+      patientId: canonicalId,
       allergen: data.allergen,
       allergyType: data.allergyType as any,
       severity: (data.severity ?? null) as any,
@@ -256,7 +296,9 @@ export async function updateAllergy(
   id: string,
   data: Partial<AllergyInput>,
 ) {
-  const existing = await prisma.patientAllergy.findFirst({ where: { id, patientId } });
+  const existing = await prisma.patientAllergy.findFirst({
+    where: { id, patientId: { in: await resolvePersonPatientIds(patientId) } },
+  });
   if (!existing) throw AppError.notFound('Allergy not found');
   const update: any = {};
   if (data.allergen !== undefined) update.allergen = data.allergen;
@@ -267,7 +309,9 @@ export async function updateAllergy(
 }
 
 export async function deleteAllergy(patientId: string, id: string) {
-  const existing = await prisma.patientAllergy.findFirst({ where: { id, patientId } });
+  const existing = await prisma.patientAllergy.findFirst({
+    where: { id, patientId: { in: await resolvePersonPatientIds(patientId) } },
+  });
   if (!existing) throw AppError.notFound('Allergy not found');
   await prisma.patientAllergy.delete({ where: { id } });
 }
