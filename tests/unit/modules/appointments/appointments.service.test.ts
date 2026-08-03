@@ -3,8 +3,10 @@ import * as appointmentsService from '../../../../src/modules/appointments/appoi
 import { prisma } from '../../../../src/config/database';
 import { AppError } from '../../../../src/shared/appError';
 
-vi.mock('../../../../src/config/database');
-vi.mock('../../../../src/config/logger');
+// NOTE: do NOT add `vi.mock('.../config/database')` here. A bare vi.mock is
+// an AUTOMOCK and overrides the working factory mock in tests/setup.ts,
+// which is what made every prisma call in this file undefined.
+
 
 describe('AppointmentsService', () => {
   beforeEach(() => { vi.clearAllMocks(); });

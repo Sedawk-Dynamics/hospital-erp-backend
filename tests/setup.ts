@@ -11,130 +11,147 @@ process.env.PORT = '4000';
 process.env.NODE_ENV = 'test';
 process.env.FRONTEND_URL = 'http://localhost:3000';
 process.env.BCRYPT_SALT_ROUNDS = '4';
+// Required by src/config/env.ts with no default — without them the schema fails
+// and env.ts calls process.exit(1), which kills the whole test FILE before a
+// single test runs. Any suite that transitively imports a service died this way.
+process.env.RAZORPAY_KEY_ID = 'rzp_test_key';
+process.env.RAZORPAY_KEY_SECRET = 'rzp_test_secret';
 
 // ─── Mock Prisma ───
-vi.mock('../src/config/database', () => ({
-  prisma: {
-    tenant: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
-    user: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), count: vi.fn() },
-    role: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
-    rolePermission: { findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), delete: vi.fn() },
-    userRole: { findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), delete: vi.fn() },
-    loginAuditLog: { create: vi.fn() },
-    patient: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), count: vi.fn() },
-    patientEmergencyContact: { create: vi.fn(), findMany: vi.fn() },
-    patientAllergy: { create: vi.fn(), findMany: vi.fn() },
-    patientFamilyHistory: { create: vi.fn(), findMany: vi.fn() },
-    patientDocument: { create: vi.fn(), findMany: vi.fn() },
-    doctorProfile: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    doctorSchedule: { findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), upsert: vi.fn() },
-    doctorLeave: { findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn() },
-    appointment: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    queueToken: { findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), count: vi.fn() },
-    visit: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    admission: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    patientTransfer: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    nurseAssignment: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    reservation: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    vital: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn() },
-    diagnosis: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
-    serviceTariff: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    bill: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn(), aggregate: vi.fn(), groupBy: vi.fn() },
-    billItem: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), deleteMany: vi.fn(), aggregate: vi.fn() },
-    payment: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), count: vi.fn() },
-    refund: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    discount: { create: vi.fn(), findMany: vi.fn(), deleteMany: vi.fn(), aggregate: vi.fn() },
-    receipt: { create: vi.fn() },
-    labTestCatalog: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), count: vi.fn() },
-    labOrder: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    labSample: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    labResult: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    labReport: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    drugCategory: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), count: vi.fn() },
-    drugMaster: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), count: vi.fn() },
-    drugFormulary: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), createMany: vi.fn(), update: vi.fn(), updateMany: vi.fn(), delete: vi.fn(), count: vi.fn() },
-    drugBatch: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), updateMany: vi.fn(), count: vi.fn(), aggregate: vi.fn() },
-    dispensingRecord: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn(), aggregate: vi.fn(), groupBy: vi.fn() },
-    drugReturn: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn(), aggregate: vi.fn() },
-    drugPurchaseOrder: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), count: vi.fn() },
-    ndpsLocation: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), count: vi.fn() },
-    ndpsStockBalance: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), count: vi.fn(), aggregate: vi.fn() },
-    ndpsTransaction: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), count: vi.fn() },
-    ndpsDailyBalance: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), count: vi.fn() },
-    pharmacyStockHold: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), count: vi.fn() },
-    pharmacyStockHoldItem: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    drugPurchaseOrderItem: { findMany: vi.fn(), create: vi.fn(), createMany: vi.fn(), deleteMany: vi.fn() },
-    wardStock: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn(), aggregate: vi.fn() },
-    wardStockLedger: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    inventoryItem: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), count: vi.fn() },
-    inventorySetting: { findUnique: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn(), upsert: vi.fn() },
-    stockTransaction: { findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), count: vi.fn(), aggregate: vi.fn() },
-    purchaseOrder: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn(), groupBy: vi.fn() },
-    purchaseOrderItem: { findMany: vi.fn(), create: vi.fn(), update: vi.fn(), deleteMany: vi.fn() },
-    supplyRequest: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    supplier: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), count: vi.fn() },
-    stockTransfer: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    insurer: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), count: vi.fn() },
-    tpaProvider: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), count: vi.fn() },
-    insurancePolicy: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    insuranceClaim: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    preAuthorizationRequest: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    bloodDonor: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    bloodDonation: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    bloodInventory: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn(), groupBy: vi.fn() },
-    crossMatchTest: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    transfusion: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    staffProfile: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    staffLicense: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    dutyRoster: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    attendance: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    leaveRequest: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    payroll: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    salarySlip: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    department: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), count: vi.fn() },
-    floor: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), count: vi.fn() },
-    ward: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), count: vi.fn() },
-    bed: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), count: vi.fn() },
-    notification: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), createMany: vi.fn(), update: vi.fn(), updateMany: vi.fn(), delete: vi.fn(), count: vi.fn() },
-    message: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), count: vi.fn() },
-    shiftHandoverNote: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    prescription: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    prescriptionItem: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
-    medicationAdministration: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), count: vi.fn() },
-    progressNote: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), count: vi.fn() },
-    nursingNote: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), count: vi.fn() },
-    imagingRequest: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    imagingResult: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    ticket: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    feedback: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    auditLog: { findMany: vi.fn(), create: vi.fn(), count: vi.fn() },
-    complianceDocument: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    otRequest: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    incidentReport: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    savedReport: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), count: vi.fn() },
-    scheduledReport: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), count: vi.fn() },
-    supportTicket: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() },
-    dischargeSummary: { findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
-    $transaction: vi.fn((fn: any) => fn({
-      // Provide the same prisma mock inside transactions
-    })),
-    $queryRawUnsafe: vi.fn(),
-    $queryRaw: vi.fn(),
-    $executeRawUnsafe: vi.fn(),
+//
+// Self-maintaining: every model is materialised on first access with the full
+// set of delegate methods, so the mock can never drift behind the schema.
+//
+// It used to be a hand-written list of ~100 models against a 161-model schema,
+// each with a hand-picked subset of methods. Any query touching a model or
+// method nobody had listed blew up with "Cannot read properties of undefined"
+// or "vi.mocked(...).mockResolvedValue is not a function" — and because that
+// kills the whole suite file, ~20 files and 134 tests were dead, leaving most
+// of the backend with no test cover at all. Adding a `prisma.x.aggregate()`
+// call to a service should never break unrelated tests.
+vi.mock('../src/config/database', () => {
+  // Every method a Prisma model delegate exposes.
+  const DELEGATE_METHODS = [
+    'findUnique', 'findUniqueOrThrow', 'findFirst', 'findFirstOrThrow', 'findMany',
+    'create', 'createMany', 'createManyAndReturn',
+    'update', 'updateMany', 'upsert',
+    'delete', 'deleteMany',
+    'count', 'aggregate', 'groupBy',
+  ] as const;
+
+  // Default returns follow Prisma's real contract, so a service that does
+  // `rows.length` or `agg._sum.x` on a query the test did not bother to stub
+  // gets an empty result instead of crashing on undefined. Tests still override
+  // any of these with mockResolvedValue as usual.
+  const DEFAULTS: Record<string, () => unknown> = {
+    findMany: () => [],
+    groupBy: () => [],
+    count: () => 0,
+    aggregate: () => ({ _sum: {}, _count: 0, _avg: {}, _min: {}, _max: {} }),
+    createMany: () => ({ count: 0 }),
+    createManyAndReturn: () => [],
+    updateMany: () => ({ count: 0 }),
+    deleteMany: () => ({ count: 0 }),
+  };
+
+  const models = new Map<string, Record<string, ReturnType<typeof vi.fn>>>();
+  const modelMock = (name: string) => {
+    let m = models.get(name);
+    if (!m) {
+      m = {};
+      for (const fn of DELEGATE_METHODS) {
+        const def = DEFAULTS[fn];
+        // findUnique / findFirst deliberately keep returning undefined — the
+        // "not found" path in every service depends on a falsy result.
+        m[fn] = def ? vi.fn(async () => def()) : vi.fn();
+      }
+      models.set(name, m);
+    }
+    return m;
+  };
+
+  // Top-level client methods. `$transaction` hands the callback the client
+  // itself — it used to pass `{}`, so any service doing `tx.bill.update(...)`
+  // inside a transaction crashed in tests. It also accepts an array form.
+  const topLevel: Record<string, unknown> = {
+    $transaction: vi.fn((arg: unknown) =>
+      typeof arg === 'function'
+        ? (arg as (tx: unknown) => unknown)(proxy)
+        : Promise.all((arg as unknown[]) ?? []),
+    ),
+    // A raw SELECT returns rows; services legitimately do `rows.map(...)`
+    // straight off it, so undefined would be a mock artefact, not a real state.
+    $queryRaw: vi.fn(async () => []),
+    $queryRawUnsafe: vi.fn(async () => []),
+    $executeRaw: vi.fn(async () => 0),
+    $executeRawUnsafe: vi.fn(async () => 0),
+    $connect: vi.fn(),
     $disconnect: vi.fn(),
-  },
-}));
+    $on: vi.fn(),
+    $extends: vi.fn(),
+  };
+
+  const proxy: Record<string, unknown> = new Proxy(topLevel, {
+    get(target, prop) {
+      if (typeof prop !== 'string') return undefined;
+      if (prop in target) return target[prop];
+      // Vitest / node poke at these when inspecting the object; they must not
+      // be mistaken for model names.
+      if (prop === 'then' || prop === 'constructor' || prop.startsWith('@@')) return undefined;
+      return modelMock(prop);
+    },
+    set(target, prop, value) {
+      if (typeof prop === 'string') target[prop] = value;
+      return true;
+    },
+    has: () => true,
+  });
+
+  return { prisma: proxy };
+});
 
 // ─── Mock Redis ───
-vi.mock('../src/config/redis', () => ({
-  redis: {
-    get: vi.fn(),
-    set: vi.fn(),
-    del: vi.fn(),
-    quit: vi.fn(),
-    call: vi.fn(),
-  },
-}));
+vi.mock('../src/config/redis', () => {
+  // Enough of the ioredis surface that cache and rate-limiter paths behave like
+  // a cold cache instead of throwing "unexpected reply from redis client".
+  const redis: Record<string, unknown> = {
+    get: vi.fn(async () => null),
+    set: vi.fn(async () => 'OK'),
+    setex: vi.fn(async () => 'OK'),
+    del: vi.fn(async () => 0),
+    exists: vi.fn(async () => 0),
+    expire: vi.fn(async () => 1),
+    ttl: vi.fn(async () => -1),
+    incr: vi.fn(async () => 1),
+    decr: vi.fn(async () => 0),
+    keys: vi.fn(async () => []),
+    scan: vi.fn(async () => ['0', []]),
+    mget: vi.fn(async () => []),
+    hget: vi.fn(async () => null),
+    hset: vi.fn(async () => 1),
+    hgetall: vi.fn(async () => ({})),
+    lpush: vi.fn(async () => 1),
+    rpush: vi.fn(async () => 1),
+    lrange: vi.fn(async () => []),
+    sadd: vi.fn(async () => 1),
+    smembers: vi.fn(async () => []),
+    zadd: vi.fn(async () => 1),
+    zrange: vi.fn(async () => []),
+    // rate-limit-redis SCRIPT LOADs a Lua script at startup and expects a SHA
+    // string back; returning null threw an unhandled rejection on every run.
+    eval: vi.fn(async () => null),
+    call: vi.fn(async () => 'da39a3ee5e6b4b0d3255bfef95601890afd80709'),
+    script: vi.fn(async () => 'da39a3ee5e6b4b0d3255bfef95601890afd80709'),
+    evalsha: vi.fn(async () => 1),
+    defineCommand: vi.fn(),
+    pipeline: vi.fn(() => ({ exec: vi.fn(async () => []) })),
+    multi: vi.fn(() => ({ exec: vi.fn(async () => []) })),
+    on: vi.fn(),
+    quit: vi.fn(async () => 'OK'),
+    disconnect: vi.fn(),
+  };
+  return { redis, default: redis };
+});
 
 // ─── Mock Logger ───
 vi.mock('../src/config/logger', () => ({

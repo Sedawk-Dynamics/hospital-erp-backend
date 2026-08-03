@@ -655,8 +655,12 @@ describe('ClinicalService', () => {
       ).rejects.toThrow('Patient does not match the visit');
     });
 
-    it('should reject doctors and other non-nursing roles', async () => {
+    // Doctors examine patients too and record their own readings — the
+    // nurse-only restriction was deliberately lifted (Phase 1 DR5). Every
+    // vital carries recordedBy, so authorship is never ambiguous.
+    it('allows a doctor to record vitals', async () => {
       vi.mocked(prisma.visit.findFirst).mockResolvedValue(mockVisitActive as any);
+      vi.mocked(prisma.vital.create).mockResolvedValue({ id: 'vital-1' } as any);
 
       await expect(
         recordVitals(TENANT_ID, USER_ID, ['doctor'], {
@@ -665,7 +669,11 @@ describe('ClinicalService', () => {
           bloodPressureSystolic: 120,
           bloodPressureDiastolic: 80,
         }),
-      ).rejects.toThrow(/nursing team/);
+      ).resolves.toBeDefined();
+    });
+
+    it('should reject front desk and other non-clinical roles', async () => {
+      vi.mocked(prisma.visit.findFirst).mockResolvedValue(mockVisitActive as any);
 
       await expect(
         recordVitals(TENANT_ID, USER_ID, ['front_desk'], {
@@ -673,7 +681,7 @@ describe('ClinicalService', () => {
           patientId: 'patient-1',
           bloodPressureSystolic: 120,
         }),
-      ).rejects.toThrow(/nursing team/);
+      ).rejects.toThrow(/clinical staff/);
     });
 
     it('should calculate BMI when weight and height are provided', async () => {
