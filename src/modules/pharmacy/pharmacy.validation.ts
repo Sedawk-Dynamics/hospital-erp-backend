@@ -379,6 +379,9 @@ export const getExpiringBatchesQuerySchema = z.object({
 const inwardMatchLineSchema = z.object({
   drugName: z.string().min(1, 'Name is required').max(255),
   genericName: z.string().max(255).optional().nullable(),
+  // Salt composition — a distinct field from genericName on the formulary.
+  // Scored alongside strength so a line only maps onto the same molecule.
+  composition: z.string().max(500).optional().nullable(),
   manufacturer: z.string().max(255).optional().nullable(),
   strength: z.string().max(100).optional().nullable(),
   dosageForm: z.string().max(40).optional().nullable(),

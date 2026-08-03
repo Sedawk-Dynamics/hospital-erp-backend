@@ -66,4 +66,63 @@ describe('scoreMatch', () => {
     );
     expect(withMeta).toBeGreaterThanOrEqual(MATCH_BLOCK_THRESHOLD);
   });
+  // ── Strength units ────────────────────────────────────────────────────────
+  // normalizeDrugName folds "500 mg" to "500" so unit-less invoice names still
+  // line up. That also made 500 mg and 500 ml identical — a perfect 100.
+
+  it('refuses to auto-map the same number with different units (500 mg vs 500 ml)', () => {
+    const score = scoreMatch(
+      { drugName: 'Paracip 500', strength: '500 mg' },
+      { drugName: 'Paracip 500', strength: '500 ml' },
+    );
+    expect(score).toBeLessThan(MATCH_BLOCK_THRESHOLD);
+  });
+
+  it('still maps when the units agree', () => {
+    const score = scoreMatch(
+      { drugName: 'Paracip 500', strength: '500 mg' },
+      { drugName: 'Paracip 500', strength: '500mg' },
+    );
+    expect(score).toBeGreaterThanOrEqual(MATCH_BLOCK_THRESHOLD);
+  });
+
+  it('still maps when only one side declares a unit', () => {
+    const score = scoreMatch({ drugName: 'Telma 40' }, { drugName: 'Telma 40', strength: '40mg' });
+    expect(score).toBeGreaterThanOrEqual(MATCH_BLOCK_THRESHOLD);
+  });
+
+  it('does not invent a unit conflict for a volume that matches', () => {
+    const score = scoreMatch(
+      { drugName: 'Ascoril 100ml Syrup' },
+      { drugName: 'Ascoril Syrup 100 ml' },
+    );
+    expect(score).toBeGreaterThanOrEqual(MATCH_BLOCK_THRESHOLD);
+  });
+
+  // ── Salt composition ──────────────────────────────────────────────────────
+
+  it('rejects a near-identical name when the composition is a different salt', () => {
+    const score = scoreMatch(
+      { drugName: 'Zynoff 500 Tablet', composition: 'Azithromycin 500mg' },
+      { drugName: 'Zynoff 500 Tablet', composition: 'Paracetamol 500mg' },
+    );
+    expect(score).toBeLessThan(MATCH_BLOCK_THRESHOLD);
+  });
+
+  it('maps when name and composition both agree', () => {
+    const score = scoreMatch(
+      { drugName: 'Zynoff 500 Tablet', composition: 'Paracetamol 500mg' },
+      { drugName: 'Zynoff 500 Tablet', composition: 'Paracetamol 500mg' },
+    );
+    expect(score).toBeGreaterThanOrEqual(MATCH_BLOCK_THRESHOLD);
+  });
+
+  it('ignores composition when only one side declares it', () => {
+    const withOne = scoreMatch(
+      { drugName: 'Glycomet 500', composition: 'Metformin 500mg' },
+      { drugName: 'Glycomet 500 Tablet' },
+    );
+    const withNone = scoreMatch({ drugName: 'Glycomet 500' }, { drugName: 'Glycomet 500 Tablet' });
+    expect(withOne).toBe(withNone);
+  });
 });

@@ -136,6 +136,8 @@ export async function findFormularyMatches(
   params: {
     name: string;
     genericName?: string | null;
+    /** Salt composition — scored separately from genericName. */
+    composition?: string | null;
     manufacturer?: string | null;
     strength?: string | null;
     dosageForm?: string | null;
@@ -170,6 +172,10 @@ export async function findFormularyMatches(
       drugName: true,
       category: true,
       genericName: true,
+      // Salt composition is a separate column from genericName. It was never
+      // selected, so the inward review could not adopt it onto a mapped line
+      // and it counted for nothing in the score.
+      composition: true,
       manufacturer: true,
       dosageForm: true,
       strength: true,
@@ -190,6 +196,7 @@ export async function findFormularyMatches(
   const incoming = {
     drugName: name,
     genericName: params.genericName,
+    composition: params.composition,
     manufacturer: params.manufacturer,
     strength: params.strength,
     dosageForm: params.dosageForm,
@@ -229,6 +236,7 @@ export async function findDrugMasterMatches(
   params: {
     name: string;
     genericName?: string | null;
+    composition?: string | null;
     manufacturer?: string | null;
     strength?: string | null;
     dosageForm?: string | null;
@@ -257,12 +265,15 @@ export async function findDrugMasterMatches(
     select: {
       id: true, name: true, genericName: true, manufacturer: true,
       dosageForm: true, strength: true, packSize: true, hsnCode: true, gtin: true,
+      // The catalog's name for the same concept as DrugFormulary.composition.
+      saltComposition: true,
     },
   });
 
   const incoming = {
     drugName: name,
     genericName: params.genericName,
+    composition: params.composition,
     manufacturer: params.manufacturer,
     strength: params.strength,
     dosageForm: params.dosageForm,
@@ -276,6 +287,9 @@ export async function findDrugMasterMatches(
       source: 'catalog' as const,
       drugName: m.name,
       genericName: m.genericName,
+      // Surfaced under the same key the formulary matches use, so the review
+      // UI reads one field whichever source the candidate came from.
+      composition: m.saltComposition,
       manufacturer: m.manufacturer,
       dosageForm: m.dosageForm,
       strength: m.strength,
@@ -287,6 +301,7 @@ export async function findDrugMasterMatches(
       score: scoreMatch(incoming, {
         drugName: m.name,
         genericName: m.genericName,
+        composition: m.saltComposition,
         manufacturer: m.manufacturer,
         strength: m.strength,
         dosageForm: m.dosageForm,
@@ -557,6 +572,8 @@ export async function mergeFormularyItems(
 export interface InwardLineInput {
   drugName: string;
   genericName?: string | null;
+  /** Salt composition — distinct from genericName; scored on its own. */
+  composition?: string | null;
   manufacturer?: string | null;
   strength?: string | null;
   dosageForm?: string | null;
@@ -595,8 +612,8 @@ export async function resolveInwardLine(
     const byGtin = await prisma.drugFormulary.findFirst({
       where: { tenantId, isActive: true, OR: [{ gtin: { in: variants } }, { casePackGtin: { in: variants } }] },
       select: {
-        id: true, drugName: true, category: true, genericName: true, manufacturer: true,
-        dosageForm: true, strength: true, packSize: true, price: true,
+        id: true, drugName: true, category: true, genericName: true, composition: true,
+        manufacturer: true, dosageForm: true, strength: true, packSize: true, price: true,
         gtin: true, casePackGtin: true, unitsPerCase: true,
       },
     });
@@ -623,6 +640,7 @@ export async function resolveInwardLine(
   const { matches: formularyMatches } = await findFormularyMatches(tenantId, {
     name: line.drugName,
     genericName: line.genericName,
+    composition: line.composition,
     manufacturer: line.manufacturer,
     strength: line.strength,
     dosageForm: line.dosageForm,
@@ -645,6 +663,7 @@ export async function resolveInwardLine(
     const catalog = await findDrugMasterMatches({
       name: line.drugName,
       genericName: line.genericName,
+      composition: line.composition,
       manufacturer: line.manufacturer,
       strength: line.strength,
       dosageForm: line.dosageForm,
@@ -660,8 +679,8 @@ export async function resolveInwardLine(
     const mapped = await prisma.drugFormulary.findFirst({
       where: { id: mappedId, tenantId, isActive: true },
       select: {
-        id: true, drugName: true, category: true, genericName: true, manufacturer: true,
-        dosageForm: true, strength: true, packSize: true, price: true,
+        id: true, drugName: true, category: true, genericName: true, composition: true,
+        manufacturer: true, dosageForm: true, strength: true, packSize: true, price: true,
         gtin: true, casePackGtin: true, unitsPerCase: true,
       },
     });

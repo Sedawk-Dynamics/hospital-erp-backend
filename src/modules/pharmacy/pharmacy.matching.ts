@@ -18,6 +18,8 @@
 export interface DrugLike {
   drugName: string;
   genericName?: string | null;
+  /** Salt composition — a distinct field from genericName (see DrugFormulary). */
+  composition?: string | null;
   manufacturer?: string | null;
   strength?: string | null;
   dosageForm?: string | null;
@@ -69,6 +71,68 @@ function strengthTokens(normalized: string): string[] {
     .filter((t) => /\d/.test(t))
     .map((t) => t.replace(/[^0-9.]/g, ''))
     .filter(Boolean);
+}
+
+// ── Units ───────────────────────────────────────────────────────────────────
+// `normalizeDrugName` folds "650 mg" down to "650" so spacing and unit-less
+// invoice names still line up. That is right for the name comparison, but it
+// also means 500 mg and 500 ml became indistinguishable — two completely
+// different products scored a perfect 100. So units are read separately, off
+// the RAW text, before that folding happens.
+
+const UNIT_ALIASES: Record<string, string> = {
+  mcg: 'mcg', ug: 'mcg',
+  mg: 'mg',
+  g: 'g', gm: 'g', gms: 'g',
+  ml: 'ml', l: 'l',
+  iu: 'iu', u: 'iu', unit: 'iu', units: 'iu',
+  '%': '%',
+};
+
+const VALUE_UNIT = /(\d+(?:\.\d+)?)\s*(mcg|ug|mg|gms|gm|g|ml|l|iu|units|unit|u|%)\b/gi;
+
+/** value → set of declared units, e.g. "500" → {"mg"}. Empty when unit-less. */
+function unitsByValue(raw: string | null | undefined): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  if (!raw) return out;
+  for (const m of raw.matchAll(VALUE_UNIT)) {
+    const value = String(parseFloat(m[1]));
+    const unit = UNIT_ALIASES[m[2].toLowerCase()] ?? m[2].toLowerCase();
+    const set = out.get(value) ?? new Set<string>();
+    set.add(unit);
+    out.set(value, set);
+  }
+  return out;
+}
+
+function mergeUnitMaps(...sources: (string | null | undefined)[]): Map<string, Set<string>> {
+  const merged = new Map<string, Set<string>>();
+  for (const src of sources) {
+    for (const [value, units] of unitsByValue(src)) {
+      const set = merged.get(value) ?? new Set<string>();
+      for (const u of units) set.add(u);
+      merged.set(value, set);
+    }
+  }
+  return merged;
+}
+
+/**
+ * True when the two sides quote the SAME number with DIFFERENT units and never
+ * agree on any number+unit pair — "500 mg" vs "500 ml". Deliberately narrow: it
+ * only fires when both sides actually declare a unit for the same value, so
+ * every unit-less name that matched before still matches.
+ */
+function unitConflict(a: Map<string, Set<string>>, b: Map<string, Set<string>>): boolean {
+  let sawConflict = false;
+  for (const [value, unitsA] of a) {
+    const unitsB = b.get(value);
+    if (!unitsB || unitsA.size === 0 || unitsB.size === 0) continue;
+    const agrees = [...unitsA].some((u) => unitsB.has(u));
+    if (agrees) return false; // some number+unit pair lines up — not a conflict
+    sawConflict = true;
+  }
+  return sawConflict;
 }
 
 /** Set of character bigrams used for the Dice coefficient. */
@@ -130,6 +194,17 @@ export function scoreMatch(incoming: DrugLike, existing: DrugLike): number {
   if (sa.size && sb.size) {
     const shared = [...sa].some((t) => sb.has(t));
     if (!shared) score -= 35;
+    // The numbers agree — but do the UNITS? "Paracip 500 mg" and "Paracip
+    // 500 ml" both reduce to "500" once units are folded, and used to score a
+    // perfect 100 and auto-map onto each other.
+    else if (
+      unitConflict(
+        mergeUnitMaps(incoming.drugName, incoming.strength),
+        mergeUnitMaps(existing.drugName, existing.strength),
+      )
+    ) {
+      score -= 35;
+    }
   }
 
   // Light multi-factor boosts (capped so they can't fabricate a match alone).
@@ -151,6 +226,21 @@ export function scoreMatch(incoming: DrugLike, existing: DrugLike): number {
     const gi = normalizeDrugName(incoming.genericName);
     const ge = normalizeDrugName(existing.genericName);
     if (gi && ge) score += diceCoefficient(gi, ge) * 6;
+  }
+
+  // Salt composition is the strongest identity signal there is: two products
+  // with the same composition are the same medicine whatever the brand, and
+  // two with clearly different compositions are NOT the same product however
+  // alike the names read. Only judged when BOTH sides declare it — most rows
+  // still carry their molecule in `genericName` alone, and those are unchanged.
+  if (incoming.composition && existing.composition) {
+    const ci = normalizeDrugName(incoming.composition);
+    const ce = normalizeDrugName(existing.composition);
+    if (ci && ce) {
+      const sim = Math.max(diceCoefficient(ci, ce), tokenJaccard(ci, ce));
+      if (sim >= 0.75) score += 10;
+      else if (sim < 0.35) score -= 25;
+    }
   }
 
   return Math.max(0, Math.min(100, Math.round(score)));
