@@ -185,6 +185,53 @@ export async function getReceiptPdf(
   }
 }
 
+/**
+ * The printable bill for an IP / Emergency / Day Care stay, as JSON for the
+ * on-screen print view. Read-only and available at any time — before discharge
+ * it renders as an interim bill, afterwards as the final one.
+ */
+export async function getAdmissionBillDocument(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const { buildAdmissionBillDocument } = await import('./billing.bill-document');
+    const data = await buildAdmissionBillDocument(
+      req.user!.tenantId,
+      req.params.admissionId as string,
+      { userId: req.user!.userId, roles: req.user!.roles ?? [] },
+    );
+    sendResponse({ res, message: 'Admission bill document', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** Same document as a branded PDF (hospital letterhead from the PDF Builder). */
+export async function getAdmissionBillPdf(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const { buildAdmissionBillDocument } = await import('./billing.bill-document');
+    const { getHospitalBranding } = await import('../hospital-branding/hospital-branding.service');
+    const [doc, branding] = await Promise.all([
+      buildAdmissionBillDocument(tenantId, req.params.admissionId as string, {
+        userId: req.user!.userId,
+        roles: req.user!.roles ?? [],
+      }),
+      getHospitalBranding(tenantId),
+    ]);
+    const { streamAdmissionBillPdf } = await import('./billing.ip-bill-pdf');
+    streamAdmissionBillPdf(res, doc, branding);
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getDayEndReport(
   req: AuthenticatedRequest,
   res: Response,

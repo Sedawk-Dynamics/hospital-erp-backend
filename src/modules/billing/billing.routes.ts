@@ -400,6 +400,23 @@ billingRoutes.post(
   validate(recordDoctorVisitSchema),
   controller.recordDoctorVisit,
 );
+// Printable bill for the stay (IP / Emergency / Day Care). Read-only, so it can
+// be produced at any time — interim while the patient is admitted, final once
+// discharged — and reprinted whenever a copy is asked for. Same care-team access
+// as the ledger it is built from; printing never posts or finalises anything.
+billingRoutes.get(
+  '/admissions/:admissionId/bill-document',
+  authenticate,
+  validate(admissionLedgerParamSchema),
+  controller.getAdmissionBillDocument,
+);
+billingRoutes.get(
+  '/admissions/:admissionId/bill-document/pdf',
+  authenticate,
+  validate(admissionLedgerParamSchema),
+  controller.getAdmissionBillPdf,
+);
+
 // The full admission timeline (admit → discharge) — same care-team access as the ledger.
 billingRoutes.get(
   '/admissions/:admissionId/activity',

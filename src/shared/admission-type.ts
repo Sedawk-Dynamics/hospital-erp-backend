@@ -12,3 +12,10 @@ export type AdmissionType = (typeof ADMISSION_TYPES)[number];
 export function normalizeAdmissionType(v: unknown): AdmissionType {
   return (ADMISSION_TYPES as readonly string[]).includes(v as string) ? (v as AdmissionType) : 'ip';
 }
+
+/** Human label for print/PDF output — mirrors ADMISSION_TYPE_LABELS on the client. */
+export const ADMISSION_TYPE_LABELS: Record<AdmissionType, string> = {
+  ip: 'In-Patient',
+  emergency: 'Emergency',
+  daycare: 'Day Care',
+};
