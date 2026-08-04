@@ -31,6 +31,13 @@ export interface BillDocumentLine {
 }
 
 export interface AdmissionBillDocument {
+  /**
+   * Hospital letterhead, carried ON the document rather than fetched by the
+   * client. `GET /hospital-branding` is admin-only, so the print view rendered
+   * a blank letterhead for every doctor, nurse and front-desk user who opened
+   * a bill. The discharge document already embeds branding the same way.
+   */
+  hospital: unknown;
   admissionId: string;
   admissionType: AdmissionType;
   admissionTypeLabel: string;
@@ -136,7 +143,11 @@ export async function buildAdmissionBillDocument(
   actor: { userId: string; roles: string[] },
 ): Promise<AdmissionBillDocument> {
   const { getAdmissionLedger } = await import('./billing.service');
-  const ledger = await getAdmissionLedger(tenantId, admissionId, actor);
+  const { getHospitalBranding } = await import('../hospital-branding/hospital-branding.service');
+  const [ledger, branding] = await Promise.all([
+    getAdmissionLedger(tenantId, admissionId, actor),
+    getHospitalBranding(tenantId),
+  ]);
 
   const admission = await prisma.admission.findFirst({
     where: { id: admissionId, tenantId },
@@ -247,6 +258,7 @@ export async function buildAdmissionBillDocument(
   const isPaid = balanceDue <= 0;
 
   return {
+    hospital: branding,
     admissionId,
     admissionType,
     admissionTypeLabel: ADMISSION_TYPE_LABELS[admissionType],
