@@ -131,6 +131,14 @@ roleRouter.post(
   usersController.createRole,
 );
 
+// Literal path — must precede `/:id`, which would otherwise match
+// "permissions" as an id and reject it as an invalid UUID.
+roleRouter.get(
+  '/permissions',
+  authenticate,
+  usersController.getPermissions,
+);
+
 roleRouter.put(
   '/:id',
   authenticate,
@@ -139,11 +147,6 @@ roleRouter.put(
   usersController.updateRole,
 );
 
-roleRouter.get(
-  '/permissions',
-  authenticate,
-  usersController.getPermissions,
-);
 
 roleRouter.post(
   '/:id/permissions',

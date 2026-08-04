@@ -154,13 +154,29 @@ vi.mock('../src/config/redis', () => {
 });
 
 // ─── Mock Logger ───
-vi.mock('../src/config/logger', () => ({
-  logger: {
+// app.ts hands this logger to pino-http, which reads `levels.values` to build
+// its list of valid log levels — a bare {info, warn, error} mock makes the whole
+// import of app.ts throw, so every integration test in the file fails to collect.
+// Mirror enough of pino's real surface for that to work.
+const PINO_LEVELS = {
+  values: { trace: 10, debug: 20, info: 30, warn: 40, error: 50, fatal: 60 },
+  labels: { 10: 'trace', 20: 'debug', 30: 'info', 40: 'warn', 50: 'error', 60: 'fatal' },
+};
+
+vi.mock('../src/config/logger', () => {
+  const logger: Record<string, unknown> = {
+    trace: vi.fn(),
+    debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
     fatal: vi.fn(),
-    debug: vi.fn(),
-    child: vi.fn().mockReturnThis(),
-  },
-}));
+    silent: vi.fn(),
+    level: 'silent',
+    levels: PINO_LEVELS,
+    bindings: vi.fn(() => ({})),
+    isLevelEnabled: vi.fn(() => false),
+  };
+  logger.child = vi.fn(() => logger);
+  return { logger };
+});

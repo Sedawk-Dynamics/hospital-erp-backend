@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { paginationSchema } from '../../shared/pagination';
+import { paginationSchema, booleanQueryParam } from '../../shared/pagination';
 
 // ── Time Slot Master ─────────────────────────────────────────
 
@@ -83,7 +83,7 @@ export const listSchedulesQuerySchema = z.object({
         z.array(z.enum(['pending', 'due', 'overdue', 'given', 'given_late', 'missed', 'held', 'refused', 'cancelled'])),
       ])
       .optional(),
-    includePrn: z.coerce.boolean().optional(),
+    includePrn: booleanQueryParam.optional(),
   }),
 });
 

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { booleanQueryParam } from '../../shared/pagination';
 
 const indentItem = z.object({
   drugFormularyId: z.string().uuid(),
@@ -75,6 +76,6 @@ export const listIndentsQuerySchema = z.object({
     status: z.enum(['draft', 'raised', 'approved', 'dispensed', 'delivered', 'acknowledged', 'cancelled']).optional(),
     patientId: z.string().uuid().optional(),
     wardId: z.string().uuid().optional(),
-    isTto: z.coerce.boolean().optional(),
+    isTto: booleanQueryParam.optional(),
   }),
 });

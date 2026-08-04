@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { booleanQueryParam } from '../../shared/pagination';
 
 const templateItem = z.object({
   drugFormularyId: z.string().uuid(),
@@ -35,7 +36,7 @@ export const listTemplatesQuerySchema = z.object({
   query: z.object({
     search: z.string().optional(),
     doctorId: z.string().uuid().optional(),
-    includeInactive: z.coerce.boolean().optional(),
+    includeInactive: booleanQueryParam.optional(),
   }),
 });
 

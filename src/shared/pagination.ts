@@ -17,3 +17,26 @@ export function getPaginationParams(query: PaginationQuery) {
 
   return { skip, take: limit, page, limit };
 }
+
+/**
+ * A boolean carried in a QUERY STRING.
+ *
+ * `z.coerce.boolean()` is wrong here and silently inverts the filter:
+ * `Boolean("false")` is `true`, and so is `Boolean("0")` and `Boolean("no")` —
+ * only the empty string is falsy. `?flag=false` therefore filtered for `true`.
+ * config/env.ts already documents the same trap for env vars.
+ *
+ * Accepts the usual truthy/falsy tokens and leaves anything else undefined so
+ * the filter is simply not applied.
+ */
+export const booleanQueryParam = z
+  .union([z.boolean(), z.string()])
+  .optional()
+  .transform((v) => {
+    if (v === undefined) return undefined;
+    if (typeof v === 'boolean') return v;
+    const s = v.trim().toLowerCase();
+    if (['true', '1', 'yes', 'on'].includes(s)) return true;
+    if (['false', '0', 'no', 'off'].includes(s)) return false;
+    return undefined;
+  });

@@ -128,6 +128,11 @@ labRoutes.patch('/results/:id/verify', authenticate, requirePermission('lab_repo
 labRoutes.post('/reports/:orderId/generate', authenticate, requirePermission('lab_reports', 'create'), validate(generateLabReportSchema), controller.generateLabReport);
 labRoutes.get('/reports/analytics', authenticate, requirePermission('lab_reports', 'read'), controller.getLabReportAnalytics);
 labRoutes.get('/reports', authenticate, requirePermission('lab_reports', 'read'), validate(getLabReportsSchema), controller.getLabReports);
+// --- Extended analytics (per-test TAT, breach counts, daily trend) ---
+// MUST precede `/reports/:id` — it was registered further down the file and
+// `/:id` swallowed it, so the lab analytics dashboard only ever got back
+// "Invalid report ID".
+labRoutes.get('/reports/analytics-extended', authenticate, requirePermission('lab_reports', 'read'), controller.getLabAnalyticsExtended);
 labRoutes.get('/reports/:id', authenticate, requirePermission('lab_reports', 'read'), validate(labReportIdParamSchema), controller.getLabReportById);
 labRoutes.patch('/reports/:id/sign', authenticate, requirePermission('lab_reports', 'approve'), validate(signLabReportSchema), controller.signLabReport);
 labRoutes.patch('/reports/:id/publish', authenticate, requirePermission('lab_reports', 'approve'), validate(publishLabReportSchema), controller.publishLabReport);
@@ -142,9 +147,6 @@ labRoutes.get('/investigation-history/:patientId', authenticate, requirePermissi
 
 // --- Dashboard (real-time worklist counts + recent activity for lab home) ---
 labRoutes.get('/dashboard', authenticate, requirePermission('lab_orders', 'read'), controller.getLabDashboard);
-
-// --- Extended analytics (per-test TAT, breach counts, daily trend) ---
-labRoutes.get('/reports/analytics-extended', authenticate, requirePermission('lab_reports', 'read'), controller.getLabAnalyticsExtended);
 
 // --- Attachments (PDF reports, microscopy images, scans, raw data) ---
 // Files land on disk under /uploads via multer; metadata row points at the

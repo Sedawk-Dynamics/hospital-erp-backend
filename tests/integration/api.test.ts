@@ -203,9 +203,18 @@ describe('API Integration Tests', () => {
   describe('Security Headers', () => {
     it('should include helmet security headers', async () => {
       const res = await request(app).get('/health');
-      // Helmet adds various security headers
       expect(res.headers['x-content-type-options']).toBe('nosniff');
-      expect(res.headers['x-frame-options']).toBeDefined();
+      expect(res.headers['referrer-policy']).toBe('no-referrer');
+      expect(res.headers['x-powered-by']).toBeUndefined();
+    });
+
+    // app.ts sets frameguard:false ON PURPOSE — the OHIF DICOM viewer is embedded
+    // from another origin and X-Frame-Options would block it. This is a JSON API
+    // with no clickable UI of its own, so framing it is not a clickjacking route.
+    // Asserted explicitly so a future re-enable is a deliberate decision, not a surprise.
+    it('deliberately omits X-Frame-Options so the cross-origin DICOM viewer can frame it', async () => {
+      const res = await request(app).get('/health');
+      expect(res.headers['x-frame-options']).toBeUndefined();
     });
   });
 

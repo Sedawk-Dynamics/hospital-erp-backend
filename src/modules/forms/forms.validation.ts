@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { paginationSchema } from '../../shared/pagination';
+import { paginationSchema, booleanQueryParam } from '../../shared/pagination';
 
 // ─────────────────────────────────────────────────────────────
 // Form schema (the JSON document stored on FormTemplate.schema /
@@ -202,7 +202,7 @@ export const templateIdParam = z.object({
 export const listTemplatesQuerySchema = z.object({
   query: paginationSchema.extend({
     category: formCategoryEnum.optional(),
-    isPublished: z.coerce.boolean().optional(),
+    isPublished: booleanQueryParam.optional(),
   }),
 });
 
@@ -233,7 +233,7 @@ export const listHospitalFormsQuerySchema = z.object({
   query: paginationSchema.extend({
     status: z.enum(['active', 'archived', 'all']).default('active'),
     category: formCategoryEnum.optional(),
-    isPublished: z.coerce.boolean().optional(),
+    isPublished: booleanQueryParam.optional(),
   }),
 });
 
