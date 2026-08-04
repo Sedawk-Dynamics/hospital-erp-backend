@@ -8,11 +8,34 @@ import { AppError } from '../../../../src/shared/appError';
 // which is what made every prisma call in this file undefined.
 
 
+// Creating a patient with a phone number now also provisions an "account
+// holder" User on the __platform__ tenant (the global-patient-identity work),
+// so every create test has to stand that path up: platform tenant, patient
+// role, and no e-mail clash. Without it the service throws
+// "Platform tenant not found" long before it reaches patient.create.
+function mockAccountHolderPath() {
+  // vi.clearAllMocks() clears CALLS but not implementations, so a $queryRaw stub
+  // staged by the phone-duplicate test would otherwise leak into later ones.
+  vi.mocked(prisma.$queryRaw).mockResolvedValue([] as any);
+  vi.mocked(prisma.user.findMany).mockResolvedValue([] as any);
+  vi.mocked(prisma.tenant.findFirst).mockResolvedValue({
+    id: 'platform-tenant', slug: '__platform__', name: 'Platform', isActive: true,
+  } as any);
+  vi.mocked(prisma.role.findFirst).mockResolvedValue({ id: 'role-patient', name: 'patient' } as any);
+  vi.mocked(prisma.user.findFirst).mockResolvedValue(null as any);
+  vi.mocked(prisma.user.create).mockResolvedValue({ id: 'account-user-1' } as any);
+  vi.mocked(prisma.userRole.create).mockResolvedValue({ id: 'ur-1' } as any);
+  // The new patient is linked to that account holder, and create() verifies
+  // the linked user exists before writing the row.
+  vi.mocked(prisma.user.findUnique).mockResolvedValue({ id: 'account-user-1' } as any);
+}
+
 describe('PatientsService', () => {
   beforeEach(() => { vi.clearAllMocks(); });
 
   describe('create', () => {
     it('should create a patient with generated MRN', async () => {
+      mockAccountHolderPath();
       vi.mocked(prisma.patient.findFirst).mockResolvedValue(null);
       vi.mocked(prisma.patient.create).mockResolvedValue({
         id: 'p1', mrn: 'MRN-20260309-0001', firstName: 'John', lastName: 'Doe',
@@ -27,6 +50,7 @@ describe('PatientsService', () => {
     });
 
     it('should map gender values correctly', async () => {
+      mockAccountHolderPath();
       vi.mocked(prisma.patient.findFirst).mockResolvedValue(null);
       vi.mocked(prisma.patient.create).mockResolvedValue({ id: 'p1', gender: 'male' } as any);
       await patientsService.create('tenant-1', {
@@ -37,9 +61,14 @@ describe('PatientsService', () => {
     });
 
     it('should throw conflict if phone already exists', async () => {
-      vi.mocked(prisma.patient.findFirst).mockResolvedValueOnce(null); // MRN findFirst
-      vi.mocked(prisma.patient.findFirst).mockResolvedValueOnce(null); // MRN uniqueness check
-      vi.mocked(prisma.patient.findFirst).mockResolvedValueOnce({ id: 'existing' } as any); // phone duplicate
+      mockAccountHolderPath();
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue(null as any);
+      // The phone duplicate check is a RAW query now — it compares the last 10
+      // digits so +91XXXXXXXXXX and XXXXXXXXXX collide as one number — so the
+      // clash has to be staged on $queryRaw, not on patient.findFirst.
+      vi.mocked(prisma.$queryRaw).mockResolvedValue([
+        { id: 'existing', user_id: null },
+      ] as any);
       await expect(
         patientsService.create('tenant-1', {
           firstName: 'John', lastName: 'Doe', gender: 'male',
@@ -63,6 +92,7 @@ describe('PatientsService', () => {
     });
 
     it('should map prefer_not_to_say gender to other', async () => {
+      mockAccountHolderPath();
       vi.mocked(prisma.patient.findFirst).mockResolvedValue(null);
       vi.mocked(prisma.patient.create).mockResolvedValue({ id: 'p1', gender: 'other' } as any);
       await patientsService.create('tenant-1', {

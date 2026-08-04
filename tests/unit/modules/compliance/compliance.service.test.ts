@@ -205,6 +205,14 @@ describe('Compliance Service - Compliance Documents', () => {
 describe('Compliance Service - OT Requests', () => {
   describe('createOTRequest', () => {
     it('should create an OT request when patient and visit exist', async () => {
+      // OT is in-patient only: the patient must be currently admitted so the
+      // surgery charge lands on their running IP bill.
+      vi.mocked(prisma.admission.findFirst).mockResolvedValue({
+        id: 'adm-1', visitId: 'visit-1',
+      } as any);
+      // doctorId / surgeonId may arrive as a DoctorProfile id OR a User id, so
+      // the service resolves them through doctorProfile before writing.
+      vi.mocked(prisma.doctorProfile.findFirst).mockResolvedValue({ id: 'doc-1' } as any);
       vi.mocked(prisma.patient.findFirst).mockResolvedValueOnce({ id: 'pat-1' } as any);
       vi.mocked(prisma.visit.findFirst).mockResolvedValueOnce({ id: 'visit-1' } as any);
       vi.mocked(prisma.otRequest.create).mockResolvedValueOnce({

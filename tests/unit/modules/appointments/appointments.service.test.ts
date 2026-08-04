@@ -8,6 +8,12 @@ import { AppError } from '../../../../src/shared/appError';
 // which is what made every prisma call in this file undefined.
 
 
+// Booking refuses a date in the past, so the fixture date must stay in the
+// future. A hardcoded one silently rots the moment that day passes — which is
+// exactly what took these tests down.
+const FUTURE_DATE = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+const FUTURE_DATE_STR = FUTURE_DATE.toISOString().slice(0, 10);
+
 describe('AppointmentsService', () => {
   beforeEach(() => { vi.clearAllMocks(); });
 
@@ -137,13 +143,13 @@ describe('AppointmentsService', () => {
 
     it('should return empty slots when doctor is on full-day leave', async () => {
       vi.mocked(prisma.doctorProfile.findFirst).mockResolvedValue({ id: 'doc-1' } as any);
-      vi.mocked(prisma.doctorSchedule.findFirst).mockResolvedValue({
+      vi.mocked(prisma.doctorSchedule.findMany).mockResolvedValue([{
         id: 'sched-1', dayOfWeek: 1, startTime: new Date('1970-01-01T09:00:00Z'),
         endTime: new Date('1970-01-01T17:00:00Z'), slotDurationMinutes: 30,
-      } as any);
-      vi.mocked(prisma.doctorLeave.findFirst).mockResolvedValue({
+      }] as any);
+      vi.mocked(prisma.doctorLeave.findMany).mockResolvedValue([{
         id: 'leave-1', doctorId: 'doc-1', startTime: null, endTime: null,
-      } as any);
+      }] as any);
 
       const result = await appointmentsService.getAvailableSlots('tenant-1', 'doc-1', '2026-03-09');
 
@@ -153,13 +159,13 @@ describe('AppointmentsService', () => {
 
     it('should generate time slots and mark booked ones as unavailable', async () => {
       vi.mocked(prisma.doctorProfile.findFirst).mockResolvedValue({ id: 'doc-1' } as any);
-      vi.mocked(prisma.doctorSchedule.findFirst).mockResolvedValue({
+      vi.mocked(prisma.doctorSchedule.findMany).mockResolvedValue([{
         id: 'sched-1', dayOfWeek: 1,
         startTime: new Date('1970-01-01T09:00:00Z'),
         endTime: new Date('1970-01-01T11:00:00Z'),
         slotDurationMinutes: 30,
-      } as any);
-      vi.mocked(prisma.doctorLeave.findFirst).mockResolvedValue(null);
+      }] as any);
+      vi.mocked(prisma.doctorLeave.findMany).mockResolvedValue([] as any);
       vi.mocked(prisma.appointment.findMany).mockResolvedValue([
         {
           startTime: new Date('1970-01-01T09:00:00Z'),
@@ -187,7 +193,7 @@ describe('AppointmentsService', () => {
     const bookingInput = {
       patientId: 'patient-1',
       doctorId: 'doc-1',
-      appointmentDate: '2026-03-15',
+      appointmentDate: FUTURE_DATE_STR,
       startTime: '09:00',
       endTime: '09:30',
       type: 'consultation' as const,
@@ -198,7 +204,7 @@ describe('AppointmentsService', () => {
     it('should book an appointment successfully', async () => {
       vi.mocked(prisma.patient.findFirst).mockResolvedValue({ id: 'patient-1' } as any);
       vi.mocked(prisma.doctorProfile.findFirst).mockResolvedValue({ id: 'doc-1', isAvailable: true } as any);
-      vi.mocked(prisma.doctorLeave.findFirst).mockResolvedValue(null);
+      vi.mocked(prisma.doctorLeave.findMany).mockResolvedValue([] as any);
       vi.mocked(prisma.appointment.findFirst).mockResolvedValue(null); // no conflicts
       vi.mocked(prisma.appointment.create).mockResolvedValue({
         id: 'apt-1',
@@ -249,7 +255,7 @@ describe('AppointmentsService', () => {
     it('should throw conflict if time slot is already booked', async () => {
       vi.mocked(prisma.patient.findFirst).mockResolvedValue({ id: 'patient-1' } as any);
       vi.mocked(prisma.doctorProfile.findFirst).mockResolvedValue({ id: 'doc-1', isAvailable: true } as any);
-      vi.mocked(prisma.doctorLeave.findFirst).mockResolvedValue(null);
+      vi.mocked(prisma.doctorLeave.findMany).mockResolvedValue([] as any);
       vi.mocked(prisma.appointment.findFirst).mockResolvedValue({ id: 'existing-apt' } as any);
 
       await expect(
@@ -446,7 +452,7 @@ describe('AppointmentsService', () => {
     it('should create a sequential queue token', async () => {
       vi.mocked(prisma.appointment.findFirst).mockResolvedValue({
         id: 'apt-1', doctorId: 'doc-1', patientId: 'patient-1',
-        appointmentDate: new Date('2026-03-15'),
+        appointmentDate: FUTURE_DATE,
         doctor: { id: 'doc-1' },
       } as any);
       vi.mocked(prisma.queueToken.findFirst)
@@ -466,7 +472,7 @@ describe('AppointmentsService', () => {
     it('should increment token number from last token', async () => {
       vi.mocked(prisma.appointment.findFirst).mockResolvedValue({
         id: 'apt-2', doctorId: 'doc-1', patientId: 'patient-2',
-        appointmentDate: new Date('2026-03-15'),
+        appointmentDate: FUTURE_DATE,
         doctor: { id: 'doc-1' },
       } as any);
       vi.mocked(prisma.queueToken.findFirst)
@@ -499,7 +505,7 @@ describe('AppointmentsService', () => {
     it('should throw conflict if token already exists for the appointment', async () => {
       vi.mocked(prisma.appointment.findFirst).mockResolvedValue({
         id: 'apt-1', doctorId: 'doc-1', patientId: 'patient-1',
-        appointmentDate: new Date('2026-03-15'),
+        appointmentDate: FUTURE_DATE,
         doctor: { id: 'doc-1' },
       } as any);
       vi.mocked(prisma.queueToken.findFirst).mockResolvedValue({

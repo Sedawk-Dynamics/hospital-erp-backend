@@ -207,8 +207,11 @@ describe('Inventory Service', () => {
         { id: 'item-1', itemName: 'Gloves', currentStock: 5, minimumStockThreshold: 50 },
       ];
 
-      (prisma.$queryRawUnsafe as any).mockResolvedValueOnce(lowStockItems);
+      // Raw query yields matching IDs; the rows themselves are re-fetched
+      // through Prisma (SELECT * would come back snake_case).
+      (prisma.$queryRawUnsafe as any).mockResolvedValueOnce([{ id: 'item-1' }]);
       (prisma.$queryRawUnsafe as any).mockResolvedValueOnce([{ count: 1 }]);
+      (prisma.inventoryItem.findMany as any).mockResolvedValue(lowStockItems);
 
       const result = await getLowStockItems(TENANT_ID, { page: 1, limit: 20 });
 

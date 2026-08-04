@@ -18,26 +18,40 @@ import {
 const TENANT_ID = 'tenant-1';
 const USER_ID = 'user-1';
 
+// Transaction client: every model materialises on first touch with the full
+// delegate surface, mirroring tests/setup.ts. A hand-listed shape rots — the
+// moment the service called tx.labResult.deleteMany the whole file broke.
 function mockTransaction() {
-  const txMock = {
-    labOrder: {
-      create: vi.fn(),
-      findUnique: vi.fn(),
-      update: vi.fn(),
-    },
-    labOrderItem: {
-      createMany: vi.fn(),
-      update: vi.fn(),
-      updateMany: vi.fn(),
-      count: vi.fn(),
-    },
-    labSample: {
-      create: vi.fn(),
-    },
-    labResult: {
-      create: vi.fn(),
-    },
+  const DELEGATE = [
+    'findUnique', 'findFirst', 'findMany', 'create', 'createMany',
+    'update', 'updateMany', 'upsert', 'delete', 'deleteMany',
+    'count', 'aggregate', 'groupBy',
+  ] as const;
+  const DEFAULTS: Record<string, () => unknown> = {
+    findMany: () => [], groupBy: () => [], count: () => 0,
+    createMany: () => ({ count: 0 }), updateMany: () => ({ count: 0 }),
+    deleteMany: () => ({ count: 0 }),
+    aggregate: () => ({ _sum: {}, _count: 0, _avg: {}, _min: {}, _max: {} }),
   };
+  const models = new Map<string, Record<string, ReturnType<typeof vi.fn>>>();
+  const txMock: any = new Proxy(
+    {},
+    {
+      get(_t, prop: string | symbol) {
+        if (typeof prop !== 'string' || prop === 'then') return undefined;
+        let m = models.get(prop);
+        if (!m) {
+          m = {};
+          for (const fn of DELEGATE) {
+            const d = DEFAULTS[fn];
+            m[fn] = d ? vi.fn(async () => d()) : vi.fn();
+          }
+          models.set(prop, m);
+        }
+        return m;
+      },
+    },
+  );
   (prisma.$transaction as any).mockImplementation((fn: any) => fn(txMock));
   return txMock;
 }
@@ -436,13 +450,17 @@ describe('Lab Service', () => {
 
       const result = await generateLabReport(TENANT_ID, 'order-1', USER_ID, 'Test report content');
 
+      // reportContent is a structured JSON document now (hospital branding,
+      // patient, per-test results, notes, generatedAt) rather than the raw
+      // string the caller passes — assert the notes survive into it plus the
+      // fields the caller actually controls.
       expect(prisma.labReport.create).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
             labOrderId: 'order-1',
             patientId: 'patient-1',
-            reportContent: 'Test report content',
             status: 'draft',
+            reportContent: expect.stringContaining('Test report content'),
           }),
         }),
       );
@@ -554,7 +572,7 @@ describe('Lab Service', () => {
       };
       (prisma.labSample.update as any).mockResolvedValue(updated);
 
-      const result = await rejectSample(TENANT_ID, 'sample-1', { rejectionReason: 'Hemolyzed sample' } as any);
+      const result = await rejectSample(TENANT_ID, 'sample-1', USER_ID, { rejectionReason: 'Hemolyzed sample' } as any);
 
       expect(result.status).toBe('rejected');
       expect(result.rejectionReason).toBe('Hemolyzed sample');
@@ -567,7 +585,7 @@ describe('Lab Service', () => {
       });
 
       await expect(
-        rejectSample(TENANT_ID, 'sample-1', { rejectionReason: 'Bad' } as any),
+        rejectSample(TENANT_ID, 'sample-1', USER_ID, { rejectionReason: 'Bad' } as any),
       ).rejects.toThrow('Sample is already rejected');
     });
   });

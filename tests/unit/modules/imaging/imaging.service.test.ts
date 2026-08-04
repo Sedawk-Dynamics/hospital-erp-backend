@@ -74,6 +74,10 @@ describe('Imaging Service', () => {
 
   describe('uploadImagingResult', () => {
     it('should upload a result and mark the request as completed', async () => {
+      // Results are created as a DRAFT for the radiologist to finalise.
+      vi.mocked(prisma.imagingResult.create).mockResolvedValue({
+        id: 'imgres-1', status: 'draft', impression: 'No abnormalities',
+      } as any);
       vi.mocked(prisma.imagingRequest.findFirst).mockResolvedValueOnce({
         id: 'img-req-1',
         tenantId: TENANT_ID,

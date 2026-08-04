@@ -74,8 +74,10 @@ const mockPolicy = {
   coPayPercent: 10,
   deductibleAmount: 5000,
   exclusions: null,
-  validFrom: new Date('2024-01-01'),
-  validTo: new Date('2025-01-01'),
+  // Relative to now: a claim is refused unless the policy is valid TODAY, so a
+  // hardcoded window silently expires and takes these tests down with it.
+  validFrom: new Date(Date.now() - 365 * 24 * 60 * 60 * 1000),
+  validTo: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
   status: 'active',
   createdAt: new Date('2024-01-01'),
   patient: { id: 'patient-1', firstName: 'Charlie', lastName: 'Brown' },
@@ -738,7 +740,7 @@ describe('Insurance Service', () => {
         expect(err).toBeInstanceOf(AppError);
         expect((err as AppError).statusCode).toBe(400);
         expect((err as AppError).message).toBe(
-          'Can only approve pending pre-authorization requests',
+          'Can only approve pending or on-hold pre-authorization requests',
         );
       }
     });
@@ -783,7 +785,7 @@ describe('Insurance Service', () => {
         expect(err).toBeInstanceOf(AppError);
         expect((err as AppError).statusCode).toBe(400);
         expect((err as AppError).message).toBe(
-          'Can only deny pending pre-authorization requests',
+          'Can only deny pending or on-hold pre-authorization requests',
         );
       }
     });

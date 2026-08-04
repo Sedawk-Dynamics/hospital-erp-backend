@@ -410,7 +410,7 @@ describe('HR Service', () => {
       } catch (err) {
         expect(err).toBeInstanceOf(AppError);
         expect((err as AppError).statusCode).toBe(409);
-        expect((err as AppError).message).toBe('Staff already has a roster entry for this date');
+        expect((err as AppError).message).toBe('Staff already has a roster entry for this date and shift');
       }
     });
   });

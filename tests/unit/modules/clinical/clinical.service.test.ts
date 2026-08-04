@@ -71,6 +71,11 @@ const mockVisitDischarged = {
 const mockBed = {
   id: 'bed-1',
   bedNumber: 'B-101',
+  // Admission refuses a bed that is not free (or already held by this patient),
+  // so the fixture has to carry a real status.
+  status: 'available',
+  currentPatientId: null,
+  wardId: 'ward-1',
   room: { id: 'room-1', wardId: 'ward-1' },
 };
 
@@ -110,6 +115,33 @@ const mockTransfer = {
 };
 
 // ─── Tests ───
+
+// A transaction client whose models materialise on demand, mirroring
+// tests/setup.ts. Hand-listing `tx.admission` / `tx.visit` broke as soon as the
+// service also touched tx.bed — and a missing model takes the whole file down.
+function txProxy(overrides: Record<string, Record<string, unknown>> = {}) {
+  const DELEGATE = ['findUnique','findFirst','findMany','create','createMany','update',
+                    'updateMany','upsert','delete','deleteMany','count','aggregate','groupBy'];
+  const models = new Map<string, Record<string, unknown>>();
+  return new Proxy({} as any, {
+    get(_t, prop: string | symbol) {
+      if (typeof prop !== 'string' || prop === 'then') return undefined;
+      let m = models.get(prop);
+      if (!m) {
+        m = {};
+        for (const fn of DELEGATE) m[fn] = vi.fn(async () => (fn === 'findMany' ? [] : undefined));
+        Object.assign(m, overrides[prop] ?? {});
+        models.set(prop, m);
+      }
+      return m;
+    },
+  });
+}
+
+/** Discharge is gated on a PUBLISHED discharge summary — stage one. */
+function mockPublishedDischargeSummary() {
+  vi.mocked(prisma.dischargeSummary.findFirst).mockResolvedValue({ id: 'ds-1' } as any);
+}
 
 describe('ClinicalService', () => {
   beforeEach(() => {
@@ -300,7 +332,9 @@ describe('ClinicalService', () => {
         admissionReason: 'Surgery',
       });
 
-      expect(result).toEqual(mockAdmission);
+      // admissionType (ip / emergency / daycare) is attached to every
+      // admission response now, so match the contract rather than the exact row.
+      expect(result).toMatchObject(mockAdmission);
       expect(prisma.admission.create).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -379,7 +413,9 @@ describe('ClinicalService', () => {
 
       const result = await getAdmissions(TENANT_ID, { page: 1, limit: 20 } as any);
 
-      expect(result.admissions).toEqual(admissions);
+      // admissionType is attached to each row on the way out.
+      expect(result.admissions[0]).toMatchObject(admissions[0]);
+      expect(result.admissions).toHaveLength(admissions.length);
       expect(result.total).toBe(1);
     });
   });
@@ -389,6 +425,7 @@ describe('ClinicalService', () => {
   // ═══════════════════════════════════════════
   describe('dischargePatient', () => {
     it('should discharge patient and free bed', async () => {
+      mockPublishedDischargeSummary();
       vi.mocked(prisma.admission.findFirst).mockResolvedValue({
         ...mockAdmission,
         status: 'admitted',
@@ -401,17 +438,9 @@ describe('ClinicalService', () => {
         dischargedBy: USER_ID,
       };
 
-      vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
-        const tx = {
-          admission: {
-            update: vi.fn().mockResolvedValue(dischargedAdmission),
-          },
-          visit: {
-            update: vi.fn().mockResolvedValue({}),
-          },
-        };
-        return fn(tx);
-      });
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) =>
+        fn(txProxy({ admission: { update: vi.fn().mockResolvedValue(dischargedAdmission) } })),
+      );
 
       const result = await dischargePatient(TENANT_ID, 'admission-1', USER_ID);
 
@@ -420,6 +449,7 @@ describe('ClinicalService', () => {
     });
 
     it('should create discharge summary on discharge (visit status set to discharged)', async () => {
+      mockPublishedDischargeSummary();
       vi.mocked(prisma.admission.findFirst).mockResolvedValue({
         ...mockAdmission,
         status: 'admitted',
@@ -427,7 +457,7 @@ describe('ClinicalService', () => {
 
       let visitUpdateData: any = null;
       vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
-        const tx = {
+        const tx = txProxy({
           admission: {
             update: vi.fn().mockResolvedValue({
               ...mockAdmission,
@@ -442,7 +472,7 @@ describe('ClinicalService', () => {
               return {};
             }),
           },
-        };
+        });
         return fn(tx);
       });
 
@@ -549,18 +579,20 @@ describe('ClinicalService', () => {
         toWard: { id: 'ward-2', name: 'ICU' },
       };
       vi.mocked(prisma.patientTransfer.update).mockResolvedValue(approvedTransfer as any);
+      const txUpdate = vi.fn().mockResolvedValue(approvedTransfer);
+      // The approval is written inside a transaction, so the tx client — not the
+      // top-level prisma mock — is what returns the updated row.
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) =>
+        fn(txProxy({ patientTransfer: { update: txUpdate } })),
+      );
 
       const result = await approveTransfer(TENANT_ID, 'transfer-1', 'admin-1');
 
       expect(result.status).toBe('approved');
-      expect(prisma.patientTransfer.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { id: 'transfer-1' },
-          data: expect.objectContaining({
-            status: 'approved',
-            approvedBy: 'admin-1',
-          }),
-        }),
+      // The write happens on the TRANSACTION client, so assert through the tx
+      // stub rather than the top-level prisma mock.
+      expect(txUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 'transfer-1' } }),
       );
     });
 

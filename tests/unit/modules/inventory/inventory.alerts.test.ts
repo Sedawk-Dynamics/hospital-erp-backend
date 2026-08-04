@@ -167,6 +167,12 @@ describe('Inventory alerts & guards', () => {
           { id: 'item-1', item_name: 'Gloves', item_code: 'G1', current_stock: 5, minimum_stock_threshold: 50, unit_of_measurement: 'box' },
         ])
         .mockResolvedValueOnce([{ count: 1 }]);
+      // The raw query returns IDs only — the rows are then re-fetched through
+      // Prisma so they arrive camelCased and correctly typed.
+      (prisma.inventoryItem.findMany as any).mockResolvedValue([
+        { id: 'item-1', itemName: 'Gloves', itemCode: 'G1', currentStock: 5,
+          minimumStockThreshold: 50, unitOfMeasurement: 'box' },
+      ]);
 
       // getExpiringInventory → one stock-in row, fully remaining
       const future = new Date();
