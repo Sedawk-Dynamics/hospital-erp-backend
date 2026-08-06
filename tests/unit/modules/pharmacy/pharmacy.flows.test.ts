@@ -189,7 +189,7 @@ describe('Pharmacy — flow coverage (sale / returns / merge / reports)', () => 
   describe('createReturn — vendor_return (G5)', () => {
     it('auto-computes the credit value from purchase price × qty and applies immediately', async () => {
       (prisma.supplier.findFirst as any).mockResolvedValue({ id: 's1', tenantId: TENANT_ID });
-      (prisma.drugBatch.findFirst as any).mockResolvedValue({ id: 'b1', tenantId: TENANT_ID, purchasePrice: 30 });
+      (prisma.drugBatch.findFirst as any).mockResolvedValue({ id: 'b1', tenantId: TENANT_ID, purchasePrice: 30, quantityInStock: 100, batchNumber: 'BN1' });
       (prisma.drugReturn.create as any).mockImplementation((args: any) => Promise.resolve({ id: 'r1', ...args.data, drugBatch: { batchNumber: 'BN1', drug: { drugName: 'Amox' } } }));
       // Returns now apply immediately — createReturn finalizes via processReturn.
       (prisma.drugReturn.findFirst as any).mockResolvedValue({ id: 'r1', tenantId: TENANT_ID, status: 'pending', returnType: 'vendor_return', drugBatchId: 'b1', quantity: 5, refundAmount: null });
@@ -209,10 +209,46 @@ describe('Pharmacy — flow coverage (sale / returns / merge / reports)', () => 
     });
 
     it('requires a supplier for a vendor return', async () => {
-      (prisma.drugBatch.findFirst as any).mockResolvedValue({ id: 'b1', tenantId: TENANT_ID });
+      (prisma.drugBatch.findFirst as any).mockResolvedValue({ id: 'b1', tenantId: TENANT_ID, quantityInStock: 100 });
       await expect(createReturn(TENANT_ID, USER_ID, ADMIN_ROLES, {
         returnType: 'vendor_return', drugBatchId: 'b1', quantity: 5,
-      } as any)).rejects.toThrow('Supplier ID is required');
+      } as any)).rejects.toThrow(/supplier this stock is going back to/i);
+    });
+
+    // processReturn floors the stock decrement at what the batch holds, so an
+    // over-sized return used to be accepted, move only what was there, and still
+    // raise a credit note for the full amount — money back for units that never
+    // left the shelf.
+    it('refuses to return more units than the batch holds', async () => {
+      (prisma.supplier.findFirst as any).mockResolvedValue({ id: 's1', tenantId: TENANT_ID });
+      (prisma.drugBatch.findFirst as any).mockResolvedValue({
+        id: 'b1', tenantId: TENANT_ID, purchasePrice: 30, quantityInStock: 4, batchNumber: 'BN1',
+      });
+
+      await expect(createReturn(TENANT_ID, USER_ID, ADMIN_ROLES, {
+        returnType: 'vendor_return', drugBatchId: 'b1', supplierId: 's1', quantity: 5,
+      } as any)).rejects.toThrow('only has 4 in stock');
+      expect(prisma.drugReturn.create).not.toHaveBeenCalled();
+    });
+
+    it('allows returning the batch down to exactly zero', async () => {
+      (prisma.supplier.findFirst as any).mockResolvedValue({ id: 's1', tenantId: TENANT_ID });
+      (prisma.drugBatch.findFirst as any).mockResolvedValue({
+        id: 'b1', tenantId: TENANT_ID, purchasePrice: 30, quantityInStock: 5, batchNumber: 'BN1',
+      });
+      (prisma.drugReturn.create as any).mockImplementation((args: any) => Promise.resolve({ id: 'r1', ...args.data, drugBatch: { batchNumber: 'BN1', drug: { drugName: 'Amox' } } }));
+      (prisma.drugReturn.findFirst as any).mockResolvedValue({ id: 'r1', tenantId: TENANT_ID, status: 'pending', returnType: 'vendor_return', drugBatchId: 'b1', quantity: 5, refundAmount: null });
+      const tx = txWith();
+      tx.drugBatch.findUnique.mockResolvedValue({ quantityInStock: 5 });
+      tx.drugReturn.findUnique.mockResolvedValue({ id: 'r1', status: 'processed' });
+
+      await createReturn(TENANT_ID, USER_ID, ADMIN_ROLES, {
+        returnType: 'vendor_return', drugBatchId: 'b1', supplierId: 's1', quantity: 5,
+      } as any);
+
+      expect(tx.drugBatch.update).toHaveBeenCalledWith({
+        where: { id: 'b1' }, data: { quantityInStock: { decrement: 5 } },
+      });
     });
   });
 

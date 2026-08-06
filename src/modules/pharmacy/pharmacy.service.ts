@@ -4012,13 +4012,24 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
   let creditAmount: number | null = null;
   if (data.returnType === 'vendor_return') {
     if (!data.supplierId) {
-      throw AppError.badRequest('Supplier ID is required for vendor returns');
+      throw AppError.badRequest(
+        'Pick the supplier this stock is going back to — a vendor return has to name a vendor.',
+      );
     }
     const supplier = await prisma.supplier.findFirst({
       where: { id: data.supplierId, tenantId },
     });
     if (!supplier) {
       throw AppError.notFound('Supplier not found');
+    }
+    // You cannot send back more than you hold. processReturn floors the stock
+    // decrement at the batch quantity, so an over-sized return used to be
+    // accepted, move only what was there, and still raise a credit note for the
+    // full amount — claiming money back for units that never left the shelf.
+    if (data.quantity > drugBatch.quantityInStock) {
+      throw AppError.badRequest(
+        `Cannot return ${data.quantity} unit(s) — batch ${drugBatch.batchNumber} only has ${drugBatch.quantityInStock} in stock.`,
+      );
     }
     // G5: credited value = explicit amount, else the returned stock at its
     // purchase price (what the distributor should credit back).
