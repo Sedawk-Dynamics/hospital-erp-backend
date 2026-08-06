@@ -2405,6 +2405,21 @@ export async function getPublicLabReportSummary(orderId: string) {
 //   - linked report status (if any)
 // Also returns a flat "abnormal" roll-up for quick display.
 
+/**
+ * A lab report is RELEASED — safe to show outside the lab — only once the
+ * supervisor has published it. `completeLabOrderItem` parks a finished report in
+ * `review`; everything before publish is still inside the lab's own checking
+ * loop and may be re-run, corrected or rejected.
+ *
+ * Same rule the patient portal already applies. Clinical surfaces (the doctor's
+ * investigation history, the discharge summary) must use it too — a value the
+ * supervisor has not signed off is not a result yet, and a doctor acting on one
+ * is acting on a draft.
+ */
+export function isLabReportReleased(status?: string | null): boolean {
+  return status === 'published' || status === 'corrected';
+}
+
 export async function getInvestigationHistory(tenantId: string, patientId: string) {
   const patient = await prisma.patient.findFirst({
     where: { id: patientId, tenantId },
@@ -2456,7 +2471,27 @@ export async function getInvestigationHistory(tenantId: string, patientId: strin
     enteredAt: Date;
   }> = [];
 
-  for (const o of orders) {
+  // Strip the CONTENT of any report the supervisor has not released — the
+  // values and the uploaded files both. The order itself stays visible, flagged
+  // `awaitingApproval`, so the doctor can see the test is running and chase it;
+  // they just cannot read a number nobody has signed off. This endpoint used to
+  // return everything the moment a technician typed it.
+  const scoped = orders.map((o) => {
+    const released = isLabReportReleased(o.labReport?.status);
+    if (released) return { ...o, released, awaitingApproval: false };
+    return {
+      ...o,
+      released,
+      // A report exists but is still inside the lab's review loop. No report at
+      // all just means results have not been entered yet.
+      awaitingApproval: !!o.labReport,
+      labOrderItems: o.labOrderItems.map((it) => ({ ...it, labResults: [] })),
+      attachments: [],
+    };
+  });
+
+  for (const o of scoped) {
+    if (!o.released) continue;
     for (const it of o.labOrderItems) {
       for (const r of it.labResults) {
         if (r.isAbnormal) {
@@ -2474,7 +2509,7 @@ export async function getInvestigationHistory(tenantId: string, patientId: strin
     }
   }
 
-  return { orders, abnormalFlat };
+  return { orders: scoped, abnormalFlat };
 }
 
 // ============================================================

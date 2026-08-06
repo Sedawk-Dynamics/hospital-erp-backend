@@ -12,6 +12,8 @@ import {
   cancelLabOrder,
   rejectSample,
   updateSampleStatus,
+  getInvestigationHistory,
+  isLabReportReleased,
 } from '../../../../src/modules/lab/lab.service';
 
 // ─── Helpers ───
@@ -314,6 +316,86 @@ describe('Lab Service', () => {
           barcode: 'DUP-BAR',
         } as any),
       ).rejects.toThrow('A sample with this barcode already exists');
+    });
+  });
+
+  // ============================================================
+  // Supervisor-approval gate on clinical surfaces
+  // ============================================================
+  // getInvestigationHistory feeds the doctor's Investigations panel. It used to
+  // return every result and every uploaded file the moment a technician saved
+  // them — before the supervisor had reviewed anything — so a doctor could act
+  // on a number the lab might still correct or re-run.
+  describe('getInvestigationHistory — release gate', () => {
+    const withReport = (reportStatus: string | null) => {
+      (prisma.patient.findFirst as any).mockResolvedValue({ id: 'patient-1' });
+      (prisma.labOrder.findMany as any).mockResolvedValue([
+        {
+          id: 'order-1',
+          status: 'completed',
+          labReport: reportStatus ? { id: 'rep-1', status: reportStatus } : null,
+          labOrderItems: [
+            {
+              id: 'item-1',
+              test: { id: 't1', testName: 'CBC' },
+              labResults: [
+                { id: 'r1', parameterName: 'Hb', value: '7.1', unit: 'g/dL', normalRange: '13-17', isAbnormal: true, enteredAt: new Date() },
+              ],
+            },
+          ],
+          attachments: [{ id: 'a1', fileName: 'cbc.pdf' }],
+        },
+      ]);
+    };
+
+    it('withholds values and files while the report is in review', async () => {
+      withReport('review');
+
+      const { orders, abnormalFlat } = await getInvestigationHistory(TENANT_ID, 'patient-1');
+
+      expect(orders[0].labOrderItems[0].labResults).toEqual([]);
+      expect(orders[0].attachments).toEqual([]);
+      expect(orders[0].released).toBe(false);
+      expect(orders[0].awaitingApproval).toBe(true);
+      // An unreleased abnormal must not raise a flag either — that is the part
+      // a doctor would actually act on.
+      expect(abnormalFlat).toEqual([]);
+    });
+
+    it('releases values and files once published', async () => {
+      withReport('published');
+
+      const { orders, abnormalFlat } = await getInvestigationHistory(TENANT_ID, 'patient-1');
+
+      expect(orders[0].released).toBe(true);
+      expect(orders[0].labOrderItems[0].labResults).toHaveLength(1);
+      expect(orders[0].attachments).toHaveLength(1);
+      expect(abnormalFlat).toHaveLength(1);
+      expect(abnormalFlat[0]).toMatchObject({ testName: 'CBC', parameterName: 'Hb', value: '7.1' });
+    });
+
+    it('releases a corrected report too', async () => {
+      withReport('corrected');
+      const { orders } = await getInvestigationHistory(TENANT_ID, 'patient-1');
+      expect(orders[0].released).toBe(true);
+    });
+
+    // No report at all means results were never entered — that is "pending",
+    // not "waiting on the supervisor", and the panel words it differently.
+    it('does not claim approval is pending when no report exists', async () => {
+      withReport(null);
+      const { orders } = await getInvestigationHistory(TENANT_ID, 'patient-1');
+      expect(orders[0].released).toBe(false);
+      expect(orders[0].awaitingApproval).toBe(false);
+    });
+
+    it('treats only published/corrected as released', () => {
+      expect(isLabReportReleased('published')).toBe(true);
+      expect(isLabReportReleased('corrected')).toBe(true);
+      expect(isLabReportReleased('draft')).toBe(false);
+      expect(isLabReportReleased('review')).toBe(false);
+      expect(isLabReportReleased('approved')).toBe(false);
+      expect(isLabReportReleased(null)).toBe(false);
     });
   });
 

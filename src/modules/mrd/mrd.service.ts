@@ -225,8 +225,19 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
         },
       },
     }),
+    // Only results the lab supervisor has RELEASED. A discharge summary is a
+    // legal record the patient leaves with — it must not quote a value that is
+    // still inside the lab's review loop and could yet be corrected or
+    // re-run. Mirrors the gate on the doctor's investigation history and the
+    // patient portal.
     prisma.labResult.findMany({
-      where: { labOrder: { visitId, tenantId } },
+      where: {
+        labOrder: {
+          visitId,
+          tenantId,
+          labReport: { status: { in: ['published', 'corrected'] } },
+        },
+      },
       include: {
         labOrderItem: { select: { test: { select: { testName: true } } } },
       },

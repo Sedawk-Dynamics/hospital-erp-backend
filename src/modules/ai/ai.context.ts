@@ -57,8 +57,14 @@ export async function buildPatientContext(
         take: 6,
         include: { prescriptionItems: true },
       }),
+      // Released reports only. This context is narrated back to the clinician,
+      // so quoting a value the lab supervisor has not signed off would put an
+      // unapproved number in front of them with the model's authority behind it.
       prisma.labResult.findMany({
-        where: { patientId, labOrder: { tenantId } },
+        where: {
+          patientId,
+          labOrder: { tenantId, labReport: { status: { in: ['published', 'corrected'] } } },
+        },
         orderBy: { enteredAt: 'desc' },
         take: 40,
         include: { labOrderItem: { include: { test: { select: { testName: true } } } } },

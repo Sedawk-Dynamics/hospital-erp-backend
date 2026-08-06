@@ -85,10 +85,12 @@ export async function bloodReportAnalysis(
 ) {
   await assertFeatureEnabled('bloodReport', tenantId);
 
+  // Released reports only — an analysis is written as if the numbers are final,
+  // so it must not be built on values still inside the lab's review loop.
   const results = await prisma.labResult.findMany({
     where: {
       patientId: input.patientId,
-      labOrder: { tenantId },
+      labOrder: { tenantId, labReport: { status: { in: ['published', 'corrected'] } } },
       ...(input.labOrderId ? { labOrderId: input.labOrderId } : {}),
     },
     orderBy: { enteredAt: 'desc' },
