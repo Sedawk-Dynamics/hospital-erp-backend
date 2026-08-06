@@ -5,6 +5,7 @@ import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
 import { TEMP_MRN_PREFIX } from '../../shared/temporary-patient';
+import { resolvePersonPatientIds } from '../../shared/patient-identity';
 import {
   AUTO_ACCOUNT_EMAIL_DOMAIN,
   normalizeAccountPhone,
@@ -1096,6 +1097,67 @@ export async function addDocument(patientId: string, data: AddDocumentInput) {
 
   logger.info({ patientId, documentId: document.id }, 'Document added');
   return document;
+}
+
+/**
+ * Every document on file for this PERSON — what the patient uploaded from the
+ * portal ("My Documents") plus anything staff attached to the record.
+ *
+ * There was no read side at all: `POST /patients/:id/documents` existed and the
+ * portal wrote rows happily, but nothing could list them, so a patient's
+ * uploaded referral letter or outside scan was invisible to the clinician it
+ * was uploaded for.
+ *
+ * Person-scoped, not patient-row-scoped. One human has a separate Patient row
+ * per hospital, and a document they uploaded once belongs to them, not to the
+ * row it happened to land on.
+ */
+export async function getDocuments(tenantId: string, patientId: string) {
+  const patient = await prisma.patient.findFirst({
+    where: { id: patientId, tenantId },
+    select: { id: true },
+  });
+  if (!patient) throw AppError.notFound('Patient not found');
+
+  const personIds = await resolvePersonPatientIds(patientId);
+
+  const [documents, personRows] = await Promise.all([
+    prisma.patientDocument.findMany({
+      where: { patientId: { in: personIds } },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        uploader: { select: { id: true, firstName: true, lastName: true } },
+        patient: { select: { id: true, tenantId: true, tenant: { select: { name: true } } } },
+      },
+    }),
+    prisma.patient.findMany({
+      where: { id: { in: personIds } },
+      select: { userId: true },
+    }),
+  ]);
+
+  // The portal writes uploadedBy = the patient's own user id, staff uploads
+  // write a staff user id. A clinician reads an outside document the patient
+  // brought differently from one the hospital produced, so flag which is which.
+  const patientUserIds = new Set(
+    personRows.map((p) => p.userId).filter((id): id is string => !!id),
+  );
+
+  return documents.map((d) => ({
+    id: d.id,
+    documentType: d.documentType,
+    title: d.title,
+    fileUrl: d.fileUrl,
+    mimeType: d.mimeType,
+    fileSizeBytes: d.fileSizeBytes,
+    notes: d.notes,
+    isVerified: d.isVerified,
+    createdAt: d.createdAt,
+    uploader: d.uploader ? `${d.uploader.firstName} ${d.uploader.lastName ?? ''}`.trim() : null,
+    uploadedByPatient: !!d.uploadedBy && patientUserIds.has(d.uploadedBy),
+    /** Which hospital's record it was filed against — null when it's this one. */
+    sourceHospital: d.patient.tenantId === tenantId ? null : (d.patient.tenant?.name ?? null),
+  }));
 }
 
 /**

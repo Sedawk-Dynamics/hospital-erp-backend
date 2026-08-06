@@ -143,6 +143,17 @@ patientRoutes.post(
   controller.addDocument,
 );
 
+// List documents — everything on file for this PERSON, including what the
+// patient uploaded from the portal under "My Documents". There was no read
+// side, so those uploads were invisible to the clinician they were meant for.
+patientRoutes.get(
+  '/:id/documents',
+  authenticate,
+  requirePermission('patients', 'read'),
+  validate(patientIdParamSchema),
+  controller.getDocuments,
+);
+
 // Get visit history
 patientRoutes.get(
   '/:id/visits',

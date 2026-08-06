@@ -195,6 +195,18 @@ export async function addDocument(req: AuthenticatedRequest, res: Response, next
   }
 }
 
+export async function getDocuments(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const documents = await patientsService.getDocuments(
+      req.user!.tenantId,
+      req.params.id as string,
+    );
+    sendResponse({ res, message: 'Patient documents retrieved successfully', data: documents });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getVisitHistory(
   req: AuthenticatedRequest,
   res: Response,

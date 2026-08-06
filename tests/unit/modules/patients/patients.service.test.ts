@@ -377,6 +377,74 @@ describe('PatientsService', () => {
     });
   });
 
+  // There was no read side at all: the portal saved "My Documents" rows and
+  // nothing could list them, so a referral letter a patient uploaded FOR their
+  // doctor never reached one.
+  describe('getDocuments', () => {
+    const setup = (docs: unknown[], personRows: unknown[] = [{ userId: 'patient-user' }]) => {
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue({ id: 'p1' } as any);
+      vi.mocked(prisma.patientDocument.findMany).mockResolvedValue(docs as any);
+      vi.mocked(prisma.patient.findMany).mockResolvedValue(personRows as any);
+    };
+
+    it('flags a portal upload as coming from the patient', async () => {
+      setup([
+        {
+          id: 'd1', documentType: 'other', title: 'Referral letter', fileUrl: '/uploads/a.pdf',
+          mimeType: 'application/pdf', fileSizeBytes: BigInt(1024), notes: null, isVerified: false,
+          createdAt: new Date(), uploadedBy: 'patient-user',
+          uploader: { id: 'patient-user', firstName: 'Asha', lastName: 'Menon' },
+          patient: { id: 'p1', tenantId: 'tenant-1', tenant: { name: 'Green city' } },
+        },
+      ]);
+
+      const [doc] = await patientsService.getDocuments('tenant-1', 'p1');
+
+      expect(doc).toMatchObject({ title: 'Referral letter', uploadedByPatient: true });
+    });
+
+    it('does not flag a staff upload as a patient upload', async () => {
+      setup([
+        {
+          id: 'd2', documentType: 'other', title: 'Consent form', fileUrl: '/uploads/b.pdf',
+          mimeType: 'application/pdf', fileSizeBytes: null, notes: null, isVerified: true,
+          createdAt: new Date(), uploadedBy: 'staff-user',
+          uploader: { id: 'staff-user', firstName: 'Front', lastName: 'Desk' },
+          patient: { id: 'p1', tenantId: 'tenant-1', tenant: { name: 'Green city' } },
+        },
+      ]);
+
+      const [doc] = await patientsService.getDocuments('tenant-1', 'p1');
+
+      expect(doc.uploadedByPatient).toBe(false);
+      expect(doc.sourceHospital).toBeNull();
+    });
+
+    // One human has a separate Patient row per hospital. A document uploaded
+    // once belongs to the person, so it shows here — labelled with where it
+    // came from, since that changes how a clinician reads it.
+    it('names the other hospital when the file was filed there', async () => {
+      setup([
+        {
+          id: 'd3', documentType: 'other', title: 'Old discharge summary',
+          fileUrl: '/uploads/c.pdf', mimeType: 'application/pdf', fileSizeBytes: null,
+          notes: null, isVerified: false, createdAt: new Date(), uploadedBy: 'patient-user',
+          uploader: { id: 'patient-user', firstName: 'Asha', lastName: null },
+          patient: { id: 'p2', tenantId: 'tenant-2', tenant: { name: 'City Care' } },
+        },
+      ]);
+
+      const [doc] = await patientsService.getDocuments('tenant-1', 'p1');
+
+      expect(doc.sourceHospital).toBe('City Care');
+    });
+
+    it('throws notFound when the patient is not in this tenant', async () => {
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue(null);
+      await expect(patientsService.getDocuments('tenant-1', 'nope')).rejects.toThrow(AppError);
+    });
+  });
+
   describe('getVisitHistory', () => {
     it('should return patient visit history', async () => {
       vi.mocked(prisma.patient.findFirst).mockResolvedValue({ id: 'p1' } as any);
