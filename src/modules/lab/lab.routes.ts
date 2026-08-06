@@ -114,9 +114,19 @@ labRoutes.patch(
 );
 
 // --- Samples ---
-labRoutes.post('/samples', authenticate, requirePermission('lab_orders', 'update'), validate(collectSampleSchema), controller.collectSample);
+// Sample collection + transit are WARD actions as much as lab ones: the nurse
+// draws at the bedside and sends the sample down. They are gated by ROLE rather
+// than `lab_orders:update`, because that permission also covers the test
+// catalog, TEST PRICING, and order cancel/accept — a ward nurse must not get
+// those just to label a blood tube. (Same precedent as /admissions/:id/type.)
+const SAMPLE_HANDLER_ROLES = [
+  'nurse', 'nurse_admin', 'lab_technician', 'lab_supervisor', 'admin', 'super_admin',
+] as const;
+labRoutes.post('/samples', authenticate, requireRoles(...SAMPLE_HANDLER_ROLES), validate(collectSampleSchema), controller.collectSample);
 labRoutes.get('/samples', authenticate, requirePermission('lab_orders', 'read'), validate(getSamplesSchema), controller.getSamples);
-labRoutes.patch('/samples/:id/status', authenticate, requirePermission('lab_orders', 'update'), validate(updateSampleStatusSchema), controller.updateSampleStatus);
+labRoutes.patch('/samples/:id/status', authenticate, requireRoles(...SAMPLE_HANDLER_ROLES), validate(updateSampleStatusSchema), controller.updateSampleStatus);
+// Rejecting a sample (haemolysed, insufficient volume, wrong tube) is a lab
+// judgement, not a ward one — keep it on the lab permission.
 labRoutes.patch('/samples/:id/reject', authenticate, requirePermission('lab_orders', 'update'), validate(rejectSampleSchema), controller.rejectSample);
 
 // --- Results ---

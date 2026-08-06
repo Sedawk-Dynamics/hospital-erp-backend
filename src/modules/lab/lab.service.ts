@@ -7,7 +7,7 @@ import {
   safeLabReportEmail,
   safeLabReportCorrectedEmail,
 } from './lab.audit';
-import { Prisma } from '@prisma/client';
+import { Prisma, type LabOrderStatus } from '@prisma/client';
 import { buildSearchTokens, normaliseAliases, normaliseTags } from './lab-templates.service';
 import type { ParameterSpec } from './lab.validation';
 import type {
@@ -992,8 +992,15 @@ export async function getSamples(tenantId: string, query: GetSamplesQuery) {
           select: {
             id: true,
             status: true,
+            urgency: true,
             patient: {
               select: { id: true, mrn: true, firstName: true, lastName: true },
+            },
+            // Which tests this sample is FOR. Without it the ward's sample list
+            // could only show an opaque id — a nurse holding a tube needs to
+            // know what it is being drawn for.
+            labOrderItems: {
+              select: { test: { select: { id: true, testName: true } } },
             },
           },
         },
@@ -1017,6 +1024,7 @@ export async function updateSampleStatus(
 ) {
   const sample = await prisma.labSample.findFirst({
     where: { id, labOrder: { tenantId } },
+    include: { labOrder: { select: { id: true, status: true } } },
   });
 
   if (!sample) {
@@ -1029,17 +1037,49 @@ export async function updateSampleStatus(
     updateData.receivedAt = new Date();
   }
 
-  const updated = await prisma.labSample.update({
-    where: { id },
-    data: updateData,
-    include: {
-      labOrder: {
-        select: { id: true, status: true },
+  // Carry the sample's progress onto its ORDER. Without this the order sat at
+  // `sample_collected` from collection until results were entered, so the ward
+  // could see a sample it had sent down still reading "collected" long after
+  // the lab had it — the "status updates should be visible" complaint.
+  // Only ever moves forward, and never past a completed/cancelled order.
+  const SAMPLE_TO_ORDER: Partial<Record<string, LabOrderStatus>> = {
+    collected: 'sample_collected',
+    in_transit: 'in_transit',
+    received: 'received',
+    processing: 'in_progress',
+  };
+  const ORDER_PROGRESSION: LabOrderStatus[] = [
+    'ordered', 'sample_collected', 'in_transit', 'received', 'in_progress', 'completed',
+  ];
+  const nextOrderStatus = SAMPLE_TO_ORDER[data.status];
+  const currentIndex = ORDER_PROGRESSION.indexOf(sample.labOrder?.status as LabOrderStatus);
+  const nextIndex = nextOrderStatus ? ORDER_PROGRESSION.indexOf(nextOrderStatus) : -1;
+  const shouldAdvanceOrder =
+    nextOrderStatus !== undefined && currentIndex >= 0 && nextIndex > currentIndex;
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const row = await tx.labSample.update({
+      where: { id },
+      data: updateData,
+      include: {
+        labOrder: {
+          select: { id: true, status: true },
+        },
+        collector: {
+          select: { id: true, firstName: true, lastName: true },
+        },
       },
-      collector: {
-        select: { id: true, firstName: true, lastName: true },
-      },
-    },
+    });
+
+    if (shouldAdvanceOrder) {
+      await tx.labOrder.update({
+        where: { id: row.labOrderId },
+        data: { status: nextOrderStatus },
+      });
+      row.labOrder = { ...row.labOrder, status: nextOrderStatus };
+    }
+
+    return row;
   });
 
   logger.info({ tenantId, sampleId: id, status: data.status }, 'Sample status updated');

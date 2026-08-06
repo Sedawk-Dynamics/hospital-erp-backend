@@ -11,6 +11,7 @@ import {
   getLabReports,
   cancelLabOrder,
   rejectSample,
+  updateSampleStatus,
 } from '../../../../src/modules/lab/lab.service';
 
 // ─── Helpers ───
@@ -313,6 +314,81 @@ describe('Lab Service', () => {
           barcode: 'DUP-BAR',
         } as any),
       ).rejects.toThrow('A sample with this barcode already exists');
+    });
+  });
+
+  // ============================================================
+  // Sample status → order status
+  // ============================================================
+  // The order used to sit at `sample_collected` from collection until results
+  // were entered, so the ward saw a sample it had already sent down still
+  // reading "collected" long after the lab had it.
+  describe('updateSampleStatus', () => {
+    const sampleOn = (orderStatus: string) => {
+      (prisma.labSample.findFirst as any).mockResolvedValue({
+        id: 'sample-1',
+        labOrderId: 'order-1',
+        status: 'collected',
+        labOrder: { id: 'order-1', status: orderStatus },
+      });
+      const txMock = mockTransaction();
+      txMock.labSample.update.mockResolvedValue({
+        id: 'sample-1',
+        labOrderId: 'order-1',
+        status: 'in_transit',
+        labOrder: { id: 'order-1', status: orderStatus },
+      });
+      return txMock;
+    };
+
+    it('advances the order when the sample goes into transit', async () => {
+      const txMock = sampleOn('sample_collected');
+
+      await updateSampleStatus(TENANT_ID, 'sample-1', USER_ID, { status: 'in_transit' } as any);
+
+      expect(txMock.labOrder.update).toHaveBeenCalledWith({
+        where: { id: 'order-1' },
+        data: { status: 'in_transit' },
+      });
+    });
+
+    it('advances the order to received and stamps receivedAt', async () => {
+      const txMock = sampleOn('in_transit');
+
+      await updateSampleStatus(TENANT_ID, 'sample-1', USER_ID, { status: 'received' } as any);
+
+      expect(txMock.labOrder.update).toHaveBeenCalledWith({
+        where: { id: 'order-1' },
+        data: { status: 'received' },
+      });
+      expect(txMock.labSample.update.mock.calls[0][0].data.receivedAt).toBeInstanceOf(Date);
+    });
+
+    // Status only ever moves forward — a late "collected" ping from a barcode
+    // re-scan must not drag an order that is already being processed backwards.
+    it('never walks the order status backwards', async () => {
+      const txMock = sampleOn('in_progress');
+
+      await updateSampleStatus(TENANT_ID, 'sample-1', USER_ID, { status: 'collected' } as any);
+
+      expect(txMock.labOrder.update).not.toHaveBeenCalled();
+    });
+
+    it('leaves a completed order alone', async () => {
+      const txMock = sampleOn('completed');
+
+      await updateSampleStatus(TENANT_ID, 'sample-1', USER_ID, { status: 'received' } as any);
+
+      expect(txMock.labOrder.update).not.toHaveBeenCalled();
+    });
+
+    // 'rejected' has no order equivalent — the lab decides what happens next.
+    it('does not touch the order when a sample is rejected', async () => {
+      const txMock = sampleOn('received');
+
+      await updateSampleStatus(TENANT_ID, 'sample-1', USER_ID, { status: 'rejected' } as any);
+
+      expect(txMock.labOrder.update).not.toHaveBeenCalled();
     });
   });
 
