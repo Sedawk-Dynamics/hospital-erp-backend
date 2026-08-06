@@ -5,6 +5,7 @@ import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
 import { getISTDateStr, formatDateTimeIST, istDayNumber } from '../../shared/date.utils';
+import { normalizeAdmissionType } from '../../shared/admission-type';
 import type {
   CreateServiceTariffInput,
   UpdateServiceTariffInput,
@@ -3250,14 +3251,27 @@ export async function getIpAdmissionsForBilling(
     },
   });
 
+  const admissionIds = admissions.map((a) => a.id);
+
   // Which of these are clinically signed off and now waiting on the counter?
   // The doctor publishing the discharge summary no longer discharges the patient
   // — this flag is what turns the row into a "Clear & Discharge" action.
   const readySummaries = await prisma.dischargeSummary.findMany({
-    where: { status: 'published', admissionId: { in: admissions.map((a) => a.id) } },
+    where: { status: 'published', admissionId: { in: admissionIds } },
     select: { admissionId: true },
   });
   const readyIds = new Set(readySummaries.map((s) => s.admissionId));
+
+  // Care type (ip | emergency | daycare). All three run the same IP flow and
+  // land in this one worklist, so without the tag the counter can't tell a
+  // Day Care row from an Emergency one. `admission_type` is a raw column, hence
+  // the raw SELECT (same pattern as billing.bill-document.ts).
+  const typeRows = admissionIds.length
+    ? await prisma.$queryRaw<{ id: string; admission_type: string | null }[]>`
+        SELECT id, admission_type FROM admissions WHERE id IN (${Prisma.join(admissionIds)})
+      `
+    : [];
+  const typeById = new Map(typeRows.map((r) => [r.id, normalizeAdmissionType(r.admission_type)]));
 
   const rows = [];
   for (const a of admissions) {
@@ -3326,6 +3340,7 @@ export async function getIpAdmissionsForBilling(
         depositAmount: deposit,
         admissionDate: a.admissionDate ? a.admissionDate.toISOString() : null,
         dischargeDate: a.dischargeDate ? a.dischargeDate.toISOString() : null,
+        admissionType: typeById.get(a.id) ?? 'ip',
         // Doctor has published the discharge summary but the patient is still
         // admitted → the counter owes them a bill clearance + discharge.
         dischargeReady: a.status === 'admitted' && readyIds.has(a.id),
