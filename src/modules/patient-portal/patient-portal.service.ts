@@ -204,7 +204,13 @@ async function resolvePatientIds(
   for (const p of emailFiltered) ids.add(p.id);
 
   if (profileId) {
-    return ids.has(profileId) ? [profileId] : [];
+    // A profileId that isn't one of this user's own records is stale — the
+    // family member was removed, or the id is left over in a store from a
+    // previous session. Returning [] made every list on the page render empty
+    // with no explanation; falling back to "all my profiles" shows the user
+    // their own records instead of a blank portal.
+    if (ids.has(profileId)) return [profileId];
+    logger.warn({ userId, profileId }, 'Portal profileId not owned by user — showing all profiles');
   }
   return Array.from(ids);
 }
@@ -1138,16 +1144,6 @@ export async function getPatientDischargeSummaries(userId: string, email: string
 // to the patient; active drafts stay private until the doctor signs.
 // ────────────────────────────────────────────────────────────
 
-const CONSULTATION_PIN_SECTIONS = [
-  'chief_complaint',
-  'examination',
-  'investigation',
-  'diagnosis',
-  'impression',
-  'advice',
-  'follow_up',
-] as const;
-
 export async function getPatientConsultationSummaries(
   userId: string,
   email: string,
@@ -1160,10 +1156,15 @@ export async function getPatientConsultationSummaries(
     where: {
       patientId: { in: patientIds },
       status: 'finalized',
-      // Only surface notes that have at least one consultation-section pin —
-      // IP discharge notes are excluded from this list (they live under the
-      // /discharge-summaries endpoint).
-      pins: { some: { dischargeSection: { in: CONSULTATION_PIN_SECTIONS as any } } },
+      // Every signed consultation note belongs to the patient — it is their
+      // record of the visit. Requiring at least one pinned section meant a
+      // perfectly ordinary consultation, written up and signed but with nothing
+      // pinned, never appeared at all; the patient saw an empty list and
+      // concluded the visit had not been documented.
+      //
+      // IP ward rounds are excluded (they live under /discharge-summaries) —
+      // those carry an admissionId, an OP consultation does not.
+      admissionId: null,
     },
     orderBy: { signedAt: 'desc' },
     take: 50,
@@ -1182,6 +1183,14 @@ export async function getPatientConsultationSummaries(
       },
       signer: { select: { id: true, firstName: true, lastName: true } },
       pins: true,
+      visit: {
+        select: {
+          id: true,
+          visitDate: true,
+          chiefComplaint: true,
+          diagnoses: { select: { id: true, diagnosisName: true } },
+        },
+      },
     },
   });
 
@@ -1194,6 +1203,10 @@ export async function getPatientConsultationSummaryById(
   id: string,
 ) {
   const patientIds = await resolvePatientIds(userId, email);
+  // The whole consultation, not a digest of it: the doctor's note and SOAP
+  // sections, what was diagnosed, the vitals taken, and the medicines
+  // prescribed at that visit. The portal used to render pinned highlights only,
+  // so a patient could open a consultation and be shown nothing.
   const note = await prisma.progressNote.findFirst({
     where: {
       id,
@@ -1202,7 +1215,9 @@ export async function getPatientConsultationSummaryById(
     },
     include: {
       doctor: {
-        include: { user: { select: { firstName: true, lastName: true } } },
+        include: {
+          user: { select: { firstName: true, lastName: true } },
+        },
       },
       patient: {
         select: {
@@ -1215,7 +1230,41 @@ export async function getPatientConsultationSummaryById(
       },
       signer: { select: { id: true, firstName: true, lastName: true } },
       pins: true,
-      visit: { select: { id: true, visitType: true, visitDate: true } },
+      visit: {
+        select: {
+          id: true,
+          visitType: true,
+          visitDate: true,
+          chiefComplaint: true,
+          diagnoses: {
+            select: { id: true, diagnosisName: true, icdCode: true, diagnosisType: true },
+          },
+          vitals: { orderBy: { recordedAt: 'desc' }, take: 1 },
+          prescriptions: {
+            orderBy: { createdAt: 'desc' },
+            select: {
+              id: true,
+              status: true,
+              notes: true,
+              followUpDate: true,
+              createdAt: true,
+              prescriptionItems: {
+                select: {
+                  id: true,
+                  drugName: true,
+                  dosage: true,
+                  frequency: true,
+                  duration: true,
+                  route: true,
+                  instructions: true,
+                  isPrn: true,
+                  quantity: true,
+                },
+              },
+            },
+          },
+        },
+      },
     },
   });
   if (!note) {
