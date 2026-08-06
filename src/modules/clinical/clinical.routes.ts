@@ -93,10 +93,15 @@ clinicalRoutes.patch('/admissions/:id/assign-bed', authenticate, requirePermissi
 // Convert care type (ip/emergency/daycare) — front desk, doctors AND nurses may
 // flip it (nurses lack admissions:update, so gate by role, not permission).
 clinicalRoutes.patch('/admissions/:id/type', authenticate, requireRoles('front_desk', 'admin', 'super_admin', 'doctor', 'nurse', 'nurse_admin'), validate(changeAdmissionTypeSchema), controller.changeAdmissionType);
-// Discharge is a doctor-only action (a nurse can prepare/record but not
-// discharge). super_admin/admin retain override. The auto-discharge on
-// discharge-summary publish runs at the service layer and is unaffected.
-clinicalRoutes.patch('/admissions/:id/discharge', authenticate, requirePermission('admissions', 'update'), requireRoles('doctor', 'admin', 'super_admin'), validate(dischargePatientSchema), controller.dischargePatient);
+// Discharge is the CASH COUNTER's action, not the doctor's. The doctor's
+// sign-off is publishing the discharge summary, which now only marks the
+// admission ready; Front Desk / Billing then clears the bill and discharges
+// here (the service re-checks both gates). Cashier is included because the
+// same person often collects the final payment and closes the file.
+// Gated by ROLE, not by `admissions:update`: billing_admin / cashier have no
+// admissions permissions at all, and granting them the module-wide update right
+// would also open PUT /admissions/:id. Same precedent as /admissions/:id/type.
+clinicalRoutes.patch('/admissions/:id/discharge', authenticate, requireRoles('front_desk', 'billing_admin', 'cashier', 'admin', 'super_admin'), validate(dischargePatientSchema), controller.dischargePatient);
 
 // --- Transfers ---
 clinicalRoutes.post('/transfers', authenticate, requirePermission('admissions', 'create'), validate(createTransferSchema), controller.createTransfer);

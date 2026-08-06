@@ -2748,6 +2748,95 @@ async function getAdmissionDepositState(tenantId: string, admissionId: string) {
   };
 }
 
+/**
+ * Deposit-adjusted money the patient still owes for a stay — the same number the
+ * IP ledger shows as `balanceAfterDeposit`, extracted so the discharge counter
+ * can gate on it without pulling the whole ledger payload.
+ *
+ * Money rule (identical to `getAdmissionLedger`, do not diverge):
+ *   - `billItem.totalAmount` ALREADY includes that line's tax — never re-add it.
+ *   - A counter concession is written on the BILL HEADER (`bill.discountAmount`)
+ *     and never onto the items, so it must be subtracted or a fully-settled stay
+ *     reads as still owing.
+ *   - Charges not yet posted to a bill (room days, doctor fee, lab, imaging, OT)
+ *     still count — the patient owes them whether or not billing has pulled them.
+ */
+export async function getAdmissionOutstanding(tenantId: string, admissionId: string) {
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  const admission = await prisma.admission.findFirst({
+    where: { id: admissionId, tenantId },
+    select: { id: true, patientId: true, visitId: true },
+  });
+  if (!admission) throw AppError.notFound('Admission not found');
+
+  // Charges for this stay live on the admission's own IP bills AND on orphan
+  // bills auto-created against the admission's VISIT (where lab / imaging land).
+  const bills = await prisma.bill.findMany({
+    where: {
+      tenantId,
+      status: { not: 'cancelled' },
+      OR: [
+        { admissionId },
+        ...(admission.visitId ? [{ visitId: admission.visitId, admissionId: null }] : []),
+      ],
+    },
+    select: {
+      amountPaid: true,
+      discountAmount: true,
+      insuranceCoveredAmount: true,
+      billItems: { select: { totalAmount: true, referenceType: true, referenceId: true } },
+    },
+  });
+
+  // Dedupe by charge reference so a charge sitting on both an IP bill and a
+  // visit bill is only counted once.
+  const seenRef = new Set<string>();
+  let totalPosted = 0;
+  for (const b of bills) {
+    for (const it of b.billItems) {
+      const refKey = it.referenceType && it.referenceId ? `${it.referenceType}:${it.referenceId}` : null;
+      if (refKey) {
+        if (seenRef.has(refKey)) continue;
+        seenRef.add(refKey);
+      }
+      totalPosted = r2(totalPosted + Number(it.totalAmount));
+    }
+  }
+
+  let totalPending = 0;
+  try {
+    const { charges } = await getPatientCharges(tenantId, { patientId: admission.patientId });
+    totalPending = r2(charges.reduce((s, c) => s + c.totalAmount, 0));
+  } catch {
+    /* patient missing → nothing pending */
+  }
+
+  const paid = r2(bills.reduce((s, b) => s + Number(b.amountPaid), 0));
+  const insuranceCovered = r2(bills.reduce((s, b) => s + Number(b.insuranceCoveredAmount ?? 0), 0));
+  const billDiscount = r2(bills.reduce((s, b) => s + Number(b.discountAmount ?? 0), 0));
+  const grandTotal = r2(Math.max(0, totalPosted + totalPending - billDiscount));
+
+  const dep = await getAdmissionDepositState(tenantId, admissionId);
+  const cashPaid = r2(Math.max(0, paid - dep.applied));
+  const netPatientObligation = r2(Math.max(0, grandTotal - insuranceCovered));
+  const moneyFromPatient = r2(cashPaid + dep.onFile - dep.refunded);
+  const balanceAfterDeposit = r2(Math.max(0, netPatientObligation - moneyFromPatient));
+
+  return {
+    grandTotal,
+    totalPosted,
+    totalPending,
+    billDiscount,
+    insuranceCovered,
+    depositOnFile: dep.onFile,
+    cashPaid,
+    /** Deposit-adjusted amount still payable. Zero means the stay is settled. */
+    balanceAfterDeposit,
+    /** Sub-rupee residue is rounding noise, not an unpaid bill. */
+    isCleared: balanceAfterDeposit < 0.01,
+  };
+}
+
 export async function getAdmissionLedger(tenantId: string, admissionId: string, actor: { userId: string; roles: string[] }) {
   await assertIpLedgerAccess(tenantId, admissionId, actor, { write: false });
   const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -3161,6 +3250,15 @@ export async function getIpAdmissionsForBilling(
     },
   });
 
+  // Which of these are clinically signed off and now waiting on the counter?
+  // The doctor publishing the discharge summary no longer discharges the patient
+  // — this flag is what turns the row into a "Clear & Discharge" action.
+  const readySummaries = await prisma.dischargeSummary.findMany({
+    where: { status: 'published', admissionId: { in: admissions.map((a) => a.id) } },
+    select: { admissionId: true },
+  });
+  const readyIds = new Set(readySummaries.map((s) => s.admissionId));
+
   const rows = [];
   for (const a of admissions) {
     // Every ACTIVE admission gets a running bill so it appears here from day one
@@ -3228,6 +3326,9 @@ export async function getIpAdmissionsForBilling(
         depositAmount: deposit,
         admissionDate: a.admissionDate ? a.admissionDate.toISOString() : null,
         dischargeDate: a.dischargeDate ? a.dischargeDate.toISOString() : null,
+        // Doctor has published the discharge summary but the patient is still
+        // admitted → the counter owes them a bill clearance + discharge.
+        dischargeReady: a.status === 'admitted' && readyIds.has(a.id),
       },
       insuranceClaims: claim ? [claim] : [],
       deposit: {

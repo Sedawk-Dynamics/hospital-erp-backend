@@ -631,31 +631,73 @@ export async function publishDischargeSummary(tenantId: string, id: string, user
     );
   }
 
-  // Publishing the discharge summary IS the clinical discharge: the doctor has
-  // signed off, so mark the admission discharged (idempotent — skip if already
-  // discharged). This also assembles the final bill (via clinical.dischargePatient).
-  // Wrapped so an auto-discharge glitch never fails the already-committed publish.
+  // Publishing is the doctor's CLINICAL sign-off — it no longer discharges the
+  // patient. Marking someone discharged here dropped them off every active-IP
+  // worklist (which filter status='admitted') while money was still outstanding,
+  // so the balance was effectively written off. The patient now stays admitted,
+  // holding their bed, until Front Desk / Billing clears the final bill and
+  // calls PATCH /clinical/admissions/:id/discharge.
   let discharged = false;
+  let dischargeReady = false;
   try {
-    const clinical = await import('../clinical/clinical.service');
     const admission = await prisma.admission.findFirst({
       where: { id: published.admissionId, tenantId },
       select: { status: true },
     });
-    if (admission?.status === 'discharged') {
-      discharged = true;
-    } else if (admission) {
-      await clinical.dischargePatient(tenantId, published.admissionId, userId);
-      discharged = true;
+    discharged = admission?.status === 'discharged';
+    dischargeReady = admission?.status === 'admitted';
+    if (dischargeReady) {
+      await notifyCounterOfDischargeReady(tenantId, published);
     }
   } catch (err) {
     logger.error(
       { err, tenantId, admissionId: published.admissionId },
-      'Auto-discharge on discharge-summary publish failed (publish still succeeded)',
+      'Discharge-ready notification failed (publish still succeeded)',
     );
   }
 
-  return Object.assign(published, { discharged });
+  return Object.assign(published, { discharged, dischargeReady });
+}
+
+/**
+ * Tell the cash counter a patient is clinically cleared and now waiting on bill
+ * clearance. Without this the published summary is invisible to Front Desk and
+ * the patient sits in a bed nobody is tracking.
+ */
+async function notifyCounterOfDischargeReady(
+  tenantId: string,
+  summary: { id: string; admissionId: string; patientId: string },
+) {
+  const [patient, staff] = await Promise.all([
+    prisma.patient.findUnique({
+      where: { id: summary.patientId },
+      select: { firstName: true, lastName: true, mrn: true },
+    }),
+    prisma.user.findMany({
+      where: {
+        tenantId,
+        isActive: true,
+        userRoles: { some: { role: { name: { in: ['front_desk', 'billing_admin', 'cashier'] } } } },
+      },
+      select: { id: true },
+    }),
+  ]);
+  if (staff.length === 0) return;
+
+  const name = patient ? `${patient.firstName} ${patient.lastName ?? ''}`.trim() : 'A patient';
+  await prisma.notification.createMany({
+    data: staff.map((s) => ({
+      tenantId,
+      userId: s.id,
+      title: 'Patient ready for discharge',
+      message: `${name} (${patient?.mrn ?? '—'}) has a signed discharge summary. Clear the final bill to complete the discharge.`,
+      notificationType: 'system' as const,
+      channel: 'in_app' as const,
+      referenceType: 'admission',
+      referenceId: summary.admissionId,
+      sentAt: new Date(),
+    })),
+  });
 }
 
 /**

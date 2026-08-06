@@ -505,6 +505,125 @@ describe('ClinicalService', () => {
         'Admission not found',
       );
     });
+
+    // Discharging with money outstanding drops the patient off every active-IP
+    // worklist (they all filter status='admitted'), which silently writes the
+    // balance off. The bill has to be settled first.
+    it('should refuse to discharge while the bill is not cleared', async () => {
+      mockPublishedDischargeSummary();
+      vi.mocked(prisma.admission.findFirst).mockResolvedValue({
+        ...mockAdmission,
+        status: 'admitted',
+        depositAmount: 0,
+      } as any);
+      vi.mocked(prisma.bill.findMany).mockResolvedValue([
+        {
+          amountPaid: 1000,
+          discountAmount: 0,
+          insuranceCoveredAmount: 0,
+          billItems: [{ totalAmount: 5000, referenceType: null, referenceId: null }],
+        },
+      ] as any);
+
+      await expect(dischargePatient(TENANT_ID, 'admission-1', USER_ID)).rejects.toThrow(
+        /not cleared/i,
+      );
+    });
+
+    it('should name the outstanding amount so the counter knows what to collect', async () => {
+      mockPublishedDischargeSummary();
+      vi.mocked(prisma.admission.findFirst).mockResolvedValue({
+        ...mockAdmission,
+        status: 'admitted',
+        depositAmount: 0,
+      } as any);
+      vi.mocked(prisma.bill.findMany).mockResolvedValue([
+        {
+          amountPaid: 1000,
+          discountAmount: 0,
+          insuranceCoveredAmount: 0,
+          billItems: [{ totalAmount: 5000, referenceType: null, referenceId: null }],
+        },
+      ] as any);
+
+      await expect(dischargePatient(TENANT_ID, 'admission-1', USER_ID)).rejects.toThrow('4000.00');
+    });
+
+    // The deposit already on file counts as money collected.
+    it('should allow discharge when the deposit covers the charges', async () => {
+      mockPublishedDischargeSummary();
+      vi.mocked(prisma.admission.findFirst).mockResolvedValue({
+        ...mockAdmission,
+        status: 'admitted',
+        depositAmount: 5000,
+      } as any);
+      vi.mocked(prisma.bill.findMany).mockResolvedValue([
+        {
+          amountPaid: 0,
+          discountAmount: 0,
+          insuranceCoveredAmount: 0,
+          billItems: [{ totalAmount: 5000, referenceType: null, referenceId: null }],
+        },
+      ] as any);
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) =>
+        fn(
+          txProxy({
+            admission: {
+              update: vi.fn().mockResolvedValue({ ...mockAdmission, status: 'discharged' }),
+            },
+          }),
+        ),
+      );
+
+      const result = await dischargePatient(TENANT_ID, 'admission-1', USER_ID);
+      expect(result.status).toBe('discharged');
+    });
+
+    // `force` is the LAMA / transfer-out / death override. It skips both gates,
+    // so it must leave a reason behind.
+    it('should require a reason when forcing past the discharge gates', async () => {
+      vi.mocked(prisma.admission.findFirst).mockResolvedValue({
+        ...mockAdmission,
+        status: 'admitted',
+      } as any);
+
+      await expect(
+        dischargePatient(TENANT_ID, 'admission-1', USER_ID, { force: true }),
+      ).rejects.toThrow(/reason is required/i);
+    });
+
+    it('should discharge with an unpaid bill when forced with a reason', async () => {
+      // No published summary and a live balance — both gates would normally fail.
+      vi.mocked(prisma.dischargeSummary.findFirst).mockResolvedValue(null as any);
+      vi.mocked(prisma.admission.findFirst).mockResolvedValue({
+        ...mockAdmission,
+        status: 'admitted',
+        depositAmount: 0,
+      } as any);
+      vi.mocked(prisma.bill.findMany).mockResolvedValue([
+        {
+          amountPaid: 0,
+          discountAmount: 0,
+          insuranceCoveredAmount: 0,
+          billItems: [{ totalAmount: 5000, referenceType: null, referenceId: null }],
+        },
+      ] as any);
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) =>
+        fn(
+          txProxy({
+            admission: {
+              update: vi.fn().mockResolvedValue({ ...mockAdmission, status: 'discharged' }),
+            },
+          }),
+        ),
+      );
+
+      const result = await dischargePatient(TENANT_ID, 'admission-1', USER_ID, {
+        force: true,
+        reason: 'LAMA — patient left against medical advice',
+      });
+      expect(result.status).toBe('discharged');
+    });
   });
 
   // ═══════════════════════════════════════════

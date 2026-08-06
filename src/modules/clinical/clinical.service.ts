@@ -954,7 +954,7 @@ export async function dischargePatient(
   tenantId: string,
   id: string,
   userId: string,
-  data?: { dischargeDate?: string; notes?: string; force?: boolean },
+  data?: { dischargeDate?: string; notes?: string; force?: boolean; reason?: string },
 ) {
   const admission = await prisma.admission.findFirst({
     where: { id, tenantId },
@@ -968,10 +968,17 @@ export async function dischargePatient(
     throw AppError.badRequest('Patient is already discharged');
   }
 
-  // The published discharge summary is the doctor's clinical sign-off for
-  // discharge: the patient can only be discharged once it exists. (Publishing
-  // the summary itself calls this with the summary already published.) An
-  // explicit administrative override (force) covers LAMA / transfer-out / death.
+  // Discharge has TWO gates, and both must pass before the bed is released.
+  //
+  //   1. CLINICAL — a published discharge summary (the doctor's sign-off).
+  //      Publishing no longer discharges the patient by itself; it only marks
+  //      them ready, and the counter performs the discharge below.
+  //   2. FINANCIAL — the stay's bill must be fully settled. Marking someone
+  //      discharged with money outstanding drops them off the active-IP
+  //      worklists and effectively writes the balance off.
+  //
+  // `force` is the administrative override for LAMA / transfer-out / death and
+  // skips BOTH gates; it requires a reason, which is written into the notes.
   if (!data?.force) {
     const publishedSummary = await prisma.dischargeSummary.findFirst({
       where: { admissionId: id, status: 'published' },
@@ -982,6 +989,18 @@ export async function dischargePatient(
         'A published discharge summary is required before discharging this patient. Please complete and publish the discharge summary first.',
       );
     }
+
+    const billing = await import('../billing/billing.service');
+    const outstanding = await billing.getAdmissionOutstanding(tenantId, id);
+    if (!outstanding.isCleared) {
+      throw AppError.badRequest(
+        `The final bill is not cleared — ₹${outstanding.balanceAfterDeposit.toFixed(2)} is still outstanding. Collect or settle the balance before discharging this patient.`,
+      );
+    }
+  } else if (!data.reason?.trim()) {
+    throw AppError.badRequest(
+      'A reason is required to discharge without clinical sign-off and bill clearance (e.g. LAMA, transfer-out, death).',
+    );
   }
 
   const dischargeDate = data?.dischargeDate ? new Date(data.dischargeDate) : new Date();
@@ -1039,8 +1058,46 @@ export async function dischargePatient(
     logger.error({ err, admissionId: id }, 'discharge bill assembly failed');
   }
 
-  logger.info({ tenantId, admissionId: id }, 'Patient discharged');
+  // Who released the bed, when, and on what authority. A forced discharge skips
+  // the clinical + financial gates, so its reason has to be recoverable later.
+  try {
+    await prisma.auditLog.create({
+      data: {
+        tenantId,
+        userId,
+        action: 'update',
+        entityType: 'admission',
+        entityId: id,
+        description: data?.force
+          ? `Patient discharged by administrative override — Reason: ${data.reason?.trim()}`
+          : 'Patient discharged after discharge-summary sign-off and bill clearance',
+        newValues: {
+          status: 'discharged',
+          dischargeDate: dischargeDate.toISOString(),
+          forced: !!data?.force,
+          reason: data?.reason?.trim() ?? null,
+        },
+      },
+    });
+  } catch (err) {
+    logger.warn({ err, admissionId: id }, 'Failed to write discharge audit log');
+  }
+
+  logger.info({ tenantId, admissionId: id, forced: !!data?.force }, 'Patient discharged');
   return { ...updated, dischargeBilling };
+}
+
+/**
+ * Admissions whose discharge summary is published but which are still occupying
+ * a bed — the "waiting on the cash counter" queue. The clinical side is done;
+ * Front Desk / Billing has to clear the bill and then discharge.
+ */
+export async function getDischargeReadyAdmissions(tenantId: string) {
+  const summaries = await prisma.dischargeSummary.findMany({
+    where: { status: 'published', admission: { tenantId, status: 'admitted' } },
+    select: { admissionId: true },
+  });
+  return new Set(summaries.map((s) => s.admissionId));
 }
 
 // ==================== Transfers ====================

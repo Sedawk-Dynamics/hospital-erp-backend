@@ -160,9 +160,17 @@ export const dischargePatientSchema = z.object({
       .optional(),
     notes: z.string().max(2000).optional(),
     // Administrative override — discharge without a published discharge summary
-    // (e.g. LAMA / transfer-out / death). Normally a published summary is required.
+    // AND without bill clearance (e.g. LAMA / transfer-out / death). Both gates
+    // apply normally; `force` skips them and REQUIRES `reason`, which is written
+    // to the audit log.
     force: z.boolean().optional(),
-  }).optional(),
+    reason: z.string().max(500).optional(),
+  })
+    .refine((b) => !b.force || !!b.reason?.trim(), {
+      message: 'A reason is required when overriding the discharge gates',
+      path: ['reason'],
+    })
+    .optional(),
 });
 
 // ==================== Transfers ====================
