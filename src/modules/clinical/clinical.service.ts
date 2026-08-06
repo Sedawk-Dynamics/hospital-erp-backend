@@ -701,8 +701,31 @@ export async function getAdmissions(tenantId: string, query: GetAdmissionsQuery)
   ]);
 
   // Attach admission_type (raw column) to each row.
-  const typeMap = await fetchAdmissionTypes(admissions.map((a) => a.id));
-  const withType = admissions.map((a) => ({ ...a, admissionType: typeMap.get(a.id) ?? 'ip' }));
+  const ids = admissions.map((a) => a.id);
+  const typeMap = await fetchAdmissionTypes(ids);
+
+  // "Ready to discharge" — the doctor has published the discharge summary but
+  // the patient is still in the bed waiting on the cash counter.
+  //
+  // Deliberately DERIVED rather than an AdmissionStatus value. The patient is
+  // still admitted in every operational sense: eMAR is still administering,
+  // pharmacy/indents/OT/NDPS still resolve their charges through
+  // `status: 'admitted'`, nurse assignments still hold, the bed still reads
+  // occupied and room charges still accrue. A real status would silently drop
+  // them from ~30 such queries the moment the doctor signed off.
+  const readySummaries = ids.length
+    ? await prisma.dischargeSummary.findMany({
+        where: { status: 'published', admissionId: { in: ids } },
+        select: { admissionId: true },
+      })
+    : [];
+  const readyIds = new Set(readySummaries.map((s) => s.admissionId));
+
+  const withType = admissions.map((a) => ({
+    ...a,
+    admissionType: typeMap.get(a.id) ?? 'ip',
+    dischargeReady: a.status === 'admitted' && readyIds.has(a.id),
+  }));
 
   return { admissions: withType, total, page, limit };
 }

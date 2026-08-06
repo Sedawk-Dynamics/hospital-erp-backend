@@ -693,7 +693,9 @@ async function notifyCounterOfDischargeReady(
       message: `${name} (${patient?.mrn ?? '—'}) has a signed discharge summary. Clear the final bill to complete the discharge.`,
       notificationType: 'system' as const,
       channel: 'in_app' as const,
-      referenceType: 'admission',
+      // Specific type, not a bare 'admission': the bell deep-links on it, and
+      // it has to mean "go finalise this stay's bill" and nothing else.
+      referenceType: 'discharge_ready',
       referenceId: summary.admissionId,
       sentAt: new Date(),
     })),
