@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
@@ -711,7 +712,7 @@ export async function createOTRequest(tenantId: string, userId: string, data: Cr
   // admission is IP / Emergency / Day Care) so the surgery charge routes onto
   // their running IP bill (ledger). OP / walk-in patients cannot be booked.
   const activeAdmission = await prisma.admission.findFirst({
-    where: { tenantId, patientId: data.patientId, status: 'admitted' },
+    where: { tenantId, patientId: data.patientId, status: ACTIVE_ADMISSION_STATUS },
     orderBy: { admissionDate: 'desc' },
     select: { id: true, visitId: true },
   });

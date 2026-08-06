@@ -2,6 +2,7 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
+import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
 import type {
   CreateNurseDoctorAssignmentInput,
   GetNurseDoctorAssignmentsQuery,
@@ -205,7 +206,9 @@ export async function getMyPatients(
     tenantId,
     doctorId: { in: doctorIds },
   };
-  if (status === 'admitted') admissionWhere.status = 'admitted';
+  // "admitted" here means "still on the ward", which includes a patient waiting
+  // on the counter after sign-off.
+  if (status === 'admitted') admissionWhere.status = ACTIVE_ADMISSION_STATUS;
   else if (status === 'discharged') admissionWhere.status = 'discharged';
   if (query.search) {
     admissionWhere.patient = {

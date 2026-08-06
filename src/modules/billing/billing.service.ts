@@ -6,6 +6,11 @@ import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
 import { getISTDateStr, formatDateTimeIST, istDayNumber } from '../../shared/date.utils';
 import { normalizeAdmissionType } from '../../shared/admission-type';
+import {
+  ACTIVE_ADMISSION_STATUS,
+  ACTIVE_ADMISSION_STATUSES,
+  isActiveAdmission,
+} from '../../shared/admission-status';
 import type {
   CreateServiceTariffInput,
   UpdateServiceTariffInput,
@@ -1994,7 +1999,7 @@ export async function billOtRequest(
   // standalone OP invoice — so it appears on the IP ledger alongside every other
   // charge for the stay.
   const activeAdmission = await prisma.admission.findFirst({
-    where: { tenantId, patientId: req.patientId, status: 'admitted' },
+    where: { tenantId, patientId: req.patientId, status: ACTIVE_ADMISSION_STATUS },
     orderBy: { admissionDate: 'desc' },
     select: { id: true },
   });
@@ -3233,7 +3238,11 @@ export async function getIpAdmissionsForBilling(
       }
     : undefined;
 
-  const statusIn = query.includeDischarged ? ['admitted', 'discharged'] : ['admitted'];
+  // A stay waiting on the counter (`ready_to_discharge`) is exactly what this
+  // worklist exists for, so it always belongs in the active set.
+  const statusIn = query.includeDischarged
+    ? [...ACTIVE_ADMISSION_STATUSES, 'discharged']
+    : [...ACTIVE_ADMISSION_STATUSES];
   const admissions = await prisma.admission.findMany({
     where: {
       tenantId,
@@ -3253,15 +3262,6 @@ export async function getIpAdmissionsForBilling(
 
   const admissionIds = admissions.map((a) => a.id);
 
-  // Which of these are clinically signed off and now waiting on the counter?
-  // The doctor publishing the discharge summary no longer discharges the patient
-  // — this flag is what turns the row into a "Clear & Discharge" action.
-  const readySummaries = await prisma.dischargeSummary.findMany({
-    where: { status: 'published', admissionId: { in: admissionIds } },
-    select: { admissionId: true },
-  });
-  const readyIds = new Set(readySummaries.map((s) => s.admissionId));
-
   // Care type (ip | emergency | daycare). All three run the same IP flow and
   // land in this one worklist, so without the tag the counter can't tell a
   // Day Care row from an Emergency one. `admission_type` is a raw column, hence
@@ -3277,7 +3277,7 @@ export async function getIpAdmissionsForBilling(
   for (const a of admissions) {
     // Every ACTIVE admission gets a running bill so it appears here from day one
     // and charges have somewhere to post. Discharged keeps whatever bills it has.
-    if (a.status === 'admitted') {
+    if (isActiveAdmission(a.status)) {
       try { await getOrCreateRunningIpBill(tenantId, a.id, userId); } catch { /* non-fatal */ }
     }
     // Insurance/corporate patients auto-connect to the TPA (no manual transfer) —
@@ -3341,9 +3341,9 @@ export async function getIpAdmissionsForBilling(
         admissionDate: a.admissionDate ? a.admissionDate.toISOString() : null,
         dischargeDate: a.dischargeDate ? a.dischargeDate.toISOString() : null,
         admissionType: typeById.get(a.id) ?? 'ip',
-        // Doctor has published the discharge summary but the patient is still
-        // admitted → the counter owes them a bill clearance + discharge.
-        dischargeReady: a.status === 'admitted' && readyIds.has(a.id),
+        // Doctor has signed off; the patient is still in the bed and the counter
+        // owes them a bill clearance + discharge.
+        dischargeReady: a.status === 'ready_to_discharge',
       },
       insuranceClaims: claim ? [claim] : [],
       deposit: {

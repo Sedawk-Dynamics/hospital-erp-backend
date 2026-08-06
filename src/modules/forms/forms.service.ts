@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
@@ -425,7 +426,7 @@ async function resolveSubmissionContext(
 
   // Prefer a live admission (IP / emergency / day-care), then the newest visit.
   const admission = await prisma.admission.findFirst({
-    where: { tenantId, patientId, status: 'admitted' },
+    where: { tenantId, patientId, status: ACTIVE_ADMISSION_STATUS },
     orderBy: { admissionDate: 'desc' },
     select: { id: true, visitId: true },
   });

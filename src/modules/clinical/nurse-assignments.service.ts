@@ -2,6 +2,7 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
+import { isActiveAdmission } from '../../shared/admission-status';
 import type {
   CreateNurseAssignmentInput,
   GetNurseAssignmentsQuery,
@@ -46,7 +47,9 @@ export async function createNurseAssignment(
     select: { id: true, status: true, wardId: true, bedId: true },
   });
   if (!admission) throw AppError.notFound('Admission not found');
-  if (admission.status !== 'admitted') {
+  // `ready_to_discharge` still needs a nurse — the patient is in the bed until
+  // the counter clears the bill, and someone has to be responsible for them.
+  if (!isActiveAdmission(admission.status)) {
     throw AppError.badRequest('Nurse assignments are only allowed for currently admitted (IPD) patients');
   }
 

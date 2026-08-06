@@ -1,0 +1,18 @@
+-- Adds `ready_to_discharge` to AdmissionStatus.
+--
+-- The doctor publishing the discharge summary no longer discharges the patient:
+-- they are clinically cleared but STILL IN THE BED until Front Desk / Billing
+-- clears the final bill. That in-between state needed a name, because every
+-- ward and counter screen was reading them as an ordinary in-patient.
+--
+-- IMPORTANT for anyone querying this column: `ready_to_discharge` is an ACTIVE
+-- admission. The patient still occupies a bed, still receives medication, and
+-- still accrues charges. Anything that means "the patient is physically here"
+-- must accept BOTH 'admitted' and 'ready_to_discharge' — see
+-- src/shared/admission-status.ts (ACTIVE_ADMISSION_STATUSES). Only 'discharged'
+-- frees the bed and closes the stay.
+--
+-- Written by hand and applied with `prisma db push --skip-generate`; the
+-- IF NOT EXISTS guard makes re-running it a no-op. Postgres cannot add an enum
+-- value inside a transaction block, which is why this is a bare statement.
+ALTER TYPE "AdmissionStatus" ADD VALUE IF NOT EXISTS 'ready_to_discharge';

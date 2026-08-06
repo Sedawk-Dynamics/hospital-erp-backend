@@ -1,4 +1,5 @@
 import { prisma } from '../../config/database';
+import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPatientCreditStatus } from '../pharmacy/pharmacy.service';
@@ -159,7 +160,7 @@ async function buildIndentFromRx(
 
   // Resolve the active admission (and its ward) from the Rx's visit.
   const admission = await prisma.admission.findFirst({
-    where: { tenantId, visitId: rx.visitId, status: 'admitted' },
+    where: { tenantId, visitId: rx.visitId, status: ACTIVE_ADMISSION_STATUS },
     select: { id: true, wardId: true },
   });
 
@@ -360,7 +361,7 @@ export async function dispenseIndent(
     // G2: scope the IP bill to the admission (the indent's, else the patient's
     // active admission) so the running IP ledger is per-stay.
     const admId = indent.admissionId
-      ?? (await tx.admission.findFirst({ where: { tenantId, patientId: indent.patientId, status: 'admitted' }, orderBy: { admissionDate: 'desc' }, select: { id: true } }))?.id
+      ?? (await tx.admission.findFirst({ where: { tenantId, patientId: indent.patientId, status: ACTIVE_ADMISSION_STATUS }, orderBy: { admissionDate: 'desc' }, select: { id: true } }))?.id
       ?? null;
 
     // Find/open the patient's IP bill.
@@ -582,7 +583,7 @@ export async function dispenseIpPrescription(
 
   const result = await prisma.$transaction(async (tx) => {
     const admId = rx.visit?.admission?.id
-      ?? (await tx.admission.findFirst({ where: { tenantId, patientId: rx.patientId, status: 'admitted' }, orderBy: { admissionDate: 'desc' }, select: { id: true } }))?.id
+      ?? (await tx.admission.findFirst({ where: { tenantId, patientId: rx.patientId, status: ACTIVE_ADMISSION_STATUS }, orderBy: { admissionDate: 'desc' }, select: { id: true } }))?.id
       ?? null;
 
     // Attach to the patient's running IP bill (draft/pending/partially_paid), else open one.

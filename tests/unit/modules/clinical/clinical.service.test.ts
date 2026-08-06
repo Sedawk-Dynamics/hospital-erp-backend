@@ -592,6 +592,52 @@ describe('ClinicalService', () => {
       ).rejects.toThrow(/reason is required/i);
     });
 
+    // `ready_to_discharge` is the state the counter acts on — the doctor has
+    // signed off and the patient is waiting on the bill. Discharge must accept
+    // it as a starting state, not just `admitted`.
+    it('should discharge a patient who is already ready_to_discharge', async () => {
+      mockPublishedDischargeSummary();
+      vi.mocked(prisma.admission.findFirst).mockResolvedValue({
+        ...mockAdmission,
+        status: 'ready_to_discharge',
+        depositAmount: 0,
+      } as any);
+      vi.mocked(prisma.bill.findMany).mockResolvedValue([]);
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) =>
+        fn(
+          txProxy({
+            admission: {
+              update: vi.fn().mockResolvedValue({ ...mockAdmission, status: 'discharged' }),
+            },
+          }),
+        ),
+      );
+
+      const result = await dischargePatient(TENANT_ID, 'admission-1', USER_ID);
+      expect(result.status).toBe('discharged');
+    });
+
+    it('should still block a ready_to_discharge patient whose bill is unpaid', async () => {
+      mockPublishedDischargeSummary();
+      vi.mocked(prisma.admission.findFirst).mockResolvedValue({
+        ...mockAdmission,
+        status: 'ready_to_discharge',
+        depositAmount: 0,
+      } as any);
+      vi.mocked(prisma.bill.findMany).mockResolvedValue([
+        {
+          amountPaid: 0,
+          discountAmount: 0,
+          insuranceCoveredAmount: 0,
+          billItems: [{ totalAmount: 2500, referenceType: null, referenceId: null }],
+        },
+      ] as any);
+
+      await expect(dischargePatient(TENANT_ID, 'admission-1', USER_ID)).rejects.toThrow(
+        /not cleared/i,
+      );
+    });
+
     it('should discharge with an unpaid bill when forced with a reason', async () => {
       // No published summary and a live balance — both gates would normally fail.
       vi.mocked(prisma.dischargeSummary.findFirst).mockResolvedValue(null as any);

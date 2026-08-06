@@ -1,4 +1,5 @@
 import { prisma } from '../../config/database';
+import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
@@ -131,7 +132,7 @@ export async function updateSettings(tenantId: string, data: UpdateSettingsInput
  */
 async function resolveWardAdmissionIds(tenantId: string, wardId: string): Promise<string[]> {
   const admissions = await prisma.admission.findMany({
-    where: { tenantId, wardId, status: 'admitted' },
+    where: { tenantId, wardId, status: ACTIVE_ADMISSION_STATUS },
     select: { id: true },
   });
   return admissions.map((a) => a.id);

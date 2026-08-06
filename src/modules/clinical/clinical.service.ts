@@ -4,6 +4,7 @@ import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
 import { normalizeAdmissionType, type AdmissionType } from '../../shared/admission-type';
+import { ACTIVE_ADMISSION_STATUS, isActiveAdmission } from '../../shared/admission-status';
 import type {
   CreateVisitInput,
   GetVisitsQuery,
@@ -631,7 +632,16 @@ export async function getAdmissions(tenantId: string, query: GetAdmissionsQuery)
   }
   if ((query as any).nurseId) where.nurseId = (query as any).nurseId;
   if (query.wardId) where.wardId = query.wardId;
-  if (query.status) where.status = query.status;
+  // `status=admitted` means "still on the ward", which INCLUDES a patient the
+  // doctor has signed off who is waiting on the counter. Every caller that asks
+  // for admitted patients — eMAR, charting, forms, ward orders, the nurse
+  // dashboard, the doctor's active-admission lookup — means "who is here", and
+  // dropping a ready_to_discharge patient from those would take them off their
+  // own drug chart while they are still in the bed. Ask for
+  // `status=ready_to_discharge` to narrow to just the counter queue.
+  if (query.status) {
+    where.status = query.status === 'admitted' ? ACTIVE_ADMISSION_STATUS : query.status;
+  }
 
   if ((query as any).date) {
     const d = new Date((query as any).date);
@@ -701,30 +711,14 @@ export async function getAdmissions(tenantId: string, query: GetAdmissionsQuery)
   ]);
 
   // Attach admission_type (raw column) to each row.
-  const ids = admissions.map((a) => a.id);
-  const typeMap = await fetchAdmissionTypes(ids);
-
-  // "Ready to discharge" — the doctor has published the discharge summary but
-  // the patient is still in the bed waiting on the cash counter.
-  //
-  // Deliberately DERIVED rather than an AdmissionStatus value. The patient is
-  // still admitted in every operational sense: eMAR is still administering,
-  // pharmacy/indents/OT/NDPS still resolve their charges through
-  // `status: 'admitted'`, nurse assignments still hold, the bed still reads
-  // occupied and room charges still accrue. A real status would silently drop
-  // them from ~30 such queries the moment the doctor signed off.
-  const readySummaries = ids.length
-    ? await prisma.dischargeSummary.findMany({
-        where: { status: 'published', admissionId: { in: ids } },
-        select: { admissionId: true },
-      })
-    : [];
-  const readyIds = new Set(readySummaries.map((s) => s.admissionId));
+  const typeMap = await fetchAdmissionTypes(admissions.map((a) => a.id));
 
   const withType = admissions.map((a) => ({
     ...a,
     admissionType: typeMap.get(a.id) ?? 'ip',
-    dischargeReady: a.status === 'admitted' && readyIds.has(a.id),
+    // Kept alongside the status so existing clients that read the flag keep
+    // working; the status itself is now the source of truth.
+    dischargeReady: a.status === 'ready_to_discharge',
   }));
 
   return { admissions: withType, total, page, limit };
@@ -1111,16 +1105,16 @@ export async function dischargePatient(
 }
 
 /**
- * Admissions whose discharge summary is published but which are still occupying
- * a bed — the "waiting on the cash counter" queue. The clinical side is done;
- * Front Desk / Billing has to clear the bill and then discharge.
+ * Admissions still occupying a bed but waiting on the cash counter — the
+ * clinical side is done and Front Desk / Billing has to clear the bill before
+ * the patient can leave.
  */
 export async function getDischargeReadyAdmissions(tenantId: string) {
-  const summaries = await prisma.dischargeSummary.findMany({
-    where: { status: 'published', admission: { tenantId, status: 'admitted' } },
-    select: { admissionId: true },
+  const rows = await prisma.admission.findMany({
+    where: { tenantId, status: 'ready_to_discharge' },
+    select: { id: true },
   });
-  return new Set(summaries.map((s) => s.admissionId));
+  return new Set(rows.map((a) => a.id));
 }
 
 // ==================== Transfers ====================
@@ -2751,7 +2745,7 @@ export async function getOrderAcknowledgements(
       throw AppError.badRequest('wardId is required when scope=ward');
     }
     const wardAdmissions = await prisma.admission.findMany({
-      where: { tenantId, wardId: query.wardId, status: 'admitted' },
+      where: { tenantId, wardId: query.wardId, status: ACTIVE_ADMISSION_STATUS },
       select: { id: true, visitId: true },
     });
     admissionIds = wardAdmissions.map((a) => a.id);

@@ -645,8 +645,18 @@ export async function publishDischargeSummary(tenantId: string, id: string, user
       select: { status: true },
     });
     discharged = admission?.status === 'discharged';
-    dischargeReady = admission?.status === 'admitted';
-    if (dischargeReady) {
+    if (admission && !discharged) {
+      // Move the stay into `ready_to_discharge`. This is still an ACTIVE
+      // admission (see shared/admission-status.ts) — the bed stays occupied and
+      // charges keep accruing — it just stops reading as an ordinary
+      // in-patient on the ward and billing screens.
+      if (admission.status === 'admitted') {
+        await prisma.admission.update({
+          where: { id: published.admissionId },
+          data: { status: 'ready_to_discharge' },
+        });
+      }
+      dischargeReady = true;
       await notifyCounterOfDischargeReady(tenantId, published);
     }
   } catch (err) {

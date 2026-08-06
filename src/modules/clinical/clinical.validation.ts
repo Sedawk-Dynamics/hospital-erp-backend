@@ -95,7 +95,9 @@ export const getAdmissionsQuerySchema = z.object({
     doctorUserId: z.string().uuid().optional(),
     nurseId: z.string().uuid().optional(),
     wardId: z.string().uuid().optional(),
-    status: z.enum(['admitted', 'discharged', 'transferred', 'absconded']).optional(),
+    status: z
+      .enum(['admitted', 'ready_to_discharge', 'discharged', 'transferred', 'absconded'])
+      .optional(),
     admissionType: z.enum(['ip', 'emergency', 'daycare']).optional(),
     search: z.string().max(255).optional(),
     date: z.string().optional(),

@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
@@ -4253,7 +4254,7 @@ export async function getWardLedger(
  */
 export async function getPatientCreditStatus(tenantId: string, patientId: string) {
   const admission = await prisma.admission.findFirst({
-    where: { tenantId, patientId, status: 'admitted' },
+    where: { tenantId, patientId, status: ACTIVE_ADMISSION_STATUS },
     orderBy: { admissionDate: 'desc' },
     select: { id: true, billingCategory: true, depositAmount: true },
   });
@@ -4301,7 +4302,7 @@ export async function getIpBillingSummary(tenantId: string, patientId: string) {
   if (!patient) throw AppError.notFound('Patient not found');
 
   const admission = await prisma.admission.findFirst({
-    where: { tenantId, patientId, status: 'admitted' },
+    where: { tenantId, patientId, status: ACTIVE_ADMISSION_STATUS },
     orderBy: { admissionDate: 'desc' },
     select: { id: true, billingCategory: true, depositAmount: true, admissionDate: true },
   });
@@ -4634,7 +4635,7 @@ export async function dispenseFromWard(
     // G2: scope the ward-issue bill to the admission (explicit hint or the
     // patient's active admission) so the running IP ledger is per-stay.
     const admId = data.admissionId
-      ?? (await tx.admission.findFirst({ where: { tenantId, patientId: data.patientId, status: 'admitted' }, orderBy: { admissionDate: 'desc' }, select: { id: true } }))?.id
+      ?? (await tx.admission.findFirst({ where: { tenantId, patientId: data.patientId, status: ACTIVE_ADMISSION_STATUS }, orderBy: { admissionDate: 'desc' }, select: { id: true } }))?.id
       ?? null;
 
     // Post the charge to the patient's open bill; else open a draft IP-ward bill.
@@ -5948,7 +5949,7 @@ export async function processReturn(
           // active admission billing category (package/insurance → advance).
           let mode: 'cash' | 'advance' = (data as any).refundMode ?? 'cash';
           const admission = await tx.admission.findFirst({
-            where: { tenantId, patientId: drugReturn.patientId, status: 'admitted' },
+            where: { tenantId, patientId: drugReturn.patientId, status: ACTIVE_ADMISSION_STATUS },
             orderBy: { admissionDate: 'desc' },
             select: { id: true, billingCategory: true, depositAmount: true },
           });

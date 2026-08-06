@@ -1,4 +1,5 @@
 import { prisma } from '../../config/database';
+import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams, PaginationQuery } from '../../shared/pagination';
@@ -590,7 +591,7 @@ export const tenantsService = {
     ] = await Promise.all([
       prisma.patient.count({ where: { tenantId } }),
       prisma.patient.count({ where: { tenantId, createdAt: { gte: today, lt: tomorrow } } }),
-      prisma.admission.count({ where: { tenantId, status: 'admitted' } }),
+      prisma.admission.count({ where: { tenantId, status: ACTIVE_ADMISSION_STATUS } }),
 
       prisma.appointment.count({ where: { tenantId } }),
       prisma.appointment.count({ where: { tenantId, appointmentDate: { gte: today, lt: tomorrow } } }),

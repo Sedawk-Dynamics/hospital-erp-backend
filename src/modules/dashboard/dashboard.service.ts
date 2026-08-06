@@ -1,4 +1,5 @@
 import { prisma } from '../../config/database';
+import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
 import { logger } from '../../config/logger';
 
 interface PatientStats {
@@ -83,7 +84,7 @@ export async function getDashboardStats(tenantId: string): Promise<DashboardStat
     prisma.admission.count({
       where: {
         tenantId,
-        status: 'admitted',
+        status: ACTIVE_ADMISSION_STATUS,
       },
     }),
 

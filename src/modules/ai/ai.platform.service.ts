@@ -1,4 +1,5 @@
 import { prisma } from '../../config/database';
+import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
 import { generateJson, generateText } from '../../services/ai';
 import { assertFeatureEnabled } from './ai.config.service';
 import { retrieveDocs } from './ai.knowledge';
@@ -131,7 +132,7 @@ async function runDataIntent(
       return { label: 'admissions', value: String(n) };
     }
     case 'current_inpatients': {
-      const n = await prisma.admission.count({ where: { tenantId, status: 'admitted' } });
+      const n = await prisma.admission.count({ where: { tenantId, status: ACTIVE_ADMISSION_STATUS } });
       return { label: 'patients currently admitted', value: String(n) };
     }
     case 'count_visits': {

@@ -37,6 +37,7 @@ export const endNurseDoctorAssignmentSchema = z.object({
 
 export const myPatientsQuerySchema = z.object({
   query: paginationSchema.extend({
+    // 'admitted' means "still on the ward" and covers ready_to_discharge too.
     status: z.enum(['admitted', 'discharged', 'all']).optional(),
     type: z.enum(['ip', 'op', 'all']).optional(),
     search: z.string().optional(),

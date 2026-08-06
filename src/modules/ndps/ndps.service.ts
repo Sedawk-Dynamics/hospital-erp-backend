@@ -1,4 +1,5 @@
 import { prisma } from '../../config/database';
+import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 
@@ -92,7 +93,7 @@ async function postConsumptionCharge(
   if (!(p.unitPrice > 0)) return null;
 
   const admission = await tx.admission.findFirst({
-    where: { tenantId, patientId: p.patientId, status: 'admitted' },
+    where: { tenantId, patientId: p.patientId, status: ACTIVE_ADMISSION_STATUS },
     orderBy: { admissionDate: 'desc' },
     select: { id: true },
   });

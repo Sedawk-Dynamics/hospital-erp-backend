@@ -1,4 +1,5 @@
 import { prisma } from '../../config/database';
+import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 
@@ -430,7 +431,7 @@ export async function reconcileKit(
     if (consumedTotal > 0) {
       // G2: scope the OT bill to the patient's active admission so the running IP
       // ledger is per-stay (an OT case for an admitted patient bills to that stay).
-      const admId = (await tx.admission.findFirst({ where: { tenantId, patientId: issue.patientId, status: 'admitted' }, orderBy: { admissionDate: 'desc' }, select: { id: true } }))?.id ?? null;
+      const admId = (await tx.admission.findFirst({ where: { tenantId, patientId: issue.patientId, status: ACTIVE_ADMISSION_STATUS }, orderBy: { admissionDate: 'desc' }, select: { id: true } }))?.id ?? null;
       let bill = await tx.bill.findFirst({
         where: { tenantId, patientId: issue.patientId, status: { in: ['draft', 'pending', 'partially_paid'] } },
         orderBy: { createdAt: 'desc' },

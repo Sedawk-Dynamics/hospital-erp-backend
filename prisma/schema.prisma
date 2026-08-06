@@ -231,6 +231,12 @@ enum VisitStatus {
 
 enum AdmissionStatus {
   admitted    @map("admitted")
+  // The doctor has published the discharge summary; the patient is clinically
+  // cleared but is STILL IN THE BED until the counter clears the final bill.
+  // Treat this as an active/occupying admission everywhere — see
+  // shared/admission-status.ts ACTIVE_ADMISSION_STATUSES. Only `discharged`
+  // frees the bed and closes the stay.
+  ready_to_discharge @map("ready_to_discharge")
   discharged  @map("discharged")
   transferred @map("transferred")
   absconded   @map("absconded")
