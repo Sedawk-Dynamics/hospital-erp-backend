@@ -62,6 +62,8 @@ export interface DischargeDocument {
   procedures: Array<{ name: string; type: string | null; date: string | null; status: string; surgeon: string | null }>;
   imaging: Array<{ study: string; indication: string | null; impression: string | null; date: string | null }>;
   sections: {
+    /** Free text the doctor added to the header column (incl. "general" pins). */
+    headerNotes: string | null;
     diagnosesText: string | null;
     hospitalCourse: string | null;
     keyLabs: string | null;
@@ -201,6 +203,14 @@ export function streamDischargeSummaryPdf(res: Response, doc: DischargeDocument)
     pdf.moveDown(0.3);
   };
 
+  // ---- Doctor's own notes on the header ----
+  // The "general" pin bucket and anything typed into the header column. Never
+  // used to reach the document at all.
+  if (doc.sections.headerNotes?.trim()) {
+    heading('Summary');
+    paragraph(doc.sections.headerNotes);
+  }
+
   // ---- Diagnoses ----
   heading('Diagnosis');
   if (doc.sections.diagnosesText && doc.sections.diagnosesText.trim()) {
@@ -275,14 +285,21 @@ export function streamDischargeSummaryPdf(res: Response, doc: DischargeDocument)
   }
 
   // ---- Medications on discharge ----
+  // Print BOTH the prescribed table and whatever the doctor typed. These used
+  // to be either/or, so any medication note written by hand vanished the moment
+  // a prescription existed on the stay — which is almost always.
   heading('Medications on Discharge');
   if (doc.medications.length) {
     table(['Medication', 'Dose', 'Frequency', 'Duration', 'Route', 'Instructions'],
       doc.medications.map((m) => [m.drug, m.dosage, m.frequency, m.duration ?? 'ongoing', m.route, m.instructions ?? '—']),
       [2.4, 1.2, 1.6, 1.3, 1, 2]);
-  } else if (doc.sections.medicationsText) {
+  }
+  if (doc.sections.medicationsText?.trim()) {
     paragraph(doc.sections.medicationsText);
-  } else emptyNote('No discharge medications prescribed.');
+  }
+  if (!doc.medications.length && !doc.sections.medicationsText?.trim()) {
+    emptyNote('No discharge medications prescribed.');
+  }
 
   // ---- Discharge instructions ----
   if (doc.sections.dischargeInstructions) {

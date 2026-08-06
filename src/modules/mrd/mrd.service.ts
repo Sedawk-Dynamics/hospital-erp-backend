@@ -2,6 +2,7 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
+import { formatDateIST } from '../../shared/date.utils';
 import { sendDischargeSummaryPublishedEmail } from '../../services/email.service';
 import type { DischargeDocument, DischargeVitalRow } from './discharge-summary-pdf';
 import { getHospitalBranding } from '../hospital-branding/hospital-branding.service';
@@ -341,27 +342,37 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
   const hospitalCourseBlock = hospitalCoursePins ? `Additional hospital-course notes:\n${hospitalCoursePins}` : null;
   const proceduresSummary = mergeSections([allNotesBlock, procedurePins, hospitalCourseBlock]);
 
-  // ── All lab results (full) ──
-  const labResultsSummary = labResults.length > 0
-    ? labResults
-        .map((r) => {
-          const testName = r.labOrderItem?.test?.testName || 'Unknown Test';
-          const abnormal = r.isAbnormal ? ' [ABNORMAL]' : '';
-          return `- ${testName}: ${r.parameterName} = ${r.value ?? 'N/A'} ${r.unit ?? ''} (Ref: ${r.normalRange ?? 'N/A'})${abnormal}`;
-        })
-        .join('\n')
-    : null;
+  // ── Labs, grouped by the day they were taken ──
+  // A stay produces the same panel over and over, so an undated flat list reads
+  // as noise — the clinically useful thing is the trend, which needs the dates
+  // to be the structure. Newest day first, tests grouped within each day.
+  const labLine = (r: (typeof labResults)[number], withFlag: boolean) => {
+    const testName = r.labOrderItem?.test?.testName || 'Unknown Test';
+    const flag = withFlag && r.isAbnormal ? ' [ABNORMAL]' : '';
+    return `- ${testName}: ${r.parameterName} = ${r.value ?? 'N/A'} ${r.unit ?? ''} (Ref: ${r.normalRange ?? 'N/A'})${flag}`;
+  };
 
-  // ── Key labs: flagged abnormal only ──
-  const abnormal = labResults.filter((r) => r.isAbnormal);
-  const keyLabsSummary = abnormal.length > 0
-    ? abnormal
-        .map((r) => {
-          const testName = r.labOrderItem?.test?.testName || 'Unknown Test';
-          return `- ${testName}: ${r.parameterName} = ${r.value ?? 'N/A'} ${r.unit ?? ''} (Ref: ${r.normalRange ?? 'N/A'})`;
-        })
-        .join('\n')
-    : null;
+  const groupByDay = (rows: typeof labResults, withFlag: boolean): string | null => {
+    if (rows.length === 0) return null;
+    const byDay = new Map<string, string[]>();
+    for (const r of rows) {
+      // Group on the IST calendar day — a 01:00 draw belongs to that night's
+      // date on the ward, not the previous UTC day. dd/MM/yyyy is both the key
+      // and the heading the summary prints.
+      const day = formatDateIST(r.enteredAt);
+      const bucket = byDay.get(day) ?? [];
+      bucket.push(labLine(r, withFlag));
+      byDay.set(day, bucket);
+    }
+    // `labResults` arrives newest-first, so insertion order is already the
+    // order we want.
+    return [...byDay.entries()]
+      .map(([day, lines]) => `${day}\n${lines.join('\n')}`)
+      .join('\n\n');
+  };
+
+  const labResultsSummary = groupByDay(labResults, true);
+  const keyLabsSummary = groupByDay(labResults.filter((r) => r.isAbnormal), false);
 
   // ── Meds ── (source-derived prescriptions + "medication" section pins)
   const medsBase = prescriptions.length > 0
@@ -404,6 +415,98 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
   };
 }
 
+/**
+ * The notes part of `headerSummary`, without the generated demographic block.
+ *
+ * The column holds an auto-built "Patient: … / Admitted: … / Attending: …"
+ * header, and anything extra — general pins, or text the doctor typed — is
+ * appended after a blank line. The printed document renders demographics in its
+ * own info card, so only the extra part belongs in the body; printing the whole
+ * column would repeat the patient's details twice on the page.
+ */
+function stripGeneratedHeader(headerSummary?: string | null): string | null {
+  if (!headerSummary?.trim()) return null;
+  const blocks = headerSummary.split(/\n{2,}/);
+  // `Patient:` is the first line the generator writes. If the doctor replaced
+  // the header wholesale it won't match, and we keep everything rather than
+  // silently dropping their text.
+  const rest = blocks[0]?.startsWith('Patient:') ? blocks.slice(1) : blocks;
+  const text = rest.join('\n\n').trim();
+  return text || null;
+}
+
+/** Which DischargeSummary column each pin section feeds. */
+const PIN_SECTION_TO_COLUMN: Record<string, string> = {
+  diagnosis: 'diagnosesSummary',
+  procedure: 'proceduresSummary',
+  hospital_course: 'proceduresSummary',
+  medication: 'medicationReconciliation',
+  advice: 'dischargeInstructions',
+  follow_up: 'followUpInstructions',
+  general: 'headerSummary',
+};
+
+/**
+ * Fold pins added since the summary was generated into a DRAFT, without
+ * touching anything the doctor typed.
+ *
+ * The full `refresh` path rebuilds the source-derived columns from scratch,
+ * which is why the editor never calls it — doing so would discard direct
+ * entries. This is the additive half: a pin whose text is not already present
+ * gets appended to its column, and nothing is ever removed or rewritten.
+ */
+async function mergeNewPinsIntoDraft(
+  tenantId: string,
+  admissionId: string,
+  existing: { id: string } & Record<string, any>,
+) {
+  const pins = await prisma.progressNotePin.findMany({
+    where: { note: { admissionId, status: { in: ['active', 'finalized'] } } },
+    orderBy: { createdAt: 'asc' },
+    include: {
+      note: { select: { createdAt: true, doctor: { select: { user: { select: { firstName: true, lastName: true } } } } } },
+    },
+  });
+  if (pins.length === 0) return existing;
+
+  const additions: Record<string, string[]> = {};
+  for (const p of pins) {
+    const column = PIN_SECTION_TO_COLUMN[p.dischargeSection];
+    if (!column) continue;
+    const current: string = existing[column] ?? '';
+    // Match on the pin's own words rather than the rendered line: the doctor
+    // may have reworded the surrounding text, and re-adding the same content
+    // under a slightly different prefix would duplicate it on every open.
+    if (current.includes(p.content.trim())) continue;
+
+    const doctor = p.note?.doctor?.user
+      ? `Dr. ${p.note.doctor.user.firstName}${p.note.doctor.user.lastName ? ' ' + p.note.doctor.user.lastName : ''}`
+      : 'Attending';
+    const when = formatDateIST(p.createdAt);
+    const line = `- [${when} · ${doctor}] ${p.content}`;
+    (additions[column] ??= []).push(line);
+  }
+
+  const entries = Object.entries(additions);
+  if (entries.length === 0) return existing;
+
+  const data: Record<string, string> = {};
+  for (const [column, lines] of entries) {
+    const current: string = existing[column] ?? '';
+    data[column] = current.trim() ? `${current.trim()}\n${lines.join('\n')}` : lines.join('\n');
+  }
+
+  logger.info(
+    { tenantId, admissionId, columns: Object.keys(data) },
+    'Folded new discharge-summary pins into the draft',
+  );
+  return prisma.dischargeSummary.update({
+    where: { id: existing.id },
+    data,
+    include: dischargeSummaryInclude,
+  });
+}
+
 export async function generateDischargeSummary(
   tenantId: string,
   admissionId: string,
@@ -415,6 +518,14 @@ export async function generateDischargeSummary(
   });
 
   if (existing && !options.refresh) {
+    // A pin added AFTER the summary was first generated used to be invisible
+    // forever: the summary is built once, the editor never asks for a refresh,
+    // and refresh is a full rebuild that would wipe whatever the doctor had
+    // typed. So while the summary is still a draft, fold in only pins that are
+    // not already in the text — additive, so direct entries survive.
+    if (existing.status === 'draft') {
+      return mergeNewPinsIntoDraft(tenantId, admissionId, existing);
+    }
     return existing;
   }
   if (existing && options.refresh && existing.status !== 'draft') {
@@ -924,6 +1035,10 @@ export async function buildDischargeDocument(tenantId: string, id: string): Prom
       .filter((im) => im.imagingResult?.impression || im.completedAt)
       .map((im) => ({ study: im.bodyPart ?? 'Imaging', indication: im.clinicalIndication ?? null, impression: im.imagingResult?.impression ?? null, date: im.completedAt ? im.completedAt.toISOString() : null })),
     sections: {
+      // The header column carries the "general" pin bucket and anything the
+      // doctor typed there. It was left out of this payload entirely, so none
+      // of it could ever print.
+      headerNotes: stripGeneratedHeader(summary.headerSummary),
       diagnosesText: summary.diagnosesSummary ?? null,
       hospitalCourse: summary.proceduresSummary ?? null,
       keyLabs: summary.keyLabsSummary ?? null,
