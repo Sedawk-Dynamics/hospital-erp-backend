@@ -7,7 +7,9 @@ import {
   sendMessage,
   getConversation,
   createHandover,
+  getHandovers,
   acknowledgeHandover,
+  addHandoverNote,
   markAllNotificationsRead,
 } from '../../../../src/modules/communication/communication.service';
 
@@ -215,6 +217,102 @@ describe('Communication Service - Handovers', () => {
           content: 'x',
         } as any),
       ).rejects.toThrow('Ward not found in this tenant');
+    });
+  });
+
+  // ═══════════════════════════════════════════
+  // Response contract
+  // ═══════════════════════════════════════════
+  // The nurse UI reads these exact keys. It used to read fromUser / toUser /
+  // summary / status instead — none of which the API has ever sent — so every
+  // handover rendered as "Unknown → Anyone" with an empty body and no
+  // Acknowledge button. `apiGet<T>` casts rather than validates, so nothing
+  // caught it. These tests pin the shape the clients depend on.
+  describe('handover response contract', () => {
+    const row = {
+      id: 'ho-1',
+      fromNurseId: USER_ID,
+      toNurseId: 'nurse-2',
+      wardId: 'ward-1',
+      shiftType: 'morning',
+      content: 'BP stable overnight, watch bed 4',
+      isAcknowledged: false,
+      acknowledgedAt: null,
+    };
+
+    it('derives status=submitted for an unacknowledged note', async () => {
+      vi.mocked(prisma.shiftHandoverNote.findMany).mockResolvedValueOnce([row] as any);
+      vi.mocked(prisma.shiftHandoverNote.count).mockResolvedValueOnce(1);
+
+      const { handovers } = await getHandovers(TENANT_ID, { page: 1, limit: 20 } as any);
+
+      expect(handovers[0]).toMatchObject({
+        fromNurseId: USER_ID,
+        content: 'BP stable overnight, watch bed 4',
+        isAcknowledged: false,
+        status: 'submitted',
+      });
+    });
+
+    it('derives status=acknowledged once acknowledged', async () => {
+      vi.mocked(prisma.shiftHandoverNote.findMany).mockResolvedValueOnce([
+        { ...row, isAcknowledged: true, acknowledgedAt: new Date() },
+      ] as any);
+      vi.mocked(prisma.shiftHandoverNote.count).mockResolvedValueOnce(1);
+
+      const { handovers } = await getHandovers(TENANT_ID, { page: 1, limit: 20 } as any);
+
+      expect(handovers[0].status).toBe('acknowledged');
+    });
+
+    // A note left for "anyone on next shift" (toNurseId null) is claimed by
+    // whoever acknowledges it — otherwise the most common case would have no
+    // recipient on record.
+    it('claims an unaddressed note for the acknowledging nurse', async () => {
+      vi.mocked(prisma.shiftHandoverNote.findFirst).mockResolvedValueOnce({
+        ...row,
+        toNurseId: null,
+      } as any);
+      vi.mocked(prisma.shiftHandoverNote.update).mockResolvedValueOnce({
+        ...row,
+        toNurseId: 'nurse-9',
+        isAcknowledged: true,
+      } as any);
+
+      const result = await acknowledgeHandover(TENANT_ID, 'nurse-9', 'ho-1');
+
+      expect(vi.mocked(prisma.shiftHandoverNote.update).mock.calls[0][0]).toMatchObject({
+        data: { isAcknowledged: true, toNurseId: 'nurse-9' },
+      });
+      expect(result.status).toBe('acknowledged');
+    });
+
+    it('refuses to acknowledge the same note twice', async () => {
+      vi.mocked(prisma.shiftHandoverNote.findFirst).mockResolvedValueOnce({
+        ...row,
+        isAcknowledged: true,
+      } as any);
+
+      await expect(acknowledgeHandover(TENANT_ID, 'nurse-2', 'ho-1')).rejects.toThrow(
+        'already been acknowledged',
+      );
+    });
+
+    // The addendum text is read by the next nurse on shift; it used to embed
+    // the author's raw UUID.
+    it('names the author in an addendum instead of their UUID', async () => {
+      vi.mocked(prisma.shiftHandoverNote.findFirst).mockResolvedValueOnce(row as any);
+      vi.mocked(prisma.user.findUnique).mockResolvedValueOnce({
+        firstName: 'Asha',
+        lastName: 'Menon',
+      } as any);
+      vi.mocked(prisma.shiftHandoverNote.update).mockResolvedValueOnce(row as any);
+
+      await addHandoverNote(TENANT_ID, USER_ID, 'ho-1', { content: 'Bed 4 spiked at 3am' } as any);
+
+      const written = vi.mocked(prisma.shiftHandoverNote.update).mock.calls[0][0] as any;
+      expect(written.data.content).toContain('Addendum by Asha Menon');
+      expect(written.data.content).not.toContain(USER_ID);
     });
   });
 });

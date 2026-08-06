@@ -387,6 +387,32 @@ export async function deleteMessage(tenantId: string, userId: string, id: string
 // ============================================================
 
 /**
+ * Derived UI state for a handover.
+ *
+ * `ShiftHandoverNote` has no status column: a note is created already
+ * submitted (there is no draft) and the only transition is acknowledgement.
+ * Every handover surface still needs one field to badge, so it is derived here
+ * — once, server-side — rather than re-implemented (differently) in each
+ * client. Clients read `status`; the DB keeps `isAcknowledged` as the truth.
+ */
+export type HandoverStatus = 'submitted' | 'acknowledged';
+
+function withHandoverStatus<T extends { isAcknowledged: boolean }>(
+  handover: T,
+): T & { status: HandoverStatus } {
+  return { ...handover, status: handover.isAcknowledged ? 'acknowledged' : 'submitted' };
+}
+
+/** Display name for the user who acted, so note text names a person, not a UUID. */
+async function actorName(userId: string): Promise<string> {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { firstName: true, lastName: true },
+  });
+  return user ? `${user.firstName} ${user.lastName ?? ''}`.trim() : 'a colleague';
+}
+
+/**
  * Create a shift handover note.
  */
 export async function createHandover(
@@ -443,7 +469,7 @@ export async function createHandover(
     { tenantId, handoverId: handover.id, fromNurseId },
     'Shift handover note created',
   );
-  return handover;
+  return withHandoverStatus(handover);
 }
 
 /**
@@ -498,7 +524,7 @@ export async function getHandovers(tenantId: string, query: GetHandoversQuery) {
     prisma.shiftHandoverNote.count({ where }),
   ]);
 
-  return { handovers, total, page, limit };
+  return { handovers: handovers.map(withHandoverStatus), total, page, limit };
 }
 
 /**
@@ -524,7 +550,7 @@ export async function getHandoverById(tenantId: string, id: string) {
     throw AppError.notFound('Handover note not found');
   }
 
-  return handover;
+  return withHandoverStatus(handover);
 }
 
 /**
@@ -567,7 +593,7 @@ export async function acknowledgeHandover(tenantId: string, userId: string, id: 
     { tenantId, handoverId: id, acknowledgedBy: userId },
     'Handover note acknowledged',
   );
-  return updated;
+  return withHandoverStatus(updated);
 }
 
 /**
@@ -587,8 +613,10 @@ export async function addHandoverNote(
     throw AppError.notFound('Handover note not found');
   }
 
-  // Append additional content to the existing handover
-  const updatedContent = `${handover.content}\n\n--- Addendum by user ${userId} at ${formatDateTimeIST(new Date())} ---\n${data.content}`;
+  // Append additional content to the existing handover. Name the author — this
+  // string is read by the next nurse on shift, and a bare UUID told them nothing.
+  const author = await actorName(userId);
+  const updatedContent = `${handover.content}\n\n--- Addendum by ${author} at ${formatDateTimeIST(new Date())} ---\n${data.content}`;
 
   const updateData: any = {
     content: updatedContent,
@@ -622,7 +650,7 @@ export async function addHandoverNote(
     { tenantId, handoverId: id, addedBy: userId },
     'Handover note updated with addendum',
   );
-  return updated;
+  return withHandoverStatus(updated);
 }
 
 // ============================================================
@@ -817,7 +845,7 @@ export async function completeHandover(
 
   const note = data?.completionNote?.trim();
   const appendedContent = note
-    ? `${handover.content}\n\n[Completed ${formatDateTimeIST(new Date())} by current user] ${note}`
+    ? `${handover.content}\n\n[Completed ${formatDateTimeIST(new Date())} by ${await actorName(userId)}] ${note}`
     : handover.content;
 
   // Idempotent: if already acknowledged, just allow appending a completion note.
@@ -840,7 +868,7 @@ export async function completeHandover(
     { tenantId, handoverId: id, completedBy: userId, hasNote: !!note },
     'Handover note marked complete',
   );
-  return updated;
+  return withHandoverStatus(updated);
 }
 
 /**
