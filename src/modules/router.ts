@@ -53,6 +53,7 @@ import { aiRoutes } from './ai/ai.routes';
 import { icdRoutes } from './icd/icd.routes';
 import { platformBrandingRoutes } from './platform-branding/platform-branding.routes';
 import { hospitalBrandingRoutes } from './hospital-branding/hospital-branding.routes';
+import { hospitalSettingsRoutes } from './hospital-settings/hospital-settings.routes';
 
 const apiRouter = Router();
 
@@ -90,6 +91,7 @@ apiRouter.use('/ai', authenticate, userTierLimiter, aiRoutes);
 // super-admin only (guarded inside the router).
 apiRouter.use('/platform-branding', platformBrandingRoutes);
 apiRouter.use('/hospital-branding', hospitalBrandingRoutes);
+apiRouter.use('/hospital-settings', hospitalSettingsRoutes);
 
 // PACS auth gateway. Mounted WITHOUT the global `authenticate` because its
 // /o/* proxy authenticates via the pacs_session cookie (the OHIF iframe can't

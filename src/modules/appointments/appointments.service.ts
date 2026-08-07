@@ -2,6 +2,18 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
+import {
+  REGISTRATION_FEE_REFERENCE_TYPE,
+  registrationFeeTotals,
+  shouldChargeRegistrationFee,
+} from '../../shared/registration-fee';
+import {
+  getRegistrationFeeSettings,
+  getPatientVisitStatus,
+} from '../hospital-settings/hospital-settings.service';
+
+/** Money to paise — bills must not carry floating-point dust. */
+const round2 = (n: number) => Math.round(n * 100) / 100;
 import type {
   CreateDoctorProfileInput,
   UpdateDoctorScheduleInput,
@@ -1286,11 +1298,22 @@ export async function bookAppointment(tenantId: string, data: BookAppointmentInp
     },
   });
 
+  // Record the front desk's registration-fee decision. Written by raw SQL
+  // because the column is not in the (unregenerated) client — same as
+  // `admission_type`. Only an explicit choice is stored: leaving it null means
+  // "the desk did not say", and the rule decides when the bill is raised.
+  if (typeof data.chargeRegistrationFee === 'boolean') {
+    await prisma.$executeRaw`
+      UPDATE appointments SET charge_registration_fee = ${data.chargeRegistrationFee}
+      WHERE id = ${appointment.id}
+    `;
+  }
+
   logger.info(
     { tenantId, appointmentId: appointment.id, doctorId: data.doctorId, patientId: data.patientId },
     'Appointment booked',
   );
-  return appointment;
+  return { ...appointment, chargeRegistrationFee: data.chargeRegistrationFee ?? null };
 }
 
 /**
@@ -1762,6 +1785,29 @@ async function ensureAppointmentBill(
     ? Number(appointment.doctor.consultationFee)
     : 0;
   const amount = consultationFee > 0 ? consultationFee : 0;
+
+  // The one-time registration fee for opening a file at THIS hospital. Decided
+  // here rather than at booking so it is applied however the appointment was
+  // made — front desk, walk-in or the patient's own portal, none of which
+  // necessarily showed a checkbox.
+  const [settings, visitStatus, deskChoice] = await Promise.all([
+    getRegistrationFeeSettings(tenantId),
+    getPatientVisitStatus(tenantId, appointment.patientId, { excludeAppointmentId: appointmentId }),
+    readRegistrationChoice(appointmentId),
+  ]);
+  const chargeRegistration = shouldChargeRegistrationFee({
+    settings,
+    isFirstVisit: visitStatus.isFirstVisit,
+    alreadyCharged: visitStatus.registrationFeeCharged,
+    deskChoice,
+  });
+  const regTotals = registrationFeeTotals(settings);
+  const registrationTotal = chargeRegistration ? regTotals.totalAmount : 0;
+
+  const subtotal = round2(amount + (chargeRegistration ? regTotals.unitPrice : 0));
+  const taxAmount = chargeRegistration ? regTotals.taxAmount : 0;
+  const total = round2(amount + registrationTotal);
+
   const billNumber = await generateFrontdeskBillNumber(tenantId);
 
   const bill = await prisma.bill.create({
@@ -1770,39 +1816,68 @@ async function ensureAppointmentBill(
       patientId: appointment.patientId,
       billNumber,
       billDate: new Date(),
-      subtotal: amount,
+      subtotal,
       discountAmount: 0,
-      taxAmount: 0,
-      totalAmount: amount,
+      taxAmount,
+      totalAmount: total,
       insuranceCoveredAmount: 0,
-      patientPayableAmount: amount,
+      patientPayableAmount: total,
       amountPaid: 0,
-      balanceDue: amount,
+      balanceDue: total,
       status: 'pending',
       generatedBy: userId,
       billItems: {
-        create: {
-          description,
-          category: 'consultation',
-          quantity: 1,
-          unitPrice: amount,
-          discountPercent: 0,
-          discountAmount: 0,
-          taxPercent: 0,
-          taxAmount: 0,
-          totalAmount: amount,
-          referenceType: 'appointment',
-          referenceId: appointment.id,
-        },
+        create: [
+          {
+            description,
+            category: 'consultation',
+            quantity: 1,
+            unitPrice: amount,
+            discountPercent: 0,
+            discountAmount: 0,
+            taxPercent: 0,
+            taxAmount: 0,
+            totalAmount: amount,
+            referenceType: 'appointment',
+            referenceId: appointment.id,
+          },
+          ...(chargeRegistration
+            ? [
+                {
+                  description: settings.label,
+                  category: 'registration' as const,
+                  quantity: 1,
+                  unitPrice: regTotals.unitPrice,
+                  discountPercent: 0,
+                  discountAmount: 0,
+                  taxPercent: settings.gstRatePercent,
+                  taxAmount: regTotals.taxAmount,
+                  totalAmount: regTotals.totalAmount,
+                  // Referenced by TYPE so the once-per-patient check can find it
+                  // again regardless of what the label or amount later becomes.
+                  referenceType: REGISTRATION_FEE_REFERENCE_TYPE,
+                  referenceId: appointment.id,
+                },
+              ]
+            : []),
+        ],
       },
     },
   });
 
   logger.info(
-    { tenantId, appointmentId, billId: bill.id, amount, by: userId },
+    { tenantId, appointmentId, billId: bill.id, amount, registrationTotal, by: userId },
     'Consultation bill created for appointment',
   );
   return { appointment, bill };
+}
+
+/** The desk's stored registration-fee choice; null when they never said. */
+async function readRegistrationChoice(appointmentId: string): Promise<boolean | null> {
+  const rows = await prisma.$queryRaw<{ charge_registration_fee: boolean | null }[]>`
+    SELECT charge_registration_fee FROM appointments WHERE id = ${appointmentId}
+  `;
+  return rows[0]?.charge_registration_fee ?? null;
 }
 
 export async function initiateFrontdeskPayment(

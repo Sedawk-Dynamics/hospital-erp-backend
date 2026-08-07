@@ -167,6 +167,13 @@ export const bookAppointmentSchema = z.object({
     reason: z.string().max(1000).optional(),
     notes: z.string().max(2000).optional(),
     priority: z.enum(['normal', 'urgent', 'emergency']).default('normal'),
+    /**
+     * The front desk's call on the one-time registration fee. Omit it and the
+     * rule decides at bill time (charge iff this is the patient's first visit
+     * here and it has not been taken before) — which is what happens for a
+     * portal booking, where there is no desk to ask.
+     */
+    chargeRegistrationFee: z.boolean().optional(),
   }),
 });
 

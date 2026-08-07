@@ -838,6 +838,9 @@ enum BillStatus {
 
 enum BillItemCategory {
   consultation @map("consultation")
+  // One-time fee for opening a file at this hospital. Its own category rather
+  // than `other` so a hospital can report registration income separately.
+  registration @map("registration")
   surgery      @map("surgery")
   room         @map("room")
   lab          @map("lab")
@@ -2344,6 +2347,12 @@ model Appointment {
   consultationType   String?           @map("consultation_type") @db.VarChar(30)
   priority           String?           @db.VarChar(20)
   visitType          VisitTypeAppt     @default(new) @map("visit_type")
+  // Whether the front desk chose to add the hospital's one-time registration
+  // fee to this appointment's bill. Null = the desk never said, so the rule
+  // decides (charge it iff this is the patient's first visit HERE and it has
+  // not been charged before). Accessed via raw SQL like `admission_type` —
+  // the client is not regenerated for it.
+  chargeRegistrationFee Boolean?       @map("charge_registration_fee")
   status             AppointmentStatus @default(booked)
   reason             String?
   notes              String?
