@@ -8,6 +8,7 @@ import {
   closeVisit,
   createAdmission,
   getAdmissions,
+  assignAdmissionDoctor,
   dischargePatient,
   createTransfer,
   approveTransfer,
@@ -417,6 +418,129 @@ describe('ClinicalService', () => {
       expect(result.admissions[0]).toMatchObject(admissions[0]);
       expect(result.admissions).toHaveLength(admissions.length);
       expect(result.total).toBe(1);
+    });
+
+    // Emergency / Day Care are the SAME IP flow with a different tag, and the
+    // front desk opens an emergency admission without naming a consultant. Left
+    // out of "my patients", that admission belonged to nobody and appeared on
+    // nobody's list.
+    describe('doctor scope', () => {
+      beforeEach(() => {
+        vi.mocked(prisma.doctorProfile.findFirst).mockResolvedValue({ id: 'dp-1' } as any);
+        vi.mocked(prisma.admission.findMany).mockResolvedValue([] as any);
+        vi.mocked(prisma.admission.count).mockResolvedValue(0);
+      });
+
+      it('scopes to this doctor alone by default', async () => {
+        await getAdmissions(TENANT_ID, { doctorUserId: 'user-1' } as any);
+        const where = vi.mocked(prisma.admission.findMany).mock.calls[0][0]!.where as any;
+        expect(where.doctorId).toBe('dp-1');
+        expect(where.AND).toBeUndefined();
+      });
+
+      it('adds the unassigned admissions when asked', async () => {
+        await getAdmissions(TENANT_ID, { doctorUserId: 'user-1', includeUnassigned: true } as any);
+        const where = vi.mocked(prisma.admission.findMany).mock.calls[0][0]!.where as any;
+        expect(where.doctorId).toBeUndefined();
+        expect(where.AND).toContainEqual({ OR: [{ doctorId: 'dp-1' }, { doctorId: null }] });
+      });
+
+      // `search` already occupies where.OR — a second top-level OR would
+      // silently replace it and the search box would stop working.
+      it('does not clobber the search filter', async () => {
+        await getAdmissions(TENANT_ID, {
+          doctorUserId: 'user-1',
+          includeUnassigned: true,
+          search: 'sample',
+        } as any);
+        const where = vi.mocked(prisma.admission.findMany).mock.calls[0][0]!.where as any;
+        expect(Array.isArray(where.OR)).toBe(true);
+        expect(where.OR.length).toBeGreaterThan(0);
+        expect(where.AND).toContainEqual({ OR: [{ doctorId: 'dp-1' }, { doctorId: null }] });
+      });
+
+      it('returns nothing when the user has no doctor profile', async () => {
+        vi.mocked(prisma.doctorProfile.findFirst).mockResolvedValue(null as any);
+        const res = await getAdmissions(TENANT_ID, { doctorUserId: 'user-1' } as any);
+        expect(res.admissions).toEqual([]);
+        expect(prisma.admission.findMany).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  // ═══════════════════════════════════════════
+  // assignAdmissionDoctor — the missing half of a nullable doctorId
+  // ═══════════════════════════════════════════
+  describe('assignAdmissionDoctor', () => {
+    beforeEach(() => {
+      vi.mocked(prisma.admission.findFirst).mockResolvedValue({
+        id: 'adm-1',
+        status: 'admitted',
+        doctorId: null,
+        patientId: 'patient-1',
+      } as any);
+      vi.mocked(prisma.doctorProfile.findFirst).mockResolvedValue({ id: 'dp-1' } as any);
+      vi.mocked(prisma.admission.update).mockResolvedValue({ id: 'adm-1', doctorId: 'dp-1' } as any);
+    });
+
+    it('sets the consultant on an unassigned admission', async () => {
+      const res = await assignAdmissionDoctor(TENANT_ID, 'adm-1', 'dp-1', 'user-1');
+
+      expect(prisma.admission.update).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 'adm-1' }, data: { doctorId: 'dp-1' } }),
+      );
+      expect(res.admissionType).toBe('ip');
+    });
+
+    it('clears the consultant when passed null', async () => {
+      await assignAdmissionDoctor(TENANT_ID, 'adm-1', null, 'user-1');
+      expect(prisma.admission.update).toHaveBeenCalledWith(
+        expect.objectContaining({ data: { doctorId: null } }),
+      );
+      // No doctor to look up when clearing.
+      expect(prisma.doctorProfile.findFirst).not.toHaveBeenCalled();
+    });
+
+    // Who is answerable for a stay is worth an audit row.
+    it('records who changed it', async () => {
+      await assignAdmissionDoctor(TENANT_ID, 'adm-1', 'dp-1', 'user-1');
+      expect(prisma.auditLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            entityType: 'Admission',
+            entityId: 'adm-1',
+            userId: 'user-1',
+            oldValues: { doctorId: null },
+            newValues: { doctorId: 'dp-1' },
+          }),
+        }),
+      );
+    });
+
+    it('rejects a doctor from another hospital', async () => {
+      vi.mocked(prisma.doctorProfile.findFirst).mockResolvedValue(null as any);
+      await expect(assignAdmissionDoctor(TENANT_ID, 'adm-1', 'dp-x', 'user-1')).rejects.toThrow(
+        'Doctor not found at this hospital',
+      );
+      expect(prisma.admission.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses to rewrite a discharged stay', async () => {
+      vi.mocked(prisma.admission.findFirst).mockResolvedValue({
+        id: 'adm-1',
+        status: 'discharged',
+        doctorId: 'dp-old',
+      } as any);
+      await expect(assignAdmissionDoctor(TENANT_ID, 'adm-1', 'dp-1', 'user-1')).rejects.toThrow(
+        'discharged admission',
+      );
+    });
+
+    it('throws when the admission is not in this tenant', async () => {
+      vi.mocked(prisma.admission.findFirst).mockResolvedValue(null as any);
+      await expect(assignAdmissionDoctor(TENANT_ID, 'adm-1', 'dp-1', 'user-1')).rejects.toThrow(
+        'Admission not found',
+      );
     });
   });
 

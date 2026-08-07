@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
+import { normalizeAdmissionType } from '../../shared/admission-type';
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
@@ -2616,7 +2617,14 @@ export async function setPrescriptionPharmacyStatus(
  */
 export async function getIpDispensedMedicines(
   tenantId: string,
-  query: { patientId?: string; wardId?: string; fromDate?: string; toDate?: string; limit?: number },
+  query: {
+    patientId?: string;
+    wardId?: string;
+    fromDate?: string;
+    toDate?: string;
+    limit?: number;
+    admissionType?: string;
+  },
 ) {
   const take = Math.min(query.limit ?? 200, 500);
   const dispensedAt: any = {};
@@ -2658,6 +2666,22 @@ export async function getIpDispensedMedicines(
     : [];
   const billMap = new Map(bills.map((b) => [b.id, b]));
 
+  // Emergency / Day Care are the SAME IP flow with a different tag, so they are
+  // already in this list — but without the tag the pharmacy could not tell an
+  // emergency case apart from a planned one, or filter to it.
+  const admissionIds = [
+    ...new Set(bills.map((b) => b.admission?.id).filter(Boolean) as string[]),
+  ];
+  const typeById = admissionIds.length
+    ? new Map(
+        (
+          await prisma.$queryRaw<{ id: string; admission_type: string | null }[]>`
+            SELECT id, admission_type FROM admissions WHERE id IN (${Prisma.join(admissionIds)})
+          `
+        ).map((r) => [r.id, normalizeAdmissionType(r.admission_type)]),
+      )
+    : new Map<string, string>();
+
   const rows = records
     .filter((r) => r.billId && billMap.has(r.billId))
     .slice(0, take)
@@ -2680,11 +2704,16 @@ export async function getIpDispensedMedicines(
         bill: { id: bill.id, billNumber: bill.billNumber, status: bill.status },
         ward: bill.admission?.ward?.name ?? null,
         bed: bill.admission?.bed?.bedNumber ?? null,
+        admissionId: bill.admission?.id ?? null,
+        admissionType: bill.admission?.id ? (typeById.get(bill.admission.id) ?? 'ip') : 'ip',
       };
     });
 
-  const totalAmount = Math.round(rows.reduce((s, r) => s + r.lineTotal, 0) * 100) / 100;
-  return { rows, count: rows.length, totalAmount };
+  const filtered = query.admissionType
+    ? rows.filter((r) => r.admissionType === query.admissionType)
+    : rows;
+  const totalAmount = Math.round(filtered.reduce((s, r) => s + r.lineTotal, 0) * 100) / 100;
+  return { rows: filtered, count: filtered.length, totalAmount };
 }
 
 export async function getExpiringBatches(tenantId: string, query: GetExpiringBatchesQuery) {
@@ -4258,6 +4287,17 @@ export async function getPatientCreditStatus(tenantId: string, patientId: string
     orderBy: { admissionDate: 'desc' },
     select: { id: true, billingCategory: true, depositAmount: true },
   });
+  // Emergency and Day Care are admissions like any other — the credit rules are
+  // identical — but the counter should be able to SEE which it is dealing with.
+  const admissionType = admission
+    ? normalizeAdmissionType(
+        (
+          await prisma.$queryRaw<{ admission_type: string | null }[]>`
+            SELECT admission_type FROM admissions WHERE id = ${admission.id}
+          `
+        )[0]?.admission_type,
+      )
+    : null;
   const category = (admission?.billingCategory ?? 'cash').toLowerCase();
   const deposit = admission ? Number(admission.depositAmount) : 0;
 
@@ -4277,6 +4317,7 @@ export async function getPatientCreditStatus(tenantId: string, patientId: string
     patientId,
     hasAdmission: !!admission,
     admissionId: admission?.id ?? null,
+    admissionType,
     category,
     deposit,
     billed,

@@ -628,7 +628,21 @@ export async function getAdmissions(tenantId: string, query: GetAdmissionsQuery)
     if (!dp) {
       return { admissions: [], total: 0, page, limit };
     }
-    where.doctorId = dp.id;
+    // An admission the front desk opened without naming a consultant — which is
+    // the norm for an emergency case — belongs to nobody, so a doctor scoped to
+    // "my patients" never saw it and neither did anyone else. `includeUnassigned`
+    // adds those, so waiting work is visible to whoever can pick it up.
+    //
+    // Uses AND/OR rather than `where.doctorId` because a `search` filter already
+    // occupies `where.OR`, and a second top-level OR would silently replace it.
+    if ((query as any).includeUnassigned) {
+      where.AND = [
+        ...((where.AND as unknown[]) ?? []),
+        { OR: [{ doctorId: dp.id }, { doctorId: null }] },
+      ];
+    } else {
+      where.doctorId = dp.id;
+    }
   }
   if ((query as any).nurseId) where.nurseId = (query as any).nurseId;
   if (query.wardId) where.wardId = query.wardId;
@@ -951,6 +965,78 @@ export async function changeAdmissionType(tenantId: string, id: string, type: st
   await prisma.$executeRaw`UPDATE admissions SET admission_type = ${admissionType}, updated_at = now() WHERE id = ${id} AND tenant_id = ${tenantId}`;
   logger.info({ tenantId, admissionId: id, admissionType }, 'Admission type changed');
   return { id, admissionType };
+}
+
+/**
+ * Set (or clear) the treating consultant on an admission.
+ *
+ * `Admission.doctorId` is nullable so the front desk can open an emergency
+ * admission before a consultant is named — but nothing could fill it in
+ * afterwards: `updateAdmissionSchema` has no doctorId, so an unassigned
+ * admission stayed unassigned forever and never appeared on any doctor's list.
+ *
+ * A doctor calling this for themselves is claiming the patient; the desk or an
+ * admin can assign anyone. Handing over a patient who already has a consultant
+ * is allowed but recorded, since it changes who is answerable for the stay.
+ */
+export async function assignAdmissionDoctor(
+  tenantId: string,
+  id: string,
+  doctorId: string | null,
+  actorUserId: string,
+) {
+  const admission = await prisma.admission.findFirst({
+    where: { id, tenantId },
+    select: { id: true, status: true, doctorId: true, patientId: true },
+  });
+  if (!admission) throw AppError.notFound('Admission not found');
+  if (admission.status === 'discharged') {
+    throw AppError.badRequest('Cannot change the consultant on a discharged admission');
+  }
+
+  if (doctorId) {
+    const doctor = await prisma.doctorProfile.findFirst({
+      where: { id: doctorId, tenantId },
+      select: { id: true },
+    });
+    if (!doctor) throw AppError.notFound('Doctor not found at this hospital');
+  }
+
+  const updated = await prisma.admission.update({
+    where: { id },
+    data: { doctorId },
+    include: {
+      patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+      doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
+      ward: { select: { id: true, name: true } },
+      bed: { select: { id: true, bedNumber: true } },
+    },
+  });
+
+  // Who is answerable for a stay is worth an audit row, not just a log line.
+  // Best-effort: a failed audit write must not undo the assignment.
+  try {
+    await prisma.auditLog.create({
+      data: {
+        tenantId,
+        userId: actorUserId,
+        action: 'update',
+        entityType: 'Admission',
+        entityId: id,
+        description: doctorId
+          ? `Treating consultant set on admission ${id}`
+          : `Treating consultant cleared on admission ${id}`,
+        oldValues: { doctorId: admission.doctorId },
+        newValues: { doctorId },
+      },
+    });
+  } catch {
+    /* audit is not worth failing the change over */
+  }
+
+  logger.info({ tenantId, admissionId: id, doctorId, actorUserId }, 'Admission consultant changed');
+  const typeMap = await fetchAdmissionTypes([id]);
+  return { ...updated, admissionType: typeMap.get(id) ?? 'ip' };
 }
 
 /** Fetch admission_type for a set of admission ids (raw — client not regenerated). */

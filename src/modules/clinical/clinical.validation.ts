@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { paginationSchema } from '../../shared/pagination';
+import { paginationSchema, booleanQueryParam } from '../../shared/pagination';
 
 // ==================== Visits ====================
 
@@ -99,6 +99,10 @@ export const getAdmissionsQuerySchema = z.object({
       .enum(['admitted', 'ready_to_discharge', 'discharged', 'transferred', 'absconded'])
       .optional(),
     admissionType: z.enum(['ip', 'emergency', 'daycare']).optional(),
+    // With doctorUserId: also return admissions that have NO consultant yet.
+    // An emergency admission opened by the front desk has none, so without this
+    // it belongs to nobody and shows on nobody's list.
+    includeUnassigned: booleanQueryParam.optional(),
     search: z.string().max(255).optional(),
     date: z.string().optional(),
     // Date-range window on admissionDate — used by the hospital reports screen.
@@ -127,6 +131,16 @@ export const updateAdmissionSchema = z.object({
     admissionReason: z.string().max(2000).optional(),
     depositAmount: z.number().min(0).optional(),
     billingCategory: z.enum(['cash', 'package', 'insurance', 'corporate']).optional(),
+  }),
+});
+
+// Set / clear the treating consultant. Null clears it (hand back to the pool).
+export const assignAdmissionDoctorSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid admission ID'),
+  }),
+  body: z.object({
+    doctorId: z.string().uuid('Invalid doctor ID').nullable(),
   }),
 });
 
@@ -502,6 +516,7 @@ export type UpdateVisitInput = z.infer<typeof updateVisitSchema>['body'];
 export type CreateAdmissionInput = z.infer<typeof createAdmissionSchema>['body'];
 export type GetAdmissionsQuery = z.infer<typeof getAdmissionsQuerySchema>['query'];
 export type UpdateAdmissionInput = z.infer<typeof updateAdmissionSchema>['body'];
+export type AssignAdmissionDoctorInput = z.infer<typeof assignAdmissionDoctorSchema>['body'];
 
 export type CreateTransferInput = z.infer<typeof createTransferSchema>['body'];
 export type GetTransfersQuery = z.infer<typeof getTransfersQuerySchema>['query'];

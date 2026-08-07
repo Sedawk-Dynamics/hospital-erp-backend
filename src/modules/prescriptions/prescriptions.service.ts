@@ -8,6 +8,7 @@ import {
   cancelFutureSchedules as emarCancelFutureSchedules,
 } from '../emar/emar.scheduler-engine';
 import { Prisma } from '@prisma/client';
+import { normalizeAdmissionType } from '../../shared/admission-type';
 import { makeMedicineRankComparator, mergePrefixFirst } from '../../shared/medicine-search-rank';
 import { fuzzyMatchIds } from '../../shared/medicine-fuzzy';
 import type {
@@ -261,7 +262,40 @@ export async function getPrescriptions(tenantId: string, query: GetPrescriptions
     prisma.prescription.count({ where }),
   ]);
 
-  return { prescriptions, total, page, limit };
+  // Attach the admission's care type. Emergency / Day Care are the SAME IP flow
+  // with a different tag, so those orders are already in this queue — but the
+  // pharmacy could not tell an emergency order apart from a planned one.
+  // `admission_type` is a raw column (client not regenerated), hence the query.
+  const admissionIds = [
+    ...new Set(
+      prescriptions
+        .map((p) => (p as { visit?: { admission?: { id?: string } | null } }).visit?.admission?.id)
+        .filter(Boolean) as string[],
+    ),
+  ];
+  const typeById = admissionIds.length
+    ? new Map(
+        (
+          await prisma.$queryRaw<{ id: string; admission_type: string | null }[]>`
+            SELECT id, admission_type FROM admissions WHERE id IN (${Prisma.join(admissionIds)})
+          `
+        ).map((r) => [r.id, normalizeAdmissionType(r.admission_type)]),
+      )
+    : new Map<string, string>();
+
+  const withType = prescriptions.map((p) => {
+    const admission = (p as { visit?: { admission?: { id?: string } | null } }).visit?.admission;
+    if (!admission?.id) return p;
+    return {
+      ...p,
+      visit: {
+        ...(p as { visit: object }).visit,
+        admission: { ...admission, admissionType: typeById.get(admission.id) ?? 'ip' },
+      },
+    };
+  });
+
+  return { prescriptions: withType, total, page, limit };
 }
 
 /**

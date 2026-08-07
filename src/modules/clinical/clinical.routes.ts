@@ -15,6 +15,7 @@ import {
   updateAdmissionSchema,
   assignAdmissionBedSchema,
   changeAdmissionTypeSchema,
+  assignAdmissionDoctorSchema,
   dischargePatientSchema,
   createTransferSchema,
   getTransfersQuerySchema,
@@ -92,6 +93,14 @@ clinicalRoutes.put('/admissions/:id', authenticate, requirePermission('admission
 clinicalRoutes.patch('/admissions/:id/assign-bed', authenticate, requirePermission('admissions', 'update'), validate(assignAdmissionBedSchema), controller.assignAdmissionBed);
 // Convert care type (ip/emergency/daycare) — front desk, doctors AND nurses may
 // flip it (nurses lack admissions:update, so gate by role, not permission).
+// Assign / claim the treating consultant. Admission.doctorId is nullable so an
+// emergency admission can be opened before a consultant is named, but nothing
+// could fill it in afterwards — PUT /admissions/:id does not accept doctorId, so
+// an unassigned admission stayed on nobody's list forever.
+// Gated by ROLE for the same reason as /type below: nurses hold no
+// admissions:update, and granting it would also open PUT /admissions/:id.
+clinicalRoutes.patch('/admissions/:id/doctor', authenticate, requireRoles('doctor', 'front_desk', 'admin', 'super_admin', 'nurse_admin'), validate(assignAdmissionDoctorSchema), controller.assignAdmissionDoctor);
+
 clinicalRoutes.patch('/admissions/:id/type', authenticate, requireRoles('front_desk', 'admin', 'super_admin', 'doctor', 'nurse', 'nurse_admin'), validate(changeAdmissionTypeSchema), controller.changeAdmissionType);
 // Discharge is the CASH COUNTER's action, not the doctor's. The doctor's
 // sign-off is publishing the discharge summary, which now only marks the

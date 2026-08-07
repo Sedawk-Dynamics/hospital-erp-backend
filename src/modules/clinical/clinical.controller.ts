@@ -211,6 +211,33 @@ export async function assignAdmissionBed(
   }
 }
 
+/**
+ * Set or clear the treating consultant. A doctor calling it with their own
+ * profile id is claiming an unassigned patient; the desk or an admin can assign
+ * anyone. Role-gated on the route, not permission-gated — see the note there.
+ */
+export async function assignAdmissionDoctor(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const admission = await clinicalService.assignAdmissionDoctor(
+      req.user!.tenantId,
+      req.params.id as string,
+      (req.body?.doctorId ?? null) as string | null,
+      req.user!.userId,
+    );
+    sendResponse({
+      res,
+      message: req.body?.doctorId ? 'Consultant assigned' : 'Consultant cleared',
+      data: admission,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function changeAdmissionType(
   req: AuthenticatedRequest,
   res: Response,
