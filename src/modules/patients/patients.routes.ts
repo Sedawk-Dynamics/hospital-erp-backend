@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { authenticate } from '../../middleware/authenticate';
-import { requirePermission } from '../../middleware/authorize';
+import { requirePermission, requireRoles } from '../../middleware/authorize';
 import { validate } from '../../middleware/validate';
 import {
   createPatientSchema,
@@ -88,6 +88,23 @@ patientRoutes.post(
   controller.provisionLocal,
 );
 
+// PLATFORM directory — every patient at every hospital. super_admin only: they
+// run the platform rather than a hospital, so there is no tenant to scope to.
+// Literal subpaths must precede '/:id' or they get swallowed by it.
+patientRoutes.get(
+  '/platform-directory',
+  authenticate,
+  requireRoles('super_admin'),
+  controller.platformDirectory,
+);
+
+patientRoutes.get(
+  '/platform-hospitals',
+  authenticate,
+  requireRoles('super_admin'),
+  controller.platformHospitals,
+);
+
 // Get patient by ID
 patientRoutes.get(
   '/:id',
@@ -95,6 +112,18 @@ patientRoutes.get(
   requirePermission('patients', 'read'),
   validate(patientIdParamSchema),
   controller.findById,
+);
+
+// The centralized patient file — everything the hospital holds on one patient.
+// A hospital user only ever resolves a patient registered at THEIR hospital
+// (the service scopes by tenant unless the caller is super_admin), so a person
+// who has never been here is simply not found.
+patientRoutes.get(
+  '/:id/file',
+  authenticate,
+  requirePermission('patients', 'read'),
+  validate(patientIdParamSchema),
+  controller.patientFile,
 );
 
 // Update patient

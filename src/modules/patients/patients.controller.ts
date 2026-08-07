@@ -4,6 +4,7 @@ import { sendResponse, sendPaginatedResponse } from '../../shared/apiResponse';
 import { AppError } from '../../shared/appError';
 import * as patientsService from './patients.service';
 import * as tempService from './patients.temporary.service';
+import * as fileService from './patients.file.service';
 
 export async function create(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
@@ -126,6 +127,63 @@ export async function globalHistory(req: AuthenticatedRequest, res: Response, ne
   try {
     const data = await patientsService.getGlobalPatientHistory(req.user!.tenantId, req.params.id as string);
     sendResponse({ res, message: 'Unified patient history', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ── Centralized patient file ───────────────────────────────────────────────
+
+/**
+ * Everything this hospital holds on one patient, on one page.
+ *
+ * The tenant scope is decided in the service off the caller's roles — a
+ * hospital user only ever reaches a patient registered at their own hospital;
+ * super_admin reaches any. Passing both here rather than a pre-resolved tenant
+ * keeps that decision in one place.
+ */
+export async function patientFile(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await fileService.getPatientFile(
+      { tenantId: req.user!.tenantId, roles: req.user!.roles ?? [] },
+      req.params.id as string,
+    );
+    sendResponse({ res, message: 'Patient file', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** Platform-wide patient directory. Route-gated to super_admin. */
+export async function platformDirectory(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const q = req.query as Record<string, string | undefined>;
+    const data = await fileService.getPlatformPatientDirectory({
+      page: q.page ? Number(q.page) : undefined,
+      limit: q.limit ? Number(q.limit) : undefined,
+      search: q.search,
+      tenantId: q.tenantId,
+      isActive: q.isActive === undefined ? undefined : q.isActive === 'true',
+    });
+    sendResponse({ res, message: 'Platform patient directory', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** Hospitals that have patients — the platform directory's filter. */
+export async function platformHospitals(
+  _req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await fileService.getPlatformPatientHospitals();
+    sendResponse({ res, message: 'Hospitals with patients', data });
   } catch (err) {
     next(err);
   }

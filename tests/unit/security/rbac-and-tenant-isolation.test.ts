@@ -159,6 +159,19 @@ describe('security: the permission matrix', () => {
     // Submission is blocked at the route with denyRoles('doctor') — see above.
     expect(has('doctor', 'forms', 'create')).toBe(true);
   });
+
+  // The platform patient directory spans every hospital, so `patients:read` —
+  // which a receptionist holds — must NOT be what opens it. The route uses
+  // requireRoles('super_admin'); this pins the reason.
+  it('does not let patients:read alone reach across hospitals', async () => {
+    expect(has('admin', 'patients', 'read')).toBe(true);
+    expect(has('front_desk', 'patients', 'read')).toBe(true);
+
+    const gate = requireRoles('super_admin');
+    expect((await run(gate, req({ roles: ['admin'] }))).allowed).toBe(false);
+    expect((await run(gate, req({ roles: ['front_desk'] }))).allowed).toBe(false);
+    expect((await run(gate, req({ roles: ['super_admin'] }))).allowed).toBe(true);
+  });
 });
 
 // ── Accepted-risk findings from the 2026-08-04 security audit ──────────────
