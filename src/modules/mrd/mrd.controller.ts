@@ -208,8 +208,12 @@ export async function downloadDischargeSummaryPdf(
   try {
     const tenantId = req.user!.tenantId;
     const id = req.params.id as string;
-    const document = await mrdService.getDischargeDocumentForExport(tenantId, id);
-    streamDischargeSummaryPdf(res, document);
+    const { resolvePdfTemplate } = await import('../hospital-branding/hospital-branding.service');
+    const [document, template] = await Promise.all([
+      mrdService.getDischargeDocumentForExport(tenantId, id),
+      resolvePdfTemplate(tenantId, 'discharge_summary'),
+    ]);
+    streamDischargeSummaryPdf(res, document, template);
   } catch (err) {
     next(err);
   }

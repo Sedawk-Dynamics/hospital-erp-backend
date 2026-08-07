@@ -1465,8 +1465,11 @@ export async function getPayslip(tenantId: string, payrollId: string) {
 export async function streamSalarySlip(tenantId: string, payrollId: string, res: Response) {
   const { payroll, salarySlip } = await getPayslip(tenantId, payrollId);
 
-  const { getHospitalBranding } = await import('../hospital-branding/hospital-branding.service');
-  const branding = await getHospitalBranding(tenantId);
+  const { getHospitalBranding, resolvePdfTemplate } = await import('../hospital-branding/hospital-branding.service');
+  const [branding, template] = await Promise.all([
+    getHospitalBranding(tenantId),
+    resolvePdfTemplate(tenantId, 'salary_slip'),
+  ]);
 
   streamSalarySlipPdf(res, branding, {
     slipNumber: salarySlip.slipNumber ?? salarySlip.id,
@@ -1492,7 +1495,7 @@ export async function streamSalarySlip(tenantId: string, payrollId: string, res:
         department: (payroll as any).staff.department ?? null,
       },
     },
-  });
+  }, template);
 }
 
 // ============================================================

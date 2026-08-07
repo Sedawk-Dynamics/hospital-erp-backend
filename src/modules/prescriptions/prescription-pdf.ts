@@ -1,16 +1,11 @@
-import PDFDocument from 'pdfkit';
 import { Response } from 'express';
-import {
-  drawBrandedHeader,
-  drawBrandedFooters,
-  DEFAULT_ACCENT,
-  tintHex,
-  type HospitalBranding,
-} from '../../services/pdf-branding';
+import { tintHex, type HospitalBranding } from '../../services/pdf-branding';
+import { createBrandedDocument, finalizeBrandedDocument } from '../../services/pdf-doc';
+import type { PdfTemplate } from '../../services/pdf-template';
 
 // A fully-detailed, hospital-branded OP prescription / consultation document.
-// It inherits the letterhead, accent colour and footer configured by the
-// hospital admin in the PDF Builder, and includes the patient's contact +
+// Page setup, letterhead, fonts, colours, watermark and footer come from the
+// `prescription` template in the PDF Builder, and it includes the patient's contact +
 // allergies, the visit's chief complaint, diagnoses and latest vitals, the
 // medications and the doctor's advice + follow-up — the complete visit record.
 
@@ -61,8 +56,6 @@ const INK = '#1a2332';
 const MUTED = '#5b6472';
 const LINE = '#c9ced6';
 const LIGHT = '#eef2f5';
-const PAGE = { width: 595.28, height: 841.89, margin: 42 } as const;
-const CONTENT_W = PAGE.width - PAGE.margin * 2;
 
 const dash = (v?: string | number | null) => (v === null || v === undefined || v === '' ? '—' : String(v));
 const num = (v: unknown): string | null => (v === null || v === undefined ? null : String(v));
@@ -70,27 +63,31 @@ const fmtDate = (v?: Date | string | null) => (v ? new Date(v).toLocaleDateStrin
 const ageOf = (dob?: Date | string | null): number | null =>
   dob ? Math.floor((Date.now() - new Date(dob).getTime()) / (365.25 * 24 * 60 * 60 * 1000)) : null;
 
-export function streamPrescriptionPdf(res: Response, rx: RxData, branding: HospitalBranding) {
-  const pdf = new PDFDocument({ size: 'A4', margin: PAGE.margin, bufferPages: true });
-  const left = PAGE.margin;
-  const right = PAGE.width - PAGE.margin;
-  const accent = /^#[0-9a-fA-F]{6}$/.test(branding.accentColor) ? branding.accentColor : DEFAULT_ACCENT;
-
-  res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Disposition', `inline; filename="prescription-${rx.id}.pdf"`);
-  pdf.pipe(res);
-
+export function streamPrescriptionPdf(
+  res: Response,
+  rx: RxData,
+  branding: HospitalBranding,
+  template?: PdfTemplate,
+) {
   const isIp = (rx.prescriptionType ?? 'op').toLowerCase() === 'ip';
-  drawBrandedHeader(pdf, branding, {
+  const { pdf, theme } = createBrandedDocument({
+    res,
+    branding,
+    template,
     title: 'Prescription',
-    margin: PAGE.margin,
-    contentWidth: CONTENT_W,
     subtitle: isIp ? 'Inpatient (IP)' : 'Outpatient (OP)',
     meta: [
       { label: 'Date', value: fmtDate(rx.createdAt) },
       { label: 'Rx No', value: rx.id.slice(0, 8).toUpperCase() },
     ],
+    filename: `prescription-${rx.id}.pdf`,
   });
+  // Page geometry now comes from the template, not a module constant.
+  const PAGE = { width: pdf.page.width, height: pdf.page.height, margin: theme.margin };
+  const CONTENT_W = theme.contentWidth;
+  const left = PAGE.margin;
+  const right = PAGE.width - PAGE.margin;
+  const accent = theme.accent;
 
   const ensure = (needed: number) => {
     if (pdf.y + needed > PAGE.height - PAGE.margin - 26) pdf.addPage();
@@ -122,8 +119,8 @@ export function streamPrescriptionPdf(res: Response, rx: RxData, branding: Hospi
   info.forEach(([label, value], i) => {
     const x = left + (i % 2) * colW + 8;
     const y = top + Math.floor(i / 2) * rowH + 5;
-    pdf.font('Helvetica-Bold').fontSize(7).fillColor(MUTED).text(label.toUpperCase(), x, y, { width: colW - 16 });
-    pdf.font('Helvetica').fontSize(9).fillColor(INK).text(value, x, y + 9, { width: colW - 16, ellipsis: true, height: 12 });
+    pdf.font(theme.font.bold).fontSize(7).fillColor(MUTED).text(label.toUpperCase(), x, y, { width: colW - 16 });
+    pdf.font(theme.font.regular).fontSize(9).fillColor(INK).text(value, x, y + 9, { width: colW - 16, ellipsis: true, height: 12 });
   });
   pdf.y = top + rows * rowH + 10;
 
@@ -133,14 +130,14 @@ export function streamPrescriptionPdf(res: Response, rx: RxData, branding: Hospi
     pdf.moveDown(0.25);
     const y = pdf.y;
     pdf.rect(left, y, 3, 12).fill(accent);
-    pdf.font('Helvetica-Bold').fontSize(10).fillColor(INK).text(title.toUpperCase(), left + 8, y, { width: CONTENT_W - 8 });
+    pdf.font(theme.font.bold).fontSize(10).fillColor(INK).text(title.toUpperCase(), left + 8, y, { width: CONTENT_W - 8 });
     pdf.moveTo(left, pdf.y + 2).lineTo(right, pdf.y + 2).strokeColor(LINE).lineWidth(0.5).stroke();
     pdf.moveDown(0.3);
   };
   const paragraph = (text?: string | null) => {
     if (!text || !text.trim()) return;
     ensure(16);
-    pdf.font('Helvetica').fontSize(9).fillColor('#2a3240').text(text.trim(), left, pdf.y, { width: CONTENT_W, align: 'left', lineGap: 1.5 });
+    pdf.font(theme.font.regular).fontSize(9).fillColor('#2a3240').text(text.trim(), left, pdf.y, { width: CONTENT_W, align: 'left', lineGap: 1.5 });
     pdf.moveDown(0.2);
   };
   const table = (headers: string[], data: string[][], fr: number[]) => {
@@ -150,7 +147,7 @@ export function streamPrescriptionPdf(res: Response, rx: RxData, branding: Hospi
       pdf.rect(left, y, CONTENT_W, 16).fill(accent);
       let x = left;
       headers.forEach((h, i) => {
-        pdf.font('Helvetica-Bold').fontSize(7.5).fillColor('#ffffff').text(h.toUpperCase(), x + 4, y + 4.5, { width: widths[i] - 8, ellipsis: true });
+        pdf.font(theme.font.bold).fontSize(7.5).fillColor('#ffffff').text(h.toUpperCase(), x + 4, y + 4.5, { width: widths[i] - 8, ellipsis: true });
         x += widths[i];
       });
       pdf.y = y + 16;
@@ -158,14 +155,14 @@ export function streamPrescriptionPdf(res: Response, rx: RxData, branding: Hospi
     ensure(30);
     drawHead();
     data.forEach((r, idx) => {
-      const cellHeights = r.map((c, i) => pdf.font('Helvetica').fontSize(8).heightOfString(c || '—', { width: widths[i] - 8 }));
+      const cellHeights = r.map((c, i) => pdf.font(theme.font.regular).fontSize(8).heightOfString(c || '—', { width: widths[i] - 8 }));
       const h = Math.max(16, Math.max(...cellHeights) + 6);
       if (pdf.y + h > PAGE.height - PAGE.margin - 26) { pdf.addPage(); drawHead(); }
       const y = pdf.y;
       if (idx % 2 === 1) pdf.rect(left, y, CONTENT_W, h).fill(LIGHT);
       let x = left;
       r.forEach((c, i) => {
-        pdf.font('Helvetica').fontSize(8).fillColor(INK).text(c || '—', x + 4, y + 3.5, { width: widths[i] - 8 });
+        pdf.font(theme.font.regular).fontSize(8).fillColor(INK).text(c || '—', x + 4, y + 3.5, { width: widths[i] - 8 });
         x += widths[i];
       });
       pdf.moveTo(left, y + h).lineTo(right, y + h).strokeColor(LINE).lineWidth(0.4).stroke();
@@ -179,10 +176,10 @@ export function streamPrescriptionPdf(res: Response, rx: RxData, branding: Hospi
   if (allergies.length) {
     ensure(30);
     const txt = 'ALLERGIES:  ' + allergies.map((a) => a.allergen + (a.reaction ? ` (${a.reaction})` : '')).join(',   ');
-    const bh = Math.max(20, pdf.font('Helvetica-Bold').fontSize(8.5).heightOfString(txt, { width: CONTENT_W - 16 }) + 10);
+    const bh = Math.max(20, pdf.font(theme.font.bold).fontSize(8.5).heightOfString(txt, { width: CONTENT_W - 16 }) + 10);
     const y = pdf.y;
     pdf.rect(left, y, CONTENT_W, bh).fillAndStroke('#fdecec', '#f0b4b4');
-    pdf.font('Helvetica-Bold').fontSize(8.5).fillColor('#b42318').text(txt, left + 8, y + 5, { width: CONTENT_W - 16 });
+    pdf.font(theme.font.bold).fontSize(8.5).fillColor('#b42318').text(txt, left + 8, y + 5, { width: CONTENT_W - 16 });
     pdf.y = y + bh + 6;
     pdf.fillColor(INK);
   }
@@ -227,7 +224,7 @@ export function streamPrescriptionPdf(res: Response, rx: RxData, branding: Hospi
   heading('℞  Medications');
   const items = rx.prescriptionItems ?? [];
   if (items.length === 0) {
-    pdf.font('Helvetica-Oblique').fontSize(9).fillColor(MUTED).text('No medications on this prescription.', left, pdf.y, { width: CONTENT_W });
+    pdf.font(theme.font.italic).fontSize(9).fillColor(MUTED).text('No medications on this prescription.', left, pdf.y, { width: CONTENT_W });
     pdf.moveDown(0.3);
   } else {
     table(
@@ -260,7 +257,7 @@ export function streamPrescriptionPdf(res: Response, rx: RxData, branding: Hospi
     ensure(24);
     const y = pdf.y;
     pdf.roundedRect(left, y, CONTENT_W, 20, 3).fill(tintHex(accent, 0.88));
-    pdf.font('Helvetica-Bold').fontSize(9).fillColor(INK).text(`Follow-up / Next review:  ${fmtDate(rx.followUpDate)}`, left + 10, y + 6, { width: CONTENT_W - 20 });
+    pdf.font(theme.font.bold).fontSize(9).fillColor(INK).text(`Follow-up / Next review:  ${fmtDate(rx.followUpDate)}`, left + 10, y + 6, { width: CONTENT_W - 20 });
     pdf.y = y + 20 + 6;
   }
 
@@ -269,11 +266,10 @@ export function streamPrescriptionPdf(res: Response, rx: RxData, branding: Hospi
   pdf.moveDown(1.4);
   const sy = pdf.y;
   pdf.moveTo(right - 200, sy + 24).lineTo(right, sy + 24).strokeColor(INK).lineWidth(0.6).stroke();
-  pdf.font('Helvetica-Bold').fontSize(9.5).fillColor(INK).text(drName, right - 200, sy + 28, { width: 200, align: 'right' });
+  pdf.font(theme.font.bold).fontSize(9.5).fillColor(INK).text(drName, right - 200, sy + 28, { width: 200, align: 'right' });
   const drSub = [rx.doctor?.specialization, rx.doctor?.qualifications].filter(Boolean).join(', ');
-  if (drSub) pdf.font('Helvetica').fontSize(8).fillColor(MUTED).text(drSub, right - 220, pdf.y, { width: 220, align: 'right' });
-  if (rx.doctor?.licenseNumber) pdf.font('Helvetica').fontSize(8).fillColor(MUTED).text(`Reg. No: ${rx.doctor.licenseNumber}`, right - 220, pdf.y, { width: 220, align: 'right' });
+  if (drSub) pdf.font(theme.font.regular).fontSize(8).fillColor(MUTED).text(drSub, right - 220, pdf.y, { width: 220, align: 'right' });
+  if (rx.doctor?.licenseNumber) pdf.font(theme.font.regular).fontSize(8).fillColor(MUTED).text(`Reg. No: ${rx.doctor.licenseNumber}`, right - 220, pdf.y, { width: 220, align: 'right' });
 
-  drawBrandedFooters(pdf, branding, { margin: PAGE.margin, contentWidth: CONTENT_W });
-  pdf.end();
+  finalizeBrandedDocument({ pdf, branding, theme });
 }

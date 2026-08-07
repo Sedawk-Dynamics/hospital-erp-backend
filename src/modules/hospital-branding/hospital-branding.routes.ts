@@ -13,6 +13,14 @@ const adminOnly = [authenticate, requireRoles('super_admin', 'admin')];
 hospitalBrandingRoutes.get('/', ...adminOnly, controller.getBranding);
 hospitalBrandingRoutes.put('/', ...adminOnly, controller.updateBranding);
 hospitalBrandingRoutes.post('/preview.pdf', ...adminOnly, controller.previewPdf);
+
+// Per-document-type templates (page setup, typography, watermark, footer,
+// signature block, custom text). `__all__` carries the hospital-wide defaults
+// every type inherits. Literal subpath first — see the route-shadowing rule.
+hospitalBrandingRoutes.get('/templates', ...adminOnly, controller.listTemplates);
+hospitalBrandingRoutes.get('/templates/:documentType', ...adminOnly, controller.getTemplate);
+hospitalBrandingRoutes.put('/templates/:documentType', ...adminOnly, controller.saveTemplate);
+hospitalBrandingRoutes.delete('/templates/:documentType', ...adminOnly, controller.resetTemplate);
 hospitalBrandingRoutes.post(
   '/logo',
   ...adminOnly,

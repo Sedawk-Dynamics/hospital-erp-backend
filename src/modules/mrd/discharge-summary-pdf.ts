@@ -1,6 +1,7 @@
-import PDFDocument from 'pdfkit';
 import { Response } from 'express';
-import { drawBrandedHeader, drawBrandedFooters, DEFAULT_ACCENT, type HospitalBranding } from '../../services/pdf-branding';
+import { type HospitalBranding } from '../../services/pdf-branding';
+import { createBrandedDocument, finalizeBrandedDocument } from '../../services/pdf-doc';
+import type { PdfTemplate } from '../../services/pdf-template';
 
 // ---------------------------------------------------------------------------
 // Shared shape for a fully-detailed IP discharge document. Assembled in
@@ -89,36 +90,34 @@ const fmtDate = (v?: string | null) => (v ? new Date(v).toLocaleDateString('en-I
 const fmtDateTime = (v?: string | null) => (v ? new Date(v).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—');
 const dash = (v?: string | number | null) => (v === null || v === undefined || v === '' ? '—' : String(v));
 
-const PAGE = { width: 595.28, height: 841.89, margin: 42 } as const;
-const CONTENT_W = PAGE.width - PAGE.margin * 2;
-
-export function streamDischargeSummaryPdf(res: Response, doc: DischargeDocument) {
-  const pdf = new PDFDocument({ size: 'A4', margin: PAGE.margin, bufferPages: true });
-  const filename = `discharge-summary-${doc.meta.id}.pdf`;
-  res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
-  pdf.pipe(res);
-
-  const left = PAGE.margin;
-  const right = PAGE.width - PAGE.margin;
-  const accent = /^#[0-9a-fA-F]{6}$/.test(doc.hospital.accentColor) ? doc.hospital.accentColor : DEFAULT_ACCENT;
-
-  // Guard: if a block won't fit, start a new page.
-  const ensure = (needed: number) => {
-    if (pdf.y + needed > PAGE.height - PAGE.margin - 24) pdf.addPage();
-  };
-
-  // ---- Branded letterhead + title (shared across every PDF in the app) ----
-  drawBrandedHeader(pdf, doc.hospital, {
+export function streamDischargeSummaryPdf(
+  res: Response,
+  doc: DischargeDocument,
+  template?: PdfTemplate,
+) {
+  const { pdf, theme } = createBrandedDocument({
+    res,
+    branding: doc.hospital,
+    template,
     title: 'Discharge Summary',
-    margin: PAGE.margin,
-    contentWidth: CONTENT_W,
     subtitle: doc.meta.status !== 'published' ? `${doc.meta.status.toUpperCase()} — PREVIEW` : 'Inpatient (IP)',
     meta: [
       { label: 'MRN', value: doc.patient.mrn ?? '—' },
       { label: 'Doc No', value: doc.meta.id.slice(0, 8).toUpperCase() },
     ],
+    filename: `discharge-summary-${doc.meta.id}.pdf`,
   });
+  // Page geometry comes from the template now, not a module constant.
+  const PAGE = { width: pdf.page.width, height: pdf.page.height, margin: theme.margin };
+  const CONTENT_W = theme.contentWidth;
+  const left = PAGE.margin;
+  const right = PAGE.width - PAGE.margin;
+  const accent = theme.accent;
+
+  // Guard: if a block won't fit, start a new page.
+  const ensure = (needed: number) => {
+    if (pdf.y + needed > PAGE.height - PAGE.margin - 24) pdf.addPage();
+  };
 
   // ---- Patient / admission info card ----
   const info: Array<[string, string]> = [
@@ -145,8 +144,8 @@ export function streamDischargeSummaryPdf(res: Response, doc: DischargeDocument)
     const row = Math.floor(i / 2);
     const x = left + col * colW + 8;
     const y = cardTop + row * rowH + 5;
-    pdf.font('Helvetica-Bold').fontSize(7).fillColor(MUTED).text(label.toUpperCase(), x, y, { width: colW - 16 });
-    pdf.font('Helvetica').fontSize(9).fillColor(INK).text(value, x, y + 9, { width: colW - 16, ellipsis: true, height: 12 });
+    pdf.font(theme.font.bold).fontSize(7).fillColor(MUTED).text(label.toUpperCase(), x, y, { width: colW - 16 });
+    pdf.font(theme.font.regular).fontSize(9).fillColor(INK).text(value, x, y + 9, { width: colW - 16, ellipsis: true, height: 12 });
   });
   pdf.y = cardTop + rows * rowH + 10;
 
@@ -156,18 +155,18 @@ export function streamDischargeSummaryPdf(res: Response, doc: DischargeDocument)
     pdf.moveDown(0.3);
     const y = pdf.y;
     pdf.rect(left, y, 3, 12).fill(accent);
-    pdf.font('Helvetica-Bold').fontSize(10.5).fillColor(INK).text(title.toUpperCase(), left + 8, y, { width: CONTENT_W - 8 });
+    pdf.font(theme.font.bold).fontSize(10.5).fillColor(INK).text(title.toUpperCase(), left + 8, y, { width: CONTENT_W - 8 });
     pdf.moveTo(left, pdf.y + 2).lineTo(right, pdf.y + 2).strokeColor(LINE).lineWidth(0.5).stroke();
     pdf.moveDown(0.35);
   };
   const paragraph = (text?: string | null) => {
     if (!text || !text.trim()) return;
     ensure(18);
-    pdf.font('Helvetica').fontSize(9).fillColor('#2a3240').text(text.trim(), left, pdf.y, { width: CONTENT_W, align: 'left', lineGap: 1.5 });
+    pdf.font(theme.font.regular).fontSize(9).fillColor('#2a3240').text(text.trim(), left, pdf.y, { width: CONTENT_W, align: 'left', lineGap: 1.5 });
     pdf.moveDown(0.2);
   };
   const emptyNote = (text: string) => {
-    pdf.font('Helvetica-Oblique').fontSize(8.5).fillColor(MUTED).text(text, left, pdf.y, { width: CONTENT_W });
+    pdf.font(theme.font.italic).fontSize(8.5).fillColor(MUTED).text(text, left, pdf.y, { width: CONTENT_W });
     pdf.moveDown(0.2);
   };
 
@@ -179,7 +178,7 @@ export function streamDischargeSummaryPdf(res: Response, doc: DischargeDocument)
       pdf.rect(left, y, CONTENT_W, 16).fill(accent);
       let x = left;
       headers.forEach((h, i) => {
-        pdf.font('Helvetica-Bold').fontSize(7.5).fillColor('#ffffff').text(h.toUpperCase(), x + 4, y + 4.5, { width: widths[i] - 8, ellipsis: true });
+        pdf.font(theme.font.bold).fontSize(7.5).fillColor('#ffffff').text(h.toUpperCase(), x + 4, y + 4.5, { width: widths[i] - 8, ellipsis: true });
         x += widths[i];
       });
       pdf.y = y + 16;
@@ -187,14 +186,14 @@ export function streamDischargeSummaryPdf(res: Response, doc: DischargeDocument)
     ensure(30);
     drawHead();
     data.forEach((r, idx) => {
-      const cellHeights = r.map((c, i) => pdf.font('Helvetica').fontSize(8).heightOfString(c || '—', { width: widths[i] - 8 }));
+      const cellHeights = r.map((c, i) => pdf.font(theme.font.regular).fontSize(8).heightOfString(c || '—', { width: widths[i] - 8 }));
       const h = Math.max(16, Math.max(...cellHeights) + 6);
       if (pdf.y + h > PAGE.height - PAGE.margin - 24) { pdf.addPage(); drawHead(); }
       const y = pdf.y;
       if (idx % 2 === 1) pdf.rect(left, y, CONTENT_W, h).fill(LIGHT);
       let x = left;
       r.forEach((c, i) => {
-        pdf.font('Helvetica').fontSize(8).fillColor(INK).text(c || '—', x + 4, y + 3.5, { width: widths[i] - 8 });
+        pdf.font(theme.font.regular).fontSize(8).fillColor(INK).text(c || '—', x + 4, y + 3.5, { width: widths[i] - 8 });
         x += widths[i];
       });
       pdf.moveTo(left, y + h).lineTo(right, y + h).strokeColor(LINE).lineWidth(0.4).stroke();
@@ -266,17 +265,17 @@ export function streamDischargeSummaryPdf(res: Response, doc: DischargeDocument)
   if (doc.sections.keyLabs || doc.sections.labResults || doc.imaging.length) {
     heading('Investigations');
     if (doc.sections.keyLabs) {
-      pdf.font('Helvetica-Bold').fontSize(8.5).fillColor(accent).text('Significant / Abnormal Labs', left, pdf.y, { width: CONTENT_W });
+      pdf.font(theme.font.bold).fontSize(8.5).fillColor(accent).text('Significant / Abnormal Labs', left, pdf.y, { width: CONTENT_W });
       pdf.moveDown(0.1);
       paragraph(doc.sections.keyLabs);
     }
     if (doc.sections.labResults) {
-      pdf.font('Helvetica-Bold').fontSize(8.5).fillColor(accent).text('All Lab Results', left, pdf.y, { width: CONTENT_W });
+      pdf.font(theme.font.bold).fontSize(8.5).fillColor(accent).text('All Lab Results', left, pdf.y, { width: CONTENT_W });
       pdf.moveDown(0.1);
       paragraph(doc.sections.labResults);
     }
     if (doc.imaging.length) {
-      pdf.font('Helvetica-Bold').fontSize(8.5).fillColor(accent).text('Imaging', left, pdf.y, { width: CONTENT_W });
+      pdf.font(theme.font.bold).fontSize(8.5).fillColor(accent).text('Imaging', left, pdf.y, { width: CONTENT_W });
       pdf.moveDown(0.1);
       table(['Study', 'Indication', 'Impression', 'Date'],
         doc.imaging.map((im) => [im.study, im.indication ?? '—', im.impression ?? '—', fmtDate(im.date)]),
@@ -311,7 +310,7 @@ export function streamDischargeSummaryPdf(res: Response, doc: DischargeDocument)
   if (doc.sections.followUpDate || doc.sections.followUpInstructions) {
     heading('Follow-up');
     if (doc.sections.followUpDate) {
-      pdf.font('Helvetica-Bold').fontSize(9).fillColor(INK).text(`Next review: ${fmtDate(doc.sections.followUpDate)}`, left, pdf.y, { width: CONTENT_W });
+      pdf.font(theme.font.bold).fontSize(9).fillColor(INK).text(`Next review: ${fmtDate(doc.sections.followUpDate)}`, left, pdf.y, { width: CONTENT_W });
       pdf.moveDown(0.15);
     }
     paragraph(doc.sections.followUpInstructions);
@@ -322,17 +321,16 @@ export function streamDischargeSummaryPdf(res: Response, doc: DischargeDocument)
   pdf.moveDown(1.2);
   const sy = pdf.y;
   pdf.moveTo(right - 200, sy + 26).lineTo(right, sy + 26).strokeColor(INK).lineWidth(0.6).stroke();
-  pdf.font('Helvetica-Bold').fontSize(9.5).fillColor(INK).text(doc.admission.attendingDoctor, right - 200, sy + 30, { width: 200, align: 'right' });
-  if (doc.admission.specialization) pdf.font('Helvetica').fontSize(8).fillColor(MUTED).text(doc.admission.specialization, right - 200, pdf.y, { width: 200, align: 'right' });
-  if (doc.meta.signedAt) pdf.font('Helvetica').fontSize(8).fillColor(MUTED).text(`Electronically signed on ${fmtDateTime(doc.meta.signedAt)}`, right - 260, pdf.y + 2, { width: 260, align: 'right' });
-  if (doc.meta.attestation) pdf.font('Helvetica-Oblique').fontSize(8).fillColor(MUTED).text(`Attested as “${doc.meta.attestation}”`, right - 260, pdf.y, { width: 260, align: 'right' });
+  pdf.font(theme.font.bold).fontSize(9.5).fillColor(INK).text(doc.admission.attendingDoctor, right - 200, sy + 30, { width: 200, align: 'right' });
+  if (doc.admission.specialization) pdf.font(theme.font.regular).fontSize(8).fillColor(MUTED).text(doc.admission.specialization, right - 200, pdf.y, { width: 200, align: 'right' });
+  if (doc.meta.signedAt) pdf.font(theme.font.regular).fontSize(8).fillColor(MUTED).text(`Electronically signed on ${fmtDateTime(doc.meta.signedAt)}`, right - 260, pdf.y + 2, { width: 260, align: 'right' });
+  if (doc.meta.attestation) pdf.font(theme.font.italic).fontSize(8).fillColor(MUTED).text(`Attested as “${doc.meta.attestation}”`, right - 260, pdf.y, { width: 260, align: 'right' });
 
   // ---- Branded footers (hospital name • page X of Y • disclaimer) ----
-  drawBrandedFooters(pdf, doc.hospital, {
-    margin: PAGE.margin,
-    contentWidth: CONTENT_W,
+  finalizeBrandedDocument({
+    pdf,
+    branding: doc.hospital,
+    theme,
     generatedAt: doc.meta.generatedAt ? new Date(doc.meta.generatedAt) : undefined,
   });
-
-  pdf.end();
 }

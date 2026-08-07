@@ -96,6 +96,36 @@ export function brandingAddressLine(b: HospitalBranding): string | null {
   return line || null;
 }
 
+/**
+ * The subset of the render theme the letterhead needs. Passed by
+ * createBrandedDocument so the header picks up the template's font family,
+ * sizes and colours; omitted by the two legacy direct callers, which keep the
+ * original Helvetica look.
+ */
+export interface BrandingThemeHints {
+  accent: string;
+  ink: string;
+  muted: string;
+  font: { regular: string; bold: string; italic: string };
+  size: { body: number; small: number; tiny: number; heading: number; title: number };
+}
+
+/** What of the header/footer this document type shows. See services/pdf-template. */
+export interface BrandingTemplateHints {
+  header: {
+    showLetterhead: boolean;
+    headerStyle: 'inherit' | 'centered' | 'left';
+    showTitleBar: boolean;
+    showMetaStrip: boolean;
+  };
+  footer: {
+    showFooter: boolean;
+    footerTextOverride: string | null;
+    showPageNumbers: boolean;
+    showGeneratedAt: boolean;
+  };
+}
+
 interface HeaderOpts {
   title: string;
   margin: number;
@@ -104,6 +134,9 @@ interface HeaderOpts {
   meta?: PdfMetaItem[];
   /** Optional small subtitle shown at the left of the meta strip. */
   subtitle?: string;
+  /** Per-document-type overrides. Everything is shown when absent. */
+  template?: BrandingTemplateHints;
+  theme?: BrandingThemeHints;
 }
 
 /**
@@ -113,10 +146,31 @@ interface HeaderOpts {
  */
 export function drawBrandedHeader(pdf: PDFKit.PDFDocument, b: HospitalBranding, opts: HeaderOpts) {
   const { title, margin, contentWidth, meta, subtitle } = opts;
-  const accent = /^#[0-9a-fA-F]{6}$/.test(b.accentColor) ? b.accentColor : DEFAULT_ACCENT;
+  const th = opts.theme;
+  const tpl = opts.template;
+  const accent =
+    th?.accent ?? (/^#[0-9a-fA-F]{6}$/.test(b.accentColor) ? b.accentColor : DEFAULT_ACCENT);
+  const ink = th?.ink ?? INK;
+  const muted = th?.muted ?? MUTED;
+  const F = th?.font ?? { regular: 'Helvetica', bold: 'Helvetica-Bold', italic: 'Helvetica-Oblique' };
   const s = b.show ?? DEFAULT_SHOW;
   const left = margin;
   const right = left + contentWidth;
+
+  // A document type can be printed on pre-printed stationery that already
+  // carries the letterhead — then only the title bar belongs on the page.
+  const showLetterhead = tpl?.header.showLetterhead ?? true;
+  const headerStyle =
+    !tpl || tpl.header.headerStyle === 'inherit' ? b.headerStyle : tpl.header.headerStyle;
+
+  if (!showLetterhead) {
+    pdf.y = margin;
+    drawTitleBar(pdf, { title, left, contentWidth, accent, ink, muted, F, meta, subtitle, tpl });
+    pdf.moveDown(0.6);
+    pdf.fillColor(ink);
+    return;
+  }
+
   const logoPath = b.showLogo ? resolveLogoPath(b.logoUrl) : null;
   const showTagline = !!b.tagline && s.tagline;
   const addr = s.address ? brandingAddressLine(b) : null;
@@ -141,14 +195,14 @@ export function drawBrandedHeader(pdf: PDFKit.PDFDocument, b: HospitalBranding, 
 
   const topY = margin;
 
-  if (b.headerStyle === 'left' && logoPath) {
+  if (headerStyle === 'left' && logoPath) {
     // Logo on the left, hospital details to its right.
     try { pdf.image(logoPath, left, topY, { fit: [66, 66] }); } catch { /* ignore bad image */ }
     const tx = left + 80;
     const tw = contentWidth - 80;
-    pdf.font('Helvetica-Bold').fontSize(18).fillColor(INK).text(b.name, tx, topY, { width: tw });
-    if (showTagline) pdf.font('Helvetica-Oblique').fontSize(9).fillColor(accent).text(b.tagline ?? "", tx, pdf.y, { width: tw });
-    pdf.font('Helvetica').fontSize(8.5).fillColor(MUTED);
+    pdf.font(F.bold).fontSize(18).fillColor(ink).text(b.name, tx, topY, { width: tw });
+    if (showTagline) pdf.font(F.italic).fontSize(9).fillColor(accent).text(b.tagline ?? "", tx, pdf.y, { width: tw });
+    pdf.font(F.regular).fontSize(8.5).fillColor(muted);
     if (addr) pdf.text(addr, tx, pdf.y + 1, { width: tw });
     if (contact) pdf.text(contact, tx, pdf.y, { width: tw });
     if (reg) pdf.text(reg, tx, pdf.y, { width: tw });
@@ -163,9 +217,9 @@ export function drawBrandedHeader(pdf: PDFKit.PDFDocument, b: HospitalBranding, 
     } else {
       pdf.y = topY;
     }
-    pdf.font('Helvetica-Bold').fontSize(19).fillColor(INK).text(b.name, left, pdf.y, { width: contentWidth, align: 'center' });
-    if (showTagline) pdf.font('Helvetica-Oblique').fontSize(9).fillColor(accent).text(b.tagline ?? "", { width: contentWidth, align: 'center' });
-    pdf.font('Helvetica').fontSize(8.5).fillColor(MUTED);
+    pdf.font(F.bold).fontSize(19).fillColor(ink).text(b.name, left, pdf.y, { width: contentWidth, align: 'center' });
+    if (showTagline) pdf.font(F.italic).fontSize(9).fillColor(accent).text(b.tagline ?? "", { width: contentWidth, align: 'center' });
+    pdf.font(F.regular).fontSize(8.5).fillColor(muted);
     if (addr) pdf.text(addr, { width: contentWidth, align: 'center' });
     if (contact) pdf.text(contact, { width: contentWidth, align: 'center' });
     if (reg) pdf.text(reg, { width: contentWidth, align: 'center' });
@@ -176,31 +230,53 @@ export function drawBrandedHeader(pdf: PDFKit.PDFDocument, b: HospitalBranding, 
   pdf.moveTo(left, pdf.y).lineTo(right, pdf.y).strokeColor(HAIRLINE).lineWidth(0.6).stroke();
   pdf.moveDown(0.5);
 
-  // Accent title bar with rounded corners.
-  const barY = pdf.y;
-  const barH = 22;
-  pdf.roundedRect(left, barY, contentWidth, barH, 3).fill(accent);
-  pdf.fillColor('#ffffff').font('Helvetica-Bold').fontSize(11.5).text(title.toUpperCase(), left + 10, barY + 6, { width: contentWidth - 20, align: 'center', characterSpacing: 0.8 });
-  pdf.y = barY + barH;
+  drawTitleBar(pdf, { title, left, contentWidth, accent, ink, muted, F, meta, subtitle, tpl });
 
-  // Optional meta strip (light band): subtitle on the left, key/values on the right.
-  if ((meta && meta.length) || subtitle) {
+  pdf.moveDown(0.6);
+  pdf.fillColor(ink);
+}
+
+/** The accent title bar plus the optional meta strip under it. */
+function drawTitleBar(
+  pdf: PDFKit.PDFDocument,
+  o: {
+    title: string;
+    left: number;
+    contentWidth: number;
+    accent: string;
+    ink: string;
+    muted: string;
+    F: { regular: string; bold: string; italic: string };
+    meta?: PdfMetaItem[];
+    subtitle?: string;
+    tpl?: BrandingTemplateHints;
+  },
+) {
+  const { left, contentWidth, accent, ink, muted, F, meta, subtitle, tpl } = o;
+
+  if (tpl?.header.showTitleBar ?? true) {
+    const barY = pdf.y;
+    const barH = 22;
+    pdf.roundedRect(left, barY, contentWidth, barH, 3).fill(accent);
+    pdf.fillColor('#ffffff').font(F.bold).fontSize(11.5).text(o.title.toUpperCase(), left + 10, barY + 6, { width: contentWidth - 20, align: 'center', characterSpacing: 0.8 });
+    pdf.y = barY + barH;
+  }
+
+  const showMeta = tpl?.header.showMetaStrip ?? true;
+  if (showMeta && ((meta && meta.length) || subtitle)) {
     const stripY = pdf.y;
     const stripH = 16;
     pdf.rect(left, stripY, contentWidth, stripH).fill(tintHex(accent, 0.9));
     pdf.rect(left, stripY, contentWidth, stripH).lineWidth(0.4).strokeColor(tintHex(accent, 0.6)).stroke();
     if (subtitle) {
-      pdf.font('Helvetica-Bold').fontSize(8).fillColor(INK).text(subtitle, left + 8, stripY + 4.5, { width: contentWidth * 0.45, lineBreak: false });
+      pdf.font(F.bold).fontSize(8).fillColor(ink).text(subtitle, left + 8, stripY + 4.5, { width: contentWidth * 0.45, lineBreak: false });
     }
     if (meta && meta.length) {
       const metaText = meta.map((m) => `${m.label}: ${m.value}`).join('    •    ');
-      pdf.font('Helvetica').fontSize(8).fillColor(MUTED).text(metaText, left + contentWidth * 0.35 - 8, stripY + 4.5, { width: contentWidth * 0.65, align: 'right', lineBreak: false });
+      pdf.font(F.regular).fontSize(8).fillColor(muted).text(metaText, left + contentWidth * 0.35 - 8, stripY + 4.5, { width: contentWidth * 0.65, align: 'right', lineBreak: false });
     }
     pdf.y = stripY + stripH;
   }
-
-  pdf.moveDown(0.6);
-  pdf.fillColor(INK);
 }
 
 /**
@@ -210,13 +286,28 @@ export function drawBrandedHeader(pdf: PDFKit.PDFDocument, b: HospitalBranding, 
 export function drawBrandedFooters(
   pdf: PDFKit.PDFDocument,
   b: HospitalBranding,
-  opts: { margin: number; contentWidth: number; generatedAt?: Date },
+  opts: {
+    margin: number;
+    contentWidth: number;
+    generatedAt?: Date;
+    template?: BrandingTemplateHints;
+    theme?: BrandingThemeHints;
+  },
 ) {
   const { margin, contentWidth } = opts;
+  const tpl = opts.template;
+  if (tpl && !tpl.footer.showFooter) return;
+
   const left = margin;
-  const accent = /^#[0-9a-fA-F]{6}$/.test(b.accentColor) ? b.accentColor : DEFAULT_ACCENT;
+  const muted = opts.theme?.muted ?? MUTED;
+  const F = opts.theme?.font ?? { regular: 'Helvetica', bold: 'Helvetica-Bold', italic: 'Helvetica-Oblique' };
+  const accent =
+    opts.theme?.accent ?? (/^#[0-9a-fA-F]{6}$/.test(b.accentColor) ? b.accentColor : DEFAULT_ACCENT);
   const range = pdf.bufferedPageRange();
-  const footer = b.footerText || 'This is a computer-generated document.';
+  const footer =
+    tpl?.footer.footerTextOverride || b.footerText || 'This is a computer-generated document.';
+  const showGen = tpl?.footer.showGeneratedAt ?? true;
+  const showPages = tpl?.footer.showPageNumbers ?? true;
   const gen = opts.generatedAt ?? new Date();
   const genStr = gen.toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   for (let i = 0; i < range.count; i++) {
@@ -230,11 +321,14 @@ export function drawBrandedFooters(
     const fy = pdf.page.height - margin + 4;
     // Thin accent rule above the footer.
     pdf.moveTo(left, fy - 4).lineTo(left + contentWidth, fy - 4).strokeColor(tintHex(accent, 0.55)).lineWidth(0.6).stroke();
-    pdf.font('Helvetica').fontSize(7).fillColor(MUTED);
-    pdf.text(`${b.name}  ·  Generated ${genStr}`, left, fy, { width: contentWidth * 0.7, align: 'left', lineBreak: false });
-    pdf.text(`Page ${i + 1} of ${range.count}`, left + contentWidth * 0.7, fy, { width: contentWidth * 0.3, align: 'right', lineBreak: false });
+    pdf.font(F.regular).fontSize(7).fillColor(muted);
+    const leftText = showGen ? `${b.name}  ·  Generated ${genStr}` : b.name;
+    pdf.text(leftText, left, fy, { width: contentWidth * 0.7, align: 'left', lineBreak: false });
+    if (showPages) {
+      pdf.text(`Page ${i + 1} of ${range.count}`, left + contentWidth * 0.7, fy, { width: contentWidth * 0.3, align: 'right', lineBreak: false });
+    }
     if (i === range.count - 1 && (b.show?.footer ?? true)) {
-      pdf.fillColor(MUTED).fontSize(6.8).text(footer, left, fy + 9, { width: contentWidth, align: 'center', lineBreak: false });
+      pdf.fillColor(muted).fontSize(6.8).text(footer, left, fy + 9, { width: contentWidth, align: 'center', lineBreak: false });
     }
     pdf.page.margins.bottom = savedBottom;
   }

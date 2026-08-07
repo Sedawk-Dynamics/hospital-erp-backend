@@ -1,13 +1,13 @@
-import PDFDocument from 'pdfkit';
 import { Response } from 'express';
-import { drawBrandedHeader, drawBrandedFooters, type HospitalBranding } from '../../services/pdf-branding';
+import { type HospitalBranding } from '../../services/pdf-branding';
+import { createBrandedDocument, finalizeBrandedDocument } from '../../services/pdf-doc';
+import type { PdfTemplate } from '../../services/pdf-template';
 import type { AdmissionBillDocument } from './billing.bill-document';
 
-// Final IP bill PDF — the hospital admin's PDF Builder letterhead/footer (same
-// look as the receipt and discharge summary), then patient + stay details, the
-// itemised charges grouped by head, the money summary and the payment history.
-
-const MARGIN = 42;
+// Final IP bill PDF — page setup, letterhead, fonts, colours, watermark and
+// footer come from the `ip_bill` template in the PDF Builder; this file owns the
+// body: patient + stay details, the itemised charges grouped by head, the money
+// summary and the payment history.
 
 const fmt = (n: number) =>
   `${Number(n ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -28,25 +28,23 @@ export function streamAdmissionBillPdf(
   res: Response,
   doc: AdmissionBillDocument,
   branding: HospitalBranding,
+  template?: PdfTemplate,
 ) {
-  const pdf = new PDFDocument({ size: 'A4', margin: MARGIN, bufferPages: true });
-  const contentWidth = pdf.page.width - MARGIN * 2;
-  const right = MARGIN + contentWidth;
-  const filename = `bill-${doc.admission.ipNumber ?? doc.admissionId.slice(0, 8)}.pdf`;
-  res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
-  pdf.pipe(res);
-
-  drawBrandedHeader(pdf, branding, {
+  const { pdf, theme } = createBrandedDocument({
+    res,
+    branding,
+    template,
     title: `${doc.admissionTypeLabel} · ${doc.documentTitle}`,
-    margin: MARGIN,
-    contentWidth,
     subtitle: doc.bills.length ? doc.bills.map((b) => b.billNumber).join(', ') : undefined,
     meta: [
       { label: 'IP No', value: doc.admission.ipNumber ?? '—' },
       { label: 'Date', value: dateOnly(doc.generatedAt) },
     ],
+    filename: `bill-${doc.admission.ipNumber ?? doc.admissionId.slice(0, 8)}.pdf`,
   });
+  const MARGIN = theme.margin;
+  const contentWidth = theme.contentWidth;
+  const right = MARGIN + contentWidth;
 
   // ── Patient / stay blocks ────────────────────────────────────────────────
   const colGap = 12;
@@ -55,9 +53,9 @@ export function streamAdmissionBillPdf(
 
   const kv = (label: string, value: string | null, x: number, width: number) => {
     const y = pdf.y;
-    pdf.font('Helvetica').fontSize(8.5).fillColor('#6b7280').text(label, x, y, { width: 70 });
+    pdf.font(theme.font.regular).fontSize(8.5).fillColor('#6b7280').text(label, x, y, { width: 70 });
     pdf
-      .font('Helvetica-Bold')
+      .font(theme.font.bold)
       .fontSize(9)
       .fillColor('#111827')
       .text(value ?? '—', x + 74, y, { width: width - 74 });
@@ -65,7 +63,7 @@ export function streamAdmissionBillPdf(
   };
 
   pdf.y = blockTop;
-  pdf.font('Helvetica-Bold').fontSize(9).fillColor('#374151').text('PATIENT', MARGIN, pdf.y);
+  pdf.font(theme.font.bold).fontSize(9).fillColor('#374151').text('PATIENT', MARGIN, pdf.y);
   pdf.moveDown(0.3);
   kv('Name', doc.patient.name, MARGIN, colW);
   kv('MRN', doc.patient.mrn, MARGIN, colW);
@@ -76,7 +74,7 @@ export function streamAdmissionBillPdf(
 
   const rx = MARGIN + colW + colGap;
   pdf.y = blockTop;
-  pdf.font('Helvetica-Bold').fontSize(9).fillColor('#374151').text('ADMISSION', rx, pdf.y);
+  pdf.font(theme.font.bold).fontSize(9).fillColor('#374151').text('ADMISSION', rx, pdf.y);
   pdf.moveDown(0.3);
   kv('Type', doc.admissionTypeLabel, rx, colW);
   kv('Admitted', dateTime(doc.admission.admittedOn), rx, colW);
@@ -98,7 +96,7 @@ export function streamAdmissionBillPdf(
 
   const tableHeader = () => {
     const y = pdf.y;
-    pdf.font('Helvetica-Bold').fontSize(8.5).fillColor('#6b7280');
+    pdf.font(theme.font.bold).fontSize(8.5).fillColor('#6b7280');
     pdf.text('PARTICULARS', MARGIN, y, { width: cQty - MARGIN - 8 });
     pdf.text('QTY', cQty, y, { width: 50, align: 'right' });
     pdf.text('RATE', cRate, y, { width: 62, align: 'right' });
@@ -119,22 +117,22 @@ export function streamAdmissionBillPdf(
     }
   };
 
-  pdf.font('Helvetica-Bold').fontSize(10).fillColor('#111827').text('Bill of Charges', MARGIN, pdf.y);
+  pdf.font(theme.font.bold).fontSize(10).fillColor('#111827').text('Bill of Charges', MARGIN, pdf.y);
   pdf.moveDown(0.4);
   tableHeader();
 
   if (doc.groups.length === 0) {
-    pdf.font('Helvetica-Oblique').fontSize(9).fillColor('#6b7280')
+    pdf.font(theme.font.italic).fontSize(9).fillColor('#6b7280')
       .text('No charges recorded for this stay.', MARGIN, pdf.y);
     pdf.moveDown(0.5);
   }
 
   for (const g of doc.groups) {
     ensureSpace(40);
-    pdf.font('Helvetica-Bold').fontSize(9).fillColor('#374151').text(g.label, MARGIN, pdf.y);
+    pdf.font(theme.font.bold).fontSize(9).fillColor('#374151').text(g.label, MARGIN, pdf.y);
     pdf.moveDown(0.25);
 
-    pdf.font('Helvetica').fontSize(8.5).fillColor('#374151');
+    pdf.font(theme.font.regular).fontSize(8.5).fillColor('#374151');
     for (const l of g.lines) {
       ensureSpace(18);
       const y = pdf.y;
@@ -151,7 +149,7 @@ export function streamAdmissionBillPdf(
 
     ensureSpace(20);
     const gy = pdf.y + 1;
-    pdf.font('Helvetica-Bold').fontSize(8.5).fillColor('#111827');
+    pdf.font(theme.font.bold).fontSize(8.5).fillColor('#111827');
     pdf.text(`${g.label} total`, cRate - 120, gy, { width: 180, align: 'right' });
     pdf.text(fmt(g.total), cAmt, gy, { width: 80, align: 'right' });
     pdf.moveDown(0.9);
@@ -165,7 +163,7 @@ export function streamAdmissionBillPdf(
   const sLabel = MARGIN + contentWidth - 280;
   const row = (label: string, value: string, opts: { bold?: boolean; color?: string } = {}) => {
     const y = pdf.y;
-    pdf.font(opts.bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(9.5).fillColor(opts.color ?? '#374151');
+    pdf.font(opts.bold ? theme.font.bold : theme.font.regular).fontSize(9.5).fillColor(opts.color ?? '#374151');
     pdf.text(label, sLabel, y, { width: 190, align: 'right' });
     pdf.text(value, cAmt, y, { width: 80, align: 'right' });
     pdf.moveDown(0.35);
@@ -198,7 +196,7 @@ export function streamAdmissionBillPdf(
     pdf.moveDown(0.4);
     const sy = pdf.y;
     pdf.roundedRect(MARGIN, sy, 132, 26, 4).lineWidth(1.4).strokeColor('#047857').stroke();
-    pdf.font('Helvetica-Bold').fontSize(13).fillColor('#047857')
+    pdf.font(theme.font.bold).fontSize(13).fillColor('#047857')
       .text('PAID IN FULL', MARGIN, sy + 7, { width: 132, align: 'center' });
     pdf.y = sy + 32;
   }
@@ -207,10 +205,10 @@ export function streamAdmissionBillPdf(
   if (doc.payments.length > 0) {
     ensureSpace(60, false);
     pdf.moveDown(0.4);
-    pdf.font('Helvetica-Bold').fontSize(10).fillColor('#111827').text('Payments Received', MARGIN, pdf.y);
+    pdf.font(theme.font.bold).fontSize(10).fillColor('#111827').text('Payments Received', MARGIN, pdf.y);
     pdf.moveDown(0.35);
     const py = pdf.y;
-    pdf.font('Helvetica-Bold').fontSize(8.5).fillColor('#6b7280');
+    pdf.font(theme.font.bold).fontSize(8.5).fillColor('#6b7280');
     pdf.text('DATE', MARGIN, py, { width: 110 });
     pdf.text('MODE', MARGIN + 115, py, { width: 90 });
     pdf.text('RECEIPT', MARGIN + 210, py, { width: 130 });
@@ -219,7 +217,7 @@ export function streamAdmissionBillPdf(
     pdf.moveTo(MARGIN, pdf.y).lineTo(right, pdf.y).strokeColor('#e5e7eb').stroke();
     pdf.moveDown(0.3);
 
-    pdf.font('Helvetica').fontSize(8.5).fillColor('#374151');
+    pdf.font(theme.font.regular).fontSize(8.5).fillColor('#374151');
     for (const p of doc.payments) {
       ensureSpace(16);
       const y = pdf.y;
@@ -231,6 +229,5 @@ export function streamAdmissionBillPdf(
     }
   }
 
-  drawBrandedFooters(pdf, branding, { margin: MARGIN, contentWidth });
-  pdf.end();
+  finalizeBrandedDocument({ pdf, branding, theme });
 }

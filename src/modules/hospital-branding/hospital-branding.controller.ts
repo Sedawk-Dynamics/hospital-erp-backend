@@ -1,10 +1,26 @@
 import { Response, NextFunction } from 'express';
-import PDFDocument from 'pdfkit';
 import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse } from '../../shared/apiResponse';
 import { AppError } from '../../shared/appError';
 import * as service from './hospital-branding.service';
-import { drawBrandedHeader, drawBrandedFooters, type HospitalBranding, DEFAULT_ACCENT } from '../../services/pdf-branding';
+import { type HospitalBranding, DEFAULT_ACCENT } from '../../services/pdf-branding';
+import {
+  ALL_DOCUMENTS_KEY,
+  DEFAULT_TEMPLATE,
+  PDF_DOCUMENT_REGISTRY,
+  PDF_DOCUMENT_TYPES,
+  isPdfDocumentType,
+  mergeTemplate,
+  type PdfDocumentType,
+} from '../../services/pdf-template';
+import {
+  createBrandedDocument,
+  finalizeBrandedDocument,
+  drawKeyValueCard,
+  drawSectionHeading,
+  drawTable,
+} from '../../services/pdf-doc';
+import { previewDoc } from './pdf-preview-samples';
 
 export async function getBranding(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
@@ -73,89 +89,133 @@ function coerce(body: Record<string, unknown>, base: HospitalBranding): Hospital
   };
 }
 
-// The preview can mimic any of the real document types so the admin sees the
-// letterhead in context, not just an abstract sample.
-type PreviewType = 'prescription' | 'discharge' | 'receipt';
-const PREVIEW_DOCS: Record<PreviewType, { title: string; subtitle: string; meta: Array<{ label: string; value: string }> }> = {
-  prescription: { title: 'Prescription', subtitle: 'Outpatient (OP)', meta: [{ label: 'Date', value: '' }, { label: 'Rx No', value: 'RX-8A31C2' }] },
-  discharge: { title: 'Discharge Summary', subtitle: 'Inpatient (IP)', meta: [{ label: 'MRN', value: 'MRN-000000' }, { label: 'Doc No', value: 'DS-4F19AB' }] },
-  receipt: { title: 'Payment Receipt', subtitle: 'Bill INV-000123', meta: [{ label: 'Receipt', value: 'RCP-000045' }, { label: 'Date', value: '' }] },
-};
+// ── Templates ──────────────────────────────────────────────────────────────
 
-// A live sample PDF so the admin sees their letterhead exactly as it will print.
+function templateKey(raw: unknown): PdfDocumentType | typeof ALL_DOCUMENTS_KEY {
+  if (raw === ALL_DOCUMENTS_KEY) return ALL_DOCUMENTS_KEY;
+  if (isPdfDocumentType(raw)) return raw;
+  throw AppError.badRequest('Unknown document type');
+}
+
+export async function listTemplates(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.getAllPdfTemplates(req.user!.tenantId, PDF_DOCUMENT_TYPES);
+    sendResponse({
+      res,
+      message: 'PDF templates',
+      data: { ...data, registry: PDF_DOCUMENT_REGISTRY, defaults: DEFAULT_TEMPLATE },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getTemplate(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const key = templateKey(req.params.documentType);
+    const data = await service.getPdfTemplate(req.user!.tenantId, key);
+    sendResponse({ res, message: 'PDF template', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function saveTemplate(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const key = templateKey(req.params.documentType);
+    const data = await service.savePdfTemplate(req.user!.tenantId, key, req.body ?? {});
+    sendResponse({
+      res,
+      message:
+        key === ALL_DOCUMENTS_KEY
+          ? 'Saved — this now applies to every document that has no override of its own.'
+          : 'Template saved — it applies to this document from the next print.',
+      data,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function resetTemplate(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const key = templateKey(req.params.documentType);
+    const data = await service.resetPdfTemplate(req.user!.tenantId, key);
+    sendResponse({ res, message: 'Reset to the inherited defaults', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ── Live preview ───────────────────────────────────────────────────────────
+
+// A live sample PDF so the admin sees the letterhead AND the template exactly as
+// they will print — real page size, fonts, watermark, table style and footer,
+// with body content shaped like the document type they picked.
 export async function previewPdf(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const saved = await service.getHospitalBranding(req.user!.tenantId);
-    const b = coerce(body, saved);
-    const type: PreviewType = (['prescription', 'discharge', 'receipt'] as const).includes(body.previewType as PreviewType)
-      ? (body.previewType as PreviewType)
+    const tenantId = req.user!.tenantId;
+
+    const saved = await service.getHospitalBranding(tenantId);
+    const branding = coerce(body, saved);
+
+    const type: PdfDocumentType = isPdfDocumentType(body.documentType)
+      ? body.documentType
       : 'prescription';
-    const today = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
-    const docDef = PREVIEW_DOCS[type];
-    const meta = docDef.meta.map((m) => ({ label: m.label, value: m.value || today }));
 
-    const margin = 42;
-    const pdf = new PDFDocument({ size: 'A4', margin, bufferPages: true });
-    const contentWidth = pdf.page.width - margin * 2;
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', 'inline; filename="branding-preview.pdf"');
-    pdf.pipe(res);
+    // Unsaved template edits are merged over what is stored, so the preview
+    // tracks the form rather than the database.
+    const storedTemplate = await service.getPdfTemplate(tenantId, type);
+    const template = body.template ? mergeTemplate(storedTemplate, body.template) : storedTemplate;
 
-    drawBrandedHeader(pdf, b, { title: docDef.title, subtitle: docDef.subtitle, meta, margin, contentWidth });
-
-    const left = margin;
-    const accent = b.accentColor;
-    // Mock patient / info card.
-    const info: Array<[string, string]> = type === 'receipt'
-      ? [['Patient Name', 'Sample Patient'], ['MRN / UHID', 'MRN-000000'], ['Bill No', 'INV-000123'], ['Date', today]]
-      : [['Patient Name', 'Sample Patient'], ['MRN / UHID', 'MRN-000000'], ['Age / Gender', '42 / Male'], ['Doctor', 'Dr. A. Sharma']];
-    const colW = contentWidth / 2, rowH = 26, rows = Math.ceil(info.length / 2);
-    const top = pdf.y;
-    pdf.rect(left, top, contentWidth, rows * rowH).fillAndStroke('#eef2f5', '#c9ced6');
-    info.forEach(([k, v], i) => {
-      const x = left + (i % 2) * colW + 8, y = top + Math.floor(i / 2) * rowH + 5;
-      pdf.font('Helvetica-Bold').fontSize(7).fillColor('#5b6472').text(k.toUpperCase(), x, y, { width: colW - 16 });
-      pdf.font('Helvetica').fontSize(9).fillColor('#1a2332').text(v, x, y + 9, { width: colW - 16 });
+    const doc = previewDoc(type);
+    const { pdf, theme } = createBrandedDocument({
+      res,
+      branding,
+      template,
+      title: doc.title,
+      subtitle: doc.subtitle,
+      meta: doc.meta,
+      filename: `pdf-preview-${type}.pdf`,
     });
-    pdf.y = top + rows * rowH + 12;
 
-    const heading = (t: string) => {
-      const y = pdf.y;
-      pdf.rect(left, y, 3, 12).fill(accent);
-      pdf.font('Helvetica-Bold').fontSize(10.5).fillColor('#1a2332').text(t.toUpperCase(), left + 8, y, { width: contentWidth - 8 });
-      pdf.moveDown(0.4);
-    };
+    drawKeyValueCard(pdf, theme, doc.header);
 
-    // A representative body per document type.
-    const th = type === 'receipt' ? ['Item', 'Qty', 'Amount'] : ['Medication', 'Dosage', 'Frequency'];
-    const tr = type === 'receipt'
-      ? [['Consultation — General OPD', '1', '₹500.00'], ['Investigation — CBC', '1', '₹350.00']]
-      : [['Paracetamol 650mg (Acetaminophen)', '1 tab', '1-1-1 · 5 days'], ['Pantoprazole 40mg', '1 tab', '1-0-0 · 5 days']];
-    heading(type === 'receipt' ? 'Bill items' : type === 'discharge' ? 'Medications on discharge' : '℞  Medications');
-    const widths = type === 'receipt' ? [contentWidth * 0.6, contentWidth * 0.15, contentWidth * 0.25] : [contentWidth * 0.5, contentWidth * 0.2, contentWidth * 0.3];
-    let hy = pdf.y;
-    pdf.rect(left, hy, contentWidth, 16).fill(accent);
-    let hx = left;
-    th.forEach((h, i) => { pdf.font('Helvetica-Bold').fontSize(8).fillColor('#fff').text(h.toUpperCase(), hx + 4, hy + 4.5, { width: widths[i] - 8 }); hx += widths[i]; });
-    pdf.y = hy + 16;
-    tr.forEach((r, idx) => {
-      const ry = pdf.y;
-      if (idx % 2) pdf.rect(left, ry, contentWidth, 16).fill('#eef2f5');
-      let rx = left;
-      r.forEach((c, i) => { pdf.font('Helvetica').fontSize(8).fillColor('#1a2332').text(c, rx + 4, ry + 4, { width: widths[i] - 8 }); rx += widths[i]; });
-      pdf.y = ry + 16;
-    });
-    pdf.moveDown(0.8);
+    for (const section of doc.sections) {
+      drawSectionHeading(pdf, theme, section.heading);
+      if (section.paragraph) {
+        pdf
+          .font(theme.font.regular)
+          .fontSize(theme.size.body)
+          .fillColor(theme.ink)
+          .text(section.paragraph, theme.margin, pdf.y, {
+            width: theme.contentWidth,
+            lineGap: theme.lineGap,
+          });
+        pdf.moveDown(0.7);
+      }
+      if (section.columns && section.rows) {
+        drawTable(pdf, theme, section.columns, section.rows);
+      }
+      if (section.card) {
+        drawKeyValueCard(pdf, theme, section.card);
+      }
+    }
 
-    heading('About this preview');
-    pdf.font('Helvetica').fontSize(9).fillColor('#2a3240').text(
-      'This letterhead and footer appear on every PDF and print the system produces — discharge summaries, prescriptions, bills, receipts, salary slips, lab & radiology reports and more. Switch the preview above to see different documents. Edit the fields on the left and this updates live. Nothing here is a real record.',
-      left, pdf.y, { width: contentWidth, lineGap: 2 },
-    );
+    drawSectionHeading(pdf, theme, 'About this preview');
+    pdf
+      .font(theme.font.regular)
+      .fontSize(theme.size.small)
+      .fillColor(theme.muted)
+      .text(
+        'Nothing on this page is a real record. It shows the page size, margins, fonts, colours, table style, watermark, signature block and footer this document type will print with. Switch the document above to check another one — each type can be styled on its own, or all of them together.',
+        theme.margin,
+        pdf.y,
+        { width: theme.contentWidth, lineGap: theme.lineGap },
+      );
 
-    drawBrandedFooters(pdf, b, { margin, contentWidth });
-    pdf.end();
+    finalizeBrandedDocument({ pdf, branding, theme });
   } catch (err) {
     next(err);
   }

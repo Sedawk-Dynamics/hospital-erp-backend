@@ -173,13 +173,14 @@ export async function getReceiptPdf(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const { getHospitalBranding } = await import('../hospital-branding/hospital-branding.service');
-    const [receipt, branding] = await Promise.all([
+    const { getHospitalBranding, resolvePdfTemplate } = await import('../hospital-branding/hospital-branding.service');
+    const [receipt, branding, template] = await Promise.all([
       billingService.getReceiptById(tenantId, req.params.id as string),
       getHospitalBranding(tenantId),
+      resolvePdfTemplate(tenantId, 'payment_receipt'),
     ]);
     const { streamReceiptPdf } = await import('./billing.receipt-pdf');
-    streamReceiptPdf(res, receipt as any, branding);
+    streamReceiptPdf(res, receipt as any, branding, template);
   } catch (err) {
     next(err);
   }
@@ -217,16 +218,17 @@ export async function getAdmissionBillPdf(
   try {
     const tenantId = req.user!.tenantId;
     const { buildAdmissionBillDocument } = await import('./billing.bill-document');
-    const { getHospitalBranding } = await import('../hospital-branding/hospital-branding.service');
-    const [doc, branding] = await Promise.all([
+    const { getHospitalBranding, resolvePdfTemplate } = await import('../hospital-branding/hospital-branding.service');
+    const [doc, branding, template] = await Promise.all([
       buildAdmissionBillDocument(tenantId, req.params.admissionId as string, {
         userId: req.user!.userId,
         roles: req.user!.roles ?? [],
       }),
       getHospitalBranding(tenantId),
+      resolvePdfTemplate(tenantId, 'ip_bill'),
     ]);
     const { streamAdmissionBillPdf } = await import('./billing.ip-bill-pdf');
-    streamAdmissionBillPdf(res, doc, branding);
+    streamAdmissionBillPdf(res, doc, branding, template);
   } catch (err) {
     next(err);
   }

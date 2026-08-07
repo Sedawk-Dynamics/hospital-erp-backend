@@ -1,10 +1,19 @@
-import PDFDocument from 'pdfkit';
 import { Response } from 'express';
-import { drawBrandedHeader, drawBrandedFooters, type HospitalBranding } from '../../services/pdf-branding';
+import { type HospitalBranding } from '../../services/pdf-branding';
+import {
+  createBrandedDocument,
+  finalizeBrandedDocument,
+  drawKeyValueCard,
+  drawSectionHeading,
+  drawTable,
+} from '../../services/pdf-doc';
+import type { PdfTemplate } from '../../services/pdf-template';
 
-// Salary slip PDF — the hospital admin's PDF Builder letterhead/footer, then the
-// slip meta block, earnings + deductions two-column table, net-pay highlight and
-// a signature block.
+// Salary slip PDF — page setup, letterhead, fonts, colours, watermark and footer
+// come from the `salary_slip` template in the PDF Builder; this file owns the
+// slip meta card, the earnings + deductions table and the net-pay highlight.
+// The signing lines are the template's signature block, so a hospital that wants
+// three signatories (or none) sets that in the builder.
 
 interface SalarySlipLike {
   slipNumber: string;
@@ -50,117 +59,83 @@ const monthLabel = (start: Date, end: Date) => {
   return sm === em ? sm : `${sm} – ${em}`;
 };
 
-export function streamSalarySlipPdf(res: Response, branding: HospitalBranding, slip: SalarySlipLike) {
-  const MARGIN = 42;
-  const doc = new PDFDocument({ size: 'A4', margin: MARGIN, bufferPages: true });
-  const contentWidth = doc.page.width - MARGIN * 2;
-  const filename = `salary-slip-${slip.slipNumber}.pdf`;
-  res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
-  doc.pipe(res);
-
-  // Branded letterhead + title + meta strip.
-  drawBrandedHeader(doc, branding, {
+export function streamSalarySlipPdf(
+  res: Response,
+  branding: HospitalBranding,
+  slip: SalarySlipLike,
+  template?: PdfTemplate,
+) {
+  const staff = slip.payroll.staff;
+  const { pdf, theme } = createBrandedDocument({
+    res,
+    branding,
+    template,
     title: 'Salary Slip',
-    margin: MARGIN,
-    contentWidth,
     subtitle: monthLabel(slip.payroll.payPeriodStart, slip.payroll.payPeriodEnd),
     meta: [
       { label: 'Slip', value: slip.slipNumber },
       { label: 'Status', value: slip.payroll.status.toUpperCase() },
     ],
+    filename: `salary-slip-${slip.slipNumber}.pdf`,
   });
 
-  // Meta block (left = staff, right = pay period)
-  const staff = slip.payroll.staff;
-  const startY = doc.y;
-  doc.font('Helvetica').fontSize(10).fillColor('#333');
-  doc.text(`Name: ${staff.user.firstName} ${staff.user.lastName ?? ''}`.trim(), 40, startY);
-  if (staff.employeeId) doc.text(`Emp ID: ${staff.employeeId}`, 40, doc.y);
-  if (staff.position) doc.text(`Position: ${staff.position}`, 40, doc.y);
-  if (staff.department?.name) doc.text(`Department: ${staff.department.name}`, 40, doc.y);
-  if (staff.dateOfJoining) {
-    doc.text(`Date of Joining: ${new Date(staff.dateOfJoining).toLocaleDateString('en-IN')}`, 40, doc.y);
-  }
+  const d = (v: Date | string | null | undefined) =>
+    v ? new Date(v).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
 
-  doc.text(`Slip #: ${slip.slipNumber}`, 320, startY);
-  doc.text(`Period: ${new Date(slip.payroll.payPeriodStart).toLocaleDateString('en-IN')} – ${new Date(slip.payroll.payPeriodEnd).toLocaleDateString('en-IN')}`, 320, doc.y);
-  doc.text(`Status: ${slip.payroll.status.toUpperCase()}`, 320, doc.y);
-  if (slip.payroll.paidAt) {
-    doc.text(`Paid On: ${new Date(slip.payroll.paidAt).toLocaleDateString('en-IN')}`, 320, doc.y);
-  }
-  doc.text(`Generated: ${new Date(slip.generatedAt).toLocaleString('en-IN')}`, 320, doc.y);
-  doc.moveDown(1);
-
-  // Earnings / Deductions side-by-side
-  const tableTop = doc.y;
-  const leftX = 40;
-  const leftValX = 220;
-  const rightX = 320;
-  const rightValX = 500;
-
-  doc.font('Helvetica-Bold').fontSize(11).fillColor('#111');
-  doc.text('Earnings', leftX, tableTop);
-  doc.text('Deductions', rightX, tableTop);
-  doc.moveTo(leftX, tableTop + 16).lineTo(290, tableTop + 16).strokeColor('#ddd').stroke();
-  doc.moveTo(rightX, tableTop + 16).lineTo(555, tableTop + 16).strokeColor('#ddd').stroke();
-
-  doc.font('Helvetica').fontSize(10).fillColor('#333');
-  let leftY = tableTop + 22;
-  let rightY = tableTop + 22;
-
-  const earnRow = (label: string, value: string) => {
-    doc.text(label, leftX, leftY);
-    doc.text(value, leftValX, leftY, { width: 70, align: 'right' });
-    leftY += 16;
-  };
-  const dedRow = (label: string, value: string) => {
-    doc.text(label, rightX, rightY);
-    doc.text(value, rightValX, rightY, { width: 55, align: 'right' });
-    rightY += 16;
-  };
-
-  earnRow('Basic Salary', fmt(slip.payroll.basicSalary));
-  earnRow('Allowances', fmt(slip.payroll.allowances));
-  earnRow('Overtime Pay', fmt(slip.payroll.overtimePay));
-
-  dedRow('General Deductions', fmt(slip.payroll.deductions));
-  dedRow('Tax (TDS)', fmt(slip.payroll.taxDeduction));
-
-  // Totals row
-  const tEnd = Math.max(leftY, rightY) + 6;
-  doc.moveTo(leftX, tEnd).lineTo(290, tEnd).strokeColor('#bbb').stroke();
-  doc.moveTo(rightX, tEnd).lineTo(555, tEnd).strokeColor('#bbb').stroke();
-
-  doc.font('Helvetica-Bold').fontSize(10).fillColor('#111');
-  doc.text('Gross', leftX, tEnd + 6);
-  doc.text(fmt(slip.payroll.grossSalary), leftValX, tEnd + 6, { width: 70, align: 'right' });
+  drawKeyValueCard(pdf, theme, [
+    ['Employee', `${staff.user.firstName} ${staff.user.lastName ?? ''}`.trim()],
+    ['Employee ID', staff.employeeId ?? '—'],
+    ['Designation', staff.position ?? '—'],
+    ['Department', staff.department?.name ?? '—'],
+    ['Date of joining', d(staff.dateOfJoining)],
+    ['Pay period', `${d(slip.payroll.payPeriodStart)} – ${d(slip.payroll.payPeriodEnd)}`],
+    ['Status', slip.payroll.status.toUpperCase()],
+    ['Paid on', slip.payroll.paidAt ? d(slip.payroll.paidAt) : 'Not paid yet'],
+  ]);
 
   const totalDed = Number(slip.payroll.deductions ?? 0) + Number(slip.payroll.taxDeduction ?? 0);
-  doc.text('Total Deductions', rightX, tEnd + 6);
-  doc.text(fmt(totalDed), rightValX, tEnd + 6, { width: 55, align: 'right' });
 
-  doc.y = tEnd + 30;
-  doc.moveDown(1);
+  drawSectionHeading(pdf, theme, 'Earnings & deductions');
+  drawTable(
+    pdf,
+    theme,
+    [
+      { header: 'Component', width: 0.5 },
+      { header: 'Earnings', width: 0.25, align: 'right' },
+      { header: 'Deductions', width: 0.25, align: 'right' },
+    ],
+    [
+      ['Basic salary', fmt(slip.payroll.basicSalary), '—'],
+      ['Allowances', fmt(slip.payroll.allowances), '—'],
+      ['Overtime pay', fmt(slip.payroll.overtimePay), '—'],
+      ['General deductions', '—', fmt(slip.payroll.deductions)],
+      ['Tax (TDS)', '—', fmt(slip.payroll.taxDeduction)],
+      ['Total', fmt(slip.payroll.grossSalary), fmt(totalDed)],
+    ],
+  );
 
-  // Net Pay highlight
-  doc.rect(40, doc.y, 515, 36).fillAndStroke('#f1f8f4', '#86c79c');
-  doc.fillColor('#0f5132').font('Helvetica-Bold').fontSize(13)
-    .text('NET PAY', 56, doc.y + 12);
-  doc.fillColor('#0f5132').font('Helvetica-Bold').fontSize(16)
-    .text(fmt(slip.payroll.netSalary), 360, doc.y - 4, { width: 180, align: 'right' });
-  doc.y += 28;
-  doc.moveDown(2);
+  // Net pay highlight — the one number the employee looks for.
+  const boxH = theme.size.body + 26;
+  const boxY = pdf.y;
+  pdf.rect(theme.margin, boxY, theme.contentWidth, boxH).fillAndStroke('#f1f8f4', '#86c79c');
+  pdf
+    .font(theme.font.bold)
+    .fontSize(theme.size.heading + 1)
+    .fillColor('#0f5132')
+    .text('NET PAY', theme.margin + 14, boxY + (boxH - theme.size.heading) / 2 - 1, {
+      width: theme.contentWidth * 0.5,
+      lineBreak: false,
+    });
+  pdf
+    .font(theme.font.bold)
+    .fontSize(theme.size.heading + 4)
+    .fillColor('#0f5132')
+    .text(fmt(slip.payroll.netSalary), theme.margin + theme.contentWidth * 0.5, boxY + (boxH - theme.size.heading - 4) / 2 - 1, {
+      width: theme.contentWidth * 0.5 - 14,
+      align: 'right',
+      lineBreak: false,
+    });
+  pdf.y = boxY + boxH + 6;
 
-  // Signature footer
-  doc.font('Helvetica').fontSize(9).fillColor('#666');
-  doc.text('_________________________', 40, doc.y);
-  doc.text('Employee Signature', 40, doc.y);
-
-  doc.text('_________________________', 380, doc.y - 24);
-  doc.text('HR / Authorised Signatory', 380, doc.y);
-
-  // Branded footer (hospital name • generated • page X of Y • disclaimer).
-  drawBrandedFooters(doc, branding, { margin: MARGIN, contentWidth });
-  doc.end();
+  finalizeBrandedDocument({ pdf, branding, theme });
 }

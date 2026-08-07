@@ -1,10 +1,19 @@
-import PDFDocument from 'pdfkit';
 import { Response } from 'express';
-import { drawBrandedHeader, drawBrandedFooters, type HospitalBranding } from '../../services/pdf-branding';
+import { type HospitalBranding } from '../../services/pdf-branding';
+import {
+  createBrandedDocument,
+  finalizeBrandedDocument,
+  drawKeyValueCard,
+  drawSectionHeading,
+  drawTable,
+  ensureSpace,
+} from '../../services/pdf-doc';
+import type { PdfTemplate } from '../../services/pdf-template';
 
-// Receipt PDF — uses the hospital admin's PDF Builder letterhead/footer (same
-// look as every other document), then the receipt body: meta blocks, the bill
-// line-item table, a bill summary, and the current receipt's payment details.
+// Receipt PDF — page setup, letterhead, table style, watermark and footer all
+// come from the `payment_receipt` template in the PDF Builder; this file owns
+// only the body: meta blocks, the bill line-item table, a bill summary, and the
+// current receipt's payment details.
 
 interface ReceiptLike {
   id: string;
@@ -59,15 +68,12 @@ interface ReceiptLike {
 const fmt = (n: number | string | null | undefined) =>
   `₹${Number(n ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 
-export function streamReceiptPdf(res: Response, receipt: ReceiptLike, branding: HospitalBranding) {
-  const MARGIN = 42;
-  const doc = new PDFDocument({ size: 'A4', margin: MARGIN, bufferPages: true });
-  const contentWidth = doc.page.width - MARGIN * 2;
-  const filename = `receipt-${receipt.receiptNumber}.pdf`;
-  res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
-  doc.pipe(res);
-
+export function streamReceiptPdf(
+  res: Response,
+  receipt: ReceiptLike,
+  branding: HospitalBranding,
+  template?: PdfTemplate,
+) {
   const isCancellation = Number(receipt.amount) === 0 && receipt.payment.status === 'reversed';
   const isReversed = receipt.payment.status === 'reversed' && Number(receipt.amount) > 0;
 
@@ -76,102 +82,112 @@ export function streamReceiptPdf(res: Response, receipt: ReceiptLike, branding: 
   if (isCancellation) title = 'Bill Cancellation Receipt';
   else if (isReversed) title = 'Reversal Receipt';
 
-  // Branded letterhead + title bar + meta strip (Receipt no + Date).
-  drawBrandedHeader(doc, branding, {
+  const { pdf, theme } = createBrandedDocument({
+    res,
+    branding,
+    template,
     title,
-    margin: MARGIN,
-    contentWidth,
     subtitle: `Bill ${receipt.payment.bill.billNumber}`,
     meta: [
       { label: 'Receipt', value: receipt.receiptNumber },
       { label: 'Date', value: new Date(receipt.receiptDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) },
     ],
+    filename: `receipt-${receipt.receiptNumber}.pdf`,
   });
+  // Who / what this receipt is for.
+  drawKeyValueCard(pdf, theme, [
+    ['Receipt No', receipt.receiptNumber],
+    ['Bill No', receipt.payment.bill.billNumber],
+    ['Date', new Date(receipt.receiptDate).toLocaleString('en-IN')],
+    ['Txn Ref', receipt.payment.transactionId ?? '—'],
+    ['Patient', `${receipt.payment.bill.patient.firstName} ${receipt.payment.bill.patient.lastName ?? ''}`.trim()],
+    ['MRN', receipt.payment.bill.patient.mrn ?? '—'],
+  ]);
 
-  // Meta — left/right blocks
-  const startY = doc.y;
-  doc.font('Helvetica').fontSize(10).fillColor('#333');
-  doc.text(`Receipt #: ${receipt.receiptNumber}`, 40, startY);
-  doc.text(`Bill #: ${receipt.payment.bill.billNumber}`, 40, doc.y);
-  doc.text(`Date: ${new Date(receipt.receiptDate).toLocaleString('en-IN')}`, 40, doc.y);
-  if (receipt.payment.transactionId) {
-    doc.text(`Txn Ref: ${receipt.payment.transactionId}`, 40, doc.y);
-  }
-
-  doc.text(`Patient: ${receipt.payment.bill.patient.firstName} ${receipt.payment.bill.patient.lastName}`, 320, startY);
-  doc.text(`MRN: ${receipt.payment.bill.patient.mrn ?? '-'}`, 320, doc.y);
-  if (receipt.payment.bill.patient.phone) {
-    doc.text(`Phone: ${receipt.payment.bill.patient.phone}`, 320, doc.y);
-  }
-  doc.moveDown(1);
-
-  // Bill items
   if (receipt.payment.bill.billItems && receipt.payment.bill.billItems.length > 0) {
-    doc.font('Helvetica-Bold').fontSize(11).fillColor('#111').text('Bill Items');
-    doc.moveDown(0.2);
-    const tableTop = doc.y;
-    doc.font('Helvetica-Bold').fontSize(9).fillColor('#555');
-    doc.text('Description', 40, tableTop, { width: 260 });
-    doc.text('Qty', 320, tableTop, { width: 40, align: 'right' });
-    doc.text('Unit', 370, tableTop, { width: 70, align: 'right' });
-    doc.text('Total', 460, tableTop, { width: 85, align: 'right' });
-    doc.moveTo(40, doc.y + 2).lineTo(555, doc.y + 2).strokeColor('#ddd').stroke();
-    doc.moveDown(0.4);
-
-    doc.font('Helvetica').fontSize(9).fillColor('#333');
-    for (const item of receipt.payment.bill.billItems.slice(0, 30)) {
-      const y = doc.y;
-      doc.text(item.description, 40, y, { width: 260 });
-      doc.text(String(item.quantity), 320, y, { width: 40, align: 'right' });
-      doc.text(fmt(item.unitPrice), 370, y, { width: 70, align: 'right' });
-      doc.text(fmt(item.totalAmount), 460, y, { width: 85, align: 'right' });
-      doc.moveDown(0.4);
-    }
-    doc.moveDown(0.4);
+    drawSectionHeading(pdf, theme, 'Bill items');
+    drawTable(
+      pdf,
+      theme,
+      [
+        { header: 'Description', width: 0.52 },
+        { header: 'Qty', width: 0.1, align: 'right' },
+        { header: 'Unit', width: 0.17, align: 'right' },
+        { header: 'Total', width: 0.21, align: 'right' },
+      ],
+      receipt.payment.bill.billItems.slice(0, 30).map((item) => [
+        item.description,
+        String(item.quantity),
+        fmt(item.unitPrice),
+        fmt(item.totalAmount),
+      ]),
+    );
   }
 
-  // Bill summary on the right
-  const sumX = 320;
-  const valX = 480;
-  const sumStart = doc.y;
-  doc.font('Helvetica').fontSize(10).fillColor('#444');
+  // Bill summary, right-aligned against the content edge.
+  drawSectionHeading(pdf, theme, 'Bill summary');
+  const sumX = theme.margin + theme.contentWidth * 0.5;
+  const sumW = theme.contentWidth * 0.5;
   const sumRow = (label: string, value: string, bold?: boolean) => {
-    if (bold) doc.font('Helvetica-Bold');
-    else doc.font('Helvetica');
-    const y = doc.y;
-    doc.text(label, sumX, y);
-    doc.text(value, valX, y, { width: 75, align: 'right' });
+    ensureSpace(pdf, theme, theme.size.body + 6);
+    const y = pdf.y;
+    pdf
+      .font(bold ? theme.font.bold : theme.font.regular)
+      .fontSize(theme.size.body)
+      .fillColor(bold ? theme.ink : theme.muted)
+      .text(label, sumX, y, { width: sumW * 0.55, lineBreak: false });
+    pdf
+      .font(bold ? theme.font.bold : theme.font.regular)
+      .fillColor(theme.ink)
+      .text(value, sumX + sumW * 0.55, y, { width: sumW * 0.45, align: 'right', lineBreak: false });
+    pdf.y = y + theme.size.body + 5;
   };
   sumRow('Subtotal', fmt(receipt.payment.bill.subtotal));
   sumRow('Discount', `− ${fmt(receipt.payment.bill.discountAmount)}`);
   sumRow('Tax', fmt(receipt.payment.bill.taxAmount));
-  doc.moveTo(sumX, doc.y + 2).lineTo(555, doc.y + 2).strokeColor('#ddd').stroke();
-  doc.moveDown(0.2);
+  pdf
+    .moveTo(sumX, pdf.y + 1)
+    .lineTo(theme.margin + theme.contentWidth, pdf.y + 1)
+    .strokeColor(theme.hairline)
+    .lineWidth(0.5)
+    .stroke();
+  pdf.moveDown(0.2);
   sumRow('Total', fmt(receipt.payment.bill.totalAmount), true);
   sumRow('Paid', fmt(receipt.payment.bill.amountPaid));
-  sumRow('Balance Due', fmt(receipt.payment.bill.balanceDue), true);
-  doc.moveDown(0.6);
+  sumRow('Balance due', fmt(receipt.payment.bill.balanceDue), true);
+  pdf.moveDown(0.6);
 
-  // This receipt block
-  doc.font('Helvetica-Bold').fontSize(11).fillColor('#111').text('This Receipt');
-  doc.moveDown(0.2);
-  doc.font('Helvetica').fontSize(10).fillColor('#333');
-  const r = doc.y;
-  doc.text(`Amount: ${fmt(receipt.amount)}`, 40, r);
-  doc.text(`Method: ${receipt.payment.paymentMethod.replace('_', ' ').toUpperCase()}`, 220, r);
-  doc.text(`Type: ${receipt.payment.paymentType.toUpperCase()}`, 400, r);
-  doc.moveDown(0.4);
+  drawSectionHeading(pdf, theme, 'This receipt');
+  drawKeyValueCard(
+    pdf,
+    theme,
+    [
+      ['Amount', fmt(receipt.amount)],
+      ['Method', receipt.payment.paymentMethod.replace('_', ' ').toUpperCase()],
+      ['Type', receipt.payment.paymentType.toUpperCase()],
+    ],
+    3,
+  );
   if (receipt.payment.notes) {
-    doc.font('Helvetica-Oblique').fontSize(9).fillColor('#555').text(`Notes: ${receipt.payment.notes}`);
+    pdf
+      .font(theme.font.italic)
+      .fontSize(theme.size.small)
+      .fillColor(theme.muted)
+      .text(`Notes: ${receipt.payment.notes}`, theme.margin, pdf.y, { width: theme.contentWidth });
+    pdf.moveDown(0.5);
   }
 
   if (isCancellation && receipt.payment.bill.cancellationReason) {
-    doc.moveDown(0.5);
-    doc.font('Helvetica-Bold').fontSize(10).fillColor('#b00').text('Cancellation Reason:');
-    doc.font('Helvetica').fontSize(10).fillColor('#444').text(receipt.payment.bill.cancellationReason);
+    drawSectionHeading(pdf, theme, 'Cancellation reason');
+    pdf
+      .font(theme.font.regular)
+      .fontSize(theme.size.body)
+      .fillColor(theme.ink)
+      .text(receipt.payment.bill.cancellationReason, theme.margin, pdf.y, {
+        width: theme.contentWidth,
+        lineGap: theme.lineGap,
+      });
   }
 
-  // Branded footer (hospital name • generated • page X of Y • disclaimer).
-  drawBrandedFooters(doc, branding, { margin: MARGIN, contentWidth });
-  doc.end();
+  finalizeBrandedDocument({ pdf, branding, theme });
 }

@@ -105,16 +105,28 @@ export async function getDailyBalances(req: AuthenticatedRequest, res: Response,
 
 export async function exportRegisterPdf(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
-    const data = await service.getRegisterExport(req.user!.tenantId, req.query as any);
+    const tenantId = req.user!.tenantId;
+    const { getHospitalBranding, resolvePdfTemplate } = await import('../hospital-branding/hospital-branding.service');
+    const [data, branding, template] = await Promise.all([
+      service.getRegisterExport(tenantId, req.query as any),
+      getHospitalBranding(tenantId),
+      resolvePdfTemplate(tenantId, 'ndps_register'),
+    ]);
     const { streamNdpsRegisterPdf } = await import('./ndps.pdf');
-    streamNdpsRegisterPdf(res, data as any);
+    streamNdpsRegisterPdf(res, data as any, branding, template);
   } catch (err) { next(err); }
 }
 
 export async function exportDailyPdf(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
-    const data = await service.getDailyExport(req.user!.tenantId, req.query as any);
+    const tenantId = req.user!.tenantId;
+    const { getHospitalBranding, resolvePdfTemplate } = await import('../hospital-branding/hospital-branding.service');
+    const [data, branding, template] = await Promise.all([
+      service.getDailyExport(tenantId, req.query as any),
+      getHospitalBranding(tenantId),
+      resolvePdfTemplate(tenantId, 'ndps_daily'),
+    ]);
     const { streamNdpsDailyPdf } = await import('./ndps.pdf');
-    streamNdpsDailyPdf(res, data);
+    streamNdpsDailyPdf(res, data, branding, template);
   } catch (err) { next(err); }
 }
