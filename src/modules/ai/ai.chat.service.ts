@@ -5,6 +5,8 @@ import { generateText, generateJson } from '../../services/ai';
 import type { AiMessage } from '../../services/ai';
 import { assertFeatureEnabled } from './ai.config.service';
 import { buildPatientContext } from './ai.context';
+import { backfillResultsFromAttachments } from '../lab/lab.service';
+import { Prisma } from '@prisma/client';
 import type { PatientChatInput, BloodReportAnalysisInput } from './ai.validation';
 
 // Best-effort audit of AI usage. Never blocks the response.
@@ -77,7 +79,9 @@ interface BloodReportResult {
 }
 
 // Use Case 2.2 — blood report (lab) analysis with a score. Works off the
-// already-structured lab result values (no OCR needed; the values are stored).
+// stored LabResult values, including the ones read off an uploaded report PDF
+// or scan — the lab's real workflow is to upload the analyser's printout, not
+// to retype every number.
 export async function bloodReportAnalysis(
   tenantId: string,
   userId: string,
@@ -87,19 +91,36 @@ export async function bloodReportAnalysis(
 
   // Released reports only — an analysis is written as if the numbers are final,
   // so it must not be built on values still inside the lab's review loop.
-  const results = await prisma.labResult.findMany({
-    where: {
-      patientId: input.patientId,
-      labOrder: { tenantId, labReport: { status: { in: ['published', 'corrected'] } } },
-      ...(input.labOrderId ? { labOrderId: input.labOrderId } : {}),
-    },
+  const where: Prisma.LabResultWhereInput = {
+    patientId: input.patientId,
+    labOrder: { tenantId, labReport: { status: { in: ['published', 'corrected'] } } },
+    ...(input.labOrderId ? { labOrderId: input.labOrderId } : {}),
+  };
+  const include = { labOrderItem: { include: { test: { select: { testName: true } } } } };
+
+  let results = await prisma.labResult.findMany({
+    where,
     orderBy: { enteredAt: 'desc' },
     take: 60,
-    include: { labOrderItem: { include: { test: { select: { testName: true } } } } },
+    include,
   });
 
+  // Nothing stored — but the report may exist as an uploaded file that predates
+  // the read-on-upload flow. Read those now rather than telling the doctor there
+  // is nothing to analyse while the report sits on the same screen.
   if (!results.length) {
-    throw AppError.badRequest('No lab results available to analyse for this patient.');
+    const filled = await backfillResultsFromAttachments(tenantId, input.patientId, userId, {
+      labOrderId: input.labOrderId,
+    });
+    if (filled > 0) {
+      results = await prisma.labResult.findMany({ where, orderBy: { enteredAt: 'desc' }, take: 60, include });
+    }
+  }
+
+  if (!results.length) {
+    throw AppError.badRequest(
+      'No lab values are available to analyse. If the report was uploaded as a PDF or image, ask the lab to open the order and use "Read values" so the numbers are captured.',
+    );
   }
 
   const reportText = results

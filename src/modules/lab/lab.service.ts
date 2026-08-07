@@ -1,7 +1,11 @@
+import path from 'path';
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
+import { UPLOAD_DIR } from '../../services/upload.service';
+import { parseLabReportFile } from './lab.ocr';
+import { OCR_SUPPORTED_MIME } from '../../services/gemini-vision';
 import {
   safeLabAudit,
   safeLabReportEmail,
@@ -1243,6 +1247,9 @@ export async function enterResults(tenantId: string, userId: string, data: Enter
             normalRange: result.normalRange,
             isAbnormal,
             status: 'entered',
+            // A human typed this. Marks the row as protected so a later OCR
+            // pass over a re-uploaded report cannot overwrite it.
+            source: 'manual',
             enteredBy: userId,
             enteredAt: new Date(),
           },
@@ -2057,6 +2064,202 @@ export async function completeLabOrderItem(
     where: { id: itemId },
     include: { test: { select: { id: true, testName: true, testCode: true } } },
   });
+}
+
+/**
+ * Read an uploaded lab report file and store what it says as LabResult rows.
+ *
+ * The lab uploads the analyser's PDF and marks the test done rather than
+ * retyping every number, which left the order with attachments and no LabResult
+ * rows at all — and every clinical reader (investigation panel, discharge
+ * summary, CDSS, the AI assistant) works off LabResult. So the doctor asked the
+ * AI about a report that was sitting right there and was told there was nothing
+ * to analyse.
+ *
+ * Rows land as `source: 'ocr'`, machine-read and unverified. They stay invisible
+ * to clinicians until the supervisor publishes the report (isLabReportReleased),
+ * so a misread number cannot reach a doctor unchecked.
+ *
+ * Never overwrites a value a human typed: an existing row for the same
+ * parameter that is not itself OCR-derived wins.
+ */
+export async function extractResultsFromAttachment(
+  tenantId: string,
+  attachmentId: string,
+  userId: string,
+): Promise<{ created: number; skipped: number; warnings: string[] }> {
+  const attachment = await prisma.labAttachment.findFirst({
+    where: { id: attachmentId, tenantId, deletedAt: null },
+    include: {
+      labOrder: {
+        select: {
+          id: true,
+          patientId: true,
+          labOrderItems: {
+            select: { id: true, testId: true, test: { select: { testName: true } } },
+          },
+        },
+      },
+    },
+  });
+  if (!attachment) throw AppError.notFound('Attachment not found');
+
+  const order = attachment.labOrder;
+  // Which order item the values belong to. The upload usually names one; when
+  // it doesn't, a single-test order is unambiguous and anything else needs the
+  // lab to say which test the file is for.
+  const targetItemId =
+    attachment.labOrderItemId ??
+    (order.labOrderItems.length === 1 ? order.labOrderItems[0].id : null);
+  if (!targetItemId) {
+    return {
+      created: 0,
+      skipped: 0,
+      warnings: [
+        'This file is not tied to a specific test on a multi-test order — re-upload it against the test it belongs to.',
+      ],
+    };
+  }
+
+  // Once the supervisor has finalized the report, its values are what the
+  // clinician has already seen — re-reading the file must not quietly rewrite
+  // them behind the correction flow. Reading is still allowed when the test has
+  // NO values at all, which is the whole point of the backfill: those reports
+  // were published as a file only, so filling the gap adds nothing to overwrite.
+  const existing = await prisma.labResult.findMany({
+    where: { labOrderItemId: targetItemId },
+    select: { id: true, parameterName: true, source: true },
+  });
+  if (existing.length > 0) {
+    await assertOrderReportEditable(tenantId, order.id);
+  }
+
+  const fileName = attachment.fileUrl.replace(/^\/uploads\//, '');
+  if (!fileName || fileName.includes('..') || fileName.includes('/')) {
+    throw AppError.badRequest('Attachment file path is not readable');
+  }
+  const parsed = await parseLabReportFile({
+    path: path.join(UPLOAD_DIR, fileName),
+    mimetype: attachment.mimeType,
+    originalname: attachment.fileName,
+  });
+
+  if (parsed.parameters.length === 0) {
+    return { created: 0, skipped: 0, warnings: parsed.warnings };
+  }
+
+  // A human-entered value is the source of truth — only replace a previous OCR
+  // read (a re-upload of a corrected report).
+  const protectedParams = new Set(
+    existing.filter((r) => r.source !== 'ocr').map((r) => r.parameterName.toLowerCase()),
+  );
+  const staleOcrIds = existing.filter((r) => r.source === 'ocr').map((r) => r.id);
+
+  let created = 0;
+  let skipped = 0;
+
+  await prisma.$transaction(async (tx) => {
+    if (staleOcrIds.length) {
+      await tx.labResult.deleteMany({ where: { id: { in: staleOcrIds } } });
+    }
+    for (const p of parsed.parameters) {
+      if (protectedParams.has(p.parameterName.toLowerCase())) {
+        skipped += 1;
+        continue;
+      }
+      await tx.labResult.create({
+        data: {
+          labOrderItemId: targetItemId,
+          labOrderId: order.id,
+          patientId: order.patientId,
+          parameterName: p.parameterName,
+          value: p.value,
+          unit: p.unit,
+          normalRange: p.normalRange,
+          isAbnormal: evaluateAbnormal(p.value ?? undefined, p.normalRange ?? undefined) ?? false,
+          status: 'entered',
+          source: 'ocr',
+          enteredBy: userId,
+          enteredAt: new Date(),
+        },
+      });
+      created += 1;
+    }
+  });
+
+  const warnings = [...parsed.warnings];
+  if (skipped > 0) {
+    warnings.push(`${skipped} parameter(s) already entered by hand were left untouched.`);
+  }
+
+  logger.info(
+    { tenantId, attachmentId, labOrderId: order.id, created, skipped },
+    'Lab report OCR extracted results',
+  );
+  void safeLabAudit({
+    tenantId,
+    userId,
+    action: 'create',
+    entityType: 'lab_result',
+    entityId: targetItemId,
+    description: `Read ${created} value(s) from uploaded report "${attachment.fileName}"`,
+    newValues: { source: 'ocr', created, skipped },
+  });
+
+  return { created, skipped, warnings };
+}
+
+/**
+ * Read any uploaded report files for this patient that never became values.
+ *
+ * Every report uploaded from now on is read at upload time, but reports that
+ * predate that are still file-only — so the doctor opens the AI on a patient
+ * whose reports are sitting right there and is told there is nothing to
+ * analyse. This backfills them on demand.
+ *
+ * Deliberately bounded and best-effort: only released orders (an unreleased one
+ * must not reach a clinician at all), only items with no values yet, at most
+ * `limit` files per call, and a failure on one file never fails the caller.
+ */
+export async function backfillResultsFromAttachments(
+  tenantId: string,
+  patientId: string,
+  userId: string,
+  options: { labOrderId?: string; limit?: number } = {},
+): Promise<number> {
+  const limit = options.limit ?? 5;
+
+  const attachments = await prisma.labAttachment.findMany({
+    where: {
+      tenantId,
+      deletedAt: null,
+      mimeType: { in: [...OCR_SUPPORTED_MIME] },
+      labOrder: {
+        tenantId,
+        patientId,
+        ...(options.labOrderId ? { id: options.labOrderId } : {}),
+        labReport: { status: { in: ['published', 'corrected'] } },
+        labOrderItems: { some: { labResults: { none: {} } } },
+      },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: limit,
+    select: { id: true },
+  });
+
+  let total = 0;
+  for (const a of attachments) {
+    try {
+      const res = await extractResultsFromAttachment(tenantId, a.id, userId);
+      total += res.created;
+    } catch (err) {
+      logger.warn({ err, attachmentId: a.id }, 'Backfill OCR of an uploaded lab report failed');
+    }
+  }
+  if (total > 0) {
+    logger.info({ tenantId, patientId, total }, 'Backfilled lab results from uploaded reports');
+  }
+  return total;
 }
 
 export async function correctLabReport(

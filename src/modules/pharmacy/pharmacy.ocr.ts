@@ -1,6 +1,6 @@
-import fs from 'fs';
 import { AppError } from '../../shared/appError';
 import { logger } from '../../config/logger';
+import { callGeminiVision } from '../../services/gemini-vision';
 
 // ============================================================
 // OCR invoice parsing for stock inward (spec G1 — "CSV / OCR / manual").
@@ -15,21 +15,6 @@ import { logger } from '../../config/logger';
 // When it is missing we throw a clear badRequest so the UI can fall back to the
 // CSV / manual entry that already exists, rather than failing silently.
 // ============================================================
-
-// Fallback only when GEMINI_MODEL is unset. gemini-2.0-flash had its free-tier
-// quota zeroed (429 "limit: 0"); 2.5-flash is multimodal and still works.
-const DEFAULT_MODEL = 'gemini-2.5-flash';
-const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
-
-// MIME types Gemini can OCR inline. Mirrors the upload allowlist (images + PDF).
-const OCR_SUPPORTED_MIME = new Set([
-  'image/jpeg',
-  'image/png',
-  'image/webp',
-  'image/heic',
-  'image/heif',
-  'application/pdf',
-]);
 
 /** One parsed invoice line — shaped to seed the inward grid (DraftLine). */
 export interface OcrInvoiceLine {
@@ -188,7 +173,7 @@ function coerceLine(raw: unknown): OcrInvoiceLine | null {
   };
 }
 
-function parseModelJson(text: string): { header: OcrInvoiceHeader; lines: OcrInvoiceLine[] } {
+function parseInvoiceJson(text: string): { header: OcrInvoiceHeader; lines: OcrInvoiceLine[] } {
   const match = text.match(/\{[\s\S]*\}/);
   if (!match) throw new Error('No JSON object found in OCR response');
   const parsed = JSON.parse(match[0]) as unknown;
@@ -216,96 +201,19 @@ export async function parseInvoiceFile(file: {
   mimetype: string;
   originalname?: string;
 }): Promise<OcrInvoiceResult> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw AppError.badRequest(
-      'Invoice OCR is not configured on this server (set GEMINI_API_KEY). You can still enter stock manually or via CSV.',
-    );
-  }
-  if (!OCR_SUPPORTED_MIME.has(file.mimetype)) {
-    throw AppError.badRequest(
-      `Unsupported file type '${file.mimetype}'. Upload a photo (JPG/PNG/WEBP) or PDF of the invoice.`,
-    );
-  }
+  // Transport, file read and upstream error mapping are shared with the lab
+  // report reader — see services/gemini-vision.ts.
+  const { text, model } = await callGeminiVision({
+    prompt: buildPrompt(),
+    file,
+    feature: 'Invoice OCR',
+    fallbackHint: 'You can still add stock manually or via CSV.',
+  });
 
-  let base64: string;
-  try {
-    base64 = await fs.promises.readFile(file.path, { encoding: 'base64' });
-  } catch (err) {
-    logger.error({ err, path: file.path }, 'Failed to read uploaded invoice for OCR');
-    throw AppError.internal('Could not read the uploaded invoice file');
-  }
-
-  const model = process.env.GEMINI_MODEL || DEFAULT_MODEL;
-  const url = `${API_BASE}/${encodeURIComponent(model)}:generateContent`;
-
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              { text: buildPrompt() },
-              { inlineData: { mimeType: file.mimetype, data: base64 } },
-            ],
-          },
-        ],
-        generationConfig: {
-          maxOutputTokens: 4096,
-          temperature: 0.1,
-          responseMimeType: 'application/json',
-        },
-      }),
-    });
-  } catch (err) {
-    logger.error({ err }, 'Gemini OCR request failed');
-    throw AppError.internal('OCR service unreachable');
-  }
-
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    logger.error({ status: res.status, body: errText.slice(0, 500) }, 'Gemini OCR error');
-    // Map the upstream AI failure to a clear, actionable error instead of a
-    // generic 500 — the cause is almost always quota/billing or a bad API key.
-    if (res.status === 429) {
-      throw new AppError(
-        'Invoice OCR is temporarily unavailable — the AI provider quota/credits are exhausted. Top up billing on the Gemini API key (or set a new GEMINI_API_KEY). You can still add stock manually or via CSV.',
-        503,
-        'OCR_QUOTA_EXHAUSTED',
-      );
-    }
-    if (res.status === 401 || res.status === 403) {
-      throw new AppError(
-        'Invoice OCR is misconfigured — the AI API key was rejected. Check GEMINI_API_KEY on the server. You can still add stock manually or via CSV.',
-        503,
-        'OCR_AUTH_ERROR',
-      );
-    }
-    throw new AppError(
-      'The AI OCR service returned an error. Please try again in a moment, or add the stock manually / via CSV.',
-      502,
-      'OCR_UPSTREAM_ERROR',
-    );
-  }
-
-  const data = (await res.json()) as {
-    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }; finishReason?: string }>;
-    promptFeedback?: { blockReason?: string };
-  };
-  if (data.promptFeedback?.blockReason) {
-    logger.warn({ blockReason: data.promptFeedback.blockReason }, 'Gemini blocked OCR prompt');
-    throw AppError.internal('OCR service blocked the request');
-  }
-
-  const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? '').join('') ?? '';
 
   let parsed: { header: OcrInvoiceHeader; lines: OcrInvoiceLine[] };
   try {
-    parsed = parseModelJson(text);
+    parsed = parseInvoiceJson(text);
   } catch (err) {
     logger.warn({ err: (err as Error).message, preview: text.slice(0, 200) }, 'Failed to parse OCR result');
     throw AppError.internal('OCR returned an unexpected format');

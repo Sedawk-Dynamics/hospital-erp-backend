@@ -43,7 +43,16 @@ export async function buildPatientContext(
   if (!patient) throw AppError.notFound('Patient not found');
 
   // Pull each clinical stream in parallel, recency-bounded.
-  const [visits, prescriptions, labResults, imaging, personalHistory, familyHistory, vitals] =
+  const [
+    visits,
+    prescriptions,
+    labResults,
+    unreadLabFiles,
+    imaging,
+    personalHistory,
+    familyHistory,
+    vitals,
+  ] =
     await Promise.all([
       prisma.visit.findMany({
         where: { patientId, tenantId },
@@ -68,6 +77,31 @@ export async function buildPatientContext(
         orderBy: { enteredAt: 'desc' },
         take: 40,
         include: { labOrderItem: { include: { test: { select: { testName: true } } } } },
+      }),
+      // Released reports the lab uploaded as a file that never became values.
+      // Uploads are read into LabResult rows now, but older ones are file-only
+      // and the model cannot see a file — so name them rather than let it
+      // conclude the patient has no labs.
+      prisma.labAttachment.findMany({
+        where: {
+          tenantId,
+          deletedAt: null,
+          labOrder: {
+            tenantId,
+            patientId,
+            labReport: { status: { in: ['published', 'corrected'] } },
+            labOrderItems: { some: { labResults: { none: {} } } },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+        select: {
+          fileName: true,
+          createdAt: true,
+          labOrder: {
+            select: { labOrderItems: { select: { test: { select: { testName: true } } } } },
+          },
+        },
       }),
       prisma.imagingRequest.findMany({
         where: { patientId, tenantId },
@@ -192,6 +226,22 @@ export async function buildPatientContext(
             const test = r.labOrderItem?.test?.testName ?? 'Lab';
             const flag = r.isAbnormal ? ' **ABNORMAL**' : '';
             return `- ${test} — ${r.parameterName}: ${r.value ?? '?'} ${r.unit ?? ''} (ref ${r.normalRange ?? 'n/a'})${flag}`;
+          })
+          .join('\n'),
+    );
+  }
+
+  if (unreadLabFiles.length) {
+    sections.push(
+      '## LAB REPORTS ON FILE BUT NOT TRANSCRIBED\n' +
+        'These reports exist as uploaded files whose values were never captured. You cannot see their contents. Do not guess at them — say the report is on file and ask the lab to capture its values.\n' +
+        unreadLabFiles
+          .map((a) => {
+            const tests = a.labOrder.labOrderItems
+              .map((it) => it.test?.testName)
+              .filter(Boolean)
+              .join(', ');
+            return `- ${new Date(a.createdAt).toISOString().slice(0, 10)} ${tests || 'Lab order'} — ${a.fileName}`;
           })
           .join('\n'),
     );

@@ -3708,6 +3708,11 @@ model LabResult {
   normalRange     String?         @map("normal_range") @db.VarChar(100)
   isAbnormal      Boolean         @default(false) @map("is_abnormal")
   status          LabResultStatus @default(entered)
+  // How the value got here: 'manual' (typed into the result grid) or 'ocr'
+  // (read off an uploaded report PDF/scan). Null = manual, for rows that
+  // predate this. An OCR row is machine-read and unverified until the lab
+  // confirms it, so the entry grid marks it for review.
+  source          String?         @db.VarChar(20)
   enteredBy       String?         @map("entered_by")
   enteredAt       DateTime        @default(now()) @map("entered_at")
   verifiedBy      String?         @map("verified_by")

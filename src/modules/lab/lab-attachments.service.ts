@@ -4,6 +4,7 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { UPLOAD_DIR, getFileUrl, deleteFile } from '../../services/upload.service';
+import { canOcrLabFile } from './lab.ocr';
 
 // ── LabAttachment service ──────────────────────────────────────────────────
 // File storage for everything a lab role needs to attach to an order or
@@ -109,6 +110,29 @@ export async function createLabAttachment(
   }
 
   logger.info({ tenantId, attachmentId: attachment.id, labOrderId }, 'Lab attachment uploaded');
+
+  // Read the report into structured values in the background. This is what
+  // makes an uploaded PDF/scan visible to everything that works off LabResult —
+  // the doctor's investigation panel, the discharge summary, CDSS and the AI
+  // assistant — instead of the file being the only record of the numbers.
+  //
+  // Deliberately fire-and-forget: OCR needs a third-party AI call that can be
+  // unconfigured, rate-limited or simply wrong, and none of that may stop a
+  // technician attaching a file. The lab can re-run it from the order screen.
+  if (canOcrLabFile(file.mimetype)) {
+    void (async () => {
+      try {
+        const { extractResultsFromAttachment } = await import('./lab.service');
+        await extractResultsFromAttachment(tenantId, attachment.id, uploaderId);
+      } catch (err) {
+        logger.warn(
+          { err, attachmentId: attachment.id },
+          'Background lab report OCR failed (upload unaffected)',
+        );
+      }
+    })();
+  }
+
   return attachment;
 }
 

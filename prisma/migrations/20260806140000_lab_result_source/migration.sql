@@ -1,0 +1,13 @@
+-- Records how a LabResult value got here.
+--
+-- The lab's real workflow is to upload the analyser's PDF and mark the test
+-- done, not to retype every number into the entry grid — which left the order
+-- with attachments and ZERO LabResult rows. Every downstream reader works off
+-- LabResult (the doctor's investigation panel, the discharge summary, CDSS and
+-- the AI assistant), so a doctor could ask the AI about a report sitting right
+-- there and be told there was nothing to analyse.
+--
+-- Uploaded reports are now OCR'd into LabResult rows. 'ocr' marks those as
+-- machine-read and unverified so the lab can check them before the supervisor
+-- publishes; 'manual' (or NULL, for rows predating this) means a human typed it.
+ALTER TABLE "lab_results" ADD COLUMN IF NOT EXISTS "source" VARCHAR(20);

@@ -211,6 +211,26 @@ labRoutes.get(
   },
 );
 
+// Re-run the reader on an already-uploaded report. The upload triggers this in
+// the background, but the AI call can be unconfigured or rate-limited at that
+// moment, so the lab needs a way to ask again — and a way to re-read a file the
+// first pass got nothing out of. Literal subpath must precede /attachments/:id.
+labRoutes.post(
+  '/attachments/:id/extract',
+  authenticate,
+  requirePermission('lab_reports', 'update'),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const data = await labService.extractResultsFromAttachment(
+        req.user!.tenantId,
+        req.params.id as string,
+        req.user!.userId,
+      );
+      sendResponse({ res, message: 'Report read', data });
+    } catch (err) { next(err); }
+  },
+);
+
 labRoutes.delete(
   '/attachments/:id',
   authenticate,

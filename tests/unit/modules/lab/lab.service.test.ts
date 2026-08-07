@@ -14,7 +14,16 @@ import {
   updateSampleStatus,
   getInvestigationHistory,
   isLabReportReleased,
+  extractResultsFromAttachment,
 } from '../../../../src/modules/lab/lab.service';
+import { parseLabReportFile } from '../../../../src/modules/lab/lab.ocr';
+
+// The report reader is a network call to Gemini — stub it and assert on what
+// the service does with what it gets back.
+vi.mock('../../../../src/modules/lab/lab.ocr', () => ({
+  parseLabReportFile: vi.fn(),
+  canOcrLabFile: vi.fn(() => true),
+}));
 
 // ─── Helpers ───
 
@@ -565,6 +574,148 @@ describe('Lab Service', () => {
           results: [{ parameterName: 'WBC', value: '7500' }],
         } as any),
       ).rejects.toThrow('Cannot enter results for a cancelled order item');
+    });
+  });
+
+  // ============================================================
+  // Reading an uploaded report file into values (Bug 2)
+  //
+  // The lab uploads the analyser printout instead of typing the numbers, which
+  // left the order with a file and zero LabResult rows — so the doctor's AI,
+  // the discharge summary and CDSS all saw a patient with no labs.
+  // ============================================================
+  describe('extractResultsFromAttachment', () => {
+    const attachment = (over: Record<string, unknown> = {}) => ({
+      id: 'att-1',
+      fileUrl: '/uploads/report.pdf',
+      fileName: 'report.pdf',
+      mimeType: 'application/pdf',
+      labOrderItemId: 'item-1',
+      labOrder: {
+        id: 'order-1',
+        patientId: 'patient-1',
+        labOrderItems: [{ id: 'item-1', testId: 'test-1', test: { testName: 'CBC' } }],
+      },
+      ...over,
+    });
+
+    it('stores every parameter it read as an ocr-sourced result', async () => {
+      (prisma.labAttachment.findFirst as any).mockResolvedValue(attachment());
+      (parseLabReportFile as any).mockResolvedValue({
+        model: 'gemini-2.5-flash',
+        parameters: [
+          { testName: 'CBC', parameterName: 'Haemoglobin', value: '9.1', unit: 'g/dL', normalRange: '13.0-17.0' },
+          { testName: 'CBC', parameterName: 'Platelet Count', value: '250', unit: '10^3/uL', normalRange: '150-410' },
+        ],
+        warnings: [],
+      });
+      (prisma.labResult.findMany as any).mockResolvedValue([]);
+      const txMock = mockTransaction();
+
+      const res = await extractResultsFromAttachment(TENANT_ID, 'att-1', USER_ID);
+
+      expect(res.created).toBe(2);
+      expect(txMock.labResult.create).toHaveBeenCalledTimes(2);
+      const first = txMock.labResult.create.mock.calls[0][0].data;
+      expect(first).toMatchObject({
+        labOrderItemId: 'item-1',
+        labOrderId: 'order-1',
+        patientId: 'patient-1',
+        parameterName: 'Haemoglobin',
+        value: '9.1',
+        source: 'ocr',
+      });
+      // 9.1 sits below the 13.0-17.0 reference interval — the flag has to come
+      // off the range, not off the model's opinion.
+      expect(first.isAbnormal).toBe(true);
+    });
+
+    it('never overwrites a value a technician typed', async () => {
+      (prisma.labAttachment.findFirst as any).mockResolvedValue(attachment());
+      (parseLabReportFile as any).mockResolvedValue({
+        model: 'gemini-2.5-flash',
+        parameters: [
+          { testName: null, parameterName: 'Haemoglobin', value: '9.1', unit: 'g/dL', normalRange: '13.0-17.0' },
+          { testName: null, parameterName: 'ESR', value: '30', unit: 'mm/hr', normalRange: '0-20' },
+        ],
+        warnings: [],
+      });
+      (prisma.labResult.findMany as any).mockResolvedValue([
+        { id: 'res-typed', parameterName: 'haemoglobin', source: 'manual' },
+        { id: 'res-old-ocr', parameterName: 'ESR', source: 'ocr' },
+      ]);
+      const txMock = mockTransaction();
+
+      const res = await extractResultsFromAttachment(TENANT_ID, 'att-1', USER_ID);
+
+      expect(res.skipped).toBe(1);
+      expect(res.created).toBe(1);
+      // The stale machine-read row is replaced; the typed one is left alone.
+      expect(txMock.labResult.deleteMany).toHaveBeenCalledWith({
+        where: { id: { in: ['res-old-ocr'] } },
+      });
+      const written = txMock.labResult.create.mock.calls.map((c: any[]) => c[0].data.parameterName);
+      expect(written).toEqual(['ESR']);
+    });
+
+    it('refuses to guess which test a file belongs to on a multi-test order', async () => {
+      (prisma.labAttachment.findFirst as any).mockResolvedValue(
+        attachment({
+          labOrderItemId: null,
+          labOrder: {
+            id: 'order-1',
+            patientId: 'patient-1',
+            labOrderItems: [
+              { id: 'item-1', testId: 'test-1', test: { testName: 'CBC' } },
+              { id: 'item-2', testId: 'test-2', test: { testName: 'LFT' } },
+            ],
+          },
+        }),
+      );
+
+      const res = await extractResultsFromAttachment(TENANT_ID, 'att-1', USER_ID);
+
+      expect(res.created).toBe(0);
+      expect(res.warnings[0]).toContain('not tied to a specific test');
+      expect(parseLabReportFile).not.toHaveBeenCalled();
+    });
+
+    it('refuses to rewrite values on a report the supervisor already published', async () => {
+      (prisma.labAttachment.findFirst as any).mockResolvedValue(attachment());
+      (prisma.labResult.findMany as any).mockResolvedValue([
+        { id: 'res-1', parameterName: 'Haemoglobin', source: 'ocr' },
+      ]);
+      (prisma.labReport.findFirst as any).mockResolvedValue({ status: 'published' });
+
+      await expect(extractResultsFromAttachment(TENANT_ID, 'att-1', USER_ID)).rejects.toThrow(
+        /locked by the lab supervisor/,
+      );
+      expect(parseLabReportFile).not.toHaveBeenCalled();
+    });
+
+    it('still fills a published report that has no values at all — the backfill case', async () => {
+      (prisma.labAttachment.findFirst as any).mockResolvedValue(attachment());
+      (prisma.labResult.findMany as any).mockResolvedValue([]);
+      (prisma.labReport.findFirst as any).mockResolvedValue({ status: 'published' });
+      (parseLabReportFile as any).mockResolvedValue({
+        model: 'gemini-2.5-flash',
+        parameters: [{ parameterName: 'Haemoglobin', value: '9.1', unit: 'g/dL', normalRange: '13.0-17.0' }],
+        warnings: [],
+      });
+      const txMock = mockTransaction();
+
+      const res = await extractResultsFromAttachment(TENANT_ID, 'att-1', USER_ID);
+
+      expect(res.created).toBe(1);
+      expect(txMock.labResult.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('throws when the attachment is not in this tenant', async () => {
+      (prisma.labAttachment.findFirst as any).mockResolvedValue(null);
+
+      await expect(extractResultsFromAttachment(TENANT_ID, 'att-1', USER_ID)).rejects.toThrow(
+        'Attachment not found',
+      );
     });
   });
 
