@@ -13,6 +13,7 @@ import {
   applyDiscount,
   getServiceTariffs,
   getBillById,
+  adjustAdvanceToBill,
 } from '../../../../src/modules/billing/billing.service';
 
 // ─── Extend mocks that setup.ts does not provide ───
@@ -843,6 +844,61 @@ describe('BillingService', () => {
       vi.mocked(prisma.bill.findFirst).mockResolvedValue(null);
 
       await expect(getBillById(TENANT_ID, 'no-bill')).rejects.toThrow('Bill not found');
+    });
+  });
+
+  // ═══════════════════════════════════════════
+  // adjustAdvanceToBill — moving a deposit onto a bill
+  // ═══════════════════════════════════════════
+  describe('adjustAdvanceToBill', () => {
+    const partiallyPaidBill = {
+      id: 'bill-1',
+      tenantId: TENANT_ID,
+      patientId: 'patient-1',
+      status: 'partially_paid',
+      totalAmount: 2000,
+      amountPaid: 1500,
+      balanceDue: 500,
+    };
+
+    it('refuses to take more off the advance than the bill owes', async () => {
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue(partiallyPaidBill as any);
+
+      // The bill owes 500. Adjusting 2000 used to mark it paid, drain the full
+      // 2000 from the advance, and lose the 1500 difference: the bill balance
+      // is floored at zero, so the overpayment had nowhere to go.
+      await expect(
+        adjustAdvanceToBill(TENANT_ID, 'user-1', {
+          patientId: 'patient-1',
+          billId: 'bill-1',
+          amount: 2000,
+        }),
+      ).rejects.toThrow('Bill balance is 500, cannot adjust 2000');
+    });
+
+    it('refuses a bill that cannot take a payment', async () => {
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue({
+        ...partiallyPaidBill,
+        status: 'cancelled',
+      } as any);
+
+      await expect(
+        adjustAdvanceToBill(TENANT_ID, 'user-1', {
+          patientId: 'patient-1',
+          billId: 'bill-1',
+          amount: 100,
+        }),
+      ).rejects.toThrow('Bill cannot accept payment (status: cancelled)');
+    });
+
+    it('rejects a non-positive amount', async () => {
+      await expect(
+        adjustAdvanceToBill(TENANT_ID, 'user-1', {
+          patientId: 'patient-1',
+          billId: 'bill-1',
+          amount: 0,
+        }),
+      ).rejects.toThrow('Amount must be > 0');
     });
   });
 });

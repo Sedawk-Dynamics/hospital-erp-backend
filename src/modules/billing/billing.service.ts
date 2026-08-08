@@ -3942,12 +3942,34 @@ export async function adjustAdvanceToBill(
     throw AppError.badRequest(`Bill cannot accept payment (status: ${bill.status})`);
   }
 
+  // Never let more be taken off the advance than the bill actually owes. The
+  // bill's balance is floored at zero below, so an over-sized adjustment used
+  // to mark the bill paid, drain the full amount from the advance bucket, and
+  // silently lose the difference — ₹2000 against a ₹500 bill cost the patient
+  // ₹1500 of their own money.
+  const billBalance = toNumber(bill.balanceDue);
+  if (data.amount > billBalance) {
+    throw AppError.badRequest(`Bill balance is ${billBalance}, cannot adjust ${data.amount}`);
+  }
+
   const advance = await getPatientAdvanceBalance(tenantId, data.patientId);
   if (data.amount > advance.balance) {
     throw AppError.badRequest(`Advance balance is ${advance.balance}, cannot adjust ${data.amount}`);
   }
 
   const result = await prisma.$transaction(async (tx) => {
+    // Re-read the bucket inside the transaction and check it again. The
+    // balance above is read outside, so two counters adjusting the same
+    // advance at once could both pass it and between them draw out more than
+    // the patient ever deposited.
+    const bucket = await tx.bill.findFirst({
+      where: { tenantId, patientId: data.patientId, billNumber: { startsWith: 'ADV-' } },
+    });
+    const available = bucket ? toNumber(bucket.amountPaid) : 0;
+    if (data.amount > available) {
+      throw AppError.badRequest(`Advance balance is ${available}, cannot adjust ${data.amount}`);
+    }
+
     // Mark a "regular" payment on the bill, source=advance via notes, and
     // contra-entry on the advance bucket as a refund row so the running
     // balance falls correctly.
@@ -3990,9 +4012,6 @@ export async function adjustAdvanceToBill(
     });
 
     // Reduce advance bucket
-    const bucket = await tx.bill.findFirst({
-      where: { tenantId, patientId: data.patientId, billNumber: { startsWith: 'ADV-' } },
-    });
     if (bucket) {
       await tx.bill.update({
         where: { id: bucket.id },
