@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { paginationSchema } from '../../shared/pagination';
+import { paginationSchema, booleanQueryParam } from '../../shared/pagination';
 
 // ============================================================
 // Notifications
@@ -28,10 +28,10 @@ export const createNotificationSchema = z.object({
 
 export const getNotificationsQuerySchema = z.object({
   query: paginationSchema.extend({
-    isRead: z
-      .string()
-      .transform((val) => val === 'true')
-      .optional(),
+    // Shared parser: anything it does not recognise stays undefined, so the
+    // filter is simply not applied. The old `val === 'true'` turned a typo — or
+    // `isRead=1` — into `false`, silently showing only READ notifications.
+    isRead: booleanQueryParam.optional(),
     notificationType: z
       .enum([
         'appointment',
