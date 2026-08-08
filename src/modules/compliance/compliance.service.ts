@@ -1058,6 +1058,31 @@ export async function scheduleOT(
         referenceId: id,
       });
     }
+  } else {
+    // The desk booked the slot the surgeon asked for (or booked one for the
+    // first time). Nothing needs confirming, but the surgeon still has to be
+    // TOLD — until now this branch was silent, so a doctor only discovered
+    // their surgery was on by opening the list and looking.
+    const patientName = `${updated.patient?.firstName ?? ''} ${updated.patient?.lastName ?? ''}`.trim();
+    const slot = slotLabel(updated.scheduledDate, updated.scheduledStartTime);
+    const theatre = (updated as { ot?: { name?: string | null } | null }).ot?.name;
+    const targets = new Set(
+      [updated.doctor?.user?.id, updated.surgeon?.user?.id].filter(Boolean) as string[],
+    );
+    for (const uid of targets) {
+      // The person who did the scheduling does not need telling they did it.
+      if (uid === userId) continue;
+      notify({
+        tenantId,
+        userId: uid,
+        title: 'Surgery scheduled',
+        message:
+          `${updated.procedureName} for ${patientName || 'a patient'} is scheduled for ${slot}` +
+          (theatre ? ` in ${theatre}` : '') + '.',
+        referenceType: 'ot_scheduled',
+        referenceId: id,
+      });
+    }
   }
 
   logger.info(

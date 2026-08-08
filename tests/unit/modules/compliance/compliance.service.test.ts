@@ -8,6 +8,7 @@ import {
   getAuditLogs,
   createComplianceDoc,
   createOTRequest,
+  scheduleOT,
   reportIncident,
   updateIncident,
 } from '../../../../src/modules/compliance/compliance.service';
@@ -288,5 +289,93 @@ describe('Compliance Service - Incidents', () => {
         updateIncident(TENANT_ID, 'inc-1', { description: 'x' } as any),
       ).rejects.toThrow('Cannot update a closed incident');
     });
+  });
+});
+
+// ============================================================
+// OT scheduling — telling the surgeon
+// ============================================================
+
+describe('Compliance Service - scheduleOT notifications', () => {
+  const REQ = {
+    id: 'ot-1',
+    status: 'requested',
+    procedureName: 'Appendectomy',
+    preferredDate: new Date('2026-09-01'),
+    preferredTime: new Date('1970-01-01T09:00:00Z'),
+    scheduledDate: null,
+    scheduledStartTime: null,
+    patient: { firstName: 'Sample', lastName: 'Patient' },
+    doctor: { user: { id: 'doc-user-1' } },
+    surgeon: { user: { id: 'surgeon-user-1' } },
+  };
+
+  const scheduled = (over: Record<string, unknown> = {}) => ({
+    ...REQ,
+    status: 'scheduled',
+    scheduledDate: new Date('2026-09-01'),
+    scheduledStartTime: '09:00',
+    ot: { name: 'OT-1' },
+    ...over,
+  });
+
+  function notificationsSent() {
+    return (prisma.notification.create as any).mock.calls.map(
+      (c: any[]) => c[0].data as { userId: string; referenceType: string; title: string },
+    );
+  }
+
+  beforeEach(() => {
+    vi.mocked(prisma.otRequest.findFirst).mockResolvedValue(REQ as any);
+    vi.mocked(prisma.otRequest.update).mockResolvedValue(scheduled() as any);
+    // `notify` is fire-and-forget and chains .catch(), so the mock has to
+    // return a promise rather than the bare undefined the shared mock gives.
+    (prisma.notification.create as any).mockResolvedValue({ id: 'notif-1' });
+  });
+
+  // The desk booking the slot the surgeon asked for used to be silent, so a
+  // doctor only learned their surgery was on by opening the list and looking.
+  it('tells the doctor and surgeon when the case is booked as asked', async () => {
+    await scheduleOT(TENANT_ID, 'ot-1', 'ot-desk-user', {
+      otId: 'ot-room-1',
+      scheduledDate: '2026-09-01',
+      scheduledTime: '09:00',
+    } as any);
+
+    const sent = notificationsSent();
+    expect(sent.map((s) => s.userId).sort()).toEqual(['doc-user-1', 'surgeon-user-1']);
+    for (const s of sent) {
+      expect(s.referenceType).toBe('ot_scheduled');
+      expect(s.title).toBe('Surgery scheduled');
+    }
+  });
+
+  it('does not tell the person who did the scheduling', async () => {
+    await scheduleOT(TENANT_ID, 'ot-1', 'doc-user-1', {
+      otId: 'ot-room-1',
+      scheduledDate: '2026-09-01',
+      scheduledTime: '09:00',
+    } as any);
+
+    expect(notificationsSent().map((s) => s.userId)).toEqual(['surgeon-user-1']);
+  });
+
+  // A slot that is NOT what the doctor asked for stays on the reschedule path,
+  // which needs their confirmation — a different notification entirely.
+  it('uses the reschedule notification when the slot was moved', async () => {
+    vi.mocked(prisma.otRequest.update).mockResolvedValue(
+      scheduled({ scheduledStartTime: '14:00' }) as any,
+    );
+
+    await scheduleOT(TENANT_ID, 'ot-1', 'ot-desk-user', {
+      otId: 'ot-room-1',
+      scheduledDate: '2026-09-01',
+      scheduledTime: '14:00',
+      rescheduleReason: 'Theatre unavailable at 09:00',
+    } as any);
+
+    const sent = notificationsSent();
+    expect(sent.length).toBeGreaterThan(0);
+    for (const s of sent) expect(s.referenceType).toBe('ot_reschedule');
   });
 });
