@@ -132,6 +132,43 @@ describe('Pharmacy — G1 bulk stock inward (CSV / OCR / manual)', () => {
       expect(res.results[0]).toMatchObject({ status: 'ok', action: 'create', formularyId: 'drug-new' });
     });
 
+    it('carries the composition onto a product created at inward', async () => {
+      // The salt is typed on the review row for an unmapped "add as new" line —
+      // it is the only chance to capture it. commitInward used to drop it, so a
+      // product born here had an empty composition forever. That also broke the
+      // NEXT delivery: composition is one of the fields the matcher scores, so
+      // the same drug arriving again would not resolve to this row.
+      (prisma.drugFormulary.create as any).mockResolvedValue({ id: 'drug-new', drugName: 'Zynovia XR 500' });
+      (prisma.drugFormulary.findFirst as any).mockResolvedValue({ id: 'drug-new', drugName: 'Zynovia XR 500' });
+      (prisma.drugBatch.findFirst as any).mockResolvedValue(null);
+      (prisma.drugBatch.create as any).mockResolvedValue({ id: 'batch-3' });
+      (prisma.$executeRaw as any).mockClear?.();
+
+      await commitInward(TENANT_ID, USER_ID, ADMIN_ROLES, {
+        lines: [
+          {
+            action: 'create',
+            drugName: 'Zynovia XR 500',
+            composition: 'Metformin Hydrochloride 500mg',
+            strength: '500mg',
+            batchNumber: 'B3',
+            expiryDate: '2030-12-31',
+            quantityReceived: 10,
+          },
+        ],
+      } as any);
+
+      // composition is a raw-SQL column, so it is written outside the create().
+      const wroteComposition = ((prisma.$executeRaw as any).mock?.calls ?? []).some(
+        (call: unknown[]) => call.slice(1).includes('Metformin Hydrochloride 500mg'),
+      );
+      expect(wroteComposition, 'composition should be stored on the new row').toBe(true);
+      // strength goes through the ordinary create()
+      expect((prisma.drugFormulary.create as any).mock.calls[0][0].data).toMatchObject({
+        strength: '500mg',
+      });
+    });
+
     it('records a per-line error and keeps posting the remaining lines', async () => {
       (prisma.drugFormulary.findFirst as any).mockResolvedValue({ id: 'drug-existing', drugName: 'Telmac 40' });
       // First line: clashing batch number with no addToExisting → createBatch throws.

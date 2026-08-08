@@ -1129,6 +1129,10 @@ export async function commitInward(
               select: {
                 name: true, genericName: true, manufacturer: true, dosageForm: true,
                 strength: true, packSize: true, hsnCode: true, gtin: true,
+                // The catalog's name for the same concept as
+                // DrugFormulary.composition — without it, a product created
+                // from the catalog started life with no salt on record.
+                saltComposition: true,
               },
             })
           : null;
@@ -1140,6 +1144,12 @@ export async function commitInward(
           // Carries the "Type" chosen at stock entry (medicine / consumable / …).
           category: lineCategory,
           genericName: line.genericName ?? master?.genericName ?? undefined,
+          // The salt. `createFormularyItem` has always accepted it, but this
+          // call never passed it, so a product born at inward had a permanently
+          // empty composition — and composition is what the matcher scores a
+          // future invoice line against, so the next delivery of the same drug
+          // could not recognise it either.
+          composition: line.composition ?? master?.saltComposition ?? undefined,
           manufacturer: line.manufacturer ?? master?.manufacturer ?? undefined,
           dosageForm: (line.dosageForm ?? master?.dosageForm) as CreateFormularyInput['dosageForm'],
           strength: line.strength ?? master?.strength ?? undefined,
