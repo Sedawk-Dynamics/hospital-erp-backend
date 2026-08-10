@@ -4,6 +4,7 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
+import { istDayStart, istDayEnd } from '../../shared/date.utils';
 import type {
   CreateTicketInput,
   UpdateTicketInput,
@@ -392,12 +393,15 @@ export async function getAuditLogs(tenantId: string, query: GetAuditLogsQuery) {
     where.entityType = query.entityType;
   }
 
+  // IST calendar-day bounds. `new Date(toDate)` is midnight UTC, so the chosen
+  // end date was excluded entirely — and the Audit Logs page defaults `toDate`
+  // to today, which meant today's actions never appeared in the trail at all.
   if (query.fromDate) {
-    where.createdAt = { ...where.createdAt, gte: new Date(query.fromDate) };
+    where.createdAt = { ...where.createdAt, gte: istDayStart(query.fromDate) };
   }
 
   if (query.toDate) {
-    where.createdAt = { ...where.createdAt, lte: new Date(query.toDate) };
+    where.createdAt = { ...where.createdAt, lte: istDayEnd(query.toDate) };
   }
 
   if (query.search) {

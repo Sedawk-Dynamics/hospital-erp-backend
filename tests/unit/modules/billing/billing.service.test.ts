@@ -14,6 +14,7 @@ import {
   getServiceTariffs,
   getBillById,
   getBills,
+  getCollectionSummary,
   adjustAdvanceToBill,
   settleGatewayPayment,
 } from '../../../../src/modules/billing/billing.service';
@@ -732,43 +733,118 @@ describe('BillingService', () => {
   // approveRefund
   // ═══════════════════════════════════════════
   describe('approveRefund', () => {
-    it('should approve a refund and update bill amounts', async () => {
+    /** A ₹500 refund sitting against a fully-paid ₹1100 bill, paid by card. */
+    function mockPendingRefund(over: Record<string, unknown> = {}) {
       vi.mocked((prisma.refund as any).findFirst).mockResolvedValue({
         id: 'refund-1',
         tenantId: TENANT_ID,
         paymentId: 'payment-1',
         billId: 'bill-1',
+        patientId: 'patient-1',
         amount: 500,
+        reason: 'Test cancelled',
         status: 'requested',
         bill: {
           id: 'bill-1',
+          billNumber: 'BILL-20260810-0001',
           status: 'paid',
           amountPaid: 1100,
           totalAmount: 1100,
         },
+        payment: { id: 'payment-1', paymentMethod: 'credit_card' },
+        ...over,
       });
+    }
 
-      vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
-        const tx = {
-          refund: {
-            update: vi.fn().mockResolvedValue({
-              id: 'refund-1',
-              status: 'approved',
-              approvedBy: 'admin-1',
-              processedAt: new Date(),
-            }),
-          },
-          bill: {
-            update: vi.fn().mockResolvedValue({}),
-          },
-        };
-        return fn(tx);
-      });
+    beforeEach(() => {
+      vi.mocked((prisma.refund as any).update).mockResolvedValue({
+        id: 'refund-1',
+        status: 'approved',
+        approvedBy: 'admin-1',
+        processedAt: new Date(),
+      } as any);
+      vi.mocked(prisma.payment.create).mockResolvedValue({ id: 'payout-1' } as any);
+      vi.mocked(prisma.receipt.findUnique).mockResolvedValue(null);
+      vi.mocked(prisma.receipt.findFirst).mockResolvedValue(null);
+      vi.mocked(prisma.receipt.create).mockResolvedValue({
+        id: 'receipt-payout-1',
+        receiptNumber: 'RCP-20260810-0009',
+      } as any);
+      vi.mocked(prisma.bill.update).mockResolvedValue({} as any);
+      // Ledger after approval: ₹1100 collected, ₹500 now refunded.
+      vi.mocked(prisma.payment.aggregate).mockResolvedValue({ _sum: { amount: 1100 } } as any);
+      vi.mocked((prisma.refund as any).aggregate).mockResolvedValue({ _sum: { amount: 500 } } as any);
+    });
+
+    it('should approve a refund and update bill amounts', async () => {
+      mockPendingRefund();
 
       const result = await approveRefund(TENANT_ID, 'refund-1', 'admin-1');
 
       expect(result.status).toBe('approved');
       expect(result.approvedBy).toBe('admin-1');
+      // ₹1100 collected − ₹500 refunded = ₹600 still counted as paid, so ₹500
+      // of the ₹1100 bill is open again.
+      expect(prisma.bill.update).toHaveBeenCalledWith({
+        where: { id: 'bill-1' },
+        data: { amountPaid: 600, balanceDue: 500, status: 'partially_paid' },
+      });
+    });
+
+    it('records the cash leaving the drawer as a refund payment', async () => {
+      // Approving used to adjust the bill and nothing else, so a note handed
+      // back across the counter left no trace — Day End's refund line was
+      // structurally always ₹0 and no drawer could be tallied.
+      mockPendingRefund();
+
+      await approveRefund(TENANT_ID, 'refund-1', 'admin-1');
+
+      expect(prisma.payment.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          billId: 'bill-1',
+          amount: 500,
+          paymentType: 'refund',
+          status: 'completed',
+          processedBy: 'admin-1',
+          // Money goes back out the way it came in, so each tender reconciles
+          // against its own line.
+          paymentMethod: 'credit_card',
+        }),
+      });
+    });
+
+    it('issues a receipt for the money handed back', async () => {
+      mockPendingRefund();
+
+      await approveRefund(TENANT_ID, 'refund-1', 'admin-1');
+
+      expect(prisma.receipt.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ paymentId: 'payout-1', amount: 500 }),
+      });
+    });
+
+    it('falls back to cash when the original payment method is unknown', async () => {
+      mockPendingRefund({ payment: null });
+
+      await approveRefund(TENANT_ID, 'refund-1', 'admin-1');
+
+      expect(prisma.payment.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ paymentMethod: 'cash' }),
+      });
+    });
+
+    it('marks the bill refunded when nothing is left paid', async () => {
+      mockPendingRefund({ amount: 1100 });
+      vi.mocked((prisma.refund as any).aggregate).mockResolvedValue({
+        _sum: { amount: 1100 },
+      } as any);
+
+      await approveRefund(TENANT_ID, 'refund-1', 'admin-1');
+
+      expect(prisma.bill.update).toHaveBeenCalledWith({
+        where: { id: 'bill-1' },
+        data: { amountPaid: 0, balanceDue: 1100, status: 'refunded' },
+      });
     });
 
     it('should throw notFound if refund not found or not requested', async () => {
@@ -777,6 +853,7 @@ describe('BillingService', () => {
       await expect(approveRefund(TENANT_ID, 'no-refund', 'admin-1')).rejects.toThrow(
         'Refund not found or not in pending status',
       );
+      expect(prisma.payment.create).not.toHaveBeenCalled();
     });
   });
 
@@ -1068,6 +1145,35 @@ describe('BillingService', () => {
 
       expect(result).toEqual({ alreadySettled: false, billId: null });
       expect(prisma.bill.update).not.toHaveBeenCalled();
+    });
+  });
+
+  // ═══════════════════════════════════════════
+  // getCollectionSummary — refunds are not takings
+  // ═══════════════════════════════════════════
+  describe('getCollectionSummary', () => {
+    it('leaves refunds out of collection and reports them separately', async () => {
+      // Refund payouts are completed payments like any other. Counting them as
+      // collection would credit the counter with money it just handed back.
+      vi.mocked(prisma.payment.findMany).mockResolvedValue([
+        { amount: 1000, paymentMethod: 'cash', paymentType: 'regular', paymentSource: 'frontdesk' },
+        { amount: 500, paymentMethod: 'upi', paymentType: 'regular', paymentSource: 'frontdesk' },
+        { amount: 300, paymentMethod: 'cash', paymentType: 'refund', paymentSource: 'frontdesk' },
+      ] as any);
+      vi.mocked(prisma.bill.findMany).mockResolvedValue([]);
+
+      const s = await getCollectionSummary(TENANT_ID, {
+        startDate: '2026-08-10',
+        endDate: '2026-08-10',
+      });
+
+      expect(s.totalCollection).toBe(1500);
+      expect(s.refunds).toBe(300);
+      expect(s.netCollection).toBe(1200);
+      // The ₹300 handed back must not show up under the cash tender either —
+      // that is the figure a cashier counts the drawer against.
+      expect(s.cash).toBe(1000);
+      expect(s.upi).toBe(500);
     });
   });
 

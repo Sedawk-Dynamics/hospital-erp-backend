@@ -13,6 +13,7 @@ import {
   istDayEnd,
 } from '../../shared/date.utils';
 import { normalizeAdmissionType } from '../../shared/admission-type';
+import { writeAudit } from '../../shared/audit';
 import {
   ACTIVE_ADMISSION_STATUS,
   ACTIVE_ADMISSION_STATUSES,
@@ -94,6 +95,13 @@ function toNumber(val: Decimal | number | null | undefined): number {
   if (typeof val === 'number') return val;
   return val.toNumber();
 }
+
+/**
+ * Round to paise. A dozen functions in this file declare this locally; those
+ * shadow this one with an identical implementation, so nothing changes for them
+ * — this exists so code outside those bodies has it too.
+ */
+const r2 = (n: number) => Math.round(n * 100) / 100;
 
 /**
  * Generate a unique bill number.
@@ -489,8 +497,17 @@ export async function getCollectionSummary(
     }
   };
 
+  // Money handed back is not takings. Refund payouts are completed payments
+  // like any other, so counting them here would inflate the day's collection by
+  // the very amount that left the drawer.
+  let refunds = 0;
+
   for (const p of payments) {
     const amt = toNumber(p.amount);
+    if (p.paymentType === 'refund') {
+      refunds += amt;
+      continue;
+    }
     totalCollection += amt;
     switch (p.paymentMethod) {
       case 'cash': cash += amt; break;
@@ -531,6 +548,9 @@ export async function getCollectionSummary(
     upi,
     bankTransfer,
     cheque,
+    // What went back out, and what the counter is actually holding once it has.
+    refunds,
+    netCollection: r2(totalCollection - refunds),
     totalBill,
     totalPaid,
     totalCredit,
@@ -980,6 +1000,15 @@ export async function createBill(tenantId: string, userId: string, data: CreateB
   });
 
   logger.info({ tenantId, billId: bill.id, billNumber }, 'Bill created');
+  void writeAudit({
+    tenantId,
+    userId,
+    action: 'create',
+    entityType: 'bill',
+    entityId: bill.id,
+    description: `Bill ${billNumber} raised for ${patient.firstName} ${patient.lastName} (${patient.mrn ?? 'no MRN'})`,
+    newValues: { billNumber, patientId: data.patientId, status: 'draft' },
+  });
   return bill;
 }
 
@@ -1250,6 +1279,20 @@ export async function finalizeBill(tenantId: string, userId: string, billId: str
   });
 
   logger.info({ tenantId, billId, totalAmount: updatedBill.totalAmount }, 'Bill finalized');
+  void writeAudit({
+    tenantId,
+    userId,
+    action: 'update',
+    entityType: 'bill',
+    entityId: billId,
+    description: `Bill ${updatedBill.billNumber} finalized — ₹${toNumber(updatedBill.totalAmount)} payable across ${updatedBill.billItems.length} line(s)`,
+    oldValues: { status: 'draft' },
+    newValues: {
+      status: 'pending',
+      totalAmount: toNumber(updatedBill.totalAmount),
+      itemCount: updatedBill.billItems.length,
+    },
+  });
   return updatedBill;
 }
 
@@ -1304,6 +1347,15 @@ export async function reopenBill(tenantId: string, billId: string) {
   });
 
   logger.info({ tenantId, billId }, 'Bill reopened for editing');
+  void writeAudit({
+    tenantId,
+    action: 'update',
+    entityType: 'bill',
+    entityId: billId,
+    description: `Bill ${updated.billNumber} reopened for editing — pulled back from pending to draft`,
+    oldValues: { status: 'pending' },
+    newValues: { status: 'draft' },
+  });
   return updated;
 }
 
@@ -1385,6 +1437,23 @@ export async function createPayment(
     { tenantId, billId: data.billId, paymentId: result.payment.id, amount: data.amount },
     'Payment recorded',
   );
+  void writeAudit({
+    tenantId,
+    userId,
+    action: 'create',
+    entityType: 'payment',
+    entityId: result.payment.id,
+    description:
+      `₹${data.amount} collected on bill ${bill.billNumber} by ${mappedPaymentMethod.replace(/_/g, ' ')}` +
+      ` — receipt ${result.receipt.receiptNumber}`,
+    newValues: {
+      billId: data.billId,
+      amount: data.amount,
+      paymentMethod: mappedPaymentMethod,
+      referenceNumber: data.referenceNumber ?? null,
+      receiptNumber: result.receipt.receiptNumber,
+    },
+  });
   return result;
 }
 
@@ -1416,6 +1485,9 @@ export async function getPayments(tenantId: string, query: GetPaymentsQuery) {
         patient: {
           select: { id: true, mrn: true, firstName: true, lastName: true },
         },
+        // The Cash Counter lists who took each payment — with manual entry that
+        // attribution is the control, so it belongs on the row itself.
+        processor: { select: { id: true, firstName: true, lastName: true } },
       },
       orderBy: { createdAt: 'desc' },
     }),
@@ -1477,21 +1549,42 @@ export async function createRefund(
     { tenantId, refundId: refund.id, paymentId: data.paymentId, amount: data.amount },
     'Refund request created',
   );
+  void writeAudit({
+    tenantId,
+    userId,
+    action: 'create',
+    entityType: 'refund',
+    entityId: refund.id,
+    description:
+      `Refund of ₹${data.amount} requested against a ₹${paymentAmount} payment` +
+      (payment.bill ? ` on bill ${payment.bill.billNumber}` : ''),
+    reason: data.reason,
+    newValues: {
+      amount: data.amount,
+      paymentId: data.paymentId,
+      billId: payment.billId,
+      status: 'requested',
+    },
+  });
   return refund;
 }
 
 export async function approveRefund(tenantId: string, refundId: string, approvedBy: string) {
   const refund = await prisma.refund.findFirst({
     where: { id: refundId, tenantId, status: 'requested' },
-    include: { bill: true },
+    include: { bill: true, payment: true },
   });
 
   if (!refund) {
     throw AppError.notFound('Refund not found or not in pending status');
   }
 
+  const refundAmount = toNumber(refund.amount);
+  // Hand the money back the way it came in, so the drawer and the card/UPI
+  // settlement each reconcile against their own line.
+  const refundMethod = (refund.payment?.paymentMethod ?? 'cash') as any;
+
   const result = await prisma.$transaction(async (tx) => {
-    // Update refund status
     const updatedRefund = await tx.refund.update({
       where: { id: refundId },
       data: {
@@ -1501,11 +1594,39 @@ export async function approveRefund(tenantId: string, refundId: string, approved
       },
     });
 
-    // Update bill amounts
+    // Cash actually leaving the counter. Approving a refund used to adjust the
+    // bill and nothing else, so a ₹500 note handed back across the counter left
+    // no record anywhere — Day End's refund line was structurally always ₹0 and
+    // the drawer could never be tallied against the system.
+    //
+    // `paymentType: 'refund'` keeps it out of `computeBillPaid`'s collected sum
+    // and out of Collected on the reports; the bill's own reduction comes from
+    // the Refund row, so the money is counted once, not twice.
+    const payout = await tx.payment.create({
+      data: {
+        tenantId,
+        billId: refund.billId,
+        patientId: refund.patientId,
+        amount: refundAmount,
+        paymentMethod: refundMethod,
+        paymentSource: 'frontdesk',
+        paymentType: 'refund',
+        status: 'completed',
+        paymentDate: new Date(),
+        processedBy: approvedBy,
+        notes: `Refund against payment ${refund.paymentId} — ${refund.reason}`,
+      },
+    });
+
+    // The patient signs for money going out just as they do for money coming in.
+    const payoutReceipt = await issueReceiptForPayment(tx, tenantId, payout.id, refundAmount);
+
+    // Settle from the ledger rather than from the figure read before the
+    // transaction opened. The status rules are the ones this function has
+    // always applied: nothing left paid means the bill is refunded, an open
+    // balance means partially paid, and anything else is left alone.
     const bill = refund.bill!;
-    const currentPaid = toNumber(bill.amountPaid);
-    const refundAmount = toNumber(refund.amount);
-    const newPaidAmount = currentPaid - refundAmount;
+    const newPaidAmount = await computeBillPaid(tx, bill.id);
     const totalAmount = toNumber(bill.totalAmount);
     const newBalanceDue = totalAmount - newPaidAmount;
 
@@ -1525,14 +1646,35 @@ export async function approveRefund(tenantId: string, refundId: string, approved
       },
     });
 
-    return updatedRefund;
+    return { updatedRefund, payout, payoutReceipt, newPaidAmount, newStatus };
   });
 
   logger.info(
-    { tenantId, refundId, approvedBy, amount: refund.amount },
-    'Refund approved',
+    { tenantId, refundId, approvedBy, amount: refund.amount, payoutId: result.payout.id },
+    'Refund approved and paid out',
   );
-  return result;
+  void writeAudit({
+    tenantId,
+    userId: approvedBy,
+    action: 'update',
+    entityType: 'refund',
+    entityId: refundId,
+    description:
+      `Refund of ₹${refundAmount} approved and paid out by ${String(refundMethod).replace(/_/g, ' ')}` +
+      (refund.bill ? ` on bill ${refund.bill.billNumber}` : '') +
+      ` — receipt ${result.payoutReceipt.receiptNumber}`,
+    oldValues: { status: 'requested', billAmountPaid: toNumber(refund.bill?.amountPaid) },
+    newValues: {
+      status: 'approved',
+      payoutPaymentId: result.payout.id,
+      payoutReceiptNumber: result.payoutReceipt.receiptNumber,
+      billAmountPaid: result.newPaidAmount,
+      billStatus: result.newStatus,
+    },
+  });
+
+  // Callers (and the Refunds tab) expect the refund row itself.
+  return result.updatedRefund;
 }
 
 // --- Discounts ---
@@ -3919,6 +4061,28 @@ export async function setBillDiscount(
   });
 
   logger.info({ tenantId, billId, billDiscountAmt }, 'Bill-level discount applied');
+  void writeAudit({
+    tenantId,
+    userId: data.approvedBy,
+    action: 'update',
+    entityType: 'bill',
+    entityId: billId,
+    description:
+      `Concession on bill ${bill.billNumber}: ` +
+      `${data.discountType === 'percentage' ? `${data.discountValue}%` : `₹${data.discountValue}`} ` +
+      `(₹${r2(billDiscountAmt)} off)`,
+    reason: data.reason,
+    oldValues: {
+      discountAmount: toNumber(bill.discountAmount),
+      totalAmount: toNumber(bill.totalAmount),
+    },
+    newValues: {
+      discountAmount: r2(totalDiscount),
+      totalAmount: r2(totalAmount),
+      discountType: data.discountType,
+      discountValue: data.discountValue,
+    },
+  });
   return updated;
 }
 
@@ -4004,6 +4168,22 @@ export async function createSplitPayment(
   });
 
   logger.info({ tenantId, billId: data.billId, totalCollected: totalSplit }, 'Split payment recorded');
+  void writeAudit({
+    tenantId,
+    userId,
+    action: 'create',
+    entityType: 'payment',
+    entityId: result.payments[0]?.id ?? data.billId,
+    description:
+      `₹${totalSplit} collected on bill ${bill.billNumber} across ${data.splits.length} modes ` +
+      `(${data.splits.map((s) => `${s.paymentMethod.replace(/_/g, ' ')} ₹${s.amount}`).join(', ')})`,
+    newValues: {
+      billId: data.billId,
+      totalCollected: totalSplit,
+      splits: data.splits.map((s) => ({ amount: s.amount, paymentMethod: s.paymentMethod })),
+      paymentIds: result.payments.map((p) => p.id),
+    },
+  });
   return result;
 }
 
@@ -4110,6 +4290,23 @@ export async function createAdvancePayment(
   });
 
   logger.info({ tenantId, patientId: data.patientId, amount: data.amount }, 'Advance payment recorded');
+  void writeAudit({
+    tenantId,
+    userId,
+    action: 'create',
+    entityType: 'payment',
+    entityId: result.paymentId,
+    description:
+      `Advance of ₹${data.amount} collected from ${patient.firstName} ${patient.lastName} ` +
+      `by ${data.paymentMethod.replace(/_/g, ' ')} — receipt ${result.receiptNumber}`,
+    newValues: {
+      patientId: data.patientId,
+      amount: data.amount,
+      paymentMethod: data.paymentMethod,
+      paymentType: 'advance',
+      receiptNumber: result.receiptNumber,
+    },
+  });
   return result;
 }
 
@@ -4208,6 +4405,24 @@ export async function adjustAdvanceToBill(
   });
 
   logger.info({ tenantId, patientId: data.patientId, billId: data.billId, amount: data.amount }, 'Advance adjusted to bill');
+  void writeAudit({
+    tenantId,
+    userId,
+    action: 'create',
+    entityType: 'payment',
+    entityId: result.paymentId,
+    description:
+      `₹${data.amount} moved from the patient's advance onto bill ${bill.billNumber} ` +
+      `— receipt ${result.receiptNumber}`,
+    newValues: {
+      billId: data.billId,
+      patientId: data.patientId,
+      amount: data.amount,
+      source: 'advance',
+      receiptNumber: result.receiptNumber,
+      billBalanceAfter: result.newBalance,
+    },
+  });
   return result;
 }
 
@@ -4295,6 +4510,19 @@ export async function reversePayment(
   });
 
   logger.info({ tenantId, paymentId: data.paymentId, by: userId }, 'Payment reversed');
+  void writeAudit({
+    tenantId,
+    userId,
+    action: 'update',
+    entityType: 'payment',
+    entityId: payment.id,
+    description:
+      `Payment of ₹${toNumber(payment.amount)} reversed` +
+      (payment.bill ? ` on bill ${payment.bill.billNumber}` : ''),
+    reason: data.reason,
+    oldValues: { status: 'completed', amount: toNumber(payment.amount) },
+    newValues: { status: 'reversed' },
+  });
   return result;
 }
 
@@ -4369,6 +4597,17 @@ export async function cancelBill(
   });
 
   logger.info({ tenantId, billId, by: userId }, 'Bill cancelled');
+  void writeAudit({
+    tenantId,
+    userId,
+    action: 'update',
+    entityType: 'bill',
+    entityId: billId,
+    description: `Bill ${bill.billNumber} cancelled (₹${toNumber(bill.totalAmount)}) — cancellation receipt ${receiptNumber}`,
+    reason: data.reason,
+    oldValues: { status: bill.status, totalAmount: toNumber(bill.totalAmount) },
+    newValues: { status: 'cancelled', cancellationReceiptNumber: receiptNumber },
+  });
   return result;
 }
 
@@ -4395,6 +4634,17 @@ export async function rejectRefund(
     },
   });
   logger.info({ tenantId, refundId, by: rejectedBy }, 'Refund rejected');
+  void writeAudit({
+    tenantId,
+    userId: rejectedBy,
+    action: 'update',
+    entityType: 'refund',
+    entityId: refundId,
+    description: `Refund of ₹${toNumber(refund.amount)} rejected — no money paid out`,
+    reason,
+    oldValues: { status: 'requested' },
+    newValues: { status: 'rejected' },
+  });
   return updated;
 }
 
@@ -4511,6 +4761,9 @@ export async function getDayEndReport(tenantId: string, query: { date?: string }
     },
     include: {
       bill: { select: { billNumber: true, patient: { select: { firstName: true, lastName: true } } } },
+      // Who took (or handed back) the money — the counter runs on manual entry,
+      // so the cashier is part of the record, not metadata.
+      processor: { select: { id: true, firstName: true, lastName: true } },
     },
     orderBy: { paymentDate: 'asc' },
   });
@@ -4531,15 +4784,43 @@ export async function getDayEndReport(tenantId: string, query: { date?: string }
   }
 
   const byMethod: Record<string, number> = {};
+  const refundsByMethod: Record<string, number> = {};
   const byType: Record<string, number> = { regular: 0, advance: 0, refund: 0 };
+  const byCashier: Record<string, { name: string; collected: number; refunded: number }> = {};
   let collected = 0;
+  let refunded = 0;
   let reversed = 0;
   for (const p of payments) {
     const amt = toNumber(p.amount);
     if (p.status === 'completed') {
-      collected += amt;
-      byMethod[p.paymentMethod] = (byMethod[p.paymentMethod] ?? 0) + amt;
       byType[p.paymentType] = (byType[p.paymentType] ?? 0) + amt;
+
+      // A refund is cash going the other way. Counting it in `collected` — or in
+      // `byMethod`, which is what a cashier tallies the drawer against — would
+      // credit the counter with money it just handed back.
+      const isRefund = p.paymentType === 'refund';
+      if (isRefund) {
+        refunded += amt;
+        refundsByMethod[p.paymentMethod] = (refundsByMethod[p.paymentMethod] ?? 0) + amt;
+      } else {
+        collected += amt;
+        byMethod[p.paymentMethod] = (byMethod[p.paymentMethod] ?? 0) + amt;
+      }
+
+      // Per-cashier tally. With payments marked by hand this is the unit a
+      // shift actually reconciles on — whose drawer holds what.
+      if (p.processedBy) {
+        const who = byCashier[p.processedBy] ?? {
+          name: p.processor
+            ? `${p.processor.firstName} ${p.processor.lastName}`
+            : 'Unknown',
+          collected: 0,
+          refunded: 0,
+        };
+        if (isRefund) who.refunded += amt;
+        else who.collected += amt;
+        byCashier[p.processedBy] = who;
+      }
     } else if (p.status === 'reversed') {
       reversed += amt;
     }
@@ -4548,10 +4829,15 @@ export async function getDayEndReport(tenantId: string, query: { date?: string }
   return {
     date: dateStr,
     collected,
+    refunded,
+    // What the counter should actually be holding at close of day.
+    netCollection: r2(collected - refunded),
     reversed,
     billed,
     byMethod,
+    refundsByMethod,
     byType,
+    byCashier: Object.entries(byCashier).map(([userId, v]) => ({ userId, ...v })),
     byStatusBills,
     payments: payments.map((p) => ({
       id: p.id,
@@ -4565,6 +4851,9 @@ export async function getDayEndReport(tenantId: string, query: { date?: string }
       status: p.status,
       paymentDate: p.paymentDate,
       transactionId: p.transactionId,
+      cashier: p.processor
+        ? `${p.processor.firstName} ${p.processor.lastName}`
+        : null,
     })),
   };
 }
