@@ -36,6 +36,11 @@ otKitRoutes.post('/issues/request', authenticate, validate(requestKitSchema), co
 // Bulk issue + transit-lock and post-op reconcile + net-bill are pharmacy actions.
 otKitRoutes.post('/issues/issue', authenticate, requirePermission('pharmacy', 'create'), validate(issueKitSchema), controller.issueKit);
 otKitRoutes.post('/issues/reconcile', authenticate, requirePermission('pharmacy', 'update'), validate(reconcileKitSchema), controller.reconcileKit);
-otKitRoutes.patch('/issues/:id/cancel', authenticate, requirePermission('pharmacy', 'update'), validate(cancelKitSchema), controller.cancelKit);
+// Cancel is authenticated-only at the route because it covers two different
+// acts: the pharmacy pulling back an ISSUED kit (stock reversal), and the
+// requester withdrawing their own kit while it is still only a request. The
+// service tells them apart — it holds the pharmacy check for everything except
+// the second case.
+otKitRoutes.patch('/issues/:id/cancel', authenticate, validate(cancelKitSchema), controller.cancelKit);
 otKitRoutes.get('/issues', authenticate, validate(listIssuesQuerySchema), controller.listIssues);
 otKitRoutes.get('/issues/:id', authenticate, validate(issueIdParamSchema), controller.getIssue);

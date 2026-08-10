@@ -515,11 +515,22 @@ export async function reconcileKit(
 
 /** Cancel a kit. An issued kit reverses ALL issued stock back into active inventory. */
 export async function cancelKit(tenantId: string, userId: string, roles: string[], id: string, reason?: string) {
-  assertPharmacyOperator(roles, 'cancel an OT kit');
   const issue = await prisma.otKitIssue.findFirst({ where: { id, tenantId }, include: { items: true } });
   if (!issue) throw AppError.notFound('OT kit issue not found');
   if (issue.status === 'reconciled') throw AppError.badRequest('A reconciled kit cannot be cancelled');
   if (issue.status === 'cancelled') return issue;
+
+  // Withdrawing a request nobody has acted on yet is the requester's own
+  // business: a ward nurse who picked the wrong preference card should be able
+  // to undo it rather than telephone the pharmacy. Nothing has moved — the kit
+  // is still only a piece of paper.
+  //
+  // Once it is ISSUED, stock has physically left the pharmacy and putting it
+  // back is a pharmacy action, so that path stays pharmacy-only.
+  const isOwnPendingRequest = issue.status === 'requested' && issue.requestedById === userId;
+  if (!isOwnPendingRequest) {
+    assertPharmacyOperator(roles, 'cancel an OT kit');
+  }
 
   const result = await prisma.$transaction(async (tx) => {
     if (issue.status === 'issued') {
