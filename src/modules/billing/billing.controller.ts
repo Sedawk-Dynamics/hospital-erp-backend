@@ -490,7 +490,7 @@ export async function settleCredit(
 export async function createBill(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const tenantId = req.user!.tenantId;
-    const bill = await billingService.createBill(tenantId, req.body);
+    const bill = await billingService.createBill(tenantId, req.user!.userId, req.body);
     sendResponse({
       res,
       statusCode: 201,
@@ -579,7 +579,11 @@ export async function removeBillItem(
 export async function finalizeBill(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const tenantId = req.user!.tenantId;
-    const bill = await billingService.finalizeBill(tenantId, req.params.id as string);
+    const bill = await billingService.finalizeBill(
+      tenantId,
+      req.user!.userId,
+      req.params.id as string,
+    );
     sendResponse({
       res,
       message: 'Bill finalized successfully',
@@ -833,7 +837,7 @@ export async function createPayment(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const result = await billingService.createPayment(tenantId, req.body);
+    const result = await billingService.createPayment(tenantId, req.user!.userId, req.body);
     sendResponse({
       res,
       statusCode: 201,
@@ -863,7 +867,7 @@ export async function getPayments(req: AuthenticatedRequest, res: Response, next
 export async function createRefund(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const tenantId = req.user!.tenantId;
-    const refund = await billingService.createRefund(tenantId, req.body);
+    const refund = await billingService.createRefund(tenantId, req.user!.userId, req.body);
     sendResponse({
       res,
       statusCode: 201,

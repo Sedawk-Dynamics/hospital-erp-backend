@@ -4,7 +4,14 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
-import { getISTDateStr, formatDateTimeIST, istDayNumber } from '../../shared/date.utils';
+import {
+  getISTDateStr,
+  formatDateTimeIST,
+  istDayNumber,
+  istDayRange,
+  istDayStart,
+  istDayEnd,
+} from '../../shared/date.utils';
 import { normalizeAdmissionType } from '../../shared/admission-type';
 import {
   ACTIVE_ADMISSION_STATUS,
@@ -243,6 +250,183 @@ async function recalculateBillTotals(billId: string) {
   });
 }
 
+/**
+ * A patient's advance money lives on a sentinel `ADV-…` bill so it can reuse the
+ * Payment/Receipt machinery. It is a holding bucket, not something anyone was
+ * ever billed for, so it must be kept out of every bill list and revenue total —
+ * left in, it showed up in the Pending List as a phantom bill and inflated the
+ * day-end "Bills Generated" count and "Total Billed" figure.
+ */
+const NOT_ADVANCE_BUCKET = {
+  billNumber: { not: { startsWith: 'ADV-' } },
+} as const;
+
+/**
+ * What a bill has actually been paid, read from its own ledger.
+ *
+ * Collected = completed payments, EXCLUDING `refund`-type rows (those record
+ * cash leaving the drawer, not money coming in) and `advance`-type rows (those
+ * belong to the patient's advance bucket, not to a bill). Minus refunds that
+ * have been approved, which is money handed back.
+ *
+ * Deriving this instead of incrementing a stored figure is what makes
+ * settlement safe under concurrency — see {@link applyPaymentToBill}.
+ */
+async function computeBillPaid(
+  db: Prisma.TransactionClient | typeof prisma,
+  billId: string,
+): Promise<number> {
+  const [collected, refunded] = await Promise.all([
+    db.payment.aggregate({
+      where: {
+        billId,
+        status: 'completed',
+        paymentType: { notIn: ['refund', 'advance'] as any },
+      },
+      _sum: { amount: true },
+    }),
+    db.refund.aggregate({
+      where: { billId, status: { in: ['approved', 'processed'] as any } },
+      _sum: { amount: true },
+    }),
+  ]);
+
+  return toNumber(collected._sum.amount) - toNumber(refunded._sum.amount);
+}
+
+/**
+ * Re-settle a bill from its own payment ledger, inside a transaction.
+ *
+ * Every caller used to compute `amountPaid = <figure read before the
+ * transaction opened> + amount`. Two cashiers collecting against the same bill
+ * in the same moment both read the same starting figure, and the second write
+ * silently discarded the first — a receipt went across the counter for money
+ * the bill never recorded. A double-clicked Collect button did the same thing.
+ *
+ * Summing the ledger *inside* the transaction is self-correcting: whatever
+ * payment rows exist at commit time are exactly what the bill reflects, however
+ * the requests interleaved.
+ *
+ * Not for the `ADV-` advance bucket, whose `amountPaid` is a running balance
+ * that `adjustAdvanceToBill` draws down on purpose rather than a sum of its
+ * payments.
+ */
+async function applyPaymentToBill(tx: Prisma.TransactionClient, billId: string) {
+  const bill = await tx.bill.findUnique({
+    where: { id: billId },
+    select: { totalAmount: true, status: true },
+  });
+  if (!bill) throw AppError.notFound('Bill not found');
+
+  const paid = await computeBillPaid(tx, billId);
+  const total = toNumber(bill.totalAmount);
+  const balance = total - paid;
+
+  // draft / cancelled / refunded are states a payment does not move a bill out
+  // of — leave them exactly as they are.
+  const settled: string[] = ['draft', 'cancelled', 'refunded'];
+  const status = settled.includes(bill.status)
+    ? bill.status
+    : balance <= 0 && total > 0
+      ? 'paid'
+      : paid > 0
+        ? 'partially_paid'
+        : 'pending';
+
+  return tx.bill.update({
+    where: { id: billId },
+    data: {
+      amountPaid: paid,
+      balanceDue: Math.max(0, balance),
+      status: status as any,
+    },
+  });
+}
+
+/**
+ * Issue the receipt for a payment, inside the caller's transaction.
+ *
+ * Idempotent: `Receipt.paymentId` is unique, so a second call for the same
+ * payment returns the receipt that already exists rather than blowing up. That
+ * matters for the gateway paths, which can be driven twice by a webhook retry.
+ */
+async function issueReceiptForPayment(
+  tx: Prisma.TransactionClient,
+  tenantId: string,
+  paymentId: string,
+  amount: number,
+) {
+  const existing = await tx.receipt.findUnique({ where: { paymentId } });
+  if (existing) return existing;
+
+  const receiptNumber = await generateReceiptNumber(tenantId, tx);
+  return tx.receipt.create({
+    data: { tenantId, receiptNumber, paymentId, receiptDate: new Date(), amount },
+  });
+}
+
+/**
+ * Settle a payment that an online gateway has confirmed.
+ *
+ * The single entry point for every gateway callback — the Razorpay webhook, the
+ * checkout `handler` callback, and the patient portal's own verify route. They
+ * all used to settle by hand, and the webhook version was wrong twice over:
+ *
+ *  1. It never checked whether the payment was already `completed`. Razorpay
+ *     retries a webhook until it gets a 2xx and re-sends on replay, so one
+ *     payment could be credited to the bill two or three times.
+ *  2. It computed `balance = totalAmount − discountAmount − paid`, but
+ *     `totalAmount` is already net of discount, so every discounted bill paid
+ *     online was marked `paid` while the concession amount was still owed.
+ *
+ * Returning `alreadySettled` lets the caller log a replay instead of treating it
+ * as new money. Callers must still respond 2xx — a replay is not an error.
+ */
+export async function settleGatewayPayment(
+  paymentId: string,
+  gatewayPaymentId?: string,
+  webhookPayload?: unknown,
+): Promise<{ alreadySettled: boolean; billId: string | null }> {
+  return prisma.$transaction(async (tx) => {
+    const payment = await tx.payment.findUnique({ where: { id: paymentId } });
+    if (!payment) return { alreadySettled: false, billId: null };
+
+    if (payment.status === 'completed') {
+      // Keep the gateway reference fresh, but touch no money.
+      if (gatewayPaymentId && payment.transactionId !== gatewayPaymentId) {
+        await tx.payment.update({
+          where: { id: paymentId },
+          data: { transactionId: gatewayPaymentId },
+        });
+      }
+      return { alreadySettled: true, billId: payment.billId };
+    }
+
+    await tx.payment.update({
+      where: { id: paymentId },
+      data: {
+        status: 'completed',
+        ...(gatewayPaymentId ? { transactionId: gatewayPaymentId } : {}),
+      },
+    });
+
+    // Every counter payment gets a receipt; the gateway paths never did, so a
+    // patient who paid online had nothing in the Receipts tab to download.
+    await issueReceiptForPayment(tx, payment.tenantId, paymentId, toNumber(payment.amount));
+
+    await applyPaymentToBill(tx, payment.billId);
+
+    if (webhookPayload !== undefined) {
+      await tx.paymentTransfer.updateMany({
+        where: { paymentId },
+        data: { webhookPayload: webhookPayload as any },
+      });
+    }
+
+    return { alreadySettled: false, billId: payment.billId };
+  });
+}
+
 // --- Collection Summary ---
 
 export async function getCollectionSummary(
@@ -251,11 +435,15 @@ export async function getCollectionSummary(
 ) {
   const where: any = { tenantId, status: 'completed' };
 
+  // IST calendar-day bounds. Passing the bare date string to `new Date()` gave
+  // midnight UTC for BOTH ends, so a single-day query (startDate === endDate,
+  // which is what the Cash Counter sends every time it loads) asked for a
+  // one-millisecond window and reported zero collection all day.
   if (query.startDate) {
-    where.paymentDate = { ...where.paymentDate, gte: new Date(query.startDate) };
+    where.paymentDate = { ...where.paymentDate, gte: istDayStart(query.startDate) };
   }
   if (query.endDate) {
-    where.paymentDate = { ...where.paymentDate, lte: new Date(query.endDate) };
+    where.paymentDate = { ...where.paymentDate, lte: istDayEnd(query.endDate) };
   }
 
   const payments = await prisma.payment.findMany({ where });
@@ -321,14 +509,14 @@ export async function getCollectionSummary(
   // Bill-level aggregation
   const billWhere: any = { tenantId };
   if (query.startDate) {
-    billWhere.createdAt = { ...billWhere.createdAt, gte: new Date(query.startDate) };
+    billWhere.createdAt = { ...billWhere.createdAt, gte: istDayStart(query.startDate) };
   }
   if (query.endDate) {
-    billWhere.createdAt = { ...billWhere.createdAt, lte: new Date(query.endDate) };
+    billWhere.createdAt = { ...billWhere.createdAt, lte: istDayEnd(query.endDate) };
   }
 
   const bills = await prisma.bill.findMany({
-    where: { ...billWhere, status: { not: 'draft' } },
+    where: { ...billWhere, ...NOT_ADVANCE_BUCKET, status: { not: 'draft' } },
     select: { totalAmount: true, amountPaid: true, balanceDue: true },
   });
 
@@ -750,7 +938,7 @@ export async function deleteServiceTariff(tenantId: string, id: string) {
 
 // --- Bills ---
 
-export async function createBill(tenantId: string, data: CreateBillInput) {
+export async function createBill(tenantId: string, userId: string, data: CreateBillInput) {
   // Verify patient exists
   const patient = await prisma.patient.findFirst({
     where: { id: data.patientId, tenantId },
@@ -771,6 +959,10 @@ export async function createBill(tenantId: string, data: CreateBillInput) {
       admissionId: data.admissionId,
       billDate: new Date(),
       status: 'draft',
+      // The IP running bill already stamped this; the OP counter bill did not,
+      // so "who raised this bill" was unanswerable for most of the bills in the
+      // system.
+      generatedBy: userId,
       subtotal: 0,
       taxAmount: 0,
       discountAmount: 0,
@@ -794,7 +986,7 @@ export async function createBill(tenantId: string, data: CreateBillInput) {
 export async function getBills(tenantId: string, query: GetBillsQuery) {
   const { skip, take, page, limit } = getPaginationParams(query);
 
-  const where: any = { tenantId };
+  const where: any = { tenantId, ...NOT_ADVANCE_BUCKET };
 
   if (query.patientId) where.patientId = query.patientId;
   if (query.status) where.status = query.status;
@@ -803,10 +995,10 @@ export async function getBills(tenantId: string, query: GetBillsQuery) {
   else if (query.billType === 'op') where.admissionId = null;
 
   if (query.fromDate) {
-    where.createdAt = { ...where.createdAt, gte: new Date(query.fromDate) };
+    where.createdAt = { ...where.createdAt, gte: istDayStart(query.fromDate) };
   }
   if (query.toDate) {
-    where.createdAt = { ...where.createdAt, lte: new Date(query.toDate) };
+    where.createdAt = { ...where.createdAt, lte: istDayEnd(query.toDate) };
   }
 
   if (query.search) {
@@ -1020,7 +1212,7 @@ export async function removeBillItem(tenantId: string, billId: string, itemId: s
   logger.info({ tenantId, billId, itemId }, 'Bill item removed');
 }
 
-export async function finalizeBill(tenantId: string, billId: string) {
+export async function finalizeBill(tenantId: string, userId: string, billId: string) {
   const bill = await prisma.bill.findFirst({
     where: { id: billId, tenantId },
     include: { billItems: true },
@@ -1045,6 +1237,9 @@ export async function finalizeBill(tenantId: string, billId: string) {
     where: { id: billId },
     data: {
       status: 'pending',
+      // Finalising is the moment a draft becomes a demand for money — record
+      // who did it, which the column exists for and nothing was setting.
+      approvedBy: userId,
     },
     include: {
       patient: {
@@ -1114,7 +1309,11 @@ export async function reopenBill(tenantId: string, billId: string) {
 
 // --- Payments ---
 
-export async function createPayment(tenantId: string, data: CreatePaymentInput) {
+export async function createPayment(
+  tenantId: string,
+  userId: string,
+  data: CreatePaymentInput,
+) {
   const bill = await prisma.bill.findFirst({
     where: { id: data.billId, tenantId },
   });
@@ -1159,6 +1358,10 @@ export async function createPayment(tenantId: string, data: CreatePaymentInput) 
         notes: data.notes,
         status: 'completed',
         paymentDate: new Date(),
+        // Who took the money. Every other payment path already recorded this;
+        // the main counter path — by far the highest volume — did not, so the
+        // busiest cash records had no cashier attached to them.
+        processedBy: userId,
       },
     });
 
@@ -1173,21 +1376,7 @@ export async function createPayment(tenantId: string, data: CreatePaymentInput) 
       },
     });
 
-    // Update bill amounts
-    const currentPaid = toNumber(bill.amountPaid);
-    const newPaidAmount = currentPaid + data.amount;
-    const totalAmount = toNumber(bill.totalAmount);
-    const newBalanceDue = totalAmount - newPaidAmount;
-    const newStatus = newBalanceDue <= 0 ? 'paid' : 'partially_paid';
-
-    await tx.bill.update({
-      where: { id: data.billId },
-      data: {
-        amountPaid: newPaidAmount,
-        balanceDue: newBalanceDue,
-        status: newStatus,
-      },
-    });
+    await applyPaymentToBill(tx, data.billId);
 
     return { payment, receipt };
   });
@@ -1209,10 +1398,10 @@ export async function getPayments(tenantId: string, query: GetPaymentsQuery) {
   if (query.paymentMethod) where.paymentMethod = mapPaymentMethod(query.paymentMethod);
 
   if (query.fromDate) {
-    where.paymentDate = { ...where.paymentDate, gte: new Date(query.fromDate) };
+    where.paymentDate = { ...where.paymentDate, gte: istDayStart(query.fromDate) };
   }
   if (query.toDate) {
-    where.paymentDate = { ...where.paymentDate, lte: new Date(query.toDate) };
+    where.paymentDate = { ...where.paymentDate, lte: istDayEnd(query.toDate) };
   }
 
   const [payments, total] = await Promise.all([
@@ -1238,7 +1427,11 @@ export async function getPayments(tenantId: string, query: GetPaymentsQuery) {
 
 // --- Refunds ---
 
-export async function createRefund(tenantId: string, data: CreateRefundInput) {
+export async function createRefund(
+  tenantId: string,
+  userId: string,
+  data: CreateRefundInput,
+) {
   const payment = await prisma.payment.findFirst({
     where: { id: data.paymentId, tenantId, status: 'completed' },
     include: { bill: true },
@@ -1274,6 +1467,9 @@ export async function createRefund(tenantId: string, data: CreateRefundInput) {
       amount: data.amount,
       reason: data.reason,
       status: 'requested',
+      // Populates the Refunds tab's requester column, which was permanently
+      // blank because nothing ever wrote this.
+      requestedBy: userId,
     },
   });
 
@@ -2027,9 +2223,9 @@ export async function billOtRequest(
     billId = ipBill.id;
   } else {
     // OP: a dedicated, finalized surgery invoice (optionally collect payment below).
-    const bill = await createBill(tenantId, { patientId: req.patientId, visitId: req.visitId ?? undefined });
+    const bill = await createBill(tenantId, userId, { patientId: req.patientId, visitId: req.visitId ?? undefined });
     await pullChargesToBill(tenantId, bill.id, [otCharge]);
-    await finalizeBill(tenantId, bill.id);
+    await finalizeBill(tenantId, userId, bill.id);
     billId = bill.id;
   }
 
@@ -2039,7 +2235,7 @@ export async function billOtRequest(
   if (opts.collectPayment && billBefore && billBefore.status !== 'paid' && billBefore.status !== 'draft') {
     const due = toNumber(billBefore.balanceDue);
     if (due > 0) {
-      await createPayment(tenantId, {
+      await createPayment(tenantId, userId, {
         billId,
         amount: due,
         paymentMethod: (opts.paymentMethod ?? 'cash') as any,
@@ -2193,7 +2389,7 @@ export async function consolidateAdmissionBill(
     await recalculateBillTotals(bill.id);
     const draftItems = await prisma.billItem.count({ where: { billId: bill.id } });
     if (opts.finalize && draftItems > 0) {
-      await finalizeBill(tenantId, bill.id);
+      await finalizeBill(tenantId, userId, bill.id);
     }
   }
 
@@ -3798,19 +3994,13 @@ export async function createSplitPayment(
       payments.push({ id: payment.id, receiptId: receipt.id, amount: split.amount, method: split.paymentMethod });
     }
 
-    const newPaid = toNumber(bill.amountPaid) + totalSplit;
-    const total = toNumber(bill.totalAmount);
-    const newBalance = total - newPaid;
-    await tx.bill.update({
-      where: { id: data.billId },
-      data: {
-        amountPaid: newPaid,
-        balanceDue: Math.max(0, newBalance),
-        status: newBalance <= 0 ? 'paid' : 'partially_paid',
-      },
-    });
+    const settled = await applyPaymentToBill(tx, data.billId);
 
-    return { payments, totalCollected: totalSplit, newBalance: Math.max(0, newBalance) };
+    return {
+      payments,
+      totalCollected: totalSplit,
+      newBalance: toNumber(settled.balanceDue),
+    };
   });
 
   logger.info({ tenantId, billId: data.billId, totalCollected: totalSplit }, 'Split payment recorded');
@@ -3999,17 +4189,9 @@ export async function adjustAdvanceToBill(
       },
     });
 
-    // Lift bill totals
-    const newPaid = toNumber(bill.amountPaid) + data.amount;
-    const newBalance = toNumber(bill.totalAmount) - newPaid;
-    await tx.bill.update({
-      where: { id: data.billId },
-      data: {
-        amountPaid: newPaid,
-        balanceDue: Math.max(0, newBalance),
-        status: newBalance <= 0 ? 'paid' : 'partially_paid',
-      },
-    });
+    // Lift bill totals from the ledger the payment above just joined.
+    const settled = await applyPaymentToBill(tx, data.billId);
+    const newBalance = toNumber(settled.balanceDue);
 
     // Reduce advance bucket
     if (bucket) {
@@ -4254,8 +4436,8 @@ export async function listReceipts(
 ) {
   const { skip, take, page, limit } = getPaginationParams(query as any);
   const where: any = { tenantId };
-  if (query.fromDate) where.receiptDate = { ...where.receiptDate, gte: new Date(query.fromDate) };
-  if (query.toDate) where.receiptDate = { ...where.receiptDate, lte: new Date(query.toDate) };
+  if (query.fromDate) where.receiptDate = { ...where.receiptDate, gte: istDayStart(query.fromDate) };
+  if (query.toDate) where.receiptDate = { ...where.receiptDate, lte: istDayEnd(query.toDate) };
 
   // Patient/bill filters require joining via payment
   const paymentFilter: any = {};
@@ -4315,10 +4497,12 @@ export async function getReceiptById(tenantId: string, receiptId: string) {
 // --- Day-end snapshot ---
 
 export async function getDayEndReport(tenantId: string, query: { date?: string }) {
+  // `getISTDateStr()` returns the compact YYYYMMDD used for bill numbers, which
+  // is not a parseable date literal — building the bounds by hand made the
+  // no-argument call (a cron day-end job, a report, the mobile client) produce
+  // an Invalid Date. istDayRange normalises both shapes.
   const dateStr = query.date ?? getISTDateStr();
-  // Convert IST date to UTC bounds — keep it simple by using the day strings
-  const start = new Date(`${dateStr}T00:00:00.000+05:30`);
-  const end = new Date(`${dateStr}T23:59:59.999+05:30`);
+  const { start, end } = istDayRange(dateStr);
 
   const payments = await prisma.payment.findMany({
     where: {
@@ -4332,7 +4516,7 @@ export async function getDayEndReport(tenantId: string, query: { date?: string }
   });
 
   const billsToday = await prisma.bill.findMany({
-    where: { tenantId, createdAt: { gte: start, lte: end } },
+    where: { tenantId, ...NOT_ADVANCE_BUCKET, createdAt: { gte: start, lte: end } },
     select: { id: true, status: true, totalAmount: true, amountPaid: true, balanceDue: true },
   });
 

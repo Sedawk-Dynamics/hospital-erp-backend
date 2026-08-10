@@ -13,7 +13,9 @@ import {
   applyDiscount,
   getServiceTariffs,
   getBillById,
+  getBills,
   adjustAdvanceToBill,
+  settleGatewayPayment,
 } from '../../../../src/modules/billing/billing.service';
 
 // ─── Extend mocks that setup.ts does not provide ───
@@ -27,6 +29,10 @@ import {
 // ─── Shared fixtures ───
 
 const TENANT_ID = 'tenant-1';
+
+// The acting user. Money-touching calls take this so the record carries who did
+// it — generatedBy / processedBy / requestedBy / approvedBy.
+const USER_ID = 'user-cashier-1';
 
 const mockPatient = {
   id: 'patient-1',
@@ -100,6 +106,16 @@ function mockRecalculate(
 describe('BillingService', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+
+    // clearAllMocks wipes recorded calls but KEEPS implementations, so a
+    // hand-rolled `tx` stub set up by one describe leaks into every describe
+    // that runs after it — and a stub carrying two models silently starves any
+    // later transaction body that touches a third. Restore the shared setup's
+    // behaviour each time: the callback gets the prisma proxy itself, so
+    // `tx.<anyModel>` resolves exactly as `prisma.<anyModel>` does.
+    (prisma.$transaction as any).mockImplementation((arg: any) =>
+      typeof arg === 'function' ? arg(prisma) : Promise.all(arg ?? []),
+    );
   });
 
   // ═══════════════════════════════════════════
@@ -202,7 +218,7 @@ describe('BillingService', () => {
       };
       vi.mocked(prisma.bill.create).mockResolvedValue(mockCreatedBill as any);
 
-      const result = await createBill(TENANT_ID, { patientId: 'patient-1' });
+      const result = await createBill(TENANT_ID, USER_ID, { patientId: 'patient-1' });
 
       expect(result).toEqual(mockCreatedBill);
       expect(prisma.bill.create).toHaveBeenCalledWith(
@@ -224,7 +240,7 @@ describe('BillingService', () => {
     it('should throw notFound if patient does not exist', async () => {
       vi.mocked(prisma.patient.findFirst).mockResolvedValue(null);
 
-      await expect(createBill(TENANT_ID, { patientId: 'no-such-patient' })).rejects.toThrow(
+      await expect(createBill(TENANT_ID, USER_ID, { patientId: 'no-such-patient' })).rejects.toThrow(
         'Patient not found',
       );
 
@@ -395,7 +411,7 @@ describe('BillingService', () => {
       };
       vi.mocked(prisma.bill.update).mockResolvedValue(finalizedBill as any);
 
-      const result = await finalizeBill(TENANT_ID, 'bill-1');
+      const result = await finalizeBill(TENANT_ID, USER_ID, 'bill-1');
 
       expect(result.status).toBe('pending');
       // The second update call is the finalize (first is from recalculate)
@@ -415,7 +431,7 @@ describe('BillingService', () => {
         billItems: [mockBillItem],
       } as any);
 
-      await expect(finalizeBill(TENANT_ID, 'bill-1')).rejects.toThrow(
+      await expect(finalizeBill(TENANT_ID, USER_ID, 'bill-1')).rejects.toThrow(
         'Only draft bills can be finalized',
       );
     });
@@ -426,7 +442,7 @@ describe('BillingService', () => {
         billItems: [],
       } as any);
 
-      await expect(finalizeBill(TENANT_ID, 'bill-1')).rejects.toThrow(
+      await expect(finalizeBill(TENANT_ID, USER_ID, 'bill-1')).rejects.toThrow(
         'Cannot finalize a bill with no items',
       );
     });
@@ -434,7 +450,7 @@ describe('BillingService', () => {
     it('should throw notFound if bill does not exist for finalization', async () => {
       vi.mocked(prisma.bill.findFirst).mockResolvedValue(null);
 
-      await expect(finalizeBill(TENANT_ID, 'no-bill')).rejects.toThrow('Bill not found');
+      await expect(finalizeBill(TENANT_ID, USER_ID, 'no-bill')).rejects.toThrow('Bill not found');
     });
   });
 
@@ -442,47 +458,51 @@ describe('BillingService', () => {
   // createPayment
   // ═══════════════════════════════════════════
   describe('createPayment', () => {
+    // Deliberately NO $transaction override. The shared setup hands the callback
+    // the prisma proxy itself, so the transaction body runs against the same
+    // mocks as everything else. That matters now: settlement reads the payment
+    // ledger *inside* the transaction, which the hand-rolled `tx` stub this
+    // suite used to build (payment.create / receipt.create / bill.update only)
+    // could never exercise — the happy path was passing without running.
     beforeEach(() => {
-      // Mock $transaction to pass through a mock tx with the same structure as prisma
-      vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
-        const tx = {
-          payment: {
-            create: vi.fn().mockResolvedValue({
-              id: 'payment-1',
-              tenantId: TENANT_ID,
-              billId: 'bill-1',
-              patientId: 'patient-1',
-              amount: 1100,
-              paymentMethod: 'cash',
-              status: 'completed',
-            }),
-          },
-          receipt: {
-            create: vi.fn().mockResolvedValue({
-              id: 'receipt-1',
-              receiptNumber: 'RCP-20260309-0001',
-              amount: 1100,
-            }),
-          },
-          bill: {
-            update: vi.fn().mockResolvedValue({}),
-          },
-        };
-        return fn(tx);
-      });
+      vi.mocked(prisma.receipt.findFirst).mockResolvedValue(null); // receipt numbering
+      vi.mocked(prisma.payment.create).mockResolvedValue({
+        id: 'payment-1',
+        billId: 'bill-1',
+        amount: 1100,
+        status: 'completed',
+      } as any);
+      vi.mocked(prisma.receipt.create).mockResolvedValue({
+        id: 'receipt-1',
+        receiptNumber: 'RCP-20260309-0001',
+      } as any);
+      vi.mocked(prisma.bill.update).mockResolvedValue({} as any);
     });
 
-    it('should create payment and mark bill as paid when fully paid', async () => {
-      vi.mocked(prisma.bill.findFirst).mockResolvedValue({
-        ...mockBillPending,
-        amountPaid: 0,
-        balanceDue: 1100,
+    /**
+     * Stub what `applyPaymentToBill` reads: the bill's total, and the ledger it
+     * settles from — payments collected, less refunds already approved.
+     */
+    function mockLedger(opts: { total: number; collected: number; refunded?: number }) {
+      vi.mocked(prisma.bill.findUnique).mockResolvedValue({
+        totalAmount: opts.total,
+        status: 'pending',
       } as any);
-      // generateReceiptNumber mocks
-      vi.mocked(prisma.receipt.create).mockResolvedValue({} as any);
-      (prisma as any).receipt.findFirst = vi.fn().mockResolvedValue(null);
+      vi.mocked(prisma.payment.aggregate).mockResolvedValue({
+        _sum: { amount: opts.collected },
+      } as any);
+      vi.mocked(prisma.refund.aggregate).mockResolvedValue({
+        _sum: { amount: opts.refunded ?? 0 },
+      } as any);
+    }
 
-      const result = await createPayment(TENANT_ID, {
+    const pendingBill = { ...mockBillPending, amountPaid: 0, balanceDue: 1100 };
+
+    it('records the cashier on the payment', async () => {
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue(pendingBill as any);
+      mockLedger({ total: 1100, collected: 1100 });
+
+      const result = await createPayment(TENANT_ID, USER_ID, {
         billId: 'bill-1',
         amount: 1100,
         paymentMethod: 'cash',
@@ -490,58 +510,85 @@ describe('BillingService', () => {
 
       expect(result.payment).toBeDefined();
       expect(result.receipt).toBeDefined();
-      expect(result.payment.amount).toBe(1100);
-      expect(result.payment.status).toBe('completed');
+      // The counter path used to omit processedBy, leaving the highest-volume
+      // cash records with nobody attached to them.
+      expect(prisma.payment.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          processedBy: USER_ID,
+          amount: 1100,
+          status: 'completed',
+        }),
+      });
     });
 
-    it('should mark bill as partially_paid when not fully paid', async () => {
-      vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
-        const tx = {
-          payment: {
-            create: vi.fn().mockResolvedValue({
-              id: 'payment-2',
-              tenantId: TENANT_ID,
-              billId: 'bill-1',
-              patientId: 'patient-1',
-              amount: 500,
-              paymentMethod: 'cash',
-              status: 'completed',
-            }),
-          },
-          receipt: {
-            create: vi.fn().mockResolvedValue({
-              id: 'receipt-2',
-              receiptNumber: 'RCP-20260309-0002',
-              amount: 500,
-            }),
-          },
-          bill: {
-            update: vi.fn().mockResolvedValue({}),
-          },
-        };
-        return fn(tx);
+    it('settles the bill as paid when the ledger covers the total', async () => {
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue(pendingBill as any);
+      mockLedger({ total: 1100, collected: 1100 });
+
+      await createPayment(TENANT_ID, USER_ID, {
+        billId: 'bill-1',
+        amount: 1100,
+        paymentMethod: 'cash',
       });
 
-      vi.mocked(prisma.bill.findFirst).mockResolvedValue({
-        ...mockBillPending,
-        amountPaid: 0,
-        balanceDue: 1100,
-      } as any);
-      (prisma as any).receipt.findFirst = vi.fn().mockResolvedValue(null);
+      expect(prisma.bill.update).toHaveBeenCalledWith({
+        where: { id: 'bill-1' },
+        data: { amountPaid: 1100, balanceDue: 0, status: 'paid' },
+      });
+    });
 
-      const result = await createPayment(TENANT_ID, {
+    it('settles as partially_paid when the ledger is short of the total', async () => {
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue(pendingBill as any);
+      mockLedger({ total: 1100, collected: 500 });
+
+      await createPayment(TENANT_ID, USER_ID, {
         billId: 'bill-1',
         amount: 500,
         paymentMethod: 'cash',
       });
 
-      expect(result.payment.amount).toBe(500);
+      expect(prisma.bill.update).toHaveBeenCalledWith({
+        where: { id: 'bill-1' },
+        data: { amountPaid: 500, balanceDue: 600, status: 'partially_paid' },
+      });
+    });
 
-      // Verify the bill.update inside transaction was called with partially_paid
-      const txFn = vi.mocked(prisma.$transaction).mock.calls[0][0] as any;
-      // The $transaction mock already ran; check the tx.bill.update call
-      // We verify via the result which came through the mock
-      expect(result.payment.status).toBe('completed');
+    it('trusts the ledger over the amountPaid it read before the transaction', async () => {
+      // The concurrency regression. Two cashiers collect against the same bill
+      // at once; both read amountPaid = 0 before their transaction opens. The
+      // old code wrote `thatStaleZero + ownAmount`, so whichever committed
+      // second erased the other's money. Settlement must reflect every payment
+      // row that exists at commit time — here ₹600 of our own plus ₹500 the
+      // other cashier already committed.
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue(pendingBill as any);
+      mockLedger({ total: 1100, collected: 1100 });
+
+      await createPayment(TENANT_ID, USER_ID, {
+        billId: 'bill-1',
+        amount: 600,
+        paymentMethod: 'cash',
+      });
+
+      expect(prisma.bill.update).toHaveBeenCalledWith({
+        where: { id: 'bill-1' },
+        data: { amountPaid: 1100, balanceDue: 0, status: 'paid' },
+      });
+    });
+
+    it('nets approved refunds out of what the bill counts as paid', async () => {
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue(pendingBill as any);
+      mockLedger({ total: 1100, collected: 1100, refunded: 400 });
+
+      await createPayment(TENANT_ID, USER_ID, {
+        billId: 'bill-1',
+        amount: 100,
+        paymentMethod: 'cash',
+      });
+
+      expect(prisma.bill.update).toHaveBeenCalledWith({
+        where: { id: 'bill-1' },
+        data: { amountPaid: 700, balanceDue: 400, status: 'partially_paid' },
+      });
     });
 
     it('should throw if payment exceeds bill balance due', async () => {
@@ -552,7 +599,7 @@ describe('BillingService', () => {
       } as any);
 
       await expect(
-        createPayment(TENANT_ID, {
+        createPayment(TENANT_ID, USER_ID, {
           billId: 'bill-1',
           amount: 600,
           paymentMethod: 'cash',
@@ -564,7 +611,7 @@ describe('BillingService', () => {
       vi.mocked(prisma.bill.findFirst).mockResolvedValue(mockBillDraft as any);
 
       await expect(
-        createPayment(TENANT_ID, {
+        createPayment(TENANT_ID, USER_ID, {
           billId: 'bill-1',
           amount: 100,
           paymentMethod: 'cash',
@@ -581,7 +628,7 @@ describe('BillingService', () => {
       } as any);
 
       await expect(
-        createPayment(TENANT_ID, {
+        createPayment(TENANT_ID, USER_ID, {
           billId: 'bill-1',
           amount: 100,
           paymentMethod: 'cash',
@@ -593,7 +640,7 @@ describe('BillingService', () => {
       vi.mocked(prisma.bill.findFirst).mockResolvedValue(null);
 
       await expect(
-        createPayment(TENANT_ID, {
+        createPayment(TENANT_ID, USER_ID, {
           billId: 'no-bill',
           amount: 100,
           paymentMethod: 'cash',
@@ -628,7 +675,7 @@ describe('BillingService', () => {
         status: 'requested',
       } as any);
 
-      const result = await createRefund(TENANT_ID, {
+      const result = await createRefund(TENANT_ID, USER_ID, {
         paymentId: 'payment-1',
         amount: 500,
         reason: 'Overcharge',
@@ -653,7 +700,7 @@ describe('BillingService', () => {
       vi.mocked((prisma.payment as any).findFirst).mockResolvedValue(null);
 
       await expect(
-        createRefund(TENANT_ID, {
+        createRefund(TENANT_ID, USER_ID, {
           paymentId: 'no-payment',
           amount: 100,
           reason: 'Test',
@@ -672,7 +719,7 @@ describe('BillingService', () => {
       vi.mocked(prisma.refund.findMany).mockResolvedValue([]);
 
       await expect(
-        createRefund(TENANT_ID, {
+        createRefund(TENANT_ID, USER_ID, {
           paymentId: 'payment-1',
           amount: 600,
           reason: 'Too much',
@@ -899,6 +946,153 @@ describe('BillingService', () => {
           amount: 0,
         }),
       ).rejects.toThrow('Amount must be > 0');
+    });
+  });
+
+  // ═══════════════════════════════════════════
+  // settleGatewayPayment
+  // ═══════════════════════════════════════════
+  // Razorpay only reaches this system from the patient portal and the SaaS
+  // subscription checkout — the hospital counter marks payments by hand. Low
+  // volume, but it is real money and the gateway drives it twice by design:
+  // the checkout callback verifies, and the webhook fires independently and
+  // retries until it gets a 2xx.
+  describe('settleGatewayPayment', () => {
+    const pendingGatewayPayment = {
+      id: 'payment-online-1',
+      tenantId: TENANT_ID,
+      billId: 'bill-1',
+      amount: 1100,
+      status: 'pending',
+      transactionId: null,
+    };
+
+    beforeEach(() => {
+      vi.mocked(prisma.receipt.findFirst).mockResolvedValue(null);
+      vi.mocked(prisma.receipt.findUnique).mockResolvedValue(null);
+      vi.mocked(prisma.receipt.create).mockResolvedValue({
+        id: 'receipt-online-1',
+        receiptNumber: 'RCP-20260810-0001',
+      } as any);
+      vi.mocked(prisma.payment.update).mockResolvedValue({} as any);
+      vi.mocked(prisma.bill.update).mockResolvedValue({} as any);
+      vi.mocked(prisma.bill.findUnique).mockResolvedValue({
+        totalAmount: 1100,
+        status: 'pending',
+      } as any);
+      vi.mocked(prisma.payment.aggregate).mockResolvedValue({
+        _sum: { amount: 1100 },
+      } as any);
+      vi.mocked(prisma.refund.aggregate).mockResolvedValue({ _sum: { amount: 0 } } as any);
+    });
+
+    it('settles a pending payment and issues its receipt', async () => {
+      vi.mocked(prisma.payment.findUnique).mockResolvedValue(pendingGatewayPayment as any);
+
+      const result = await settleGatewayPayment('payment-online-1', 'pay_rzp_abc');
+
+      expect(result).toEqual({ alreadySettled: false, billId: 'bill-1' });
+      expect(prisma.payment.update).toHaveBeenCalledWith({
+        where: { id: 'payment-online-1' },
+        data: { status: 'completed', transactionId: 'pay_rzp_abc' },
+      });
+      // Counter payments always produced a receipt; the gateway paths never
+      // did, so a patient who paid online had nothing to download.
+      expect(prisma.receipt.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ paymentId: 'payment-online-1', amount: 1100 }),
+      });
+      expect(prisma.bill.update).toHaveBeenCalledWith({
+        where: { id: 'bill-1' },
+        data: { amountPaid: 1100, balanceDue: 0, status: 'paid' },
+      });
+    });
+
+    it('credits the bill once when the webhook is replayed', async () => {
+      // The headline gateway bug: `payment.captured` added the amount to
+      // bill.amountPaid with no check that the payment was already completed,
+      // so a retried or replayed webhook credited the same money two or three
+      // times over.
+      vi.mocked(prisma.payment.findUnique).mockResolvedValue({
+        ...pendingGatewayPayment,
+        status: 'completed',
+        transactionId: 'pay_rzp_abc',
+      } as any);
+
+      const result = await settleGatewayPayment('payment-online-1', 'pay_rzp_abc');
+
+      expect(result).toEqual({ alreadySettled: true, billId: 'bill-1' });
+      expect(prisma.bill.update).not.toHaveBeenCalled();
+      expect(prisma.receipt.create).not.toHaveBeenCalled();
+      expect(prisma.payment.update).not.toHaveBeenCalled();
+    });
+
+    it('does not double-subtract the discount when settling', async () => {
+      // totalAmount is already net of discount — recalculateBillTotals stores
+      // `subtotal − discount + tax`. The webhook subtracted discountAmount a
+      // second time, so a discounted bill paid online flipped to `paid` while
+      // the concession amount was still owed. Settling from the ledger against
+      // totalAmount alone is what makes that impossible.
+      vi.mocked(prisma.payment.findUnique).mockResolvedValue(pendingGatewayPayment as any);
+      vi.mocked(prisma.bill.findUnique).mockResolvedValue({
+        totalAmount: 900, // ₹1000 of items less a ₹100 concession
+        status: 'pending',
+      } as any);
+      vi.mocked(prisma.payment.aggregate).mockResolvedValue({ _sum: { amount: 800 } } as any);
+
+      await settleGatewayPayment('payment-online-1', 'pay_rzp_abc');
+
+      // ₹100 still owed. The old arithmetic gave 900 − 100 − 800 = 0 → 'paid'.
+      expect(prisma.bill.update).toHaveBeenCalledWith({
+        where: { id: 'bill-1' },
+        data: { amountPaid: 800, balanceDue: 100, status: 'partially_paid' },
+      });
+    });
+
+    it('reuses an existing receipt rather than failing on the unique paymentId', async () => {
+      vi.mocked(prisma.payment.findUnique).mockResolvedValue(pendingGatewayPayment as any);
+      vi.mocked(prisma.receipt.findUnique).mockResolvedValue({
+        id: 'receipt-online-1',
+        receiptNumber: 'RCP-20260810-0001',
+      } as any);
+
+      await settleGatewayPayment('payment-online-1', 'pay_rzp_abc');
+
+      expect(prisma.receipt.create).not.toHaveBeenCalled();
+      expect(prisma.bill.update).toHaveBeenCalled();
+    });
+
+    it('is a no-op for an unknown payment', async () => {
+      vi.mocked(prisma.payment.findUnique).mockResolvedValue(null);
+
+      const result = await settleGatewayPayment('no-such-payment');
+
+      expect(result).toEqual({ alreadySettled: false, billId: null });
+      expect(prisma.bill.update).not.toHaveBeenCalled();
+    });
+  });
+
+  // ═══════════════════════════════════════════
+  // getBills — advance bucket exclusion
+  // ═══════════════════════════════════════════
+  describe('getBills', () => {
+    it('keeps the ADV- advance bucket out of every bill list', async () => {
+      // A patient's advance money is parked on a sentinel ADV- bill so it can
+      // reuse the Payment/Receipt machinery. Nobody was ever billed for it, so
+      // it must not surface as a bill — left in, it appeared in the Pending
+      // List as a phantom row and inflated the day-end revenue totals.
+      vi.mocked(prisma.bill.findMany).mockResolvedValue([]);
+      vi.mocked(prisma.bill.count).mockResolvedValue(0);
+
+      await getBills(TENANT_ID, { page: 1, limit: 20 });
+
+      expect(prisma.bill.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            tenantId: TENANT_ID,
+            billNumber: { not: { startsWith: 'ADV-' } },
+          }),
+        }),
+      );
     });
   });
 });

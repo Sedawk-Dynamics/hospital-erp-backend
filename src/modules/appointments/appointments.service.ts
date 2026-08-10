@@ -1939,7 +1939,7 @@ export async function frontdeskCheckout(
     // Reuse the billing module's payment path so the Payment row, the receipt
     // and the bill's amountPaid/balanceDue/status all move together.
     const amount = data.amount != null ? data.amount : balanceDue;
-    const { payment, receipt } = await createPayment(tenantId, {
+    const { payment, receipt } = await createPayment(tenantId, userId, {
       billId: bill.id,
       amount,
       paymentMethod: data.paymentMethod ?? 'cash',

@@ -5,6 +5,7 @@ import { razorpay } from '../../config/razorpay';
 import { env } from '../../config/env';
 import { AppError } from '../../shared/appError';
 import { commissionService } from '../commission/commission.service';
+import { settleGatewayPayment } from '../billing/billing.service';
 import { VerifyOnlinePaymentInput } from './online-payments.validation';
 
 async function createOnlineOrder(tenantId: string, userId: string, data: { billId: string }) {
@@ -113,7 +114,17 @@ async function verifyOnlinePayment(data: VerifyOnlinePaymentInput) {
     data: { razorpayPaymentId: data.razorpay_payment_id },
   });
 
-  return { verified: true, transferId: transfer.id };
+  // Settle here too, not only in the webhook. The signature above is proof the
+  // gateway took the money, and a server Razorpay cannot reach — local, staging
+  // behind a firewall, or during a webhook outage — would otherwise leave the
+  // patient charged and the bill open forever. Settlement is idempotent, so
+  // whichever of the two arrives second is a no-op.
+  const { alreadySettled } = await settleGatewayPayment(
+    transfer.paymentId,
+    data.razorpay_payment_id,
+  );
+
+  return { verified: true, transferId: transfer.id, alreadySettled };
 }
 
 async function handleWebhook(rawBody: string, signature: string) {
@@ -145,35 +156,27 @@ async function handleWebhook(rawBody: string, signature: string) {
         return;
       }
 
-      await prisma.$transaction(async (tx) => {
-        await tx.payment.update({
-          where: { id: transfer.paymentId },
-          data: { status: 'completed', transactionId: rzpPayment.id },
-        });
+      const { alreadySettled } = await settleGatewayPayment(
+        transfer.paymentId,
+        rzpPayment.id,
+        payload,
+      );
 
-        const payment = await tx.payment.findUnique({ where: { id: transfer.paymentId } });
-        const bill = await tx.bill.findUnique({ where: { id: payment!.billId } });
-
-        if (bill) {
-          const newAmountPaid = Number(bill.amountPaid) + Number(transfer.totalAmount);
-          const newBalanceDue = Number(bill.totalAmount) - Number(bill.discountAmount) - newAmountPaid;
-          const newStatus = newBalanceDue <= 0 ? 'paid' : 'partially_paid';
-
-          await tx.bill.update({
-            where: { id: bill.id },
-            data: {
-              amountPaid: newAmountPaid,
-              balanceDue: Math.max(0, newBalanceDue),
-              status: newStatus,
-            },
-          });
-        }
-
-        await tx.paymentTransfer.update({
-          where: { id: transfer.id },
-          data: { razorpayPaymentId: rzpPayment.id, webhookPayload: payload },
-        });
+      await prisma.paymentTransfer.update({
+        where: { id: transfer.id },
+        data: { razorpayPaymentId: rzpPayment.id },
       });
+
+      if (alreadySettled) {
+        // A retry or replay of a payment we have already banked. Fall through
+        // to a 2xx so Razorpay stops re-sending, but do not pay the hospital
+        // a second time.
+        logger.info(
+          { orderId, paymentId: transfer.paymentId },
+          'Razorpay webhook replayed for a settled payment — bill left untouched',
+        );
+        break;
+      }
 
       // Initiate transfer to hospital's linked account
       const tenant = await prisma.tenant.findUnique({ where: { id: transfer.tenantId } });

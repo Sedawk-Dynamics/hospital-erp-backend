@@ -5,6 +5,7 @@ import { env } from '../../config/env';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { commissionService } from '../commission/commission.service';
+import { settleGatewayPayment } from '../billing/billing.service';
 import { getAvailableSlots } from '../appointments/appointments.service';
 
 // ────────────────────────────────────────────────────────────
@@ -2344,6 +2345,12 @@ export async function verifyPatientPayment(data: {
     where: { id: transfer.id },
     data: { razorpayPaymentId: data.razorpay_payment_id },
   });
+
+  // Settle the payment and the bill it belongs to. The signature above proves
+  // the gateway took the money; waiting only on the webhook meant a server
+  // Razorpay could not reach left the patient charged and the bill open.
+  // Idempotent, so the webhook arriving later is a no-op.
+  await settleGatewayPayment(transfer.paymentId, data.razorpay_payment_id);
 
   // Confirm appointment (pending_payment → booked) via the payment record
   const payment = await prisma.payment.findUnique({
