@@ -4,7 +4,7 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
-import { istDayStart, istDayEnd } from '../../shared/date.utils';
+import { istDayStart, istDayEnd, istDayRange } from '../../shared/date.utils';
 import type {
   CreateTicketInput,
   UpdateTicketInput,
@@ -857,24 +857,26 @@ export async function getOTRequests(
     );
   }
 
-  // `date` filter searches both scheduled and preferred date (for unscheduled requests)
+  // `date` filter searches both scheduled and preferred date (for unscheduled
+  // requests). Bounded in IST — `new Date('2026-08-11')` is midnight UTC, which
+  // is 05:30 IST, so the window used to run from half past five in the morning
+  // to half past five the next morning: it dropped that day's early-morning
+  // theatre list and pulled in the following morning's.
   if ((query as any).date) {
-    const day = new Date((query as any).date);
-    const next = new Date(day);
-    next.setDate(next.getDate() + 1);
+    const { start, end } = istDayRange((query as any).date);
     where.AND.push({
       OR: [
-        { scheduledDate: { gte: day, lt: next } },
-        { AND: [{ scheduledDate: null }, { preferredDate: { gte: day, lt: next } }] },
+        { scheduledDate: { gte: start, lte: end } },
+        { AND: [{ scheduledDate: null }, { preferredDate: { gte: start, lte: end } }] },
       ],
     });
   }
 
   if (query.fromDate) {
-    where.createdAt = { ...where.createdAt, gte: new Date(query.fromDate) };
+    where.createdAt = { ...where.createdAt, gte: istDayStart(query.fromDate) };
   }
   if (query.toDate) {
-    where.createdAt = { ...where.createdAt, lte: new Date(query.toDate) };
+    where.createdAt = { ...where.createdAt, lte: istDayEnd(query.toDate) };
   }
 
   if (query.search) {
@@ -1301,9 +1303,13 @@ export interface OtAnalyticsQuery {
 }
 
 export async function getOTAnalytics(tenantId: string, query: OtAnalyticsQuery) {
-  const toDate = query.toDate ? new Date(query.toDate) : new Date();
+  // Whole IST days at both ends. Taken literally, `new Date(toDate)` is midnight
+  // UTC, so every surgery on the last day of the range fell outside it — the
+  // report silently understated the most recent day, which is the one anyone
+  // looking at OT utilisation cares about most.
+  const toDate = query.toDate ? istDayEnd(query.toDate) : istDayEnd();
   const fromDate = query.fromDate
-    ? new Date(query.fromDate)
+    ? istDayStart(query.fromDate)
     : (() => {
         const d = new Date(toDate);
         d.setDate(d.getDate() - 30);
@@ -1615,11 +1621,13 @@ export async function getIncidents(tenantId: string, query: GetIncidentsQuery) {
     where.incidentType = query.incidentType;
   }
 
+  // IST day bounds — an incident logged on the end date itself used to fall
+  // outside the range, so "show me everything up to today" hid today's.
   if (query.fromDate) {
-    where.createdAt = { ...where.createdAt, gte: new Date(query.fromDate) };
+    where.createdAt = { ...where.createdAt, gte: istDayStart(query.fromDate) };
   }
   if (query.toDate) {
-    where.createdAt = { ...where.createdAt, lte: new Date(query.toDate) };
+    where.createdAt = { ...where.createdAt, lte: istDayEnd(query.toDate) };
   }
 
   if (query.search) {
