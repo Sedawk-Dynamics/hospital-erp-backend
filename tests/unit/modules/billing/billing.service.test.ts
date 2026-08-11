@@ -18,6 +18,7 @@ import {
   adjustAdvanceToBill,
   settleGatewayPayment,
   pullChargesToBill,
+  getPatientCharges,
 } from '../../../../src/modules/billing/billing.service';
 
 // ─── Extend mocks that setup.ts does not provide ───
@@ -1245,6 +1246,104 @@ describe('BillingService', () => {
       expect(prisma.billItem.create).toHaveBeenCalledWith({
         data: expect.objectContaining({ taxAmount: 0, totalAmount: 300 }),
       });
+    });
+  });
+
+  // ═══════════════════════════════════════════
+  // GST resolution — India: healthcare is exempt, with narrow exceptions
+  // ═══════════════════════════════════════════
+  describe('room GST', () => {
+    // In India room rent is exempt EXCEPT non-ICU accommodation above
+    // ₹5,000/day, which attracts 5% — and on the whole day's rent, not just the
+    // part above the line. ICU is exempt at any rate.
+    const DAY = new Date('2026-08-10T06:00:00.000Z');
+
+    /**
+     * One admission, one bed, one ward, one billable day — then read back the
+     * tax rate the room charge resolved to.
+     */
+    async function roomCharge(opts: {
+      dailyCharge?: number | null;
+      wardType?: string | null;
+      bedType?: string;
+      tariffs?: Array<{ serviceCode: string | null; basePrice: number; gstRatePercent: number; category: string }>;
+    }) {
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue(mockPatient as any);
+      vi.mocked(prisma.billItem.findMany).mockResolvedValue([]);
+      vi.mocked(prisma.serviceTariff.findMany).mockResolvedValue((opts.tariffs ?? []) as any);
+      vi.mocked(prisma.admission.findMany).mockResolvedValue([
+        {
+          id: 'adm-1',
+          visitId: 'visit-1',
+          admissionDate: DAY,
+          dischargeDate: DAY,
+          status: 'discharged',
+          bedId: 'bed-1',
+          wardId: 'ward-1',
+        },
+      ] as any);
+      vi.mocked(prisma.patientTransfer.findMany).mockResolvedValue([]);
+      vi.mocked(prisma.bed.findMany).mockResolvedValue([
+        { id: 'bed-1', bedNumber: 'B1', bedType: opts.bedType ?? 'standard' },
+      ] as any);
+      vi.mocked(prisma.ward.findMany).mockResolvedValue([
+        {
+          id: 'ward-1',
+          name: 'Ward',
+          wardType: opts.wardType ?? 'general',
+          dailyCharge: opts.dailyCharge ?? null,
+        },
+      ] as any);
+
+      const res = await getPatientCharges(TENANT_ID, {
+        patientId: 'patient-1',
+        source: 'room',
+      } as any);
+      return res.charges[0];
+    }
+
+    it('exempts a general ward bed below the threshold', async () => {
+      const row = await roomCharge({ dailyCharge: 1500 });
+      expect(row.unitPrice).toBe(1500);
+      expect(row.taxRate).toBe(0);
+    });
+
+    it('charges 5% on a non-ICU room above ₹5,000 a day', async () => {
+      const row = await roomCharge({ dailyCharge: 6000, wardType: 'private' });
+      expect(row.unitPrice).toBe(6000);
+      expect(row.taxRate).toBe(5);
+    });
+
+    it('exempts ICU however expensive the bed is', async () => {
+      const row = await roomCharge({ dailyCharge: 12000, wardType: 'icu', bedType: 'icu' });
+      expect(row.taxRate).toBe(0);
+    });
+
+    it('does not let a taxable room tariff spill onto a cheap ward bed', async () => {
+      // The regression this rule exists for. A hospital whose room tariffs are
+      // mostly deluxe AC at 5% used to have that 5% applied to any bed priced
+      // off the ward's own daily charge — rent that is plainly exempt.
+      const row = await roomCharge({
+        dailyCharge: 1200,
+        tariffs: [
+          { serviceCode: 'deluxe', basePrice: 8000, gstRatePercent: 5, category: 'room' },
+          { serviceCode: 'suite', basePrice: 12000, gstRatePercent: 5, category: 'room' },
+        ],
+      });
+      expect(row.unitPrice).toBe(1200);
+      expect(row.taxRate).toBe(0);
+    });
+
+    it('honours the tariff’s own rate once the room is over the threshold', async () => {
+      const row = await roomCharge({
+        dailyCharge: null,
+        bedType: 'electric',
+        tariffs: [
+          { serviceCode: 'electric', basePrice: 7500, gstRatePercent: 5, category: 'room' },
+        ],
+      });
+      expect(row.unitPrice).toBe(7500);
+      expect(row.taxRate).toBe(5);
     });
   });
 

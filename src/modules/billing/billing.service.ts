@@ -1798,18 +1798,28 @@ interface ChargeRow {
 }
 
 /**
- * Last-resort GST rates, used only where the tenant has configured nothing.
+ * Healthcare in India is GST-EXEMPT by default.
  *
- * These are no longer the answer — they are the fallback. Real rates come from
- * the tenant's own masters: `ServiceTariff.gstRatePercent` for hospital
- * services, and the HSN-derived rate on the drug/batch for pharmacy. Most
- * clinical services in India are GST-exempt, which is why the service defaults
- * here are zero.
+ * Treatment, consultation, diagnostics and therapeutic procedures by a clinical
+ * establishment are exempt under Notification 12/2017-Central Tax (Rate) — a
+ * hospital issues a BILL OF SUPPLY for them, not a tax invoice. So the honest
+ * default for every service is zero, and tax is the exception a hospital opts
+ * into on the specific tariff that carries it.
+ *
+ * The exceptions that do exist, and how each is handled here:
+ *   • Non-ICU room rent above ₹5,000/day → 5% — see {@link roomTaxRate}.
+ *   • Cosmetic (non-therapeutic) surgery → 18% — set on that tariff.
+ *   • Medicines → 5/12/18% by HSN, and MRP is tax-INCLUSIVE — read off the
+ *     dispensed batch, never guessed.
+ *
+ * This is deliberately not a "best guess". Inventing a rate would overcharge a
+ * patient for tax the hospital never owed; showing none where a hospital has
+ * configured none is both correct and what the law expects.
  */
 const CHARGE_TAX_RATES: Record<string, number> = {
   consultation: 0,
   lab: 0,
-  pharmacy: 12,
+  pharmacy: 0,
   imaging: 0,
   room: 0,
   ot: 0,
@@ -1826,16 +1836,51 @@ const SOURCE_TARIFF_CATEGORY: Record<string, string> = {
 };
 
 /**
+ * Non-ICU room rent above this per-day figure attracts GST — and on the WHOLE
+ * day's rent, not merely the part above the line. At or below it, and in ICU at
+ * any rate, room rent is exempt.
+ */
+const ROOM_GST_THRESHOLD_PER_DAY = 5000;
+const ROOM_GST_RATE_ABOVE_THRESHOLD = 5;
+
+/** ICU/NICU/PICU rent is exempt whatever it costs. */
+function isIcuAccommodation(bedType?: string | null, wardType?: string | null): boolean {
+  const b = String(bedType ?? '').toLowerCase();
+  const w = String(wardType ?? '').toLowerCase();
+  return b === 'icu' || w === 'icu' || w === 'nicu' || w === 'picu';
+}
+
+/**
+ * GST on a day of room rent, by the rule that actually applies in India rather
+ * than by whatever the room category averages out to.
+ *
+ * Getting this from a category default was wrong in a way that costs patients
+ * money: a hospital whose tariffs are mostly deluxe AC rooms at 5% would have
+ * had that 5% applied to a ₹1,500 general-ward bed billed off the ward's own
+ * daily charge — rent that is plainly exempt.
+ */
+function roomTaxRate(
+  dailyRate: number,
+  opts: { bedType?: string | null; wardType?: string | null; configuredRate?: number | null },
+): number {
+  if (isIcuAccommodation(opts.bedType, opts.wardType)) return 0;
+  if (dailyRate <= ROOM_GST_THRESHOLD_PER_DAY) return 0;
+  // Above the line: the hospital's own configured rate for that room if it set
+  // one, else the statutory 5%.
+  return opts.configuredRate != null && opts.configuredRate > 0
+    ? opts.configuredRate
+    : ROOM_GST_RATE_ABOVE_THRESHOLD;
+}
+
+/**
  * Per-category GST read from the tenant's ServiceTariff master.
  *
- * The spec asks for tax "auto-calculated per service category", and this file
- * used to answer that with a hardcoded map — so a hospital could not change a
- * rate without a deploy, and the tariff table's own `gstRatePercent` column was
- * read by imaging alone.
- *
- * Where a category's active tariffs disagree, the most frequently configured
- * rate wins; a charge that resolves to one specific tariff uses that tariff's
- * own rate instead, which always beats the category default.
+ * Only a category whose active tariffs ALL agree on one rate yields a default —
+ * a mixed category (a surgery list holding both exempt therapeutic procedures
+ * and taxable cosmetic ones) falls back to exempt rather than picking the
+ * commoner of the two and taxing the wrong half. A charge that resolves to one
+ * specific tariff always uses that tariff's own rate, which is the precise
+ * answer and beats any default.
  */
 async function buildServiceTaxRates(tenantId: string): Promise<Record<string, number>> {
   const tariffs = await prisma.serviceTariff.findMany({
@@ -1843,32 +1888,18 @@ async function buildServiceTaxRates(tenantId: string): Promise<Record<string, nu
     select: { category: true, gstRatePercent: true },
   });
 
-  // category → (rate → how many tariffs carry it)
-  const tally = new Map<string, Map<number, number>>();
+  const seen = new Map<string, Set<number>>();
   for (const t of tariffs) {
     const cat = String(t.category);
-    const rate = toNumber(t.gstRatePercent);
-    const forCat = tally.get(cat) ?? new Map<number, number>();
-    forCat.set(rate, (forCat.get(rate) ?? 0) + 1);
-    tally.set(cat, forCat);
+    const set = seen.get(cat) ?? new Set<number>();
+    set.add(toNumber(t.gstRatePercent));
+    seen.set(cat, set);
   }
 
   const rates: Record<string, number> = {};
   for (const [source, category] of Object.entries(SOURCE_TARIFF_CATEGORY)) {
-    const forCat = tally.get(category);
-    if (!forCat || forCat.size === 0) {
-      rates[source] = CHARGE_TAX_RATES[source] ?? 0;
-      continue;
-    }
-    let best = 0;
-    let bestCount = -1;
-    for (const [rate, count] of forCat) {
-      if (count > bestCount) {
-        best = rate;
-        bestCount = count;
-      }
-    }
-    rates[source] = best;
+    const set = seen.get(category);
+    rates[source] = set && set.size === 1 ? [...set][0]! : (CHARGE_TAX_RATES[source] ?? 0);
   }
   return rates;
 }
@@ -2269,7 +2300,7 @@ async function getRoomCharges(
       ? prisma.bed.findMany({ where: { id: { in: [...bedIds] } }, select: { id: true, bedNumber: true, bedType: true } })
       : Promise.resolve([]),
     wardIds.size
-      ? prisma.ward.findMany({ where: { id: { in: [...wardIds] } }, select: { id: true, name: true, dailyCharge: true } })
+      ? prisma.ward.findMany({ where: { id: { in: [...wardIds] } }, select: { id: true, name: true, wardType: true, dailyCharge: true } })
       : Promise.resolve([]),
     // Per-day room rate from ServiceTariff (category=room), matched by bedType.
     prisma.serviceTariff.findMany({ where: { tenantId, category: 'room', isActive: true } }),
@@ -2287,16 +2318,26 @@ async function getRoomCharges(
     bedId: string | null,
     wardId: string | null,
   ): { price: number; taxRate: number } => {
-    const categoryTax = taxRates.room ?? CHARGE_TAX_RATES.room;
-    const wardRate = toNumber((wardId ? wardById.get(wardId)?.dailyCharge : null) ?? 0);
-    if (wardRate > 0) return { price: wardRate, taxRate: categoryTax };
     const bedType = bedId ? bedById.get(bedId)?.bedType ?? null : null;
+    const wardType = wardId ? wardById.get(wardId)?.wardType ?? null : null;
+    const wardRate = toNumber((wardId ? wardById.get(wardId)?.dailyCharge : null) ?? 0);
+    if (wardRate > 0) {
+      return {
+        price: wardRate,
+        taxRate: roomTaxRate(wardRate, { bedType, wardType }),
+      };
+    }
     const tariff =
       roomTariffs.find((t) => (t.serviceCode ?? '').toLowerCase() === String(bedType ?? '').toLowerCase()) ||
       roomTariffs[0];
+    const price = toNumber(tariff?.basePrice ?? 0);
     return {
-      price: toNumber(tariff?.basePrice ?? 0),
-      taxRate: tariff ? toNumber(tariff.gstRatePercent) : categoryTax,
+      price,
+      taxRate: roomTaxRate(price, {
+        bedType,
+        wardType,
+        configuredRate: tariff ? toNumber(tariff.gstRatePercent) : null,
+      }),
     };
   };
 
