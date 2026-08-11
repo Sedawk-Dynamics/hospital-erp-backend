@@ -201,11 +201,20 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
     // money and handing over a receipt — so they need the billing/payment
     // surface radiology_admin already had. Without payments:create the accept
     // dialog can price an order and then 403 on the collection.
+    //
+    // `users:read` is what lets them SEE the bench. Assigning work, the
+    // technician filter on the work queue and the whole Workload tab all read
+    // GET /users, which is gated on it — without it the request 403s and the
+    // screens degrade to "no technicians exist" rather than to an error, so the
+    // Assign-to dropdown silently offered nothing but "Leave unassigned".
+    // radiology_admin has held this since the module was built, which is why
+    // the identical dropdown worked there and not here.
     lab_supervisor: [
       { module: 'lab_orders', action: 'read' }, { module: 'lab_orders', action: 'create' }, { module: 'lab_orders', action: 'update' }, { module: 'lab_orders', action: 'approve' },
       { module: 'lab_reports', action: 'read' }, { module: 'lab_reports', action: 'create' }, { module: 'lab_reports', action: 'update' }, { module: 'lab_reports', action: 'approve' },
       { module: 'patients', action: 'read' },
       { module: 'visits', action: 'read' },
+      { module: 'users', action: 'read' },
       { module: 'billing', action: 'read' }, { module: 'billing', action: 'create' },
       { module: 'billing', action: 'update' },
       { module: 'payments', action: 'read' }, { module: 'payments', action: 'create' },
