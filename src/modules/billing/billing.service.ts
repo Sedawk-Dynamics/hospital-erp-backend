@@ -234,22 +234,25 @@ async function recalculateBillTotals(billId: string) {
   // tax. It only diverges where a line carries its tax inside the price.
   const total = Math.max(0, r2(lineTotals - billLevelDiscount));
 
-  // Get total paid
-  const payments = await prisma.payment.findMany({
-    where: { billId, status: 'completed' },
-  });
-  const totalPaid = payments.reduce((sum, p) => sum + toNumber(p.amount), 0);
+  // Through the same ledger definition every other path settles by. Summing
+  // completed payments raw counted a REFUND payout as money coming in — a
+  // ₹1,000 bill refunded ₹400 read as ₹1,400 paid the next time any charge was
+  // posted to it — and counted advance-bucket rows that belong to no bill.
+  const totalPaid = await computeBillPaid(prisma, billId);
 
-  // Determine status based on payment
-  let status: string | undefined;
+  // Determine status based on payment. draft / cancelled / refunded are states
+  // a recalculation does not move a bill out of; the rest mirror
+  // applyPaymentToBill exactly, so the two can never disagree about a bill.
   const bill = await prisma.bill.findUnique({ where: { id: billId }, select: { status: true } });
-  if (bill && bill.status !== 'draft') {
-    if (totalPaid >= total && total > 0) {
-      status = 'paid';
-    } else if (totalPaid > 0) {
-      status = 'partially_paid';
-    }
-  }
+  const settled: string[] = ['draft', 'cancelled', 'refunded'];
+  const status =
+    bill && !settled.includes(bill.status)
+      ? totalPaid >= total && total > 0
+        ? 'paid'
+        : totalPaid > 0
+          ? 'partially_paid'
+          : 'pending'
+      : undefined;
 
   const updateData: any = {
     subtotal,
@@ -257,7 +260,7 @@ async function recalculateBillTotals(billId: string) {
     discountAmount: totalDiscount,
     totalAmount: total,
     amountPaid: totalPaid,
-    balanceDue: total - totalPaid,
+    balanceDue: Math.max(0, r2(total - totalPaid)),
   };
 
   if (status) {
@@ -1750,32 +1753,13 @@ export async function applyDiscount(tenantId: string, billId: string, data: Appl
     },
   });
 
-  // Recalculate totals - apply discount to the bill level
-  const allDiscounts = await prisma.discount.findMany({
-    where: { billId },
-  });
-
-  // Item-level discounts count too — `setBillDiscount` and recalculateBillTotals
-  // both treat bill.discountAmount as (item discounts + bill-level rows), and
-  // the three must agree or whichever runs last changes the payable amount.
-  const itemDiscounts = await prisma.billItem.aggregate({
-    where: { billId },
-    _sum: { discountAmount: true },
-  });
-  const totalDiscountValue =
-    allDiscounts.reduce((sum: number, d: { value: Decimal }) => sum + toNumber(d.value), 0) +
-    toNumber(itemDiscounts._sum.discountAmount);
-  const taxAmount = toNumber(bill.taxAmount);
-  const totalAmount = subtotal - totalDiscountValue + taxAmount;
-
-  await prisma.bill.update({
-    where: { id: billId },
-    data: {
-      discountAmount: totalDiscountValue,
-      totalAmount: Math.max(0, totalAmount),
-      balanceDue: Math.max(0, totalAmount - toNumber(bill.amountPaid)),
-    },
-  });
+  // One definition of what a bill comes to. This used to recompute the total
+  // here as `subtotal − discount + tax`, which is only right when every line
+  // adds its tax on top — a bill carrying a tax-INCLUSIVE medicine price had
+  // the GST already inside the MRP added a second time. recalculateBillTotals
+  // sums the line totals and folds in the bill-level Discount rows, so the
+  // three places that used to hold this arithmetic can no longer drift apart.
+  await recalculateBillTotals(billId);
 
   logger.info({ tenantId, billId, discountValue }, 'Discount applied');
   return discount;
@@ -4390,11 +4374,6 @@ export async function setBillDiscount(
     (sum, it) => sum + toNumber(it.discountAmount),
     0,
   );
-  const itemTax = bill.billItems.reduce(
-    (sum, it) => sum + toNumber(it.taxAmount),
-    0,
-  );
-
   let billDiscountAmt = 0;
   if (data.discountType === 'percentage') {
     if (data.discountValue < 0 || data.discountValue > 100) {
@@ -4407,7 +4386,6 @@ export async function setBillDiscount(
   }
 
   const totalDiscount = itemDiscounts + billDiscountAmt;
-  const totalAmount = Math.max(0, subtotal - totalDiscount + itemTax);
 
   // Remove any prior bill-level discount rows (keep an audit row).
   await prisma.discount.deleteMany({ where: { billId } });
@@ -4424,25 +4402,13 @@ export async function setBillDiscount(
     });
   }
 
-  const amountPaid = toNumber(bill.amountPaid);
-  const updated = await prisma.bill.update({
-    where: { id: billId },
-    data: {
-      subtotal,
-      taxAmount: itemTax,
-      discountAmount: totalDiscount,
-      totalAmount,
-      balanceDue: Math.max(0, totalAmount - amountPaid),
-      status:
-        bill.status === 'draft'
-          ? 'draft'
-          : amountPaid >= totalAmount && totalAmount > 0
-            ? 'paid'
-            : amountPaid > 0
-              ? 'partially_paid'
-              : 'pending',
-    },
-  });
+  // Totals come from the one definition rather than being recomputed here. The
+  // old arithmetic — `subtotal − discount + tax` — is only right when every
+  // line adds its tax on top, so discounting a bill that carried a
+  // tax-INCLUSIVE medicine price re-added the GST already inside the MRP.
+  await recalculateBillTotals(billId);
+  const updated = await prisma.bill.findUniqueOrThrow({ where: { id: billId } });
+  const totalAmount = toNumber(updated.totalAmount);
 
   logger.info({ tenantId, billId, billDiscountAmt }, 'Bill-level discount applied');
   void writeAudit({
@@ -4871,23 +4837,14 @@ export async function reversePayment(
       },
     });
 
-    // Adjust bill totals back
+    // Adjust the bill back from its own ledger. This was the last place still
+    // subtracting from a figure read before the transaction opened — the same
+    // stale-read that let two concurrent counter payments lose one of them.
+    // The payment is now `reversed`, so it drops out of the completed sum on
+    // its own and the recompute lands exactly where the hand arithmetic did:
+    // nothing left paid reads as pending, an open balance as partially paid.
     if (payment.bill) {
-      const newPaid = Math.max(0, toNumber(payment.bill.amountPaid) - toNumber(payment.amount));
-      const total = toNumber(payment.bill.totalAmount);
-      const newBalance = total - newPaid;
-      let newStatus = payment.bill.status as string;
-      if (newPaid <= 0) newStatus = 'pending';
-      else if (newBalance > 0) newStatus = 'partially_paid';
-
-      await tx.bill.update({
-        where: { id: payment.bill.id },
-        data: {
-          amountPaid: newPaid,
-          balanceDue: Math.max(0, newBalance),
-          status: newStatus as any,
-        },
-      });
+      await applyPaymentToBill(tx, payment.bill.id);
     }
 
     return { reversed: true, paymentId: payment.id };

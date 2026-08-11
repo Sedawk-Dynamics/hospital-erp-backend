@@ -22,6 +22,7 @@ import {
   getDrawerStatus,
   closeDrawer,
   settleCredit,
+  reversePayment,
 } from '../../../../src/modules/billing/billing.service';
 
 // ─── Extend mocks that setup.ts does not provide ───
@@ -1168,6 +1169,81 @@ describe('BillingService', () => {
   });
 
   // ═══════════════════════════════════════════
+  // recalculateBillTotals — one definition of what a bill comes to
+  // ═══════════════════════════════════════════
+  // Reached through addBillItem, which recalculates as its last act.
+  describe('bill totals', () => {
+    beforeEach(() => {
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue(mockBillDraft as any);
+      vi.mocked(prisma.billItem.create).mockResolvedValue({ id: 'item-new' } as any);
+    });
+
+    /** Ledger stubs: what applyPaymentToBill/computeBillPaid read. */
+    function mockLedger(collected: number, refunded = 0) {
+      vi.mocked(prisma.payment.aggregate).mockResolvedValue({
+        _sum: { amount: collected },
+      } as any);
+      vi.mocked((prisma.refund as any).aggregate).mockResolvedValue({
+        _sum: { amount: refunded },
+      } as any);
+    }
+
+    it('does not count a refund payout as money coming in', async () => {
+      // Refund payouts are completed payments too. Summing the payment table
+      // raw made a ₹1,000 bill refunded ₹400 read as ₹1,400 PAID the next time
+      // any charge was posted to it.
+      mockRecalculate(
+        [{ quantity: 1, unitPrice: 1000, discountAmount: 0, taxAmount: 0, totalAmount: 1000 }],
+        [],
+        'pending',
+      );
+      mockLedger(1000, 400);
+
+      await addBillItem(TENANT_ID, 'bill-1', {
+        description: 'Dressing',
+        quantity: 1,
+        unitPrice: 0,
+      });
+
+      expect(prisma.bill.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ amountPaid: 600, balanceDue: 400 }),
+        }),
+      );
+    });
+
+    it('sums the line totals, so a tax-inclusive price is not taxed twice', async () => {
+      // A pharmacy line holds the MRP as its total with the GST embedded in it.
+      // Rebuilding the bill as `subtotal − discount + tax` added that embedded
+      // portion back on top.
+      mockRecalculate(
+        [
+          // ₹100 MRP with ₹10.71 of GST already inside it
+          { quantity: 1, unitPrice: 100, discountAmount: 0, taxAmount: 10.71, totalAmount: 100 },
+          // an exempt service line
+          { quantity: 1, unitPrice: 500, discountAmount: 0, taxAmount: 0, totalAmount: 500 },
+        ],
+        [],
+        'pending',
+      );
+      mockLedger(0);
+
+      await addBillItem(TENANT_ID, 'bill-1', {
+        description: 'Dressing',
+        quantity: 1,
+        unitPrice: 0,
+      });
+
+      expect(prisma.bill.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          // 100 + 500, NOT 600 + 10.71
+          data: expect.objectContaining({ totalAmount: 600 }),
+        }),
+      );
+    });
+  });
+
+  // ═══════════════════════════════════════════
   // pullChargesToBill — tax-inclusive vs tax-exclusive lines
   // ═══════════════════════════════════════════
   describe('pullChargesToBill', () => {
@@ -1376,6 +1452,39 @@ describe('BillingService', () => {
       // that is the figure a cashier counts the drawer against.
       expect(s.cash).toBe(1000);
       expect(s.upi).toBe(500);
+    });
+  });
+
+  // ═══════════════════════════════════════════
+  // reversePayment
+  // ═══════════════════════════════════════════
+  describe('reversePayment', () => {
+    it('re-settles the bill from the ledger, not from a stale read', async () => {
+      // The last place still subtracting from a figure read before the
+      // transaction opened. The reversed payment drops out of the completed sum
+      // on its own, so the remaining ₹400 of a ₹1,000 bill is what is left.
+      vi.mocked((prisma.payment as any).findFirst).mockResolvedValue({
+        id: 'payment-1',
+        amount: 600,
+        status: 'completed',
+        notes: null,
+        bill: { id: 'bill-1', billNumber: 'BILL-1', amountPaid: 1000, totalAmount: 1000 },
+      } as any);
+      vi.mocked(prisma.payment.update).mockResolvedValue({} as any);
+      vi.mocked(prisma.bill.findUnique).mockResolvedValue({
+        totalAmount: 1000,
+        status: 'paid',
+      } as any);
+      vi.mocked(prisma.payment.aggregate).mockResolvedValue({ _sum: { amount: 400 } } as any);
+      vi.mocked((prisma.refund as any).aggregate).mockResolvedValue({ _sum: { amount: 0 } } as any);
+      vi.mocked(prisma.bill.update).mockResolvedValue({} as any);
+
+      await reversePayment(TENANT_ID, USER_ID, { paymentId: 'payment-1', reason: 'Keyed twice' });
+
+      expect(prisma.bill.update).toHaveBeenCalledWith({
+        where: { id: 'bill-1' },
+        data: { amountPaid: 400, balanceDue: 600, status: 'partially_paid' },
+      });
     });
   });
 
