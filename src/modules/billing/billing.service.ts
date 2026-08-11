@@ -12,7 +12,7 @@ import {
   istDayStart,
   istDayEnd,
 } from '../../shared/date.utils';
-import { normalizeAdmissionType } from '../../shared/admission-type';
+import { normalizeAdmissionType, type AdmissionType } from '../../shared/admission-type';
 import { writeAudit } from '../../shared/audit';
 import {
   DEFAULT_DISCOUNT_APPROVAL,
@@ -2785,6 +2785,212 @@ export async function billOtRequest(
     amountPaid: toNumber(finalBill?.amountPaid ?? 0),
     balanceDue: toNumber(finalBill?.balanceDue ?? 0),
     paid,
+  };
+}
+
+// ============================================================
+// Diagnostic order billing — lab + radiology, one rule for both
+// ============================================================
+//
+// A lab order and an imaging request are the same commercial event: the doctor
+// asks for something, the department admits it, and the money is settled one of
+// two ways depending on where the patient is.
+//
+//   OP  — the department is its own counter. A dedicated, finalized bill holding
+//         only this order's lines, collected and receipted at the lab/radiology
+//         desk, and printed from there.
+//   IP / Emergency / Day Care — there is no counter. The charge is posted to the
+//         admission's running IP ledger and settles once, on the consolidated
+//         bill at discharge.
+//
+// This used to fire the moment the DOCTOR placed the order, which put a charge
+// on the patient before anybody had agreed to do the work — an order the lab
+// then declined still left a line on the bill. It now runs when the department
+// ACCEPTS, which is also the point the patient is standing at the counter.
+
+export interface DiagnosticChargeInput {
+  referenceType: 'lab_order_item' | 'imaging_request';
+  referenceId: string;
+  description: string;
+  quantity?: number;
+  unitPrice: number;
+  serviceTariffId?: string | null;
+}
+
+export interface DiagnosticBillSummary {
+  /** Which settlement route applied. */
+  mode: 'ip' | 'op';
+  admissionId: string | null;
+  admissionType: AdmissionType | null;
+  billId: string;
+  billNumber: string;
+  billStatus: string;
+  /** What THIS order contributes to the bill (the rest may be other charges). */
+  chargeAmount: number;
+  totalAmount: number;
+  amountPaid: number;
+  balanceDue: number;
+  /** True when every line was already on a bill and nothing new was posted. */
+  alreadyBilled: boolean;
+}
+
+/**
+ * Where a diagnostic order settles. An active admission — of ANY type: ip,
+ * emergency or daycare, they all run the one IP flow — means the ledger.
+ * Matched on the order's own visit first, then on any active admission for the
+ * patient, because a ward lab order is often raised against the OP visit that
+ * preceded the admission.
+ */
+export async function resolveDiagnosticPayer(
+  tenantId: string,
+  patientId: string,
+  visitId?: string | null,
+): Promise<{ mode: 'ip' | 'op'; admissionId: string | null; admissionType: AdmissionType | null }> {
+  const byVisit = visitId
+    ? await prisma.admission.findFirst({
+        where: { tenantId, visitId, status: ACTIVE_ADMISSION_STATUS },
+        orderBy: { admissionDate: 'desc' },
+        select: { id: true },
+      })
+    : null;
+  const admission =
+    byVisit ??
+    (await prisma.admission.findFirst({
+      where: { tenantId, patientId, status: ACTIVE_ADMISSION_STATUS },
+      orderBy: { admissionDate: 'desc' },
+      select: { id: true },
+    }));
+
+  if (!admission) return { mode: 'op', admissionId: null, admissionType: null };
+
+  // admission_type is a raw VarChar column (migration-free), so it is read out
+  // of band rather than through the generated client.
+  let admissionType: AdmissionType = 'ip';
+  try {
+    const rows = await prisma.$queryRaw<Array<{ admission_type: string | null }>>`
+      SELECT admission_type FROM admissions WHERE id = ${admission.id}::uuid LIMIT 1
+    `;
+    admissionType = normalizeAdmissionType(rows[0]?.admission_type);
+  } catch (err) {
+    logger.warn({ err, admissionId: admission.id }, 'Could not read admission_type — defaulting to ip');
+  }
+
+  return { mode: 'ip', admissionId: admission.id, admissionType };
+}
+
+/**
+ * Post a diagnostic order's charges and hand back the bill the department will
+ * collect against (OP) or that the stay will settle (IP).
+ *
+ * Idempotent across the WHOLE tenant, not just per bill: a reference already
+ * sitting on any non-cancelled bill is skipped. `pullChargesToBill` only dedupes
+ * within one bill, so without this the same test could be charged twice on two
+ * different bills — once by the front desk pulling pending orders, once here.
+ */
+export async function billDiagnosticOrder(
+  tenantId: string,
+  userId: string,
+  opts: {
+    source: 'lab' | 'imaging';
+    patientId: string;
+    visitId?: string | null;
+    charges: DiagnosticChargeInput[];
+  },
+): Promise<DiagnosticBillSummary | null> {
+  const charges = opts.charges.filter((c) => c.referenceId);
+  if (!charges.length) return null;
+
+  const taxRates = await buildServiceTaxRates(tenantId);
+  const category = opts.source === 'lab' ? 'lab' : 'radiology';
+  const taxRate =
+    opts.source === 'lab'
+      ? (taxRates.lab ?? CHARGE_TAX_RATES.lab)
+      : (taxRates.imaging ?? CHARGE_TAX_RATES.imaging);
+
+  // What is already on a bill somewhere in this tenant.
+  const existing = await prisma.billItem.findMany({
+    where: {
+      referenceType: charges[0]!.referenceType,
+      referenceId: { in: charges.map((c) => c.referenceId) },
+      bill: { tenantId, status: { not: 'cancelled' } },
+    },
+    select: { referenceId: true, billId: true, totalAmount: true },
+  });
+  const billedRefs = new Set(existing.map((e) => e.referenceId!));
+  const fresh = charges.filter((c) => !billedRefs.has(c.referenceId));
+
+  const payer = await resolveDiagnosticPayer(tenantId, opts.patientId, opts.visitId);
+
+  let billId: string | null = existing[0]?.billId ?? null;
+
+  if (fresh.length) {
+    const lines = fresh.map((c) => ({
+      referenceType: c.referenceType,
+      referenceId: c.referenceId,
+      description: c.description,
+      quantity: c.quantity ?? 1,
+      unitPrice: c.unitPrice,
+      taxRate,
+      category,
+    }));
+
+    if (payer.mode === 'ip') {
+      // The stay's running draft bill — no finalize, no counter payment. It is
+      // settled once at discharge with everything else.
+      const ipBill = await getOrCreateRunningIpBill(tenantId, payer.admissionId!, userId);
+      await pullChargesToBill(tenantId, ipBill.id, lines);
+      billId = ipBill.id;
+    } else {
+      // OP: keep adding to the order's own bill while it is still a draft;
+      // otherwise raise the department's dedicated invoice and finalize it so
+      // the counter can collect and print against it.
+      const reusable = billId
+        ? await prisma.bill.findFirst({ where: { id: billId, tenantId, status: 'draft' }, select: { id: true } })
+        : null;
+      if (reusable) {
+        await pullChargesToBill(tenantId, reusable.id, lines);
+        billId = reusable.id;
+      } else {
+        const bill = await createBill(tenantId, userId, {
+          patientId: opts.patientId,
+          visitId: opts.visitId ?? undefined,
+        } as CreateBillInput);
+        await pullChargesToBill(tenantId, bill.id, lines);
+        // A zero-value order (unpriced catalog entry) cannot be finalized —
+        // finalizeBill rejects an empty bill and there is nothing to collect.
+        const posted = await prisma.billItem.count({ where: { billId: bill.id } });
+        if (posted > 0) await finalizeBill(tenantId, userId, bill.id);
+        billId = bill.id;
+      }
+    }
+  }
+
+  if (!billId) return null;
+
+  const bill = await prisma.bill.findFirst({ where: { id: billId, tenantId } });
+  if (!bill) return null;
+
+  const orderLines = await prisma.billItem.findMany({
+    where: {
+      billId,
+      referenceType: charges[0]!.referenceType,
+      referenceId: { in: charges.map((c) => c.referenceId) },
+    },
+    select: { totalAmount: true },
+  });
+
+  return {
+    mode: payer.mode,
+    admissionId: payer.admissionId,
+    admissionType: payer.admissionType,
+    billId: bill.id,
+    billNumber: bill.billNumber,
+    billStatus: bill.status,
+    chargeAmount: r2(orderLines.reduce((s, l) => s + toNumber(l.totalAmount), 0)),
+    totalAmount: toNumber(bill.totalAmount),
+    amountPaid: toNumber(bill.amountPaid),
+    balanceDue: toNumber(bill.balanceDue),
+    alreadyBilled: fresh.length === 0,
   };
 }
 

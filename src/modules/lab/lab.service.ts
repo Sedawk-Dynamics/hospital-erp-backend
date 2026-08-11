@@ -13,6 +13,12 @@ import {
   safeLabReportCorrectedEmail,
 } from './lab.audit';
 import { Prisma, type LabOrderStatus } from '@prisma/client';
+import {
+  billDiagnosticOrder,
+  resolveDiagnosticPayer,
+  createPayment,
+  type DiagnosticChargeInput,
+} from '../billing/billing.service';
 import { buildSearchTokens, normaliseAliases, normaliseTags } from './lab-templates.service';
 import type { ParameterSpec } from './lab.validation';
 import type {
@@ -110,120 +116,153 @@ async function notifyLabSupervisors(
   }
 }
 
-// Helper: auto-link lab order tests to a draft bill on the patient's visit
-export async function autoLinkLabOrderToBill(tenantId: string, labOrderId: string) {
+/**
+ * Price a lab order's tests as billable lines.
+ *
+ * Cancelled items are left out — the patient is not charged for a test the lab
+ * withdrew — and so are unpriced catalog entries, which would otherwise put a
+ * ₹0 line on the bill and make the counter total look wrong.
+ */
+async function buildLabOrderCharges(tenantId: string, labOrderId: string) {
+  const order = await prisma.labOrder.findFirst({
+    where: { id: labOrderId, tenantId },
+    include: { labOrderItems: { include: { test: true } } },
+  });
+  if (!order) return null;
+
+  const charges: DiagnosticChargeInput[] = order.labOrderItems
+    .filter((it) => it.status !== 'cancelled')
+    .map((it) => ({
+      referenceType: 'lab_order_item' as const,
+      referenceId: it.id,
+      description: it.test.testName,
+      quantity: 1,
+      unitPrice: Number(it.test.price ?? 0),
+    }))
+    .filter((c) => c.unitPrice > 0);
+
+  return { order, charges };
+}
+
+/**
+ * Post a lab order's charges to wherever the patient settles: the lab's own
+ * counter bill for an OP patient, the admission's running ledger for an
+ * IP / Emergency / Day Care one.
+ *
+ * Kept under the old name because several paths call it as a safety net
+ * (submit, mark-done); it is globally idempotent, so calling it twice — or
+ * after the accept step has already billed the order — posts nothing.
+ */
+export async function autoLinkLabOrderToBill(tenantId: string, labOrderId: string, userId?: string) {
   try {
-    const order = await prisma.labOrder.findFirst({
-      where: { id: labOrderId, tenantId },
-      include: {
-        labOrderItems: { include: { test: true } },
-      },
-    });
-    if (!order) return;
-
-    // Find or create a draft bill for the visit
-    let bill = await prisma.bill.findFirst({
-      where: { tenantId, visitId: order.visitId, status: 'draft' },
-    });
-    if (!bill) {
-      const billNumber = `BILL-${Date.now()}`;
-      bill = await prisma.bill.create({
-        data: {
-          tenantId,
-          billNumber,
-          patientId: order.patientId,
-          visitId: order.visitId,
-          billDate: new Date(),
-          status: 'draft',
-        },
-      });
-    }
-
-    // Add items per test (idempotent on referenceId+description)
-    for (const it of order.labOrderItems) {
-      const existing = await prisma.billItem.findFirst({
-        where: {
-          billId: bill.id,
-          referenceType: 'lab_order_item',
-          referenceId: it.id,
-        },
-      });
-      if (existing) continue;
-
-      const price = Number(it.test.price ?? 0);
-      await prisma.billItem.create({
-        data: {
-          billId: bill.id,
-          description: it.test.testName,
-          category: 'lab',
-          quantity: 1,
-          unitPrice: price,
-          totalAmount: price,
-          referenceType: 'lab_order_item',
-          referenceId: it.id,
-          isAutoPulled: true,
-        },
-      });
-    }
-
-    // Recompute totals on the bill
-    const items = await prisma.billItem.findMany({ where: { billId: bill.id } });
-    const subtotal = items.reduce((sum, x) => sum + Number(x.totalAmount ?? 0), 0);
-    await prisma.bill.update({
-      where: { id: bill.id },
-      data: {
-        subtotal,
-        totalAmount: subtotal,
-        patientPayableAmount: subtotal,
-        balanceDue: subtotal - Number(bill.amountPaid ?? 0),
-      },
+    const built = await buildLabOrderCharges(tenantId, labOrderId);
+    if (!built || !built.charges.length) return null;
+    return await billDiagnosticOrder(tenantId, userId ?? built.order.orderedBy, {
+      source: 'lab',
+      patientId: built.order.patientId,
+      visitId: built.order.visitId,
+      charges: built.charges,
     });
   } catch (err) {
     logger.warn({ err, labOrderId }, 'Failed to auto-link lab order to bill');
+    return null;
   }
 }
 
 /**
- * Payment gate for lab result work. An outpatient order must have its linked
- * bill settled before a technician may enter values, upload a result, or mark a
- * test done — mirroring the radiology payment-verify gate. Inpatient orders are
- * billed on the consolidated stay bill (settled later), so they are not gated.
+ * What the lab counter needs to show before accepting: what this order costs,
+ * where it settles, and what is already paid. Read-only — it never posts a
+ * charge, so opening the accept dialog and closing it again leaves no trace.
+ */
+export async function getLabOrderBillingPreview(tenantId: string, labOrderId: string) {
+  const built = await buildLabOrderCharges(tenantId, labOrderId);
+  if (!built) throw AppError.notFound('Lab order not found');
+
+  const payer = await resolveDiagnosticPayer(
+    tenantId,
+    built.order.patientId,
+    built.order.visitId,
+  );
+
+  const lines = built.charges.map((c) => ({
+    referenceId: c.referenceId,
+    description: c.description,
+    amount: c.unitPrice,
+  }));
+  const chargeAmount = Math.round(lines.reduce((s, l) => s + l.amount, 0) * 100) / 100;
+
+  // Anything already on a bill — the front desk may have collected for these
+  // tests before the lab ever saw the order.
+  const existing = built.charges.length
+    ? await prisma.billItem.findMany({
+        where: {
+          referenceType: 'lab_order_item',
+          referenceId: { in: built.charges.map((c) => c.referenceId) },
+          bill: { tenantId, status: { not: 'cancelled' } },
+        },
+        select: {
+          bill: {
+            select: { id: true, billNumber: true, status: true, totalAmount: true, amountPaid: true, balanceDue: true },
+          },
+        },
+      })
+    : [];
+  const existingBill = existing[0]?.bill ?? null;
+
+  return {
+    orderId: labOrderId,
+    mode: payer.mode,
+    admissionId: payer.admissionId,
+    admissionType: payer.admissionType,
+    lines,
+    chargeAmount,
+    unpricedCount: built.order.labOrderItems.filter(
+      (it) => it.status !== 'cancelled' && Number(it.test.price ?? 0) <= 0,
+    ).length,
+    alreadyBilled: !!existingBill,
+    bill: existingBill
+      ? {
+          id: existingBill.id,
+          billNumber: existingBill.billNumber,
+          status: existingBill.status,
+          totalAmount: Number(existingBill.totalAmount ?? 0),
+          amountPaid: Number(existingBill.amountPaid ?? 0),
+          balanceDue: Number(existingBill.balanceDue ?? 0),
+        }
+      : null,
+  };
+}
+
+/**
+ * Payment gate for lab result work — the same gate radiology applies before a
+ * radiologist may touch a study.
+ *
+ * The lab admin settles this at accept time: an OP patient pays at the lab
+ * counter, an admitted patient's charge goes to the stay ledger (which counts as
+ * cleared — it settles at discharge). An order deliberately accepted unpaid for
+ * a TPA / credit patient carries a reason, and that is treated as authorised: a
+ * decision the admin already made must not resurface as an error in front of the
+ * technician who is only trying to record a result.
  */
 async function assertLabOrderPaid(
   tenantId: string,
   order: { id: string; visitId: string },
 ): Promise<void> {
-  // Inpatient? Lab is part of the admission bill — don't block at the counter.
-  const admission = await prisma.admission.findFirst({
-    where: { visitId: order.visitId, status: { not: 'discharged' } },
-    select: { id: true },
+  const row = await prisma.labOrder.findFirst({
+    where: { id: order.id, tenantId },
+    select: { paymentVerified: true, paymentDeferredReason: true, acceptedAt: true },
   });
-  if (admission) return;
+  if (!row) return; // downstream will surface not-found
+  if (row.paymentVerified) return;
+  if (row.paymentDeferredReason) return; // accepted unpaid, on purpose
 
-  const items = await prisma.labOrderItem.findMany({
-    where: { labOrderId: order.id },
-    select: { id: true },
-  });
-  if (!items.length) return;
+  // Never accepted at all: fall through rather than block, so an order that
+  // predates the accept flow (or one worked on directly) is not stranded.
+  if (!row.acceptedAt) return;
 
-  const billItems = await prisma.billItem.findMany({
-    where: {
-      referenceType: 'lab_order_item',
-      referenceId: { in: items.map((i) => i.id) },
-      bill: { tenantId },
-    },
-    include: { bill: { select: { status: true, balanceDue: true } } },
-  });
-  if (!billItems.length) return; // not billed yet — nothing to gate on
-
-  const unpaid = billItems.some(
-    (bi) => bi.bill.status !== 'paid' && Number(bi.bill.balanceDue ?? 0) > 0,
+  throw AppError.badRequest(
+    'Payment is pending for this lab order. The lab admin must collect it (or accept the order on credit) before results can be recorded.',
   );
-  if (unpaid) {
-    throw AppError.badRequest(
-      'Payment is pending for this lab order. Collect payment at the front desk before entering or uploading results.',
-    );
-  }
 }
 
 /** Public payment gate by orderId — for the result-file upload route (LP5). */
@@ -548,9 +587,12 @@ export async function createLabOrder(tenantId: string, userId: string, data: Cre
 
   logger.info({ tenantId, orderId: order?.id }, 'Lab order created');
 
-  // Auto-link to draft bill (best-effort, must not fail order creation)
+  // NOT billed here. The charge is posted when the LAB ACCEPTS the order — that
+  // is the moment the hospital agrees to do the work and, for an OP patient, the
+  // moment they are at the counter to pay for it. Billing at order-creation put
+  // a line on the patient's bill for tests the lab might never accept, and gave
+  // the front desk a charge to collect before anyone had confirmed the order.
   if (order?.id) {
-    void autoLinkLabOrderToBill(tenantId, order.id);
     void safeLabAudit({
       tenantId,
       userId,
@@ -602,6 +644,12 @@ export async function getLabOrders(tenantId: string, query: GetLabOrdersQuery) {
     where.acceptedAt = query.accepted ? { not: null } : null;
   }
 
+  // The intake queue splits on money the same way radiology's does: what the
+  // admin still has to collect for, versus what is cleared to run.
+  if (query.paymentVerified !== undefined) {
+    where.paymentVerified = query.paymentVerified;
+  }
+
   // Whole IST days. This used to bound the day with a bare `new Date(date)`,
   // which is midnight UTC — 05:30 IST — so a "today" filter ran from half past
   // five this morning to half past five tomorrow and quietly moved the
@@ -629,8 +677,18 @@ export async function getLabOrders(tenantId: string, query: GetLabOrdersQuery) {
 
   // Raised more than 24h ago with no report out. Same predicate the dashboard
   // card counts, so the number and the rows agree.
+  //
+  // Its "no report" clause goes under AND, not OR: the search below also writes
+  // `where.OR`, and whichever ran last silently replaced the other. Searching
+  // inside the overdue list therefore dropped the no-report condition and
+  // returned finished orders as overdue.
   if (query.overdue) {
-    Object.assign(where, OVERDUE_WHERE(tenantId, new Date(Date.now() - 24 * 60 * 60 * 1000)));
+    const { OR: noReport, ...rest } = OVERDUE_WHERE(
+      tenantId,
+      new Date(Date.now() - 24 * 60 * 60 * 1000),
+    );
+    Object.assign(where, rest);
+    where.AND = [...(where.AND ?? []), { OR: noReport }];
   }
 
   // Waiting for someone to pick it up — the supervisor's triage queue.
@@ -705,7 +763,90 @@ export async function getLabOrders(tenantId: string, query: GetLabOrdersQuery) {
     prisma.labOrder.count({ where }),
   ]);
 
-  return { orders, total, page, limit };
+  return { orders: await decorateWithBill(tenantId, orders), total, page, limit };
+}
+
+/**
+ * Attach the bill each order was charged on, so the intake queue can show what
+ * is owed and how it was paid without a second round trip per row. Same shape
+ * radiology's `linkedBill` has carried since the payment-verify gate, so one
+ * component renders both.
+ */
+async function decorateWithBill<T extends { id: string }>(tenantId: string, orders: T[]) {
+  if (!orders.length) return orders.map((o) => ({ ...o, linkedBill: null }));
+
+  const items = await prisma.labOrderItem.findMany({
+    where: { labOrderId: { in: orders.map((o) => o.id) } },
+    select: { id: true, labOrderId: true },
+  });
+  if (!items.length) return orders.map((o) => ({ ...o, linkedBill: null }));
+
+  const billItems = await prisma.billItem.findMany({
+    where: {
+      referenceType: 'lab_order_item',
+      referenceId: { in: items.map((i) => i.id) },
+      bill: { tenantId, status: { not: 'cancelled' } },
+    },
+    select: {
+      referenceId: true,
+      totalAmount: true,
+      bill: {
+        select: {
+          id: true,
+          billNumber: true,
+          status: true,
+          admissionId: true,
+          amountPaid: true,
+          totalAmount: true,
+          balanceDue: true,
+          payments: {
+            where: { status: 'completed' },
+            select: { paymentMethod: true, amount: true, paymentDate: true },
+            orderBy: { paymentDate: 'desc' },
+          },
+        },
+      },
+    },
+  });
+
+  const orderIdByItemId = new Map(items.map((i) => [i.id, i.labOrderId]));
+  // An order is several tests, so several bill lines: sum what THIS order
+  // contributes rather than reporting one line's price as the whole charge.
+  const byOrder = new Map<string, { charge: number; bill: (typeof billItems)[number]['bill'] }>();
+  for (const bi of billItems) {
+    const orderId = orderIdByItemId.get(bi.referenceId!);
+    if (!orderId) continue;
+    const prev = byOrder.get(orderId);
+    byOrder.set(orderId, {
+      charge: (prev?.charge ?? 0) + Number(bi.totalAmount ?? 0),
+      bill: prev?.bill ?? bi.bill,
+    });
+  }
+
+  return orders.map((o) => {
+    const hit = byOrder.get(o.id);
+    return {
+      ...o,
+      linkedBill: hit?.bill
+        ? {
+            id: hit.bill.id,
+            billNumber: hit.bill.billNumber,
+            status: hit.bill.status,
+            // An IP bill is the stay ledger — it is not collected at this counter.
+            isLedger: !!hit.bill.admissionId,
+            amountPaid: hit.bill.amountPaid,
+            totalAmount: hit.bill.totalAmount,
+            balanceDue: hit.bill.balanceDue,
+            chargeAmount: Math.round(hit.charge * 100) / 100,
+            payments: hit.bill.payments.map((p) => ({
+              paymentMethod: p.paymentMethod,
+              amount: p.amount,
+              paymentDate: p.paymentDate,
+            })),
+          }
+        : null,
+    };
+  });
 }
 
 export async function getLabOrderById(tenantId: string, id: string) {
@@ -807,6 +948,20 @@ export async function updateLabOrder(
   return updated;
 }
 
+/**
+ * Accept a lab order — the lab admin's single act at their own counter.
+ *
+ * In order:
+ *   1. post the order's charges (OP → the lab's own finalized bill; IP /
+ *      Emergency / Day Care → the admission's running ledger);
+ *   2. settle it — collect the money at the lab counter, or record why it is
+ *      being deferred (TPA, credit, will pay later);
+ *   3. admit the order to the bench and hand it to whoever will run it.
+ *
+ * Money first, deliberately: if the payment fails the order stays in the intake
+ * queue rather than being admitted against a collection that never happened.
+ * The charge posting is idempotent, so a retry re-uses the same bill.
+ */
 export async function acceptLabOrder(
   tenantId: string,
   id: string,
@@ -828,12 +983,69 @@ export async function acceptLabOrder(
     if (!tech) throw AppError.badRequest('Assigned user not found in tenant');
   }
 
+  // 1 — charge. Best-effort: an unpriced catalog or a billing hiccup must not
+  // leave a patient standing at the bench with nobody able to admit their test.
+  const billing = await autoLinkLabOrderToBill(tenantId, id, acceptorUserId);
+
+  // 2 — settle.
+  let paymentVerified = order.paymentVerified;
+  let deferredReason: string | null = order.paymentDeferredReason;
+
+  if (billing?.mode === 'ip') {
+    // Nothing to collect: the charge is on the stay's ledger and settles once,
+    // on the consolidated bill at discharge.
+    paymentVerified = true;
+    deferredReason = null;
+  } else if (data.payment) {
+    const due = billing?.balanceDue ?? 0;
+    if (!billing?.billId) {
+      throw AppError.badRequest('There is nothing to collect on this order.');
+    }
+    if (due <= 0) {
+      // Already settled (front desk got there first) — accept it as cleared
+      // rather than refusing over money we have already taken.
+      paymentVerified = true;
+      deferredReason = null;
+    } else {
+      const amount = Math.min(data.payment.amount ?? due, due);
+      if (amount <= 0) throw AppError.badRequest('Enter an amount to collect');
+      await createPayment(tenantId, acceptorUserId, {
+        billId: billing.billId,
+        amount,
+        paymentMethod: data.payment.paymentMethod,
+        referenceNumber: data.payment.referenceNumber,
+        notes: data.payment.notes,
+      } as any);
+      const after = await prisma.bill.findUnique({
+        where: { id: billing.billId },
+        select: { balanceDue: true },
+      });
+      // A part payment does not clear the gate — the badge stays until the rest
+      // is collected, but the work is admitted either way.
+      paymentVerified = Number(after?.balanceDue ?? 0) <= 0;
+      deferredReason = paymentVerified ? null : (data.deferReason?.trim() || 'Part payment collected');
+    }
+  } else if (data.deferReason) {
+    // Accepted without collecting — TPA / insurance / credit / pay later.
+    paymentVerified = false;
+    deferredReason = data.deferReason.trim();
+  } else if ((billing?.balanceDue ?? 0) <= 0 && billing?.billId) {
+    // Nothing outstanding (front desk already collected, or a zero-value order).
+    paymentVerified = true;
+    deferredReason = null;
+  }
+
+  // 3 — admit + assign.
   const updated = await prisma.labOrder.update({
     where: { id },
     data: {
       assignedToId: data.assignedToId ?? order.assignedToId,
       acceptedAt: new Date(),
       acceptedBy: acceptorUserId,
+      paymentVerified,
+      paymentVerifiedBy: paymentVerified ? (order.paymentVerifiedBy ?? acceptorUserId) : null,
+      paymentVerifiedAt: paymentVerified ? (order.paymentVerifiedAt ?? new Date()) : null,
+      paymentDeferredReason: deferredReason,
       // Move ordered → received once accepted (sample may already be in transit)
       status: order.status === 'ordered' ? 'received' : order.status,
       notes: data.notes ?? order.notes,
@@ -850,21 +1062,44 @@ export async function acceptLabOrder(
     },
   });
 
-  logger.info({ tenantId, orderId: id, assignedToId: data.assignedToId }, 'Lab order accepted');
+  // Tell whoever now owns the work that it is theirs.
+  if (data.assignedToId && data.assignedToId !== order.assignedToId) {
+    void safeNotify({
+      tenantId,
+      userId: data.assignedToId,
+      title: 'Lab order assigned to you',
+      message: `${updated.patient.firstName} ${updated.patient.lastName ?? ''} — ${updated.labOrderItems.length} test(s) ready to run.`.trim(),
+      notificationType: 'lab_result',
+      referenceType: 'lab_order',
+      referenceId: id,
+    });
+  }
+
+  logger.info(
+    { tenantId, orderId: id, assignedToId: data.assignedToId, mode: billing?.mode, paymentVerified },
+    'Lab order accepted',
+  );
   void safeLabAudit({
     tenantId,
     userId: acceptorUserId,
     action: 'update',
     entityType: 'lab_order',
     entityId: id,
-    description: 'Lab order accepted by lab',
+    description: billing
+      ? `Lab order accepted — ₹${billing.chargeAmount} ${billing.mode === 'ip' ? `posted to the ${billing.admissionType ?? 'ip'} ledger` : `billed on ${billing.billNumber}`}`
+      : 'Lab order accepted by lab',
     newValues: {
       assignedToId: updated.assignedToId,
       acceptedAt: updated.acceptedAt,
       status: updated.status,
+      billId: billing?.billId ?? null,
+      billMode: billing?.mode ?? null,
+      paymentVerified,
+      paymentDeferredReason: deferredReason,
     },
   });
-  return updated;
+
+  return { ...updated, billing };
 }
 
 export async function cancelLabOrder(tenantId: string, id: string, reason?: string) {

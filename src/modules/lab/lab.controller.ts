@@ -237,6 +237,27 @@ export async function acceptLabOrder(
   }
 }
 
+/**
+ * What the accept dialog needs before it can ask for money: the priced lines,
+ * whether this patient settles at the counter or on their stay ledger, and
+ * anything already collected. Posts nothing.
+ */
+export async function getLabOrderBillingPreview(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const preview = await labService.getLabOrderBillingPreview(
+      req.user!.tenantId,
+      req.params.id as string,
+    );
+    sendResponse({ res, message: 'Lab order billing preview', data: preview });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // ============================================================
 // Samples
 // ============================================================

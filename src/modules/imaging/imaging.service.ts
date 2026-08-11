@@ -2,8 +2,16 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
+import { istDayRange, istDayStart, istDayEnd } from '../../shared/date.utils';
+import {
+  billDiagnosticOrder,
+  resolveDiagnosticPayer,
+  createPayment,
+  type DiagnosticChargeInput,
+} from '../billing/billing.service';
 import type {
   CreateImagingRequestInput,
+  AcceptImagingRequestInput,
   UpdateImagingRequestInput,
   GetImagingRequestsQuery,
   ScheduleImagingInput,
@@ -38,7 +46,64 @@ async function safeNotify(params: {
     });
   } catch (err) {
     logger.warn({ err, ...params }, 'Failed to dispatch imaging notification');
+    return;
   }
+}
+
+/**
+ * Ping every radiology admin in the tenant — used when a radiologist marks a
+ * study done so the approval queue does not depend on somebody refreshing.
+ * Mirrors the lab's notifyLabSupervisors.
+ */
+async function notifyRadiologyAdmins(
+  tenantId: string,
+  title: string,
+  message: string,
+  referenceType: string,
+  referenceId: string,
+) {
+  try {
+    const admins = await prisma.user.findMany({
+      where: {
+        tenantId,
+        isActive: true,
+        userRoles: { some: { role: { name: 'radiology_admin' } } },
+      },
+      select: { id: true },
+    });
+    await Promise.all(
+      admins.map((a) =>
+        safeNotify({
+          tenantId,
+          userId: a.id,
+          title,
+          message,
+          notificationType: 'general',
+          referenceType,
+          referenceId,
+        }),
+      ),
+    );
+  } catch (err) {
+    logger.warn({ err, tenantId }, 'Failed to notify radiology admins');
+  }
+}
+
+/**
+ * Roles that work INSIDE radiology and therefore see a study before it is
+ * approved. Everyone else — the ordering doctor, nurses, the ward — sees the
+ * request but not its unreleased contents, exactly as the lab already does
+ * with an unpublished report.
+ */
+const RADIOLOGY_INSIDER_ROLES = new Set([
+  'radiologist',
+  'radiology_admin',
+  'admin',
+  'super_admin',
+]);
+
+export function isImagingReportReleased(status?: string | null): boolean {
+  return status === 'published';
 }
 
 // Resolve a tariff price for a given imaging type (best-effort lookup against ServiceTariff).
@@ -121,93 +186,127 @@ export async function getImagingCatalog(
   }));
 }
 
-// Auto-add a radiology line item to the patient's draft bill. When the order
-// was placed from a catalog study, `preferredTariffId` prices it exactly off
-// that tariff; otherwise we fall back to the modality/body-part lookup.
-export async function autoLinkImagingToBill(
+/**
+ * Price a study as a billable line. When the doctor ordered it off the catalog,
+ * `preferredTariffId` prices it exactly off that tariff; otherwise fall back to
+ * the modality / body-part lookup.
+ */
+async function buildImagingCharge(
   tenantId: string,
   requestId: string,
   preferredTariffId?: string | null,
 ) {
+  const request = await prisma.imagingRequest.findFirst({
+    where: { id: requestId, tenantId },
+  });
+  if (!request) return null;
+
+  let serviceTariffId: string | null = null;
+  let price = 0;
+  if (preferredTariffId) {
+    const picked = await prisma.serviceTariff.findFirst({
+      where: { id: preferredTariffId, tenantId, category: 'radiology', isActive: true },
+    });
+    if (picked) {
+      serviceTariffId = picked.id;
+      price = Number(picked.basePrice ?? 0);
+    }
+  }
+  if (!serviceTariffId) {
+    const resolved = await lookupImagingPrice(tenantId, request.imagingType, request.bodyPart);
+    serviceTariffId = resolved.id;
+    price = resolved.price;
+  }
+
+  const charge: DiagnosticChargeInput = {
+    referenceType: 'imaging_request',
+    referenceId: requestId,
+    description: `${request.imagingType.toUpperCase()}${request.bodyPart ? ' — ' + request.bodyPart : ''}`,
+    quantity: 1,
+    unitPrice: price,
+    serviceTariffId,
+  };
+  return { request, charge };
+}
+
+/**
+ * Post a study's charge to wherever the patient settles: radiology's own
+ * counter bill for an OP patient, the admission's running ledger for an
+ * IP / Emergency / Day Care one. Globally idempotent — safe to call twice.
+ *
+ * Same rule, same helper, as the lab side.
+ */
+export async function autoLinkImagingToBill(
+  tenantId: string,
+  requestId: string,
+  preferredTariffId?: string | null,
+  userId?: string,
+) {
   try {
-    const request = await prisma.imagingRequest.findFirst({
-      where: { id: requestId, tenantId },
-    });
-    if (!request) return;
-
-    let bill = await prisma.bill.findFirst({
-      where: { tenantId, visitId: request.visitId, status: 'draft' },
-    });
-    if (!bill) {
-      const billNumber = `BILL-${Date.now()}`;
-      bill = await prisma.bill.create({
-        data: {
-          tenantId,
-          billNumber,
-          patientId: request.patientId,
-          visitId: request.visitId,
-          billDate: new Date(),
-          status: 'draft',
-        },
-      });
-    }
-
-    const existing = await prisma.billItem.findFirst({
-      where: {
-        billId: bill.id,
-        referenceType: 'imaging_request',
-        referenceId: requestId,
-      },
-    });
-    if (existing) return;
-
-    // Exact price from the picked catalog study, else resolve by modality/body part.
-    let serviceTariffId: string | null = null;
-    let price = 0;
-    if (preferredTariffId) {
-      const picked = await prisma.serviceTariff.findFirst({
-        where: { id: preferredTariffId, tenantId, category: 'radiology', isActive: true },
-      });
-      if (picked) {
-        serviceTariffId = picked.id;
-        price = Number(picked.basePrice ?? 0);
-      }
-    }
-    if (!serviceTariffId) {
-      const resolved = await lookupImagingPrice(tenantId, request.imagingType, request.bodyPart);
-      serviceTariffId = resolved.id;
-      price = resolved.price;
-    }
-
-    await prisma.billItem.create({
-      data: {
-        billId: bill.id,
-        serviceTariffId: serviceTariffId ?? undefined,
-        description: `${request.imagingType.toUpperCase()}${request.bodyPart ? ' — ' + request.bodyPart : ''}`,
-        category: 'radiology',
-        quantity: 1,
-        unitPrice: price,
-        totalAmount: price,
-        referenceType: 'imaging_request',
-        referenceId: requestId,
-        isAutoPulled: true,
-      },
-    });
-
-    const items = await prisma.billItem.findMany({ where: { billId: bill.id } });
-    const subtotal = items.reduce((sum, x) => sum + Number(x.totalAmount ?? 0), 0);
-    await prisma.bill.update({
-      where: { id: bill.id },
-      data: {
-        subtotal,
-        totalAmount: subtotal,
-        patientPayableAmount: subtotal,
-        balanceDue: subtotal - Number(bill.amountPaid ?? 0),
-      },
+    const built = await buildImagingCharge(tenantId, requestId, preferredTariffId);
+    if (!built || built.charge.unitPrice <= 0) return null;
+    return await billDiagnosticOrder(tenantId, userId ?? built.request.orderedBy, {
+      source: 'imaging',
+      patientId: built.request.patientId,
+      visitId: built.request.visitId,
+      charges: [built.charge],
     });
   } catch (err) {
     logger.warn({ err, requestId }, 'Failed to auto-link imaging request to bill');
+    return null;
   }
+}
+
+/** Read-only preview for the accept dialog — mirrors getLabOrderBillingPreview. */
+export async function getImagingBillingPreview(tenantId: string, requestId: string) {
+  const built = await buildImagingCharge(tenantId, requestId);
+  if (!built) throw AppError.notFound('Imaging request not found');
+
+  const payer = await resolveDiagnosticPayer(
+    tenantId,
+    built.request.patientId,
+    built.request.visitId,
+  );
+
+  const existing = await prisma.billItem.findFirst({
+    where: {
+      referenceType: 'imaging_request',
+      referenceId: requestId,
+      bill: { tenantId, status: { not: 'cancelled' } },
+    },
+    select: {
+      bill: {
+        select: { id: true, billNumber: true, status: true, totalAmount: true, amountPaid: true, balanceDue: true },
+      },
+    },
+  });
+
+  return {
+    requestId,
+    mode: payer.mode,
+    admissionId: payer.admissionId,
+    admissionType: payer.admissionType,
+    lines: [
+      {
+        referenceId: requestId,
+        description: built.charge.description,
+        amount: built.charge.unitPrice,
+      },
+    ],
+    chargeAmount: built.charge.unitPrice,
+    unpricedCount: built.charge.unitPrice > 0 ? 0 : 1,
+    alreadyBilled: !!existing?.bill,
+    bill: existing?.bill
+      ? {
+          id: existing.bill.id,
+          billNumber: existing.bill.billNumber,
+          status: existing.bill.status,
+          totalAmount: Number(existing.bill.totalAmount ?? 0),
+          amountPaid: Number(existing.bill.amountPaid ?? 0),
+          balanceDue: Number(existing.bill.balanceDue ?? 0),
+        }
+      : null,
+  };
 }
 
 // ============================================================
@@ -257,14 +356,165 @@ export async function createImagingRequest(
 
   logger.info({ tenantId, imagingRequestId: request.id }, 'Imaging request created');
 
-  // Auto-link to draft bill (best effort). When the doctor picked a catalog
-  // study, price it exactly off that tariff.
-  void autoLinkImagingToBill(tenantId, request.id, (data as any).serviceTariffId ?? null);
-
+  // NOT billed here — the charge is posted when RADIOLOGY ACCEPTS the study.
+  // Billing on the doctor's click put a line on the patient's bill for a scan
+  // the department had not yet agreed to do. The tariff the doctor picked is
+  // remembered on the request's notes-free path via the accept step, which
+  // re-resolves it from the modality/body part.
   return request;
 }
 
-export async function getImagingRequests(tenantId: string, query: GetImagingRequestsQuery) {
+/**
+ * Accept an imaging request — the radiology admin's single act at their own
+ * counter. Identical in shape to acceptLabOrder: charge, settle, admit, assign.
+ *
+ * Replaces the bare "Verify Payment" flag, which recorded that somebody had
+ * looked at a bill without taking any money or moving the study anywhere.
+ */
+export async function acceptImagingRequest(
+  tenantId: string,
+  id: string,
+  acceptorUserId: string,
+  data: AcceptImagingRequestInput,
+) {
+  const request = await prisma.imagingRequest.findFirst({ where: { id, tenantId } });
+  if (!request) throw AppError.notFound('Imaging request not found');
+  if (request.status === 'cancelled' || request.status === 'no_show') {
+    throw AppError.badRequest('Cannot accept a closed request — reopen it first');
+  }
+  if (request.status === 'completed') {
+    throw AppError.badRequest('Cannot accept a completed request');
+  }
+
+  if (data.assignedTechnicianId) {
+    const person = await prisma.user.findFirst({
+      where: { id: data.assignedTechnicianId, tenantId, isActive: true },
+    });
+    if (!person) throw AppError.badRequest('Assigned user not found in tenant');
+  }
+
+  // 1 — charge.
+  const billing = await autoLinkImagingToBill(
+    tenantId,
+    id,
+    data.serviceTariffId ?? null,
+    acceptorUserId,
+  );
+
+  // 2 — settle.
+  let paymentVerified = request.paymentVerified;
+  let deferredReason: string | null = request.paymentDeferredReason;
+
+  if (billing?.mode === 'ip') {
+    paymentVerified = true;
+    deferredReason = null;
+  } else if (data.payment) {
+    if (!billing?.billId) {
+      throw AppError.badRequest('There is nothing to collect on this request.');
+    }
+    const due = billing.balanceDue ?? 0;
+    if (due <= 0) {
+      paymentVerified = true;
+      deferredReason = null;
+    } else {
+      const amount = Math.min(data.payment.amount ?? due, due);
+      if (amount <= 0) throw AppError.badRequest('Enter an amount to collect');
+      await createPayment(tenantId, acceptorUserId, {
+        billId: billing.billId,
+        amount,
+        paymentMethod: data.payment.paymentMethod,
+        referenceNumber: data.payment.referenceNumber,
+        notes: data.payment.notes,
+      } as any);
+      const after = await prisma.bill.findUnique({
+        where: { id: billing.billId },
+        select: { balanceDue: true },
+      });
+      paymentVerified = Number(after?.balanceDue ?? 0) <= 0;
+      deferredReason = paymentVerified ? null : (data.deferReason?.trim() || 'Part payment collected');
+    }
+  } else if (data.deferReason) {
+    paymentVerified = false;
+    deferredReason = data.deferReason.trim();
+  } else if (billing?.billId && (billing.balanceDue ?? 0) <= 0) {
+    paymentVerified = true;
+    deferredReason = null;
+  } else if (!billing) {
+    // Nothing to charge (no tariff priced for this modality) — accepting must
+    // not be blocked by a catalog gap.
+    paymentVerified = true;
+    deferredReason = null;
+  }
+
+  // 3 — admit + assign.
+  const now = new Date();
+  const updated = await prisma.imagingRequest.update({
+    where: { id },
+    data: {
+      acceptedAt: now,
+      acceptedBy: acceptorUserId,
+      assignedTechnicianId: data.assignedTechnicianId ?? request.assignedTechnicianId,
+      paymentVerified,
+      paymentVerifiedBy: paymentVerified ? (request.paymentVerifiedBy ?? acceptorUserId) : null,
+      paymentVerifiedAt: paymentVerified ? (request.paymentVerifiedAt ?? now) : null,
+      paymentDeferredReason: deferredReason,
+      notes: data.notes ?? request.notes,
+    },
+    include: {
+      patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+      orderer: { select: { id: true, firstName: true, lastName: true } },
+      assignedTechnician: { select: { id: true, firstName: true, lastName: true } },
+      acceptedByUser: { select: { id: true, firstName: true, lastName: true } },
+    },
+  });
+
+  if (data.assignedTechnicianId && data.assignedTechnicianId !== request.assignedTechnicianId) {
+    await safeNotify({
+      tenantId,
+      userId: data.assignedTechnicianId,
+      title: 'Imaging study assigned to you',
+      message: `${updated.patient.firstName} ${updated.patient.lastName ?? ''} — ${updated.imagingType.toUpperCase()}${updated.bodyPart ? ` ${updated.bodyPart}` : ''}.`.trim(),
+      notificationType: 'general',
+      referenceType: 'imaging_request',
+      referenceId: id,
+    });
+  }
+  await safeNotify({
+    tenantId,
+    userId: updated.orderedBy,
+    title: 'Imaging request accepted',
+    message: `Radiology has accepted ${updated.imagingType.toUpperCase()}${updated.bodyPart ? ' — ' + updated.bodyPart : ''}.`,
+    notificationType: 'general',
+    referenceType: 'imaging_request',
+    referenceId: id,
+  });
+
+  logger.info(
+    { tenantId, imagingRequestId: id, mode: billing?.mode, paymentVerified },
+    'Imaging request accepted',
+  );
+  return { ...updated, billing };
+}
+
+/**
+ * Still open more than 24 hours after it was raised, with nothing published.
+ *
+ * Declared once — the dashboard count and the `overdue=true` filter both use it,
+ * so the number on the card and the rows underneath it cannot disagree. Same
+ * shape as the lab's OVERDUE_WHERE.
+ */
+export const IMAGING_OVERDUE_WHERE = (tenantId: string, before: Date) => ({
+  tenantId,
+  status: { notIn: ['completed', 'cancelled', 'no_show'] as any },
+  createdAt: { lt: before },
+  OR: [{ imagingResult: null }, { imagingResult: { status: { not: 'published' as any } } }],
+});
+
+export async function getImagingRequests(
+  tenantId: string,
+  query: GetImagingRequestsQuery,
+  actorRoles: string[] = [],
+) {
   const { skip, take, page, limit } = getPaginationParams(query);
 
   const where: any = { tenantId };
@@ -272,6 +522,14 @@ export async function getImagingRequests(tenantId: string, query: GetImagingRequ
   if ((query as any).closed) {
     // Closed / No-show tab: terminal admin-closed requests in one call.
     where.status = { in: ['cancelled', 'no_show'] };
+  } else if ((query as any).statuses) {
+    // Several statuses at once — a worklist wants "everything still open",
+    // which a single enum cannot express. Same param the lab list takes.
+    const list = String((query as any).statuses)
+      .split(',')
+      .map((x) => x.trim())
+      .filter(Boolean);
+    if (list.length) where.status = { in: list as any };
   } else if (query.status) {
     where.status = query.status;
   } else {
@@ -306,22 +564,44 @@ export async function getImagingRequests(tenantId: string, query: GetImagingRequ
     where.paymentVerified = (query as any).paymentVerified;
   }
 
+  // Accepted / not yet accepted — the admin's intake queue, mirroring the lab.
+  if ((query as any).accepted !== undefined) {
+    where.acceptedAt = (query as any).accepted ? { not: null } : null;
+  }
+
+  // Nobody has picked it up yet.
+  if ((query as any).unassigned) {
+    where.assignedTechnicianId = null;
+  }
+
+  // Whole IST days. This used to bound the day with a bare `new Date(date)`,
+  // which is midnight UTC — 05:30 IST — so "today" ran from half past five this
+  // morning to half past five tomorrow and moved early-morning studies onto the
+  // wrong day. The lab list was fixed for this; radiology had the same bug.
   if (query.date) {
-    // Scheduling was removed, so this filters by ORDER date (createdAt) — the
-    // radiology dashboard's "show me this day's orders" control.
-    const start = new Date(query.date);
-    if (!isNaN(start.getTime())) {
-      const end = new Date(start);
-      end.setDate(end.getDate() + 1);
-      where.createdAt = { gte: start, lt: end };
-    }
+    const { start, end } = istDayRange(query.date);
+    where.createdAt = { ...where.createdAt, gte: start, lte: end };
   }
 
   if (query.fromDate) {
-    where.createdAt = { ...where.createdAt, gte: new Date(query.fromDate) };
+    where.createdAt = { ...where.createdAt, gte: istDayStart(query.fromDate) };
   }
   if (query.toDate) {
-    where.createdAt = { ...where.createdAt, lte: new Date(query.toDate) };
+    where.createdAt = { ...where.createdAt, lte: istDayEnd(query.toDate) };
+  }
+
+  // Past its 24-hour SLA with nothing published. Applied after the status
+  // clauses above so it wins — it IS a status statement.
+  //
+  // Its "not published" clause goes under AND, not OR: the search below also
+  // writes `where.OR`, and whichever ran last would silently replace the other.
+  if ((query as any).overdue) {
+    const { OR: notPublished, ...rest } = IMAGING_OVERDUE_WHERE(
+      tenantId,
+      new Date(Date.now() - 24 * 60 * 60 * 1000),
+    );
+    Object.assign(where, rest);
+    where.AND = [...(where.AND ?? []), { OR: notPublished }];
   }
 
   if (query.search) {
@@ -379,6 +659,7 @@ export async function getImagingRequests(tenantId: string, query: GetImagingRequ
               id: true,
               billNumber: true,
               status: true,
+              admissionId: true,
               amountPaid: true,
               totalAmount: true,
               balanceDue: true,
@@ -401,15 +682,30 @@ export async function getImagingRequests(tenantId: string, query: GetImagingRequ
     // in case.
     billByRequestId.set(bi.referenceId!, bi);
   }
+
+  // A report the radiology admin has not approved is not a report yet. Outside
+  // the department the row still shows — the doctor needs to know their scan is
+  // running and can chase it — but the result and its files are withheld and
+  // flagged `awaitingApproval`. This is the same rule the lab has applied to
+  // unpublished reports since the supervisor gate went in; radiology had no
+  // gate at all, so a doctor could open a half-finished study.
+  const isInsider = actorRoles.some((r) => RADIOLOGY_INSIDER_ROLES.has(r));
+
   const decorated = requests.map((r) => {
     const bi = billByRequestId.get(r.id);
+    const released = isImagingReportReleased(r.imagingResult?.status);
     return {
       ...r,
+      released,
+      awaitingApproval: !!r.imagingResult && !released,
+      imagingResult: isInsider || released ? r.imagingResult : null,
       linkedBill: bi
         ? {
             id: bi.bill?.id,
             billNumber: bi.bill?.billNumber,
             status: bi.bill?.status,
+            // An IP bill is the stay ledger — never collected at this counter.
+            isLedger: !!bi.bill?.admissionId,
             amountPaid: bi.bill?.amountPaid,
             totalAmount: bi.bill?.totalAmount,
             balanceDue: bi.bill?.balanceDue,
@@ -870,10 +1166,13 @@ export async function getImagingResults(tenantId: string, query: GetImagingResul
   };
 
   if ((query as any).pendingApproval) {
-    // Admin "Awaiting Approval" queue: a file has been uploaded (request
-    // completed) but the report isn't published yet.
-    where.imagingRequest = { tenantId, status: 'completed' };
-    where.status = { not: 'published' };
+    // Admin "Awaiting Approval" queue: exactly what the radiologist has marked
+    // done. It used to be "request completed and not published", which swept in
+    // drafts the radiologist was still working on.
+    where.status = 'finalized';
+  } else if ((query as any).draft) {
+    // The radiologist's own bench: still being worked on, still editable.
+    where.status = 'draft';
   } else if (query.status) {
     where.status = query.status;
   }
@@ -1047,6 +1346,127 @@ export async function addImagingReport(
   return updated;
 }
 
+/**
+ * Mark as Done — the radiologist hands a finished study to the admin.
+ *
+ * This is the counterpart of the lab technician marking every test done: up to
+ * this point the result is a DRAFT they own and can keep editing; afterwards it
+ * sits in the admin's approval queue and only the admin's Approve & Publish
+ * releases it to the doctor and the patient.
+ */
+export async function submitImagingResult(
+  tenantId: string,
+  id: string,
+  userId: string,
+  impression?: string,
+) {
+  const result = await prisma.imagingResult.findFirst({
+    where: { id, imagingRequest: { tenantId } },
+    select: { id: true, status: true, imagingRequestId: true, impression: true },
+  });
+  if (!result) throw AppError.notFound('Imaging result not found');
+  if (result.status === 'published') {
+    throw AppError.badRequest('This report is already published.');
+  }
+
+  // The uploaded files ARE the report — submitting an empty one would put
+  // nothing in front of the approver.
+  const attachmentCount = await prisma.imagingAttachment.count({
+    where: { imagingRequestId: result.imagingRequestId, deletedAt: null },
+  });
+  if (attachmentCount === 0) {
+    throw AppError.badRequest('Upload the study files before marking this done.');
+  }
+
+  const [updated] = await prisma.$transaction([
+    prisma.imagingResult.update({
+      where: { id },
+      data: {
+        status: 'finalized',
+        radiologistId: userId,
+        ...(impression !== undefined ? { impression } : {}),
+      },
+      include: {
+        imagingRequest: { select: { id: true, imagingType: true, bodyPart: true } },
+        patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+        radiologist: { select: { id: true, firstName: true, lastName: true } },
+      },
+    }),
+    prisma.imagingRequest.update({
+      where: { id: result.imagingRequestId },
+      data: { status: 'completed', completedAt: new Date() },
+    }),
+  ]);
+
+  void notifyRadiologyAdmins(
+    tenantId,
+    'Radiology report awaiting approval',
+    `${updated.patient.firstName} ${updated.patient.lastName ?? ''} — ${updated.imagingRequest.imagingType.toUpperCase()}${updated.imagingRequest.bodyPart ? ` ${updated.imagingRequest.bodyPart}` : ''} is ready for review.`.trim(),
+    'imaging_result',
+    id,
+  );
+
+  logger.info({ tenantId, imagingResultId: id, userId }, 'Imaging result submitted for approval');
+  return updated;
+}
+
+/**
+ * Send a submitted report back to the radiologist — the admin's "not yet"
+ * answer, so a report that needs another series or a clearer image can be
+ * reopened instead of being published or abandoned. Mirrors the lab supervisor
+ * re-opening a report for re-submission.
+ */
+export async function reopenImagingResult(
+  tenantId: string,
+  id: string,
+  userId: string,
+  reason?: string,
+) {
+  const result = await prisma.imagingResult.findFirst({
+    where: { id, imagingRequest: { tenantId } },
+    select: { id: true, status: true, imagingRequestId: true, radiologistId: true },
+  });
+  if (!result) throw AppError.notFound('Imaging result not found');
+  if (result.status === 'published') {
+    throw AppError.badRequest('A published report cannot be sent back — publish a correction instead.');
+  }
+  if (result.status !== 'finalized') {
+    throw AppError.badRequest('This report is already a draft with the radiologist.');
+  }
+
+  const [updated] = await prisma.$transaction([
+    prisma.imagingResult.update({
+      where: { id },
+      data: { status: 'draft' },
+      include: {
+        imagingRequest: { select: { id: true, imagingType: true, bodyPart: true } },
+        patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+      },
+    }),
+    prisma.imagingRequest.update({
+      where: { id: result.imagingRequestId },
+      data: { status: 'in_progress', completedAt: null },
+    }),
+  ]);
+
+  if (result.radiologistId) {
+    await safeNotify({
+      tenantId,
+      userId: result.radiologistId,
+      title: 'Radiology report sent back',
+      message: reason?.trim()
+        ? `Sent back for changes: ${reason.trim()}`
+        : 'The radiology admin sent this report back for changes.',
+      notificationType: 'general',
+      referenceType: 'imaging_result',
+      referenceId: id,
+    });
+  }
+
+  logger.info({ tenantId, imagingResultId: id, userId }, 'Imaging result reopened to draft');
+  return updated;
+}
+
 export async function verifyImagingResult(tenantId: string, id: string, userId: string) {
   const result = await prisma.imagingResult.findFirst({
     where: { id, imagingRequest: { tenantId } },
@@ -1060,9 +1480,16 @@ export async function verifyImagingResult(tenantId: string, id: string, userId: 
     throw AppError.badRequest('Imaging result is already verified and published');
   }
 
-  // The radiologist finalize step was removed — the radiology admin approves &
-  // publishes the uploaded study directly. Guard that an actual file exists so
-  // an empty result can never be published.
+  // Only a report the radiologist has marked done can be approved. A draft is
+  // still being worked on — publishing one would release half a study to the
+  // doctor and the patient behind the radiologist's back.
+  if (result.status !== 'finalized') {
+    throw AppError.badRequest(
+      'This study is still a draft with the radiologist. It can be approved once they mark it done.',
+    );
+  }
+
+  // Belt and braces: the uploaded files ARE the report.
   const attachmentCount = await prisma.imagingAttachment.count({
     where: { imagingRequestId: result.imagingRequestId, deletedAt: null },
   });
@@ -1332,10 +1759,10 @@ export async function getImagingBillingSummary(
 }
 
 export async function getImagingDashboard(tenantId: string) {
-  const todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
-  const tomorrowStart = new Date(todayStart);
-  tomorrowStart.setDate(tomorrowStart.getDate() + 1);
+  // Whole IST days — `setHours(0,0,0,0)` is midnight in the SERVER's zone, so
+  // every "today" count silently shifted when the box was not on IST.
+  const { start: todayStart, end: todayEnd } = istDayRange();
+  const tomorrowStart = new Date(todayEnd.getTime() + 1);
 
   const last24h = new Date();
   last24h.setHours(last24h.getHours() - 24);
@@ -1355,6 +1782,10 @@ export async function getImagingDashboard(tenantId: string) {
     overdueScheduledCount,
     noShowCount,
     closedTodayCount,
+    awaitingAcceptCount,
+    draftCount,
+    unassignedCount,
+    overdueCount,
   ] = await Promise.all([
     // New requests sitting in the radiology_admin queue waiting for payment
     // verification before they reach the radiologist.
@@ -1374,16 +1805,11 @@ export async function getImagingDashboard(tenantId: string) {
     prisma.imagingRequest.count({
       where: { tenantId, urgency: 'stat', createdAt: { gte: todayStart, lt: tomorrowStart } },
     }),
-    // Awaiting admin approval = a file has been uploaded (request is completed)
-    // but the report isn't published yet. The radiologist finalize step was
-    // removed, so this is simply the not-yet-published results on completed
-    // studies — the radiology_admin's "pending sign-off" queue. Empty drafts
-    // (no file → request not completed) are excluded by the request filter.
+    // Awaiting admin approval = exactly what a radiologist has marked done.
+    // This used to be "request completed and not published", which counted
+    // drafts the radiologist was still working on.
     prisma.imagingResult.count({
-      where: {
-        imagingRequest: { tenantId, status: 'completed' },
-        status: { not: 'published' },
-      },
+      where: { imagingRequest: { tenantId }, status: 'finalized' },
     }),
     prisma.imagingResult.count({
       where: {
@@ -1414,6 +1840,27 @@ export async function getImagingDashboard(tenantId: string) {
         tenantId,
         closedAt: { gte: todayStart, lt: tomorrowStart },
       },
+    }),
+    // The admin's intake queue: raised by a doctor, not yet accepted.
+    prisma.imagingRequest.count({
+      where: { tenantId, acceptedAt: null, status: { notIn: ['cancelled', 'no_show', 'completed'] } },
+    }),
+    // On a radiologist's bench right now — uploaded but not marked done.
+    prisma.imagingResult.count({
+      where: { imagingRequest: { tenantId }, status: 'draft' },
+    }),
+    // Accepted but nobody owns it.
+    prisma.imagingRequest.count({
+      where: {
+        tenantId,
+        acceptedAt: { not: null },
+        assignedTechnicianId: null,
+        status: { notIn: ['cancelled', 'no_show', 'completed'] },
+      },
+    }),
+    // Past its 24-hour SLA — the same predicate the overdue filter uses.
+    prisma.imagingRequest.count({
+      where: IMAGING_OVERDUE_WHERE(tenantId, last24h) as any,
     }),
   ]);
 
@@ -1468,6 +1915,12 @@ export async function getImagingDashboard(tenantId: string) {
       overdueScheduled: overdueScheduledCount,
       noShow: noShowCount,
       closedToday: closedTodayCount,
+      // The unified-flow counts, named to match the lab's dashboard so the two
+      // summary strips read the same.
+      awaitingAccept: awaitingAcceptCount,
+      draft: draftCount,
+      unassigned: unassignedCount,
+      overdue: overdueCount,
     },
     recentRequests: latestRequests,
     recentResults: latestResults,

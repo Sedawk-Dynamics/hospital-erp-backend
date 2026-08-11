@@ -20,6 +20,9 @@ import {
   imagingCatalogQuerySchema,
   scheduleImagingSchema,
   verifyImagingPaymentSchema,
+  acceptImagingRequestSchema,
+  submitImagingResultSchema,
+  reopenImagingResultSchema,
   uploadImagingResultSchema,
   getImagingResultsQuerySchema,
   imagingResultIdParamSchema,
@@ -61,12 +64,38 @@ imagingRoutes.patch('/requests/:id/schedule', authenticate, requirePermission('i
 // Payment-verify gate (2026-05-27 flow). Gated on `billing:update` so only
 // radiology_admin / admin / billing-side roles pass — radiologists cannot
 // self-clear payment because they don't have billing:update.
+//
+// Superseded by /accept below, which collects the money instead of just noting
+// that somebody looked at the bill. Kept because it is still the right action
+// for "the front desk took this at the main counter, release it" and because
+// the old client calls it.
 imagingRoutes.patch(
   '/requests/:id/verify-payment',
   authenticate,
   requirePermission('billing', 'update'),
   validate(verifyImagingPaymentSchema),
   controller.verifyImagingPayment,
+);
+
+// Accept — the radiology admin's single act: charge the study, collect at their
+// own counter (or record why not), admit it, hand it to a radiologist. Gated on
+// `billing:update` for the same reason verify-payment is: it takes money, and a
+// radiologist must not be able to clear their own work through.
+imagingRoutes.patch(
+  '/requests/:id/accept',
+  authenticate,
+  requirePermission('billing', 'update'),
+  validate(acceptImagingRequestSchema),
+  controller.acceptImagingRequest,
+);
+// Read by the accept dialog before it offers to collect. Literal subpath, so it
+// is registered alongside the other /requests/:id/<verb> routes.
+imagingRoutes.get(
+  '/requests/:id/billing-preview',
+  authenticate,
+  requirePermission('billing', 'update'),
+  validate(imagingRequestIdParamSchema),
+  controller.getImagingBillingPreview,
 );
 
 // --- Imaging Analytics (TAT, volume by modality, status mix, technician load) ---
@@ -84,7 +113,14 @@ imagingRoutes.get('/results', authenticate, requirePermission('imaging', 'read')
 imagingRoutes.get('/results/:id', authenticate, requirePermission('imaging', 'read'), validate(imagingResultIdParamSchema), controller.getImagingResultById);
 imagingRoutes.post('/results/:id/report', authenticate, requirePermission('imaging', 'create'), validate(addImagingReportSchema), controller.addImagingReport);
 imagingRoutes.patch('/results/:id', authenticate, requirePermission('imaging', 'update'), validate(editImagingResultSchema), controller.editImagingResult);
+// Mark as Done — the radiologist submits their draft for admin approval. On
+// `imaging:update` (which the radiologist has) and NOT `imaging:approve`, which
+// is exactly the line between doing the work and signing it off.
+imagingRoutes.patch('/results/:id/submit', authenticate, requirePermission('imaging', 'update'), validate(submitImagingResultSchema), controller.submitImagingResult);
 imagingRoutes.patch('/results/:id/verify', authenticate, requirePermission('imaging', 'approve'), validate(verifyImagingResultSchema), controller.verifyImagingResult);
+// Send a submitted report back for changes — the admin's "not yet", so a study
+// needing another series can be reopened instead of published or abandoned.
+imagingRoutes.patch('/results/:id/reopen', authenticate, requirePermission('imaging', 'approve'), validate(reopenImagingResultSchema), controller.reopenImagingResult);
 
 // --- Attachments (PDF reports, modality images, DICOM, video loops) ---
 // Mirrors the lab attachments pattern. Files land on disk under /uploads via

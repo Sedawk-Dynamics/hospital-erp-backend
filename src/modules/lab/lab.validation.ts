@@ -259,6 +259,12 @@ export const getLabOrdersSchema = z.object({
       .string()
       .transform((val) => val === 'true')
       .optional(),
+    // Money side of the intake queue: false = the lab admin still has to
+    // collect (or accept on credit), true = cleared to run.
+    paymentVerified: z
+      .string()
+      .transform((val) => val === 'true')
+      .optional(),
     date: z.string().optional(),
   }),
 });
@@ -299,6 +305,27 @@ export const cancelLabOrderSchema = z.object({
   }).optional(),
 });
 
+/**
+ * Money collected at the department's own counter. Shared shape between the lab
+ * and radiology accept endpoints so one dialog drives both.
+ */
+export const diagnosticPaymentSchema = z.object({
+  paymentMethod: z.enum([
+    'cash',
+    'credit_card',
+    'debit_card',
+    'upi',
+    'net_banking',
+    'cheque',
+    'insurance',
+    'other',
+  ]),
+  /** Omitted means "the whole balance" — the counter's normal case. */
+  amount: z.coerce.number().positive('Enter an amount to collect').optional(),
+  referenceNumber: z.string().max(200).optional(),
+  notes: z.string().max(500).optional(),
+});
+
 export const acceptLabOrderSchema = z.object({
   params: z.object({
     id: z.string().uuid('Invalid order ID'),
@@ -306,6 +333,14 @@ export const acceptLabOrderSchema = z.object({
   body: z.object({
     assignedToId: z.string().uuid('Invalid technician user ID').optional(),
     notes: z.string().max(500).optional(),
+    /** Collect at the lab counter as part of accepting. */
+    payment: diagnosticPaymentSchema.optional(),
+    /**
+     * Admit the order without collecting — TPA / insurance / credit / pay later.
+     * Required when there is a balance and no payment is being taken, so an
+     * unpaid order always carries the reason it was let through.
+     */
+    deferReason: z.string().min(2).max(300).optional(),
   }),
 });
 

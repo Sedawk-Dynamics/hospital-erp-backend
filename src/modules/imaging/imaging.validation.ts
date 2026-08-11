@@ -81,10 +81,63 @@ export const getImagingRequestsQuerySchema = z.object({
       .string()
       .transform((v) => v === 'true')
       .optional(),
+    // Several statuses at once, comma separated — a worklist wants "everything
+    // still open", which a single enum cannot express. Same param the lab takes.
+    statuses: z.string().optional(),
+    /** Admin intake queue: has the department accepted this study yet? */
+    accepted: z
+      .string()
+      .transform((v) => v === 'true')
+      .optional(),
+    /** Accepted but nobody owns it. */
+    unassigned: z
+      .string()
+      .transform((v) => v === 'true')
+      .optional(),
+    /** Open >24h with nothing published. */
+    overdue: z
+      .string()
+      .transform((v) => v === 'true')
+      .optional(),
   }),
 });
 
 export const imagingRequestIdParamSchema = idParam;
+
+/**
+ * Money collected at radiology's own counter — same shape as the lab's, so one
+ * dialog drives both accept flows.
+ */
+export const diagnosticPaymentSchema = z.object({
+  paymentMethod: z.enum([
+    'cash',
+    'credit_card',
+    'debit_card',
+    'upi',
+    'net_banking',
+    'cheque',
+    'insurance',
+    'other',
+  ]),
+  amount: z.coerce.number().positive('Enter an amount to collect').optional(),
+  referenceNumber: z.string().max(200).optional(),
+  notes: z.string().max(500).optional(),
+});
+
+export const acceptImagingRequestSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid imaging request ID'),
+  }),
+  body: z.object({
+    assignedTechnicianId: z.string().uuid('Invalid radiologist ID').optional(),
+    notes: z.string().max(500).optional(),
+    /** Price off an exact catalog study rather than the modality lookup. */
+    serviceTariffId: z.string().uuid().optional(),
+    payment: diagnosticPaymentSchema.optional(),
+    /** Admit without collecting — TPA / insurance / credit / pay later. */
+    deferReason: z.string().min(2).max(300).optional(),
+  }),
+});
 
 export const updateImagingRequestSchema = z.object({
   params: z.object({
@@ -181,9 +234,15 @@ export const getImagingResultsQuerySchema = z.object({
     patientId: z.string().uuid().optional(),
     fromDate: z.string().optional(),
     toDate: z.string().optional(),
-    // Admin "Awaiting Approval" queue: not-yet-published results on completed
-    // studies (i.e. a file has been uploaded but the report isn't published).
+    // Admin "Awaiting Approval" queue: exactly what a radiologist has marked
+    // done (status='finalized').
     pendingApproval: z
+      .string()
+      .transform((v) => v === 'true')
+      .optional(),
+    // The radiologist's own bench: uploaded but not yet marked done, so still
+    // editable by them.
+    draft: z
       .string()
       .transform((v) => v === 'true')
       .optional(),
@@ -224,6 +283,30 @@ export const verifyImagingResultSchema = z.object({
   }),
 });
 
+/** Radiologist's Mark as Done — hands the draft to the admin for approval. */
+export const submitImagingResultSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid imaging result ID'),
+  }),
+  body: z
+    .object({
+      impression: z.string().max(5000).optional(),
+    })
+    .optional(),
+});
+
+/** Admin sends a submitted report back to the radiologist for changes. */
+export const reopenImagingResultSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid imaging result ID'),
+  }),
+  body: z
+    .object({
+      reason: z.string().max(500).optional(),
+    })
+    .optional(),
+});
+
 export const publishImagingResultSchema = z.object({
   params: z.object({
     id: z.string().uuid('Invalid imaging result ID'),
@@ -243,6 +326,7 @@ export type CreateImagingRequestInput = z.infer<typeof createImagingRequestSchem
 export type UpdateImagingRequestInput = z.infer<typeof updateImagingRequestSchema>['body'];
 export type GetImagingRequestsQuery = z.infer<typeof getImagingRequestsQuerySchema>['query'];
 export type ScheduleImagingInput = z.infer<typeof scheduleImagingSchema>['body'];
+export type AcceptImagingRequestInput = z.infer<typeof acceptImagingRequestSchema>['body'];
 
 export type CloseImagingRequestInput = z.infer<typeof closeImagingRequestSchema>['body'];
 export type UploadImagingResultInput = z.infer<typeof uploadImagingResultSchema>['body'];

@@ -108,6 +108,10 @@ labRoutes.patch('/orders/:id/cancel', authenticate, requirePermission('lab_order
 // (lab_supervisor / admin / super_admin) and is already what result approval
 // uses, so the two supervisor acts are gated the same way.
 labRoutes.patch('/orders/:id/accept', authenticate, requirePermission('lab_orders', 'approve'), validate(acceptLabOrderSchema), controller.acceptLabOrder);
+// What accepting will cost and where it settles — read by the accept dialog
+// before it offers to collect. Registered before /orders/:id so the literal
+// subpath is not swallowed by the id route.
+labRoutes.get('/orders/:id/billing-preview', authenticate, requirePermission('lab_orders', 'approve'), validate(labOrderIdParamSchema), controller.getLabOrderBillingPreview);
 // Mark a single test on an order as done. The uploaded attachments serve as
 // the report; when every item on the order is done, this endpoint auto-
 // completes the order and publishes a LabReport for downstream readers.

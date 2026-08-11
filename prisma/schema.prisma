@@ -1562,6 +1562,7 @@ model User {
   labOrdersOrdered               LabOrder[]
   labOrdersAssigned              LabOrder[]                   @relation("LabOrderAssignee")
   labOrdersAccepted              LabOrder[]                   @relation("LabOrderAcceptor")
+  labOrderPaymentsVerified       LabOrder[]                   @relation("LabOrderPaymentVerifier")
   labOrdersExternallyCompleted   LabOrder[]                   @relation("LabOrderExternalCompleter")
   labSamplesCollected            LabSample[]
   labResultsEntered              LabResult[]
@@ -1574,6 +1575,7 @@ model User {
   imagingRequestsAssigned        ImagingRequest[]             @relation("ImagingTechnician")
   imagingRequestsExternallyDone  ImagingRequest[]             @relation("ImagingRequestExternalCompleter")
   imagingPaymentsVerified        ImagingRequest[]             @relation("ImagingPaymentVerifier")
+  imagingRequestsAccepted        ImagingRequest[]             @relation("ImagingRequestAcceptor")
   imagingRequestsClosed          ImagingRequest[]             @relation("ImagingRequestCloser")
   imagingResultsRadiologist      ImagingResult[]              @relation("ImagingRadiologist")
   imagingResultsSigned           ImagingResult[]              @relation("ImagingResultSigner")
@@ -3644,6 +3646,16 @@ model LabOrder {
   assignedToId          String?        @map("assigned_to_id")
   acceptedAt            DateTime?      @map("accepted_at")
   acceptedBy            String?        @map("accepted_by")
+  // Payment gate, mirroring ImagingRequest so both diagnostic modules run the
+  // one flow. The lab admin accepts the order at their own counter: an OP
+  // patient pays there and then, an admitted patient's charge goes straight to
+  // the IP ledger (which counts as cleared — it settles at discharge). An order
+  // may still be accepted unpaid for a TPA / credit patient, in which case the
+  // reason is recorded and the order carries an Unpaid badge until it is settled.
+  paymentVerified       Boolean        @default(false) @map("payment_verified")
+  paymentVerifiedBy     String?        @map("payment_verified_by")
+  paymentVerifiedAt     DateTime?      @map("payment_verified_at")
+  paymentDeferredReason String?        @map("payment_deferred_reason")
   urgency               Urgency        @default(routine)
   status                LabOrderStatus @default(ordered)
   isThirdParty          Boolean        @default(false) @map("is_third_party")
@@ -3666,6 +3678,7 @@ model LabOrder {
   orderer           User            @relation(fields: [orderedBy], references: [id])
   assignedTo        User?           @relation("LabOrderAssignee", fields: [assignedToId], references: [id])
   acceptedByUser    User?           @relation("LabOrderAcceptor", fields: [acceptedBy], references: [id])
+  paymentVerifier   User?           @relation("LabOrderPaymentVerifier", fields: [paymentVerifiedBy], references: [id])
   externalCompleter User?           @relation("LabOrderExternalCompleter", fields: [completedExternallyBy], references: [id])
   labOrderItems     LabOrderItem[]
   labSamples        LabSample[]
@@ -3838,6 +3851,13 @@ model ImagingRequest {
   paymentVerified       Boolean               @default(false) @map("payment_verified")
   paymentVerifiedBy     String?               @map("payment_verified_by")
   paymentVerifiedAt     DateTime?             @map("payment_verified_at")
+  // Accepting is the admin's single act: take the money (or record why it is
+  // deferred), admit the study, hand it to a radiologist. Mirrors LabOrder so
+  // both diagnostic modules read the same. `paymentVerified` above remains the
+  // gate the radiologist's queue filters on.
+  acceptedAt            DateTime?             @map("accepted_at")
+  acceptedBy            String?               @map("accepted_by")
+  paymentDeferredReason String?               @map("payment_deferred_reason")
   // Admin closure (2026-06-01). Captures requests that end without a report
   // file — patient no-show, refused, done elsewhere, not required, etc. The
   // status lands on `no_show` or `cancelled`; this preserves the reason.
@@ -3855,6 +3875,7 @@ model ImagingRequest {
   assignedTechnician User?               @relation("ImagingTechnician", fields: [assignedTechnicianId], references: [id])
   externalCompleter  User?               @relation("ImagingRequestExternalCompleter", fields: [completedExternallyBy], references: [id])
   paymentVerifier    User?               @relation("ImagingPaymentVerifier", fields: [paymentVerifiedBy], references: [id])
+  acceptedByUser     User?               @relation("ImagingRequestAcceptor", fields: [acceptedBy], references: [id])
   closer             User?               @relation("ImagingRequestCloser", fields: [closedBy], references: [id])
   imagingResult      ImagingResult?
   attachments        ImagingAttachment[]

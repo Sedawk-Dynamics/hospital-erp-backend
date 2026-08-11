@@ -134,21 +134,23 @@ export async function createImagingAttachment(
     },
   });
 
-  // Now that a real file is attached, the study has actually been performed —
-  // advance the request to `completed`. This is the ONLY place a request gets
-  // completed (the draft-result create no longer does it), so a request can
-  // never show completed without a file. Skip terminal states (already
-  // completed, or admin-closed as cancelled/no_show).
-  if (!['completed', 'cancelled', 'no_show'].includes(request.status)) {
+  // A file means work has started, not that it is finished. The study moves to
+  // `in_progress` and the result stays a DRAFT the radiologist can keep editing
+  // — add another series, swap a wrong file, remove one — until they explicitly
+  // Mark as Done (submitImagingResult), which is what hands it to the admin for
+  // approval. Uploading used to complete the request outright, so a half-loaded
+  // study appeared in the approval queue with no way back.
+  // Skip terminal states (completed, or admin-closed as cancelled/no_show).
+  if (!['completed', 'cancelled', 'no_show', 'in_progress'].includes(request.status)) {
     await prisma.imagingRequest
       .update({
         where: { id: imagingRequestId },
-        data: { status: 'completed', completedAt: new Date() },
+        data: { status: 'in_progress' },
       })
       .catch((err) =>
         logger.warn(
           { err, imagingRequestId },
-          'Failed to mark imaging request completed after attachment upload',
+          'Failed to move imaging request to in_progress after attachment upload',
         ),
       );
   }

@@ -35,7 +35,13 @@ export async function getImagingCatalog(req: AuthenticatedRequest, res: Response
 export async function getImagingRequests(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const tenantId = req.user!.tenantId;
-    const { requests, total, page, limit } = await imagingService.getImagingRequests(tenantId, req.query as any);
+    // Roles decide whether unreleased result content comes back: radiology
+    // staff see their own drafts, everyone else waits for admin approval.
+    const { requests, total, page, limit } = await imagingService.getImagingRequests(
+      tenantId,
+      req.query as any,
+      req.user!.roles ?? [],
+    );
     sendPaginatedResponse(res, requests, total, page, limit, 'Imaging requests retrieved successfully');
   } catch (err) {
     next(err);
@@ -115,6 +121,37 @@ export async function verifyImagingPayment(req: AuthenticatedRequest, res: Respo
   }
 }
 
+/**
+ * The radiology admin's one act: charge the study, take the money (or record
+ * why not), admit it and hand it to a radiologist.
+ */
+export async function acceptImagingRequest(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const request = await imagingService.acceptImagingRequest(
+      req.user!.tenantId,
+      req.params.id as string,
+      req.user!.userId,
+      req.body,
+    );
+    sendResponse({ res, message: 'Imaging request accepted', data: request });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** What accepting will cost and where it settles. Posts nothing. */
+export async function getImagingBillingPreview(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const preview = await imagingService.getImagingBillingPreview(
+      req.user!.tenantId,
+      req.params.id as string,
+    );
+    sendResponse({ res, message: 'Imaging billing preview', data: preview });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // ============================================================
 // Imaging Results
 // ============================================================
@@ -177,6 +214,36 @@ export async function verifyImagingResult(req: AuthenticatedRequest, res: Respon
     const userId = req.user!.userId;
     const result = await imagingService.verifyImagingResult(tenantId, req.params.id as string, userId);
     sendResponse({ res, message: 'Imaging result verified successfully', data: result });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** Radiologist's Mark as Done — draft → awaiting admin approval. */
+export async function submitImagingResult(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const result = await imagingService.submitImagingResult(
+      req.user!.tenantId,
+      req.params.id as string,
+      req.user!.userId,
+      req.body?.impression,
+    );
+    sendResponse({ res, message: 'Report marked done — sent for admin approval', data: result });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** Admin sends a submitted report back to the radiologist for changes. */
+export async function reopenImagingResult(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const result = await imagingService.reopenImagingResult(
+      req.user!.tenantId,
+      req.params.id as string,
+      req.user!.userId,
+      req.body?.reason,
+    );
+    sendResponse({ res, message: 'Report sent back to the radiologist', data: result });
   } catch (err) {
     next(err);
   }

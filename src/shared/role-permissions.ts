@@ -196,10 +196,19 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'patients', action: 'read' },
     ],
 
+    // Lab Supervisor doubles as the lab's own ADMIN: they accept incoming
+    // orders at the lab counter, which means raising the bill, collecting the
+    // money and handing over a receipt — so they need the billing/payment
+    // surface radiology_admin already had. Without payments:create the accept
+    // dialog can price an order and then 403 on the collection.
     lab_supervisor: [
       { module: 'lab_orders', action: 'read' }, { module: 'lab_orders', action: 'create' }, { module: 'lab_orders', action: 'update' }, { module: 'lab_orders', action: 'approve' },
       { module: 'lab_reports', action: 'read' }, { module: 'lab_reports', action: 'create' }, { module: 'lab_reports', action: 'update' }, { module: 'lab_reports', action: 'approve' },
       { module: 'patients', action: 'read' },
+      { module: 'visits', action: 'read' },
+      { module: 'billing', action: 'read' }, { module: 'billing', action: 'create' },
+      { module: 'billing', action: 'update' },
+      { module: 'payments', action: 'read' }, { module: 'payments', action: 'create' },
     ],
 
     // Radiologist (clinical role): receives orders that the radiology_admin
@@ -238,7 +247,9 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       // (service tariffs) in Settings.
       { module: 'billing', action: 'read' }, { module: 'billing', action: 'create' },
       { module: 'billing', action: 'update' }, { module: 'billing', action: 'delete' },
-      { module: 'payments', action: 'read' },
+      // Radiology now collects at its own counter when it accepts a study, so
+      // it needs to be able to RECORD a payment, not merely read them.
+      { module: 'payments', action: 'read' }, { module: 'payments', action: 'create' },
       { module: 'inventory', action: 'read' }, { module: 'inventory', action: 'create' },
       { module: 'inventory', action: 'update' }, { module: 'inventory', action: 'approve' },
       { module: 'inventory', action: 'export' },

@@ -942,11 +942,32 @@ describe('getLabOrders filters', () => {
     expect(where.status).toEqual({ notIn: ['completed', 'cancelled'] });
     expect(where.createdAt.lt).toBeInstanceOf(Date);
     // A signed or published report means it is done, whatever the order's own
-    // status column still says.
-    expect(where.OR).toEqual([
-      { labReport: null },
-      { labReport: { publishedAt: null, signedAt: null } },
+    // status column still says. Held under AND so the search below cannot
+    // overwrite it — see the next test.
+    expect(where.AND).toEqual([
+      {
+        OR: [{ labReport: null }, { labReport: { publishedAt: null, signedAt: null } }],
+      },
     ]);
+  });
+
+  it('keeps the no-report condition when searching inside the overdue list', async () => {
+    // Both clauses used to be written to `where.OR`, so whichever ran last
+    // replaced the other: searching an overdue list quietly dropped the
+    // no-report condition and returned finished orders as overdue.
+    const where = await whereFor({ overdue: true, search: 'Asha' });
+
+    expect(where.AND).toEqual([
+      {
+        OR: [{ labReport: null }, { labReport: { publishedAt: null, signedAt: null } }],
+      },
+    ]);
+    // …and the search is still a search.
+    expect(where.OR).toEqual(
+      expect.arrayContaining([
+        { patient: { firstName: { contains: 'Asha', mode: 'insensitive' } } },
+      ]),
+    );
   });
 
   it('can single out orders nobody has picked up', async () => {

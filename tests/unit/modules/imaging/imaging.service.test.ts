@@ -142,8 +142,49 @@ describe('Imaging Service', () => {
 
       const result = await getImagingRequests(TENANT_ID, { page: 1, limit: 20, sortOrder: 'desc' } as any);
 
-      expect(result.requests).toEqual([{ ...requests[0], linkedBill: null }]);
+      expect(result.requests).toMatchObject([{ ...requests[0], linkedBill: null }]);
       expect(result.total).toBe(1);
+    });
+
+    // A study the radiology admin has not approved is not a report yet: outside
+    // the department the row still shows (the doctor needs to know their scan is
+    // running) but the result and its files are withheld.
+    it('withholds an unapproved result from callers outside radiology', async () => {
+      const requests = [
+        { id: 'img-req-1', imagingType: 'xray', imagingResult: { id: 'res-1', status: 'draft' } },
+      ];
+      vi.mocked(prisma.imagingRequest.findMany).mockResolvedValue(requests as any);
+      vi.mocked(prisma.imagingRequest.count).mockResolvedValue(1);
+      vi.mocked(prisma.billItem.findMany).mockResolvedValue([] as any);
+
+      const asDoctor = await getImagingRequests(TENANT_ID, { page: 1, limit: 20 } as any, ['doctor']);
+      expect(asDoctor.requests[0]).toMatchObject({
+        imagingResult: null,
+        released: false,
+        awaitingApproval: true,
+      });
+
+      // The radiologist working on it must still see their own draft.
+      const asRadiologist = await getImagingRequests(TENANT_ID, { page: 1, limit: 20 } as any, [
+        'radiologist',
+      ]);
+      expect(asRadiologist.requests[0].imagingResult).toMatchObject({ id: 'res-1' });
+    });
+
+    it('releases a published result to everyone', async () => {
+      const requests = [
+        { id: 'img-req-1', imagingType: 'xray', imagingResult: { id: 'res-1', status: 'published' } },
+      ];
+      vi.mocked(prisma.imagingRequest.findMany).mockResolvedValueOnce(requests as any);
+      vi.mocked(prisma.imagingRequest.count).mockResolvedValueOnce(1);
+      vi.mocked(prisma.billItem.findMany).mockResolvedValueOnce([] as any);
+
+      const result = await getImagingRequests(TENANT_ID, { page: 1, limit: 20 } as any, ['doctor']);
+      expect(result.requests[0]).toMatchObject({
+        released: true,
+        awaitingApproval: false,
+        imagingResult: { id: 'res-1' },
+      });
     });
   });
 });
