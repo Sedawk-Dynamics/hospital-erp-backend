@@ -6,6 +6,7 @@ import { istDayRange, istDayStart, istDayEnd } from '../../shared/date.utils';
 import {
   billDiagnosticOrder,
   resolveDiagnosticPayer,
+  resolveDiagnosticPayers,
   createPayment,
   type DiagnosticChargeInput,
 } from '../billing/billing.service';
@@ -691,11 +692,20 @@ export async function getImagingRequests(
   // gate at all, so a doctor could open a half-finished study.
   const isInsider = actorRoles.some((r) => RADIOLOGY_INSIDER_ROLES.has(r));
 
+  // Whether the patient is admitted decides whether accepting asks for money or
+  // posts to the stay ledger, so the row says it before the admin opens
+  // anything. Resolved once for the page.
+  const payers = await resolveDiagnosticPayers(
+    tenantId,
+    requests.map((r) => r.patientId),
+  );
+
   const decorated = requests.map((r) => {
     const bi = billByRequestId.get(r.id);
     const released = isImagingReportReleased(r.imagingResult?.status);
     return {
       ...r,
+      encounter: payers.get(r.patientId) ?? null,
       released,
       awaitingApproval: !!r.imagingResult && !released,
       imagingResult: isInsider || released ? r.imagingResult : null,

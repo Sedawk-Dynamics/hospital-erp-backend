@@ -1820,6 +1820,16 @@ interface ChargeRow {
   alreadyBilled: boolean;
   billItemId?: string;
   billId?: string;
+  /**
+   * False when this counter may not bill the line itself. Lab and radiology
+   * charges are the department's own: an OP patient pays at their counter, an
+   * admitted one has it posted to the stay ledger when the department accepts.
+   * The row stays VISIBLE — the front desk still needs the running picture of
+   * what a patient has had — but it cannot be selected.
+   */
+  pullable?: boolean;
+  /** Shown against a row that cannot be selected, so "why not" is answerable. */
+  notPullableReason?: string;
 }
 
 /**
@@ -2124,6 +2134,10 @@ async function getLabCharges(
         alreadyBilled: !!billed,
         billItemId: billed?.billItemId,
         billId: billed?.billId,
+        pullable: false,
+        notPullableReason: billed
+          ? 'Billed by the laboratory'
+          : 'The laboratory bills this when it accepts the order',
       });
     }
   }
@@ -2253,6 +2267,10 @@ async function getImagingCharges(
       alreadyBilled: !!billed,
       billItemId: billed?.billItemId,
       billId: billed?.billId,
+      pullable: false,
+      notPullableReason: billed
+        ? 'Billed by radiology'
+        : 'Radiology bills this when it accepts the request',
     };
   });
 }
@@ -2879,6 +2897,57 @@ export async function resolveDiagnosticPayer(
 }
 
 /**
+ * Resolve the payer mode for a whole page of patients at once.
+ *
+ * The lab / radiology worklist has to say, on the row, whether a patient is
+ * admitted — that is what tells the admin whether accepting will ask for money
+ * or post to the stay ledger, and they need it before they open anything. Doing
+ * it per row would be an N+1 on every list paint, so both admission lookups run
+ * once for the page.
+ */
+export async function resolveDiagnosticPayers(
+  tenantId: string,
+  patientIds: string[],
+): Promise<Map<string, { mode: 'ip' | 'op'; admissionId: string; admissionType: AdmissionType }>> {
+  const out = new Map<
+    string,
+    { mode: 'ip' | 'op'; admissionId: string; admissionType: AdmissionType }
+  >();
+  const ids = [...new Set(patientIds.filter(Boolean))];
+  if (!ids.length) return out;
+
+  const admissions = await prisma.admission.findMany({
+    where: { tenantId, patientId: { in: ids }, status: ACTIVE_ADMISSION_STATUS },
+    orderBy: { admissionDate: 'desc' },
+    select: { id: true, patientId: true },
+  });
+  if (!admissions.length) return out;
+
+  // admission_type is a raw VarChar column (migration-free).
+  let typeById = new Map<string, AdmissionType>();
+  try {
+    const rows = await prisma.$queryRaw<Array<{ id: string; admission_type: string | null }>>`
+      SELECT id, admission_type FROM admissions
+       WHERE id = ANY(${admissions.map((a) => a.id)}::uuid[])
+    `;
+    typeById = new Map(rows.map((r) => [r.id, normalizeAdmissionType(r.admission_type)]));
+  } catch (err) {
+    logger.warn({ err, tenantId }, 'Could not read admission_type for the page — defaulting to ip');
+  }
+
+  for (const a of admissions) {
+    // findMany returns newest first, so the first hit per patient wins.
+    if (out.has(a.patientId)) continue;
+    out.set(a.patientId, {
+      mode: 'ip',
+      admissionId: a.id,
+      admissionType: typeById.get(a.id) ?? 'ip',
+    });
+  }
+  return out;
+}
+
+/**
  * Post a diagnostic order's charges and hand back the bill the department will
  * collect against (OP) or that the stay will settle (IP).
  *
@@ -2938,7 +3007,7 @@ export async function billDiagnosticOrder(
       // The stay's running draft bill — no finalize, no counter payment. It is
       // settled once at discharge with everything else.
       const ipBill = await getOrCreateRunningIpBill(tenantId, payer.admissionId!, userId);
-      await pullChargesToBill(tenantId, ipBill.id, lines);
+      await pullChargesToBill(tenantId, ipBill.id, lines, { fromDiagnostics: true });
       billId = ipBill.id;
     } else {
       // OP: keep adding to the order's own bill while it is still a draft;
@@ -2948,14 +3017,14 @@ export async function billDiagnosticOrder(
         ? await prisma.bill.findFirst({ where: { id: billId, tenantId, status: 'draft' }, select: { id: true } })
         : null;
       if (reusable) {
-        await pullChargesToBill(tenantId, reusable.id, lines);
+        await pullChargesToBill(tenantId, reusable.id, lines, { fromDiagnostics: true });
         billId = reusable.id;
       } else {
         const bill = await createBill(tenantId, userId, {
           patientId: opts.patientId,
           visitId: opts.visitId ?? undefined,
         } as CreateBillInput);
-        await pullChargesToBill(tenantId, bill.id, lines);
+        await pullChargesToBill(tenantId, bill.id, lines, { fromDiagnostics: true });
         // A zero-value order (unpriced catalog entry) cannot be finalized —
         // finalizeBill rejects an empty bill and there is nothing to collect.
         const posted = await prisma.billItem.count({ where: { billId: bill.id } });
@@ -3012,12 +3081,28 @@ export async function pullChargesToBill(
     taxInclusive?: boolean;
     category?: string;
   }>,
+  opts: { fromDiagnostics?: boolean } = {},
 ) {
   const bill = await prisma.bill.findFirst({ where: { id: billId, tenantId } });
   if (!bill) throw AppError.notFound('Bill not found');
   if (bill.status !== 'draft') {
     throw AppError.badRequest('Can only auto-pull into draft bills');
   }
+
+  // Lab and radiology charges belong to those departments alone.
+  //
+  // An OP patient pays at the lab / radiology counter, which raises its own
+  // bill and hands over its own receipt — the front desk never collects for a
+  // test. An admitted patient's charge is posted to the stay ledger by the
+  // department when it ACCEPTS the order, and the front desk collects that
+  // ledger at discharge; it still does not pull the individual line.
+  //
+  // So the only thing allowed to bill one of these references is the diagnostic
+  // biller. Without this, `consolidateAdmissionBill` re-billed at discharge
+  // whatever the department had already charged, and — worse — billed orders
+  // the department had never accepted, which is precisely the decision the
+  // accept step exists to make.
+  const isDiagnosticRef = (t: string) => t === 'lab_order_item' || t === 'imaging_request';
 
   // A charge already on ANY live bill in this tenant is not pullable, whichever
   // bill it landed on. The per-bill check below cannot see that, so the same
@@ -3053,6 +3138,10 @@ export async function pullChargesToBill(
   const skipped: string[] = [];
   await prisma.$transaction(async (tx) => {
     for (const c of charges) {
+      if (!opts.fromDiagnostics && isDiagnosticRef(c.referenceType)) {
+        skipped.push(c.description);
+        continue;
+      }
       if (blocked.has(`${c.referenceType}:${c.referenceId}`)) {
         skipped.push(c.description);
         continue;

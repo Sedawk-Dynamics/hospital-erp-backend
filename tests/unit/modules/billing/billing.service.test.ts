@@ -1258,6 +1258,66 @@ describe('BillingService', () => {
       mockRecalculate([]);
     });
 
+    it('refuses lab and radiology charges — those counters bill their own work', async () => {
+      // The front desk never collects for a test. An OP patient pays at the lab
+      // / radiology counter, which raises its own bill; an admitted one has the
+      // charge posted to the stay ledger when the department ACCEPTS, and the
+      // desk collects that ledger at discharge.
+      const result = await pullChargesToBill(TENANT_ID, 'bill-1', [
+        {
+          referenceType: 'lab_order_item',
+          referenceId: 'item-1',
+          description: 'Lab: CBC',
+          quantity: 1,
+          unitPrice: 300,
+          category: 'lab',
+        },
+        {
+          referenceType: 'imaging_request',
+          referenceId: 'img-1',
+          description: 'Imaging: xray',
+          quantity: 1,
+          unitPrice: 400,
+          category: 'radiology',
+        },
+        {
+          referenceType: 'dispensing_record',
+          referenceId: 'disp-1',
+          description: 'Paracetamol 500mg',
+          quantity: 1,
+          unitPrice: 100,
+          category: 'pharmacy',
+        },
+      ]);
+
+      // Pharmacy still goes through — this is a diagnostics rule, not a
+      // blanket one.
+      expect(result.added).toBe(1);
+      expect(result.skipped).toEqual(['Lab: CBC', 'Imaging: xray']);
+      expect(prisma.billItem.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('lets the diagnostic biller through — it is the one caller that may', async () => {
+      const result = await pullChargesToBill(
+        TENANT_ID,
+        'bill-1',
+        [
+          {
+            referenceType: 'lab_order_item',
+            referenceId: 'item-1',
+            description: 'Lab: CBC',
+            quantity: 1,
+            unitPrice: 300,
+            category: 'lab',
+          },
+        ],
+        { fromDiagnostics: true },
+      );
+
+      expect(result.added).toBe(1);
+      expect(result.skipped).toEqual([]);
+    });
+
     it('refuses a charge already billed on a DIFFERENT bill', async () => {
       // The per-bill check cannot see this, so the same real-world charge could
       // be billed twice: the lab bills a test at its own counter, then the stay
@@ -1289,19 +1349,19 @@ describe('BillingService', () => {
       // A re-pull onto the same bill is ordinary idempotency, not a conflict —
       // treating it as one would make the pull button stop working entirely.
       vi.mocked(prisma.billItem.findMany).mockResolvedValueOnce([
-        { referenceType: 'lab_order_item', referenceId: 'item-1', billId: 'bill-1' },
+        { referenceType: 'dispensing_record', referenceId: 'disp-1', billId: 'bill-1' },
       ] as any);
       // …and the per-bill check is what skips it.
       vi.mocked(prisma.billItem.findFirst).mockResolvedValue({ id: 'already' } as any);
 
       const result = await pullChargesToBill(TENANT_ID, 'bill-1', [
         {
-          referenceType: 'lab_order_item',
-          referenceId: 'item-1',
-          description: 'Lab: CBC',
+          referenceType: 'dispensing_record',
+          referenceId: 'disp-1',
+          description: 'Paracetamol 500mg',
           quantity: 1,
-          unitPrice: 300,
-          category: 'lab',
+          unitPrice: 100,
+          category: 'pharmacy',
         },
       ]);
 
@@ -1341,15 +1401,19 @@ describe('BillingService', () => {
     it('still adds tax on top of a tax-exclusive service charge', async () => {
       // A ServiceTariff quotes a basePrice and a gstRatePercent — that reads as
       // "plus GST", so services must keep behaving exactly as before.
+      //
+      // Uses a procedure rather than the imaging line it used to: radiology
+      // bills its own work now, so this route refuses that reference. The
+      // arithmetic being tested is category-independent.
       await pullChargesToBill(TENANT_ID, 'bill-1', [
         {
-          referenceType: 'imaging_request',
-          referenceId: 'img-1',
-          description: 'Imaging: xray',
+          referenceType: 'manual_clinical',
+          referenceId: 'proc-1',
+          description: 'Minor procedure',
           quantity: 1,
           unitPrice: 100,
           taxRate: 18,
-          category: 'radiology',
+          category: 'procedure',
         },
       ]);
 
@@ -1364,16 +1428,19 @@ describe('BillingService', () => {
     });
 
     it('leaves an untaxed charge alone whichever way it is marked', async () => {
+      // Deliberately NOT a lab/imaging reference: those belong to their own
+      // counters and this route refuses them. The tax arithmetic under test is
+      // the same for any category.
       await pullChargesToBill(TENANT_ID, 'bill-1', [
         {
-          referenceType: 'lab_order_item',
-          referenceId: 'lab-1',
-          description: 'Lab: CBC',
+          referenceType: 'manual_clinical',
+          referenceId: 'chg-1',
+          description: 'Dressing',
           quantity: 2,
           unitPrice: 150,
           taxRate: 0,
           taxInclusive: true,
-          category: 'lab',
+          category: 'procedure',
         },
       ]);
 

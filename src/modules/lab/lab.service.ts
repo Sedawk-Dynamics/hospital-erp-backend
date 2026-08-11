@@ -16,6 +16,7 @@ import { Prisma, type LabOrderStatus } from '@prisma/client';
 import {
   billDiagnosticOrder,
   resolveDiagnosticPayer,
+  resolveDiagnosticPayers,
   createPayment,
   type DiagnosticChargeInput,
 } from '../billing/billing.service';
@@ -772,14 +773,26 @@ export async function getLabOrders(tenantId: string, query: GetLabOrdersQuery) {
  * radiology's `linkedBill` has carried since the payment-verify gate, so one
  * component renders both.
  */
-async function decorateWithBill<T extends { id: string }>(tenantId: string, orders: T[]) {
-  if (!orders.length) return orders.map((o) => ({ ...o, linkedBill: null }));
+async function decorateWithBill<T extends { id: string; patientId: string }>(
+  tenantId: string,
+  orders: T[],
+) {
+  if (!orders.length) return orders.map((o) => ({ ...o, linkedBill: null, encounter: null }));
+
+  // Whether this patient is admitted decides whether accepting asks for money
+  // or posts to the stay ledger, so the row has to say it before the admin
+  // opens anything. Resolved once for the page, not per row.
+  const payers = await resolveDiagnosticPayers(
+    tenantId,
+    orders.map((o) => o.patientId),
+  );
+  const withEncounter = (o: T) => ({ ...o, encounter: payers.get(o.patientId) ?? null });
 
   const items = await prisma.labOrderItem.findMany({
     where: { labOrderId: { in: orders.map((o) => o.id) } },
     select: { id: true, labOrderId: true },
   });
-  if (!items.length) return orders.map((o) => ({ ...o, linkedBill: null }));
+  if (!items.length) return orders.map((o) => ({ ...withEncounter(o), linkedBill: null }));
 
   const billItems = await prisma.billItem.findMany({
     where: {
@@ -826,7 +839,7 @@ async function decorateWithBill<T extends { id: string }>(tenantId: string, orde
   return orders.map((o) => {
     const hit = byOrder.get(o.id);
     return {
-      ...o,
+      ...withEncounter(o),
       linkedBill: hit?.bill
         ? {
             id: hit.bill.id,
