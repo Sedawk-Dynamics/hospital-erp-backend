@@ -84,6 +84,11 @@ function mapPaymentMethod(method: string): string {
     credit_card: 'credit_card',
     debit_card: 'debit_card',
     bank_transfer: 'net_banking',
+    // `net_banking` is the enum's own value and what every client actually
+    // sends — only the legacy `bank_transfer` alias was listed, so a net-banking
+    // payment fell through to `other` and was reported as such on the day-end
+    // sheet and in every payment-mode breakdown.
+    net_banking: 'net_banking',
     upi: 'upi',
     cheque: 'cheque',
     insurance: 'insurance',
