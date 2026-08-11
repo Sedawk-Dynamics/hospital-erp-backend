@@ -281,6 +281,20 @@ export async function getCharges(
   }
 }
 
+export async function getPendingOrders(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const result = await billingService.getPendingOrders(tenantId, req.query as any);
+    sendResponse({ res, message: 'Pending orders retrieved successfully', data: result });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function pullCharges(
   req: AuthenticatedRequest,
   res: Response,

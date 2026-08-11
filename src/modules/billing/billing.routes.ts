@@ -27,6 +27,7 @@ import {
   refundIdParamSchema,
   patientIdParamSchema,
   getChargesQuerySchema,
+  getPendingOrdersQuerySchema,
   pullChargesSchema,
   billOtRequestSchema,
   setBillDiscountSchema,
@@ -55,6 +56,16 @@ billingRoutes.get(
   requirePermission('billing', 'read'),
   validate(getChargesQuerySchema),
   controller.getCharges,
+);
+
+// The counter's "what still needs a bill" worklist — unbilled lab, imaging and
+// OT across every patient, deduped against existing bill items.
+billingRoutes.get(
+  '/pending-orders',
+  authenticate,
+  requirePermission('billing', 'read'),
+  validate(getPendingOrdersQuerySchema),
+  controller.getPendingOrders,
 );
 
 // Push an OT surgery's charge onto a hospital bill (+ optional payment).

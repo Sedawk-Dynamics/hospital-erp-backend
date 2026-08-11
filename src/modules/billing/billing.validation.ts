@@ -408,6 +408,17 @@ export const getChargesQuerySchema = z.object({
   }),
 });
 
+// Tenant-wide "what still needs a bill" worklist. Only the sources that are a
+// discrete order somebody raised — room and consultation accrue on their own,
+// pharmacy is dispensed at its own counter.
+export const getPendingOrdersQuerySchema = z.object({
+  query: z.object({
+    source: z.enum(['lab', 'imaging', 'ot', 'all']).optional(),
+    search: z.string().optional(),
+    limit: z.coerce.number().int().min(1).max(300).optional(),
+  }),
+});
+
 // Bill an OT surgery (push its charge onto a hospital bill, optionally pay).
 export const billOtRequestSchema = z.object({
   params: z.object({ otRequestId: z.string().uuid('Invalid OT request ID') }),

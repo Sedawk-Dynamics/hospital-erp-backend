@@ -2431,6 +2431,192 @@ export async function getPatientCharges(
  * referenceType 'ot_request' exists on a non-cancelled bill) that bill is
  * reused instead of creating a duplicate. Keeps OtRequest.billingStatus in sync.
  */
+/** One unbilled order on the counter worklist. */
+export interface PendingOrderRow {
+  key: string;
+  source: 'lab' | 'imaging' | 'ot';
+  referenceType: string;
+  referenceId: string;
+  description: string;
+  amount: number;
+  taxRate: number;
+  orderedAt: string;
+  orderedAtISO: string;
+  status: string;
+  patient: { id: string; firstName: string; lastName: string | null; mrn: string } | null;
+}
+
+/**
+ * Everything the hospital has done that nobody has billed yet, across all
+ * patients — the counter's "what still needs a bill" worklist.
+ *
+ * The Order List panel used to fake this by pulling the last 30 lab orders and
+ * the last 30 imaging requests straight from those modules with no billing
+ * filter at all, under a heading that read "Pending Orders Awaiting Billing".
+ * Already-billed work therefore sat in the list inviting the desk to bill it
+ * again; the charges feed then correctly refused, so it read as a broken button.
+ *
+ * Same idea as `getPatientCharges` but tenant-wide rather than per patient, and
+ * only the sources that represent a discrete order somebody raised: lab,
+ * imaging and OT. Room and consultation accrue automatically and pharmacy is
+ * dispensed at its own counter, so none of them belong on a "chase this" list.
+ */
+export async function getPendingOrders(
+  tenantId: string,
+  query: { source?: 'lab' | 'imaging' | 'ot' | 'all'; search?: string; limit?: number } = {},
+) {
+  const source = query.source ?? 'all';
+  const limit = Math.min(Math.max(query.limit ?? 100, 1), 300);
+  const want = (s: string) => source === 'all' || source === s;
+
+  const [labItems, imagingReqs, otReqs] = await Promise.all([
+    want('lab')
+      ? prisma.labOrderItem.findMany({
+          where: {
+            labOrder: { tenantId, status: { notIn: ['cancelled'] as any } },
+            status: { notIn: ['cancelled'] as any },
+          },
+          include: {
+            test: { select: { testName: true, testCode: true, price: true } },
+            labOrder: {
+              select: {
+                createdAt: true,
+                patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
+              },
+            },
+          },
+          orderBy: { id: 'desc' },
+          take: limit,
+        })
+      : Promise.resolve([]),
+    want('imaging')
+      ? prisma.imagingRequest.findMany({
+          where: { tenantId, status: { not: 'cancelled' as any } },
+          include: { patient: { select: { id: true, firstName: true, lastName: true, mrn: true } } },
+          orderBy: { createdAt: 'desc' },
+          take: limit,
+        })
+      : Promise.resolve([]),
+    want('ot')
+      ? prisma.otRequest.findMany({
+          where: {
+            tenantId,
+            status: { notIn: ['cancelled'] as any },
+            billingAmount: { gt: 0 },
+          },
+          include: { patient: { select: { id: true, firstName: true, lastName: true, mrn: true } } },
+          orderBy: { createdAt: 'desc' },
+          take: limit,
+        })
+      : Promise.resolve([]),
+  ]);
+
+  // One lookup for every reference we are about to consider, so "already
+  // billed" is decided by the same (referenceType, referenceId) tuple the
+  // charges feed and the auto-pull dedupe use.
+  const refIds = [
+    ...labItems.map((i) => i.id),
+    ...imagingReqs.map((r) => r.id),
+    ...otReqs.map((r) => r.id),
+  ];
+  const billed = refIds.length
+    ? await prisma.billItem.findMany({
+        where: {
+          bill: { tenantId, status: { not: 'cancelled' } },
+          referenceId: { in: refIds },
+          referenceType: { in: ['lab_order_item', 'imaging_request', 'ot_request'] },
+        },
+        select: { referenceType: true, referenceId: true },
+      })
+    : [];
+  const billedKeys = new Set(billed.map((b) => `${b.referenceType}:${b.referenceId}`));
+
+  const taxRates = await buildServiceTaxRates(tenantId);
+
+
+  const rows: PendingOrderRow[] = [];
+
+  for (const item of labItems) {
+    if (billedKeys.has(`lab_order_item:${item.id}`)) continue;
+    const p = item.labOrder?.patient;
+    const at = item.labOrder?.createdAt ?? new Date();
+    rows.push({
+      key: `lab:${item.id}`,
+      source: 'lab',
+      referenceType: 'lab_order_item',
+      referenceId: item.id,
+      description: `Lab: ${item.test?.testName ?? 'Test'}${item.test?.testCode ? ` (${item.test.testCode})` : ''}`,
+      amount: toNumber(item.test?.price),
+      taxRate: taxRates.lab ?? CHARGE_TAX_RATES.lab,
+      orderedAt: formatDateTimeIST(at),
+      orderedAtISO: new Date(at).toISOString(),
+      status: String(item.status),
+      patient: p ? { id: p.id, firstName: p.firstName, lastName: p.lastName, mrn: p.mrn } : null,
+    });
+  }
+
+  for (const req of imagingReqs) {
+    if (billedKeys.has(`imaging_request:${req.id}`)) continue;
+    const p = req.patient;
+    rows.push({
+      key: `imaging:${req.id}`,
+      source: 'imaging',
+      referenceType: 'imaging_request',
+      referenceId: req.id,
+      description: `Imaging: ${req.imagingType}${req.bodyPart ? ` — ${req.bodyPart}` : ''}`,
+      amount: 0, // priced from the radiology tariff when it is pulled onto a bill
+      taxRate: taxRates.imaging ?? CHARGE_TAX_RATES.imaging,
+      orderedAt: formatDateTimeIST(req.createdAt),
+      orderedAtISO: new Date(req.createdAt).toISOString(),
+      status: String(req.status),
+      patient: p ? { id: p.id, firstName: p.firstName, lastName: p.lastName, mrn: p.mrn } : null,
+    });
+  }
+
+  for (const req of otReqs) {
+    if (billedKeys.has(`ot_request:${req.id}`)) continue;
+    const p = req.patient;
+    rows.push({
+      key: `ot:${req.id}`,
+      source: 'ot',
+      referenceType: 'ot_request',
+      referenceId: req.id,
+      description: `Surgery — ${req.procedureName}`,
+      amount: toNumber(req.billingAmount),
+      taxRate: taxRates.ot ?? CHARGE_TAX_RATES.ot,
+      orderedAt: formatDateTimeIST(req.createdAt),
+      orderedAtISO: new Date(req.createdAt).toISOString(),
+      status: String(req.status),
+      patient: p ? { id: p.id, firstName: p.firstName, lastName: p.lastName, mrn: p.mrn } : null,
+    });
+  }
+
+  const search = query.search?.trim().toLowerCase();
+  const filtered = search
+    ? rows.filter((r) => {
+        const name = r.patient ? `${r.patient.firstName} ${r.patient.lastName}`.toLowerCase() : '';
+        return (
+          name.includes(search) ||
+          (r.patient?.mrn ?? '').toLowerCase().includes(search) ||
+          r.description.toLowerCase().includes(search)
+        );
+      })
+    : rows;
+
+  filtered.sort((a, b) => b.orderedAtISO.localeCompare(a.orderedAtISO));
+
+  return {
+    orders: filtered,
+    summary: {
+      count: filtered.length,
+      lab: filtered.filter((r) => r.source === 'lab').length,
+      imaging: filtered.filter((r) => r.source === 'imaging').length,
+      ot: filtered.filter((r) => r.source === 'ot').length,
+      totalAmount: r2(filtered.reduce((s, r) => s + r.amount, 0)),
+    },
+  };
+}
+
 export async function billOtRequest(
   tenantId: string,
   otRequestId: string,
