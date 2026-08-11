@@ -3019,9 +3019,44 @@ export async function pullChargesToBill(
     throw AppError.badRequest('Can only auto-pull into draft bills');
   }
 
+  // A charge already on ANY live bill in this tenant is not pullable, whichever
+  // bill it landed on. The per-bill check below cannot see that, so the same
+  // real-world charge could be billed twice on two different bills:
+  //
+  //   - consolidateAdmissionBill feeds it EVERY charge for the patient with an
+  //     `alreadyBilled` flag it does not act on, so a test the lab already
+  //     billed at its own counter was re-billed onto the stay at discharge;
+  //   - the front desk's pull route takes the charge list from the request body,
+  //     so a stale page (or any direct call) bypassed the disabled checkbox that
+  //     is the only thing stopping it in the UI.
+  //
+  // The patient pays once for one test. Whoever billed it first owns it, and
+  // moving it belongs to the bill-item routes, not to a bulk pull.
+  const refs = charges.filter((c) => c.referenceType && c.referenceId);
+  const billedElsewhere = refs.length
+    ? await prisma.billItem.findMany({
+        where: {
+          bill: { tenantId, status: { not: 'cancelled' } },
+          OR: refs.map((c) => ({ referenceType: c.referenceType, referenceId: c.referenceId })),
+        },
+        select: { referenceType: true, referenceId: true, billId: true },
+      })
+    : [];
+  // Same-bill hits are the ordinary idempotent re-pull, not a conflict.
+  const blocked = new Set(
+    billedElsewhere
+      .filter((b) => b.billId !== billId)
+      .map((b) => `${b.referenceType}:${b.referenceId}`),
+  );
+
   const created: any[] = [];
+  const skipped: string[] = [];
   await prisma.$transaction(async (tx) => {
     for (const c of charges) {
+      if (blocked.has(`${c.referenceType}:${c.referenceId}`)) {
+        skipped.push(c.description);
+        continue;
+      }
       // Idempotency: skip if a bill item with the same reference already
       // exists on this bill.
       const exists = await tx.billItem.findFirst({
@@ -3062,8 +3097,16 @@ export async function pullChargesToBill(
   });
 
   await recalculateBillTotals(billId);
-  logger.info({ tenantId, billId, count: created.length }, 'Charges auto-pulled to bill');
-  return { added: created.length, billId };
+  // Say what was dropped. A silent skip reads as "everything was pulled" to the
+  // counter, and then the total is short and nobody knows why.
+  if (skipped.length) {
+    logger.warn(
+      { tenantId, billId, skipped },
+      'Skipped charges already billed on another bill',
+    );
+  }
+  logger.info({ tenantId, billId, count: created.length, skipped: skipped.length }, 'Charges auto-pulled to bill');
+  return { added: created.length, skipped, billId };
 }
 
 /**

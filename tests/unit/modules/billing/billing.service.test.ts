@@ -1252,8 +1252,61 @@ describe('BillingService', () => {
     beforeEach(() => {
       vi.mocked(prisma.bill.findFirst).mockResolvedValue(mockBillDraft as any);
       vi.mocked(prisma.billItem.findFirst).mockResolvedValue(null); // no dedupe hit
+      // Nothing billed anywhere else in the tenant — the cross-bill guard.
+      vi.mocked(prisma.billItem.findMany).mockResolvedValue([] as any);
       vi.mocked(prisma.billItem.create).mockResolvedValue({ id: 'item-1' } as any);
       mockRecalculate([]);
+    });
+
+    it('refuses a charge already billed on a DIFFERENT bill', async () => {
+      // The per-bill check cannot see this, so the same real-world charge could
+      // be billed twice: the lab bills a test at its own counter, then the stay
+      // consolidation re-bills it at discharge, and the patient pays twice for
+      // one test. Both callers now go through this guard.
+      vi.mocked(prisma.billItem.findMany).mockResolvedValueOnce([
+        { referenceType: 'lab_order_item', referenceId: 'item-1', billId: 'some-other-bill' },
+      ] as any);
+
+      const result = await pullChargesToBill(TENANT_ID, 'bill-1', [
+        {
+          referenceType: 'lab_order_item',
+          referenceId: 'item-1',
+          description: 'Lab: CBC',
+          quantity: 1,
+          unitPrice: 300,
+          category: 'lab',
+        },
+      ]);
+
+      expect(prisma.billItem.create).not.toHaveBeenCalled();
+      expect(result.added).toBe(0);
+      // Reported, not silently dropped — a short total with no explanation is
+      // worse than the duplicate it prevents.
+      expect(result.skipped).toEqual(['Lab: CBC']);
+    });
+
+    it('still pulls a charge whose only prior hit is THIS bill', async () => {
+      // A re-pull onto the same bill is ordinary idempotency, not a conflict —
+      // treating it as one would make the pull button stop working entirely.
+      vi.mocked(prisma.billItem.findMany).mockResolvedValueOnce([
+        { referenceType: 'lab_order_item', referenceId: 'item-1', billId: 'bill-1' },
+      ] as any);
+      // …and the per-bill check is what skips it.
+      vi.mocked(prisma.billItem.findFirst).mockResolvedValue({ id: 'already' } as any);
+
+      const result = await pullChargesToBill(TENANT_ID, 'bill-1', [
+        {
+          referenceType: 'lab_order_item',
+          referenceId: 'item-1',
+          description: 'Lab: CBC',
+          quantity: 1,
+          unitPrice: 300,
+          category: 'lab',
+        },
+      ]);
+
+      expect(result.skipped).toEqual([]);
+      expect(result.added).toBe(0);
     });
 
     it('embeds the GST in a tax-inclusive medicine price instead of adding it on top', async () => {
