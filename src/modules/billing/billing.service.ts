@@ -5222,6 +5222,37 @@ export async function getDayEndReport(tenantId: string, query: { date?: string }
   };
 }
 
+/**
+ * The printable OP / counter bill.
+ *
+ * Everything on it was already being rendered — but only inside the payment
+ * receipt, which exists per PAYMENT. A bill nobody has paid yet had no
+ * printable form, so a patient leaving with a pending or partly-paid bill could
+ * not be handed a copy of what they owe. Read-only, so it can be produced at
+ * any point in the bill's life and reprinted whenever a copy is asked for.
+ *
+ * Draft bills are refused: a draft is still being assembled at the counter and
+ * handing one over would put a figure in the patient's hands that is about to
+ * change.
+ */
+export async function getBillDocument(tenantId: string, billId: string) {
+  const bill = await prisma.bill.findFirst({
+    where: { id: billId, tenantId },
+    include: {
+      patient: {
+        select: { id: true, firstName: true, lastName: true, mrn: true, phone: true },
+      },
+      billItems: { orderBy: { createdAt: 'asc' } },
+      payments: { orderBy: { paymentDate: 'asc' } },
+    },
+  });
+  if (!bill) throw AppError.notFound('Bill not found');
+  if (bill.status === 'draft') {
+    throw AppError.badRequest('This bill is still a draft — finalize it before printing.');
+  }
+  return bill;
+}
+
 // --- Patient Bills ---
 
 export async function getPatientBills(tenantId: string, patientId: string) {

@@ -187,6 +187,44 @@ export async function getReceiptPdf(
 }
 
 /**
+ * The printable OP / counter bill. Read-only, and unlike the receipt it does
+ * not need a payment to exist first.
+ */
+export async function getBillDocument(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const bill = await billingService.getBillDocument(tenantId, req.params.id as string);
+    sendResponse({ res, message: 'Bill document retrieved successfully', data: bill });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getBillDocumentPdf(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const { getHospitalBranding, resolvePdfTemplate } = await import('../hospital-branding/hospital-branding.service');
+    const [bill, branding, template] = await Promise.all([
+      billingService.getBillDocument(tenantId, req.params.id as string),
+      getHospitalBranding(tenantId),
+      resolvePdfTemplate(tenantId, 'op_bill'),
+    ]);
+    const { streamOpBillPdf } = await import('./billing.op-bill-pdf');
+    streamOpBillPdf(res, bill as any, branding, template);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
  * The printable bill for an IP / Emergency / Day Care stay, as JSON for the
  * on-screen print view. Read-only and available at any time — before discharge
  * it renders as an interim bill, afterwards as the final one.

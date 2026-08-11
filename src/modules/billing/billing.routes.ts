@@ -313,6 +313,24 @@ billingRoutes.get(
   controller.getBillById,
 );
 
+// The patient's own copy of an OP / counter bill. Read-only, and available
+// whether or not it has been paid — the receipt only exists once money has
+// changed hands, which left an unpaid bill with nothing to hand over.
+billingRoutes.get(
+  '/:id/document',
+  authenticate,
+  requirePermission('billing', 'read'),
+  validate(billIdParamSchema),
+  controller.getBillDocument,
+);
+billingRoutes.get(
+  '/:id/document/pdf',
+  authenticate,
+  requirePermission('billing', 'read'),
+  validate(billIdParamSchema),
+  controller.getBillDocumentPdf,
+);
+
 billingRoutes.post(
   '/:id/items',
   authenticate,

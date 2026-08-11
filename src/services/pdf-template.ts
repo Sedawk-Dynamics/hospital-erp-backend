@@ -147,6 +147,7 @@ export const PDF_DOCUMENT_TYPES = [
   'prescription',
   'discharge_summary',
   'ip_bill',
+  'op_bill',
   'payment_receipt',
   'salary_slip',
   'ndps_register',
@@ -188,6 +189,16 @@ export const PDF_DOCUMENT_REGISTRY: PdfDocumentMeta[] = [
     group: 'Billing',
     description: 'The consolidated admission bill, interim or final.',
     defaultTitle: 'Inpatient Bill',
+  },
+  {
+    key: 'op_bill',
+    label: 'OP / Counter Bill',
+    group: 'Billing',
+    // Healthcare services are GST-exempt in India, so for most hospitals this
+    // is a bill of supply rather than a tax invoice — it names itself from the
+    // template title, and only shows a tax line when something on it is taxed.
+    description: 'The itemised outpatient bill, printable whether or not it has been paid.',
+    defaultTitle: 'Bill',
   },
   {
     key: 'payment_receipt',
