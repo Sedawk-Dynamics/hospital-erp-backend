@@ -28,6 +28,8 @@ import {
   patientIdParamSchema,
   getChargesQuerySchema,
   getPendingOrdersQuerySchema,
+  updateDiscountPolicySchema,
+  decideDiscountSchema,
   drawerStatusQuerySchema,
   closeDrawerSchema,
   drawerClosuresQuerySchema,
@@ -60,6 +62,45 @@ billingRoutes.get(
   requirePermission('billing', 'read'),
   validate(getChargesQuerySchema),
   controller.getCharges,
+);
+
+// --- Discount approval ---
+// Reading the policy is open to anyone who can see a bill (the counter needs to
+// know the limit before typing a concession). Changing it, and deciding on a
+// parked concession, take 'billing:approve' — the same permission that already
+// gates finalize, cancel, reversal and refund approval.
+billingRoutes.get(
+  '/discount-policy',
+  authenticate,
+  requirePermission('billing', 'read'),
+  controller.getDiscountPolicy,
+);
+billingRoutes.put(
+  '/discount-policy',
+  authenticate,
+  requirePermission('billing', 'approve'),
+  validate(updateDiscountPolicySchema),
+  controller.updateDiscountPolicy,
+);
+billingRoutes.get(
+  '/discounts/pending',
+  authenticate,
+  requirePermission('billing', 'read'),
+  controller.getPendingDiscounts,
+);
+billingRoutes.patch(
+  '/discounts/:id/approve',
+  authenticate,
+  requirePermission('billing', 'approve'),
+  validate(decideDiscountSchema),
+  controller.approveDiscount,
+);
+billingRoutes.patch(
+  '/discounts/:id/reject',
+  authenticate,
+  requirePermission('billing', 'approve'),
+  validate(decideDiscountSchema),
+  controller.rejectDiscount,
 );
 
 // --- Cash drawer close ---

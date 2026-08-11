@@ -1626,6 +1626,7 @@ model User {
   ticketsEscalated               Ticket[]                     @relation("TicketEscalator")
   feedbackSubmitted              Feedback[]
   auditLogs                      AuditLog[]
+  discountsRequested             Discount[]                   @relation("DiscountRequester")
   drawersClosed                  CashDrawerClosure[]          @relation("DrawerCashier")
   drawerClosuresRecorded         CashDrawerClosure[]          @relation("DrawerCloser")
   complianceDocUploads           ComplianceDocument[]
@@ -5228,11 +5229,32 @@ model Discount {
   approvedBy   String?      @map("approved_by")
   createdAt    DateTime     @default(now()) @map("created_at")
 
-  tenant   Tenant @relation(fields: [tenantId], references: [id])
-  bill     Bill   @relation(fields: [billId], references: [id])
-  approver User?  @relation(fields: [approvedBy], references: [id])
+  /// Whether this concession is in effect. Only `approved` rows reduce what the
+  /// patient owes — a `pending` one is a request and changes no figure until
+  /// somebody with billing:approve decides on it.
+  ///
+  /// Defaults to `approved` so that every concession granted before the
+  /// approval gate existed stays in effect, and so a hospital that never turns
+  /// the gate on behaves exactly as it always did.
+  status          DiscountStatus @default(approved)
+  /// Who asked for it, as distinct from who allowed it.
+  requestedBy     String?        @map("requested_by")
+  decidedAt       DateTime?      @map("decided_at")
+  rejectionReason String?        @map("rejection_reason")
 
+  tenant    Tenant @relation(fields: [tenantId], references: [id])
+  bill      Bill   @relation(fields: [billId], references: [id])
+  approver  User?  @relation(fields: [approvedBy], references: [id])
+  requester User?  @relation("DiscountRequester", fields: [requestedBy], references: [id])
+
+  @@index([tenantId, status])
   @@map("discounts")
+}
+
+enum DiscountStatus {
+  pending  @map("pending")
+  approved @map("approved")
+  rejected @map("rejected")
 }
 
 // ============================================================

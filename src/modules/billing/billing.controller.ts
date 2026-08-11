@@ -319,6 +319,49 @@ export async function getCharges(
   }
 }
 
+// --- Discount approval ---
+
+export async function getDiscountPolicy(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const policy = await billingService.getDiscountApprovalSettings(req.user!.tenantId);
+    sendResponse({ res, message: 'Discount policy retrieved', data: policy });
+  } catch (err) { next(err); }
+}
+
+export async function updateDiscountPolicy(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const { tenantId, userId } = req.user!;
+    const policy = await billingService.updateDiscountApprovalSettings(tenantId, userId, req.body);
+    sendResponse({ res, message: 'Discount policy updated', data: policy });
+  } catch (err) { next(err); }
+}
+
+export async function getPendingDiscounts(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const rows = await billingService.getPendingDiscounts(req.user!.tenantId);
+    sendResponse({ res, message: 'Pending concessions retrieved', data: rows });
+  } catch (err) { next(err); }
+}
+
+export async function approveDiscount(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const { tenantId, userId } = req.user!;
+    const d = await billingService.decideDiscount(tenantId, userId, req.params.id as string, { approve: true });
+    sendResponse({ res, message: 'Concession approved', data: d });
+  } catch (err) { next(err); }
+}
+
+export async function rejectDiscount(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const { tenantId, userId } = req.user!;
+    const d = await billingService.decideDiscount(tenantId, userId, req.params.id as string, {
+      approve: false,
+      reason: req.body?.reason,
+    });
+    sendResponse({ res, message: 'Concession rejected', data: d });
+  } catch (err) { next(err); }
+}
+
 // --- Cash drawer close ---
 
 export async function getDrawerStatus(

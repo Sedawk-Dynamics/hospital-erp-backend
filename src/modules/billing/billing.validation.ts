@@ -408,6 +408,21 @@ export const getChargesQuerySchema = z.object({
   }),
 });
 
+// --- Discount approval ---
+
+export const updateDiscountPolicySchema = z.object({
+  body: z.object({
+    enabled: z.boolean().optional(),
+    maxAmountWithoutApproval: z.number().min(0).optional(),
+    maxPercentWithoutApproval: z.number().min(0).max(100).optional(),
+  }),
+});
+
+export const decideDiscountSchema = z.object({
+  params: z.object({ id: z.string().uuid('Invalid discount ID') }),
+  body: z.object({ reason: z.string().max(500).optional() }),
+});
+
 // --- Cash drawer close ---
 
 export const drawerStatusQuerySchema = z.object({

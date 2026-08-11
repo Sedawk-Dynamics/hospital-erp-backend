@@ -15,6 +15,12 @@ import {
 import { normalizeAdmissionType } from '../../shared/admission-type';
 import { writeAudit } from '../../shared/audit';
 import {
+  DEFAULT_DISCOUNT_APPROVAL,
+  discountNeedsApproval,
+  mergeDiscountApproval,
+  type DiscountApprovalSettings,
+} from '../../shared/discount-approval';
+import {
   ACTIVE_ADMISSION_STATUS,
   ACTIVE_ADMISSION_STATUSES,
   isActiveAdmission,
@@ -222,8 +228,12 @@ async function recalculateBillTotals(billId: string) {
   // deposit applied, every doctor visit recorded. On an IP stay, where charges
   // accrue daily, a concession given on day one was guaranteed to vanish and
   // the patient got billed the full amount again.
+  // Only an APPROVED concession reduces what the patient owes. A pending one is
+  // a request awaiting a second pair of eyes and must change no figure until
+  // somebody decides on it — otherwise the gate would be decorative, the money
+  // already off the bill before anyone looked.
   const billLevel = await prisma.discount.aggregate({
-    where: { billId },
+    where: { billId, status: 'approved' },
     _sum: { value: true },
   });
   const billLevelDiscount = toNumber(billLevel._sum.value);
@@ -1292,6 +1302,17 @@ export async function finalizeBill(tenantId: string, userId: string, billId: str
 
   if (bill.billItems.length === 0) {
     throw AppError.badRequest('Cannot finalize a bill with no items');
+  }
+
+  // A concession still awaiting approval is not yet off the bill. Finalising
+  // now would present the patient a figure that is about to change the moment
+  // somebody approves it — and collecting against it would then leave the bill
+  // over-paid.
+  const undecided = await prisma.discount.count({ where: { billId, status: 'pending' } });
+  if (undecided > 0) {
+    throw AppError.badRequest(
+      'A concession on this bill is awaiting approval. Get it approved or rejected before finalizing.',
+    );
   }
 
   // Recalculate final totals
@@ -4387,6 +4408,15 @@ export async function setBillDiscount(
 
   const totalDiscount = itemDiscounts + billDiscountAmt;
 
+  // Does this concession need a second pair of eyes? Measured against the bill's
+  // net before it, so a percentage limit means what a person would expect.
+  const approvalPolicy = await getDiscountApprovalSettings(tenantId);
+  const needsApproval = discountNeedsApproval(
+    approvalPolicy,
+    billDiscountAmt,
+    subtotal - itemDiscounts,
+  );
+
   // Remove any prior bill-level discount rows (keep an audit row).
   await prisma.discount.deleteMany({ where: { billId } });
   if (data.discountValue > 0) {
@@ -4397,7 +4427,14 @@ export async function setBillDiscount(
         discountType: data.discountType as any,
         value: billDiscountAmt,
         reason: data.reason,
-        approvedBy: data.approvedBy,
+        // A concession over the limit is a REQUEST: it is recorded, it is
+        // visible, and it changes nothing the patient owes until someone with
+        // billing:approve decides on it. Under the limit — or with the gate
+        // switched off — it applies immediately, as it always has.
+        status: needsApproval ? 'pending' : 'approved',
+        requestedBy: data.approvedBy,
+        approvedBy: needsApproval ? null : data.approvedBy,
+        decidedAt: needsApproval ? null : new Date(),
       },
     });
   }
@@ -4410,7 +4447,10 @@ export async function setBillDiscount(
   const updated = await prisma.bill.findUniqueOrThrow({ where: { id: billId } });
   const totalAmount = toNumber(updated.totalAmount);
 
-  logger.info({ tenantId, billId, billDiscountAmt }, 'Bill-level discount applied');
+  logger.info(
+    { tenantId, billId, billDiscountAmt, needsApproval },
+    needsApproval ? 'Bill-level discount awaiting approval' : 'Bill-level discount applied',
+  );
   void writeAudit({
     tenantId,
     userId: data.approvedBy,
@@ -4420,7 +4460,8 @@ export async function setBillDiscount(
     description:
       `Concession on bill ${bill.billNumber}: ` +
       `${data.discountType === 'percentage' ? `${data.discountValue}%` : `₹${data.discountValue}`} ` +
-      `(₹${r2(billDiscountAmt)} off)`,
+      `(₹${r2(billDiscountAmt)} off)` +
+      (needsApproval ? ' — over the limit, awaiting approval' : ''),
     reason: data.reason,
     oldValues: {
       discountAmount: toNumber(bill.discountAmount),
@@ -4431,9 +4472,12 @@ export async function setBillDiscount(
       totalAmount: r2(totalAmount),
       discountType: data.discountType,
       discountValue: data.discountValue,
+      status: needsApproval ? 'pending' : 'approved',
     },
   });
-  return updated;
+  // The caller needs to know whether the money actually came off, so the
+  // counter can say "sent for approval" rather than implying it is done.
+  return Object.assign(updated, { discountPendingApproval: needsApproval });
 }
 
 // --- Split Payment (multiple modes against one bill) ---
@@ -5228,6 +5272,175 @@ export async function getBillDocument(tenantId: string, billId: string) {
     throw AppError.badRequest('This bill is still a draft — finalize it before printing.');
   }
   return bill;
+}
+
+// --- Discount approval ---
+
+/**
+ * The tenant's discount policy, from the same migration-free `themeConfig` JSON
+ * the registration fee and PDF templates use. A read failure must never block a
+ * concession, so it degrades to the default — which is the gate switched OFF.
+ */
+export async function getDiscountApprovalSettings(
+  tenantId: string,
+): Promise<DiscountApprovalSettings> {
+  try {
+    const t = await prisma.tenant.findFirst({
+      where: { id: tenantId },
+      select: { themeConfig: true },
+    });
+    const cfg =
+      t?.themeConfig && typeof t.themeConfig === 'object'
+        ? (t.themeConfig as Record<string, unknown>)
+        : {};
+    return mergeDiscountApproval(DEFAULT_DISCOUNT_APPROVAL, cfg.discountApproval);
+  } catch {
+    return DEFAULT_DISCOUNT_APPROVAL;
+  }
+}
+
+export async function updateDiscountApprovalSettings(
+  tenantId: string,
+  userId: string,
+  patch: unknown,
+): Promise<DiscountApprovalSettings> {
+  const t = await prisma.tenant.findFirst({
+    where: { id: tenantId },
+    select: { themeConfig: true },
+  });
+  if (!t) throw AppError.notFound('Hospital not found');
+  const cfg =
+    t.themeConfig && typeof t.themeConfig === 'object'
+      ? (t.themeConfig as Record<string, unknown>)
+      : {};
+
+  const before = mergeDiscountApproval(DEFAULT_DISCOUNT_APPROVAL, cfg.discountApproval);
+  const merged = mergeDiscountApproval(before, patch);
+
+  await prisma.tenant.update({
+    where: { id: tenantId },
+    // Write only our own key back and preserve the rest — the letterhead, the
+    // PDF templates and the registration fee all live in this same column.
+    data: { themeConfig: { ...cfg, discountApproval: merged } as object },
+  });
+
+  void writeAudit({
+    tenantId,
+    userId,
+    action: 'update',
+    entityType: 'discount_policy',
+    entityId: tenantId,
+    description: merged.enabled
+      ? `Discount approval ON — above ₹${merged.maxAmountWithoutApproval || '∞'} or ${merged.maxPercentWithoutApproval || '∞'}% needs approval`
+      : 'Discount approval OFF — concessions apply immediately',
+    oldValues: before,
+    newValues: merged,
+  });
+
+  return merged;
+}
+
+/** Concessions typed at the counter that nobody has decided on yet. */
+export async function getPendingDiscounts(tenantId: string) {
+  const rows = await prisma.discount.findMany({
+    where: { tenantId, status: 'pending' },
+    include: {
+      bill: {
+        select: {
+          id: true,
+          billNumber: true,
+          totalAmount: true,
+          subtotal: true,
+          status: true,
+          patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
+        },
+      },
+      requester: { select: { id: true, firstName: true, lastName: true } },
+    },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  return rows.map((d) => ({
+    id: d.id,
+    billId: d.billId,
+    billNumber: d.bill?.billNumber ?? null,
+    patientName: d.bill?.patient
+      ? `${d.bill.patient.firstName} ${d.bill.patient.lastName ?? ''}`.trim()
+      : null,
+    patientMrn: d.bill?.patient?.mrn ?? null,
+    // What the bill comes to WITHOUT this concession — the figure the approver
+    // is being asked to reduce.
+    billTotal: toNumber(d.bill?.totalAmount),
+    discountType: String(d.discountType),
+    amount: toNumber(d.value),
+    percentOfBill: toNumber(d.bill?.subtotal)
+      ? r2((toNumber(d.value) / toNumber(d.bill!.subtotal)) * 100)
+      : 0,
+    reason: d.reason,
+    requestedBy: d.requester
+      ? `${d.requester.firstName} ${d.requester.lastName}`
+      : null,
+    requestedAt: d.createdAt,
+  }));
+}
+
+export async function decideDiscount(
+  tenantId: string,
+  userId: string,
+  discountId: string,
+  decision: { approve: boolean; reason?: string },
+) {
+  const discount = await prisma.discount.findFirst({
+    where: { id: discountId, tenantId },
+    include: { bill: { select: { id: true, billNumber: true } } },
+  });
+  if (!discount) throw AppError.notFound('Discount not found');
+  if (discount.status !== 'pending') {
+    throw AppError.badRequest(`This concession has already been ${discount.status}.`);
+  }
+
+  // Nobody signs off their own concession — that is the entire point of a gate.
+  if (discount.requestedBy && discount.requestedBy === userId) {
+    throw AppError.badRequest(
+      'A concession cannot be approved by the person who requested it.',
+    );
+  }
+
+  const updated = await prisma.discount.update({
+    where: { id: discountId },
+    data: decision.approve
+      ? { status: 'approved', approvedBy: userId, decidedAt: new Date() }
+      : {
+          status: 'rejected',
+          approvedBy: userId,
+          decidedAt: new Date(),
+          rejectionReason: decision.reason ?? null,
+        },
+  });
+
+  // Only now does the money move — an approved concession starts counting, a
+  // rejected one never does.
+  await recalculateBillTotals(discount.billId);
+
+  logger.info(
+    { tenantId, discountId, by: userId, approved: decision.approve },
+    'Discount decided',
+  );
+  void writeAudit({
+    tenantId,
+    userId,
+    action: 'update',
+    entityType: 'bill',
+    entityId: discount.billId,
+    description:
+      `Concession of ₹${toNumber(discount.value)} on bill ${discount.bill?.billNumber ?? discount.billId} ` +
+      (decision.approve ? 'approved' : 'rejected'),
+    reason: decision.reason,
+    oldValues: { status: 'pending' },
+    newValues: { status: decision.approve ? 'approved' : 'rejected', decidedBy: userId },
+  });
+
+  return updated;
 }
 
 // --- Cash drawer close ---

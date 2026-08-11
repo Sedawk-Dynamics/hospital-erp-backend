@@ -23,6 +23,8 @@ import {
   closeDrawer,
   settleCredit,
   reversePayment,
+  setBillDiscount,
+  decideDiscount,
 } from '../../../../src/modules/billing/billing.service';
 
 // ─── Extend mocks that setup.ts does not provide ───
@@ -1550,6 +1552,149 @@ describe('BillingService', () => {
       await expect(
         settleCredit(TENANT_ID, USER_ID, 'nonsense:1', { amount: 10 }),
       ).rejects.toThrow('Unknown provider kind');
+    });
+  });
+
+  // ═══════════════════════════════════════════
+  // Discount approval gate
+  // ═══════════════════════════════════════════
+  describe('discount approval', () => {
+    const APPROVER = 'user-admin-1';
+
+    /** Set the tenant's policy as it is stored — in themeConfig JSON. */
+    function policy(cfg: Record<string, unknown> | null) {
+      vi.mocked(prisma.tenant.findFirst).mockResolvedValue({
+        themeConfig: cfg ? { discountApproval: cfg } : {},
+      } as any);
+    }
+
+    function billWithItems(unitPrice: number) {
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue({
+        ...mockBillDraft,
+        billItems: [{ quantity: 1, unitPrice, discountAmount: 0, taxAmount: 0, totalAmount: unitPrice }],
+      } as any);
+      mockRecalculate([
+        { quantity: 1, unitPrice, discountAmount: 0, taxAmount: 0, totalAmount: unitPrice },
+      ]);
+      vi.mocked(prisma.bill.findUniqueOrThrow).mockResolvedValue({
+        ...mockBillDraft,
+        totalAmount: unitPrice,
+      } as any);
+      vi.mocked((prisma.discount as any).deleteMany).mockResolvedValue({ count: 0 } as any);
+      vi.mocked(prisma.discount.create).mockResolvedValue({ id: 'disc-1' } as any);
+    }
+
+    it('applies a concession immediately when the gate is off', async () => {
+      // The default. A hospital that never turns this on must behave exactly as
+      // it always did — no new friction at the counter.
+      policy(null);
+      billWithItems(10000);
+
+      await setBillDiscount(TENANT_ID, 'bill-1', {
+        discountType: 'fixed',
+        discountValue: 9000,
+        approvedBy: USER_ID,
+      });
+
+      expect(prisma.discount.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ status: 'approved', approvedBy: USER_ID }),
+      });
+    });
+
+    it('parks a concession over the rupee limit', async () => {
+      policy({ enabled: true, maxAmountWithoutApproval: 500, maxPercentWithoutApproval: 0 });
+      billWithItems(10000);
+
+      await setBillDiscount(TENANT_ID, 'bill-1', {
+        discountType: 'fixed',
+        discountValue: 800,
+        approvedBy: USER_ID,
+      });
+
+      expect(prisma.discount.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          status: 'pending',
+          requestedBy: USER_ID,
+          // Not yet allowed by anyone — that is the whole point.
+          approvedBy: null,
+        }),
+      });
+    });
+
+    it('lets a concession under both limits through', async () => {
+      policy({ enabled: true, maxAmountWithoutApproval: 500, maxPercentWithoutApproval: 10 });
+      billWithItems(10000);
+
+      await setBillDiscount(TENANT_ID, 'bill-1', {
+        discountType: 'fixed',
+        discountValue: 400, // ₹400 = 4% of ₹10,000 — under both
+        approvedBy: USER_ID,
+      });
+
+      expect(prisma.discount.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ status: 'approved' }),
+      });
+    });
+
+    it('parks a concession over the percentage limit even when the rupee value is small', async () => {
+      // ₹300 is nothing on an admission and half a consultation. This is why
+      // both limits exist.
+      policy({ enabled: true, maxAmountWithoutApproval: 5000, maxPercentWithoutApproval: 10 });
+      billWithItems(600);
+
+      await setBillDiscount(TENANT_ID, 'bill-1', {
+        discountType: 'fixed',
+        discountValue: 300, // 50% of the bill
+        approvedBy: USER_ID,
+      });
+
+      expect(prisma.discount.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ status: 'pending' }),
+      });
+    });
+
+    it('refuses to let the requester approve their own concession', async () => {
+      vi.mocked((prisma.discount as any).findFirst).mockResolvedValue({
+        id: 'disc-1',
+        billId: 'bill-1',
+        value: 800,
+        status: 'pending',
+        requestedBy: USER_ID,
+        bill: { id: 'bill-1', billNumber: 'BILL-1' },
+      } as any);
+
+      await expect(
+        decideDiscount(TENANT_ID, USER_ID, 'disc-1', { approve: true }),
+      ).rejects.toThrow('cannot be approved by the person who requested it');
+      expect(prisma.discount.update).not.toHaveBeenCalled();
+    });
+
+    it('will not decide the same concession twice', async () => {
+      vi.mocked((prisma.discount as any).findFirst).mockResolvedValue({
+        id: 'disc-1',
+        billId: 'bill-1',
+        status: 'approved',
+        requestedBy: USER_ID,
+        bill: { id: 'bill-1', billNumber: 'BILL-1' },
+      } as any);
+
+      await expect(
+        decideDiscount(TENANT_ID, APPROVER, 'disc-1', { approve: false }),
+      ).rejects.toThrow('already been approved');
+    });
+
+    it('refuses to finalize a bill with a concession still awaiting approval', async () => {
+      // Finalising would present a figure that is about to change, and money
+      // collected against it would leave the bill over-paid.
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue({
+        ...mockBillDraft,
+        billItems: [mockBillItem],
+      } as any);
+      vi.mocked(prisma.discount.count).mockResolvedValue(1);
+
+      await expect(finalizeBill(TENANT_ID, USER_ID, 'bill-1')).rejects.toThrow(
+        'awaiting approval',
+      );
     });
   });
 
