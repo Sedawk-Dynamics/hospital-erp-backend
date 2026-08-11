@@ -101,7 +101,13 @@ labRoutes.get('/orders', authenticate, requirePermission('lab_orders', 'read'), 
 labRoutes.get('/orders/:id', authenticate, requirePermission('lab_orders', 'read'), validate(labOrderIdParamSchema), controller.getLabOrderById);
 labRoutes.put('/orders/:id', authenticate, requirePermission('lab_orders', 'update'), validate(updateLabOrderSchema), controller.updateLabOrder);
 labRoutes.patch('/orders/:id/cancel', authenticate, requirePermission('lab_orders', 'update'), validate(cancelLabOrderSchema), controller.cancelLabOrder);
-labRoutes.patch('/orders/:id/accept', authenticate, requirePermission('lab_orders', 'update'), validate(acceptLabOrderSchema), controller.acceptLabOrder);
+// Accepting an order admits it to the bench AND assigns a technician to it —
+// that is triage and workload allocation, a supervisor's job. It sat on
+// `lab_orders:update`, which technicians hold, so a technician could accept
+// work and hand it to a colleague. `lab_orders:approve` is supervisor-only
+// (lab_supervisor / admin / super_admin) and is already what result approval
+// uses, so the two supervisor acts are gated the same way.
+labRoutes.patch('/orders/:id/accept', authenticate, requirePermission('lab_orders', 'approve'), validate(acceptLabOrderSchema), controller.acceptLabOrder);
 // Mark a single test on an order as done. The uploaded attachments serve as
 // the report; when every item on the order is done, this endpoint auto-
 // completes the order and publishes a LabReport for downstream readers.

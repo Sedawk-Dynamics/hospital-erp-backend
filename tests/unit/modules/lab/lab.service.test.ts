@@ -15,6 +15,7 @@ import {
   getInvestigationHistory,
   isLabReportReleased,
   extractResultsFromAttachment,
+  getLabOrders,
 } from '../../../../src/modules/lab/lab.service';
 import { parseLabReportFile } from '../../../../src/modules/lab/lab.ocr';
 
@@ -897,5 +898,68 @@ describe('Lab Service', () => {
         rejectSample(TENANT_ID, 'sample-1', USER_ID, { rejectionReason: 'Bad' } as any),
       ).rejects.toThrow('Sample is already rejected');
     });
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Order worklist filters — what the bench and the supervisor query on
+// ═══════════════════════════════════════════════════════════════
+
+describe('getLabOrders filters', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(prisma.labOrder.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.labOrder.count).mockResolvedValue(0);
+  });
+
+  /** The `where` the service handed Prisma. */
+  async function whereFor(query: Record<string, unknown>) {
+    await getLabOrders(TENANT_ID, query as any);
+    return (vi.mocked(prisma.labOrder.findMany).mock.calls[0]![0] as any).where;
+  }
+
+  it('bounds a single-day filter to a whole IST day', async () => {
+    // A bare `new Date('2026-08-11')` is midnight UTC — 05:30 IST — so the day
+    // used to run from half past five in the morning to half past five the
+    // next, moving the early-morning orders onto the wrong day.
+    const where = await whereFor({ date: '2026-08-11' });
+
+    expect(where.createdAt.gte.toISOString()).toBe('2026-08-10T18:30:00.000Z');
+    expect(where.createdAt.lte.toISOString()).toBe('2026-08-11T18:29:59.999Z');
+  });
+
+  it('accepts several statuses at once', async () => {
+    // The API took a single enum, so "everything still open" had to be
+    // filtered in the browser — on ONE page of results.
+    const where = await whereFor({ statuses: 'ordered,received,in_progress' });
+
+    expect(where.status).toEqual({ in: ['ordered', 'received', 'in_progress'] });
+  });
+
+  it('treats overdue as open, aged, and with no report out', async () => {
+    const where = await whereFor({ overdue: true });
+
+    expect(where.status).toEqual({ notIn: ['completed', 'cancelled'] });
+    expect(where.createdAt.lt).toBeInstanceOf(Date);
+    // A signed or published report means it is done, whatever the order's own
+    // status column still says.
+    expect(where.OR).toEqual([
+      { labReport: null },
+      { labReport: { publishedAt: null, signedAt: null } },
+    ]);
+  });
+
+  it('can single out orders nobody has picked up', async () => {
+    expect((await whereFor({ unassigned: true })).assignedToId).toBeNull();
+  });
+
+  it('searches the order number and the test, not just the patient', async () => {
+    // What a bench technician actually reaches for.
+    const where = await whereFor({ search: 'CBC' });
+    const keys = where.OR.map((c: Record<string, unknown>) => Object.keys(c)[0]);
+
+    expect(keys).toContain('patient');
+    expect(keys).toContain('orderNumber');
+    expect(keys).toContain('labOrderItems');
   });
 });

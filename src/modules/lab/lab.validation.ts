@@ -236,9 +236,16 @@ export const getLabOrdersSchema = z.object({
         'cancelled',
       ])
       .optional(),
+    // Several statuses at once, comma separated — a worklist wants "everything
+    // still open", which a single enum cannot express.
+    statuses: z.string().optional(),
     urgency: z.enum(['routine', 'urgent', 'stat']).optional(),
     fromDate: z.string().optional(),
     toDate: z.string().optional(),
+    /** Open >24h with no report signed or published. */
+    overdue: z.coerce.boolean().optional(),
+    /** Not yet picked up by a technician — the supervisor's triage queue. */
+    unassigned: z.coerce.boolean().optional(),
     assignedTo: z.string().optional(),
     outsourced: z
       .string()

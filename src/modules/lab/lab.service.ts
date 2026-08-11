@@ -3,6 +3,7 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
+import { istDayRange, istDayStart, istDayEnd } from '../../shared/date.utils';
 import { UPLOAD_DIR } from '../../services/upload.service';
 import { parseLabReportFile } from './lab.ocr';
 import { OCR_SUPPORTED_MIME } from '../../services/gemini-vision';
@@ -601,28 +602,53 @@ export async function getLabOrders(tenantId: string, query: GetLabOrdersQuery) {
     where.acceptedAt = query.accepted ? { not: null } : null;
   }
 
-  // Single-day date filter (UTC -> tenant-day approximation; Asia/Kolkata clients send IST date)
+  // Whole IST days. This used to bound the day with a bare `new Date(date)`,
+  // which is midnight UTC — 05:30 IST — so a "today" filter ran from half past
+  // five this morning to half past five tomorrow and quietly moved the
+  // early-morning orders onto the wrong day.
   if (query.date) {
-    const start = new Date(query.date);
-    if (!isNaN(start.getTime())) {
-      const end = new Date(start);
-      end.setDate(end.getDate() + 1);
-      where.createdAt = { ...where.createdAt, gte: start, lt: end };
-    }
+    const { start, end } = istDayRange(query.date);
+    where.createdAt = { ...where.createdAt, gte: start, lte: end };
   }
 
   if (query.fromDate) {
-    where.createdAt = { ...where.createdAt, gte: new Date(query.fromDate) };
+    where.createdAt = { ...where.createdAt, gte: istDayStart(query.fromDate) };
   }
   if (query.toDate) {
-    where.createdAt = { ...where.createdAt, lte: new Date(query.toDate) };
+    where.createdAt = { ...where.createdAt, lte: istDayEnd(query.toDate) };
+  }
+
+  // Several statuses at once. The API only ever took one, so a screen wanting
+  // "everything still open" had to fetch a page and drop the finished rows in
+  // the browser — which filtered ONE PAGE, so the worklist showed 6 of 20 rows
+  // and the pager still claimed 20 pages of them.
+  if (query.statuses) {
+    const list = query.statuses.split(',').map((x) => x.trim()).filter(Boolean);
+    if (list.length) where.status = { in: list as any };
+  }
+
+  // Raised more than 24h ago with no report out. Same predicate the dashboard
+  // card counts, so the number and the rows agree.
+  if (query.overdue) {
+    Object.assign(where, OVERDUE_WHERE(tenantId, new Date(Date.now() - 24 * 60 * 60 * 1000)));
+  }
+
+  // Waiting for someone to pick it up — the supervisor's triage queue.
+  if (query.unassigned) {
+    where.assignedToId = null;
   }
 
   if (query.search) {
+    const q = query.search;
     where.OR = [
-      { patient: { firstName: { contains: query.search, mode: 'insensitive' } } },
-      { patient: { lastName: { contains: query.search, mode: 'insensitive' } } },
-      { patient: { mrn: { contains: query.search, mode: 'insensitive' } } },
+      { patient: { firstName: { contains: q, mode: 'insensitive' } } },
+      { patient: { lastName: { contains: q, mode: 'insensitive' } } },
+      { patient: { mrn: { contains: q, mode: 'insensitive' } } },
+      // Searching by what was ordered, and by the order's own number, is what
+      // a bench technician actually reaches for — neither was searchable.
+      { orderNumber: { contains: q, mode: 'insensitive' } },
+      { labOrderItems: { some: { test: { testName: { contains: q, mode: 'insensitive' } } } } },
+      { labOrderItems: { some: { test: { testCode: { contains: q, mode: 'insensitive' } } } } },
     ];
   }
 
@@ -2368,8 +2394,8 @@ export async function getLabReportAnalytics(
   range: { fromDate?: string; toDate?: string },
 ) {
   const where: any = { tenantId };
-  if (range.fromDate) where.createdAt = { ...where.createdAt, gte: new Date(range.fromDate) };
-  if (range.toDate) where.createdAt = { ...where.createdAt, lte: new Date(range.toDate) };
+  if (range.fromDate) where.createdAt = { ...where.createdAt, gte: istDayStart(range.fromDate) };
+  if (range.toDate) where.createdAt = { ...where.createdAt, lte: istDayEnd(range.toDate) };
 
   const [orders, completedOrders, totalSamples, openOrders] = await Promise.all([
     prisma.labOrder.findMany({
@@ -2726,6 +2752,25 @@ export async function getInvestigationHistory(tenantId: string, patientId: strin
 //   - today's published count
 //   - abnormal results pending review (last 24h)
 // Plus: a recent-activity feed of the last ~20 actions (orders + reports).
+/**
+ * What counts as overdue: still open, raised more than 24h ago, and no report
+ * signed or published yet.
+ *
+ * Declared once because three places ask the question — the dashboard count,
+ * the dashboard list, and the `overdue=true` order filter. When they each had
+ * their own version they disagreed, and the number on the card did not match
+ * the rows underneath it.
+ */
+export const OVERDUE_WHERE = (tenantId: string, before: Date) => ({
+  tenantId,
+  status: { notIn: ['completed', 'cancelled'] as any },
+  createdAt: { lt: before },
+  OR: [
+    { labReport: null },
+    { labReport: { publishedAt: null, signedAt: null } },
+  ],
+});
+
 export async function getLabDashboard(tenantId: string) {
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
@@ -2791,13 +2836,14 @@ export async function getLabDashboard(tenantId: string) {
         labOrder: { select: { id: true } },
       },
     }),
-    // Orders open longer than 24h with no published report — surfaces SLA risks.
+    // Orders open longer than 24h with no report out — the SLA risk list.
+    //
+    // The "no report" half was in the comment but not in the query: an order
+    // whose report had been signed and published still counted as overdue as
+    // long as its own status had not been flipped to completed, so the list
+    // filled up with work that was actually finished.
     prisma.labOrder.findMany({
-      where: {
-        tenantId,
-        status: { notIn: ['completed', 'cancelled'] },
-        createdAt: { lt: yesterday },
-      },
+      where: OVERDUE_WHERE(tenantId, yesterday),
       orderBy: { createdAt: 'asc' },
       take: 10,
       select: {
@@ -2809,6 +2855,13 @@ export async function getLabDashboard(tenantId: string) {
       },
     }),
   ]);
+
+  // Counted separately. `overdueOrders.length` was the count, on a query capped
+  // at 10 rows — so a lab 40 orders behind its SLA read as exactly 10, and the
+  // number stopped moving however far behind it got.
+  const overdueCount = await prisma.labOrder.count({
+    where: OVERDUE_WHERE(tenantId, yesterday),
+  });
 
   return {
     summary: {
@@ -2824,7 +2877,7 @@ export async function getLabDashboard(tenantId: string) {
       publishedToday,
       correctedReports,
       abnormalRecent,
-      overdueOrders: overdueOrders.length,
+      overdueOrders: overdueCount,
     },
     recentOrders,
     recentPublishedReports,
@@ -2842,8 +2895,8 @@ export async function getLabAnalyticsExtended(
   range: { fromDate?: string; toDate?: string },
 ) {
   const where: any = { tenantId };
-  if (range.fromDate) where.createdAt = { ...where.createdAt, gte: new Date(range.fromDate) };
-  if (range.toDate) where.createdAt = { ...where.createdAt, lte: new Date(range.toDate) };
+  if (range.fromDate) where.createdAt = { ...where.createdAt, gte: istDayStart(range.fromDate) };
+  if (range.toDate) where.createdAt = { ...where.createdAt, lte: istDayEnd(range.toDate) };
 
   const completedOrders = await prisma.labOrder.findMany({
     where: { ...where, status: 'completed' },
