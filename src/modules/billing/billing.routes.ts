@@ -28,6 +28,10 @@ import {
   patientIdParamSchema,
   getChargesQuerySchema,
   getPendingOrdersQuerySchema,
+  drawerStatusQuerySchema,
+  closeDrawerSchema,
+  drawerClosuresQuerySchema,
+  drawerClosureIdParamSchema,
   pullChargesSchema,
   billOtRequestSchema,
   setBillDiscountSchema,
@@ -56,6 +60,40 @@ billingRoutes.get(
   requirePermission('billing', 'read'),
   validate(getChargesQuerySchema),
   controller.getCharges,
+);
+
+// --- Cash drawer close ---
+// The counter marks payments by hand, so the drawer is where the system meets
+// physical reality. A cashier reads their own expected figure and closes their
+// own drawer at 'payments:create'; only 'billing:approve' can reopen a closure
+// for a recount, so nobody quietly redoes their own variance.
+billingRoutes.get(
+  '/drawer/status',
+  authenticate,
+  requirePermission('payments', 'read'),
+  validate(drawerStatusQuerySchema),
+  controller.getDrawerStatus,
+);
+billingRoutes.post(
+  '/drawer/close',
+  authenticate,
+  requirePermission('payments', 'create'),
+  validate(closeDrawerSchema),
+  controller.closeDrawer,
+);
+billingRoutes.get(
+  '/drawer/closures',
+  authenticate,
+  requirePermission('billing', 'read'),
+  validate(drawerClosuresQuerySchema),
+  controller.listDrawerClosures,
+);
+billingRoutes.delete(
+  '/drawer/closures/:id',
+  authenticate,
+  requirePermission('billing', 'approve'),
+  validate(drawerClosureIdParamSchema),
+  controller.reopenDrawer,
 );
 
 // The counter's "what still needs a bill" worklist — unbilled lab, imaging and

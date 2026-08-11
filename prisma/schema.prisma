@@ -1314,6 +1314,7 @@ model Tenant {
   tickets                    Ticket[]
   feedback                   Feedback[]
   auditLogs                  AuditLog[]
+  cashDrawerClosures         CashDrawerClosure[]
   complianceDocuments        ComplianceDocument[]
   otRequests                 OtRequest[]
   incidentReports            IncidentReport[]
@@ -1625,6 +1626,8 @@ model User {
   ticketsEscalated               Ticket[]                     @relation("TicketEscalator")
   feedbackSubmitted              Feedback[]
   auditLogs                      AuditLog[]
+  drawersClosed                  CashDrawerClosure[]          @relation("DrawerCashier")
+  drawerClosuresRecorded         CashDrawerClosure[]          @relation("DrawerCloser")
   complianceDocUploads           ComplianceDocument[]
   incidentReportsReported        IncidentReport[]             @relation("IncidentReporter")
   incidentReportsEscalated       IncidentReport[]             @relation("IncidentEscalator")
@@ -5131,6 +5134,47 @@ model Payment {
   transfers PaymentTransfer[]
 
   @@map("payments")
+}
+
+/// End-of-day cash reconciliation for one cashier's drawer.
+///
+/// Payments here are marked by hand, so the drawer is the only place the system
+/// meets physical reality: what it thinks was collected versus what is actually
+/// in the till. Only CASH is counted — card, UPI and bank transfers settle to
+/// the bank and never sit in a drawer.
+///
+/// One closure per cashier per business day. The cashier is the unit because
+/// every payment already records who took it, so the expected figure can be
+/// derived per person rather than guessed for the counter as a whole.
+model CashDrawerClosure {
+  id           String   @id @default(uuid())
+  tenantId     String   @map("tenant_id")
+  /// The IST calendar day being closed, not a timestamp.
+  businessDate DateTime @map("business_date") @db.Date
+  /// Whose drawer. Payments carry processedBy, so expected cash is derived.
+  cashierId    String   @map("cashier_id")
+  /// Cash handed over at the start of the shift to make change with.
+  openingFloat Decimal  @default(0) @map("opening_float") @db.Decimal(12, 2)
+  /// System figure: openingFloat + cash collected − cash refunded.
+  expectedCash Decimal  @default(0) @map("expected_cash") @db.Decimal(12, 2)
+  /// What the cashier actually counted.
+  countedCash  Decimal  @default(0) @map("counted_cash") @db.Decimal(12, 2)
+  /// countedCash − expectedCash. Negative is short, positive is over.
+  variance     Decimal  @default(0) @db.Decimal(12, 2)
+  /// Note count per denomination, e.g. {"500": 12, "200": 3}. Optional — a
+  /// cashier may just enter a total.
+  denominations Json?   @map("denominations")
+  notes        String?
+  closedBy     String   @map("closed_by")
+  closedAt     DateTime @default(now()) @map("closed_at")
+
+  tenant  Tenant @relation(fields: [tenantId], references: [id])
+  cashier User   @relation("DrawerCashier", fields: [cashierId], references: [id])
+  closer  User   @relation("DrawerCloser", fields: [closedBy], references: [id])
+
+  @@unique([tenantId, businessDate, cashierId])
+  @@index([tenantId, businessDate])
+  @@map("cash_drawer_closures")
 }
 
 model Receipt {

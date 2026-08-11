@@ -5253,6 +5253,232 @@ export async function getBillDocument(tenantId: string, billId: string) {
   return bill;
 }
 
+// --- Cash drawer close ---
+
+/**
+ * What one cashier's drawer should hold at the end of a business day.
+ *
+ * ONLY cash. Card, UPI and bank transfers settle to the bank and never sit in a
+ * till, so counting them here would guarantee a variance on every close.
+ *
+ * Expected = opening float + cash taken in − cash handed back. Both halves come
+ * from the payment ledger, which now records who processed each one, so this is
+ * derived per person rather than guessed for the counter as a whole.
+ */
+export async function getDrawerStatus(
+  tenantId: string,
+  cashierId: string,
+  query: { date?: string; openingFloat?: number } = {},
+) {
+  const dateStr = query.date ?? getISTDateStr();
+  const { start, end } = istDayRange(dateStr);
+
+  const existing = await prisma.cashDrawerClosure.findFirst({
+    where: { tenantId, cashierId, businessDate: istDayStart(dateStr) },
+    include: {
+      cashier: { select: { id: true, firstName: true, lastName: true } },
+      closer: { select: { id: true, firstName: true, lastName: true } },
+    },
+  });
+
+  const payments = await prisma.payment.findMany({
+    where: {
+      tenantId,
+      processedBy: cashierId,
+      status: 'completed',
+      paymentMethod: 'cash',
+      paymentDate: { gte: start, lte: end },
+    },
+    select: { amount: true, paymentType: true },
+  });
+
+  let cashIn = 0;
+  let cashOut = 0;
+  for (const p of payments) {
+    const amt = toNumber(p.amount);
+    if (p.paymentType === 'refund') cashOut += amt;
+    else cashIn += amt;
+  }
+
+  // A drawer already closed keeps the float it was closed with, so reopening
+  // the screen shows the same figures it was reconciled against.
+  const openingFloat = existing
+    ? toNumber(existing.openingFloat)
+    : (query.openingFloat ?? 0);
+  const expectedCash = r2(openingFloat + cashIn - cashOut);
+
+  return {
+    date: dateStr,
+    cashierId,
+    openingFloat,
+    cashIn: r2(cashIn),
+    cashOut: r2(cashOut),
+    expectedCash,
+    transactionCount: payments.length,
+    closure: existing
+      ? {
+          id: existing.id,
+          openingFloat: toNumber(existing.openingFloat),
+          expectedCash: toNumber(existing.expectedCash),
+          countedCash: toNumber(existing.countedCash),
+          variance: toNumber(existing.variance),
+          denominations: existing.denominations as Record<string, number> | null,
+          notes: existing.notes,
+          closedAt: existing.closedAt,
+          closedBy: existing.closer
+            ? `${existing.closer.firstName} ${existing.closer.lastName}`
+            : null,
+        }
+      : null,
+  };
+}
+
+export async function closeDrawer(
+  tenantId: string,
+  userId: string,
+  data: {
+    date?: string;
+    cashierId?: string;
+    openingFloat?: number;
+    countedCash: number;
+    denominations?: Record<string, number>;
+    notes?: string;
+  },
+) {
+  // A cashier closes their own drawer by default; a supervisor may close
+  // someone else's (e.g. a nurse who has gone home mid-reconciliation).
+  const cashierId = data.cashierId ?? userId;
+  const dateStr = data.date ?? getISTDateStr();
+  const businessDate = istDayStart(dateStr);
+
+  const already = await prisma.cashDrawerClosure.findFirst({
+    where: { tenantId, cashierId, businessDate },
+  });
+  if (already) {
+    throw AppError.badRequest(
+      'This drawer has already been closed for the day. Reopen it to recount.',
+    );
+  }
+
+  const status = await getDrawerStatus(tenantId, cashierId, {
+    date: dateStr,
+    openingFloat: data.openingFloat,
+  });
+
+  // Recomputed here rather than trusted from the client — the whole point of
+  // the exercise is that the system says what it expected, independently.
+  const expectedCash = status.expectedCash;
+  const countedCash = r2(data.countedCash);
+  const variance = r2(countedCash - expectedCash);
+
+  const closure = await prisma.cashDrawerClosure.create({
+    data: {
+      tenantId,
+      businessDate,
+      cashierId,
+      openingFloat: status.openingFloat,
+      expectedCash,
+      countedCash,
+      variance,
+      denominations: (data.denominations ?? undefined) as any,
+      notes: data.notes?.trim() || null,
+      closedBy: userId,
+    },
+  });
+
+  logger.info(
+    { tenantId, cashierId, date: dateStr, expectedCash, countedCash, variance },
+    'Cash drawer closed',
+  );
+  void writeAudit({
+    tenantId,
+    userId,
+    action: 'create',
+    entityType: 'cash_drawer_closure',
+    entityId: closure.id,
+    description:
+      `Drawer closed for ${dateStr} — expected ₹${expectedCash}, counted ₹${countedCash}` +
+      (variance === 0
+        ? ' (balanced)'
+        : ` (${variance > 0 ? 'over' : 'short'} by ₹${Math.abs(variance)})`),
+    reason: data.notes,
+    newValues: {
+      businessDate: dateStr,
+      cashierId,
+      openingFloat: status.openingFloat,
+      expectedCash,
+      countedCash,
+      variance,
+    },
+  });
+
+  return closure;
+}
+
+/** Every drawer closed on a day — the supervisor's view of the counter. */
+export async function listDrawerClosures(tenantId: string, query: { date?: string } = {}) {
+  const dateStr = query.date ?? getISTDateStr();
+  const closures = await prisma.cashDrawerClosure.findMany({
+    where: { tenantId, businessDate: istDayStart(dateStr) },
+    include: {
+      cashier: { select: { id: true, firstName: true, lastName: true } },
+      closer: { select: { id: true, firstName: true, lastName: true } },
+    },
+    orderBy: { closedAt: 'asc' },
+  });
+
+  return {
+    date: dateStr,
+    closures: closures.map((c) => ({
+      id: c.id,
+      cashierId: c.cashierId,
+      cashierName: c.cashier ? `${c.cashier.firstName} ${c.cashier.lastName}` : '—',
+      openingFloat: toNumber(c.openingFloat),
+      expectedCash: toNumber(c.expectedCash),
+      countedCash: toNumber(c.countedCash),
+      variance: toNumber(c.variance),
+      notes: c.notes,
+      closedAt: c.closedAt,
+      closedBy: c.closer ? `${c.closer.firstName} ${c.closer.lastName}` : '—',
+    })),
+    totals: {
+      expectedCash: r2(closures.reduce((s, c) => s + toNumber(c.expectedCash), 0)),
+      countedCash: r2(closures.reduce((s, c) => s + toNumber(c.countedCash), 0)),
+      variance: r2(closures.reduce((s, c) => s + toNumber(c.variance), 0)),
+    },
+  };
+}
+
+/**
+ * Undo a close so the cashier can recount. Deliberately gated at
+ * `billing:approve` rather than letting anyone quietly redo their own variance.
+ */
+export async function reopenDrawer(tenantId: string, userId: string, closureId: string) {
+  const closure = await prisma.cashDrawerClosure.findFirst({
+    where: { id: closureId, tenantId },
+  });
+  if (!closure) throw AppError.notFound('Drawer closure not found');
+
+  await prisma.cashDrawerClosure.delete({ where: { id: closureId } });
+
+  logger.info({ tenantId, closureId, by: userId }, 'Cash drawer reopened');
+  void writeAudit({
+    tenantId,
+    userId,
+    action: 'delete',
+    entityType: 'cash_drawer_closure',
+    entityId: closureId,
+    description: `Drawer closure reopened for recount — was counted ₹${toNumber(closure.countedCash)} against ₹${toNumber(closure.expectedCash)} expected`,
+    oldValues: {
+      expectedCash: toNumber(closure.expectedCash),
+      countedCash: toNumber(closure.countedCash),
+      variance: toNumber(closure.variance),
+    },
+  });
+
+  return { reopened: true, closureId };
+}
+
 // --- Patient Bills ---
 
 export async function getPatientBills(tenantId: string, patientId: string) {

@@ -319,6 +319,57 @@ export async function getCharges(
   }
 }
 
+// --- Cash drawer close ---
+
+export async function getDrawerStatus(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const { tenantId, userId } = req.user!;
+    const q = req.query as { date?: string; cashierId?: string; openingFloat?: number };
+    const status = await billingService.getDrawerStatus(tenantId, q.cashierId ?? userId, q);
+    sendResponse({ res, message: 'Drawer status retrieved successfully', data: status });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function closeDrawer(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const { tenantId, userId } = req.user!;
+    const closure = await billingService.closeDrawer(tenantId, userId, req.body);
+    sendResponse({ res, statusCode: 201, message: 'Drawer closed successfully', data: closure });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function listDrawerClosures(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const result = await billingService.listDrawerClosures(tenantId, req.query as any);
+    sendResponse({ res, message: 'Drawer closures retrieved successfully', data: result });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function reopenDrawer(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const { tenantId, userId } = req.user!;
+    const result = await billingService.reopenDrawer(tenantId, userId, req.params.id as string);
+    sendResponse({ res, message: 'Drawer reopened for recount', data: result });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getPendingOrders(
   req: AuthenticatedRequest,
   res: Response,

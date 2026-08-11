@@ -19,6 +19,8 @@ import {
   settleGatewayPayment,
   pullChargesToBill,
   getPatientCharges,
+  getDrawerStatus,
+  closeDrawer,
 } from '../../../../src/modules/billing/billing.service';
 
 // ─── Extend mocks that setup.ts does not provide ───
@@ -1373,6 +1375,102 @@ describe('BillingService', () => {
       // that is the figure a cashier counts the drawer against.
       expect(s.cash).toBe(1000);
       expect(s.upi).toBe(500);
+    });
+  });
+
+  // ═══════════════════════════════════════════
+  // Cash drawer close
+  // ═══════════════════════════════════════════
+  describe('cash drawer', () => {
+    beforeEach(() => {
+      vi.mocked((prisma as any).cashDrawerClosure.findFirst).mockResolvedValue(null);
+      vi.mocked((prisma as any).cashDrawerClosure.create).mockResolvedValue({ id: 'close-1' } as any);
+    });
+
+    it('expects the float plus cash in, less cash handed back', async () => {
+      vi.mocked(prisma.payment.findMany).mockResolvedValue([
+        { amount: 4000, paymentType: 'regular' },
+        { amount: 1500, paymentType: 'regular' },
+        { amount: 500, paymentType: 'refund' },
+      ] as any);
+
+      const status = await getDrawerStatus(TENANT_ID, USER_ID, {
+        date: '2026-08-10',
+        openingFloat: 2000,
+      });
+
+      expect(status.cashIn).toBe(5500);
+      expect(status.cashOut).toBe(500);
+      // 2000 float + 5500 in − 500 out
+      expect(status.expectedCash).toBe(7000);
+    });
+
+    it('asks the ledger for cash only', async () => {
+      // Card, UPI and bank transfers settle to the bank and never sit in a
+      // till. Counting them would guarantee a variance every single day.
+      await getDrawerStatus(TENANT_ID, USER_ID, { date: '2026-08-10' });
+
+      expect(prisma.payment.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            paymentMethod: 'cash',
+            status: 'completed',
+            processedBy: USER_ID,
+          }),
+        }),
+      );
+    });
+
+    it('records the variance when the till is short', async () => {
+      vi.mocked(prisma.payment.findMany).mockResolvedValue([
+        { amount: 5000, paymentType: 'regular' },
+      ] as any);
+
+      await closeDrawer(TENANT_ID, USER_ID, {
+        date: '2026-08-10',
+        openingFloat: 1000,
+        countedCash: 5800, // expected 6000
+      });
+
+      expect((prisma as any).cashDrawerClosure.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          openingFloat: 1000,
+          expectedCash: 6000,
+          countedCash: 5800,
+          variance: -200,
+        }),
+      });
+    });
+
+    it('derives the expected figure itself rather than trusting the client', async () => {
+      // The whole point of a reconciliation is that the system states what it
+      // expected independently — otherwise the count proves nothing.
+      vi.mocked(prisma.payment.findMany).mockResolvedValue([
+        { amount: 3000, paymentType: 'regular' },
+      ] as any);
+
+      await closeDrawer(TENANT_ID, USER_ID, {
+        date: '2026-08-10',
+        openingFloat: 500,
+        countedCash: 3500,
+        // A client claiming a different expectation must be ignored.
+        expectedCash: 99999,
+      } as any);
+
+      expect((prisma as any).cashDrawerClosure.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ expectedCash: 3500, variance: 0 }),
+      });
+    });
+
+    it('refuses to close a drawer twice in one day', async () => {
+      vi.mocked((prisma as any).cashDrawerClosure.findFirst).mockResolvedValue({
+        id: 'close-1',
+      } as any);
+
+      await expect(
+        closeDrawer(TENANT_ID, USER_ID, { date: '2026-08-10', countedCash: 100 }),
+      ).rejects.toThrow('already been closed');
+      expect((prisma as any).cashDrawerClosure.create).not.toHaveBeenCalled();
     });
   });
 

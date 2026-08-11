@@ -408,6 +408,37 @@ export const getChargesQuerySchema = z.object({
   }),
 });
 
+// --- Cash drawer close ---
+
+export const drawerStatusQuerySchema = z.object({
+  query: z.object({
+    date: z.string().optional(),
+    cashierId: z.string().uuid('Invalid cashier ID').optional(),
+    openingFloat: z.coerce.number().min(0).optional(),
+  }),
+});
+
+export const closeDrawerSchema = z.object({
+  body: z.object({
+    date: z.string().optional(),
+    /** Omit to close your own drawer; a supervisor may name someone else's. */
+    cashierId: z.string().uuid('Invalid cashier ID').optional(),
+    openingFloat: z.number().min(0).optional(),
+    countedCash: z.number().min(0, 'Counted cash cannot be negative'),
+    /** Note count per denomination, e.g. { "500": 12, "200": 3 }. */
+    denominations: z.record(z.string(), z.number().int().min(0)).optional(),
+    notes: z.string().max(1000).optional(),
+  }),
+});
+
+export const drawerClosuresQuerySchema = z.object({
+  query: z.object({ date: z.string().optional() }),
+});
+
+export const drawerClosureIdParamSchema = z.object({
+  params: z.object({ id: z.string().uuid('Invalid closure ID') }),
+});
+
 // Tenant-wide "what still needs a bill" worklist. Only the sources that are a
 // discrete order somebody raised — room and consultation accrue on their own,
 // pharmacy is dispensed at its own counter.
