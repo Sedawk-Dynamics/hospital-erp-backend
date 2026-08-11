@@ -577,7 +577,7 @@ export async function settleCredit(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const settlement = await billingService.settleCredit(tenantId, req.params.id as string, req.body);
+    const settlement = await billingService.settleCredit(tenantId, req.user!.userId, req.params.id as string, req.body);
     sendResponse({
       res,
       message: 'Credit settled successfully',

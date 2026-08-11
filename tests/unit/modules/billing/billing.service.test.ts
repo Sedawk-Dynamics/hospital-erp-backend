@@ -21,6 +21,7 @@ import {
   getPatientCharges,
   getDrawerStatus,
   closeDrawer,
+  settleCredit,
 } from '../../../../src/modules/billing/billing.service';
 
 // ─── Extend mocks that setup.ts does not provide ───
@@ -1375,6 +1376,71 @@ describe('BillingService', () => {
       // that is the figure a cashier counts the drawer against.
       expect(s.cash).toBe(1000);
       expect(s.upi).toBe(500);
+    });
+  });
+
+  // ═══════════════════════════════════════════
+  // settleCredit — a payer's money lands on that payer's bills
+  // ═══════════════════════════════════════════
+  describe('settleCredit', () => {
+    it('only touches the bills belonging to the payer being settled', async () => {
+      // The bug this pins. The provider key was accepted and then thrown away:
+      // the query filtered on nothing but "unpaid", so recording that an
+      // insurer had paid spread the money over the oldest open bills in the
+      // whole hospital — self-pay patients' bills included.
+      vi.mocked(prisma.bill.findMany).mockResolvedValue([]);
+
+      await expect(
+        settleCredit(TENANT_ID, USER_ID, 'ins:insurer-1', { amount: 100 }),
+      ).rejects.toThrow('cannot settle');
+
+      expect(prisma.bill.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            tenantId: TENANT_ID,
+            insuranceClaims: { some: { policy: { insurerId: 'insurer-1' } } },
+          }),
+        }),
+      );
+    });
+
+    it('scopes a self-pay settlement to that patient, claim-free', async () => {
+      vi.mocked(prisma.bill.findMany).mockResolvedValue([]);
+
+      await expect(
+        settleCredit(TENANT_ID, USER_ID, 'pat:patient-1', { amount: 50 }),
+      ).rejects.toThrow('cannot settle');
+
+      expect(prisma.bill.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            patientId: 'patient-1',
+            insuranceClaims: { none: {} },
+          }),
+        }),
+      );
+    });
+
+    it('refuses to settle more than the payer actually owes', async () => {
+      vi.mocked(prisma.bill.findMany).mockResolvedValue([
+        { id: 'bill-1', balanceDue: 1000, patientId: 'patient-1', totalAmount: 1000, amountPaid: 0 },
+      ] as any);
+
+      await expect(
+        settleCredit(TENANT_ID, USER_ID, 'ins:insurer-1', { amount: 5000 }),
+      ).rejects.toThrow('This payer owes 1000');
+    });
+
+    it('rejects a non-positive settlement', async () => {
+      await expect(
+        settleCredit(TENANT_ID, USER_ID, 'ins:insurer-1', { amount: 0 }),
+      ).rejects.toThrow('must be greater than zero');
+    });
+
+    it('rejects an unknown provider key', async () => {
+      await expect(
+        settleCredit(TENANT_ID, USER_ID, 'nonsense:1', { amount: 10 }),
+      ).rejects.toThrow('Unknown provider kind');
     });
   });
 

@@ -721,29 +721,35 @@ export async function getCreditSettlements(
  * Bills behind a single provider/patient bucket — used by the credit
  * settlement drill-down so the cashier can pick which invoices to clear.
  */
-export async function getCreditSettlementBills(
-  tenantId: string,
-  providerId: string,
-) {
-  // providerId format: ins:<id> | tpa:<id> | pat:<id>
+/**
+ * The open bills belonging to ONE payer.
+ *
+ * `providerId` is `ins:<insurerId>` | `tpa:<tpaId>` | `pat:<patientId>` — the
+ * key the receivables list hands back. Extracted so that reading a payer's
+ * bills and settling against them can never disagree about which bills are
+ * theirs; settleCredit used to build no filter at all.
+ */
+function creditProviderBillWhere(tenantId: string, providerId: string) {
   const [kind, id] = providerId.split(':');
   if (!id) throw AppError.badRequest('Invalid provider key');
 
-  let where: any = {
+  const base: any = {
     tenantId,
     balanceDue: { gt: 0 },
     status: { in: ['pending', 'partially_paid'] },
   };
 
-  if (kind === 'ins') {
-    where = { ...where, insuranceClaims: { some: { policy: { insurerId: id } } } };
-  } else if (kind === 'tpa') {
-    where = { ...where, insuranceClaims: { some: { policy: { tpaId: id } } } };
-  } else if (kind === 'pat') {
-    where = { ...where, patientId: id, insuranceClaims: { none: {} } };
-  } else {
-    throw AppError.badRequest('Unknown provider kind');
-  }
+  if (kind === 'ins') return { ...base, insuranceClaims: { some: { policy: { insurerId: id } } } };
+  if (kind === 'tpa') return { ...base, insuranceClaims: { some: { policy: { tpaId: id } } } };
+  if (kind === 'pat') return { ...base, patientId: id, insuranceClaims: { none: {} } };
+  throw AppError.badRequest('Unknown provider kind');
+}
+
+export async function getCreditSettlementBills(
+  tenantId: string,
+  providerId: string,
+) {
+  const where = creditProviderBillWhere(tenantId, providerId);
 
   const bills = await prisma.bill.findMany({
     where,
@@ -773,18 +779,28 @@ export async function getCreditSettlementBills(
 
 export async function settleCredit(
   tenantId: string,
+  userId: string,
   providerId: string,
   data: { amount: number; method?: string; notes?: string },
 ) {
-  // Find all unpaid bills
+  if (!(data.amount > 0)) throw AppError.badRequest('Settlement amount must be greater than zero');
+
+  // Only THIS payer's bills. The provider key was accepted and then thrown
+  // away: the query filtered on nothing but "unpaid", so recording that an
+  // insurer had paid ₹50,000 spread that money over the oldest open bills in
+  // the whole hospital — including self-pay patients who owe it themselves and
+  // other insurers' claims. Money landed on the wrong accounts entirely.
   const bills = await prisma.bill.findMany({
-    where: {
-      tenantId,
-      balanceDue: { gt: 0 },
-      status: { in: ['pending', 'partially_paid'] },
-    },
+    where: creditProviderBillWhere(tenantId, providerId),
     orderBy: { createdAt: 'asc' },
   });
+
+  const totalOutstanding = bills.reduce((s, b) => s + toNumber(b.balanceDue), 0);
+  if (data.amount > totalOutstanding) {
+    throw AppError.badRequest(
+      `This payer owes ${totalOutstanding}; cannot settle ${data.amount} against them.`,
+    );
+  }
 
   let remaining = data.amount;
 
@@ -806,6 +822,7 @@ export async function settleCredit(
           notes: data.notes || `Credit settlement for ${providerId}`,
           status: 'completed',
           paymentDate: new Date(),
+          processedBy: userId,
         },
       });
 
@@ -819,26 +836,29 @@ export async function settleCredit(
         },
       });
 
-      const newPaid = toNumber(bill.amountPaid) + payAmount;
-      const newBalance = toNumber(bill.totalAmount) - newPaid;
-
-      await tx.bill.update({
-        where: { id: bill.id },
-        data: {
-          amountPaid: newPaid,
-          balanceDue: Math.max(0, newBalance),
-          status: newBalance <= 0 ? 'paid' : 'partially_paid',
-        },
-      });
+      // Settle from the ledger the payment above just joined, not from the
+      // figure read before this loop started — same stale-read class as the
+      // counter payment path.
+      await applyPaymentToBill(tx, bill.id);
     });
 
     remaining -= payAmount;
   }
 
-  return {
-    settledAmount: data.amount - remaining,
-    provider: providerId,
-  };
+  const settledAmount = r2(data.amount - remaining);
+  logger.info({ tenantId, providerId, settledAmount }, 'Credit settled against payer');
+  void writeAudit({
+    tenantId,
+    userId,
+    action: 'create',
+    entityType: 'payment',
+    entityId: providerId,
+    description: `Credit settlement of ₹${settledAmount} recorded against ${providerId} across ${bills.length} open bill(s)`,
+    reason: data.notes,
+    newValues: { providerId, amount: settledAmount, method: data.method ?? 'bank_transfer' },
+  });
+
+  return { settledAmount, provider: providerId };
 }
 
 // --- Service Tariffs ---
