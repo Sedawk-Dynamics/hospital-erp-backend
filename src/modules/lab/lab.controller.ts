@@ -554,6 +554,25 @@ export async function publishLabReport(
   }
 }
 
+/** Send a submitted report back to the bench with a reason. */
+export async function rejectLabReport(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const report = await labService.rejectLabReport(
+      req.user!.tenantId,
+      req.params.id as string,
+      req.user!.userId,
+      req.body?.reason,
+    );
+    sendResponse({ res, message: 'Report sent back to the lab', data: report });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function submitLabReport(
   req: AuthenticatedRequest,
   res: Response,

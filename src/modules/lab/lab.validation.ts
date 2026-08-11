@@ -476,6 +476,18 @@ export const publishLabReportSchema = z.object({
     .optional(),
 });
 
+/** The other half of the approval decision: send a submitted report back. */
+export const rejectLabReportSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid report ID'),
+  }),
+  body: z
+    .object({
+      reason: z.string().max(500).optional(),
+    })
+    .optional(),
+});
+
 export const correctLabReportSchema = z.object({
   params: z.object({
     id: z.string().uuid('Invalid report ID'),

@@ -27,6 +27,7 @@ import {
   labReportIdParamSchema,
   signLabReportSchema,
   publishLabReportSchema,
+  rejectLabReportSchema,
   correctLabReportSchema,
   submitLabReportSchema,
   createLabTemplateSchema,
@@ -156,6 +157,10 @@ labRoutes.get('/reports/analytics-extended', authenticate, requirePermission('la
 labRoutes.get('/reports/:id', authenticate, requirePermission('lab_reports', 'read'), validate(labReportIdParamSchema), controller.getLabReportById);
 labRoutes.patch('/reports/:id/sign', authenticate, requirePermission('lab_reports', 'approve'), validate(signLabReportSchema), controller.signLabReport);
 labRoutes.patch('/reports/:id/publish', authenticate, requirePermission('lab_reports', 'approve'), validate(publishLabReportSchema), controller.publishLabReport);
+// The other half of the same decision. Same permission as publish — approving
+// and rejecting are one job, and a lab admin who can release a report must be
+// able to refuse one.
+labRoutes.patch('/reports/:id/reject', authenticate, requirePermission('lab_reports', 'approve'), validate(rejectLabReportSchema), controller.rejectLabReport);
 labRoutes.patch('/reports/:id/correct', authenticate, requirePermission('lab_reports', 'update'), validate(correctLabReportSchema), controller.correctLabReport);
 // One-shot Submit (generate + sign + publish). Gated by `lab_reports.create`
 // so technicians can publish a structured-mode report without supervisor

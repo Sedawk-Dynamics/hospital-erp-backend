@@ -1992,6 +1992,110 @@ export async function publishLabReport(
   return updated;
 }
 
+/**
+ * Reject a submitted report — the lab admin's "not yet".
+ *
+ * Approving and rejecting are the two halves of the same decision, and only one
+ * of them existed: a report that was wrong could be published, or left sitting
+ * in the queue forever. This sends it back to `draft`, which is the state the
+ * technician can edit in (assertOrderReportEditable allows draft/review), with
+ * the reason recorded on the report and delivered to whoever did the work.
+ *
+ * Deliberately NOT a cancellation: the order stays completed and the files stay
+ * put. The technician fixes what was called out and re-submits the same report.
+ */
+export async function rejectLabReport(
+  tenantId: string,
+  reportId: string,
+  userId: string,
+  reason?: string,
+) {
+  const report = await prisma.labReport.findFirst({
+    where: { id: reportId, labOrder: { tenantId } },
+    include: {
+      labOrder: {
+        select: {
+          id: true,
+          assignedToId: true,
+          patient: { select: { firstName: true, lastName: true, mrn: true } },
+        },
+      },
+    },
+  });
+  if (!report) throw AppError.notFound('Lab report not found');
+  if (report.status === 'published' || report.status === 'corrected') {
+    throw AppError.badRequest(
+      'A published report cannot be sent back — issue a correction instead.',
+    );
+  }
+  if (report.status !== 'review') {
+    throw AppError.badRequest('This report is already a draft with the lab.');
+  }
+
+  const trimmed = reason?.trim();
+  const [updated] = await prisma.$transaction([
+    prisma.labReport.update({
+      where: { id: reportId },
+      data: {
+        status: 'draft',
+        correctionNotes: trimmed || 'Sent back by the lab admin for changes.',
+        reviewedBy: userId,
+        reviewedAt: new Date(),
+      },
+    }),
+    // Put the order back on the bench. Submitting marks it `completed`, so a
+    // report sent back would otherwise leave its order sitting on the Completed
+    // tab — off the work queue the technician actually looks at, and therefore
+    // never corrected. Same reason radiology's reopen returns the request to
+    // in_progress.
+    prisma.labOrder.update({
+      where: { id: report.labOrderId },
+      data: { status: 'in_progress' },
+    }),
+  ]);
+
+  // Tell whoever did the work. The assignee owns it; where nobody was assigned,
+  // fall back to the person who uploaded the most recent file, because a
+  // rejection nobody is told about is a report that silently stops moving.
+  let notifyUserId = report.labOrder.assignedToId ?? null;
+  if (!notifyUserId) {
+    const lastUpload = await prisma.labAttachment.findFirst({
+      where: { labOrderId: report.labOrderId, deletedAt: null },
+      orderBy: { createdAt: 'desc' },
+      select: { uploadedBy: true },
+    });
+    notifyUserId = lastUpload?.uploadedBy ?? null;
+  }
+  const patientName =
+    `${report.labOrder.patient.firstName} ${report.labOrder.patient.lastName ?? ''}`.trim();
+  if (notifyUserId) {
+    await safeNotify({
+      tenantId,
+      userId: notifyUserId,
+      title: 'Lab report sent back',
+      message: trimmed
+        ? `${patientName} (${report.labOrder.patient.mrn ?? ''}) — ${trimmed}`
+        : `${patientName} (${report.labOrder.patient.mrn ?? ''}) was sent back for changes.`,
+      notificationType: 'lab_result',
+      referenceType: 'lab_report',
+      referenceId: reportId,
+    });
+  }
+
+  logger.info({ tenantId, reportId, userId }, 'Lab report sent back to draft');
+  void safeLabAudit({
+    tenantId,
+    userId,
+    action: 'update',
+    entityType: 'lab_report',
+    entityId: reportId,
+    description: `Lab report sent back for changes${trimmed ? ` — ${trimmed}` : ''}`,
+    oldValues: { status: 'review' },
+    newValues: { status: 'draft', correctionNotes: updated.correctionNotes },
+  });
+  return updated;
+}
+
 // One-shot submit — generate (if needed) and queue the report for supervisor
 // approval (status='review'). Gated by `lab_reports.create` so technicians
 // can submit. The patient portal stays gated by status='published'|'corrected'
@@ -3020,11 +3124,15 @@ export const OVERDUE_WHERE = (tenantId: string, before: Date) => ({
 });
 
 export async function getLabDashboard(tenantId: string) {
-  const startOfToday = new Date();
-  startOfToday.setHours(0, 0, 0, 0);
+  // Whole IST day. `setHours(0,0,0,0)` is midnight in the SERVER's zone, so
+  // every "today" count shifted whenever the box was not on IST.
+  const { start: startOfToday } = istDayRange();
   const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
   const [
+    awaitingApproval,
+    draftReports,
+    unassignedOrders,
     incomingOrders,
     inProgressOrders,
     samplesCollected,
@@ -3041,6 +3149,21 @@ export async function getLabDashboard(tenantId: string) {
     recentPublishedReports,
     overdueOrders,
   ] = await Promise.all([
+    // The lab admin's actual queue: what a technician has submitted and is
+    // waiting on a decision. `reportsAwaitingSign` below is the legacy number —
+    // it counts drafts too, so it never matched the Awaiting Approval tab.
+    prisma.labReport.count({ where: { labOrder: { tenantId }, status: 'review' } }),
+    // Still on the bench, including anything sent back for changes.
+    prisma.labReport.count({ where: { labOrder: { tenantId }, status: 'draft' } }),
+    // Accepted but nobody owns it — the triage number.
+    prisma.labOrder.count({
+      where: {
+        tenantId,
+        acceptedAt: { not: null },
+        assignedToId: null,
+        status: { notIn: ['completed', 'cancelled'] },
+      },
+    }),
     prisma.labOrder.count({ where: { tenantId, status: 'ordered', acceptedAt: null } }),
     prisma.labOrder.count({ where: { tenantId, status: 'in_progress' } }),
     prisma.labSample.count({ where: { labOrder: { tenantId }, status: 'collected' } }),
@@ -3126,6 +3249,11 @@ export async function getLabDashboard(tenantId: string) {
       correctedReports,
       abnormalRecent,
       overdueOrders: overdueCount,
+      // The unified-flow numbers, named to match radiology's dashboard so the
+      // two summary strips read the same.
+      awaitingApproval,
+      draftReports,
+      unassignedOrders,
     },
     recentOrders,
     recentPublishedReports,
