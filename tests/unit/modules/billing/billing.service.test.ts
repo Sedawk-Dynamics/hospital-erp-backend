@@ -17,6 +17,7 @@ import {
   getCollectionSummary,
   adjustAdvanceToBill,
   settleGatewayPayment,
+  pullChargesToBill,
 } from '../../../../src/modules/billing/billing.service';
 
 // ─── Extend mocks that setup.ts does not provide ───
@@ -93,7 +94,21 @@ function mockRecalculate(
   // recalculateBillTotals folds them in — default none.
   billLevelDiscount = 0,
 ) {
-  vi.mocked((prisma.billItem as any).findMany).mockResolvedValue(items);
+  // A real BillItem always carries its own totalAmount, and the bill total is
+  // summed from those — that is the only formula that holds for both a
+  // tax-exclusive service (tax added on top) and a tax-inclusive medicine price
+  // (tax embedded in the MRP). Fixtures that only describe qty/price/tax get
+  // the figure a real row would have stored.
+  const withTotals = items.map((i) =>
+    i.totalAmount != null
+      ? i
+      : {
+          ...i,
+          totalAmount:
+            (i.quantity ?? 1) * (i.unitPrice ?? 0) - (i.discountAmount ?? 0) + (i.taxAmount ?? 0),
+        },
+  );
+  vi.mocked((prisma.billItem as any).findMany).mockResolvedValue(withTotals);
   vi.mocked(prisma.payment.findMany).mockResolvedValue(payments);
   vi.mocked(prisma.bill.findUnique).mockResolvedValue({ status: billStatus } as any);
   vi.mocked(prisma.bill.update).mockResolvedValue({} as any);
@@ -1145,6 +1160,91 @@ describe('BillingService', () => {
 
       expect(result).toEqual({ alreadySettled: false, billId: null });
       expect(prisma.bill.update).not.toHaveBeenCalled();
+    });
+  });
+
+  // ═══════════════════════════════════════════
+  // pullChargesToBill — tax-inclusive vs tax-exclusive lines
+  // ═══════════════════════════════════════════
+  describe('pullChargesToBill', () => {
+    beforeEach(() => {
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue(mockBillDraft as any);
+      vi.mocked(prisma.billItem.findFirst).mockResolvedValue(null); // no dedupe hit
+      vi.mocked(prisma.billItem.create).mockResolvedValue({ id: 'item-1' } as any);
+      mockRecalculate([]);
+    });
+
+    it('embeds the GST in a tax-inclusive medicine price instead of adding it on top', async () => {
+      // Medicine prices are MRP, which is tax-inclusive by law — the pharmacy
+      // counter derives the embedded GST for the breakup. Billing used to add
+      // the rate ON TOP of the same MRP, so a ₹100 strip cost ₹100 at the
+      // counter and ₹112 on an IP bill for the identical item.
+      await pullChargesToBill(TENANT_ID, 'bill-1', [
+        {
+          referenceType: 'dispensing_record',
+          referenceId: 'disp-1',
+          description: 'Paracetamol 500mg',
+          quantity: 1,
+          unitPrice: 100,
+          taxRate: 12,
+          taxInclusive: true,
+          category: 'pharmacy',
+        },
+      ]);
+
+      expect(prisma.billItem.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          unitPrice: 100,
+          taxPercent: 12,
+          // 100 − 100/1.12 = 10.71 of GST already inside the ₹100.
+          taxAmount: 10.71,
+          totalAmount: 100,
+        }),
+      });
+    });
+
+    it('still adds tax on top of a tax-exclusive service charge', async () => {
+      // A ServiceTariff quotes a basePrice and a gstRatePercent — that reads as
+      // "plus GST", so services must keep behaving exactly as before.
+      await pullChargesToBill(TENANT_ID, 'bill-1', [
+        {
+          referenceType: 'imaging_request',
+          referenceId: 'img-1',
+          description: 'Imaging: xray',
+          quantity: 1,
+          unitPrice: 100,
+          taxRate: 18,
+          category: 'radiology',
+        },
+      ]);
+
+      expect(prisma.billItem.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          unitPrice: 100,
+          taxPercent: 18,
+          taxAmount: 18,
+          totalAmount: 118,
+        }),
+      });
+    });
+
+    it('leaves an untaxed charge alone whichever way it is marked', async () => {
+      await pullChargesToBill(TENANT_ID, 'bill-1', [
+        {
+          referenceType: 'lab_order_item',
+          referenceId: 'lab-1',
+          description: 'Lab: CBC',
+          quantity: 2,
+          unitPrice: 150,
+          taxRate: 0,
+          taxInclusive: true,
+          category: 'lab',
+        },
+      ]);
+
+      expect(prisma.billItem.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ taxAmount: 0, totalAmount: 300 }),
+      });
     });
   });
 

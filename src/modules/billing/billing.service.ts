@@ -197,6 +197,13 @@ async function recalculateBillTotals(billId: string) {
   let subtotal = 0;
   let totalTax = 0;
   let totalDiscount = 0;
+  // The authoritative figure. Each line already knows what it comes to — the
+  // per-line maths is where a tax-exclusive service (tax added on top) and a
+  // tax-inclusive medicine price (tax embedded in the MRP) differ. Summing the
+  // line totals is the one formula that is right for both, and it is the same
+  // rule the IP bill document prints by: Σ item.totalAmount − header discount,
+  // never re-adding tax.
+  let lineTotals = 0;
 
   for (const item of items) {
     const itemSubtotal = item.quantity * toNumber(item.unitPrice);
@@ -206,6 +213,7 @@ async function recalculateBillTotals(billId: string) {
     subtotal += itemSubtotal;
     totalDiscount += itemDiscount;
     totalTax += itemTax;
+    lineTotals += toNumber(item.totalAmount);
   }
 
   // A concession granted at the counter is a BILL-LEVEL discount: it lives as a
@@ -218,9 +226,13 @@ async function recalculateBillTotals(billId: string) {
     where: { billId },
     _sum: { value: true },
   });
-  totalDiscount += toNumber(billLevel._sum.value);
+  const billLevelDiscount = toNumber(billLevel._sum.value);
+  totalDiscount += billLevelDiscount;
 
-  const total = Math.max(0, subtotal - totalDiscount + totalTax);
+  // For an all-exclusive bill this is arithmetically identical to the old
+  // `subtotal − discount + tax`, because each line total IS its net plus its
+  // tax. It only diverges where a line carries its tax inside the price.
+  const total = Math.max(0, r2(lineTotals - billLevelDiscount));
 
   // Get total paid
   const payments = await prisma.payment.findMany({
@@ -1769,6 +1781,12 @@ interface ChargeRow {
   unitPrice: number;
   totalAmount: number;
   taxRate: number;
+  /**
+   * True when `unitPrice` ALREADY contains the tax — pharmacy prices are MRP,
+   * which is tax-inclusive by law. Such a line shows the embedded GST as a
+   * breakup; it must never have tax added on top of it.
+   */
+  taxInclusive?: boolean;
   category: string;
   occurredAt: string;
   /** Raw ISO timestamp for chronological sorting (occurredAt is display-only). */
@@ -1779,6 +1797,15 @@ interface ChargeRow {
   billId?: string;
 }
 
+/**
+ * Last-resort GST rates, used only where the tenant has configured nothing.
+ *
+ * These are no longer the answer — they are the fallback. Real rates come from
+ * the tenant's own masters: `ServiceTariff.gstRatePercent` for hospital
+ * services, and the HSN-derived rate on the drug/batch for pharmacy. Most
+ * clinical services in India are GST-exempt, which is why the service defaults
+ * here are zero.
+ */
 const CHARGE_TAX_RATES: Record<string, number> = {
   consultation: 0,
   lab: 0,
@@ -1787,6 +1814,64 @@ const CHARGE_TAX_RATES: Record<string, number> = {
   room: 0,
   ot: 0,
 };
+
+/** ChargeSource → the ServiceTariff category that prices (and taxes) it. */
+const SOURCE_TARIFF_CATEGORY: Record<string, string> = {
+  consultation: 'consultation',
+  lab: 'lab',
+  imaging: 'radiology',
+  room: 'room',
+  ot: 'surgery',
+  pharmacy: 'pharmacy',
+};
+
+/**
+ * Per-category GST read from the tenant's ServiceTariff master.
+ *
+ * The spec asks for tax "auto-calculated per service category", and this file
+ * used to answer that with a hardcoded map — so a hospital could not change a
+ * rate without a deploy, and the tariff table's own `gstRatePercent` column was
+ * read by imaging alone.
+ *
+ * Where a category's active tariffs disagree, the most frequently configured
+ * rate wins; a charge that resolves to one specific tariff uses that tariff's
+ * own rate instead, which always beats the category default.
+ */
+async function buildServiceTaxRates(tenantId: string): Promise<Record<string, number>> {
+  const tariffs = await prisma.serviceTariff.findMany({
+    where: { tenantId, isActive: true },
+    select: { category: true, gstRatePercent: true },
+  });
+
+  // category → (rate → how many tariffs carry it)
+  const tally = new Map<string, Map<number, number>>();
+  for (const t of tariffs) {
+    const cat = String(t.category);
+    const rate = toNumber(t.gstRatePercent);
+    const forCat = tally.get(cat) ?? new Map<number, number>();
+    forCat.set(rate, (forCat.get(rate) ?? 0) + 1);
+    tally.set(cat, forCat);
+  }
+
+  const rates: Record<string, number> = {};
+  for (const [source, category] of Object.entries(SOURCE_TARIFF_CATEGORY)) {
+    const forCat = tally.get(category);
+    if (!forCat || forCat.size === 0) {
+      rates[source] = CHARGE_TAX_RATES[source] ?? 0;
+      continue;
+    }
+    let best = 0;
+    let bestCount = -1;
+    for (const [rate, count] of forCat) {
+      if (count > bestCount) {
+        best = rate;
+        bestCount = count;
+      }
+    }
+    rates[source] = best;
+  }
+  return rates;
+}
 
 /**
  * Lookup of bill_items already created against a (referenceType, referenceId)
@@ -1828,6 +1913,7 @@ async function getOtCharges(
   tenantId: string,
   patientId: string,
   billedIndex: Map<string, { billItemId: string; billId: string }>,
+  taxRates: Record<string, number>,
 ): Promise<ChargeRow[]> {
   const requests = await prisma.otRequest.findMany({
     where: {
@@ -1857,7 +1943,7 @@ async function getOtCharges(
       quantity: 1,
       unitPrice: amount,
       totalAmount: amount,
-      taxRate: CHARGE_TAX_RATES.ot,
+      taxRate: taxRates.ot ?? CHARGE_TAX_RATES.ot,
       category: 'surgery',
       occurredAt: formatDateTimeIST(r.scheduledDate ?? r.createdAt),
       occurredAtISO: new Date(r.scheduledDate ?? r.createdAt).toISOString(),
@@ -1873,6 +1959,7 @@ async function getConsultationCharges(
   tenantId: string,
   patientId: string,
   billedIndex: Map<string, { billItemId: string; billId: string }>,
+  taxRates: Record<string, number>,
 ): Promise<ChargeRow[]> {
   const visits = await prisma.visit.findMany({
     where: { tenantId, patientId },
@@ -1919,7 +2006,7 @@ async function getConsultationCharges(
         quantity: 1,
         unitPrice: fee,
         totalAmount: fee,
-        taxRate: CHARGE_TAX_RATES.consultation,
+        taxRate: taxRates.consultation ?? CHARGE_TAX_RATES.consultation,
         category: 'consultation',
         occurredAt: formatDateTimeIST(v.visitDate),
         occurredAtISO: new Date(v.visitDate).toISOString(),
@@ -1940,6 +2027,7 @@ async function getLabCharges(
   tenantId: string,
   patientId: string,
   billedIndex: Map<string, { billItemId: string; billId: string }>,
+  taxRates: Record<string, number>,
 ): Promise<ChargeRow[]> {
   const orders = await prisma.labOrder.findMany({
     where: {
@@ -1972,7 +2060,7 @@ async function getLabCharges(
         quantity: 1,
         unitPrice: price,
         totalAmount: price,
-        taxRate: CHARGE_TAX_RATES.lab,
+        taxRate: taxRates.lab ?? CHARGE_TAX_RATES.lab,
         category: 'lab',
         occurredAt: formatDateTimeIST(order.createdAt),
         occurredAtISO: new Date(order.createdAt).toISOString(),
@@ -1990,6 +2078,7 @@ async function getPharmacyCharges(
   tenantId: string,
   patientId: string,
   billedIndex: Map<string, { billItemId: string; billId: string }>,
+  taxRates: Record<string, number>,
 ): Promise<ChargeRow[]> {
   const records = await prisma.dispensingRecord.findMany({
     where: { tenantId, patientId },
@@ -1999,7 +2088,9 @@ async function getPharmacyCharges(
           batchNumber: true,
           sellingPrice: true,
           purchasePrice: true,
-          drug: { select: { drugName: true, price: true } },
+          // The batch's own GST, derived from the drug's HSN code at inward.
+          gstPercent: true,
+          drug: { select: { drugName: true, price: true, taxPercent: true } },
         },
       },
     },
@@ -2016,6 +2107,17 @@ async function getPharmacyCharges(
     const drugName = (r.drugBatch as any)?.drug?.drugName ?? 'Medication';
     const batchTag = (r.drugBatch as any)?.batchNumber ? ` (Batch ${(r.drugBatch as any).batchNumber})` : '';
     const billed = billedIndex.get(`dispensing_record:${r.id}`);
+    // The drug's real GST — set from its HSN code at inward — not a blanket
+    // 12%. The batch's rate is the one the stock was actually received under;
+    // the formulary's is the drug-level default.
+    const batchGst = (r.drugBatch as any)?.gstPercent;
+    const drugGst = (r.drugBatch as any)?.drug?.taxPercent;
+    const taxRate =
+      batchGst != null
+        ? toNumber(batchGst)
+        : drugGst != null
+          ? toNumber(drugGst)
+          : (taxRates.pharmacy ?? CHARGE_TAX_RATES.pharmacy);
     return {
       source: 'pharmacy' as const,
       referenceType: 'dispensing_record',
@@ -2024,7 +2126,12 @@ async function getPharmacyCharges(
       quantity: r.quantityDispensed,
       unitPrice: unit,
       totalAmount: total,
-      taxRate: CHARGE_TAX_RATES.pharmacy,
+      taxRate,
+      // Medicine prices are MRP. The pharmacy counter already treats them as
+      // tax-inclusive and shows the embedded GST as a breakup; the hospital
+      // bill used to add the rate ON TOP of the same MRP, so a ₹100 strip cost
+      // ₹100 at the counter and ₹112 on an IP bill for the identical item.
+      taxInclusive: true,
       category: 'pharmacy',
       occurredAt: formatDateTimeIST(r.dispensedAt),
       occurredAtISO: new Date(r.dispensedAt).toISOString(),
@@ -2040,6 +2147,7 @@ async function getImagingCharges(
   tenantId: string,
   patientId: string,
   billedIndex: Map<string, { billItemId: string; billId: string }>,
+  taxRates: Record<string, number>,
 ): Promise<ChargeRow[]> {
   const requests = await prisma.imagingRequest.findMany({
     where: { tenantId, patientId, status: { not: 'cancelled' as any } },
@@ -2066,7 +2174,12 @@ async function getImagingCharges(
       tariffByCode.get(req.imagingType.toLowerCase()) ||
       tariffByCode.get(typeLabel.toLowerCase());
     const price = toNumber(tariff?.basePrice ?? 0);
-    const taxRate = toNumber(tariff?.gstRatePercent ?? 0);
+    // The matched study's own rate is the most specific answer; where no tariff
+    // matched, fall back to what the radiology category is configured at rather
+    // than silently assuming zero.
+    const taxRate = tariff
+      ? toNumber(tariff.gstRatePercent)
+      : (taxRates.imaging ?? CHARGE_TAX_RATES.imaging);
     const billed = billedIndex.get(`imaging_request:${req.id}`);
     return {
       source: 'imaging' as const,
@@ -2092,6 +2205,7 @@ async function getRoomCharges(
   tenantId: string,
   patientId: string,
   billedIndex: Map<string, { billItemId: string; billId: string }>,
+  taxRates: Record<string, number>,
 ): Promise<ChargeRow[]> {
   const admissions = await prisma.admission.findMany({
     where: { tenantId, patientId },
@@ -2165,14 +2279,25 @@ async function getRoomCharges(
 
   // The ward's admin-set per-day charge wins; otherwise the room ServiceTariff
   // matched by the bed's type (fallback: first active room tariff).
-  const rateFor = (bedId: string | null, wardId: string | null): number => {
+  //
+  // Returns the tax alongside the rate: when a specific room tariff prices the
+  // bed, that same tariff also says what GST it carries. A ward's own daily
+  // charge has no tariff behind it, so it falls back to the room category rate.
+  const rateFor = (
+    bedId: string | null,
+    wardId: string | null,
+  ): { price: number; taxRate: number } => {
+    const categoryTax = taxRates.room ?? CHARGE_TAX_RATES.room;
     const wardRate = toNumber((wardId ? wardById.get(wardId)?.dailyCharge : null) ?? 0);
-    if (wardRate > 0) return wardRate;
+    if (wardRate > 0) return { price: wardRate, taxRate: categoryTax };
     const bedType = bedId ? bedById.get(bedId)?.bedType ?? null : null;
     const tariff =
       roomTariffs.find((t) => (t.serviceCode ?? '').toLowerCase() === String(bedType ?? '').toLowerCase()) ||
       roomTariffs[0];
-    return toNumber(tariff?.basePrice ?? 0);
+    return {
+      price: toNumber(tariff?.basePrice ?? 0),
+      taxRate: tariff ? toNumber(tariff.gstRatePercent) : categoryTax,
+    };
   };
 
   type Seg = { bedId: string | null; wardId: string | null; startDay: number; startAt: Date; refId: string };
@@ -2207,7 +2332,7 @@ async function getRoomCharges(
       const days = nextStart !== null ? nextStart - seg.startDay : endDay - seg.startDay + 1;
       if (days <= 0 || !seg.bedId) return;
 
-      const unit = rateFor(seg.bedId, seg.wardId);
+      const { price: unit, taxRate } = rateFor(seg.bedId, seg.wardId);
       const wardName = (seg.wardId ? wardById.get(seg.wardId)?.name : null) ?? 'Ward';
       const bedNumber = (seg.bedId ? bedById.get(seg.bedId)?.bedNumber : null) ?? '-';
       const billed = billedIndex.get(`admission:${seg.refId}`);
@@ -2219,7 +2344,7 @@ async function getRoomCharges(
         quantity: days,
         unitPrice: unit,
         totalAmount: unit * days,
-        taxRate: CHARGE_TAX_RATES.room,
+        taxRate,
         category: 'room',
         occurredAt: formatDateTimeIST(seg.startAt),
         occurredAtISO: new Date(seg.startAt).toISOString(),
@@ -2252,25 +2377,28 @@ export async function getPatientCharges(
 
   const source = query.source ?? 'all';
   const billedIndex = await indexBilledReferences(tenantId, query.patientId);
+  // Per-category GST from the tenant's ServiceTariff master, resolved once for
+  // the whole feed rather than per charge.
+  const taxRates = await buildServiceTaxRates(tenantId);
 
   let rows: ChargeRow[] = [];
   if (source === 'consultation' || source === 'all') {
-    rows = rows.concat(await getConsultationCharges(tenantId, query.patientId, billedIndex));
+    rows = rows.concat(await getConsultationCharges(tenantId, query.patientId, billedIndex, taxRates));
   }
   if (source === 'lab' || source === 'all') {
-    rows = rows.concat(await getLabCharges(tenantId, query.patientId, billedIndex));
+    rows = rows.concat(await getLabCharges(tenantId, query.patientId, billedIndex, taxRates));
   }
   if (source === 'pharmacy' || source === 'all') {
-    rows = rows.concat(await getPharmacyCharges(tenantId, query.patientId, billedIndex));
+    rows = rows.concat(await getPharmacyCharges(tenantId, query.patientId, billedIndex, taxRates));
   }
   if (source === 'imaging' || source === 'all') {
-    rows = rows.concat(await getImagingCharges(tenantId, query.patientId, billedIndex));
+    rows = rows.concat(await getImagingCharges(tenantId, query.patientId, billedIndex, taxRates));
   }
   if (source === 'room' || source === 'all') {
-    rows = rows.concat(await getRoomCharges(tenantId, query.patientId, billedIndex));
+    rows = rows.concat(await getRoomCharges(tenantId, query.patientId, billedIndex, taxRates));
   }
   if (source === 'ot' || source === 'all') {
-    rows = rows.concat(await getOtCharges(tenantId, query.patientId, billedIndex));
+    rows = rows.concat(await getOtCharges(tenantId, query.patientId, billedIndex, taxRates));
   }
 
   if (!query.includeBilled) {
@@ -2344,13 +2472,14 @@ export async function billOtRequest(
 
   const sUser = req.surgeon?.user ?? req.doctor?.user;
   const surgeon = sUser ? `Dr. ${sUser.firstName} ${sUser.lastName}` : null;
+  const otTaxRates = await buildServiceTaxRates(tenantId);
   const otCharge = {
     referenceType: 'ot_request',
     referenceId: otRequestId,
     description: `Surgery — ${req.procedureName}${surgeon ? ` (${surgeon})` : ''}`,
     quantity: 1,
     unitPrice: amount,
-    taxRate: CHARGE_TAX_RATES.ot,
+    taxRate: otTaxRates.ot ?? CHARGE_TAX_RATES.ot,
     category: 'surgery',
   };
 
@@ -2422,6 +2551,7 @@ export async function pullChargesToBill(
     quantity: number;
     unitPrice: number;
     taxRate?: number;
+    taxInclusive?: boolean;
     category?: string;
   }>,
 ) {
@@ -2443,8 +2573,15 @@ export async function pullChargesToBill(
 
       const taxPercent = c.taxRate ?? 0;
       const subtotal = c.quantity * c.unitPrice;
-      const taxAmount = subtotal * (taxPercent / 100);
-      const totalAmount = subtotal + taxAmount;
+      // A tax-INCLUSIVE price (pharmacy MRP) already contains its GST: the line
+      // total is the price itself and the tax is shown as the embedded portion,
+      // exactly as the pharmacy counter computes it. Adding the rate on top of
+      // an MRP, which is what this used to do, charged the patient the tax twice
+      // over — ₹100 at the counter became ₹112 on the bill for the same strip.
+      const taxAmount = c.taxInclusive
+        ? r2(subtotal - subtotal / (1 + taxPercent / 100))
+        : r2(subtotal * (taxPercent / 100));
+      const totalAmount = c.taxInclusive ? r2(subtotal) : r2(subtotal + taxAmount);
       const item = await tx.billItem.create({
         data: {
           billId,
