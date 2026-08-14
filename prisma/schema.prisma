@@ -4114,6 +4114,80 @@ model HsnGstRate {
 }
 
 // ============================================================
+// Drug schedule reference (Drugs & Cosmetics Rules 1945 + NDPS Act)
+// ============================================================
+// Platform reference data — no tenantId, like HsnGstRate / ICD codes. Every row
+// is ONE published rule: "this salt (or this brand) puts a product in this
+// schedule". The classifier resolves a drug by running the statutory cascade
+// H2-brand → X → H1 → H → G → OTC over a product's salts, then applies the NDPS
+// rows as a SEPARATE OVERLAY.
+//
+// Two independent axes, deliberately not collapsed into one flag:
+//   scheduleCode    — what the counter must collect (Rx, register, Rx copy)
+//   controlledClass — which register/report the drug appears in
+// Tramadol is Schedule H1 (CDSCO) AND a psychotropic (NDPS docx): it dispenses
+// normally with an H1 register line and still shows in the controlled register.
+// Collapsing those into one boolean is what would wrongly vault 26 SKUs.
+model DrugScheduleRule {
+  id           String @id @default(uuid())
+  // 'X' | 'H1' | 'H' | 'G' | 'H2' | 'NDPS'. NDPS rows are an overlay: they set
+  // controlledClass/vault/threshold fields and never win the cascade themselves.
+  scheduleCode String @map("schedule_code") @db.VarChar(10)
+  // 'salt'  — match a molecule in the product's composition (the normal case)
+  // 'brand' — match the whole trade name (Schedule H2's 300 named formulations)
+  // 'class' — a therapeutic-class entry ("Antibiotics", "Corticosteroids"),
+  //           matched by `pattern` only AFTER every salt match has failed.
+  matchType    String @map("match_type") @db.VarChar(20)
+  // As published in the schedule, for display and audit ("why was this X?").
+  matchValue   String @map("match_value") @db.VarChar(255)
+  // Lookup key: lowercased, punctuation-stripped, trailing salt form removed, so
+  // the schedule's "Chlorpheniramine" matches a product's "Chlorpheniramine
+  // Maleate". Brand rows keep the full lowercased trade name.
+  matchNorm    String @map("match_norm") @db.VarChar(255)
+  // Extra lookup keys: Indian labelling spellings (phenobarbitone/phenobarbital),
+  // INN synonyms (paracetamol/acetaminophen), and the variants generated from
+  // multi-salt entries ("Diclofenac Sodium/Potassium/Acid" → "diclofenac").
+  aliases      String[] @default([])
+  // Regex for matchType='class' only. Null for salt/brand rows.
+  pattern      String?
+
+  // ── NDPS overlay ──
+  // 'none' | 'narcotic' | 'psychotropic' — drives register/report membership.
+  controlledClass String? @map("controlled_class") @db.VarChar(20)
+  isNarcotic      Boolean @default(false) @map("is_narcotic")
+  // 'opioid' | 'benzodiazepine' | 'barbiturate' | 'cns_stimulant' | 'dissociative' | 'other'
+  narcoticClass   String? @map("narcotic_class") @db.VarChar(40)
+  // Physical safe custody + witness co-sign. False for the benzodiazepines and
+  // tramadol/zolpidem, which are dispensed over the counter under their own
+  // CDSCO schedule.
+  vaultControlled Boolean @default(false) @map("vault_controlled")
+
+  // ── Concentration exemption (the codeine decision tree) ──
+  // When the product is a COMBINATION and the molecule stays within both limits,
+  // it falls back to `fallbackSchedule` instead of full NDPS control. A
+  // single-ingredient preparation is never exempt, and an unknown strength fails
+  // safe to full NDPS.
+  exemptIfCombination     Boolean  @default(false) @map("exempt_if_combination")
+  maxPerUnitMg            Decimal? @map("max_per_unit_mg") @db.Decimal(10, 3)
+  maxConcentrationPercent Decimal? @map("max_concentration_percent") @db.Decimal(6, 3)
+  fallbackSchedule        String?  @map("fallback_schedule") @db.VarChar(10)
+
+  // Schedule G's own Note: preparations intended for topical/external use are
+  // NOT covered, so a topical hit resolves to OTC.
+  topicalExempt Boolean @default(false) @map("topical_exempt")
+
+  notes     String?
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([scheduleCode, matchType, matchNorm])
+  @@index([matchNorm])
+  @@index([matchType, isActive])
+  @@map("drug_schedule_rules")
+}
+
+// ============================================================
 // NDPS Narcotic Accounting (spec — Essential Narcotic Drug lifecycle)
 // ============================================================
 // Indian drug inspectors cross-reference physical narcotic stock against the

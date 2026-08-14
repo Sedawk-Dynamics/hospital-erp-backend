@@ -38,6 +38,7 @@ import { seedPackSizes } from '../seeds/pack-sizes';
 import { seedPackPrices } from '../seeds/pack-prices';
 import { seedImagingModalities } from '../seeds/imaging-modalities';
 import { seedHsnGstRates } from '../seeds/hsn-gst-rates';
+import { seedDrugScheduleRules } from '../seeds/drug-schedule-rules';
 import { migrateInventoryToFormulary } from '../seeds/inventory-to-formulary';
 
 // Arbitrary constant identifying our advisory lock.
@@ -116,6 +117,11 @@ export async function runSeeds(db: PrismaClient): Promise<void> {
   // that ships new/updated rates picks them up. Also tags a few common catalog
   // medicines with their HSN + GST.
   await step('hsn-gst-rates', () => seedHsnGstRates(db));
+
+  // Drug schedule reference (Sch. G/H/H1/H2/X + the NDPS narcotic list). Small,
+  // idempotent and platform-wide, so it runs every boot and a release shipping a
+  // gazette update picks it up. Reference data only — nothing reads it yet.
+  await step('drug-schedule-rules', () => seedDrugScheduleRules(db));
 
   // Legacy stock unification — give every InventoryItem a formulary product so
   // all types behave like medicines (searchable + billable). Additive and

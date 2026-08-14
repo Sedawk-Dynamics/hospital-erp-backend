@@ -1,0 +1,6673 @@
+[
+ {
+  "scheduleCode": "X",
+  "matchType": "salt",
+  "matchValue": "Amobarbital",
+  "matchNorm": "amobarbital",
+  "notes": "NDPS Act Schedule serial 168"
+ },
+ {
+  "scheduleCode": "X",
+  "matchType": "salt",
+  "matchValue": "Amphetamine",
+  "matchNorm": "amphetamine",
+  "notes": "NDPS Act Schedule serial 152",
+  "aliases": [
+   "amfetamine",
+   "amphatamine"
+  ]
+ },
+ {
+  "scheduleCode": "X",
+  "matchType": "salt",
+  "matchValue": "Barbital",
+  "matchNorm": "barbital",
+  "notes": "NDPS Act Schedule serial 181"
+ },
+ {
+  "scheduleCode": "X",
+  "matchType": "salt",
+  "matchValue": "Cyclobarbital",
+  "matchNorm": "cyclobarbital",
+  "notes": "NDPS Act Schedule serial 172"
+ },
+ {
+  "scheduleCode": "X",
+  "matchType": "salt",
+  "matchValue": "Dexamphetamine",
+  "matchNorm": "dexamphetamine",
+  "notes": "NDPS Act Schedule serial 154",
+  "aliases": [
+   "dexamfetamine",
+   "dextroamphetamine"
+  ]
+ },
+ {
+  "scheduleCode": "X",
+  "matchType": "salt",
+  "matchValue": "Ethchlorvynol",
+  "matchNorm": "ethchlorvynol",
+  "notes": "NDPS Act Schedule serial 196"
+ },
+ {
+  "scheduleCode": "X",
+  "matchType": "salt",
+  "matchValue": "Glutethimide",
+  "matchNorm": "glutethimide",
+  "notes": "NDPS Act Schedule serial 176"
+ },
+ {
+  "scheduleCode": "X",
+  "matchType": "salt",
+  "matchValue": "Meprobamate",
+  "matchNorm": "meprobamate",
+  "notes": "NDPS Act Schedule serial 215"
+ },
+ {
+  "scheduleCode": "X",
+  "matchType": "salt",
+  "matchValue": "Methamphetamine",
+  "matchNorm": "methamphetamine",
+  "notes": "NDPS Act Schedule serial 159",
+  "aliases": [
+   "metamfetamine"
+  ]
+ },
+ {
+  "scheduleCode": "X",
+  "matchType": "salt",
+  "matchValue": "Methylphenidate",
+  "matchNorm": "methylphenidate",
+  "notes": "NDPS Act Schedule serial 162"
+ },
+ {
+  "scheduleCode": "X",
+  "matchType": "salt",
+  "matchValue": "Methylphenobarbital",
+  "matchNorm": "methylphenobarbital",
+  "notes": "NDPS Act Schedule serial 217"
+ },
+ {
+  "scheduleCode": "X",
+  "matchType": "salt",
+  "matchValue": "Pentobarbital",
+  "matchNorm": "pentobarbital",
+  "notes": "NDPS Act Schedule serial 176"
+ },
+ {
+  "scheduleCode": "X",
+  "matchType": "salt",
+  "matchValue": "Phencyclidine",
+  "matchNorm": "phencyclidine",
+  "notes": "NDPS Act Schedule serial 163"
+ },
+ {
+  "scheduleCode": "X",
+  "matchType": "salt",
+  "matchValue": "Phenmetrazine",
+  "matchNorm": "phenmetrazine",
+  "notes": "NDPS Act Schedule serial 164"
+ },
+ {
+  "scheduleCode": "X",
+  "matchType": "salt",
+  "matchValue": "Secobarbital",
+  "matchNorm": "secobarbital",
+  "notes": "NDPS Act Schedule serial 165"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Alprazolam",
+  "matchNorm": "alprazolam"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Balofloxacin",
+  "matchNorm": "balofloxacin"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Buprenorphine",
+  "matchNorm": "buprenorphine"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Capreomycin",
+  "matchNorm": "capreomycin"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Cefdinir",
+  "matchNorm": "cefdinir"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Cefditoren",
+  "matchNorm": "cefditoren"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Cefepime",
+  "matchNorm": "cefepime"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Cefetamet",
+  "matchNorm": "cefetamet"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Cefixime",
+  "matchNorm": "cefixime"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Cefoperazone",
+  "matchNorm": "cefoperazone"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Cefotaxime",
+  "matchNorm": "cefotaxime"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Cefpirome",
+  "matchNorm": "cefpirome"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Cefpodoxime",
+  "matchNorm": "cefpodoxime"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Ceftazidime",
+  "matchNorm": "ceftazidime"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Ceftibuten",
+  "matchNorm": "ceftibuten"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Ceftizoxime",
+  "matchNorm": "ceftizoxime"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Ceftriaxone",
+  "matchNorm": "ceftriaxone"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Chlordiazepoxide",
+  "matchNorm": "chlordiazepoxide"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Clofazimine",
+  "matchNorm": "clofazimine"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Codeine",
+  "matchNorm": "codeine"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Cycloserine",
+  "matchNorm": "cycloserine"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Diazepam",
+  "matchNorm": "diazepam"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Diphenoxylate",
+  "matchNorm": "diphenoxylate"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Doripenem",
+  "matchNorm": "doripenem"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Ertapenem",
+  "matchNorm": "ertapenem"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Ethambutol Hydrochloride",
+  "matchNorm": "ethambutol"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Ethionamide",
+  "matchNorm": "ethionamide"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Faropenem",
+  "matchNorm": "faropenem"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Gemifloxacin",
+  "matchNorm": "gemifloxacin"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Imipenem",
+  "matchNorm": "imipenem"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Isoniazid",
+  "matchNorm": "isoniazid"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Levofloxacin",
+  "matchNorm": "levofloxacin"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Meropenem",
+  "matchNorm": "meropenem"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Midazolam",
+  "matchNorm": "midazolam"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Moxifloxacin",
+  "matchNorm": "moxifloxacin"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Nitrazepam",
+  "matchNorm": "nitrazepam"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Oseltamivir",
+  "matchNorm": "oseltamivir"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Oxytocin",
+  "matchNorm": "oxytocin",
+  "aliases": [
+   "oxytocine"
+  ]
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Pentazocine",
+  "matchNorm": "pentazocine"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Prulifloxacin",
+  "matchNorm": "prulifloxacin"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Pyrazinamide",
+  "matchNorm": "pyrazinamide"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Rifabutin",
+  "matchNorm": "rifabutin"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Rifampicin",
+  "matchNorm": "rifampicin"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Sodium Para-aminosalicylate",
+  "matchNorm": "sodium para-aminosalicylate"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Sparfloxacin",
+  "matchNorm": "sparfloxacin"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Tapentadol",
+  "matchNorm": "tapentadol"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Thiacetazone",
+  "matchNorm": "thiacetazone",
+  "aliases": [
+   "thioacetazone"
+  ]
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Tramadol",
+  "matchNorm": "tramadol"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Zanamivir",
+  "matchNorm": "zanamivir"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
+  "matchValue": "Zolpidem",
+  "matchNorm": "zolpidem"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "5-Fluorouracil",
+  "matchNorm": "5-fluorouracil"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Abacavir",
+  "matchNorm": "abacavir"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Abciximab",
+  "matchNorm": "abciximab"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Acamprosate Calcium",
+  "matchNorm": "acamprosate"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Acebutol Hydrochloride",
+  "matchNorm": "acebutol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Acitretin",
+  "matchNorm": "acitretin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Aclarubicin",
+  "matchNorm": "aclarubicin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Actilyse",
+  "matchNorm": "actilyse"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Acyclovir",
+  "matchNorm": "acyclovir"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Adenosine",
+  "matchNorm": "adenosine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Adrenocorticotrophic Hormone (Acth)",
+  "matchNorm": "adrenocorticotrophic hormone",
+  "aliases": [
+   "adrenocorticotrophic"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Albendazole",
+  "matchNorm": "albendazole"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Alclometasone Dipropionate",
+  "matchNorm": "alclometasone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Alendronate Sodium",
+  "matchNorm": "alendronate"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Allopurinol",
+  "matchNorm": "allopurinol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Alphachymotrypsin",
+  "matchNorm": "alphachymotrypsin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Alprostadil",
+  "matchNorm": "alprostadil"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Amantadine Hydrochloride",
+  "matchNorm": "amantadine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Amifostine",
+  "matchNorm": "amifostine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Amikacin Sulphate",
+  "matchNorm": "amikacin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Amiloride Hydrochloride",
+  "matchNorm": "amiloride"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Amineptine",
+  "matchNorm": "amineptine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Aminoglutethimide",
+  "matchNorm": "aminoglutethimide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Aminosalicylic Acid",
+  "matchNorm": "aminosalicylic acid",
+  "aliases": [
+   "aminosalicylic"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Amiodarone Hydrochloride",
+  "matchNorm": "amiodarone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Amitriptyline",
+  "matchNorm": "amitriptyline"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Amlodipine Besylate",
+  "matchNorm": "amlodipine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Amoscanate",
+  "matchNorm": "amoscanate"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Amoxapine",
+  "matchNorm": "amoxapine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Amrinone Lactate",
+  "matchNorm": "amrinone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Analgin",
+  "matchNorm": "analgin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "class",
+  "matchValue": "Androgenic Anabolic, Oestrogenic & Progestational Substances",
+  "matchNorm": "androgenic anabolic oestrogenic progestational substances",
+  "pattern": "(testosterone|nandrolone|oxymetholone|stanozolol|danazol|oestradiol|estradiol|estriol|ethinyloestradiol|ethinylestradiol|progesterone|norethisterone|levonorgestrel|desogestrel|medroxyprogesterone|dydrogesterone|drospirenone|gestodene|megestrol|mesterolone)",
+  "notes": "Therapeutic-class entry — matches any member molecule."
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "class",
+  "matchValue": "Antibiotics",
+  "matchNorm": "antibiotics",
+  "pattern": "(cillin|mycin|micin|kacin|floxacin|oxacin|cycline|penem|^cef|^ceph|sulphamethoxazole|sulfamethoxazole|cotrimoxazole|colistin|polymyxin|aztreonam|daptomycin|tigecycline|chloramphenicol|fosfomycin|nitrofurantoin|rifampicin|rifabutin|isoniazid|ethambutol|pyrazinamide)",
+  "notes": "Therapeutic-class entry — matches any member molecule."
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Apraclonidine",
+  "matchNorm": "apraclonidine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Aprotinin",
+  "matchNorm": "aprotinin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Arteether",
+  "matchNorm": "arteether"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Artemether",
+  "matchNorm": "artemether"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Artesunate",
+  "matchNorm": "artesunate"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Articaine Hydrochloride",
+  "matchNorm": "articaine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Atenolol",
+  "matchNorm": "atenolol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Atorvastatin",
+  "matchNorm": "atorvastatin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Atracurium Besylate Injection",
+  "matchNorm": "atracurium besylate injection",
+  "aliases": [
+   "atracurium"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Auranofin",
+  "matchNorm": "auranofin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Azathioprine",
+  "matchNorm": "azathioprine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Aztreonam",
+  "matchNorm": "aztreonam"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Bacampicillin",
+  "matchNorm": "bacampicillin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Baclofen",
+  "matchNorm": "baclofen"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Balsalazide",
+  "matchNorm": "balsalazide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Bambuterol",
+  "matchNorm": "bambuterol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Barbituric Acid",
+  "matchNorm": "barbituric acid",
+  "aliases": [
+   "barbituric"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Basiliximab",
+  "matchNorm": "basiliximab"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Beclomethasone",
+  "matchNorm": "beclomethasone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Benazepril Hydrochloride",
+  "matchNorm": "benazepril"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Benidipine Hydrochloride",
+  "matchNorm": "benidipine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Benserazide Hydrochloride",
+  "matchNorm": "benserazide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Betahistine Dihydrochloride",
+  "matchNorm": "betahistine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Betamethasone",
+  "matchNorm": "betamethasone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Bethanidine Sulphate",
+  "matchNorm": "bethanidine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Bezafibrate",
+  "matchNorm": "bezafibrate"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Bicalutamide",
+  "matchNorm": "bicalutamide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Biclotymol",
+  "matchNorm": "biclotymol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Bifonazole",
+  "matchNorm": "bifonazole"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Bimatoprost",
+  "matchNorm": "bimatoprost"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Biperiden Hydrochloride",
+  "matchNorm": "biperiden"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Biphenyl Acetic Acid",
+  "matchNorm": "biphenyl acetic acid",
+  "aliases": [
+   "biphenyl"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Bitoscanate",
+  "matchNorm": "bitoscanate"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Bleomycin",
+  "matchNorm": "bleomycin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Brimonidine Tartrate",
+  "matchNorm": "brimonidine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Bromhexine Hydrochloride",
+  "matchNorm": "bromhexine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Bromocriptine Mesylate",
+  "matchNorm": "bromocriptine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Budesonide",
+  "matchNorm": "budesonide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Bulaquine",
+  "matchNorm": "bulaquine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Bupivacaine Hydrochloride",
+  "matchNorm": "bupivacaine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Bupropion",
+  "matchNorm": "bupropion"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Buspirone",
+  "matchNorm": "buspirone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Butenafine Hydrochloride",
+  "matchNorm": "butenafine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Butorphanol Tartrate",
+  "matchNorm": "butorphanol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Cabergoline",
+  "matchNorm": "cabergoline"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Calcium Dobesilate",
+  "matchNorm": "calcium dobesilate"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Candesartan",
+  "matchNorm": "candesartan"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Capecitabine",
+  "matchNorm": "capecitabine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Captopril",
+  "matchNorm": "captopril"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Carbidopa",
+  "matchNorm": "carbidopa"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Carbocisteine",
+  "matchNorm": "carbocisteine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Carboplatin",
+  "matchNorm": "carboplatin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Carboquone",
+  "matchNorm": "carboquone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Carisoprodol",
+  "matchNorm": "carisoprodol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Carteolol Hydrochloride",
+  "matchNorm": "carteolol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Carvedilol",
+  "matchNorm": "carvedilol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Cefadroxil",
+  "matchNorm": "cefadroxil"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Cefazolin Sodium",
+  "matchNorm": "cefazolin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Cefotaxime Sodium",
+  "matchNorm": "cefotaxime"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Cefuroxime",
+  "matchNorm": "cefuroxime"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Celecoxib",
+  "matchNorm": "celecoxib"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Centbutindole",
+  "matchNorm": "centbutindole"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Centchroman",
+  "matchNorm": "centchroman"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Centpropazine",
+  "matchNorm": "centpropazine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Cetirizine Hydrochloride",
+  "matchNorm": "cetirizine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Chenodeoxycholic Acid",
+  "matchNorm": "chenodeoxycholic acid",
+  "aliases": [
+   "chenodeoxycholic"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Chlormezanone",
+  "matchNorm": "chlormezanone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Chlorpromazine",
+  "matchNorm": "chlorpromazine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Chlorzoxazone",
+  "matchNorm": "chlorzoxazone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Ciclopirox Olamine",
+  "matchNorm": "ciclopirox olamine",
+  "aliases": [
+   "ciclopirox"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Cimetidine",
+  "matchNorm": "cimetidine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Cinnarizine",
+  "matchNorm": "cinnarizine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Ciprofloxacin Hydrochloride Monohydrate / Lactate",
+  "matchNorm": "ciprofloxacin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Cisplatin",
+  "matchNorm": "cisplatin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Citalopram Hydrobromide",
+  "matchNorm": "citalopram"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Clarithromycin",
+  "matchNorm": "clarithromycin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Clavulanic Acid",
+  "matchNorm": "clavulanic acid",
+  "aliases": [
+   "clavulanic"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Clidinium Bromide",
+  "matchNorm": "clidinium"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Clindamycin",
+  "matchNorm": "clindamycin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Clobazam",
+  "matchNorm": "clobazam"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Clobetasol Propionate",
+  "matchNorm": "clobetasol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Clobetasone 17-Butyrate",
+  "matchNorm": "clobetasone 17-butyrate",
+  "aliases": [
+   "clobetasone"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Clofibrate",
+  "matchNorm": "clofibrate"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Clonazepam",
+  "matchNorm": "clonazepam"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Clonidine Hydrochloride",
+  "matchNorm": "clonidine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Clopamide",
+  "matchNorm": "clopamide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Clopidogrel Bisulphate",
+  "matchNorm": "clopidogrel"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Clostebol Acetate",
+  "matchNorm": "clostebol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Clotrimazole",
+  "matchNorm": "clotrimazole"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Clozapine",
+  "matchNorm": "clozapine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Colchicine",
+  "matchNorm": "colchicine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "class",
+  "matchValue": "Corticosteroids",
+  "matchNorm": "corticosteroids",
+  "pattern": "(prednis|dexamethasone|betamethasone|hydrocortisone|triamcinolone|budesonide|fluticasone|mometasone|beclomethasone|clobetas|desonide|halobetasol|halometasone|deflazacort|fludrocortisone|cortisone|desoximetasone|diflorasone|fluocinolone|fluocinonide|prednicarbate|alclometasone)",
+  "notes": "Therapeutic-class entry — matches any member molecule."
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Cotrimoxazole",
+  "matchNorm": "cotrimoxazole",
+  "aliases": [
+   "co-trimoxazole"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Cyclandelate",
+  "matchNorm": "cyclandelate"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Cyclosporins",
+  "matchNorm": "cyclosporins"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "D-Penicillamine",
+  "matchNorm": "d-penicillamine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Daclizumab",
+  "matchNorm": "daclizumab"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Danazol",
+  "matchNorm": "danazol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Dapsone",
+  "matchNorm": "dapsone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Desloratadine",
+  "matchNorm": "desloratadine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Desogestrel",
+  "matchNorm": "desogestrel"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Desonide",
+  "matchNorm": "desonide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Desoximetasone",
+  "matchNorm": "desoximetasone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Dexamethasone",
+  "matchNorm": "dexamethasone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Dexrazoxane",
+  "matchNorm": "dexrazoxane"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Dextranomer",
+  "matchNorm": "dextranomer"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Dextropropoxyphene",
+  "matchNorm": "dextropropoxyphene"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Di-sodium Pamidronate",
+  "matchNorm": "di-sodium pamidronate",
+  "aliases": [
+   "di-sodium"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Diazoxide",
+  "matchNorm": "diazoxide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Diclofenac Sodium/Potassium/Acid",
+  "matchNorm": "diclofenac sodium potassium acid",
+  "aliases": [
+   "diclofenac"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Dicyclomin Hydrochloride",
+  "matchNorm": "dicyclomin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Didanosine",
+  "matchNorm": "didanosine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Diflorasone diacetate",
+  "matchNorm": "diflorasone diacetate",
+  "aliases": [
+   "diflorasone"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Digoxin",
+  "matchNorm": "digoxin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Dilazep Hydrochloride",
+  "matchNorm": "dilazep"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Diltiazem",
+  "matchNorm": "diltiazem"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Dinoprostone",
+  "matchNorm": "dinoprostone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Dipivefrin Hydrochloride",
+  "matchNorm": "dipivefrin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Disopyramide",
+  "matchNorm": "disopyramide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Docetaxel",
+  "matchNorm": "docetaxel"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Domperidone",
+  "matchNorm": "domperidone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Donepezil Hydrochloride",
+  "matchNorm": "donepezil"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Dopamine Hydrochloride",
+  "matchNorm": "dopamine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Dothiepin Hydrochloride",
+  "matchNorm": "dothiepin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Doxapram Hydrochloride",
+  "matchNorm": "doxapram"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Doxazosin Mesylate",
+  "matchNorm": "doxazosin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Doxepin Hydrochloride",
+  "matchNorm": "doxepin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Doxorubicin Hydrochloride",
+  "matchNorm": "doxorubicin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Drotrecogin-Alpha",
+  "matchNorm": "drotrecogin-alpha"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Ebastine",
+  "matchNorm": "ebastine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Econazole",
+  "matchNorm": "econazole"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Efavirenz",
+  "matchNorm": "efavirenz"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Enalapril Meleate",
+  "matchNorm": "enalapril"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Enfenamic Acid",
+  "matchNorm": "enfenamic acid",
+  "aliases": [
+   "enfenamic"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Epinephrine",
+  "matchNorm": "epinephrine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Epirubicin",
+  "matchNorm": "epirubicin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Eptifibatide",
+  "matchNorm": "eptifibatide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "class",
+  "matchValue": "Ergot, Alkaloids of whether Hydrogenated or not, their Homologoues, Salts",
+  "matchNorm": "ergot alkaloids of whether hydrogenated or not",
+  "pattern": "(ergotamine|ergometrine|ergonovine|dihydroergotamine|methylergometrine|methylergonovine|ergoloid)",
+  "notes": "Therapeutic-class entry — matches any member molecule."
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Esomeprazole",
+  "matchNorm": "esomeprazole"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Estradiol Succinate",
+  "matchNorm": "estradiol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Estramustine Phosphate",
+  "matchNorm": "estramustine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Etanercept",
+  "matchNorm": "etanercept"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Ethacridine Lactate",
+  "matchNorm": "ethacridine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Ethamsylate",
+  "matchNorm": "ethamsylate"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Ethinyloestradiol",
+  "matchNorm": "ethinyloestradiol",
+  "aliases": [
+   "ethinylestradiol"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Etidronate Disodium",
+  "matchNorm": "etidronate"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Etizolam",
+  "matchNorm": "etizolam"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Etodolac",
+  "matchNorm": "etodolac"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Etomidate",
+  "matchNorm": "etomidate"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Etoposide",
+  "matchNorm": "etoposide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Exemestane",
+  "matchNorm": "exemestane"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Famciclovir",
+  "matchNorm": "famciclovir"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Famotidine",
+  "matchNorm": "famotidine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Fenbendazole",
+  "matchNorm": "fenbendazole"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Fenofibrate",
+  "matchNorm": "fenofibrate"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Fexofenadine",
+  "matchNorm": "fexofenadine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Finasteride",
+  "matchNorm": "finasteride"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Flavoxate Hydrochloride",
+  "matchNorm": "flavoxate"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Fludarabine",
+  "matchNorm": "fludarabine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Flufenamic Acid",
+  "matchNorm": "flufenamic acid",
+  "aliases": [
+   "flufenamic"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Flunarizine Hydrochloride",
+  "matchNorm": "flunarizine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Fluocinolone Acetonide",
+  "matchNorm": "fluocinolone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Fluocinonide",
+  "matchNorm": "fluocinonide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Fluoxetine Hydrochloride",
+  "matchNorm": "fluoxetine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Flupenthixol",
+  "matchNorm": "flupenthixol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Fluphenazine Enanthate and Decanoate",
+  "matchNorm": "fluphenazine enanthate and",
+  "aliases": [
+   "fluphenazine"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Flurazepam",
+  "matchNorm": "flurazepam"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Flurbiprofen",
+  "matchNorm": "flurbiprofen"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Flutamide",
+  "matchNorm": "flutamide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Fluticasone Propionate",
+  "matchNorm": "fluticasone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Fluvoxamine Maleate",
+  "matchNorm": "fluvoxamine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Formestane",
+  "matchNorm": "formestane"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Fosfestrol Sodium",
+  "matchNorm": "fosfestrol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Fosinopril Sodium",
+  "matchNorm": "fosinopril"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Fosphenytoin Sodium",
+  "matchNorm": "fosphenytoin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Fotemustine",
+  "matchNorm": "fotemustine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Gabapentin",
+  "matchNorm": "gabapentin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Galanthamine Hydrobromide",
+  "matchNorm": "galanthamine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Gallamine, its Salts, its Quaternary Compound",
+  "matchNorm": "gallamine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Ganciclovir",
+  "matchNorm": "ganciclovir"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Ganirelix",
+  "matchNorm": "ganirelix"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Gatifloxacin",
+  "matchNorm": "gatifloxacin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Gemcitabine",
+  "matchNorm": "gemcitabine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Gemfibrozil",
+  "matchNorm": "gemfibrozil"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Gemtuzumab",
+  "matchNorm": "gemtuzumab"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Gliclazide",
+  "matchNorm": "gliclazide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Glimepiride",
+  "matchNorm": "glimepiride"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Glucagon",
+  "matchNorm": "glucagon"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Glycopyrrolate",
+  "matchNorm": "glycopyrrolate"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Glydiazinamide",
+  "matchNorm": "glydiazinamide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Goserelin Acetate",
+  "matchNorm": "goserelin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Granisetron",
+  "matchNorm": "granisetron"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Guanethidine",
+  "matchNorm": "guanethidine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Gugulipid",
+  "matchNorm": "gugulipid"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Halobetasol propionate",
+  "matchNorm": "halobetasol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Halogenated Hydroxyquinolines",
+  "matchNorm": "halogenated hydroxyquinolines",
+  "aliases": [
+   "halogenated"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Halometasone",
+  "matchNorm": "halometasone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Haloperidol",
+  "matchNorm": "haloperidol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Heparin",
+  "matchNorm": "heparin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Hepatitis B. Vaccine",
+  "matchNorm": "hepatitis b vaccine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Hyaluronidase",
+  "matchNorm": "hyaluronidase"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Hydrocortisone 17-Butyrate",
+  "matchNorm": "hydrocortisone 17-butyrate",
+  "aliases": [
+   "hydrocortisone"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Hydrotalcite",
+  "matchNorm": "hydrotalcite"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Hydroxyzine",
+  "matchNorm": "hydroxyzine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Ibuprofen",
+  "matchNorm": "ibuprofen"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Idebenone",
+  "matchNorm": "idebenone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Imipramine",
+  "matchNorm": "imipramine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Indapamide",
+  "matchNorm": "indapamide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Indinavir Sulphate",
+  "matchNorm": "indinavir"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Indomethacin",
+  "matchNorm": "indomethacin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Insulin Human",
+  "matchNorm": "insulin human"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Interferon",
+  "matchNorm": "interferon"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Intravenous Fat Emulsion",
+  "matchNorm": "intravenous fat emulsion"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Iobitridol",
+  "matchNorm": "iobitridol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Iohexol",
+  "matchNorm": "iohexol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Iomeprol",
+  "matchNorm": "iomeprol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Iopamidol",
+  "matchNorm": "iopamidol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Iopromide",
+  "matchNorm": "iopromide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Irbesartan",
+  "matchNorm": "irbesartan"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Irinotecan Hydrochloride",
+  "matchNorm": "irinotecan"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Iron Preparation for Parenteral use",
+  "matchNorm": "iron preparation for parenteral use"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Isepamicin",
+  "matchNorm": "isepamicin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Isocarboxazid",
+  "matchNorm": "isocarboxazid"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Isoflurane",
+  "matchNorm": "isoflurane"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Isonicotinic Acid Hydrazide and other Hydrazine Derivatives of Isonicotinic Acid",
+  "matchNorm": "isonicotinic acid hydrazide and other hydrazine derivatives of isonicotinic acid",
+  "aliases": [
+   "isonicotinic",
+   "isonicotinic acid hydrazide",
+   "other hydrazine derivatives of isonicotinic acid"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Isosorbide Dinitrate/Mononitrate",
+  "matchNorm": "isosorbide dinitrate mononitrate",
+  "aliases": [
+   "isosorbide",
+   "isosorbide dinitrate",
+   "mononitrate"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Isotretinoin",
+  "matchNorm": "isotretinoin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Isoxsuprine",
+  "matchNorm": "isoxsuprine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Itopride",
+  "matchNorm": "itopride"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Ketoconazole",
+  "matchNorm": "ketoconazole"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Ketoprofen",
+  "matchNorm": "ketoprofen"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Ketorolac Tromethamine",
+  "matchNorm": "ketorolac"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "L-Carnitine",
+  "matchNorm": "l-carnitine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Labetalol Hydrochloride",
+  "matchNorm": "labetalol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Lacidipine",
+  "matchNorm": "lacidipine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Lamivudine",
+  "matchNorm": "lamivudine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Lamotrigine",
+  "matchNorm": "lamotrigine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Latanoprost",
+  "matchNorm": "latanoprost"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Leflunomide",
+  "matchNorm": "leflunomide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Lercanidipine Hydrochloride",
+  "matchNorm": "lercanidipine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Letrozole",
+  "matchNorm": "letrozole"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Leuprolide Acetate",
+  "matchNorm": "leuprolide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Levamisole",
+  "matchNorm": "levamisole"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Levarterenol",
+  "matchNorm": "levarterenol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Levobunolol",
+  "matchNorm": "levobunolol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Levocetirizine",
+  "matchNorm": "levocetirizine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Levodopa",
+  "matchNorm": "levodopa"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Levovist",
+  "matchNorm": "levovist"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Lidoflazine",
+  "matchNorm": "lidoflazine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Linezolid",
+  "matchNorm": "linezolid"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Lithium Carbonate",
+  "matchNorm": "lithium carbonate",
+  "aliases": [
+   "lithium"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Lofepramine Decanoate",
+  "matchNorm": "lofepramine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Loperamide",
+  "matchNorm": "loperamide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Lorazepam",
+  "matchNorm": "lorazepam"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Losartan Potassium",
+  "matchNorm": "losartan"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Loteprednol",
+  "matchNorm": "loteprednol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Lovastatin",
+  "matchNorm": "lovastatin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Loxapine",
+  "matchNorm": "loxapine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Mebendazole",
+  "matchNorm": "mebendazole"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Mebeverine Hydrochloride",
+  "matchNorm": "mebeverine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Medroxy Progesterone Acetate",
+  "matchNorm": "medroxy progesterone",
+  "aliases": [
+   "medroxy"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Mefenamic Acid",
+  "matchNorm": "mefenamic acid",
+  "aliases": [
+   "mefenamic"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Mefloquine Hydrochloride",
+  "matchNorm": "mefloquine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Megestrol Acetate",
+  "matchNorm": "megestrol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Meglumine Iocarmate",
+  "matchNorm": "meglumine iocarmate",
+  "aliases": [
+   "meglumine"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Melagenina",
+  "matchNorm": "melagenina"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Melitracen Hydrochloride",
+  "matchNorm": "melitracen"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Meloxicam",
+  "matchNorm": "meloxicam"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Mephenesin, its Esters",
+  "matchNorm": "mephenesin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Mephentermine",
+  "matchNorm": "mephentermine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Mesterolone",
+  "matchNorm": "mesterolone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Metaxalone",
+  "matchNorm": "metaxalone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Methicillin Sodium",
+  "matchNorm": "methicillin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Methocarbamol",
+  "matchNorm": "methocarbamol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Methotrexate",
+  "matchNorm": "methotrexate"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Methylprednisone",
+  "matchNorm": "methylprednisone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Metoclopramide",
+  "matchNorm": "metoclopramide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Metoprolol Tartrate",
+  "matchNorm": "metoprolol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Metrizamide",
+  "matchNorm": "metrizamide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Metronidazole",
+  "matchNorm": "metronidazole"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Mexiletine Hydrochloride",
+  "matchNorm": "mexiletine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Mianserin Hydrochloride",
+  "matchNorm": "mianserin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Miconazole",
+  "matchNorm": "miconazole"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Mifepristone",
+  "matchNorm": "mifepristone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Milrinone Lactate",
+  "matchNorm": "milrinone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Miltefosine",
+  "matchNorm": "miltefosine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Minocycline",
+  "matchNorm": "minocycline"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Minoxidil",
+  "matchNorm": "minoxidil"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Mirtazapine",
+  "matchNorm": "mirtazapine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Misoprostol",
+  "matchNorm": "misoprostol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Mitoxantrone Hydrochloride",
+  "matchNorm": "mitoxantrone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Mizolastine",
+  "matchNorm": "mizolastine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Moclobemide",
+  "matchNorm": "moclobemide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Mometasone Furoate",
+  "matchNorm": "mometasone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Montelukast Sodium",
+  "matchNorm": "montelukast"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Morphazinamide Hydrochloride",
+  "matchNorm": "morphazinamide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Mosapride",
+  "matchNorm": "mosapride"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Mycophenolate Mofetil",
+  "matchNorm": "mycophenolate mofetil",
+  "aliases": [
+   "mycophenolate"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "N-butyl-2-cyanoacrylate",
+  "matchNorm": "n-butyl-2-cyanoacrylate"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Nabumetone",
+  "matchNorm": "nabumetone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Nadifloxacin",
+  "matchNorm": "nadifloxacin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Nadolol",
+  "matchNorm": "nadolol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Nafarelin Acetate",
+  "matchNorm": "nafarelin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Nalidixic Acid",
+  "matchNorm": "nalidixic acid",
+  "aliases": [
+   "nalidixic"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Naproxen",
+  "matchNorm": "naproxen"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Narcotic Drugs listed in Narcotic Drugs & Psychotropic Substances Act, 1985",
+  "matchNorm": "narcotic drugs listed in narcotic drugs psychotropic substances act 1985",
+  "aliases": [
+   "narcotic"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Natamycin",
+  "matchNorm": "natamycin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Nateglinide",
+  "matchNorm": "nateglinide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Nebivolol",
+  "matchNorm": "nebivolol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Nelfinavir Mesilate",
+  "matchNorm": "nelfinavir"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Netilmicin Sulphate",
+  "matchNorm": "netilmicin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Nevirapine",
+  "matchNorm": "nevirapine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Nicergoline",
+  "matchNorm": "nicergoline"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Nicorandil",
+  "matchNorm": "nicorandil"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Nifedipine",
+  "matchNorm": "nifedipine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Nimesulide",
+  "matchNorm": "nimesulide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Nimustine Hydrochloride",
+  "matchNorm": "nimustine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Nitroglycerin",
+  "matchNorm": "nitroglycerin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Norethisterone Enanthate",
+  "matchNorm": "norethisterone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Norfloxacin",
+  "matchNorm": "norfloxacin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Ofloxacin",
+  "matchNorm": "ofloxacin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Olanzapine",
+  "matchNorm": "olanzapine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Omeprazole",
+  "matchNorm": "omeprazole"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Organic Compound of Arsenic",
+  "matchNorm": "organic compound of arsenic"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Ornidazole",
+  "matchNorm": "ornidazole"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Orphenadrine",
+  "matchNorm": "orphenadrine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Orthoclone Sterile",
+  "matchNorm": "orthoclone sterile",
+  "aliases": [
+   "orthoclone"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Otilonium Bromide",
+  "matchNorm": "otilonium"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Oxazepam",
+  "matchNorm": "oxazepam"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Oxazolidine",
+  "matchNorm": "oxazolidine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Oxcarbazepine",
+  "matchNorm": "oxcarbazepine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Oxethazaine Hydrochloride",
+  "matchNorm": "oxethazaine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Oxiconazole",
+  "matchNorm": "oxiconazole"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Oxolinic Acid",
+  "matchNorm": "oxolinic acid",
+  "aliases": [
+   "oxolinic"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Oxprenolol Hydrochloride",
+  "matchNorm": "oxprenolol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Oxybutynin Chloride",
+  "matchNorm": "oxybutynin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Oxyfedrine",
+  "matchNorm": "oxyfedrine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Oxymetazoline",
+  "matchNorm": "oxymetazoline"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Oxyphenbutazone",
+  "matchNorm": "oxyphenbutazone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Ozothine",
+  "matchNorm": "ozothine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Paclitaxel",
+  "matchNorm": "paclitaxel"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Pancuronium Bromide",
+  "matchNorm": "pancuronium"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Pantoprazole",
+  "matchNorm": "pantoprazole"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "class",
+  "matchValue": "Para-Amino Benzene Sulphonamide, its Salts & Derivatives",
+  "matchNorm": "para-amino benzene sulphonamide",
+  "pattern": "(sulphadiazine|sulfadiazine|sulphamethoxazole|sulfamethoxazole|sulphacetamide|sulfacetamide|sulphasalazine|sulfasalazine|sulphadoxine|sulfadoxine|sulphamethoxypyridazine|sulphaphenazole)",
+  "notes": "Therapeutic-class entry — matches any member molecule."
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Para-Amino Salicylic Acid, its Salts, its Derivatives",
+  "matchNorm": "para-amino salicylic acid"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Parecoxib",
+  "matchNorm": "parecoxib"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Paroxetine Hydrochloride",
+  "matchNorm": "paroxetine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Pentoxifylline",
+  "matchNorm": "pentoxifylline"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Pepleomycin",
+  "matchNorm": "pepleomycin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Phenelzine Sulphate",
+  "matchNorm": "phenelzine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Phenobarbital",
+  "matchNorm": "phenobarbital",
+  "aliases": [
+   "phenobarbitone"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Phenothiazine, Derivatives of and Salts of its Derivatives",
+  "matchNorm": "phenothiazine derivatives of and salts of",
+  "aliases": [
+   "phenothiazine",
+   "phenothiazine derivatives of",
+   "salts of"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Phenylbutazone",
+  "matchNorm": "phenylbutazone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Pimozide",
+  "matchNorm": "pimozide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Pindolol",
+  "matchNorm": "pindolol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Pioglitazone Hydrochloride",
+  "matchNorm": "pioglitazone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Piracetam",
+  "matchNorm": "piracetam"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Piroxicam",
+  "matchNorm": "piroxicam"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Pituitary Gland, Active Principles of, not otherwise specified in this Schedule and their Salts",
+  "matchNorm": "pituitary gland active principles of not otherwise specified in this schedule"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Polidocanol",
+  "matchNorm": "polidocanol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Polyestradiol Phosphate",
+  "matchNorm": "polyestradiol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Poractant Alfa",
+  "matchNorm": "poractant alfa",
+  "aliases": [
+   "poractant"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Praziquantel",
+  "matchNorm": "praziquantel"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Prednicarbate",
+  "matchNorm": "prednicarbate"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Prednimustine",
+  "matchNorm": "prednimustine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Prednisolone Steaglate",
+  "matchNorm": "prednisolone steaglate",
+  "aliases": [
+   "prednisolone"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Prenoxdiazin Hydrochloride",
+  "matchNorm": "prenoxdiazin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Promazine Hydrochloride",
+  "matchNorm": "promazine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Promegestone",
+  "matchNorm": "promegestone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Propafenone Hydrochloride",
+  "matchNorm": "propafenone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Propofol",
+  "matchNorm": "propofol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Propranolol Hydrochloride",
+  "matchNorm": "propranolol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Protriptyline Hydrochloride",
+  "matchNorm": "protriptyline"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Pyrvinium",
+  "matchNorm": "pyrvinium"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Quetiapine Fumarate",
+  "matchNorm": "quetiapine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Quinapril",
+  "matchNorm": "quinapril"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Quinidine Sulphate",
+  "matchNorm": "quinidine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Rabeprazole",
+  "matchNorm": "rabeprazole"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Racecadotril",
+  "matchNorm": "racecadotril"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Raloxifene Hydrochloride",
+  "matchNorm": "raloxifene"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Ramipril Hydrochloride",
+  "matchNorm": "ramipril"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Ranitidine",
+  "matchNorm": "ranitidine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "class",
+  "matchValue": "Rauwolfia, Alkaloids of, their Salts, Derivatives of the Alkaloids or Rauwolfia",
+  "matchNorm": "rauwolfia alkaloids of",
+  "pattern": "(reserpine|rauwolfia|deserpidine|rescinnamine)",
+  "notes": "Therapeutic-class entry — matches any member molecule."
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Reboxetine",
+  "matchNorm": "reboxetine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Repaglinide",
+  "matchNorm": "repaglinide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Reproterol Hydrochloride",
+  "matchNorm": "reproterol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Rilmenidine",
+  "matchNorm": "rilmenidine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Riluzole",
+  "matchNorm": "riluzole"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Risperidone",
+  "matchNorm": "risperidone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Ritodrine hydrochloride",
+  "matchNorm": "ritodrine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Ritonavir",
+  "matchNorm": "ritonavir"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Rituximab",
+  "matchNorm": "rituximab"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Rivastigmine",
+  "matchNorm": "rivastigmine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Rocuronium bromide",
+  "matchNorm": "rocuronium"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Ropinirole",
+  "matchNorm": "ropinirole"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Rosiglitazone Maleate",
+  "matchNorm": "rosiglitazone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Rosoxacin",
+  "matchNorm": "rosoxacin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "S-neominophagen",
+  "matchNorm": "s-neominophagen"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Salbutamol sulphate",
+  "matchNorm": "salbutamol",
+  "aliases": [
+   "albuterol"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Salicyl-azo-sulphapyridine",
+  "matchNorm": "salicyl-azo-sulphapyridine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Salmon calcitonin",
+  "matchNorm": "salmon calcitonin",
+  "aliases": [
+   "salmon"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Saquinavir",
+  "matchNorm": "saquinavir"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Satranidazole",
+  "matchNorm": "satranidazole"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Secnidazole",
+  "matchNorm": "secnidazole"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Septopal beads & chains",
+  "matchNorm": "septopal beads chains",
+  "aliases": [
+   "septopal"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Serratiopeptidase",
+  "matchNorm": "serratiopeptidase"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Sertraline hydrochloride",
+  "matchNorm": "sertraline"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Sibutramine hydrochloride",
+  "matchNorm": "sibutramine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Sildenafil citrate",
+  "matchNorm": "sildenafil"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Simvastatin",
+  "matchNorm": "simvastatin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Sirolimus",
+  "matchNorm": "sirolimus"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Sisomicin sulphate",
+  "matchNorm": "sisomicin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Sodium and maglumine iothalamates",
+  "matchNorm": "sodium and maglumine iothalamates",
+  "aliases": [
+   "maglumine iothalamates"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Sodium cromoglycate",
+  "matchNorm": "sodium cromoglycate"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Sodium hyaluronate",
+  "matchNorm": "sodium hyaluronate"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Sodium valproate",
+  "matchNorm": "sodium valproate"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Sodiumpico sulphate",
+  "matchNorm": "sodiumpico"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Somatostatin",
+  "matchNorm": "somatostatin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Somatotropin",
+  "matchNorm": "somatotropin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Sotalol",
+  "matchNorm": "sotalol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Spectinomycin hydrochloride",
+  "matchNorm": "spectinomycin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Spironolactone",
+  "matchNorm": "spironolactone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Stavudine",
+  "matchNorm": "stavudine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Sucralfate",
+  "matchNorm": "sucralfate"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Sulphadoxine",
+  "matchNorm": "sulphadoxine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Sulphamethoxine",
+  "matchNorm": "sulphamethoxine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Sulphamethoxypyridazine",
+  "matchNorm": "sulphamethoxypyridazine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Sulphaphenazole",
+  "matchNorm": "sulphaphenazole"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Sulpiride",
+  "matchNorm": "sulpiride"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Sulprostone hydrochloride",
+  "matchNorm": "sulprostone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Sumatriptan",
+  "matchNorm": "sumatriptan"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Tacrine hydrochloride",
+  "matchNorm": "tacrine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Tamsulosin hydrochloride",
+  "matchNorm": "tamsulosin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Tegaserod maleate",
+  "matchNorm": "tegaserod"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Teicoplanin",
+  "matchNorm": "teicoplanin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Telmisartan",
+  "matchNorm": "telmisartan"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Temozolomide",
+  "matchNorm": "temozolomide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Terazosin",
+  "matchNorm": "terazosin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Terbutaline sulphate",
+  "matchNorm": "terbutaline"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Terfenadine",
+  "matchNorm": "terfenadine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Terizidone",
+  "matchNorm": "terizidone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Terlipressin",
+  "matchNorm": "terlipressin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Tertatolol Hydrochloride",
+  "matchNorm": "tertatolol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Testosterone Undecanoate",
+  "matchNorm": "testosterone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Thalidomide",
+  "matchNorm": "thalidomide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Thiocolchicoside",
+  "matchNorm": "thiocolchicoside"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Thiopropazate, its salts",
+  "matchNorm": "thiopropazate"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Thymogene",
+  "matchNorm": "thymogene"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Thymosin-alpha1",
+  "matchNorm": "thymosin-alpha1"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Tiaprofenic acid",
+  "matchNorm": "tiaprofenic acid",
+  "aliases": [
+   "tiaprofenic"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Tibolone",
+  "matchNorm": "tibolone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Timolol maleate",
+  "matchNorm": "timolol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Tinidazole",
+  "matchNorm": "tinidazole"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Tizanidine",
+  "matchNorm": "tizanidine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Tobramycin",
+  "matchNorm": "tobramycin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Tolfenamic acid",
+  "matchNorm": "tolfenamic acid",
+  "aliases": [
+   "tolfenamic"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Topiramate",
+  "matchNorm": "topiramate"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Topotecan hydrochloride",
+  "matchNorm": "topotecan"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Tranexamic acid",
+  "matchNorm": "tranexamic acid",
+  "aliases": [
+   "tranexamic"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Tranylcypromine, its salts",
+  "matchNorm": "tranylcypromine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Trapidil",
+  "matchNorm": "trapidil"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Trazodone",
+  "matchNorm": "trazodone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Tretinoin",
+  "matchNorm": "tretinoin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Triamcinolone acetonide",
+  "matchNorm": "triamcinolone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Trifluoperazine",
+  "matchNorm": "trifluoperazine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Trifluperidol hydrochloride",
+  "matchNorm": "trifluperidol"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Triflusal",
+  "matchNorm": "triflusal"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Trimetazidine dihydrochloride",
+  "matchNorm": "trimetazidine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Trimipramine",
+  "matchNorm": "trimipramine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Tripotassium dicitrate bismuthate",
+  "matchNorm": "tripotassium dicitrate bismuthate",
+  "aliases": [
+   "tripotassium"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Tromantadine hydrochloride",
+  "matchNorm": "tromantadine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Urokinase",
+  "matchNorm": "urokinase"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Valsartan",
+  "matchNorm": "valsartan"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Vasopressin",
+  "matchNorm": "vasopressin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Vecuronium bromide",
+  "matchNorm": "vecuronium"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Venlafaxine hydrochloride",
+  "matchNorm": "venlafaxine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Verapamil hydrochloride",
+  "matchNorm": "verapamil"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Verteporfin",
+  "matchNorm": "verteporfin"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Vinblastine sulphate",
+  "matchNorm": "vinblastine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Vincristine sulphate",
+  "matchNorm": "vincristine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Vindesine sulphate",
+  "matchNorm": "vindesine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Vinorelbine Tartrate",
+  "matchNorm": "vinorelbine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Xipamide",
+  "matchNorm": "xipamide"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Zidovudine",
+  "matchNorm": "zidovudine"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Ziprasidone hydrochloride",
+  "matchNorm": "ziprasidone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Zoledronic acid",
+  "matchNorm": "zoledronic acid",
+  "aliases": [
+   "zoledronic"
+  ]
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Zopiclone",
+  "matchNorm": "zopiclone"
+ },
+ {
+  "scheduleCode": "H",
+  "matchType": "salt",
+  "matchValue": "Zuclopenthixol",
+  "matchNorm": "zuclopenthixol"
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "5-Phenylhydantoin",
+  "matchNorm": "5-phenylhydantoin",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Aminopterin",
+  "matchNorm": "aminopterin",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Antazoline",
+  "matchNorm": "antazoline",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Bleomycin",
+  "matchNorm": "bleomycin",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Bromodiphenhydramine",
+  "matchNorm": "bromodiphenhydramine",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Buclizine",
+  "matchNorm": "buclizine",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Busulphan",
+  "matchNorm": "busulphan",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Carbutamide",
+  "matchNorm": "carbutamide",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Chlorambucil",
+  "matchNorm": "chlorambucil",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Chlorcyclizine",
+  "matchNorm": "chlorcyclizine",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Chlorothiazide",
+  "matchNorm": "chlorothiazide",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Chlorpheniramine",
+  "matchNorm": "chlorpheniramine",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Chlorpropamide",
+  "matchNorm": "chlorpropamide",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Chlorthalidone",
+  "matchNorm": "chlorthalidone",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Cis-Platin",
+  "matchNorm": "cis-platin",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Clemizole",
+  "matchNorm": "clemizole",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Cyclophosphamide",
+  "matchNorm": "cyclophosphamide",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Cyproheptadine",
+  "matchNorm": "cyproheptadine",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Cytarabine",
+  "matchNorm": "cytarabine",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Daunorubicin",
+  "matchNorm": "daunorubicin",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Di-Isopropyl Fluorophosphate",
+  "matchNorm": "di-isopropyl fluorophosphate",
+  "topicalExempt": true,
+  "aliases": [
+   "di-isopropyl"
+  ]
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Diphenhydramine",
+  "matchNorm": "diphenhydramine",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Diphenylpyraline",
+  "matchNorm": "diphenylpyraline",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Disodium Stilboestrol Diphosphate",
+  "matchNorm": "disodium stilboestrol diphosphate",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Doxorubicin Hydrochloride",
+  "matchNorm": "doxorubicin",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Doxylamine Succinate",
+  "matchNorm": "doxylamine",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Ethacrynic Acid",
+  "matchNorm": "ethacrynic acid",
+  "topicalExempt": true,
+  "aliases": [
+   "ethacrynic"
+  ]
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Ethosuximide",
+  "matchNorm": "ethosuximide",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Glibenclamide",
+  "matchNorm": "glibenclamide",
+  "topicalExempt": true,
+  "aliases": [
+   "glyburide"
+  ]
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Hydantoin",
+  "matchNorm": "hydantoin",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Hydroxyurea",
+  "matchNorm": "hydroxyurea",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Insulin",
+  "matchNorm": "insulin",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Isothipendyl",
+  "matchNorm": "isothipendyl",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "L-Asparaginase",
+  "matchNorm": "l-asparaginase",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Lomustine Hydrochloride",
+  "matchNorm": "lomustine",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Mannomustine",
+  "matchNorm": "mannomustine",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Mebhydrolin Napadisylate",
+  "matchNorm": "mebhydrolin",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Meclozine",
+  "matchNorm": "meclozine",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Mercaptopurine",
+  "matchNorm": "mercaptopurine",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Metformin",
+  "matchNorm": "metformin",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Methsuximide",
+  "matchNorm": "methsuximide",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Mustine",
+  "matchNorm": "mustine",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Paramethadione",
+  "matchNorm": "paramethadione",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Phenacemide",
+  "matchNorm": "phenacemide",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Phenformin",
+  "matchNorm": "phenformin",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Phenindamine",
+  "matchNorm": "phenindamine",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Pheniramine",
+  "matchNorm": "pheniramine",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Primidone",
+  "matchNorm": "primidone",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Procarbazine Hydrochloride",
+  "matchNorm": "procarbazine",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Promethazine",
+  "matchNorm": "promethazine",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Quinethazone",
+  "matchNorm": "quinethazone",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Sarcolysine",
+  "matchNorm": "sarcolysine",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Sodium-2-Mercaptoethanesulfonate",
+  "matchNorm": "sodium-2-mercaptoethanesulfonate",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Tamoxifen Citrate",
+  "matchNorm": "tamoxifen",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Testolactone",
+  "matchNorm": "testolactone",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Thenalidine",
+  "matchNorm": "thenalidine",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Thiotepa",
+  "matchNorm": "thiotepa",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Tolbutamide",
+  "matchNorm": "tolbutamide",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Tretamine",
+  "matchNorm": "tretamine",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Triprolidine",
+  "matchNorm": "triprolidine",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "G",
+  "matchType": "salt",
+  "matchValue": "Troxidone",
+  "matchNorm": "troxidone",
+  "topicalExempt": true
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ACILOC 150 MG TABLET 30",
+  "matchNorm": "aciloc 150 mg tablet 30",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ACILOC 300 MG TABLET 20",
+  "matchNorm": "aciloc 300 mg tablet 20",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ACTEMRA 400 MG INJECTION 1",
+  "matchNorm": "actemra 400 mg injection 1",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ACTRAPID HUMAN 40 IU INJECTION 10 ML",
+  "matchNorm": "actrapid human 40 iu injection 10 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "AEROCORT WITH DOSE COUNTER 50/50 MCG INHALER 200 MDI",
+  "matchNorm": "aerocort with dose counter 50/50 mcg inhaler 200 mdi",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "AJADUO 25/5 MG TABLET 10",
+  "matchNorm": "ajaduo 25/5 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ALLEGRA 120 MG TABLET 10",
+  "matchNorm": "allegra 120 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ALLEGRA 180 MG TABLET 10",
+  "matchNorm": "allegra 180 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "AMBISOME 50 MG INJECTION 20 ML",
+  "matchNorm": "ambisome 50 mg injection 20 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "AMICIN 500 MG INJECTION 2 ML",
+  "matchNorm": "amicin 500 mg injection 2 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "AMLOKIND-AT 50/5 MG TABLET 10",
+  "matchNorm": "amlokind-at 50/5 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ASCORIL D PLUS NEW 5/2/10 MG SYRUP 100 ML",
+  "matchNorm": "ascoril d plus new 5/2/10 mg syrup 100 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ASCORIL LS 1/30/50 MG SYRUP 100 ML",
+  "matchNorm": "ascoril ls 1/30/50 mg syrup 100 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ASCORIL PLUS 50/1.25/2 MG EXPECTORANT 120 ML",
+  "matchNorm": "ascoril plus 50/1.25/2 mg expectorant 120 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ASTHAKIND DX 5/2/15 MG SYRUP 100 ML",
+  "matchNorm": "asthakind dx 5/2/15 mg syrup 100 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ASTHALIN 100 MCG INHALER 200 MDI",
+  "matchNorm": "asthalin 100 mcg inhaler 200 mdi",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "AUGMENTIN DUO 500/125 MG TABLET 10",
+  "matchNorm": "augmentin duo 500/125 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "AVOMINE 25 MG TABLET 10",
+  "matchNorm": "avomine 25 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "AXCER 90 MG TABLET 14",
+  "matchNorm": "axcer 90 mg tablet 14",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "AZEE 500 MG TABLET 5",
+  "matchNorm": "azee 500 mg tablet 5",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "AZITHRAL 500 MG TABLET 5",
+  "matchNorm": "azithral 500 mg tablet 5",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "BECOSULES CAPSULE 20",
+  "matchNorm": "becosules capsule 20",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "BECOSULES Z CAPSULE 20",
+  "matchNorm": "becosules z capsule 20",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "BETADINE 10 % OINTMENT 20 GM",
+  "matchNorm": "betadine 10 % ointment 20 gm",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "BETADINE 10 % SOLUTION 100 ML",
+  "matchNorm": "betadine 10 % solution 100 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "BETADINE MINT 2 % GARGLE 100 ML",
+  "matchNorm": "betadine mint 2 % gargle 100 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "BETNESOL 0.5 MG TABLET 20",
+  "matchNorm": "betnesol 0.5 mg tablet 20",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "BETNOVATE C 0.1/3 % CREAM 30 GM",
+  "matchNorm": "betnovate c 0.1/3 % cream 30 gm",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "BETNOVATE N 0.1/0.5 % CREAM 20 GM",
+  "matchNorm": "betnovate n 0.1/0.5 % cream 20 gm",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "BETNOVATE N 0.1/0.5 % CREAM 25 GM",
+  "matchNorm": "betnovate n 0.1/0.5 % cream 25 gm",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "BETT 0.5 ML INJECTION 0.5 ML",
+  "matchNorm": "bett 0.5 ml injection 0.5 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "BEVON SYRUP 200 ML",
+  "matchNorm": "bevon syrup 200 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "BIO D3 MAX 500 MG/0.25MCG/400MCG/120MG CAPSULE 15",
+  "matchNorm": "bio d3 max 500 mg/0.25mcg/400mcg/120mg capsule 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "BRILINTA 90 MG TABLET 14",
+  "matchNorm": "brilinta 90 mg tablet 14",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "BRO ZEDEX 50/1.25/4 MG SYRUP 100 ML",
+  "matchNorm": "bro zedex 50/1.25/4 mg syrup 100 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "BUDECORT 0.5 MG RESPULES 2 ML",
+  "matchNorm": "budecort 0.5 mg respules 2 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "CALCIROL 60000 IU GRANULES 1 GM",
+  "matchNorm": "calcirol 60000 iu granules 1 gm",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "CALDIKIND PLUS 500 MG/0.25MCG/400MCG/60MG CAPSULE 10",
+  "matchNorm": "caldikind plus 500 mg/0.25mcg/400mcg/60mg capsule 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "CALPOL 500 MG TABLET 15",
+  "matchNorm": "calpol 500 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "CALPOL 650 MG TABLET 15",
+  "matchNorm": "calpol 650 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "CALPOL PEAD 250 MG SUSPENSION 60 ML",
+  "matchNorm": "calpol pead 250 mg suspension 60 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "CANDIFORCE 200 MG CAPSULE 7",
+  "matchNorm": "candiforce 200 mg capsule 7",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "CCM 250 MG TABLET 40",
+  "matchNorm": "ccm 250 mg tablet 40",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "CEFAKIND 500 MG TABLET 10",
+  "matchNorm": "cefakind 500 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "CEFTUM 500 MG TABLET 4",
+  "matchNorm": "ceftum 500 mg tablet 4",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "CEPODEM 200 MG TABLET 10",
+  "matchNorm": "cepodem 200 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "CHYMORAL FORTE 100000 IU TABLET 20",
+  "matchNorm": "chymoral forte 100000 iu tablet 20",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "CIDMUS 24/26 MG TABLET 14",
+  "matchNorm": "cidmus 24/26 mg tablet 14",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "CILACAR 10 MG TABLET 15",
+  "matchNorm": "cilacar 10 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "CIPREMI 100 MG INJECTION 1",
+  "matchNorm": "cipremi 100 mg injection 1",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "CLARIBID 500 MG TABLET 10",
+  "matchNorm": "claribid 500 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "CLAVAM 500/125 MG TABLET 10",
+  "matchNorm": "clavam 500/125 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "CLEXANE 40 MG INJECTION 0.4 ML",
+  "matchNorm": "clexane 40 mg injection 0.4 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "CLEXANE 60 MG INJECTION 0.6 ML",
+  "matchNorm": "clexane 60 mg injection 0.6 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "COBADEX CZS TABLET 15",
+  "matchNorm": "cobadex czs tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "CODISTAR 4/10 MG SYRUP 100 ML",
+  "matchNorm": "codistar 4/10 mg syrup 100 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "COMBIFLAM 400/325 MG TABLET 20",
+  "matchNorm": "combiflam 400/325 mg tablet 20",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "CONCOR 5 MG TABLET 10",
+  "matchNorm": "concor 5 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "COREX DX 4/10 MG SYRUP 100 ML",
+  "matchNorm": "corex dx 4/10 mg syrup 100 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "CREMAFFIN PLUS SF 1.25 ML/3.75ML/3.33MG LIQUID 225 ML",
+  "matchNorm": "cremaffin plus sf 1.25 ml/3.75ml/3.33mg liquid 225 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "CYPON 275/2 MG SYRUP 200 ML",
+  "matchNorm": "cypon 275/2 mg syrup 200 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "CYRA D 30/20 MG TABLET SR 10",
+  "matchNorm": "cyra d 30/20 mg tablet sr 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "DALACIN C 300 MG CAPSULE 10",
+  "matchNorm": "dalacin c 300 mg capsule 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "DECA DURABOLIN 50 MG INJECTION 1",
+  "matchNorm": "deca durabolin 50 mg injection 1",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "DEFCORT 6 MG TABLET 10",
+  "matchNorm": "defcort 6 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "DERIPHYLLIN 25.3/84.7 MG INJECTION 2 ML",
+  "matchNorm": "deriphyllin 25.3/84.7 mg injection 2 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "DEROBIN 1.15/1.15/5.3 % OINTMENT 30 GM",
+  "matchNorm": "derobin 1.15/1.15/5.3 % ointment 30 gm",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "DEXONA (VIAL) 4 MG INJECTION 2 ML",
+  "matchNorm": "dexona (vial) 4 mg injection 2 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "DEXORANGE 160 MG/0.5MG/7.5MCG SYRUP 200 ML",
+  "matchNorm": "dexorange 160 mg/0.5mg/7.5mcg syrup 200 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "DOLO 650 MG TABLET 15",
+  "matchNorm": "dolo 650 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "DOLONEX 20 MG TABLET DT 15",
+  "matchNorm": "dolonex 20 mg tablet dt 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "DOXINATE 10/10 MG TABLET 30",
+  "matchNorm": "doxinate 10/10 mg tablet 30",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "DOXT SL 100 MG/5BIU CAPSULE 10",
+  "matchNorm": "doxt sl 100 mg/5biu capsule 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "DOXY 1 FORTE L DR 100 MG/5BIU CAPSULE 10",
+  "matchNorm": "doxy 1 forte l dr 100 mg/5biu capsule 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "DULCOFLEX 5 MG TABLET 10",
+  "matchNorm": "dulcoflex 5 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "DUOLIN 3 1.25 MG/500MCG RESPULES 3 ML",
+  "matchNorm": "duolin 3 1.25 mg/500mcg respules 3 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "DUPHASTON 10 MG TABLET 10",
+  "matchNorm": "duphaston 10 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "DYDROBOON 10 MG TABLET 10",
+  "matchNorm": "dydroboon 10 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "DYNAPAR AQ 75 MG INJECTION 1 ML",
+  "matchNorm": "dynapar aq 75 mg injection 1 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "EASY SIX PREFILLED SYRINGE 0.5 ML",
+  "matchNorm": "easy six prefilled syringe 0.5 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ECOSPRIN AV 10/75 MG CAPSULE 15",
+  "matchNorm": "ecosprin av 10/75 mg capsule 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ECOSPRIN GOLD 75/20/75 MG TABLET 15",
+  "matchNorm": "ecosprin gold 75/20/75 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ELAXIM 40 MG INJECTION 1",
+  "matchNorm": "elaxim 40 mg injection 1",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ELECTRAL SACHET 21.8 GM",
+  "matchNorm": "electral sachet 21.8 gm",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ELIQUIS 2.5 MG TABLET 10",
+  "matchNorm": "eliquis 2.5 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ELIQUIS 5 MG TABLET 10",
+  "matchNorm": "eliquis 5 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ELTROXIN 100 MCG TABLET 120",
+  "matchNorm": "eltroxin 100 mcg tablet 120",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ENTEROGERMINA 2 BIU ORAL SUSPENSION 5 ML",
+  "matchNorm": "enterogermina 2 biu oral suspension 5 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "EXHEP 40 MG PREFILLED SYRINGE 0.4 ML",
+  "matchNorm": "exhep 40 mg prefilled syringe 0.4 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "FABIFLU 200 MG TABLET 34",
+  "matchNorm": "fabiflu 200 mg tablet 34",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "FABIFLU 400 MG TABLET 17",
+  "matchNorm": "fabiflu 400 mg tablet 17",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "FABIFLU COPACK 800 MG TABLET 18",
+  "matchNorm": "fabiflu copack 800 mg tablet 18",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "FARONEM 200 MG TABLET 10",
+  "matchNorm": "faronem 200 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "FARONEM 300 MG TABLET ER 10",
+  "matchNorm": "faronem 300 mg tablet er 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "FORACORT 20/500 MCG RESPULES 2 ML",
+  "matchNorm": "foracort 20/500 mcg respules 2 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "FORACORT 6/200 MCG ROTACAP 30",
+  "matchNorm": "foracort 6/200 mcg rotacap 30",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "FORACORT 6/400 MCG ROTACAP 30",
+  "matchNorm": "foracort 6/400 mcg rotacap 30",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "FORXIGA 10 MG TABLET 14",
+  "matchNorm": "forxiga 10 mg tablet 14",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "GABAPIN NT 400/10 MG TABLET 15",
+  "matchNorm": "gabapin nt 400/10 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "GALVUS 50 MG TABLET 15",
+  "matchNorm": "galvus 50 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "GALVUS MET 50/1000 MG TABLET 15",
+  "matchNorm": "galvus met 50/1000 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "GALVUS MET 50/500 MG TABLET 15",
+  "matchNorm": "galvus met 50/500 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "GEFTINAT 250 MG TABLET 30",
+  "matchNorm": "geftinat 250 mg tablet 30",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "GELUSIL MPS 250/50/250 MG LIQUID 200 ML",
+  "matchNorm": "gelusil mps 250/50/250 mg liquid 200 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "GEMCAL 500 MG/0.25MCG/7.5MG CAPSULE 15",
+  "matchNorm": "gemcal 500 mg/0.25mcg/7.5mg capsule 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "GEMER 2/500 MG TABLET 10",
+  "matchNorm": "gemer 2/500 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "GIBTULIO 25 MG TABLET 10",
+  "matchNorm": "gibtulio 25 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "GLUCONORM-G 2/500 MG TABLET 15",
+  "matchNorm": "gluconorm-g 2/500 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "GLYCOMET GP 1/500 MG TABLET 15",
+  "matchNorm": "glycomet gp 1/500 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "GLYCOMET GP 2/500 MG TABLET SR 15",
+  "matchNorm": "glycomet gp 2/500 mg tablet sr 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "GLYNASE MF 5/500 MG TABLET 10",
+  "matchNorm": "glynase mf 5/500 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "GLYXAMBI 25/5 MG TABLET 10",
+  "matchNorm": "glyxambi 25/5 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "GRILINCTUS 60/2.5/5/50 MG SYRUP 100 ML",
+  "matchNorm": "grilinctus 60/2.5/5/50 mg syrup 100 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "GUDCEF 200 MG TABLET 10",
+  "matchNorm": "gudcef 200 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "GUDCEF CV 200/125 MG TABLET 10",
+  "matchNorm": "gudcef cv 200/125 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "HCQS 200 MG TABLET 15",
+  "matchNorm": "hcqs 200 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "HEXAXIM INJECTION 0.5 ML",
+  "matchNorm": "hexaxim injection 0.5 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "HUCOG HP 5000 IU INJECTION 1 ML",
+  "matchNorm": "hucog hp 5000 iu injection 1 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "HUMINSULIN 30/70 100 IU CARTRIDGE 3 ML",
+  "matchNorm": "huminsulin 30/70 100 iu cartridge 3 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "INFANRIX HEXA INJECTION 0.5 ML",
+  "matchNorm": "infanrix hexa injection 0.5 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ISTAMET 50/500 MG TABLET 15",
+  "matchNorm": "istamet 50/500 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "IVABRAD 5 MG TABLET 15",
+  "matchNorm": "ivabrad 5 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "IVERMECTOL NEW 12 MG TABLET 2",
+  "matchNorm": "ivermectol new 12 mg tablet 2",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "JALRA M 50/500 MG TABLET 15",
+  "matchNorm": "jalra m 50/500 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "JANUMET 50/1000 MG TABLET 15",
+  "matchNorm": "janumet 50/1000 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "JANUMET 50/500 MG TABLET 15",
+  "matchNorm": "janumet 50/500 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "JANUVIA 100 MG TABLET 7",
+  "matchNorm": "januvia 100 mg tablet 7",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "JARDIANCE 10 MG TABLET 10",
+  "matchNorm": "jardiance 10 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "JARDIANCE 25 MG TABLET 10",
+  "matchNorm": "jardiance 25 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "KABIMOL 1000 MG INFUSION 100 ML",
+  "matchNorm": "kabimol 1000 mg infusion 100 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "KARVOL PLUS CAPSULE 10",
+  "matchNorm": "karvol plus capsule 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "KENACORT 40 MG INJECTION 1 ML",
+  "matchNorm": "kenacort 40 mg injection 1 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "KETOROL 10 MG TABLET DT 15",
+  "matchNorm": "ketorol 10 mg tablet dt 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "KETOSTERIL TABLET 20",
+  "matchNorm": "ketosteril tablet 20",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "LANTUS 100 IU CARTRIDGE 3 ML",
+  "matchNorm": "lantus 100 iu cartridge 3 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "LANTUS SOLOSTAR 100 IU DISPOSABLE PEN 3 ML",
+  "matchNorm": "lantus solostar 100 iu disposable pen 3 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "LEVERA 500 MG TABLET 15",
+  "matchNorm": "levera 500 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "LEVIPIL 500 MG TABLET 10",
+  "matchNorm": "levipil 500 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "LIBRAX 2.5/5 MG TABLET 20",
+  "matchNorm": "librax 2.5/5 mg tablet 20",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "LIMCEE CHEW ORANGE 500 MG TABLET 15",
+  "matchNorm": "limcee chew orange 500 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "LIPAGLYN 4 MG TABLET 10",
+  "matchNorm": "lipaglyn 4 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "LMWX 40 MG INJECTION 0.4 ML",
+  "matchNorm": "lmwx 40 mg injection 0.4 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "LOBATE GM NEO 0.05/0.5/2 % CREAM 15 GM",
+  "matchNorm": "lobate gm neo 0.05/0.5/2 % cream 15 gm",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "LONOPIN 40 MG INJECTION 0.4 ML",
+  "matchNorm": "lonopin 40 mg injection 0.4 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "LOSAR 50 MG TABLET 15",
+  "matchNorm": "losar 50 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "LOSAR H 50/12.5 MG TABLET 15",
+  "matchNorm": "losar h 50/12.5 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MACBERY XT 50/1.25/4 MG SYRUP 100 ML",
+  "matchNorm": "macbery xt 50/1.25/4 mg syrup 100 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MAGNEX FORTE 1000/500 MG INJECTION 1",
+  "matchNorm": "magnex forte 1000/500 mg injection 1",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MANFORCE 100 MG TABLET 4",
+  "matchNorm": "manforce 100 mg tablet 4",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MANFORCE 50 MG TABLET 9",
+  "matchNorm": "manforce 50 mg tablet 9",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MAXTRA 5/2 MG SYRUP 60 ML",
+  "matchNorm": "maxtra 5/2 mg syrup 60 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MEFTAL SPAS 10/250 MG TABLET 10",
+  "matchNorm": "meftal spas 10/250 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MEGALIS 20 MG TABLET 4",
+  "matchNorm": "megalis 20 mg tablet 4",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MEGANEURON OD PLUS 1500 MCG CAPSULE 10",
+  "matchNorm": "meganeuron od plus 1500 mcg capsule 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MENACTRA INJECTION 0.5 ML",
+  "matchNorm": "menactra injection 0.5 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MERO 1000 MG INJECTION 1",
+  "matchNorm": "mero 1000 mg injection 1",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MEROMAC 1000 MG INJECTION 1",
+  "matchNorm": "meromac 1000 mg injection 1",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MERONEM 1000 MG INJECTION 1",
+  "matchNorm": "meronem 1000 mg injection 1",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MEROZA 1000 MG INJECTION 1 ML",
+  "matchNorm": "meroza 1000 mg injection 1 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MIFEGEST KIT 200 MG/200MCG TABLET 1",
+  "matchNorm": "mifegest kit 200 mg/200mcg tablet 1",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MIKACIN 500 MG INJECTION 2 ML",
+  "matchNorm": "mikacin 500 mg injection 2 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MINIPRESS XL 5 MG TABLET XL 30",
+  "matchNorm": "minipress xl 5 mg tablet xl 30",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MIXTARD HM PENFILL 30/70 100 IU INJECTION 3 ML",
+  "matchNorm": "mixtard hm penfill 30/70 100 iu injection 3 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MIXTARD HUMAN 30/70 40 IU INJECTION 10 ML",
+  "matchNorm": "mixtard human 30/70 40 iu injection 10 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MIXTARD HUMAN 50/50 40 IU INJECTION 10 ML",
+  "matchNorm": "mixtard human 50/50 40 iu injection 10 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MONOCEF 1000 MG INJECTION 5 ML",
+  "matchNorm": "monocef 1000 mg injection 5 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MONOCEF O 200 MG TABLET 10",
+  "matchNorm": "monocef o 200 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MONOCEF SB 1000/500 MG INJECTION 1",
+  "matchNorm": "monocef sb 1000/500 mg injection 1",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MONTAIR LC 10/5 MG TABLET 15",
+  "matchNorm": "montair lc 10/5 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MONTAZ 1000/125 MG INJECTION 1",
+  "matchNorm": "montaz 1000/125 mg injection 1",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MONTEK-LC 10/5 MG TABLET 10",
+  "matchNorm": "montek-lc 10/5 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MONTICOPE 10/5 MG TABLET 10",
+  "matchNorm": "monticope 10/5 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MOX 500 MG CAPSULE 15",
+  "matchNorm": "mox 500 mg capsule 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MOX CV 500/125 MG TABLET 10",
+  "matchNorm": "mox cv 500/125 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MOXCLAV 500/125 MG TABLET 10",
+  "matchNorm": "moxclav 500/125 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MOXIKIND CV 500/125 MG TABLET 10",
+  "matchNorm": "moxikind cv 500/125 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MUCAINE MINT 10/291/98 MG GEL 200 ML",
+  "matchNorm": "mucaine mint 10/291/98 mg gel 200 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "MUCINAC SF ORANGE 600 MG TABLET 10",
+  "matchNorm": "mucinac sf orange 600 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "NEBICARD 5 MG TABLET 10",
+  "matchNorm": "nebicard 5 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "NEFROSAVE 150/500 MG TABLET 15",
+  "matchNorm": "nefrosave 150/500 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "NEUROBION FORTE TABLET 30",
+  "matchNorm": "neurobion forte tablet 30",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "NEXPRO 40 MG TABLET 15",
+  "matchNorm": "nexpro 40 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "NEXPRO RD 30/40 MG CAPSULE 10",
+  "matchNorm": "nexpro rd 30/40 mg capsule 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "NIKORAN 5 MG TABLET 20",
+  "matchNorm": "nikoran 5 mg tablet 20",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "NISE 100 MG TABLET 15",
+  "matchNorm": "nise 100 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "NITROCONTIN 2.6 MG TABLET CR 30",
+  "matchNorm": "nitrocontin 2.6 mg tablet cr 30",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "NOVOMIX 100 IU CARTRIDGE 3 ML",
+  "matchNorm": "novomix 100 iu cartridge 3 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "NOVOMIX 30/70 MG FLEXPEN 3 ML",
+  "matchNorm": "novomix 30/70 mg flexpen 3 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "NOVORAPID 100 IU CARTRIDGE 3 ML",
+  "matchNorm": "novorapid 100 iu cartridge 3 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "NUROKIND LC 500 MG/1.5MG/1500MCG TABLET 15",
+  "matchNorm": "nurokind lc 500 mg/1.5mg/1500mcg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "NUROKIND PLUS RF 1500 MCG CAPSULE 10",
+  "matchNorm": "nurokind plus rf 1500 mcg capsule 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "O2 200/500 MG TABLET 10",
+  "matchNorm": "o2 200/500 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "OMEZ 20 MG CAPSULE 20",
+  "matchNorm": "omez 20 mg capsule 20",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "OMEZ D 30/20 MG CAPSULE SR 15",
+  "matchNorm": "omez d 30/20 mg capsule sr 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "OMNIKACIN 500 MG INJECTION 2 ML",
+  "matchNorm": "omnikacin 500 mg injection 2 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ONDERO 5 MG TABLET 10",
+  "matchNorm": "ondero 5 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ONDERO MET 2.5/500 MG TABLET 10",
+  "matchNorm": "ondero met 2.5/500 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "OROFER FCM INJECTION 10 ML",
+  "matchNorm": "orofer fcm injection 10 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "OROFER-XT 100/1.5 MG TABLET 10",
+  "matchNorm": "orofer-xt 100/1.5 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "OROFER-XT PLUS 30 MG/500MCG/500MCG SUSPENSION 200 ML",
+  "matchNorm": "orofer-xt plus 30 mg/500mcg/500mcg suspension 200 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "OTRIVIN OXY FAST RELIEF 0.05 % SPRAY 10 ML",
+  "matchNorm": "otrivin oxy fast relief 0.05 % spray 10 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "OVRAL L 0.03/0.15 MG TABLET 21",
+  "matchNorm": "ovral l 0.03/0.15 mg tablet 21",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "OXRA 10 MG TABLET 14",
+  "matchNorm": "oxra 10 mg tablet 14",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "PAN 40 MG TABLET 15",
+  "matchNorm": "pan 40 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "PAN D 30/40 MG CAPSULE 15",
+  "matchNorm": "pan d 30/40 mg capsule 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "PANDERM PLUS PLUS 0.05/0.5/2 % CREAM 15 GM",
+  "matchNorm": "panderm plus plus 0.05/0.5/2 % cream 15 gm",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "PANTIN IV 40 MG INJECTION 10 ML",
+  "matchNorm": "pantin iv 40 mg injection 10 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "PANTOCID 40 MG TABLET 15",
+  "matchNorm": "pantocid 40 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "PANTOCID DSR 30/40 MG CAPSULE 15",
+  "matchNorm": "pantocid dsr 30/40 mg capsule 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "PANTODAC 40 MG TABLET 15",
+  "matchNorm": "pantodac 40 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "PANTODAC DSR 30/40 MG CAPSULE 15",
+  "matchNorm": "pantodac dsr 30/40 mg capsule 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "PANTOP 40 MG INJECTION 10 ML",
+  "matchNorm": "pantop 40 mg injection 10 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "PANTOP 40 MG TABLET 15",
+  "matchNorm": "pantop 40 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "PANTOP D 10/20 MG CAPSULE 10",
+  "matchNorm": "pantop d 10/20 mg capsule 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "PANTOP D SR 30/40 MG CAPSULE SR 10",
+  "matchNorm": "pantop d sr 30/40 mg capsule sr 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "PHENSEDYL COUGH LINCTUS 4/10 MG SYRUP 100 ML",
+  "matchNorm": "phensedyl cough linctus 4/10 mg syrup 100 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "PIPZO 4000/500 MG INJECTION 10 ML",
+  "matchNorm": "pipzo 4000/500 mg injection 10 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "PRACTIN 4 MG TABLET 10",
+  "matchNorm": "practin 4 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "PREGA NEWS KIT 6",
+  "matchNorm": "prega news kit 6",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "PREVENAR 13 INJECTION 0.5 ML",
+  "matchNorm": "prevenar 13 injection 0.5 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "R.B TONE SYRUP 200 ML",
+  "matchNorm": "r.b tone syrup 200 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "RABLET-D 30/20 MG CAPSULE 10",
+  "matchNorm": "rablet-d 30/20 mg capsule 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "RANTAC 150 MG TABLET 30",
+  "matchNorm": "rantac 150 mg tablet 30",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "RAZO 20 MG TABLET 15",
+  "matchNorm": "razo 20 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "RAZO D 30/20 MG TABLET 15",
+  "matchNorm": "razo d 30/20 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "REFRESH TEARS 0.5 % EYE DROPS 10 ML",
+  "matchNorm": "refresh tears 0.5 % eye drops 10 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "REJUNEX-CD3 TABLET 10",
+  "matchNorm": "rejunex-cd3 tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "REMDAC 100 MG INJECTION 1",
+  "matchNorm": "remdac 100 mg injection 1",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ROSUVAS 10 MG TABLET 15",
+  "matchNorm": "rosuvas 10 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ROSUVAS 20 MG TABLET 10",
+  "matchNorm": "rosuvas 20 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "RYZODEG 2.56/1.05 MG PENFILL 3 ML",
+  "matchNorm": "ryzodeg 2.56/1.05 mg penfill 3 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "SARIDON 250/50/150 MG TABLET 10",
+  "matchNorm": "saridon 250/50/150 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "SEROFLO 50/250 MCG ROTACAP 30",
+  "matchNorm": "seroflo 50/250 mcg rotacap 30",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "SHELCAL 500 MG/250IU TABLET 15",
+  "matchNorm": "shelcal 500 mg/250iu tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "SHELCAL XT 500 MG/2000IU/1500MCG/1MG/20MG TABLET 15",
+  "matchNorm": "shelcal xt 500 mg/2000iu/1500mcg/1mg/20mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "SILODAL 8 MG TABLET 10",
+  "matchNorm": "silodal 8 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "SILODAL D 8/0.5 MG TABLET 10",
+  "matchNorm": "silodal d 8/0.5 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "SINAREST 125/5/1 MG SYRUP 60 ML",
+  "matchNorm": "sinarest 125/5/1 mg syrup 60 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "SINAREST NEW 500/10/2 MG TABLET 10",
+  "matchNorm": "sinarest new 500/10/2 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "SINAREST NEW 500/10/2 MG TABLET 15",
+  "matchNorm": "sinarest new 500/10/2 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "SKINLITE 2/0.1/0.025 % CREAM 25 GM",
+  "matchNorm": "skinlite 2/0.1/0.025 % cream 25 gm",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "SOMPRAZ D 30/40 MG CAPSULE 15",
+  "matchNorm": "sompraz d 30/40 mg capsule 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "SPASMO PROXYVON PLUS 10/325/50 MG CAPSULE 8",
+  "matchNorm": "spasmo proxyvon plus 10/325/50 mg capsule 8",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "SPEGRA 50/200/25 MG TABLET 30",
+  "matchNorm": "spegra 50/200/25 mg tablet 30",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "STAMLO 5 MG TABLET 30",
+  "matchNorm": "stamlo 5 mg tablet 30",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "STAMLO BETA 50/5 MG TABLET 15",
+  "matchNorm": "stamlo beta 50/5 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "STEMETIL 5 MG TABLET MD 15",
+  "matchNorm": "stemetil 5 mg tablet md 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "SUCRAFIL O 1000/20 MG GEL 200 ML",
+  "matchNorm": "sucrafil o 1000/20 mg gel 200 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "SUMO 100/325 MG TABLET 15",
+  "matchNorm": "sumo 100/325 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "SUMO L IV 1000 MG INFUSION 100 ML",
+  "matchNorm": "sumo l iv 1000 mg infusion 100 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "SUPRADYN TABLET 15",
+  "matchNorm": "supradyn tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "SYNFLORIX INJECTION 1",
+  "matchNorm": "synflorix injection 1",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "T BACT 2 % OINTMENT 15 GM",
+  "matchNorm": "t bact 2 % ointment 15 gm",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "T BACT 2 % OINTMENT 5 GM",
+  "matchNorm": "t bact 2 % ointment 5 gm",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "TARGOCID 400 MG INJECTION 1 ML",
+  "matchNorm": "targocid 400 mg injection 1 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "TAXIM O 200 MG TABLET 10",
+  "matchNorm": "taxim o 200 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "TAZOMAC 4000/500 MG INJECTION 2 ML",
+  "matchNorm": "tazomac 4000/500 mg injection 2 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "TELEKAST-L 10/5 MG TABLET 15",
+  "matchNorm": "telekast-l 10/5 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "TELMA 40 MG TABLET 30",
+  "matchNorm": "telma 40 mg tablet 30",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "TELMA AM 40/5 MG TABLET 15",
+  "matchNorm": "telma am 40/5 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "TELMA H 40/12.5 MG TABLET 15",
+  "matchNorm": "telma h 40/12.5 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "TELMIKIND 40 MG TABLET 10",
+  "matchNorm": "telmikind 40 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "TELMIKIND AM 40/5 MG TABLET 10",
+  "matchNorm": "telmikind am 40/5 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "TELMIKIND H 40/12.5 MG TABLET 10",
+  "matchNorm": "telmikind h 40/12.5 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "THROMBOPHOB OINTMENT 20 GM",
+  "matchNorm": "thrombophob ointment 20 gm",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "THYRONORM 100 MCG TABLET 120",
+  "matchNorm": "thyronorm 100 mcg tablet 120",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "THYRONORM 25 MCG TABLET 120",
+  "matchNorm": "thyronorm 25 mcg tablet 120",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "THYRONORM 50 MCG TABLET 120",
+  "matchNorm": "thyronorm 50 mcg tablet 120",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "TOSSEX NEW 4/10 MG SYRUP 100 ML",
+  "matchNorm": "tossex new 4/10 mg syrup 100 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "TRAJENTA 5 MG TABLET 10",
+  "matchNorm": "trajenta 5 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "TRESIBA FLEXTOUCH 100 IU DISPOSABLE PEN 3 ML",
+  "matchNorm": "tresiba flextouch 100 iu disposable pen 3 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "TUSQ DX 5/2/15 MG SYRUP 100 ML",
+  "matchNorm": "tusq dx 5/2/15 mg syrup 100 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "UDILIV 150 MG TABLET 15",
+  "matchNorm": "udiliv 150 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "UDILIV 300 MG TABLET 15",
+  "matchNorm": "udiliv 300 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ULTRACET 325/37.5 MG TABLET 15",
+  "matchNorm": "ultracet 325/37.5 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "UNIENZYME TABLET 15",
+  "matchNorm": "unienzyme tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "UNWANTED 72 1.5 MG TABLET 1",
+  "matchNorm": "unwanted 72 1.5 mg tablet 1",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "UNWANTED KIT 200 MG/200MCG TABLET 1",
+  "matchNorm": "unwanted kit 200 mg/200mcg tablet 1",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "UPRISE D3 60000 IU CAPSULE 8",
+  "matchNorm": "uprise d3 60000 iu capsule 8",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "URIMAX 0.4 MG CAPSULE 20",
+  "matchNorm": "urimax 0.4 mg capsule 20",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "URIMAX D 0.4/0.5 MG TABLET 15",
+  "matchNorm": "urimax d 0.4/0.5 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "URSOCOL 300 MG TABLET 15",
+  "matchNorm": "ursocol 300 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "VARILRIX INJECTION 0.5 ML",
+  "matchNorm": "varilrix injection 0.5 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "VELOZ D 30/20 MG CAPSULE SR 10",
+  "matchNorm": "veloz d 30/20 mg capsule sr 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "VELPANAT 400/100 MG TABLET 28",
+  "matchNorm": "velpanat 400/100 mg tablet 28",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "VERTIN 16 MG TABLET 15",
+  "matchNorm": "vertin 16 mg tablet 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "VOLINI 1.16 % SPRAY 40 GM",
+  "matchNorm": "volini 1.16 % spray 40 gm",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "VORIER 200 MG TABLET 4",
+  "matchNorm": "vorier 200 mg tablet 4",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "VOVERAN SR 100 MG TABLET SR 15",
+  "matchNorm": "voveran sr 100 mg tablet sr 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "VYMADA 24/26 MG TABLET 14",
+  "matchNorm": "vymada 24/26 mg tablet 14",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "WYSOLONE 10 MG TABLET DT 15",
+  "matchNorm": "wysolone 10 mg tablet dt 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "WYSOLONE 5 MG TABLET DT 15",
+  "matchNorm": "wysolone 5 mg tablet dt 15",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "XONE 1000 MG INJECTION 5 ML",
+  "matchNorm": "xone 1000 mg injection 5 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ZAVICEFTA 2000/500 MG VIAL 10 ML",
+  "matchNorm": "zavicefta 2000/500 mg vial 10 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ZEDEX 4/5/50 MG SYRUP 100 ML",
+  "matchNorm": "zedex 4/5/50 mg syrup 100 ml",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ZERODOL P 100/325 MG TABLET 10",
+  "matchNorm": "zerodol p 100/325 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ZERODOL SP 100/325/15 MG TABLET 10",
+  "matchNorm": "zerodol sp 100/325/15 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ZIFI 200 MG TABLET 10",
+  "matchNorm": "zifi 200 mg tablet 10",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ZORYL-M 2/500 MG TABLET 20",
+  "matchNorm": "zoryl-m 2/500 mg tablet 20",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "H2",
+  "matchType": "brand",
+  "matchValue": "ZOSTUM 1000/500 MG INJECTION 1",
+  "matchNorm": "zostum 1000/500 mg injection 1",
+  "notes": "Rule 96(6)-(7) QR/barcode tracking obligation."
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Alfentanil",
+  "matchNorm": "alfentanil",
+  "isNarcotic": true,
+  "controlledClass": "narcotic",
+  "vaultControlled": true,
+  "narcoticClass": "opioid"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Alprazolam",
+  "matchNorm": "alprazolam",
+  "isNarcotic": false,
+  "controlledClass": "psychotropic",
+  "vaultControlled": false,
+  "narcoticClass": "benzodiazepine"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Amobarbital",
+  "matchNorm": "amobarbital",
+  "isNarcotic": false,
+  "controlledClass": "psychotropic",
+  "vaultControlled": true,
+  "narcoticClass": "barbiturate"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Bromazepam",
+  "matchNorm": "bromazepam",
+  "isNarcotic": false,
+  "controlledClass": "psychotropic",
+  "vaultControlled": false,
+  "narcoticClass": "benzodiazepine"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Brotizolam",
+  "matchNorm": "brotizolam",
+  "isNarcotic": false,
+  "controlledClass": "psychotropic",
+  "vaultControlled": false,
+  "narcoticClass": "benzodiazepine"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Buprenorphine",
+  "matchNorm": "buprenorphine",
+  "isNarcotic": false,
+  "controlledClass": "psychotropic",
+  "vaultControlled": false,
+  "narcoticClass": "other"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Carisoprodol",
+  "matchNorm": "carisoprodol",
+  "isNarcotic": false,
+  "controlledClass": "psychotropic",
+  "vaultControlled": false,
+  "narcoticClass": "other"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Chlordiazepoxide",
+  "matchNorm": "chlordiazepoxide",
+  "isNarcotic": false,
+  "controlledClass": "psychotropic",
+  "vaultControlled": false,
+  "narcoticClass": "benzodiazepine"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Clobazam",
+  "matchNorm": "clobazam",
+  "isNarcotic": false,
+  "controlledClass": "psychotropic",
+  "vaultControlled": false,
+  "narcoticClass": "benzodiazepine"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Clonazepam",
+  "matchNorm": "clonazepam",
+  "isNarcotic": false,
+  "controlledClass": "psychotropic",
+  "vaultControlled": false,
+  "narcoticClass": "benzodiazepine"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Clorazepate",
+  "matchNorm": "clorazepate",
+  "isNarcotic": false,
+  "controlledClass": "psychotropic",
+  "vaultControlled": false,
+  "narcoticClass": "benzodiazepine"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Codeine",
+  "matchNorm": "codeine",
+  "isNarcotic": true,
+  "controlledClass": "narcotic",
+  "vaultControlled": true,
+  "narcoticClass": "opioid",
+  "exemptIfCombination": true,
+  "maxPerUnitMg": 100,
+  "maxConcentrationPercent": 2.5,
+  "fallbackSchedule": "H1",
+  "notes": "NDPS Rules concentration exemption: combination preparations within 100 mg/unit and 2.5% in liquids are dispensed as Schedule H1."
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Diazepam",
+  "matchNorm": "diazepam",
+  "isNarcotic": false,
+  "controlledClass": "psychotropic",
+  "vaultControlled": false,
+  "narcoticClass": "benzodiazepine"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Diphenoxylate",
+  "matchNorm": "diphenoxylate",
+  "isNarcotic": false,
+  "controlledClass": "psychotropic",
+  "vaultControlled": false,
+  "narcoticClass": "other"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Ethylmorphine",
+  "matchNorm": "ethylmorphine",
+  "isNarcotic": true,
+  "controlledClass": "narcotic",
+  "vaultControlled": true,
+  "narcoticClass": "opioid"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Fentanyl",
+  "matchNorm": "fentanyl",
+  "isNarcotic": true,
+  "controlledClass": "narcotic",
+  "vaultControlled": true,
+  "narcoticClass": "opioid"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Flunitrazepam",
+  "matchNorm": "flunitrazepam",
+  "isNarcotic": false,
+  "controlledClass": "psychotropic",
+  "vaultControlled": false,
+  "narcoticClass": "benzodiazepine"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Flurazepam",
+  "matchNorm": "flurazepam",
+  "isNarcotic": false,
+  "controlledClass": "psychotropic",
+  "vaultControlled": false,
+  "narcoticClass": "benzodiazepine"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Hexahydrocannabinol",
+  "matchNorm": "hexahydrocannabinol",
+  "isNarcotic": false,
+  "controlledClass": "psychotropic",
+  "vaultControlled": false,
+  "narcoticClass": "other",
+  "aliases": [
+   "hhc"
+  ]
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Hydrocodone",
+  "matchNorm": "hydrocodone",
+  "isNarcotic": true,
+  "controlledClass": "narcotic",
+  "vaultControlled": true,
+  "narcoticClass": "opioid"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Hydromorphone",
+  "matchNorm": "hydromorphone",
+  "isNarcotic": true,
+  "controlledClass": "narcotic",
+  "vaultControlled": true,
+  "narcoticClass": "opioid"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Ketamine",
+  "matchNorm": "ketamine",
+  "isNarcotic": false,
+  "controlledClass": "psychotropic",
+  "vaultControlled": true,
+  "narcoticClass": "dissociative"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Lorazepam",
+  "matchNorm": "lorazepam",
+  "isNarcotic": false,
+  "controlledClass": "psychotropic",
+  "vaultControlled": false,
+  "narcoticClass": "benzodiazepine"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Meperidine",
+  "matchNorm": "meperidine",
+  "isNarcotic": true,
+  "controlledClass": "narcotic",
+  "vaultControlled": true,
+  "narcoticClass": "opioid",
+  "aliases": [
+   "pethidine"
+  ]
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Methadone",
+  "matchNorm": "methadone",
+  "isNarcotic": true,
+  "controlledClass": "narcotic",
+  "vaultControlled": true,
+  "narcoticClass": "opioid"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Methylphenidate",
+  "matchNorm": "methylphenidate",
+  "isNarcotic": false,
+  "controlledClass": "psychotropic",
+  "vaultControlled": true,
+  "narcoticClass": "cns_stimulant"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Midazolam",
+  "matchNorm": "midazolam",
+  "isNarcotic": false,
+  "controlledClass": "psychotropic",
+  "vaultControlled": false,
+  "narcoticClass": "benzodiazepine"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Morphine",
+  "matchNorm": "morphine",
+  "isNarcotic": true,
+  "controlledClass": "narcotic",
+  "vaultControlled": true,
+  "narcoticClass": "opioid"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Nitrazepam",
+  "matchNorm": "nitrazepam",
+  "isNarcotic": false,
+  "controlledClass": "psychotropic",
+  "vaultControlled": false,
+  "narcoticClass": "benzodiazepine"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Oxazepam",
+  "matchNorm": "oxazepam",
+  "isNarcotic": false,
+  "controlledClass": "psychotropic",
+  "vaultControlled": false,
+  "narcoticClass": "benzodiazepine"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Oxycodone",
+  "matchNorm": "oxycodone",
+  "isNarcotic": true,
+  "controlledClass": "narcotic",
+  "vaultControlled": true,
+  "narcoticClass": "opioid"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Pentazocine",
+  "matchNorm": "pentazocine",
+  "isNarcotic": false,
+  "controlledClass": "psychotropic",
+  "vaultControlled": false,
+  "narcoticClass": "other"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Pentobarbital",
+  "matchNorm": "pentobarbital",
+  "isNarcotic": false,
+  "controlledClass": "psychotropic",
+  "vaultControlled": true,
+  "narcoticClass": "barbiturate"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Pethidine",
+  "matchNorm": "pethidine",
+  "isNarcotic": true,
+  "controlledClass": "narcotic",
+  "vaultControlled": true,
+  "narcoticClass": "opioid",
+  "aliases": [
+   "meperidine"
+  ]
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Phenobarbital",
+  "matchNorm": "phenobarbital",
+  "isNarcotic": false,
+  "controlledClass": "psychotropic",
+  "vaultControlled": true,
+  "narcoticClass": "barbiturate",
+  "aliases": [
+   "phenobarbitone"
+  ]
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Phenobarbitone",
+  "matchNorm": "phenobarbitone",
+  "isNarcotic": false,
+  "controlledClass": "psychotropic",
+  "vaultControlled": true,
+  "narcoticClass": "barbiturate",
+  "aliases": [
+   "phenobarbital"
+  ]
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Remifentanil",
+  "matchNorm": "remifentanil",
+  "isNarcotic": true,
+  "controlledClass": "narcotic",
+  "vaultControlled": true,
+  "narcoticClass": "opioid"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Sufentanil",
+  "matchNorm": "sufentanil",
+  "isNarcotic": true,
+  "controlledClass": "narcotic",
+  "vaultControlled": true,
+  "narcoticClass": "opioid"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Tapentadol",
+  "matchNorm": "tapentadol",
+  "isNarcotic": false,
+  "controlledClass": "psychotropic",
+  "vaultControlled": false,
+  "narcoticClass": "other"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Temazepam",
+  "matchNorm": "temazepam",
+  "isNarcotic": false,
+  "controlledClass": "psychotropic",
+  "vaultControlled": false,
+  "narcoticClass": "benzodiazepine"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Tramadol",
+  "matchNorm": "tramadol",
+  "isNarcotic": false,
+  "controlledClass": "psychotropic",
+  "vaultControlled": false,
+  "narcoticClass": "other"
+ },
+ {
+  "scheduleCode": "NDPS",
+  "matchType": "salt",
+  "matchValue": "Zolpidem",
+  "matchNorm": "zolpidem",
+  "isNarcotic": false,
+  "controlledClass": "psychotropic",
+  "vaultControlled": false,
+  "narcoticClass": "other"
+ }
+]
