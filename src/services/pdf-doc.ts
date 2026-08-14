@@ -15,6 +15,7 @@ import {
   tableRowHeight,
   type PdfTemplate,
 } from './pdf-template';
+import { registerEmbeddedFonts } from './pdf-fonts';
 
 // ---------------------------------------------------------------------------
 // The one way to make a PDF in this app.
@@ -100,6 +101,11 @@ export interface CreateDocOptions {
   filename?: string;
   /** `attachment` forces a download instead of an inline view. */
   disposition?: 'inline' | 'attachment';
+  /**
+   * Skip the before-body blocks — for a generator that needs something of its
+   * own above them and so places them itself with {@link drawCustomBlocks}.
+   */
+  skipBlocks?: boolean;
 }
 
 export interface BrandedDocument {
@@ -129,6 +135,13 @@ export function createBrandedDocument(opts: CreateDocOptions): BrandedDocument {
     pdf.pipe(opts.res);
   }
 
+  // Swap in the embedded faces for the family the template asked for. Done here,
+  // on the theme, so every generator and the shared header/footer pick them up
+  // without knowing about it — and so an install without the font files still
+  // produces a document, just without a rupee sign.
+  const embedded = registerEmbeddedFonts(pdf, template.typography.fontFamily);
+  if (embedded) theme.font = embedded;
+
   // The body's default text style. Generators that set their own font per call
   // still get the right family because fontNames() resolved it.
   pdf.font(theme.font.regular).fontSize(theme.size.body).fillColor(theme.ink);
@@ -143,7 +156,7 @@ export function createBrandedDocument(opts: CreateDocOptions): BrandedDocument {
     theme,
   });
 
-  drawCustomBlocks(pdf, theme, 'before_body');
+  if (!opts.skipBlocks) drawCustomBlocks(pdf, theme, 'before_body');
 
   return { pdf, theme, template };
 }
@@ -200,6 +213,21 @@ export interface TableColumn {
 }
 
 /**
+ * A row of plain cells, or one with a kind:
+ *
+ *  - `group` — a heading that spans the table, tinted and bold, for an itemised
+ *    list broken into heads (a bill's charge categories).
+ *  - `total` — the subtotal under such a group: bold, no tint.
+ *
+ * `zebra` overrides the automatic striping, so a caller that groups its rows can
+ * stripe within each group instead of down the whole table.
+ */
+export type TableRow = string[] | { cells: string[]; kind?: 'group' | 'total'; zebra?: boolean };
+
+const rowCells = (r: TableRow): string[] => (Array.isArray(r) ? r : r.cells);
+const rowKind = (r: TableRow) => (Array.isArray(r) ? undefined : r.kind);
+
+/**
  * A table styled by the document's template — header fill, zebra, grid lines and
  * row density all come from there, so one setting restyles every table in the
  * app. Repeats the header row after a page break.
@@ -208,7 +236,7 @@ export function drawTable(
   pdf: PDFKit.PDFDocument,
   theme: PdfTheme,
   columns: TableColumn[],
-  rows: string[][],
+  rows: TableRow[],
 ): void {
   const t = theme.template.table;
   const totalShare = columns.reduce((n, c) => n + c.width, 0) || 1;
@@ -253,16 +281,46 @@ export function drawTable(
   rows.forEach((r, idx) => {
     if (ensureSpace(pdf, theme, rowH + 4)) headerRow();
     const y = pdf.y;
-    if (t.zebraRows && idx % 2 === 1) {
+    const cells = rowCells(r);
+    const kind = rowKind(r);
+    const striped = Array.isArray(r)
+      ? t.zebraRows && idx % 2 === 1
+      : t.zebraRows && (r.zebra ?? false);
+    // A group heading carries the tint whether or not striping is on — it is
+    // what separates one head of charges from the next.
+    if (kind === 'group' || striped) {
       pdf.rect(left, y, theme.contentWidth, rowH).fill(theme.soft);
+    }
+    const bold = kind === 'group' || kind === 'total';
+    if (kind === 'group') {
+      // Spans the table: the heading reads across, not squeezed into column one.
+      pdf
+        .font(theme.font.bold)
+        .fontSize(theme.size.small)
+        .fillColor(theme.ink)
+        .text(cells[0] ?? '', left + 4, y + (rowH - theme.size.small) / 2 - 0.5, {
+          width: theme.contentWidth - 8,
+          lineBreak: false,
+          ellipsis: true,
+        });
+      pdf.y = y + rowH;
+      if (t.gridLines === 'horizontal' || t.gridLines === 'all') {
+        pdf
+          .moveTo(left, pdf.y)
+          .lineTo(left + theme.contentWidth, pdf.y)
+          .strokeColor(theme.hairline)
+          .lineWidth(0.4)
+          .stroke();
+      }
+      return;
     }
     let x = left;
     columns.forEach((c, i) => {
       pdf
-        .font(theme.font.regular)
+        .font(bold ? theme.font.bold : theme.font.regular)
         .fontSize(theme.size.small)
         .fillColor(theme.ink)
-        .text(r[i] ?? '', x + 4, y + (rowH - theme.size.small) / 2 - 0.5, {
+        .text(cells[i] ?? '', x + 4, y + (rowH - theme.size.small) / 2 - 0.5, {
           width: widths[i] - 8,
           align: c.align ?? 'left',
           lineBreak: false,
@@ -346,7 +404,7 @@ export function ensureSpace(pdf: PDFKit.PDFDocument, theme: PdfTheme, needed: nu
 
 // ── Template-driven furniture ─────────────────────────────────────────────
 
-function drawCustomBlocks(
+export function drawCustomBlocks(
   pdf: PDFKit.PDFDocument,
   theme: PdfTheme,
   position: 'before_body' | 'after_body',

@@ -21,6 +21,10 @@ COPY --from=build /app/dist ./dist
 COPY --from=build /app/dist-seed ./dist-seed
 COPY --from=build /app/node_modules/.prisma ./node_modules/.prisma
 COPY prisma ./prisma
+# Document fonts. tsc only emits the .ts it compiles, so these are copied
+# straight in — without them every PDF falls back to PDFKit's built-ins, which
+# have no glyph for the rupee sign and print amounts with a hole in them.
+COPY assets ./assets
 COPY package.json ./
 RUN mkdir -p /app/uploads
 VOLUME ["/app/uploads"]
