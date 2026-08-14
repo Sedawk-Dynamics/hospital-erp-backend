@@ -29,6 +29,7 @@
     "db:seed:imaging-modalities": "tsx src/seeds/imaging-modalities.ts",
     "db:seed:hsn-gst": "tsx src/seeds/hsn-gst-rates.ts",
     "db:seed:drug-schedules": "tsx src/seeds/drug-schedule-rules.ts",
+    "db:classify-schedules": "tsx prisma/scripts/classify-drug-schedules.ts",
     "db:seed:demo-gtins": "tsx src/seeds/demo-drug-gtins.ts",
     "db:seed:inventory-to-formulary": "tsx src/seeds/inventory-to-formulary.ts",
     "db:seed:icd": "tsx src/seeds/icd-codes.ts",

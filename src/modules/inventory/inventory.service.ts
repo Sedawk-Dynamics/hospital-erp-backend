@@ -605,6 +605,12 @@ export interface UnifiedStockRow {
   // resolve to this drug — both shown in the list and included in search.
   composition: string | null;
   mappingNames: string | null;
+  // Drug schedule (Drugs & Cosmetics Rules 1945) and the NDPS overlay. Null for
+  // non-medicine stock. Advisory labelling — nothing gates a sale on it yet.
+  schedule: string | null;
+  controlledClass: string | null;
+  vaultControlled: boolean;
+  scheduleReason: string | null;
 }
 
 /**
@@ -651,6 +657,11 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
         -- Generic items have no drug composition / vendor-name mappings.
         NULL::text AS composition,
         NULL::text AS mapping_names,
+        -- Only medicines carry a drug schedule.
+        NULL::text AS schedule,
+        NULL::text AS controlled_class,
+        false AS vault_controlled,
+        NULL::text AS schedule_reason,
         ii.created_at AS created_at
       FROM inventory_items ii
       WHERE ii.tenant_id = ${tenantId}
@@ -685,6 +696,13 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
         -- supplier prints on the invoice.
         df.generic_name AS composition,
         mn.mapping_names AS mapping_names,
+        -- Drug schedule resolved by the classifier. Two separate axes: the
+        -- schedule is what the counter must collect, controlled_class is which
+        -- statutory register the drug belongs in. Advisory labelling only.
+        df.schedule AS schedule,
+        df.controlled_class AS controlled_class,
+        df.vault_controlled AS vault_controlled,
+        df.schedule_reason AS schedule_reason,
         df.created_at AS created_at
       FROM drug_formulary df
       LEFT JOIN (
@@ -777,6 +795,10 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
     is_recalled: boolean;
     composition: string | null;
     mapping_names: string | null;
+    schedule: string | null;
+    controlled_class: string | null;
+    vault_controlled: boolean | null;
+    schedule_reason: string | null;
   };
   const mapRow = (r: UnifiedRaw): UnifiedStockRow => ({
     kind: r.kind as 'item' | 'drug',
@@ -795,6 +817,10 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
     isRecalled: r.is_recalled,
     composition: r.composition,
     mappingNames: r.mapping_names,
+    schedule: r.schedule,
+    controlledClass: r.controlled_class,
+    vaultControlled: Boolean(r.vault_controlled),
+    scheduleReason: r.schedule_reason,
   });
 
   // On a search we fetch ALL matching rows (the hospital's own stock — a bounded

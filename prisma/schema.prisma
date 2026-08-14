@@ -4048,7 +4048,32 @@ model DrugMaster {
   packSize         Int?        @map("pack_size")
   mrp              Decimal?    @db.Decimal(10, 2)
   isDiscontinued   Boolean     @default(false) @map("is_discontinued")
+  // LEGACY, DELIBERATELY LEFT NULL. checkSaleCompliance() already reads this
+  // column and is already wired into createPharmacySale, so populating it would
+  // silently switch counter enforcement on. The classifier writes
+  // `scheduleResolved` instead; the compliance gate is repointed at that field
+  // in a later phase, behind a per-hospital enforcement setting.
   schedule         String?     @db.VarChar(10)
+  // ── Resolved by the schedule classifier (see drug-schedule.classifier.ts) ──
+  // 'X' | 'H1' | 'H' | 'G' | 'H2' | 'OTC'. Null = not yet classified.
+  scheduleResolved String?     @map("schedule_resolved") @db.VarChar(10)
+  // Human-readable justification ("matched Schedule H1 salt Tramadol"), kept so
+  // a pharmacist or an inspector can see WHY a drug carries its schedule.
+  scheduleReason   String?     @map("schedule_reason")
+  // NDPS overlay, independent of scheduleResolved: 'narcotic' | 'psychotropic'.
+  controlledClass  String?     @map("controlled_class") @db.VarChar(20)
+  // Physical safe custody + witness co-sign. False for benzodiazepines,
+  // tramadol and zolpidem, which dispense over the counter under their own
+  // schedule.
+  vaultControlled  Boolean     @default(false) @map("vault_controlled")
+  // Schedule H2 brand — Rule 96(6)-(7) QR/barcode obligation, not an Rx gate.
+  requiresQrScan   Boolean     @default(false) @map("requires_qr_scan")
+  // Salts parsed out of genericName: [{ raw, norm, strengthValue, strengthUnit,
+  // perVolumeMl }]. Cached so the backfill and the reports do not re-parse.
+  saltsJson        Json?       @map("salts_json")
+  classifiedAt     DateTime?   @map("classified_at")
+  // Bumped when the classifier's logic changes, so a re-run can find stale rows.
+  classifierVersion Int?       @map("classifier_version")
   // Product Resolution Engine identity + compliance fields. GTIN-13 is the
   // consumer unit (a single strip/bottle); casePackGtin (GTIN-14) is the outer
   // wholesale case, and unitsPerCase translates a scanned case into N consumer
@@ -4082,6 +4107,7 @@ model DrugMaster {
   formularyItems DrugFormulary[]
 
   @@index([name])
+  @@index([scheduleResolved])
   @@map("drug_master")
 }
 
@@ -4399,7 +4425,29 @@ model DrugFormulary {
   isLifeSaving      Boolean     @default(false) @map("is_life_saving")
   // NDPS Essential Narcotic Drug — when true this drug is governed by the
   // narcotic accounting workflow (Form 3C/3E/3H, vault custody, dual-auth).
+  // Five dispensing paths throw on this flag, so it is NOT written by the
+  // classifier: it stays hospital-controlled until the inline controlled-drug
+  // flow lands. `controlledClass` + `vaultControlled` below carry the
+  // classifier's opinion without changing any existing behaviour.
   isNarcotic        Boolean     @default(false) @map("is_narcotic")
+  // ── Resolved by the schedule classifier ──
+  // 'X' | 'H1' | 'H' | 'G' | 'H2' | 'OTC'. Null = not yet classified.
+  schedule          String?     @db.VarChar(10)
+  // 'auto'      — the classifier decided it from this drug's own composition
+  // 'inherited' — copied from the linked DrugMaster catalog row
+  // 'manual'    — a pharmacy admin overrode it; a re-run must never overwrite it
+  scheduleSource    String?     @map("schedule_source") @db.VarChar(20)
+  scheduleReason    String?     @map("schedule_reason")
+  scheduleOverriddenById String? @map("schedule_overridden_by_id")
+  scheduleOverriddenAt   DateTime? @map("schedule_overridden_at")
+  // NDPS overlay: 'narcotic' | 'psychotropic'. Drives which statutory register
+  // and report the drug appears in — separate from what the counter collects.
+  controlledClass   String?     @map("controlled_class") @db.VarChar(20)
+  vaultControlled   Boolean     @default(false) @map("vault_controlled")
+  requiresQrScan    Boolean     @default(false) @map("requires_qr_scan")
+  saltsJson         Json?       @map("salts_json")
+  classifiedAt      DateTime?   @map("classified_at")
+  classifierVersion Int?        @map("classifier_version")
   // TPA/cashless reimbursability. Most drugs are reimbursable; disposables and
   // certain consumables (syringes, gloves) are billed to the patient out-of-
   // pocket. Drives the Reimbursable vs Non-Reimbursable split on the IP summary.
@@ -4435,6 +4483,9 @@ model DrugFormulary {
   // writes normalise a blank to NULL so empty fields never collide.
   @@unique([tenantId, gtin])
   @@unique([tenantId, casePackGtin])
+  // Drive the catalog schedule filter and the controlled-drug reports.
+  @@index([tenantId, schedule])
+  @@index([tenantId, controlledClass])
   @@map("drug_formulary")
 }
 

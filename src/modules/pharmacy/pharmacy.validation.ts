@@ -172,6 +172,25 @@ export const getFormularyQuerySchema = z.object({
       .optional(),
     // Filter by live stock derived from available batches.
     stockStatus: z.enum(['in', 'out']).optional(),
+    // Schedule filters. These MUST be declared here — validate() replaces
+    // req.query with the parsed object, so an undeclared filter is silently
+    // dropped and the list would quietly ignore it.
+    schedule: z.enum(['X', 'H1', 'H', 'G', 'H2', 'OTC']).optional(),
+    // Drugs the NDPS list names, regardless of their schedule.
+    controlled: z
+      .string()
+      .transform((val) => val === 'true')
+      .optional(),
+  }),
+});
+
+// A pharmacy admin correcting the classifier. Recorded as scheduleSource
+// 'manual' so no re-run of the backfill can undo it.
+export const overrideScheduleSchema = z.object({
+  params: z.object({ id: z.string().uuid('Invalid drug ID') }),
+  body: z.object({
+    schedule: z.enum(['X', 'H1', 'H', 'G', 'H2', 'OTC']),
+    reason: z.string().max(500).optional().nullable(),
   }),
 });
 

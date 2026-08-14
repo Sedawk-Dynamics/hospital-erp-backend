@@ -20,6 +20,7 @@ import {
   collectHoldSchema,
   holdsQuerySchema,
   getFormularyQuerySchema,
+  overrideScheduleSchema,
   formularyIdParamSchema,
   updateFormularySchema,
   importFormularySchema,
@@ -89,6 +90,9 @@ pharmacyRoutes.get('/formulary/match', authenticate, requirePermission('pharmacy
 pharmacyRoutes.post('/formulary/:id/merge', authenticate, requirePermission('pharmacy', 'update'), validate(mergeFormularySchema), controller.mergeFormularyItems);
 // G8: alternative brands sharing this drug's composition. Before '/formulary/:id'.
 pharmacyRoutes.get('/formulary/:id/alternatives', authenticate, requirePermission('pharmacy', 'read'), validate(formularyIdParamSchema), controller.getFormularyAlternatives);
+// Correct the classifier's schedule for one drug. Literal subpath, so it is
+// declared before '/formulary/:id' or "schedule" would be captured as an :id.
+pharmacyRoutes.patch('/formulary/:id/schedule', authenticate, requirePermission('pharmacy', 'update'), validate(overrideScheduleSchema), controller.overrideFormularySchedule);
 // Import from the platform drug catalog. Declared before '/formulary/:id' so
 // "import" isn't captured as an :id.
 pharmacyRoutes.post('/formulary/import', authenticate, requirePermission('pharmacy', 'create'), validate(importFormularySchema), controller.importFormularyItem);

@@ -7,6 +7,10 @@ import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
 import { resolvePackSize, inferLooseUnitLabel } from '../drug-master/drug-master.dataset';
 import { resolveHsnGst, getHsnGstRows, matchHsnGst } from '../drug-master/drug-master.service';
+import {
+  classifyFormularyItem,
+  inheritedScheduleFields,
+} from '../drug-master/drug-schedule.service';
 import { getInventorySettingsSafe } from '../inventory/inventory.settings.service';
 import { notifyInventoryRecipients, hasOpenInventoryAlert } from '../inventory/inventory.notify';
 import {
@@ -489,7 +493,16 @@ export async function createFormularyItem(
   if (composition !== null) {
     await prisma.$executeRaw`UPDATE drug_formulary SET composition = ${composition} WHERE id = ${formularyItem.id}`;
   }
-  return { status: 'created' as const, item: { ...formularyItem, composition } };
+
+  // Resolve the drug's schedule (H/H1/X/G/H2) from its composition. Advisory
+  // labelling only — nothing reads it to gate a sale yet — and it can never fail
+  // the create: classifyFormularyItem swallows and logs its own errors.
+  const schedulePatch = await classifyFormularyItem(formularyItem.id);
+
+  return {
+    status: 'created' as const,
+    item: { ...formularyItem, composition, ...(schedulePatch ?? {}) },
+  };
 }
 
 /**
@@ -1373,6 +1386,10 @@ export async function importFormularyItem(
       // import price is taken as-is (already per unit). Hospital can edit later.
       price: data.price ?? perBaseUnitPrice(master.mrp, packSize),
       isActive: true,
+      // Carry the catalog's resolved schedule straight into the insert, so an
+      // imported drug is labelled from the moment it exists. Empty object when
+      // the catalog row has not been classified yet.
+      ...inheritedScheduleFields(master),
     },
   });
 
@@ -1432,6 +1449,9 @@ export async function importFormularyItemsBulk(
           // Per BASE UNIT (MRP ÷ packSize) — see importFormularyItem.
           price: perBaseUnitPrice(m.mrp, packSize),
           isActive: true,
+          // Carried in the same insert rather than a second pass, so a bulk
+          // import of hundreds of drugs costs no extra queries.
+          ...inheritedScheduleFields(m),
         };
       }),
     });
@@ -1596,6 +1616,13 @@ export async function getFormulary(tenantId: string, query: GetFormularyQuery, _
   if (query.isActive !== undefined) where.isActive = query.isActive;
   // NDPS narcotic-only filter (feeds the narcotic drug pickers server-side).
   if ((query as any).isNarcotic !== undefined) where.isNarcotic = (query as any).isNarcotic;
+  // Schedule filters. `schedule` takes one code (H1, X, …); `controlled` narrows
+  // to drugs the NDPS list names, whatever their schedule — the two are separate
+  // axes, so a Schedule H1 tramadol answers to both.
+  if ((query as any).schedule) where.schedule = (query as any).schedule;
+  if ((query as any).controlled !== undefined) {
+    where.controlledClass = (query as any).controlled ? { not: null } : null;
+  }
 
   // Stock filter — derived from available (non-expired, non-recalled, qty>0)
   // batches via a relation filter so the pharmacy can see what is / isn't stocked.

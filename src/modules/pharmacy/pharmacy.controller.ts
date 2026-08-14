@@ -7,6 +7,7 @@ import * as pharmacyService from './pharmacy.service';
 import { parseInvoiceFile } from './pharmacy.ocr';
 import { assertFeatureEnabled } from '../ai/ai.config.service';
 import { getPharmacyDetailedReport as getDetailedReport } from './pharmacy.detailed-report.service';
+import { overrideFormularySchedule as overrideSchedule } from '../drug-master/drug-schedule.service';
 
 // ============================================================
 // Formulary
@@ -813,6 +814,27 @@ export async function updateFormularyItem(
       message: 'Formulary item updated successfully',
       data: item,
     });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Correct the schedule the classifier resolved for one drug. The override is
+// permanent: it marks the row 'manual', which the backfill skips forever.
+export async function overrideFormularySchedule(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const item = await overrideSchedule(
+      req.user!.tenantId,
+      req.params.id as string,
+      req.user!.userId,
+      req.body,
+    );
+    if (!item) throw AppError.notFound('Drug not found in this hospital formulary');
+    sendResponse({ res, message: 'Drug schedule updated', data: item });
   } catch (err) {
     next(err);
   }
