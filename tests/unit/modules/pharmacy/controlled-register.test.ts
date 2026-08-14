@@ -158,20 +158,27 @@ describe('movements', () => {
 });
 
 describe('opening-balance batches are not receipts', () => {
-  it('excludes the NDPS unification’s opening batches from the ledger', async () => {
-    // These were created to represent stock the hospital ALREADY held, dated the
-    // day the migration ran. Counted as receipts they push the opening balance
-    // negative — which is nonsense on a register, and was exactly the symptom
-    // seen on real data before this exclusion existed.
+  /** The prefixes of batches that stand for something other than a receipt. */
+  const excludedPrefixes = (where: any): string[] =>
+    (where.NOT?.OR ?? []).map((c: any) => c.batchNumber.startsWith);
+
+  it('excludes synthetic batches from the ledger', async () => {
+    // NDPS-OPENING stands for stock the hospital ALREADY held, dated the day the
+    // migration ran; QUAR- holds a controlled return the return row already
+    // records. Counted as receipts, the first pushes the opening balance
+    // negative — the exact symptom seen on real data — and the second shows the
+    // same stock coming back twice.
     await getControlledRegister(TENANT, {});
-    const batchWhere = (prisma.drugBatch.findMany as any).mock.calls[0][0].where;
-    expect(batchWhere.NOT.batchNumber.startsWith).toBe('NDPS-OPENING-');
+    const prefixes = excludedPrefixes((prisma.drugBatch.findMany as any).mock.calls[0][0].where);
+    expect(prefixes).toContain('NDPS-OPENING-');
+    expect(prefixes).toContain('QUAR-');
   });
 
   it('excludes them from the balance walk-back too', async () => {
     await getControlledRegister(TENANT, {});
-    const aggWhere = (prisma.drugBatch.aggregate as any).mock.calls[0][0].where;
-    expect(aggWhere.NOT.batchNumber.startsWith).toBe('NDPS-OPENING-');
+    const prefixes = excludedPrefixes((prisma.drugBatch.aggregate as any).mock.calls[0][0].where);
+    expect(prefixes).toContain('NDPS-OPENING-');
+    expect(prefixes).toContain('QUAR-');
   });
 
   it('never reports a negative opening balance from ordinary movement', async () => {

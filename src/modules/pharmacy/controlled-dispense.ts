@@ -117,6 +117,62 @@ export async function checkControlledDispense(
 }
 
 /**
+ * Batch-number prefix for quarantined controlled-drug returns.
+ *
+ * A returned Schedule X or narcotic item cannot simply go back on the sellable
+ * shelf — it has to be held and accounted for, usually destroyed under witness.
+ * Rather than add a new "quarantined" flag that every dispensing path would
+ * have to learn about (and one of them would eventually forget), the returned
+ * quantity lands in its own batch marked `isRecalled`. Every path already
+ * refuses a recalled batch, so the stock is unsellable the moment it exists,
+ * with no new filter to scatter and miss.
+ */
+export const QUARANTINE_PREFIX = 'QUAR-';
+
+export interface ControlledReturnDecision {
+  requirements: ControlRequirements;
+  /** True when the returned stock must NOT go back to sellable stock. */
+  quarantine: boolean;
+  witnessedById: string | null;
+}
+
+/**
+ * Whether a return of this drug may be restocked, and what it needs first.
+ *
+ * Vendor returns are exempt: stock going back to the distributor is leaving the
+ * building under the vendor's own paperwork, not re-entering the shelf.
+ */
+export async function checkControlledReturn(
+  tenantId: string,
+  drug: ControlledDrugLike | null | undefined,
+  ctx: { userId: string; witnessedById?: string | null; returnType: string },
+): Promise<ControlledReturnDecision> {
+  const requirements = resolveControlRequirements(drug);
+  const none: ControlledReturnDecision = { requirements, quarantine: false, witnessedById: null };
+  if (!requirements.isControlled || !drug) return none;
+  if (ctx.returnType === 'vendor_return') return none;
+
+  const settings = await getControlledDrugSettings(tenantId);
+  // Returns have always been allowed for every drug. Until a hospital switches
+  // the mode on, they still are — this must not become a new hard block.
+  if (settings.mode === 'legacy_block') return none;
+
+  if (requirements.needsWitness) {
+    if (!ctx.witnessedById) {
+      throw AppError.badRequest(
+        `${drug.drugName} is a controlled narcotic. A second authorised person must witness the ` +
+          'return before it can be accepted.',
+      );
+    }
+    if (ctx.witnessedById === ctx.userId) {
+      throw AppError.badRequest('The witness must be a different person from the one accepting the return.');
+    }
+  }
+
+  return { requirements, quarantine: true, witnessedById: ctx.witnessedById ?? null };
+}
+
+/**
  * Read-only preview of what a cart will require, for the UI to render before
  * anything is submitted. Never throws.
  */

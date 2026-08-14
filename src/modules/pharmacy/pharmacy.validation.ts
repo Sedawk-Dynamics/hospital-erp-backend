@@ -807,6 +807,9 @@ export const processReturnSchema = z.object({
     // G14: cash refund vs credit to the patient's advance. Omit to auto-detect
     // from the patient's IP billing category (package/insurance → advance).
     refundMode: z.enum(['cash', 'advance']).optional(),
+    // Second person witnessing a controlled-narcotic return. Only required once
+    // the hospital switches controlled dispensing to inline mode.
+    witnessedById: z.string().uuid('Invalid witness').optional(),
   }),
   params: z.object({
     id: z.string().uuid('Invalid return ID'),

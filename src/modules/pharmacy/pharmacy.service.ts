@@ -18,7 +18,7 @@ import {
   createStockTransaction as createInventoryStockTransaction,
 } from '../inventory/inventory.service';
 import { safePharmacyAudit } from './pharmacy.audit';
-import { checkControlledDispense } from './controlled-dispense';
+import { checkControlledDispense, checkControlledReturn, QUARANTINE_PREFIX } from './controlled-dispense';
 import {
   scoreMatch,
   normalizeDrugName,
@@ -6000,6 +6000,35 @@ export async function processReturn(
     throw AppError.notFound('Drug return not found');
   }
 
+  // A returned Schedule X or narcotic item cannot go straight back on the
+  // sellable shelf — it has to be held and accounted for. Resolved before the
+  // transaction so an unmet requirement fails before any stock moves.
+  const returnDrugId =
+    drugReturn.drugId ??
+    (drugReturn.drugBatchId
+      ? (await prisma.drugBatch.findUnique({
+          where: { id: drugReturn.drugBatchId },
+          select: { drugId: true },
+        }))?.drugId ?? null
+      : null);
+  const returnDrug = returnDrugId
+    ? await prisma.drugFormulary.findFirst({
+        where: { id: returnDrugId, tenantId },
+        select: {
+          drugName: true, isNarcotic: true, schedule: true,
+          controlledClass: true, vaultControlled: true,
+        },
+      })
+    : null;
+  const controlledReturn =
+    data.status === 'processed'
+      ? await checkControlledReturn(tenantId, returnDrug, {
+          userId,
+          witnessedById: (data as any).witnessedById,
+          returnType: drugReturn.returnType,
+        })
+      : { quarantine: false, witnessedById: null, requirements: null as never };
+
   if (drugReturn.status !== 'pending') {
     throw AppError.badRequest('Only pending returns can be processed');
   }
@@ -6070,6 +6099,48 @@ export async function processReturn(
               where: { id: restockBatchId },
               data: { quantityInStock: { decrement: dec } },
             });
+          }
+        } else if (controlledReturn.quarantine) {
+          // Held, not restocked. The quantity goes into its own batch flagged
+          // isRecalled, which every dispensing path already refuses — so the
+          // stock is accounted for and visible, but cannot be sold or issued.
+          // It leaves properly through the NDPS disposal flow, under witness.
+          const source = await tx.drugBatch.findUnique({
+            where: { id: restockBatchId },
+            select: { drugId: true, batchNumber: true, expiryDate: true, purchasePrice: true, sellingPrice: true },
+          });
+          if (source) {
+            const quarantineNumber = `${QUARANTINE_PREFIX}${source.batchNumber}`;
+            const existing = await tx.drugBatch.findFirst({
+              where: { tenantId, drugId: source.drugId, batchNumber: quarantineNumber },
+              select: { id: true },
+            });
+            if (existing) {
+              await tx.drugBatch.update({
+                where: { id: existing.id },
+                data: { quantityInStock: { increment: drugReturn.quantity } },
+              });
+              // Point the return at where the stock actually ended up, so the
+              // register's row shows the QUAR- batch rather than the shelf one.
+              await tx.drugReturn.update({ where: { id }, data: { drugBatchId: existing.id } });
+            } else {
+              const quarantined = await tx.drugBatch.create({
+                data: {
+                  tenantId,
+                  drugId: source.drugId,
+                  batchNumber: quarantineNumber,
+                  expiryDate: source.expiryDate,
+                  quantityInStock: drugReturn.quantity,
+                  quantityReceived: drugReturn.quantity,
+                  purchasePrice: source.purchasePrice,
+                  sellingPrice: source.sellingPrice,
+                  isRecalled: true,
+                  recallReason:
+                    'Controlled-drug return — quarantined pending destruction under the NDPS disposal flow.',
+                },
+              });
+              await tx.drugReturn.update({ where: { id }, data: { drugBatchId: quarantined.id } });
+            }
           }
         } else {
           await tx.drugBatch.update({
@@ -6724,7 +6795,10 @@ export async function getRecallAffectedPatients(tenantId: string, batchId: strin
  */
 export async function getRecalledItems(tenantId: string, _query: GetRecalledItemsQuery) {
   const recalledBatches = await prisma.drugBatch.findMany({
-    where: { tenantId, isRecalled: true },
+    // Quarantined controlled-drug returns are flagged isRecalled so that every
+    // dispensing path already refuses them — but a quarantine is not a recall,
+    // and listing one here would misreport a manufacturer action.
+    where: { tenantId, isRecalled: true, NOT: { batchNumber: { startsWith: QUARANTINE_PREFIX } } },
     include: {
       drug: { select: { id: true, drugName: true, category: true, genericName: true } },
       supplier: { select: { id: true, name: true } },

@@ -75,7 +75,18 @@ const inWindow = (from: Date, to: Date) => ({ gte: from, lte: to });
  * first thing an inspector queried. Opening stock is not a movement.
  */
 const OPENING_BALANCE_PREFIX = 'NDPS-OPENING-';
-const notOpeningBalance = { NOT: { batchNumber: { startsWith: OPENING_BALANCE_PREFIX } } };
+/**
+ * A quarantined controlled-drug return is held in its own batch. It is not a
+ * receipt — the return row already records the movement — so counting the batch
+ * too would show the stock coming back twice.
+ */
+const QUARANTINE_PREFIX = 'QUAR-';
+const notSyntheticBatch = {
+  NOT: { OR: [
+    { batchNumber: { startsWith: OPENING_BALANCE_PREFIX } },
+    { batchNumber: { startsWith: QUARANTINE_PREFIX } },
+  ] },
+};
 
 /** Default window is the last month, matching the report's own default. */
 function resolveWindow(q: RegisterQuery) {
@@ -140,7 +151,7 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
     prisma.drugBatch.findMany({
       where: {
         tenantId, drugId: { in: drugIds }, createdAt: inWindow(from, to),
-        ...notOpeningBalance,
+        ...notSyntheticBatch,
       },
       include: { supplier: { select: { name: true } } },
     }),
@@ -391,7 +402,7 @@ async function netMovementSince(tenantId: string, drugIds: string[], since: Date
     prisma.drugBatch.aggregate({
       where: {
         tenantId, drugId: { in: drugIds }, createdAt: { gte: since },
-        ...notOpeningBalance,
+        ...notSyntheticBatch,
       },
       _sum: { quantityReceived: true },
     }),
