@@ -4281,6 +4281,11 @@ model NdpsTransaction {
   supplierId        String? @map("supplier_id")
   batchNumber       String? @map("batch_number") @db.VarChar(100)
   expiryDate        DateTime? @map("expiry_date") @db.Date
+  // The real stock batch this statutory entry moved. Narcotic stock used to live
+  // in a ledger of its own, invisible to valuation, expiry alerts, recalls and
+  // GST; it now sits in DrugBatch like every other medicine, and this points at
+  // the batch so the register and the stock agree line for line.
+  drugBatchId       String? @map("drug_batch_id")
   // Form 3E (patient consumption) — mandatory audit fields.
   patientId   String? @map("patient_id")
   doctorRegNo String? @map("doctor_reg_no") @db.VarChar(60)
@@ -4302,6 +4307,7 @@ model NdpsTransaction {
   drug   DrugFormulary @relation(fields: [drugFormularyId], references: [id])
 
   @@index([tenantId, entryType, occurredAt])
+  @@index([drugBatchId])
   @@index([tenantId, drugFormularyId, occurredAt])
   @@map("ndps_transactions")
 }

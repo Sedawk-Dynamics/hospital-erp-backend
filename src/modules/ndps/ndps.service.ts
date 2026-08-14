@@ -178,6 +178,50 @@ async function adjustBalance(
   return next;
 }
 
+
+/**
+ * Take `qty` out of real batch stock, FEFO, and report which batch it came from.
+ *
+ * Narcotic quantity lives in DrugBatch now, so anything that consumes it must
+ * decrement there too — otherwise the location breakdown and the stock would
+ * drift apart again, which is exactly the split this unification removed.
+ *
+ * Returns null when the drug has no batch stock at all. That is not an error
+ * here: the location balance is still authoritative for the statutory register,
+ * and refusing a legally-recorded consumption because the batch side is behind
+ * would be the wrong failure.
+ */
+async function drawFromBatches(
+  tx: any,
+  tenantId: string,
+  drugFormularyId: string,
+  qty: number,
+): Promise<string | null> {
+  const batches = await tx.drugBatch.findMany({
+    where: {
+      tenantId,
+      drugId: drugFormularyId,
+      quantityInStock: { gt: 0 },
+      isExpired: false,
+      isRecalled: false,
+    },
+    orderBy: [{ expiryDate: 'asc' }, { createdAt: 'asc' }],
+  });
+  let remaining = qty;
+  let firstUsed: string | null = null;
+  for (const b of batches) {
+    if (remaining <= 0) break;
+    const take = Math.min(remaining, b.quantityInStock);
+    await tx.drugBatch.update({
+      where: { id: b.id },
+      data: { quantityInStock: { decrement: take } },
+    });
+    firstUsed ??= b.id;
+    remaining -= take;
+  }
+  return firstUsed;
+}
+
 /**
  * Step 1 — Form 3C inward. Receives a narcotic consignment into the Central
  * Vault, capturing the vendor's NDPS licence, the Form 3C consignment-note
@@ -207,7 +251,49 @@ export async function receiveConsignment(
   if (data.quantity <= 0) throw AppError.badRequest('Quantity must be positive');
   const vault = await getOrCreateMainVault(tenantId);
 
+  // A narcotic consignment is stock like any other, so it lands in DrugBatch —
+  // which is what makes it visible to valuation, expiry alerts, recalls, the GST
+  // report and the stock ledger. NdpsStockBalance then says only WHERE it is.
+  // The batch number defaults to the Form 3C note number when the consignment
+  // did not carry one, so a batch always has a traceable identity.
+  const batchNumber = data.batchNumber?.trim() || `3C-${data.form3cNumber.trim()}`;
+  const expiryDate = data.expiryDate
+    ? new Date(data.expiryDate)
+    : (() => {
+        // The column is required. Two years is a placeholder to be corrected at
+        // the next physical count, not a claim about this consignment.
+        const d = new Date();
+        d.setFullYear(d.getFullYear() + 2);
+        return d;
+      })();
+
   return prisma.$transaction(async (tx) => {
+    // Re-use the batch when the same Form 3C note is received twice (a split
+    // delivery), rather than creating a second batch with the same number.
+    const existingBatch = await tx.drugBatch.findFirst({
+      where: { tenantId, drugId: data.drugFormularyId, batchNumber },
+      select: { id: true },
+    });
+    const batch = existingBatch
+      ? await tx.drugBatch.update({
+          where: { id: existingBatch.id },
+          data: {
+            quantityInStock: { increment: data.quantity },
+            quantityReceived: { increment: data.quantity },
+          },
+        })
+      : await tx.drugBatch.create({
+          data: {
+            tenantId,
+            drugId: data.drugFormularyId,
+            batchNumber,
+            expiryDate,
+            quantityInStock: data.quantity,
+            quantityReceived: data.quantity,
+            supplierId: data.supplierId ?? null,
+          },
+        });
+
     await adjustBalance(tx, tenantId, data.drugFormularyId, vault.id, data.quantity);
     return tx.ndpsTransaction.create({
       data: {
@@ -221,8 +307,11 @@ export async function receiveConsignment(
         transportDetails: data.transportDetails ?? null,
         grossWeight: data.grossWeight ?? null,
         supplierId: data.supplierId ?? null,
-        batchNumber: data.batchNumber ?? null,
-        expiryDate: data.expiryDate ? new Date(data.expiryDate) : null,
+        batchNumber,
+        expiryDate,
+        // Nullable by design: the register entry is the statutory record and
+        // must exist even if the batch write did not come back.
+        drugBatchId: batch?.id ?? null,
         recordedById: userId,
         notes: data.notes ?? null,
       },
@@ -321,10 +410,13 @@ export async function recordConsumption(
 
   return prisma.$transaction(async (tx) => {
     await adjustBalance(tx, tenantId, data.drugFormularyId, data.fromLocationId, -data.quantity);
+    // Keep real stock in step with the register — see drawFromBatches above.
+    const drugBatchId = await drawFromBatches(tx, tenantId, data.drugFormularyId, data.quantity);
     const txn = await tx.ndpsTransaction.create({
       data: {
         tenantId,
         drugFormularyId: data.drugFormularyId,
+        drugBatchId,
         entryType: 'dispense',
         quantity: data.quantity,
         fromLocationId: data.fromLocationId,
@@ -386,10 +478,13 @@ export async function logDisposal(
 
   return prisma.$transaction(async (tx) => {
     await adjustBalance(tx, tenantId, data.drugFormularyId, data.locationId, -data.quantity);
+    // A destroyed vial leaves real stock as well as the register.
+    const drugBatchId = await drawFromBatches(tx, tenantId, data.drugFormularyId, data.quantity);
     return tx.ndpsTransaction.create({
       data: {
         tenantId,
         drugFormularyId: data.drugFormularyId,
+        drugBatchId,
         entryType: 'disposal',
         quantity: data.quantity,
         fromLocationId: data.locationId,
@@ -496,7 +591,20 @@ export async function getStockByLocation(tenantId: string, drugFormularyId?: str
     include: { drug: { select: { id: true, drugName: true, strength: true } } },
   });
 
-  const byDrug = new Map<string, { drugId: string; drugName: string; strength: string | null; total: number; locations: Array<{ locationId: string; name: string; type: string; quantity: number }> }>();
+  // Real batch stock per drug. Narcotics live in DrugBatch now, so the register
+  // and the shelf can be shown side by side — and any drift between them named
+  // rather than hidden, which is the whole point of a physical-vs-digital check.
+  const drugIds = [...new Set(balances.map((b) => b.drugFormularyId))];
+  const batchTotals = drugIds.length
+    ? await prisma.drugBatch.groupBy({
+        by: ['drugId'],
+        where: { tenantId, drugId: { in: drugIds }, isExpired: false, isRecalled: false },
+        _sum: { quantityInStock: true },
+      })
+    : [];
+  const batchByDrug = new Map(batchTotals.map((t) => [t.drugId, t._sum.quantityInStock ?? 0]));
+
+  const byDrug = new Map<string, { drugId: string; drugName: string; strength: string | null; total: number; batchStock: number; variance: number; locations: Array<{ locationId: string; name: string; type: string; quantity: number }> }>();
   for (const b of balances) {
     const key = b.drugFormularyId;
     const cur = byDrug.get(key) ?? {
@@ -504,6 +612,8 @@ export async function getStockByLocation(tenantId: string, drugFormularyId?: str
       drugName: b.drug?.drugName ?? '-',
       strength: b.drug?.strength ?? null,
       total: 0,
+      batchStock: batchByDrug.get(key) ?? 0,
+      variance: 0,
       locations: [],
     };
     const loc = locById.get(b.locationId);
@@ -511,6 +621,9 @@ export async function getStockByLocation(tenantId: string, drugFormularyId?: str
     cur.locations.push({ locationId: b.locationId, name: loc?.name ?? '-', type: loc?.type ?? 'sub_store', quantity: b.quantity });
     byDrug.set(key, cur);
   }
+  // variance = register minus shelf. Zero once unified; anything else is a real
+  // discrepancy somebody has to explain.
+  for (const d of byDrug.values()) d.variance = d.total - d.batchStock;
   return { items: [...byDrug.values()].sort((a, b) => a.drugName.localeCompare(b.drugName)) };
 }
 
