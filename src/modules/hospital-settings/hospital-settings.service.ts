@@ -6,6 +6,11 @@ import {
   mergeRegistrationFee,
   type RegistrationFeeSettings,
 } from '../../shared/registration-fee';
+import {
+  DEFAULT_CONTROLLED_DRUG_SETTINGS,
+  mergeControlledDrugSettings,
+  type ControlledDrugSettings,
+} from '../../shared/controlled-drug';
 
 // ---------------------------------------------------------------------------
 // Per-hospital operational settings that are one value, not a catalog.
@@ -47,6 +52,38 @@ export async function updateRegistrationFeeSettings(
   await prisma.tenant.update({
     where: { id: tenantId },
     data: { themeConfig: { ...cfg, registrationFee: merged } as object },
+  });
+  return merged;
+}
+
+// ── Controlled-drug dispensing policy ──────────────────────────────────────
+
+export async function getControlledDrugSettings(
+  tenantId: string,
+): Promise<ControlledDrugSettings> {
+  try {
+    const cfg = await readThemeConfig(tenantId);
+    return mergeControlledDrugSettings(DEFAULT_CONTROLLED_DRUG_SETTINGS, cfg.controlledDrugs);
+  } catch {
+    // A settings read must never decide a dispense by accident. Falling back to
+    // the default keeps today's hard block, which is the safe direction: it
+    // refuses a controlled dispense rather than waving one through.
+    return DEFAULT_CONTROLLED_DRUG_SETTINGS;
+  }
+}
+
+export async function updateControlledDrugSettings(
+  tenantId: string,
+  patch: unknown,
+): Promise<ControlledDrugSettings> {
+  const cfg = await readThemeConfig(tenantId);
+  const merged = mergeControlledDrugSettings(
+    mergeControlledDrugSettings(DEFAULT_CONTROLLED_DRUG_SETTINGS, cfg.controlledDrugs),
+    patch,
+  );
+  await prisma.tenant.update({
+    where: { id: tenantId },
+    data: { themeConfig: { ...cfg, controlledDrugs: merged } as object },
   });
   return merged;
 }

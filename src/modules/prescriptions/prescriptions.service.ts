@@ -253,7 +253,14 @@ export async function getPrescriptions(tenantId: string, query: GetPrescriptions
         // units per strip, looseUnitLabel = the sub-unit name).
         prescriptionItems: {
           include: {
-            drug: { select: { packSize: true, looseUnitLabel: true, dosageForm: true, price: true } },
+            // Pack/loose config plus the control profile, so the counter can
+            // say what a line requires before the cashier tries to bill it.
+            drug: {
+              select: {
+                packSize: true, looseUnitLabel: true, dosageForm: true, price: true,
+                schedule: true, controlledClass: true, vaultControlled: true,
+              },
+            },
           },
         },
       },
@@ -331,7 +338,12 @@ export async function getPrescriptionById(tenantId: string, id: string) {
             take: 5,
           },
           // Pack/loose config for the POS + queue detail.
-          drug: { select: { packSize: true, looseUnitLabel: true, dosageForm: true } },
+          drug: {
+            select: {
+              packSize: true, looseUnitLabel: true, dosageForm: true,
+              schedule: true, controlledClass: true, vaultControlled: true,
+            },
+          },
         },
       },
       // Progress notes a doctor linked to this prescription — so anyone who can

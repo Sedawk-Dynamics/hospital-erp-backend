@@ -37,6 +37,37 @@ hospitalSettingsRoutes.put(
   },
 );
 
+// Controlled-drug policy. Only an admin flips it, since it decides whether a
+// narcotic can leave the pharmacy through an ordinary counter at all.
+hospitalSettingsRoutes.put(
+  '/controlled-drugs',
+  ...adminOnly,
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const data = await service.updateControlledDrugSettings(req.user!.tenantId, req.body ?? {});
+      sendResponse({ res, message: 'Controlled-drug settings saved', data });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// Readable by anyone who dispenses — the counter and the ward need to know
+// which mode is live to know whether to show the controlled-drug panel.
+hospitalSettingsRoutes.get(
+  '/controlled-drugs',
+  authenticate,
+  requirePermission('pharmacy', 'read'),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const data = await service.getControlledDrugSettings(req.user!.tenantId);
+      sendResponse({ res, message: 'Controlled-drug settings', data });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 // Read-only, and needed by whoever books an appointment — the front desk, not
 // just the admin — so it is gated on reading patients rather than on being an
 // admin. It returns the fee settings alongside, which is fine: the desk has to

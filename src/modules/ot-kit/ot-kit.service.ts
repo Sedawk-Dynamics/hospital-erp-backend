@@ -2,6 +2,7 @@ import { prisma } from '../../config/database';
 import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
+import { checkControlledDispense } from '../pharmacy/controlled-dispense';
 
 // ============================================================
 // OT Kit — "Issue Bulk, Reconcile Net" surgical consumables (design doc III)
@@ -305,14 +306,22 @@ export async function issueKit(
       if (qty <= 0) continue;
       const drug = await tx.drugFormulary.findFirst({
         where: { id: line.drugFormularyId, tenantId },
-        select: { id: true, drugName: true, price: true, taxPercent: true, isNarcotic: true },
+        select: {
+          id: true, drugName: true, price: true, taxPercent: true, isNarcotic: true,
+          // Read by the controlled-drug gate.
+          schedule: true, controlledClass: true, vaultControlled: true,
+        },
       });
       if (!drug) throw AppError.badRequest('A kit item is not in this hospital formulary');
-      // NDPS narcotics are vault-controlled and cannot ride in an OT kit — they go
-      // through the NDPS transfer + Form 3E workflow.
-      if (drug.isNarcotic) {
-        throw AppError.badRequest(`${drug.drugName} is an NDPS narcotic and cannot be issued in an OT kit — use the NDPS workflow.`);
-      }
+      // Controlled-drug gate — see pharmacy/controlled-dispense.ts. Default mode
+      // reproduces the old hard block; inline mode lets the kit be issued here
+      // with a witness co-sign instead of sending OT staff to another module.
+      await checkControlledDispense(
+        tenantId,
+        drug,
+        { userId, witnessedById: (data as any)?.witnessedById, fromBatchStock: true },
+        'workflow',
+      );
 
       const taxPct = drug.taxPercent != null ? Number(drug.taxPercent) : 0;
 

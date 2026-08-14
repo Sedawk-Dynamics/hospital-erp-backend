@@ -2,6 +2,7 @@ import { prisma } from '../../config/database';
 import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
+import { checkControlledDispense } from '../pharmacy/controlled-dispense';
 import { getPatientCreditStatus } from '../pharmacy/pharmacy.service';
 
 // ============================================================
@@ -402,14 +403,23 @@ export async function dispenseIndent(
       if (qty <= 0) continue;
       const drug = await tx.drugFormulary.findFirst({
         where: { id: it.drugFormularyId, tenantId },
-        select: { id: true, drugName: true, packSize: true, price: true, taxPercent: true, looseUnitLabel: true, isNarcotic: true, isReimbursable: true },
+        select: {
+          id: true, drugName: true, packSize: true, price: true, taxPercent: true,
+          looseUnitLabel: true, isNarcotic: true, isReimbursable: true,
+          // Read by the controlled-drug gate.
+          schedule: true, controlledClass: true, vaultControlled: true,
+        },
       });
       if (!drug) throw AppError.badRequest('A drug on this indent is no longer in the formulary');
-      // NDPS narcotics never flow through a ward indent — they are vault-controlled
-      // and dispensed via the NDPS Form 3E consumption workflow.
-      if (drug.isNarcotic) {
-        throw AppError.badRequest(`${drug.drugName} is an NDPS narcotic — dispense it via the NDPS (Form 3E) workflow, not a ward indent.`);
-      }
+      // Controlled-drug gate. In the hospital's default mode this reproduces the
+      // old hard block exactly; in inline mode the ward can complete the indent
+      // here once the requirements are met. See pharmacy/controlled-dispense.ts.
+      await checkControlledDispense(
+        tenantId,
+        drug,
+        { userId, witnessedById: (data as any)?.witnessedById, fromBatchStock: true },
+        'workflow, not a ward indent',
+      );
       const packSize = drug.packSize && drug.packSize > 0 ? drug.packSize : 1;
       // Base (loose) units to remove from stock. Pack lines multiply by pack size.
       const baseQty = it.saleUnit === 'loose' ? qty : qty * packSize;
@@ -614,12 +624,20 @@ export async function dispenseIpPrescription(
       const baseQty = Math.max(1, Math.trunc(Number(it.quantity ?? 1)));
       const drug = await tx.drugFormulary.findFirst({
         where: { id: it.drugId as string, tenantId },
-        select: { id: true, drugName: true, price: true, taxPercent: true, looseUnitLabel: true, isNarcotic: true, isReimbursable: true },
+        select: {
+          id: true, drugName: true, price: true, taxPercent: true, looseUnitLabel: true,
+          isNarcotic: true, isReimbursable: true,
+          // Read by the controlled-drug gate.
+          schedule: true, controlledClass: true, vaultControlled: true,
+        },
       });
       if (!drug) continue; // free-text / no longer stocked — skip (nothing to draw from stock)
-      if (drug.isNarcotic) {
-        throw AppError.badRequest(`${drug.drugName} is an NDPS narcotic — dispense it via the NDPS (Form 3E) workflow.`);
-      }
+      await checkControlledDispense(
+        tenantId,
+        drug,
+        { userId, prescriptionId, witnessedById: (data as any)?.witnessedById, fromBatchStock: true },
+        'workflow',
+      );
 
       const chosen = batchMap.get(it.id);
       const usable = await tx.drugBatch.findMany({

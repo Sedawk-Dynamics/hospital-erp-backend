@@ -1583,6 +1583,7 @@ model User {
   imagingAttachmentsUploaded     ImagingAttachment[]          @relation("ImagingAttachmentUploader")
   dispensingRecords              DispensingRecord[]           @relation("Dispenser")
   dispensingVerifications        DispensingRecord[]           @relation("DispensingVerifier")
+  dispensingWitnesses            DispensingRecord[]           @relation("DispensingWitness")
   drugReturnsProcessed           DrugReturn[]
   stockTransactions              StockTransaction[]
   purchaseOrdersApproved         PurchaseOrder[]
@@ -4668,6 +4669,11 @@ model DispensingRecord {
   // Invoice this line was billed on (the pharmacy Bill). Plain column — the
   // canonical link is BillItem.referenceId; this is a convenience back-pointer.
   billId             String?  @map("bill_id")
+  // Controlled-drug co-sign. Set when the line required a second authenticated
+  // person to witness the hand-over (vault narcotics). Always a different user
+  // from `dispensedBy` — a witness who is the dispenser is not a witness.
+  witnessedById      String?   @map("witnessed_by_id")
+  witnessedAt        DateTime? @map("witnessed_at")
 
   tenant           Tenant            @relation(fields: [tenantId], references: [id])
   prescription     Prescription?     @relation(fields: [prescriptionId], references: [id])
@@ -4677,6 +4683,7 @@ model DispensingRecord {
   drugBatch        DrugBatch         @relation(fields: [drugBatchId], references: [id])
   dispenser        User              @relation("Dispenser", fields: [dispensedBy], references: [id])
   verifier         User?             @relation("DispensingVerifier", fields: [verifiedBy], references: [id])
+  witness          User?             @relation("DispensingWitness", fields: [witnessedById], references: [id])
   drugReturns      DrugReturn[]
 
   @@map("dispensing_records")

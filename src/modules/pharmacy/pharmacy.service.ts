@@ -18,6 +18,7 @@ import {
   createStockTransaction as createInventoryStockTransaction,
 } from '../inventory/inventory.service';
 import { safePharmacyAudit } from './pharmacy.audit';
+import { checkControlledDispense } from './controlled-dispense';
 import {
   scoreMatch,
   normalizeDrugName,
@@ -3005,6 +3006,10 @@ export async function createDispense(tenantId: string, userId: string, data: Cre
           price: true,
           isNarcotic: true,
           isLifeSaving: true,
+          // Read by the controlled-drug gate.
+          schedule: true,
+          controlledClass: true,
+          vaultControlled: true,
         },
       },
     },
@@ -3022,12 +3027,21 @@ export async function createDispense(tenantId: string, userId: string, data: Cre
     throw AppError.badRequest('Cannot dispense from a recalled batch');
   }
 
-  // NDPS "Locked in Main Safe": narcotics route through the NDPS Form 3E workflow.
-  if (drugBatch.drug?.isNarcotic) {
-    throw AppError.badRequest(
-      `${drugBatch.drug.drugName} is an NDPS narcotic — dispense it via the NDPS (Form 3E) consumption workflow.`,
-    );
-  }
+  // Controlled-drug gate. In the hospital's default mode this reproduces the old
+  // hard block exactly; in inline mode it checks the requirements are satisfied
+  // and lets the dispense finish here instead of ejecting the user to the NDPS
+  // module. See modules/pharmacy/controlled-dispense.ts.
+  const control = await checkControlledDispense(
+    tenantId,
+    drugBatch.drug,
+    {
+      userId,
+      prescriptionId: data.prescriptionId,
+      witnessedById: (data as any).witnessedById,
+      fromBatchStock: true,
+    },
+    'consumption workflow',
+  );
 
   // The hospital dispenses at its own price (operational truth).
   if (drugBatch.quantityInStock < data.quantityDispensed) {
@@ -3071,6 +3085,9 @@ export async function createDispense(tenantId: string, userId: string, data: Cre
         quantityDispensed: data.quantityDispensed,
         dispensedBy: userId,
         notes: data.notes,
+        // Controlled-drug co-sign, when the gate required one.
+        witnessedById: control.witnessedById,
+        witnessedAt: control.witnessedAt,
       },
       include: {
         patient: { select: { id: true, firstName: true, lastName: true } },
@@ -3341,6 +3358,9 @@ export async function createPharmacySale(
       taxAmt: number;
       nonReturnable: boolean;
       expiry: Date | null;
+      // Controlled-drug co-sign resolved per line by the gate.
+      witnessedById: string | null;
+      witnessedAt: Date | null;
     }>;
 
     for (const item of data.items) {
@@ -3356,6 +3376,10 @@ export async function createPharmacySale(
               dosageForm: true,
               taxPercent: true,
               isNarcotic: true,
+              // Read by the controlled-drug gate.
+              schedule: true,
+              controlledClass: true,
+              vaultControlled: true,
             },
           },
         },
@@ -3363,14 +3387,20 @@ export async function createPharmacySale(
       if (!batch) throw AppError.notFound(`Drug batch ${item.drugBatchId} not found`);
       if (isBatchExpired(batch)) throw AppError.badRequest('Cannot sell from an expired batch');
       if (batch.isRecalled) throw AppError.badRequest('Cannot sell from a recalled batch');
-      // NDPS "Locked in Main Safe": an Essential Narcotic Drug can never be issued
-      // through the ordinary counter — it must go through the NDPS vault custody +
-      // Form 3E consumption workflow so the statutory register stays complete.
-      if (batch.drug?.isNarcotic) {
-        throw AppError.badRequest(
-          `${batch.drug.drugName} is an NDPS narcotic — it must be dispensed via the NDPS (Form 3E) consumption workflow, not the counter.`,
-        );
-      }
+      // Controlled-drug gate — see createDispense above. Resolved per line and
+      // collected, so the witness co-sign is written onto the dispensing record.
+      const lineControl = await checkControlledDispense(
+        tenantId,
+        batch.drug,
+        {
+          userId,
+          prescriptionId: data.prescriptionId,
+          externalPrescriptionId: (data as any).externalPrescriptionId,
+          witnessedById: (data as any).witnessedById,
+          fromBatchStock: true,
+        },
+        'consumption workflow, not the counter',
+      );
 
       const packSize = batch.drug?.packSize && batch.drug.packSize > 0 ? batch.drug.packSize : 1;
       const saleUnit = item.saleUnit ?? 'pack';
@@ -3416,6 +3446,8 @@ export async function createPharmacySale(
         taxAmt,
         nonReturnable: item.nonReturnable ?? false,
         expiry: batch.expiryDate ?? null,
+        witnessedById: lineControl.witnessedById,
+        witnessedAt: lineControl.witnessedAt,
       });
     }
 
@@ -3541,6 +3573,9 @@ export async function createPharmacySale(
           // TTO (To Take Out) — discharge medication dispensed in full packs.
           isTto: data.isTto ?? false,
           billId: bill.id,
+          // Controlled-drug co-sign, when the gate required one for this line.
+          witnessedById: l.witnessedById,
+          witnessedAt: l.witnessedAt,
         },
       });
 
@@ -4695,16 +4730,30 @@ export async function dispenseFromWard(
 
     const batch = await tx.drugBatch.findUnique({
       where: { id: data.drugBatchId },
-      include: { drug: { select: { drugName: true, category: true, price: true, taxPercent: true, isLifeSaving: true, isNarcotic: true, isReimbursable: true } } },
+      include: {
+        drug: {
+          select: {
+            drugName: true, category: true, price: true, taxPercent: true,
+            isLifeSaving: true, isNarcotic: true, isReimbursable: true,
+            // Read by the controlled-drug gate.
+            schedule: true, controlledClass: true, vaultControlled: true,
+          },
+        },
+      },
     });
     if (!batch) throw AppError.notFound('Drug batch not found');
-    // NDPS "Locked in Main Safe": narcotics are dispensed only via the NDPS vault
-    // custody + Form 3E workflow, never through ordinary ward stock.
-    if (batch.drug?.isNarcotic) {
-      throw AppError.badRequest(
-        `${batch.drug.drugName} is an NDPS narcotic — dispense it via the NDPS (Form 3E) consumption workflow, not ward stock.`,
-      );
-    }
+    // Controlled-drug gate — see createDispense above. This is the path a nurse
+    // uses at the bedside, and the one the old hard block made unusable for her.
+    const control = await checkControlledDispense(
+      tenantId,
+      batch.drug,
+      {
+        userId,
+        witnessedById: (data as any).witnessedById,
+        fromBatchStock: true,
+      },
+      'consumption workflow, not ward stock',
+    );
 
     // IP credit gate — block a cash patient who is over deposit unless clearance
     // was given (override) or the drug is life-saving (design doc IP Step 3).

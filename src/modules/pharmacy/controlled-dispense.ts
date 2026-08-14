@@ -1,0 +1,139 @@
+import { AppError } from '../../shared/appError';
+import { getControlledDrugSettings } from '../hospital-settings/hospital-settings.service';
+import {
+  resolveControlRequirements,
+  legacyBlockMessage,
+  type ControlledDrugLike,
+  type ControlRequirements,
+} from '../../shared/controlled-drug';
+
+// ---------------------------------------------------------------------------
+// The single gate every dispensing path calls for a controlled drug.
+//
+// It replaces five separate `throw` statements that each ejected the user out
+// of the screen they were on and told them to go to the NDPS module — a module
+// only a pharmacy admin can open, which is why a nurse could never record the
+// narcotic dose she had just given.
+//
+// The policy itself lives in shared/controlled-drug.ts. This file owns only the
+// enforcement: read the hospital's mode, and either reproduce the old block
+// exactly or check that the inline requirements have been satisfied.
+// ---------------------------------------------------------------------------
+
+export interface ControlledDispenseContext {
+  /** Who is handing the drug over. */
+  userId: string;
+  /** An in-system prescription backing this dispense, if any. */
+  prescriptionId?: string | null;
+  /** A paper prescription captured at the counter, if any. */
+  externalPrescriptionId?: string | null;
+  /** The second person co-signing, when the drug needs a witness. */
+  witnessedById?: string | null;
+  /** True when the line draws from ordinary shelf/ward batch stock. */
+  fromBatchStock?: boolean;
+}
+
+export interface ControlledDispenseDecision {
+  requirements: ControlRequirements;
+  /** Persist alongside the dispense when a witness was required and given. */
+  witnessedById: string | null;
+  witnessedAt: Date | null;
+}
+
+/**
+ * Decide whether this controlled drug may be handed over here, and with what
+ * recorded alongside it.
+ *
+ * Throws a specific, actionable error when a requirement is unmet — never a
+ * generic refusal, because the person reading it is mid-sale with a patient in
+ * front of them and needs to know what to do next.
+ *
+ * @param path  How the old message described this route ("counter", "ward
+ *              stock", …) so `legacy_block` mode stays byte-identical.
+ */
+export async function checkControlledDispense(
+  tenantId: string,
+  drug: ControlledDrugLike | null | undefined,
+  ctx: ControlledDispenseContext,
+  path: string,
+): Promise<ControlledDispenseDecision> {
+  const requirements = resolveControlRequirements(drug);
+  const none: ControlledDispenseDecision = { requirements, witnessedById: null, witnessedAt: null };
+  // `drug` is non-null from here — resolveControlRequirements only reports a
+  // control requirement when it had a drug to look at.
+  if (!requirements.isControlled || !drug) return none;
+
+  const settings = await getControlledDrugSettings(tenantId);
+
+  // Today's behaviour, preserved exactly — including the wording, so a hospital
+  // that never flips the switch sees no change at all.
+  if (settings.mode === 'legacy_block') {
+    // Only the vault tier was ever blocked. A Schedule H1 drug like tramadol has
+    // always sold at the counter, and must keep doing so.
+    if (requirements.needsVaultCustody) {
+      throw AppError.badRequest(legacyBlockMessage(drug.drugName, path));
+    }
+    return none;
+  }
+
+  // ── inline mode ──
+  if (requirements.needsRx && !ctx.prescriptionId && !ctx.externalPrescriptionId) {
+    throw AppError.badRequest(
+      `${requirements.reason} Attach the prescription — either select the patient's ` +
+        'prescription or record the outside prescription they presented.',
+    );
+  }
+
+  if (requirements.needsVaultCustody && ctx.fromBatchStock) {
+    // Being honest about a real physical constraint: the stock is in the safe,
+    // so there is nothing on the shelf to sell. This is not a policy refusal —
+    // it is telling the user where the drug actually is.
+    throw AppError.badRequest(
+      `${drug.drugName} is held in the narcotic safe, so it cannot be drawn from shelf stock. ` +
+        'Issue it out of the vault to this location first, then dispense it here.',
+    );
+  }
+
+  let witnessedById: string | null = null;
+  let witnessedAt: Date | null = null;
+  if (requirements.needsWitness) {
+    if (!ctx.witnessedById) {
+      throw AppError.badRequest(
+        `${drug.drugName} needs a second authorised person to witness the hand-over. ` +
+          'Select a witness to continue.',
+      );
+    }
+    if (ctx.witnessedById === ctx.userId) {
+      // The whole purpose of a witness is that they are somebody else.
+      throw AppError.badRequest(
+        'The witness must be a different person from the one dispensing.',
+      );
+    }
+    witnessedById = ctx.witnessedById;
+    witnessedAt = new Date();
+  }
+
+  return { requirements, witnessedById, witnessedAt };
+}
+
+/**
+ * Read-only preview of what a cart will require, for the UI to render before
+ * anything is submitted. Never throws.
+ */
+export async function previewControlledRequirements(
+  tenantId: string,
+  drugs: ControlledDrugLike[],
+): Promise<{
+  mode: string;
+  witnessRoles: string[];
+  items: Array<ControlRequirements & { drugName: string }>;
+}> {
+  const settings = await getControlledDrugSettings(tenantId);
+  return {
+    mode: settings.mode,
+    witnessRoles: settings.witnessRoles,
+    items: drugs
+      .map((d) => ({ drugName: d.drugName, ...resolveControlRequirements(d) }))
+      .filter((r) => r.isControlled),
+  };
+}
