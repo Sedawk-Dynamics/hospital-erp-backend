@@ -5,6 +5,8 @@ import {
   ADMISSION_TYPE_LABELS,
   type AdmissionType,
 } from '../../shared/admission-type';
+import type { HospitalBranding } from '../../services/pdf-branding';
+import type { PdfTemplate } from '../../services/pdf-template';
 
 // ============================================================
 // Final IP bill document (IP / Emergency / Day Care)
@@ -37,7 +39,18 @@ export interface AdmissionBillDocument {
    * a blank letterhead for every doctor, nurse and front-desk user who opened
    * a bill. The discharge document already embeds branding the same way.
    */
-  hospital: unknown;
+  hospital: HospitalBranding;
+  /**
+   * The resolved `ip_bill` template from the PDF Builder — page setup,
+   * typography, colours, header/footer options, watermark, table style,
+   * signature and custom blocks.
+   *
+   * Carried on the document for the same reason as the letterhead: the print
+   * view has to render exactly what the PDF renders, and
+   * `GET /hospital-branding/templates` is admin-only. Without it the on-screen
+   * bill and the downloaded PDF of the same stay were styled differently.
+   */
+  template: PdfTemplate;
   admissionId: string;
   admissionType: AdmissionType;
   admissionTypeLabel: string;
@@ -143,10 +156,15 @@ export async function buildAdmissionBillDocument(
   actor: { userId: string; roles: string[] },
 ): Promise<AdmissionBillDocument> {
   const { getAdmissionLedger } = await import('./billing.service');
-  const { getHospitalBranding } = await import('../hospital-branding/hospital-branding.service');
-  const [ledger, branding] = await Promise.all([
+  const { getHospitalBranding, resolvePdfTemplate } = await import(
+    '../hospital-branding/hospital-branding.service'
+  );
+  const [ledger, branding, template] = await Promise.all([
     getAdmissionLedger(tenantId, admissionId, actor),
     getHospitalBranding(tenantId),
+    // Same template the PDF route resolves, so the print view and the PDF are
+    // two renderings of one definition rather than two sets of styling.
+    resolvePdfTemplate(tenantId, 'ip_bill'),
   ]);
 
   const admission = await prisma.admission.findFirst({
@@ -259,6 +277,7 @@ export async function buildAdmissionBillDocument(
 
   return {
     hospital: branding,
+    template,
     admissionId,
     admissionType,
     admissionTypeLabel: ADMISSION_TYPE_LABELS[admissionType],

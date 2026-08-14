@@ -256,17 +256,14 @@ export async function getAdmissionBillPdf(
   try {
     const tenantId = req.user!.tenantId;
     const { buildAdmissionBillDocument } = await import('./billing.bill-document');
-    const { getHospitalBranding, resolvePdfTemplate } = await import('../hospital-branding/hospital-branding.service');
-    const [doc, branding, template] = await Promise.all([
-      buildAdmissionBillDocument(tenantId, req.params.admissionId as string, {
-        userId: req.user!.userId,
-        roles: req.user!.roles ?? [],
-      }),
-      getHospitalBranding(tenantId),
-      resolvePdfTemplate(tenantId, 'ip_bill'),
-    ]);
+    // Branding and template ride on the document, so the PDF and the print view
+    // cannot be rendered from different settings — and we resolve them once.
+    const doc = await buildAdmissionBillDocument(tenantId, req.params.admissionId as string, {
+      userId: req.user!.userId,
+      roles: req.user!.roles ?? [],
+    });
     const { streamAdmissionBillPdf } = await import('./billing.ip-bill-pdf');
-    streamAdmissionBillPdf(res, doc, branding, template);
+    streamAdmissionBillPdf(res, doc, doc.hospital, doc.template);
   } catch (err) {
     next(err);
   }
