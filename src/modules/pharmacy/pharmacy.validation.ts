@@ -184,6 +184,42 @@ export const getFormularyQuerySchema = z.object({
   }),
 });
 
+// ============================================================
+// Outside (paper) prescriptions
+// ============================================================
+
+export const createExternalPrescriptionSchema = z.object({
+  body: z.object({
+    patientId: z.string().uuid('Invalid patient ID').optional().nullable(),
+    patientNameRaw: z.string().max(255).optional().nullable(),
+    patientAge: z.number().int().min(0).max(130).optional().nullable(),
+    patientSex: z.enum(['male', 'female', 'other']).optional().nullable(),
+    // The Schedule H1 register requires the patient's address.
+    patientAddress: z.string().max(500).optional().nullable(),
+    prescriberName: z.string().min(1, "The prescriber's name is required").max(255),
+    prescriberRegNo: z.string().max(60).optional().nullable(),
+    prescriberQualification: z.string().max(120).optional().nullable(),
+    hospitalName: z.string().max(255).optional().nullable(),
+    prescribedDate: z.string().optional().nullable(),
+    imageUrl: z.string().max(500).optional().nullable(),
+    ocrJson: z.unknown().optional(),
+    notes: z.string().max(1000).optional().nullable(),
+    // Schedules on the cart, so retention matches the strictest one.
+    schedules: z.array(z.enum(['X', 'H1', 'H', 'G', 'H2', 'OTC'])).optional(),
+  }),
+});
+
+export const listExternalPrescriptionsSchema = z.object({
+  query: paginationSchema.extend({
+    patientId: z.string().uuid().optional(),
+    search: z.string().max(120).optional(),
+  }),
+});
+
+export const externalPrescriptionIdParamSchema = z.object({
+  params: z.object({ id: z.string().uuid('Invalid prescription ID') }),
+});
+
 // A pharmacy admin correcting the classifier. Recorded as scheduleSource
 // 'manual' so no re-run of the backfill can undo it.
 export const overrideScheduleSchema = z.object({
@@ -274,6 +310,9 @@ export const scanQuerySchema = z.object({
 export const complianceCheckSchema = z.object({
   body: z.object({
     prescriptionId: z.string().uuid().optional(),
+    // A sale is prescription-backed by EITHER an in-system Rx or a paper one
+    // captured at the counter.
+    externalPrescriptionId: z.string().uuid().optional(),
     items: z
       .array(z.object({ drugBatchId: z.string().uuid('Invalid drug batch ID') }))
       .min(1, 'At least one item is required'),
@@ -549,6 +588,9 @@ export const createPharmacySaleSchema = z.object({
     // Optional — omit for a walk-in / OTC counter sale (no patient selected).
     patientId: z.string().uuid('Invalid patient ID').optional(),
     prescriptionId: z.string().uuid('Invalid prescription ID').optional(),
+    // A paper prescription captured at the counter. Mutually exclusive with
+    // prescriptionId in practice — a sale is backed by one or the other.
+    externalPrescriptionId: z.string().uuid('Invalid outside prescription ID').optional(),
     items: z
       .array(
         z.object({

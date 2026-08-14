@@ -3259,9 +3259,20 @@ export async function createPharmacySale(
   // violates a Schedule rule (e.g. Schedule X with no prescription) before any
   // stock or money moves. Soft warnings (HSN/GST/Schedule H/H1) are surfaced by
   // the dedicated pre-check endpoint the POS calls.
+  // A paper prescription captured at the counter backs the sale just as an
+  // in-system one does. Validate it belongs to this hospital before it counts.
+  if ((data as any).externalPrescriptionId) {
+    const ext = await prisma.externalPrescription.findFirst({
+      where: { id: (data as any).externalPrescriptionId, tenantId },
+      select: { id: true },
+    });
+    if (!ext) throw AppError.notFound('Outside prescription not found');
+  }
+
   const compliance = await checkSaleCompliance(tenantId, {
     items: data.items.map((i) => ({ drugBatchId: i.drugBatchId })),
     prescriptionId: data.prescriptionId,
+    externalPrescriptionId: (data as any).externalPrescriptionId,
   });
   if (!compliance.ok) {
     throw AppError.badRequest(compliance.blockers.join(' '));
@@ -3512,6 +3523,10 @@ export async function createPharmacySale(
           tenantId,
           prescriptionId: data.prescriptionId ?? null,
           prescriptionItemId: l.prescriptionItemId,
+          // The paper prescription this sale was made against, when there is
+          // one. Linked per line so the statutory register can be built from
+          // the dispense rows alone, with no join back through the bill.
+          externalPrescriptionId: (data as any).externalPrescriptionId ?? null,
           patientId,
           drugBatchId: l.batchId,
           quantityDispensed: l.baseQty,
@@ -5693,9 +5708,16 @@ export async function resolveScan(tenantId: string, code: string) {
  */
 export async function checkSaleCompliance(
   tenantId: string,
-  input: { items: Array<{ drugBatchId: string }>; prescriptionId?: string | null },
+  input: {
+    items: Array<{ drugBatchId: string }>;
+    prescriptionId?: string | null;
+    externalPrescriptionId?: string | null;
+  },
 ) {
-  const hasRx = !!input.prescriptionId;
+  // A sale is prescription-backed either way: an Rx this hospital wrote, or a
+  // paper Rx the customer presented and the counter captured. A walk-in holding
+  // a valid outside prescription must count as having one.
+  const hasRx = !!input.prescriptionId || !!input.externalPrescriptionId;
   const batchIds = [...new Set(input.items.map((i) => i.drugBatchId).filter(Boolean))];
   const blockers: string[] = [];
   const warnings: string[] = [];

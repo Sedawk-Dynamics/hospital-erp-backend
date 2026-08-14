@@ -6,6 +6,7 @@ import { validate } from '../../middleware/validate';
 import { uploadSingle } from '../../services/upload.service';
 import type { AuthenticatedRequest } from '../../shared/types';
 import * as controller from './pharmacy.controller';
+import * as externalRxController from './external-prescription.controller';
 import {
   createFormularySchema,
   findFormularyMatchesSchema,
@@ -21,6 +22,9 @@ import {
   holdsQuerySchema,
   getFormularyQuerySchema,
   overrideScheduleSchema,
+  createExternalPrescriptionSchema,
+  listExternalPrescriptionsSchema,
+  externalPrescriptionIdParamSchema,
   formularyIdParamSchema,
   updateFormularySchema,
   importFormularySchema,
@@ -145,6 +149,20 @@ pharmacyRoutes.get('/holds', authenticate, requirePermission('pharmacy', 'read')
 pharmacyRoutes.post('/holds', authenticate, requirePermission('pharmacy', 'create'), validate(prePackHoldSchema), controller.prePackHold);
 pharmacyRoutes.patch('/holds/:id/collect', authenticate, requirePermission('pharmacy', 'create'), validate(collectHoldSchema), controller.collectHold);
 pharmacyRoutes.patch('/holds/:id/release', authenticate, requirePermission('pharmacy', 'update'), controller.releaseHold);
+
+// --- Outside (paper) prescriptions presented at the counter ---
+// Literal subpaths, declared before any '/:id' route in this group.
+pharmacyRoutes.post(
+  '/external-prescriptions/ocr',
+  authenticate,
+  requirePermission('pharmacy', 'create'),
+  (req: AuthenticatedRequest, res: Response, next: NextFunction) =>
+    uploadSingle('file')(req as never, res, next as never),
+  externalRxController.ocrPrescription,
+);
+pharmacyRoutes.post('/external-prescriptions', authenticate, requirePermission('pharmacy', 'create'), validate(createExternalPrescriptionSchema), externalRxController.createExternalPrescription);
+pharmacyRoutes.get('/external-prescriptions', authenticate, requirePermission('pharmacy', 'read'), validate(listExternalPrescriptionsSchema), externalRxController.listExternalPrescriptions);
+pharmacyRoutes.get('/external-prescriptions/:id', authenticate, requirePermission('pharmacy', 'read'), validate(externalPrescriptionIdParamSchema), externalRxController.getExternalPrescription);
 
 // --- Barcode-driven dispensing + automated compliance (spec Section 2) ---
 pharmacyRoutes.get('/scan', authenticate, requirePermission('pharmacy', 'read'), validate(scanQuerySchema), controller.resolveScan);

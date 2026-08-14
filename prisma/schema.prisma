@@ -1275,6 +1275,7 @@ model Tenant {
   ndpsTransactions           NdpsTransaction[]
   ndpsDailyBalances          NdpsDailyBalance[]
   pharmacyStockHolds         PharmacyStockHold[]
+  externalPrescriptions      ExternalPrescription[]
   suppliers                  Supplier[]
   inventoryItems             InventoryItem[]
   stockTransactions          StockTransaction[]
@@ -2027,6 +2028,7 @@ model Patient {
   imagingResults            ImagingResult[]
   dicomStudies              DicomStudy[]
   dispensingRecords         DispensingRecord[]
+  externalPrescriptions     ExternalPrescription[]
   drugReturns               DrugReturn[]
   pharmacyStockHolds        PharmacyStockHold[]
   bills                     Bill[]
@@ -4329,6 +4331,66 @@ model NdpsDailyBalance {
 }
 
 // ============================================================
+// Outside (paper) prescriptions
+// ============================================================
+// A pharmacy counter serves walk-ins as well as this hospital's own patients,
+// and a walk-in arrives holding a paper prescription written somewhere else.
+// There is no in-system Prescription to point at, so this records the paper one:
+// who prescribed it, their council registration number, when, and a scan of the
+// slip.
+//
+// It exists BEFORE any schedule is enforced on purpose. The moment a Schedule
+// H/H1/X sale starts requiring a prescription, a walk-in with a valid paper Rx
+// must still have a lawful path through the counter — otherwise switching
+// enforcement on would block legitimate sales rather than illegitimate ones.
+//
+// Kept separate from Prescription rather than made nullable inside it: a
+// Prescription is a clinical record this hospital authored and is responsible
+// for, while this is evidence a patient presented. Merging them would put
+// unverified outside data into the clinical record.
+model ExternalPrescription {
+  id       String  @id @default(uuid())
+  tenantId String  @map("tenant_id")
+  // Set when the counter recognised the customer as an existing patient. Null
+  // for a true walk-in, whose identity lives in the raw fields below.
+  patientId       String? @map("patient_id")
+  patientNameRaw  String? @map("patient_name_raw") @db.VarChar(255)
+  patientAge      Int?    @map("patient_age")
+  patientSex      String? @map("patient_sex") @db.VarChar(20)
+  // The Schedule H1 register must record the patient's ADDRESS, which we hold
+  // nowhere else for a walk-in.
+  patientAddress  String? @map("patient_address")
+  // The prescriber. The registration number is what makes the prescription
+  // verifiable, so it is captured separately from the name.
+  prescriberName  String  @map("prescriber_name") @db.VarChar(255)
+  prescriberRegNo String? @map("prescriber_reg_no") @db.VarChar(60)
+  prescriberQualification String? @map("prescriber_qualification") @db.VarChar(120)
+  hospitalName    String? @map("hospital_name") @db.VarChar(255)
+  prescribedDate  DateTime? @map("prescribed_date") @db.Date
+  // Scan/photo of the slip. Schedule X requires the pharmacy to RETAIN a copy,
+  // so for those sales this is the retained copy and is mandatory.
+  imageUrl        String? @map("image_url")
+  // Raw OCR output, kept so a later correction can be checked against what the
+  // machine actually read rather than re-running it.
+  ocrJson         Json?   @map("ocr_json")
+  notes           String?
+  capturedById    String  @map("captured_by_id")
+  // Statutory retention: +2 years for Schedule X, +3 for H1. Stored per row so a
+  // purge job never has to re-derive it from the sale.
+  retainUntil     DateTime? @map("retain_until") @db.Date
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  tenant            Tenant             @relation(fields: [tenantId], references: [id])
+  patient           Patient?           @relation(fields: [patientId], references: [id])
+  dispensingRecords DispensingRecord[]
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, prescriberRegNo])
+  @@map("external_prescriptions")
+}
+
+// ============================================================
 // OP pre-packing — "Stock Hold" / "Pre-Packed" (spec OP Step 1)
 // ============================================================
 // The pharmacy pre-packs a digital prescription before the patient arrives: the
@@ -4578,6 +4640,10 @@ model DispensingRecord {
   // tied to any doctor prescription. When present, the Rx status is recomputed.
   prescriptionId     String?  @map("prescription_id")
   prescriptionItemId String?  @map("prescription_item_id")
+  // The OTHER way a sale can be prescription-backed: a paper Rx written outside
+  // this hospital, captured at the counter. A line carries at most one of the
+  // two — an in-system prescription or an external one.
+  externalPrescriptionId String? @map("external_prescription_id")
   patientId          String   @map("patient_id")
   drugBatchId        String   @map("drug_batch_id")
   quantityDispensed  Int      @map("quantity_dispensed")
@@ -4606,6 +4672,7 @@ model DispensingRecord {
   tenant           Tenant            @relation(fields: [tenantId], references: [id])
   prescription     Prescription?     @relation(fields: [prescriptionId], references: [id])
   prescriptionItem PrescriptionItem? @relation(fields: [prescriptionItemId], references: [id])
+  externalPrescription ExternalPrescription? @relation(fields: [externalPrescriptionId], references: [id])
   patient          Patient           @relation(fields: [patientId], references: [id])
   drugBatch        DrugBatch         @relation(fields: [drugBatchId], references: [id])
   dispenser        User              @relation("Dispenser", fields: [dispensedBy], references: [id])
