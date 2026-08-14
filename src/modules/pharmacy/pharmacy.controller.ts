@@ -8,6 +8,7 @@ import { parseInvoiceFile } from './pharmacy.ocr';
 import { assertFeatureEnabled } from '../ai/ai.config.service';
 import { getPharmacyDetailedReport as getDetailedReport } from './pharmacy.detailed-report.service';
 import { overrideFormularySchedule as overrideSchedule } from '../drug-master/drug-schedule.service';
+import { getControlledRegister } from './controlled-register.service';
 
 // ============================================================
 // Formulary
@@ -1473,6 +1474,30 @@ export async function runPharmacyExpiryAlerts(
       force: true,
     });
     sendResponse({ res, message: 'Expiry check complete', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// The Controlled-Drug Register — the audit view a drug inspector reads.
+export async function getControlledRegisterReport(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const q = req.query as Record<string, string | undefined>;
+    const data = await getControlledRegister(req.user!.tenantId, {
+      fromDate: q.fromDate,
+      toDate: q.toDate,
+      reportType: q.reportType as never,
+      scheduleType: q.scheduleType,
+      drugIds: q.drugIds ? q.drugIds.split(',').filter(Boolean) : undefined,
+      search: q.search,
+      doctorRegNo: q.doctorRegNo,
+      locationId: q.locationId,
+    });
+    sendResponse({ res, message: 'Controlled-drug register', data });
   } catch (err) {
     next(err);
   }

@@ -22,6 +22,7 @@ import {
   holdsQuerySchema,
   getFormularyQuerySchema,
   overrideScheduleSchema,
+  controlledRegisterQuerySchema,
   createExternalPrescriptionSchema,
   listExternalPrescriptionsSchema,
   externalPrescriptionIdParamSchema,
@@ -149,6 +150,9 @@ pharmacyRoutes.get('/holds', authenticate, requirePermission('pharmacy', 'read')
 pharmacyRoutes.post('/holds', authenticate, requirePermission('pharmacy', 'create'), validate(prePackHoldSchema), controller.prePackHold);
 pharmacyRoutes.patch('/holds/:id/collect', authenticate, requirePermission('pharmacy', 'create'), validate(collectHoldSchema), controller.collectHold);
 pharmacyRoutes.patch('/holds/:id/release', authenticate, requirePermission('pharmacy', 'update'), controller.releaseHold);
+
+// --- Controlled-Drug Register (the drug inspector's audit view) ---
+pharmacyRoutes.get('/controlled-register', authenticate, requirePermission('pharmacy', 'read'), validate(controlledRegisterQuerySchema), controller.getControlledRegisterReport);
 
 // --- Outside (paper) prescriptions presented at the counter ---
 // Literal subpaths, declared before any '/:id' route in this group.

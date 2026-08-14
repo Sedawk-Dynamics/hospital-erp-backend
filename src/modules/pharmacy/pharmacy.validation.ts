@@ -184,6 +184,24 @@ export const getFormularyQuerySchema = z.object({
   }),
 });
 
+// The Controlled-Drug Register — every movement of a scheduled or narcotic
+// medicine, in one ledger. Filters MUST be declared here: validate() replaces
+// req.query with the parsed object, so an undeclared one is silently dropped.
+export const controlledRegisterQuerySchema = z.object({
+  query: z.object({
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
+    reportType: z.enum(['all', 'inward', 'outward', 'transfer']).optional(),
+    // 'NDPS' selects the narcotic list; the rest are schedule codes.
+    scheduleType: z.enum(['NDPS', 'X', 'H1', 'H', 'H2', 'G']).optional(),
+    // Comma-separated so the report can be run for several named items at once.
+    drugIds: z.string().optional(),
+    search: z.string().max(120).optional(),
+    doctorRegNo: z.string().max(60).optional(),
+    locationId: z.string().uuid().optional(),
+  }),
+});
+
 // ============================================================
 // Outside (paper) prescriptions
 // ============================================================
