@@ -164,3 +164,60 @@ export function resolveControlRequirements(
 export function legacyBlockMessage(drugName: string, path: string): string {
   return `${drugName} is an NDPS narcotic — dispense it via the NDPS (Form 3E) ${path}.`;
 }
+
+// ---------------------------------------------------------------------------
+// Statutory licence identity.
+//
+// Every register and Form printed for an inspector carries the hospital's drug
+// licences in its header. Without them the PDF prints a blank space where a
+// legal identifier belongs, which makes the document worthless as a record —
+// so these live in settings rather than being hard-coded or left to a template.
+// ---------------------------------------------------------------------------
+
+export interface DrugLicenceSettings {
+  /** Form 20 / 21 retail licence, printed on the Schedule H and H1 registers. */
+  retailLicenceNumber: string;
+  /** Form 20B / 21B wholesale licence, where the hospital holds one. */
+  wholesaleLicenceNumber: string;
+  /** NDPS Essential Narcotic Drug licence — required on Form 3C/3E/3H. */
+  ndpsLicenceNumber: string;
+  /** The issuing state's drug controller — registers are filed per state. */
+  state: string;
+  /** Who the licence is issued to, when that differs from the hospital name. */
+  licenceHolderName: string;
+  /** The registered premises address the licence names. */
+  premisesAddress: string;
+}
+
+export const DEFAULT_DRUG_LICENCE: DrugLicenceSettings = {
+  retailLicenceNumber: '',
+  wholesaleLicenceNumber: '',
+  ndpsLicenceNumber: '',
+  state: '',
+  licenceHolderName: '',
+  premisesAddress: '',
+};
+
+const str = (v: unknown, fallback: string, max = 200): string =>
+  typeof v === 'string' ? v.trim().slice(0, max) : fallback;
+
+export function mergeDrugLicence(
+  base: DrugLicenceSettings,
+  patch: unknown,
+): DrugLicenceSettings {
+  if (!patch || typeof patch !== 'object') return base;
+  const p = patch as Record<string, unknown>;
+  return {
+    retailLicenceNumber: str(p.retailLicenceNumber, base.retailLicenceNumber, 60),
+    wholesaleLicenceNumber: str(p.wholesaleLicenceNumber, base.wholesaleLicenceNumber, 60),
+    ndpsLicenceNumber: str(p.ndpsLicenceNumber, base.ndpsLicenceNumber, 60),
+    state: str(p.state, base.state, 60),
+    licenceHolderName: str(p.licenceHolderName, base.licenceHolderName, 200),
+    premisesAddress: str(p.premisesAddress, base.premisesAddress, 400),
+  };
+}
+
+/** True once the hospital can legally print a register. */
+export function hasPrintableLicence(l: DrugLicenceSettings): boolean {
+  return Boolean(l.retailLicenceNumber && l.state);
+}

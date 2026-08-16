@@ -68,6 +68,35 @@ hospitalSettingsRoutes.get(
   },
 );
 
+// Statutory drug licences. Written by an admin; readable by anyone who prints a
+// register, since the licence block is part of the document's header.
+hospitalSettingsRoutes.put(
+  '/drug-licence',
+  ...adminOnly,
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const data = await service.updateDrugLicenceSettings(req.user!.tenantId, req.body ?? {});
+      sendResponse({ res, message: 'Drug licence details saved', data });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+hospitalSettingsRoutes.get(
+  '/drug-licence',
+  authenticate,
+  requirePermission('pharmacy', 'read'),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const data = await service.getDrugLicenceSettings(req.user!.tenantId);
+      sendResponse({ res, message: 'Drug licence details', data });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 // Read-only, and needed by whoever books an appointment — the front desk, not
 // just the admin — so it is gated on reading patients rather than on being an
 // admin. It returns the fee settings alongside, which is fine: the desk has to

@@ -119,13 +119,33 @@ describe('inline — the dispense completes on the same screen', () => {
   });
 
   it('records the witness and the moment they co-signed', async () => {
+    // The witness proves who they are with their own password — a name picked
+    // from a dropdown is not a co-sign.
+    const bcrypt = (await import('bcryptjs')).default;
+    (prisma.user.findFirst as any).mockResolvedValue({
+      passwordHash: await bcrypt.hash('Correct@123', 4),
+      userRoles: [{ role: { name: 'nurse' } }],
+    });
     const r = await checkControlledDispense(
       TENANT, MORPHINE,
-      { userId: USER, prescriptionId: 'rx-1', witnessedById: 'user-2', fromBatchStock: false },
+      {
+        userId: USER, prescriptionId: 'rx-1', witnessedById: 'user-2',
+        witnessPassword: 'Correct@123', fromBatchStock: false,
+      },
       'workflow',
     );
     expect(r.witnessedById).toBe('user-2');
     expect(r.witnessedAt).toBeInstanceOf(Date);
+  });
+
+  it('will not accept a witness who did not prove who they are', async () => {
+    await expect(
+      checkControlledDispense(
+        TENANT, MORPHINE,
+        { userId: USER, prescriptionId: 'rx-1', witnessedById: 'user-2', fromBatchStock: false },
+        'workflow',
+      ),
+    ).rejects.toThrow(/must enter their password/);
   });
 
   it('leaves an ordinary drug completely alone', async () => {

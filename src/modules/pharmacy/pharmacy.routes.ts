@@ -154,6 +154,8 @@ pharmacyRoutes.patch('/holds/:id/release', authenticate, requirePermission('phar
 // --- Controlled-Drug Register (the drug inspector's audit view) ---
 pharmacyRoutes.get('/controlled-register', authenticate, requirePermission('pharmacy', 'read'), validate(controlledRegisterQuerySchema), controller.getControlledRegisterReport);
 
+pharmacyRoutes.get('/controlled-register/pdf', authenticate, requirePermission('pharmacy', 'read'), validate(controlledRegisterQuerySchema), controller.getControlledRegisterPdf);
+
 // --- Outside (paper) prescriptions presented at the counter ---
 // Literal subpaths, declared before any '/:id' route in this group.
 pharmacyRoutes.post(

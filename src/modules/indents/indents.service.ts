@@ -417,7 +417,7 @@ export async function dispenseIndent(
       await checkControlledDispense(
         tenantId,
         drug,
-        { userId, witnessedById: (data as any)?.witnessedById, fromBatchStock: true },
+        { userId, witnessedById: (data as any)?.witnessedById, witnessPassword: (data as any)?.witnessPassword, fromBatchStock: true },
         'workflow, not a ward indent',
       );
       const packSize = drug.packSize && drug.packSize > 0 ? drug.packSize : 1;
@@ -635,7 +635,7 @@ export async function dispenseIpPrescription(
       await checkControlledDispense(
         tenantId,
         drug,
-        { userId, prescriptionId, witnessedById: (data as any)?.witnessedById, fromBatchStock: true },
+        { userId, prescriptionId, witnessedById: (data as any)?.witnessedById, witnessPassword: (data as any)?.witnessPassword, fromBatchStock: true },
         'workflow',
       );
 

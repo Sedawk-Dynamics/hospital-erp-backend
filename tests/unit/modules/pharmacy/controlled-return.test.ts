@@ -62,8 +62,15 @@ describe('inline — a controlled return is held, not resold', () => {
   });
 
   it('accepts a witnessed narcotic return and quarantines it', async () => {
+    // The witness proves who they are — see the re-authentication block below.
+    const bcrypt = (await import('bcryptjs')).default;
+    (prisma.user.findFirst as any).mockResolvedValue({
+      passwordHash: await bcrypt.hash('Correct@123', 4),
+      userRoles: [{ role: { name: 'nurse' } }],
+    });
     const r = await checkControlledReturn(TENANT, MORPHINE, {
-      userId: USER, witnessedById: 'user-2', returnType: 'patient_return',
+      userId: USER, witnessedById: 'user-2', witnessPassword: 'Correct@123',
+      returnType: 'patient_return',
     });
     expect(r).toMatchObject({ quarantine: true, witnessedById: 'user-2' });
   });
@@ -91,5 +98,70 @@ describe('quarantine mechanics', () => {
     // Both the recalls report and the register key off this prefix to tell a
     // quarantine apart from a real recall or a real receipt.
     expect(QUARANTINE_PREFIX).toBe('QUAR-');
+  });
+});
+
+describe('witness re-authentication', () => {
+  /**
+   * A name picked from a dropdown is not a co-sign — anyone at the terminal
+   * could choose a colleague who is not in the room. The witness proves who
+   * they are with their own password, at the moment of witnessing.
+   */
+  beforeEach(() => setMode('inline'));
+
+  it('rejects a witness who gave no password', async () => {
+    await expect(
+      checkControlledReturn(TENANT, MORPHINE, {
+        userId: USER, witnessedById: 'user-2', returnType: 'patient_return',
+      }),
+    ).rejects.toThrow(/must enter their password/);
+  });
+
+  it('rejects a wrong password without saying which half was wrong', async () => {
+    (prisma.user.findFirst as any).mockResolvedValue({
+      passwordHash: '$2a$10$notthehashforthispassword000000000000000000000000000',
+      userRoles: [{ role: { name: 'nurse' } }],
+    });
+    await expect(
+      checkControlledReturn(TENANT, MORPHINE, {
+        userId: USER, witnessedById: 'user-2', witnessPassword: 'wrong', returnType: 'patient_return',
+      }),
+    // Deliberately vague: a precise message would turn this into a way to
+    // probe colleagues' credentials.
+    ).rejects.toThrow(/could not be verified/);
+  });
+
+  it('rejects an unknown witness the same way', async () => {
+    (prisma.user.findFirst as any).mockResolvedValue(null);
+    await expect(
+      checkControlledReturn(TENANT, MORPHINE, {
+        userId: USER, witnessedById: 'nobody', witnessPassword: 'x', returnType: 'patient_return',
+      }),
+    ).rejects.toThrow(/could not be verified/);
+  });
+
+  it('accepts the right password from an authorised role', async () => {
+    const bcrypt = (await import('bcryptjs')).default;
+    (prisma.user.findFirst as any).mockResolvedValue({
+      passwordHash: await bcrypt.hash('Correct@123', 4),
+      userRoles: [{ role: { name: 'nurse' } }],
+    });
+    const r = await checkControlledReturn(TENANT, MORPHINE, {
+      userId: USER, witnessedById: 'user-2', witnessPassword: 'Correct@123', returnType: 'patient_return',
+    });
+    expect(r).toMatchObject({ quarantine: true, witnessedById: 'user-2' });
+  });
+
+  it('refuses a correct password from a role the hospital did not authorise', async () => {
+    const bcrypt = (await import('bcryptjs')).default;
+    (prisma.user.findFirst as any).mockResolvedValue({
+      passwordHash: await bcrypt.hash('Correct@123', 4),
+      userRoles: [{ role: { name: 'receptionist' } }],
+    });
+    await expect(
+      checkControlledReturn(TENANT, MORPHINE, {
+        userId: USER, witnessedById: 'user-2', witnessPassword: 'Correct@123', returnType: 'patient_return',
+      }),
+    ).rejects.toThrow(/not authorised to witness/);
   });
 });

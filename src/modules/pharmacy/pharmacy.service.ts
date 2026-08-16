@@ -3038,6 +3038,7 @@ export async function createDispense(tenantId: string, userId: string, data: Cre
       userId,
       prescriptionId: data.prescriptionId,
       witnessedById: (data as any).witnessedById,
+      witnessPassword: (data as any).witnessPassword,
       fromBatchStock: true,
     },
     'consumption workflow',
@@ -3397,6 +3398,7 @@ export async function createPharmacySale(
           prescriptionId: data.prescriptionId,
           externalPrescriptionId: (data as any).externalPrescriptionId,
           witnessedById: (data as any).witnessedById,
+          witnessPassword: (data as any).witnessPassword,
           fromBatchStock: true,
         },
         'consumption workflow, not the counter',
@@ -4041,7 +4043,11 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
       'Counter drug return created',
     );
     // Returns apply immediately — no separate approve step. Restock now.
-    return processReturn(tenantId, counterReturn.id, userId, { status: 'processed' });
+    return processReturn(tenantId, counterReturn.id, userId, {
+      status: 'processed',
+      witnessedById: (data as any).witnessedById,
+      witnessPassword: (data as any).witnessPassword,
+    } as never);
   }
 
   // Patient returns can be anchored to the original sale line. When they are,
@@ -4210,7 +4216,11 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
   return processReturn(tenantId, drugReturn.id, userId, {
     status: 'processed',
     ...((data as any).refundMode ? { refundMode: (data as any).refundMode } : {}),
-  });
+    // Carried from the return form — a controlled return is witnessed when it
+    // is taken back, since there is no separate approve step to witness at.
+    witnessedById: (data as any).witnessedById,
+    witnessPassword: (data as any).witnessPassword,
+  } as never);
 }
 
 // ============================================================
@@ -4750,6 +4760,7 @@ export async function dispenseFromWard(
       {
         userId,
         witnessedById: (data as any).witnessedById,
+        witnessPassword: (data as any).witnessPassword,
         fromBatchStock: true,
       },
       'consumption workflow, not ward stock',
@@ -6025,6 +6036,7 @@ export async function processReturn(
       ? await checkControlledReturn(tenantId, returnDrug, {
           userId,
           witnessedById: (data as any).witnessedById,
+          witnessPassword: (data as any).witnessPassword,
           returnType: drugReturn.returnType,
         })
       : { quarantine: false, witnessedById: null, requirements: null as never };

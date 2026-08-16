@@ -1502,3 +1502,55 @@ export async function getControlledRegisterReport(
     next(err);
   }
 }
+
+/**
+ * The register as the document an inspector is handed — licence block, summary,
+ * ledger and a signature line. Streamed rather than downloaded as data, because
+ * this is a record that gets printed and signed.
+ */
+export async function getControlledRegisterPdf(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const q = req.query as Record<string, string | undefined>;
+    const [{ getHospitalBranding, resolvePdfTemplate }, { getDrugLicenceSettings }, { streamControlledRegisterPdf }] =
+      await Promise.all([
+        import('../hospital-branding/hospital-branding.service'),
+        import('../hospital-settings/hospital-settings.service'),
+        import('./controlled-register.pdf'),
+      ]);
+
+    const [data, branding, template, licence] = await Promise.all([
+      getControlledRegister(tenantId, {
+        fromDate: q.fromDate,
+        toDate: q.toDate,
+        reportType: q.reportType as never,
+        scheduleType: q.scheduleType,
+        drugIds: q.drugIds ? q.drugIds.split(',').filter(Boolean) : undefined,
+        search: q.search,
+        doctorRegNo: q.doctorRegNo,
+        locationId: q.locationId,
+      }),
+      getHospitalBranding(tenantId),
+      resolvePdfTemplate(tenantId, 'ndps_register'),
+      getDrugLicenceSettings(tenantId),
+    ]);
+
+    // Spelled out on the document so its scope is never in doubt — a register
+    // filtered to one schedule must not read as the complete one.
+    const scopeLabel = [
+      q.scheduleType ? `Schedule ${q.scheduleType}` : 'All controlled drugs',
+      q.reportType && q.reportType !== 'all' ? `${q.reportType} only` : null,
+      q.search ? `matching "${q.search}"` : null,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+
+    streamControlledRegisterPdf(res, { ...data, licence, scopeLabel }, branding, template);
+  } catch (err) {
+    next(err);
+  }
+}

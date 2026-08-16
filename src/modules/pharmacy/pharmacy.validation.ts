@@ -609,6 +609,9 @@ export const createPharmacySaleSchema = z.object({
     // A paper prescription captured at the counter. Mutually exclusive with
     // prescriptionId in practice — a sale is backed by one or the other.
     externalPrescriptionId: z.string().uuid('Invalid outside prescription ID').optional(),
+    // Controlled-narcotic co-sign: the witness and their own password.
+    witnessedById: z.string().uuid('Invalid witness').optional(),
+    witnessPassword: z.string().max(200).optional(),
     items: z
       .array(
         z.object({
@@ -722,6 +725,10 @@ export const createReturnSchema = z.object({
   body: z
     .object({
       returnType: z.enum(['patient_return', 'vendor_return', 'counter_return']),
+      // A controlled return is witnessed when it is taken back — returns apply
+      // immediately, so there is no later approve step to witness at.
+      witnessedById: z.string().uuid('Invalid witness').optional(),
+      witnessPassword: z.string().max(200).optional(),
       // Optional when dispensingRecordId is given — the batch is taken from the
       // original sale line in that case.
       drugBatchId: z.string().uuid('Invalid drug batch ID').optional(),
@@ -807,9 +814,11 @@ export const processReturnSchema = z.object({
     // G14: cash refund vs credit to the patient's advance. Omit to auto-detect
     // from the patient's IP billing category (package/insurance → advance).
     refundMode: z.enum(['cash', 'advance']).optional(),
-    // Second person witnessing a controlled-narcotic return. Only required once
-    // the hospital switches controlled dispensing to inline mode.
+    // Second person witnessing a controlled-narcotic return, plus THEIR OWN
+    // password — a name alone is not a co-sign. Only required once the hospital
+    // switches controlled dispensing to inline mode.
     witnessedById: z.string().uuid('Invalid witness').optional(),
+    witnessPassword: z.string().max(200).optional(),
   }),
   params: z.object({
     id: z.string().uuid('Invalid return ID'),

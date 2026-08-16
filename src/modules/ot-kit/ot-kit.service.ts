@@ -319,7 +319,7 @@ export async function issueKit(
       await checkControlledDispense(
         tenantId,
         drug,
-        { userId, witnessedById: (data as any)?.witnessedById, fromBatchStock: true },
+        { userId, witnessedById: (data as any)?.witnessedById, witnessPassword: (data as any)?.witnessPassword, fromBatchStock: true },
         'workflow',
       );
 

@@ -9,7 +9,10 @@ import {
 import {
   DEFAULT_CONTROLLED_DRUG_SETTINGS,
   mergeControlledDrugSettings,
+  DEFAULT_DRUG_LICENCE,
+  mergeDrugLicence,
   type ControlledDrugSettings,
+  type DrugLicenceSettings,
 } from '../../shared/controlled-drug';
 
 // ---------------------------------------------------------------------------
@@ -84,6 +87,35 @@ export async function updateControlledDrugSettings(
   await prisma.tenant.update({
     where: { id: tenantId },
     data: { themeConfig: { ...cfg, controlledDrugs: merged } as object },
+  });
+  return merged;
+}
+
+// ── Statutory drug licences (printed on every register and Form) ───────────
+
+export async function getDrugLicenceSettings(tenantId: string): Promise<DrugLicenceSettings> {
+  try {
+    const cfg = await readThemeConfig(tenantId);
+    return mergeDrugLicence(DEFAULT_DRUG_LICENCE, cfg.drugLicence);
+  } catch {
+    // A blank licence block prints an obviously-empty header, which is the
+    // honest failure — far better than a report that silently omits it.
+    return DEFAULT_DRUG_LICENCE;
+  }
+}
+
+export async function updateDrugLicenceSettings(
+  tenantId: string,
+  patch: unknown,
+): Promise<DrugLicenceSettings> {
+  const cfg = await readThemeConfig(tenantId);
+  const merged = mergeDrugLicence(
+    mergeDrugLicence(DEFAULT_DRUG_LICENCE, cfg.drugLicence),
+    patch,
+  );
+  await prisma.tenant.update({
+    where: { id: tenantId },
+    data: { themeConfig: { ...cfg, drugLicence: merged } as object },
   });
   return merged;
 }
