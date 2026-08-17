@@ -19,6 +19,8 @@ import {
 } from '../inventory/inventory.service';
 import { safePharmacyAudit } from './pharmacy.audit';
 import { checkControlledDispense, checkControlledReturn, QUARANTINE_PREFIX } from './controlled-dispense';
+import { resolveControlRequirements } from '../../shared/controlled-drug';
+import { getControlledDrugSettings } from '../hospital-settings/hospital-settings.service';
 import {
   scoreMatch,
   normalizeDrugName,
@@ -5793,23 +5795,56 @@ export async function checkSaleCompliance(
           drugName: true,
           hsnCode: true,
           taxPercent: true,
+          // The classifier's answer, which is what the sale itself enforces.
+          // This used to read drugMaster.schedule alone — deliberately left
+          // NULL — so the pre-check was blind to schedules while the sale
+          // refused them: the cashier confirmed a warnings dialog and only THEN
+          // hit the refusal. A pre-check that disagrees with the gate is worse
+          // than none, because it teaches people to click through.
+          schedule: true,
+          isNarcotic: true,
+          controlledClass: true,
+          vaultControlled: true,
+          // Kept as a fallback so a drug classified only at catalog level still
+          // resolves, and so the original contract holds for either source.
           drugMaster: { select: { schedule: true } },
         },
       },
     },
   })) ?? [];
 
+  // Only enforce what the sale will enforce. In the hospital's default mode
+  // nothing is required, so this stays advisory and the dialog reads as it
+  // always has.
+  const { mode } = await getControlledDrugSettings(tenantId);
+  const enforcing = mode === 'inline';
+
   for (const b of batches) {
     const name = b.drug?.drugName ?? 'Drug';
-    const schedule = (b.drug?.drugMaster?.schedule ?? '').toUpperCase();
     if (!b.drug?.hsnCode) warnings.push(`${name}: HSN code not set (required for a compliant GST invoice).`);
     if (b.drug?.taxPercent == null) warnings.push(`${name}: GST rate not set.`);
-    if (CONTROLLED_SCHEDULES.includes(schedule)) {
-      if (schedule === 'X' && !hasRx) {
-        blockers.push(`${name} is a Schedule X drug — a prescription is mandatory to dispense it.`);
-      } else if (!hasRx) {
-        warnings.push(`${name} is a Schedule ${schedule} drug — record the prescriber/Rx for this sale.`);
-      }
+
+    const schedule = (b.drug?.schedule ?? b.drug?.drugMaster?.schedule ?? '').toUpperCase();
+    const req = resolveControlRequirements(b.drug ? { ...b.drug, schedule, drugName: name } : null);
+
+    // The original contract, unchanged: Schedule X is mandatory, anything else
+    // controlled is advisory. That predates the enforcement setting and is not
+    // conditional on it — a Schedule X sale without a prescription has always
+    // been refused here.
+    if (schedule === 'X' && !hasRx) {
+      blockers.push(`${name} is a Schedule X drug — a prescription is mandatory to dispense it.`);
+    } else if (enforcing && req.needsRx && !hasRx) {
+      // Added on top, and only once the hospital switches enforcement on.
+      blockers.push(
+        `${name} needs a prescription — select the patient's, or record the outside ` +
+          'prescription they presented.',
+      );
+    } else if (CONTROLLED_SCHEDULES.includes(schedule) && !hasRx) {
+      warnings.push(`${name} is a Schedule ${schedule} drug — record the prescriber/Rx for this sale.`);
+    }
+
+    if (enforcing && req.needsWitness) {
+      blockers.push(`${name} is a controlled narcotic — a second authorised person must co-sign the hand-over.`);
     }
   }
 

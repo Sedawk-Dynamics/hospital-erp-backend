@@ -125,17 +125,29 @@ describe('outside prescriptions — creation', () => {
 });
 
 describe('compliance — an outside prescription counts as a prescription', () => {
+  // The schedule comes off the formulary row, which is what the classifier
+  // writes and what the sale itself enforces. It used to be read from
+  // drugMaster.schedule — deliberately left NULL — so this pre-check was blind
+  // to schedules while the sale refused them, and a cashier would confirm a
+  // warnings dialog only to be refused a moment later.
   const scheduleXBatch = [
-    { id: 'b1', drug: { drugName: 'Alprazolam', hsnCode: '3004', taxPercent: 12, drugMaster: { schedule: 'X' } } },
+    { id: 'b1', drug: { drugName: 'Alprazolam', hsnCode: '3004', taxPercent: 12, schedule: 'X' } },
   ];
+  const setMode = (mode: 'legacy_block' | 'inline') =>
+    (prisma.tenant.findFirst as any).mockResolvedValue({ themeConfig: { controlledDrugs: { mode } } });
 
   it('blocks a Schedule X sale with no prescription of either kind', async () => {
+    setMode('inline');
     (prisma.drugBatch.findMany as any).mockResolvedValue(scheduleXBatch);
     const r = await checkSaleCompliance(TENANT_ID, { items: [{ drugBatchId: 'b1' }] });
     expect(r.ok).toBe(false);
+    // Schedule X keeps its original wording — that blocker predates the
+    // enforcement setting and is not conditional on it.
+    expect(r.blockers[0]).toMatch(/Schedule X/);
   });
 
   it('allows it once a paper prescription is attached', async () => {
+    setMode('inline');
     (prisma.drugBatch.findMany as any).mockResolvedValue(scheduleXBatch);
     const r = await checkSaleCompliance(TENANT_ID, {
       items: [{ drugBatchId: 'b1' }],
@@ -146,11 +158,36 @@ describe('compliance — an outside prescription counts as a prescription', () =
   });
 
   it('still allows it with an in-system prescription', async () => {
+    setMode('inline');
     (prisma.drugBatch.findMany as any).mockResolvedValue(scheduleXBatch);
     const r = await checkSaleCompliance(TENANT_ID, {
       items: [{ drugBatchId: 'b1' }],
       prescriptionId: 'rx-1',
     });
     expect(r.ok).toBe(true);
+  });
+
+  it('only advises on Schedule H1 while the hospital is on the old block', async () => {
+    // The pre-check must never be stricter than the sale. Schedule H1 has
+    // always sold at the counter, so until enforcement is switched on this is
+    // a warning. (Schedule X is the exception — it has always been a blocker,
+    // and that predates the setting.)
+    setMode('legacy_block');
+    (prisma.drugBatch.findMany as any).mockResolvedValue([
+      { id: 'b1', drug: { drugName: 'Tramadol', hsnCode: '3004', taxPercent: 12, schedule: 'H1' } },
+    ]);
+    const r = await checkSaleCompliance(TENANT_ID, { items: [{ drugBatchId: 'b1' }] });
+    expect(r.ok).toBe(true);
+    expect(r.warnings.some((w) => /Schedule H1/.test(w))).toBe(true);
+  });
+
+  it('blocks that same H1 drug once enforcement is on', async () => {
+    setMode('inline');
+    (prisma.drugBatch.findMany as any).mockResolvedValue([
+      { id: 'b1', drug: { drugName: 'Tramadol', hsnCode: '3004', taxPercent: 12, schedule: 'H1' } },
+    ]);
+    const r = await checkSaleCompliance(TENANT_ID, { items: [{ drugBatchId: 'b1' }] });
+    expect(r.ok).toBe(false);
+    expect(r.blockers[0]).toMatch(/needs a prescription/i);
   });
 });
