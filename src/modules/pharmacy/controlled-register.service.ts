@@ -62,6 +62,8 @@ export interface RegisterRow {
   prescriber: string | null;
   verification: string | null;
   schedule: string | null;
+  /** Why this schedule — the badge tooltip answers "why is this controlled?". */
+  scheduleReason: string | null;
   controlledClass: string | null;
 }
 
@@ -121,7 +123,7 @@ async function resolveDrugs(tenantId: string, q: RegisterQuery) {
     where: where as never,
     select: {
       id: true, drugName: true, composition: true, genericName: true, strength: true,
-      schedule: true, controlledClass: true,
+      schedule: true, scheduleReason: true, controlledClass: true,
     },
   });
 }
@@ -218,6 +220,7 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
     itemName: drugById.get(drugId)?.drugName ?? '—',
     apiStrength: api(drugId),
     schedule: drugById.get(drugId)?.schedule ?? null,
+    scheduleReason: drugById.get(drugId)?.scheduleReason ?? null,
     controlledClass: drugById.get(drugId)?.controlledClass ?? null,
     opening: 0,
     closing: 0,
