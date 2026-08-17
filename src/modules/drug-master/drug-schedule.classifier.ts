@@ -50,8 +50,11 @@
  * 4 — the derived composition keeps its strengths (it is read back on the next
  *     run, and dropping them broke the codeine exemption), and an explicit oral
  *     dosage form outranks the topical guess made from the brand name.
+ * 5 — reason wording only: an NDPS drug no longer reads "over the counter" and
+ *     then "Schedule H" in the same sentence, and a single-ingredient narcotic
+ *     is refused on that ground rather than on a limit it is under.
  */
-export const CLASSIFIER_VERSION = 4;
+export const CLASSIFIER_VERSION = 5;
 
 export type ScheduleCode = 'X' | 'H1' | 'H' | 'G' | 'H2' | 'OTC';
 export type ControlledClass = 'narcotic' | 'psychotropic';
@@ -478,6 +481,8 @@ export function classify(
           matchedRule = rule.matchValue;
         }
         reason = `${rule.matchValue} combination within the NDPS concentration limits — dispensed as Schedule ${schedule}.`;
+      } else if (exempt.singleIngredient) {
+        reason = `${rule.matchValue} is the only active ingredient. The NDPS exemption covers combination preparations only, so full narcotic control applies.`;
       } else {
         reason = `${rule.matchValue} exceeds the NDPS concentration limit — full narcotic control applies.`;
       }
@@ -493,7 +498,11 @@ export function classify(
   // would print "OTC" beside a vault-controlled narcotic.
   if (controlledClass && schedule === 'OTC') {
     schedule = 'H';
-    reason = `${reason} Covered by Schedule H as a drug listed in the NDPS Act, 1985.`;
+    // Replaces rather than appends. Appending produced "No scheduled substance
+    // found — over the counter. Covered by Schedule H…", which contradicts
+    // itself in one sentence, on exactly the drugs where the explanation is
+    // read most carefully.
+    reason = `${matchedRule ?? 'This drug'} is listed in the NDPS Act, 1985, which Schedule H covers as an entry in its own right — so it is a prescription drug.`;
   }
 
   return {
@@ -522,8 +531,12 @@ function withinExemptionLimits(
   salt: ParsedSalt,
   saltCount: number,
   rule: ScheduleRuleLike,
-): { within: boolean; unknown: boolean } {
-  if (saltCount < 2) return { within: false, unknown: false };
+): { within: boolean; unknown: boolean; singleIngredient?: boolean } {
+  // The exemption is written for COMBINATION preparations only, so a single
+  // -ingredient one is refused on that ground, not on a limit it may well be
+  // under. Reported separately or the explanation reads "15mg exceeds the
+  // 100mg limit", which is plainly false to anyone checking it.
+  if (saltCount < 2) return { within: false, unknown: false, singleIngredient: true };
   if (salt.strengthValue === null) return { within: false, unknown: true };
 
   const perUnitLimit = num(rule.maxPerUnitMg);

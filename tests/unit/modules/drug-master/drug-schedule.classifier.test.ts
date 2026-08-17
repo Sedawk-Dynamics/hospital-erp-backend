@@ -159,6 +159,34 @@ describe('therapeutic-class entries', () => {
   });
 });
 
+describe('the stated reason is the one a pharmacist can check', () => {
+  /**
+   * The reason is shown on the drug page and to an inspector, so a sentence
+   * that contradicts itself or cites the wrong ground is a defect in its own
+   * right — these are the drugs whose explanation gets read most carefully.
+   */
+  it('does not call an NDPS narcotic over-the-counter on its way to Schedule H', () => {
+    const r = run('Morphine (30mg)');
+    expect(r.schedule).toBe('H');
+    expect(r.reason).not.toMatch(/over the counter/i);
+    expect(r.reason).toMatch(/NDPS Act/);
+  });
+
+  it('refuses a single-ingredient narcotic on the right ground', () => {
+    // 15mg is well UNDER the 100mg limit — saying it "exceeds" it is false.
+    // The actual ground is that the exemption covers combinations only.
+    const r = run('Codeine (15mg)');
+    expect(r.vaultControlled).toBe(true);
+    expect(r.reason).toMatch(/only active ingredient/i);
+    expect(r.reason).not.toMatch(/exceeds/i);
+  });
+
+  it('still says "exceeds" when the strength genuinely exceeds the limit', () => {
+    const r = run('Codeine (150mg) + Paracetamol (500mg)');
+    expect(r.reason).toMatch(/exceeds/i);
+  });
+});
+
 describe('the derived composition round-trips', () => {
   /**
    * The result's `composition` is written back to the column the classifier
