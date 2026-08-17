@@ -152,3 +152,26 @@ export type ListDrugMasterQuery = z.infer<typeof listDrugMasterSchema>['query'];
 export type CreateDrugMasterInput = z.infer<typeof createDrugMasterSchema>['body'];
 export type UpdateDrugMasterInput = z.infer<typeof updateDrugMasterSchema>['body'];
 export type SuggestDrugMasterInput = z.infer<typeof suggestDrugMasterSchema>['body'];
+
+/** Salt review queue. Declared or validate() drops the filters. */
+export const listSaltsSchema = z.object({
+  query: z.object({
+    page: z.coerce.number().int().positive().optional(),
+    limit: z.coerce.number().int().positive().max(200).optional(),
+    search: z.string().optional(),
+    status: z.enum(['undecided', 'decided', 'all']).optional(),
+    schedule: z.enum(['X', 'H1', 'H', 'G', 'OTC']).optional(),
+    controlled: z.string().transform((v) => v === 'true').optional(),
+  }),
+});
+
+export const decideSaltSchema = z.object({
+  params: z.object({ id: z.string().uuid('Invalid salt ID') }),
+  body: z.object({
+    // Null is a legitimate answer — it puts the molecule back in the queue.
+    scheduleCode: z.enum(['X', 'H1', 'H', 'G', 'OTC']).nullable(),
+    controlledClass: z.enum(['narcotic', 'psychotropic']).nullable().optional(),
+    vaultControlled: z.boolean().optional(),
+    note: z.string().max(1000).nullable().optional(),
+  }),
+});

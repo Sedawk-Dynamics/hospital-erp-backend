@@ -3,6 +3,7 @@ import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse, sendPaginatedResponse } from '../../shared/apiResponse';
 import { AppError } from '../../shared/appError';
 import * as service from './drug-master.service';
+import * as saltReview from './salt-review.service';
 import * as refresh from './drug-master.refresh';
 import { listProviders } from './drug-master.providers';
 
@@ -259,6 +260,53 @@ export async function deleteHsnGstRate(
   try {
     const out = await service.deleteHsnGstRate(req.user!.roles ?? [], req.params.id as string);
     sendResponse({ res, message: 'HSN → GST rate removed', data: out });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ── Salt review queue ──────────────────────────────────────────────────────
+// A molecule no published schedule names is stored undecided rather than
+// over-the-counter. These endpoints are how that gets cleared.
+
+export async function listSalts(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const { items, total, page, limit } = await saltReview.listSalts(req.query as never);
+    sendPaginatedResponse(res, items, total, page, limit, 'Salts retrieved');
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getSaltReviewSummary(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const summary = await saltReview.saltReviewSummary();
+    sendResponse({ res, message: 'Salt review summary', data: summary });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function decideSalt(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const result = await saltReview.decideSalt(
+      req.params.id as string,
+      req.user!.userId,
+      req.body as never,
+    );
+    if (!result) {
+      sendResponse({ res, statusCode: 404, success: false, message: 'Salt not found' });
+      return;
+    }
+    sendResponse({
+      res,
+      message: `Schedule saved. ${result.reclassified} product(s) re-classified.`,
+      data: result.salt,
+    });
   } catch (err) {
     next(err);
   }

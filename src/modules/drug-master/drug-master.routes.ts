@@ -19,6 +19,8 @@ import {
   updateHsnGstRateSchema,
   bulkHsnGstRateSchema,
   hsnGstRateIdParamSchema,
+  listSaltsSchema,
+  decideSaltSchema,
 } from './drug-master.validation';
 
 export const drugMasterRoutes = Router();
@@ -32,6 +34,33 @@ drugMasterRoutes.get(
   authenticate,
   validate(searchDrugMasterSchema),
   controller.searchDrugMaster,
+);
+
+// --- Salt review queue (super-admin) ---
+// A molecule no published schedule names is stored UNDECIDED rather than
+// over-the-counter, so it shows up here as work instead of quietly reading as
+// safe. Declared before '/:id' so 'salts' is not captured as a drug id.
+drugMasterRoutes.get(
+  '/salts',
+  authenticate,
+  requireRoles('super_admin'),
+  validate(listSaltsSchema),
+  controller.listSalts,
+);
+
+drugMasterRoutes.get(
+  '/salts/summary',
+  authenticate,
+  requireRoles('super_admin'),
+  controller.getSaltReviewSummary,
+);
+
+drugMasterRoutes.patch(
+  '/salts/:id',
+  authenticate,
+  requireRoles('super_admin'),
+  validate(decideSaltSchema),
+  controller.decideSalt,
 );
 
 // --- HSN → GST tax reference ---
