@@ -85,19 +85,23 @@ describe('inline — the dispense completes on the same screen', () => {
     expect(r.witnessedById).toBeNull();
   });
 
-  it('says where a vault drug actually is, rather than just refusing', async () => {
-    // The stock is in the safe, so there is nothing on the shelf to sell. That
-    // is a physical fact, not a policy decision, and the message should say so.
+  it('reaches the witness check for a vault narcotic drawn from batch stock', async () => {
+    // Regression guard. There used to be a "the stock is in the safe, you
+    // cannot draw it from a batch" refusal ahead of this, which made sense
+    // while narcotic quantity lived outside DrugBatch. Once the stock was
+    // unified onto batches, every dispensing path passed fromBatchStock — so
+    // that refusal fired first on all five routes and the co-sign below became
+    // unreachable. An end-to-end run caught it; this keeps it caught.
     await expect(
       checkControlledDispense(
         TENANT, MORPHINE,
         { userId: USER, prescriptionId: 'rx-1', fromBatchStock: true },
         'workflow',
       ),
-    ).rejects.toThrow(/held in the narcotic safe/);
+    ).rejects.toThrow(/second authorised person/);
   });
 
-  it('requires a witness for a vault narcotic drawn from the vault', async () => {
+  it('requires a witness however the stock was drawn', async () => {
     await expect(
       checkControlledDispense(
         TENANT, MORPHINE,

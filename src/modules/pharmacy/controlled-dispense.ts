@@ -129,15 +129,18 @@ export async function checkControlledDispense(
     );
   }
 
-  if (requirements.needsVaultCustody && ctx.fromBatchStock) {
-    // Being honest about a real physical constraint: the stock is in the safe,
-    // so there is nothing on the shelf to sell. This is not a policy refusal —
-    // it is telling the user where the drug actually is.
-    throw AppError.badRequest(
-      `${drug.drugName} is held in the narcotic safe, so it cannot be drawn from shelf stock. ` +
-        'Issue it out of the vault to this location first, then dispense it here.',
-    );
-  }
+  // NOTE: there is deliberately no "this stock is in the safe, you cannot draw
+  // it from a batch" refusal here any more.
+  //
+  // That check made sense while narcotic quantity lived in NdpsStockBalance with
+  // no batch behind it — there genuinely was nothing on the shelf to sell. Once
+  // the stock was unified onto DrugBatch, the batch IS the vault stock, and the
+  // refusal became unreachable-by-design: every dispensing path passes
+  // fromBatchStock, so a vault narcotic was refused before the witness check
+  // could ever run. The co-sign below was dead code on all five routes.
+  //
+  // The control for taking a narcotic out of the safe is the second person who
+  // signs for it, which is exactly what needsWitness enforces.
 
   let witnessedById: string | null = null;
   let witnessedAt: Date | null = null;
