@@ -39,6 +39,8 @@ import { seedPackPrices } from '../seeds/pack-prices';
 import { seedImagingModalities } from '../seeds/imaging-modalities';
 import { seedHsnGstRates } from '../seeds/hsn-gst-rates';
 import { seedDrugScheduleRules } from '../seeds/drug-schedule-rules';
+import { seedDrugScheduleClassification } from '../seeds/drug-schedule-classification';
+import { seedNdpsBatchUnification } from '../seeds/ndps-batch-unification';
 import { migrateInventoryToFormulary } from '../seeds/inventory-to-formulary';
 
 // Arbitrary constant identifying our advisory lock.
@@ -122,6 +124,20 @@ export async function runSeeds(db: PrismaClient): Promise<void> {
   // idempotent and platform-wide, so it runs every boot and a release shipping a
   // gazette update picks it up. Reference data only — nothing reads it yet.
   await step('drug-schedule-rules', () => seedDrugScheduleRules(db));
+
+  // Apply those rules to the catalog and every formulary. Without this a drug's
+  // schedule stays NULL, so no badge renders, the controlled register is empty
+  // and the dispensing gate has nothing to act on — the feature would look like
+  // it had done nothing. Costs one count once everything is classified, and
+  // auto-seed runs after the server is already listening, so a long first pass
+  // never blocks startup or a health check.
+  await step('drug-schedule-classification', () => seedDrugScheduleClassification(db));
+
+  // Narcotic stock onto DrugBatch. Only the unambiguous cases; a drug holding
+  // stock in BOTH the NDPS ledger and batches is named in the log and left for
+  // a person, because totalling would inflate it and picking a side would
+  // destroy it.
+  await step('ndps-batch-unification', () => seedNdpsBatchUnification(db));
 
   // Legacy stock unification — give every InventoryItem a formulary product so
   // all types behave like medicines (searchable + billable). Additive and
