@@ -155,6 +155,7 @@ export async function listDrugMaster(query: ListDrugMasterQuery) {
   if (query.controlled !== undefined) {
     where.controlledClass = query.controlled ? { not: null } : null;
   }
+  if (query.qrTracked !== undefined) where.requiresQrScan = query.qrTracked;
 
   const [items, total] = await Promise.all([
     prisma.drugMaster.findMany({ where, skip, take, orderBy: { name: 'asc' } }),

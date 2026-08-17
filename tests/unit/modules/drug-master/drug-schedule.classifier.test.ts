@@ -159,21 +159,61 @@ describe('therapeutic-class entries', () => {
   });
 });
 
-describe('Schedule H2 — brand matched, QR tracked', () => {
-  it('matches the whole trade name and asks for a QR scan', () => {
-    const r = classify({ brandName: 'DOLO 650 MG TABLET 15', genericName: 'Paracetamol (650mg)' }, index);
-    expect(r.schedule).toBe('H2');
+describe('Schedule H2 — a QR obligation, never a schedule', () => {
+  /**
+   * H2 is the anti-counterfeiting list under Rule 96(6)-(7), not a prescription
+   * control. It used to be the top rung of the cascade and returned early, so a
+   * brand hit replaced the real schedule and blanked the NDPS fields. Both of
+   * the drugs below are on the notified list AND need a prescription, which is
+   * exactly the combination that used to be lost.
+   */
+  it('raises the QR flag without touching the schedule', () => {
+    const r = classify(
+      { brandName: 'DOLO 650 MG TABLET 15', genericName: 'Paracetamol (650mg)' },
+      index,
+    );
     expect(r.requiresQrScan).toBe(true);
-  });
-
-  it('is case-insensitive on the brand', () => {
-    expect(classify({ brandName: 'dolo 650 mg tablet 15', genericName: null }, index).schedule).toBe('H2');
-  });
-
-  it('does not fire on a similar but different pack', () => {
-    const r = classify({ brandName: 'DOLO 650 MG TABLET 30', genericName: 'Paracetamol (650mg)' }, index);
+    expect(r.schedule).toBe('OTC'); // paracetamol is not scheduled
     expect(r.schedule).not.toBe('H2');
-    expect(r.requiresQrScan).toBe(false);
+  });
+
+  it('never downgrades a prescription drug that is on the list', () => {
+    const r = classify(
+      { brandName: 'MERONEM 1000 MG INJECTION 1', genericName: 'Meropenem (1000mg)' },
+      index,
+    );
+    expect(r.requiresQrScan).toBe(true);
+    expect(r.schedule).toBe('H1'); // meropenem is named in H1, which the cascade still reaches
+  });
+
+  it('never blanks the NDPS overlay for a listed brand', () => {
+    // Deca Durabolin is nandrolone — Schedule H via the anabolic-steroid class
+    // entry. A brand hit must not wipe what the composition established.
+    const r = classify(
+      { brandName: 'DECA DURABOLIN 50 MG INJECTION 1', genericName: 'Nandrolone Decanoate (50mg)' },
+      index,
+    );
+    expect(r.requiresQrScan).toBe(true);
+    expect(r.schedule).toBe('H');
+  });
+
+  it('is case-insensitive and ignores the pack the list was notified with', () => {
+    // The notified name carries a pack count; no catalog writes one. Matching
+    // on the pack is why this list matched 0 of 253,987 catalog rows.
+    for (const brand of ['dolo 650 mg tablet 15', 'Dolo 650 Tablet', 'DOLO 650MG TABLET 30']) {
+      expect(classify({ brandName: brand, genericName: null }, index).requiresQrScan, brand).toBe(true);
+    }
+  });
+
+  it('still separates two strengths of the same brand', () => {
+    // "Pan 40" is notified; the number is what distinguishes it from Pan 20, so
+    // dropping the pack must not drop the strength too.
+    expect(classify({ brandName: 'PAN 40 MG TABLET 15', genericName: null }, index).requiresQrScan).toBe(true);
+    expect(classify({ brandName: 'PAN 20 MG TABLET 15', genericName: null }, index).requiresQrScan).toBe(false);
+  });
+
+  it('leaves an unlisted brand alone', () => {
+    expect(classify({ brandName: 'Some Unlisted Brand', genericName: null }, index).requiresQrScan).toBe(false);
   });
 });
 

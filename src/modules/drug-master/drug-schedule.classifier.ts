@@ -7,19 +7,29 @@
  * 254K-row backfill to a single rule query and makes every branch unit-testable.
  *
  * THE CASCADE (first match wins, per the workflow spec):
- *   1. exact trade-name match in the Schedule H2 brand list  → H2 + QR scan
- *   2. otherwise extract the salts and the dosage form
- *   3. any salt in Schedule X                                → X
- *   4. any salt in Schedule H1                               → H1
- *   5. any salt in Schedule H                                → H
- *   6. any salt in Schedule G   → topical ? OTC : G
- *   7. nothing matched                                       → OTC
+ *   1. extract the salts and the dosage form
+ *   2. any salt in Schedule X                                → X
+ *   3. any salt in Schedule H1                               → H1
+ *   4. any salt in Schedule H                                → H
+ *   5. any salt in Schedule G   → topical ? OTC : G
+ *   6. nothing matched                                       → OTC
  *
  * THE NDPS OVERLAY is a SECOND, INDEPENDENT axis applied afterwards. A molecule
  * can be Schedule H1 (what the counter collects) *and* a psychotropic (which
  * register it appears in) at the same time — tramadol is exactly that. Folding
  * the two into one flag is what would wrongly put every tramadol SKU under vault
  * custody, so `schedule` and `controlledClass` are always reported separately.
+ *
+ * SCHEDULE H2 IS A THIRD AXIS, not a rung of the cascade. Its 300 entries are
+ * the formulations notified under Rule 96(6)-(7) that must carry a QR/barcode so
+ * the pack can be authenticated — an ANTI-COUNTERFEITING obligation, chosen by
+ * sales volume, not a prescription control. The list contains a pregnancy test
+ * kit and two multivitamins, and it also contains meropenem and an anabolic
+ * steroid. Treating it as the strictest rung (which it was) meant a brand match
+ * replaced the real schedule, wiped controlledClass and vaultControlled, and
+ * returned a code the counter does not gate on — quietly turning meropenem into
+ * a no-prescription-needed sale. So a brand hit now only raises requiresQrScan
+ * and the salt cascade still decides the schedule.
  *
  * The one case where the overlay does move the schedule is the codeine rule from
  * the NDPS Rules: a COMBINATION preparation that stays within both the per-unit
@@ -35,8 +45,10 @@
  *
  * 2 — an NDPS-listed drug is Schedule H even when no salt rule names it, so
  *     morphine and fentanyl no longer come out as OTC.
+ * 3 — Schedule H2 became a flag instead of a schedule, and brand keys ignore
+ *     pack size so the QR obligation matches at all.
  */
-export const CLASSIFIER_VERSION = 2;
+export const CLASSIFIER_VERSION = 3;
 
 export type ScheduleCode = 'X' | 'H1' | 'H' | 'G' | 'H2' | 'OTC';
 export type ControlledClass = 'narcotic' | 'psychotropic';
@@ -144,6 +156,31 @@ export function normaliseSalt(raw: string): string {
   return toks.join(' ');
 }
 
+/** Pack units, as opposed to strength units — the tail of a notified name. */
+const PACK_UNITS = 'ml|gm|mdi|kit|rotacap|md|respule|vial|amp';
+
+/**
+ * Reduce a trade name to a comparable key for the Schedule H2 brand list.
+ *
+ * The two sides are written differently and neither can be changed: the notified
+ * list carries the pack it was notified with ("ACILOC 150 MG TABLET 30"), while
+ * the catalog names the product ("Aciloc 150 Tablet"). So the pack tail goes,
+ * and the strength UNIT goes while the strength NUMBER stays — the catalog
+ * routinely omits "mg" but never the number, and the number is what separates
+ * "Pan 40" from "Pan 20", which are separately notified.
+ *
+ * Matching is deliberately tolerant now that a hit only raises a QR flag. Before
+ * this was a flag, a false positive silently dropped a drug's schedule; now the
+ * worst it can do is ask a counter to scan a pack it did not have to.
+ */
+export function normaliseBrand(raw: string | null | undefined): string {
+  let s = String(raw ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
+  s = s.replace(/([\d./]+)\s*(mg|mcg|ml|iu|gm|g|%)\b/g, '$1$2'); // "150 mg" -> "150mg"
+  s = s.replace(new RegExp(`(\\s+\\d+(\\s*(${PACK_UNITS}))?)+$`, 'g'), ''); // drop the pack
+  s = s.replace(/([\d./]+)\s*(mg|mcg|ml|iu|gm|g)\b/g, '$1'); // "150mg" -> "150"
+  return s.replace(/\s+/g, ' ').trim();
+}
+
 // "10mg/5ml", "1.25mg", "50mcg", "0.3% w/v"
 const STRENGTH_RE = /([\d.]+)\s*(mcg|mg|gm|g|ml|iu|%)\s*(?:\/\s*([\d.]+)?\s*(ml|gm|g))?/i;
 
@@ -206,7 +243,12 @@ export function buildRuleIndex(rules: ScheduleRuleLike[]): RuleIndex {
       continue;
     }
     if (r.matchType === 'brand') {
-      byBrand.set(r.matchNorm, r);
+      // Keyed off the raw trade name rather than the stored matchNorm: the
+      // fixture's names carry the pack count they were notified with ("ACILOC
+      // 150 MG TABLET 30") and no catalog names a pack. First rule wins — the
+      // only collisions are one formulation notified in two tube sizes.
+      const key = normaliseBrand(r.matchValue);
+      if (key && !byBrand.has(key)) byBrand.set(key, r);
     } else if (r.matchType === 'class') {
       classes.push(r);
     } else {
@@ -291,22 +333,14 @@ export function classify(
     needsReview: false,
   };
 
-  // ── 1. Schedule H2 — matched on the whole trade name, not on a salt ──
-  const brandKey = (input.brandName ?? '').trim().toLowerCase();
-  if (brandKey && index.byBrand.has(brandKey)) {
-    const rule = index.byBrand.get(brandKey)!;
-    return {
-      ...base,
-      schedule: 'H2',
-      reason: `Schedule H2 formulation "${rule.matchValue}" — QR/barcode scan required at sale.`,
-      matchedRule: rule.matchValue,
-      controlledClass: null,
-      vaultControlled: false,
-      requiresQrScan: true,
-    };
-  }
+  // ── Schedule H2 — a QR obligation carried alongside, NOT a schedule ──
+  // Matched on the whole trade name rather than a salt. It deliberately does not
+  // return: the schedule still comes from the composition below. See the note at
+  // the top of this file for why conflating the two was dangerous.
+  const brandRule = index.byBrand.get(normaliseBrand(input.brandName));
+  const qrScan = Boolean(brandRule);
 
-  // ── 2-6. Salt cascade ──
+  // ── 1-6. Salt cascade ──
   const hits = new Map<string, { salt: ParsedSalt; rule: ScheduleRuleLike }>();
   for (const salt of salts) {
     for (const rule of lookupSalt(salt, index)) {
@@ -403,12 +437,14 @@ export function classify(
   return {
     ...base,
     schedule,
-    reason,
+    reason: qrScan
+      ? `${reason} Also a Schedule H2 formulation ("${brandRule!.matchValue}") — the pack carries a QR/barcode to be scanned at sale.`
+      : reason,
     matchedRule,
     controlledClass,
     narcoticClass,
     vaultControlled,
-    requiresQrScan: false,
+    requiresQrScan: qrScan,
     needsReview,
   };
 }

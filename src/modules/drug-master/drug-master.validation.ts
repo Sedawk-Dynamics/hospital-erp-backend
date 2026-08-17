@@ -37,9 +37,16 @@ export const listDrugMasterSchema = z.object({
       .optional(),
     // The schedule the classifier resolved. Declared here or validate() drops
     // it — it replaces req.query with the parsed object.
-    schedule: z.enum(['X', 'H1', 'H', 'H2', 'G', 'OTC']).optional(),
+    // H2 is absent on purpose: it is a QR obligation, not a schedule, so no drug
+    // ever resolves to it. Filter those with `qrTracked` instead.
+    schedule: z.enum(['X', 'H1', 'H', 'G', 'OTC']).optional(),
     // Drugs the NDPS list names, whatever their schedule.
     controlled: z
+      .string()
+      .transform((v) => v === 'true')
+      .optional(),
+    // Schedule H2 formulations — the pack must be QR-scanned at sale.
+    qrTracked: z
       .string()
       .transform((v) => v === 'true')
       .optional(),
