@@ -40,6 +40,8 @@ import { seedImagingModalities } from '../seeds/imaging-modalities';
 import { seedHsnGstRates } from '../seeds/hsn-gst-rates';
 import { seedDrugScheduleRules } from '../seeds/drug-schedule-rules';
 import { seedDrugScheduleClassification } from '../seeds/drug-schedule-classification';
+import { seedSalts } from '../seeds/salt-master';
+import { seedDrugSalts } from '../seeds/drug-salts';
 import { seedNdpsBatchUnification } from '../seeds/ndps-batch-unification';
 import { migrateInventoryToFormulary } from '../seeds/inventory-to-formulary';
 
@@ -124,6 +126,19 @@ export async function runSeeds(db: PrismaClient): Promise<void> {
   // idempotent and platform-wide, so it runs every boot and a release shipping a
   // gazette update picks it up. Reference data only — nothing reads it yet.
   await step('drug-schedule-rules', () => seedDrugScheduleRules(db));
+
+  // Turn those rules inside out: the MOLECULE becomes a row carrying its own
+  // schedule, so classifying a drug is a join rather than a string match. Small
+  // and idempotent (1,858 salts), and a schedule a person set by hand is never
+  // overwritten. Molecules no published list names are created undecided, which
+  // is what surfaces them as work instead of letting them read as safe.
+  await step('salt-master', () => seedSalts(db));
+
+  // Parse every composition ONCE into structured salt + strength rows. This is
+  // the only place the composition text is read; nothing downstream re-parses
+  // it, which is what stopped the strengths being destroyed by a lossy
+  // round-trip. Skips drugs that already have them, so a re-run is cheap.
+  await step('drug-salts', () => seedDrugSalts(db));
 
   // Apply those rules to the catalog and every formulary. Without this a drug's
   // schedule stays NULL, so no badge renders, the controlled register is empty

@@ -303,7 +303,7 @@ export function buildRuleIndex(rules: ScheduleRuleLike[]): RuleIndex {
  * long enough to be a molecule name and is not itself a salt word. That keeps
  * "Calcium Dobesilate" from ever being looked up as "calcium".
  */
-function saltLookupKeys(norm: string): string[] {
+export function saltLookupKeys(norm: string): string[] {
   const keys = [norm];
   const toks = norm.split(' ');
   if (toks.length > 1) {

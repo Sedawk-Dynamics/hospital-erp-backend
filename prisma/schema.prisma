@@ -4108,6 +4108,8 @@ model DrugMaster {
   updatedAt        DateTime    @default(now()) @updatedAt @map("updated_at")
 
   formularyItems DrugFormulary[]
+  /// Structured composition. Replaces parsing `saltComposition` at classify time.
+  salts          DrugSalt[]
 
   @@index([name])
   @@index([scheduleResolved])
@@ -4214,6 +4216,168 @@ model DrugScheduleRule {
   @@index([matchNorm])
   @@index([matchType, isActive])
   @@map("drug_schedule_rules")
+}
+
+// ============================================================
+// Salt master — the structured replacement for classifying by string
+// ============================================================
+// A drug's composition used to live only as text, and its schedule was decided
+// by parsing that text and matching it against DrugScheduleRule by name on every
+// classification. Three fragile steps stacked — parse, normalise, match — and
+// most of the classifier's bugs came from that stack: a flavour name ("American
+// Ice Cream") read as a topical preparation, strengths destroyed by a lossy
+// round-trip, "Diclofenac Sodium/Potassium/Acid" failing to match plain
+// Diclofenac.
+//
+// The catalog turns out to hold only 1,685 distinct molecules across 253,987
+// products and 367,027 salt occurrences — small enough to curate by hand. So the
+// molecule becomes a row, the schedule becomes a column on it, and deciding a
+// product's schedule becomes a join instead of a string comparison.
+//
+// Parsing does not disappear; it moves to INGESTION. Text is turned into DrugSalt
+// rows once when a drug is imported, and never re-parsed afterwards.
+//
+// Salt is the source of truth for salt-level schedules. DrugScheduleRule keeps
+// only what is not a molecule: the 300 Schedule H2 brand formulations and the 6
+// therapeutic-class entries.
+model Salt {
+  id   String @id @default(uuid())
+  /// Canonical INN-style name as it should be displayed: "Chlorpheniramine".
+  name String @unique @db.VarChar(255)
+  /// Lookup key — lowercased, punctuation-free, trailing salt form removed. Used
+  /// only at ingestion to resolve text to a row, never at classification.
+  norm String @unique @db.VarChar(255)
+
+  // ── What the counter must collect ──
+  /// 'X' | 'H1' | 'H' | 'G' | 'OTC'. NULL means NOBODY HAS DECIDED YET — which is
+  /// the point: an unmapped molecule becomes a visible work queue instead of
+  /// silently reading over-the-counter, which is how warfarin, rosuvastatin and
+  /// pregabalin sat unscheduled without anyone noticing.
+  scheduleCode String? @map("schedule_code") @db.VarChar(10)
+
+  // ── NDPS overlay: a second, independent axis (see DrugScheduleRule) ──
+  controlledClass String? @map("controlled_class") @db.VarChar(20)
+  narcoticClass   String? @map("narcotic_class") @db.VarChar(40)
+  vaultControlled Boolean @default(false) @map("vault_controlled")
+
+  // ── The codeine concentration exemption, unchanged in meaning ──
+  exemptIfCombination     Boolean  @default(false) @map("exempt_if_combination")
+  maxPerUnitMg            Decimal? @map("max_per_unit_mg") @db.Decimal(10, 3)
+  maxConcentrationPercent Decimal? @map("max_concentration_percent") @db.Decimal(6, 3)
+  fallbackSchedule        String?  @map("fallback_schedule") @db.VarChar(10)
+
+  /// Schedule G's own Note — topical/external preparations are not covered.
+  topicalExempt Boolean @default(false) @map("topical_exempt")
+
+  /// Where the schedule came from: 'cdsco' (migrated from the published lists),
+  /// 'class' (inherited from a therapeutic class), 'manual' (a human decided).
+  /// A manual decision is never overwritten by a re-seed.
+  source       String?   @map("source") @db.VarChar(20)
+  /// Free text for the audit trail — why this molecule sits where it does.
+  scheduleNote String?   @map("schedule_note")
+  /// Plain column, no relation — same convention as
+  /// DrugFormulary.scheduleOverriddenById, which keeps User free of a
+  /// back-relation for every audit field in the schema.
+  reviewedById String?   @map("reviewed_by_id")
+  reviewedAt   DateTime? @map("reviewed_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  synonyms  SaltSynonym[]
+  classes   SaltTherapeuticClass[]
+  drugSalts DrugSalt[]
+
+  @@index([scheduleCode])
+  @@index([controlledClass])
+  @@map("salts")
+}
+
+/// Alternate spellings for one molecule. 29 of the 1,685 are written more than
+/// one way in the catalog — "Paracetamol/Acetaminophen", "Metoprolol Succinate"
+/// vs "Metoprolol Tartrate" — plus the Indian labelling spellings
+/// (phenobarbitone/phenobarbital) that a plain match would miss.
+model SaltSynonym {
+  id     String @id @default(uuid())
+  saltId String @map("salt_id")
+  name   String @db.VarChar(255)
+  /// Normalised form. Unique across ALL synonyms so one spelling can never
+  /// resolve to two different molecules.
+  norm   String @unique @db.VarChar(255)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  salt Salt @relation(fields: [saltId], references: [id], onDelete: Cascade)
+
+  @@index([saltId])
+  @@map("salt_synonyms")
+}
+
+/// The Schedule H entries that name a CATEGORY rather than a molecule —
+/// "Antibiotics" is item 32 of Schedule H in those words. There are 6. They stay
+/// separate from Salt because a molecule can belong to one without being named
+/// individually anywhere.
+model TherapeuticClass {
+  id           String  @id @default(uuid())
+  name         String  @unique @db.VarChar(255)
+  scheduleCode String  @map("schedule_code") @db.VarChar(10)
+  /// Regex used at INGESTION to propose a class for a new molecule. A human
+  /// confirms it; the classifier never runs this.
+  pattern      String?
+  notes        String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  salts SaltTherapeuticClass[]
+
+  @@map("therapeutic_classes")
+}
+
+model SaltTherapeuticClass {
+  saltId  String @map("salt_id")
+  classId String @map("class_id")
+  /// True when a human confirmed the membership rather than the pattern guessing.
+  isConfirmed Boolean @default(false) @map("is_confirmed")
+
+  salt  Salt             @relation(fields: [saltId], references: [id], onDelete: Cascade)
+  class TherapeuticClass @relation(fields: [classId], references: [id], onDelete: Cascade)
+
+  @@id([saltId, classId])
+  @@index([classId])
+  @@map("salt_therapeutic_classes")
+}
+
+/// One molecule inside one catalog product, with its strength as DATA.
+///
+/// The strength is split into typed columns on purpose. Held as text it was
+/// destroyed by a lossy round-trip through the composition column — 246,485 rows
+/// lost their strengths, which broke the one rule that needs them — and "500mg"
+/// against "500ml" could drift silently. A number and a unit cannot.
+model DrugSalt {
+  id           String @id @default(uuid())
+  drugMasterId String @map("drug_master_id")
+  saltId       String @map("salt_id")
+
+  /// 400 in "400mg". Null when the catalog recorded "(NA)".
+  strengthValue Decimal? @map("strength_value") @db.Decimal(12, 4)
+  /// 'mg' | 'mcg' | 'g' | 'ml' | 'iu' | '%'
+  strengthUnit  String?  @map("strength_unit") @db.VarChar(10)
+  /// For "10mg/5ml" this is 5 — the volume the strength is expressed per.
+  perVolumeValue Decimal? @map("per_volume_value") @db.Decimal(12, 4)
+  perVolumeUnit  String?  @map("per_volume_unit") @db.VarChar(10)
+
+  /// Order within the composition, so it can be rendered back in the original
+  /// sequence without storing the text.
+  position Int @default(0)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  drugMaster DrugMaster @relation(fields: [drugMasterId], references: [id], onDelete: Cascade)
+  salt       Salt       @relation(fields: [saltId], references: [id], onDelete: Cascade)
+
+  @@unique([drugMasterId, saltId])
+  @@index([saltId])
+  @@map("drug_salts")
 }
 
 // ============================================================

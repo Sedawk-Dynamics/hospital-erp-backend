@@ -30,6 +30,7 @@
     "db:seed:hsn-gst": "tsx src/seeds/hsn-gst-rates.ts",
     "db:seed:drug-schedules": "tsx src/seeds/drug-schedule-rules.ts",
     "db:classify-schedules": "tsx prisma/scripts/classify-drug-schedules.ts",
+    "db:diff-salt-classifier": "tsx prisma/scripts/diff-salt-classifier.ts",
     "db:unify-ndps": "tsx prisma/scripts/unify-ndps-batches.ts",
     "db:seed:demo-gtins": "tsx src/seeds/demo-drug-gtins.ts",
     "db:seed:inventory-to-formulary": "tsx src/seeds/inventory-to-formulary.ts",
