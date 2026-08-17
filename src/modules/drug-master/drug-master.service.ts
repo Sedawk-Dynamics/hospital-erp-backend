@@ -147,6 +147,13 @@ export async function listDrugMaster(query: ListDrugMasterQuery) {
     const term = query.search.toLowerCase().trim();
     where.searchTokens = { contains: term, mode: 'insensitive' };
   }
+  // Filter on what the classifier resolved, not the legacy `schedule` column —
+  // that one is deliberately left NULL so classifying can never switch counter
+  // enforcement on by itself.
+  if (query.schedule) where.scheduleResolved = query.schedule;
+  if (query.controlled !== undefined) {
+    where.controlledClass = query.controlled ? { not: null } : null;
+  }
 
   const [items, total] = await Promise.all([
     prisma.drugMaster.findMany({ where, skip, take, orderBy: { name: 'asc' } }),

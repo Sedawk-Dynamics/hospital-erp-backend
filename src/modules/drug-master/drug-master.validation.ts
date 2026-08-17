@@ -35,6 +35,14 @@ export const listDrugMasterSchema = z.object({
       .string()
       .transform((v) => v === 'true')
       .optional(),
+    // The schedule the classifier resolved. Declared here or validate() drops
+    // it — it replaces req.query with the parsed object.
+    schedule: z.enum(['X', 'H1', 'H', 'H2', 'G', 'OTC']).optional(),
+    // Drugs the NDPS list names, whatever their schedule.
+    controlled: z
+      .string()
+      .transform((v) => v === 'true')
+      .optional(),
   }),
 });
 
