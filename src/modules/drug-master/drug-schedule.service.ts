@@ -13,10 +13,13 @@
 
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
+import { classifyFromSalts } from './salt-classifier';
+import { loadDrugSaltRows, resolveSaltRows, syncDrugSalts } from './salt-classification.service';
 import {
   buildRuleIndex,
   classify,
   parseSalts,
+  normaliseBrand,
   CLASSIFIER_VERSION,
   type RuleIndex,
   type ScheduleRuleLike,
@@ -49,11 +52,40 @@ export async function getRuleIndex(): Promise<RuleIndex | null> {
   return cached.index;
 }
 
-/** Classify without touching the database. Returns null if rules are missing. */
+/**
+ * Classify one drug.
+ *
+ * Prefers the salt master: the molecules are already resolved and carry their
+ * own schedules, so this is a join rather than a string match. The text
+ * classifier remains as the fallback for the two cases the salt path cannot
+ * answer — the salt master not seeded yet, and a composition containing a
+ * molecule no salt row covers. Falling back is better than guessing, because a
+ * molecule silently dropped from a composition is exactly how a scheduled drug
+ * comes out over-the-counter.
+ *
+ * `drugMasterId` lets a catalog drug read its STORED molecules instead of
+ * re-resolving text. Returns null if neither path can answer.
+ */
 export async function classifyDrug(
   input: ClassificationInput,
+  opts: { drugMasterId?: string | null } = {},
 ): Promise<ClassificationResult | null> {
   const index = await getRuleIndex();
+
+  const saltRows = opts.drugMasterId
+    ? await loadDrugSaltRows(opts.drugMasterId)
+    : await resolveSaltRows(input.composition?.trim() || input.genericName?.trim() || '');
+
+  if (saltRows) {
+    // Schedule H2 stays a brand-level fact — it is a property of the notified
+    // formulation, not of any molecule, so it cannot live on a salt row.
+    const brandRule = index?.byBrand.get(normaliseBrand(input.brandName));
+    return classifyFromSalts(
+      { brandName: input.brandName, dosageForm: input.dosageForm, route: input.route, salts: saltRows },
+      { requiresQrScan: Boolean(brandRule), qrFormulation: brandRule?.matchValue ?? null },
+    );
+  }
+
   if (!index) return null;
   return classify(input, index);
 }
@@ -224,12 +256,20 @@ export async function classifyDrugMasterItem(
     // the composition it derived earlier still says "Tramadol", so the drug
     // keeps its old schedule. When the caller knows the generic name just
     // changed, the stored composition is ignored and re-derived from it.
-    const result = await classifyDrug({
-      brandName: row.name,
-      genericName: row.genericName,
-      composition: opts.refreshComposition ? null : row.saltComposition,
-      dosageForm: row.dosageForm,
-    });
+    // Re-derive the structured molecules FIRST. This is the ingestion point for
+    // a catalog drug, and the only place its composition text is parsed —
+    // classification then reads the rows, not the string.
+    await syncDrugSalts(id);
+
+    const result = await classifyDrug(
+      {
+        brandName: row.name,
+        genericName: row.genericName,
+        composition: opts.refreshComposition ? null : row.saltComposition,
+        dosageForm: row.dosageForm,
+      },
+      { drugMasterId: id },
+    );
     if (!result) return;
     await prisma.drugMaster.update({
       where: { id },

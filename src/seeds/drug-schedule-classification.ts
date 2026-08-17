@@ -31,11 +31,13 @@ import {
   classify,
   parseSalts,
   formatSalt,
+  normaliseBrand,
   CLASSIFIER_VERSION,
   type RuleIndex,
   type ScheduleRuleLike,
   type ClassificationResult,
 } from '../modules/drug-master/drug-schedule.classifier';
+import { classifyFromSalts, type SaltRow } from '../modules/drug-master/salt-classifier';
 
 const CHUNK = 2000;
 
@@ -168,6 +170,62 @@ export async function pendingClassificationCount(
   return master + formulary;
 }
 
+/**
+ * The salt reference, held in memory for the whole run — 1,858 molecules. The
+ * backfill classifies by join like every other path now, so it needs the same
+ * facts the live service caches.
+ */
+type SaltFacts = Omit<SaltRow, 'strengthValue' | 'strengthUnit' | 'perVolumeValue'>;
+
+async function loadSaltIndex(prisma: PrismaClient): Promise<Map<string, SaltFacts> | null> {
+  const salts = await prisma.salt.findMany({ include: { classes: { include: { class: true } } } });
+  if (!salts.length) return null;
+  return new Map(
+    salts.map((s) => [
+      s.id,
+      {
+        name: s.name,
+        scheduleCode: s.scheduleCode,
+        controlledClass: s.controlledClass,
+        narcoticClass: s.narcoticClass,
+        vaultControlled: s.vaultControlled,
+        exemptIfCombination: s.exemptIfCombination,
+        maxPerUnitMg: s.maxPerUnitMg === null ? null : Number(s.maxPerUnitMg),
+        maxConcentrationPercent:
+          s.maxConcentrationPercent === null ? null : Number(s.maxConcentrationPercent),
+        fallbackSchedule: s.fallbackSchedule,
+        topicalExempt: s.topicalExempt,
+        classes: s.classes.map((c) => ({ name: c.class.name, scheduleCode: c.class.scheduleCode })),
+      },
+    ]),
+  );
+}
+
+/**
+ * Turn a drug's stored links into classifier input. Returns null when the drug
+ * has none, or names a molecule the index does not know — the caller then falls
+ * back to parsing the text, which is safer than classifying a composition with
+ * an ingredient silently missing.
+ */
+function toSaltRows(
+  links: { saltId: string; strengthValue: unknown; strengthUnit: string | null; perVolumeValue: unknown }[],
+  index: Map<string, SaltFacts>,
+): SaltRow[] | null {
+  if (!links.length) return null;
+  const rows: SaltRow[] = [];
+  for (const l of links) {
+    const facts = index.get(l.saltId);
+    if (!facts) return null;
+    rows.push({
+      ...facts,
+      strengthValue: l.strengthValue === null ? null : Number(l.strengthValue),
+      strengthUnit: l.strengthUnit,
+      perVolumeValue: l.perVolumeValue === null ? null : Number(l.perVolumeValue),
+    });
+  }
+  return rows;
+}
+
 async function loadIndex(prisma: PrismaClient): Promise<RuleIndex | null> {
   const rules = (await prisma.drugScheduleRule.findMany({
     where: { isActive: true },
@@ -189,6 +247,8 @@ export async function runClassification(
     log('  no active schedule rules — run the drug-schedule-rules seed first');
     return totals;
   }
+  const saltIndex = await loadSaltIndex(prisma);
+  if (!saltIndex) log('  salt master not seeded — falling back to composition text');
 
   const staleOnly = opts.force
     ? {}
@@ -203,19 +263,36 @@ export async function runClassification(
           id: true, name: true, genericName: true, saltComposition: true, dosageForm: true,
           scheduleResolved: true, controlledClass: true, vaultControlled: true,
           requiresQrScan: true, classifierVersion: true,
+          // The structured molecules, so the backfill classifies by join like
+          // every other path. Loading them here keeps it to one query per page
+          // instead of one per drug.
+          salts: {
+            select: { saltId: true, strengthValue: true, strengthUnit: true, perVolumeValue: true },
+            orderBy: { position: 'asc' },
+          },
         },
         orderBy: { id: 'asc' },
         ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
         take: CHUNK,
       }),
       async (row) => {
-        const r = classify(
-          {
-            brandName: row.name, genericName: row.genericName,
-            composition: row.saltComposition, dosageForm: row.dosageForm,
-          },
-          index,
-        );
+        // Prefer the salt join; fall back to parsing the text only when this
+        // drug has no structured molecules yet (a fresh import, or a molecule
+        // the salt master does not cover).
+        const saltRows = saltIndex ? toSaltRows(row.salts, saltIndex) : null;
+        const brandRule = index.byBrand.get(normaliseBrand(row.name));
+        const r = saltRows
+          ? classifyFromSalts(
+              { brandName: row.name, dosageForm: row.dosageForm, salts: saltRows },
+              { requiresQrScan: Boolean(brandRule), qrFormulation: brandRule?.matchValue ?? null },
+            )
+          : classify(
+              {
+                brandName: row.name, genericName: row.genericName,
+                composition: row.saltComposition, dosageForm: row.dosageForm,
+              },
+              index,
+            );
         totals.masterScanned += 1;
         opts.onRow?.(r, row.name, 'master');
         // The composition counts as a change in its own right. Without this the

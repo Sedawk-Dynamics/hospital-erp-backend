@@ -53,8 +53,11 @@
  * 5 — reason wording only: an NDPS drug no longer reads "over the counter" and
  *     then "Schedule H" in the same sentence, and a single-ingredient narcotic
  *     is refused on that ground rather than on a limit it is under.
+ * 6 — classification now reads the salt master by join instead of matching the
+ *     composition text by name. Same answers everywhere except three
+ *     sulphacetamide eye drops, which were under-restrictive before.
  */
-export const CLASSIFIER_VERSION = 5;
+export const CLASSIFIER_VERSION = 6;
 
 export type ScheduleCode = 'X' | 'H1' | 'H' | 'G' | 'H2' | 'OTC';
 export type ControlledClass = 'narcotic' | 'psychotropic';
