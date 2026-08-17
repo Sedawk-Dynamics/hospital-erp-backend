@@ -191,6 +191,70 @@ export function inheritedScheduleFields(master: {
 }
 
 /**
+ * The fields the classifier actually reads. Re-classification is skipped unless
+ * one of them changed, so an ordinary price or stock edit costs nothing.
+ */
+export function affectsClassification(patch: Record<string, unknown>): boolean {
+  return ['name', 'drugName', 'genericName', 'composition', 'saltComposition', 'dosageForm']
+    .some((k) => k in patch);
+}
+
+/**
+ * Classify a platform catalog drug. Called when a super admin adds or edits one,
+ * so the catalog is never left holding a drug the system has an opinion about
+ * but has not recorded.
+ *
+ * Writes scheduleResolved, never the legacy `schedule` column — the counter's
+ * compliance check reads that one, so filling it would switch enforcement on.
+ * Never throws: a label must not be the reason a drug cannot be saved.
+ */
+export async function classifyDrugMasterItem(
+  id: string,
+  opts: { refreshComposition?: boolean } = {},
+): Promise<void> {
+  try {
+    const row = await prisma.drugMaster.findUnique({
+      where: { id },
+      select: { id: true, name: true, genericName: true, saltComposition: true, dosageForm: true },
+    });
+    if (!row) return;
+    // The classifier prefers `composition` over `genericName`, and it fills
+    // `saltComposition` itself when the column is blank. That combination bites
+    // on a later edit: change the generic name from tramadol to morphine and
+    // the composition it derived earlier still says "Tramadol", so the drug
+    // keeps its old schedule. When the caller knows the generic name just
+    // changed, the stored composition is ignored and re-derived from it.
+    const result = await classifyDrug({
+      brandName: row.name,
+      genericName: row.genericName,
+      composition: opts.refreshComposition ? null : row.saltComposition,
+      dosageForm: row.dosageForm,
+    });
+    if (!result) return;
+    await prisma.drugMaster.update({
+      where: { id },
+      data: {
+        scheduleResolved: result.schedule,
+        scheduleReason: result.reason,
+        controlledClass: result.controlledClass,
+        vaultControlled: result.vaultControlled,
+        requiresQrScan: result.requiresQrScan,
+        saltsJson: result.salts as unknown as object,
+        classifiedAt: new Date(),
+        classifierVersion: CLASSIFIER_VERSION,
+        ...(opts.refreshComposition || !row.saltComposition
+          ? result.composition
+            ? { saltComposition: result.composition }
+            : {}
+          : {}),
+      },
+    });
+  } catch (err) {
+    logger.warn({ err, drugMasterId: id }, 'Catalog schedule classification failed; drug left unclassified');
+  }
+}
+
+/**
  * A pharmacy admin's manual override. Marked `manual` so no re-run of the
  * classifier or the backfill can ever undo it.
  */

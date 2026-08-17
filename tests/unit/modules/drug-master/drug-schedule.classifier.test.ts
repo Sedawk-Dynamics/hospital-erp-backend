@@ -237,6 +237,19 @@ describe('NDPS overlay — a second, independent axis', () => {
     expect(run('Morphine (10mg)').controlledClass).toBe('narcotic');
   });
 
+  it('never labels a controlled drug OTC', () => {
+    // Schedule H names "Narcotic Drugs listed in the NDPS Act, 1985" as an
+    // entry in its own right. Nothing in the salt lists spells out morphine, so
+    // without that the cascade returned OTC and a register would have printed
+    // "OTC" beside a vault-controlled narcotic.
+    for (const g of ['Morphine (10mg)', 'Fentanyl (50mcg)', 'Pethidine (50mg)']) {
+      const r = run(g);
+      expect(r.schedule, g).not.toBe('OTC');
+      expect(r.controlledClass, g).toBeTruthy();
+    }
+    expect(run('Morphine (10mg)').reason).toMatch(/NDPS Act/i);
+  });
+
   it('leaves an ordinary drug uncontrolled', () => {
     const r = run('Atorvastatin (10mg)');
     expect(r.controlledClass).toBeNull();

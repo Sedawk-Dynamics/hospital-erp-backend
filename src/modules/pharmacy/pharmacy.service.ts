@@ -10,6 +10,7 @@ import { resolveHsnGst, getHsnGstRows, matchHsnGst } from '../drug-master/drug-m
 import {
   classifyFormularyItem,
   inheritedScheduleFields,
+  affectsClassification,
 } from '../drug-master/drug-schedule.service';
 import { getInventorySettingsSafe } from '../inventory/inventory.settings.service';
 import { notifyInventoryRecipients, hasOpenInventoryAlert } from '../inventory/inventory.notify';
@@ -1933,7 +1934,18 @@ export async function updateFormularyItem(
     oldValues: Object.fromEntries(Object.keys(updateData).map((k) => [k, (existing as any)[k]])),
     newValues: updateData,
   });
-  return { ...item, composition };
+
+  // Re-label when the composition or name changed. Without this an edit leaves
+  // the OLD schedule standing for good: the row is already at the current
+  // classifier version, so neither the deploy backfill nor any later run would
+  // ever revisit it — a drug edited from paracetamol to tramadol would keep
+  // reading "OTC" forever. A manual override is still respected inside
+  // classifyFormularyItem, and a failure there leaves the drug saved.
+  let schedulePatch: Record<string, unknown> | null = null;
+  if (affectsClassification({ ...(data as Record<string, unknown>) })) {
+    schedulePatch = await classifyFormularyItem(id);
+  }
+  return { ...item, composition, ...(schedulePatch ?? {}) };
 }
 
 export async function deleteFormularyItem(tenantId: string, id: string) {

@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { classifyDrugMasterItem, affectsClassification } from './drug-schedule.service';
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
@@ -247,7 +248,11 @@ export async function createDrugMaster(
   });
 
   logger.info({ drugMasterId: drug.id }, 'Drug master entry created');
-  return drug;
+  // Label it now rather than waiting for the next deploy's backfill — a catalog
+  // drug with no schedule is invisible to every badge, filter and register that
+  // reads one. Never throws; a failure leaves it for the backfill.
+  await classifyDrugMasterItem(drug.id);
+  return prisma.drugMaster.findUnique({ where: { id: drug.id } }) ?? drug;
 }
 
 /**
@@ -281,7 +286,8 @@ export async function suggestDrugMaster(userId: string, data: SuggestDrugMasterI
     },
   });
   logger.info({ drugMasterId: drug.id, userId }, 'Drug master suggestion submitted');
-  return drug;
+  await classifyDrugMasterItem(drug.id);
+  return prisma.drugMaster.findUnique({ where: { id: drug.id } }) ?? drug;
 }
 
 export async function updateDrugMaster(
@@ -341,6 +347,20 @@ export async function updateDrugMaster(
   });
 
   logger.info({ drugMasterId: drug.id }, 'Drug master entry updated');
+  // Re-label only when something the classifier reads actually changed. An
+  // edit to price or pack size costs nothing; an edit to the composition must
+  // not leave the old schedule standing, because nothing else would ever
+  // revisit it — the row is already at the current classifier version.
+  if (affectsClassification(data as Record<string, unknown>)) {
+    // Re-derive the composition when the generic name changed but the caller
+    // did not supply a composition of its own — otherwise the one derived on
+    // create keeps the old schedule alive.
+    const refreshComposition =
+      'genericName' in (data as Record<string, unknown>) &&
+      (data as Record<string, unknown>).saltComposition === undefined;
+    await classifyDrugMasterItem(drug.id, { refreshComposition });
+    return (await prisma.drugMaster.findUnique({ where: { id: drug.id } })) ?? drug;
+  }
   return drug;
 }
 

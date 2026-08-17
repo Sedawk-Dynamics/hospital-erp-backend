@@ -4,6 +4,7 @@ import {
   runClassification,
   pendingClassificationCount,
 } from '../../../src/seeds/drug-schedule-classification';
+import { CLASSIFIER_VERSION } from '../../../src/modules/drug-master/drug-schedule.classifier';
 
 /**
  * The classification backfill runs unattended on every deploy, so the property
@@ -38,7 +39,7 @@ function fakeCatalog(size: number) {
   const byId = new Map(rows.map((r) => [r.id, r]));
 
   const findMany = vi.fn(async (args: any) => {
-    let pool = rows.filter((r) => r.classifierVersion !== 1);
+    let pool = rows.filter((r) => r.classifierVersion !== CLASSIFIER_VERSION);
     if (args?.cursor?.id) {
       // Prisma anchors on the cursor row WITHIN the filtered set. Once that row
       // has been classified it is not in the pool, and the page silently starts
@@ -53,7 +54,12 @@ function fakeCatalog(size: number) {
     if (row) Object.assign(row, data);
     return row;
   });
-  return { rows, findMany, update, classified: () => rows.filter((r) => r.classifierVersion === 1).length };
+  return {
+    rows,
+    findMany,
+    update,
+    classified: () => rows.filter((r) => r.classifierVersion === CLASSIFIER_VERSION).length,
+  };
 }
 
 beforeEach(() => {

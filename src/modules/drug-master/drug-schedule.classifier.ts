@@ -28,8 +28,15 @@
  * strength fails safe to full control with `needsReview` set.
  */
 
-/** Bump when the logic below changes, so a re-run can find stale rows. */
-export const CLASSIFIER_VERSION = 1;
+/**
+ * Bump when the logic below changes, so a re-run can find stale rows. The
+ * deploy backfill re-classifies anything not at the current version, which is
+ * what makes a logic change roll out by itself.
+ *
+ * 2 — an NDPS-listed drug is Schedule H even when no salt rule names it, so
+ *     morphine and fentanyl no longer come out as OTC.
+ */
+export const CLASSIFIER_VERSION = 2;
 
 export type ScheduleCode = 'X' | 'H1' | 'H' | 'G' | 'H2' | 'OTC';
 export type ControlledClass = 'narcotic' | 'psychotropic';
@@ -380,6 +387,17 @@ export function classify(
       }
     }
     break; // the first controlled molecule decides; combinations of two are not a real case
+  }
+
+  // Schedule H names "Narcotic Drugs listed in the Narcotic Drugs &
+  // Psychotropic Substances Act, 1985" as an entry in its own right, so a drug
+  // the NDPS list covers is a prescription drug whether or not its molecule is
+  // also spelled out by name. Without this, morphine and fentanyl come out of
+  // the cascade as OTC — nothing in the salt lists names them — and a register
+  // would print "OTC" beside a vault-controlled narcotic.
+  if (controlledClass && schedule === 'OTC') {
+    schedule = 'H';
+    reason = `${reason} Covered by Schedule H as a drug listed in the NDPS Act, 1985.`;
   }
 
   return {

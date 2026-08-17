@@ -5,6 +5,8 @@ import {
   overrideFormularySchedule,
   inheritedScheduleFields,
   invalidateScheduleRuleCache,
+  affectsClassification,
+  classifyDrugMasterItem,
 } from '../../../../src/modules/drug-master/drug-schedule.service';
 
 /**
@@ -159,5 +161,62 @@ describe('inheritedScheduleFields', () => {
 
   it('writes nothing for a catalog row that was never classified', () => {
     expect(inheritedScheduleFields({ scheduleResolved: null })).toEqual({});
+  });
+});
+
+describe('affectsClassification', () => {
+  /**
+   * Re-classification is gated on this, so it has to name every field the
+   * classifier reads. A field missing here means an edit silently leaves the
+   * old schedule standing — and nothing else would revisit it, because the row
+   * is already at the current classifier version.
+   */
+  it('fires for every field the classifier actually reads', () => {
+    for (const k of ['name', 'drugName', 'genericName', 'composition', 'saltComposition', 'dosageForm']) {
+      expect(affectsClassification({ [k]: 'x' }), k).toBe(true);
+    }
+  });
+
+  it('does not fire for an ordinary edit', () => {
+    // A price or stock change must not cost a re-classification.
+    expect(affectsClassification({ price: 10, minStock: 5, taxPercent: 12 })).toBe(false);
+    expect(affectsClassification({})).toBe(false);
+  });
+
+  it('fires even when the field was cleared rather than set', () => {
+    // Removing a composition changes the answer just as much as adding one.
+    expect(affectsClassification({ composition: null })).toBe(true);
+  });
+});
+
+describe('classifyDrugMasterItem', () => {
+  it('labels a catalog drug a super admin just added', async () => {
+    (prisma.drugMaster.findUnique as any).mockResolvedValue({
+      id: 'm1', name: 'Dolo-T', genericName: 'Tramadol (37.5mg)',
+      saltComposition: null, dosageForm: 'tablet',
+    });
+    await classifyDrugMasterItem('m1');
+
+    const arg = (prisma.drugMaster.update as any).mock.calls[0][0];
+    // The fixture holds only the Schedule H1 salt rule, no NDPS overlay row —
+    // so H1 with no controlled class is exactly right here.
+    expect(arg.data).toMatchObject({ scheduleResolved: 'H1', controlledClass: null });
+    expect(arg.data.classifierVersion).toBeGreaterThanOrEqual(1);
+  });
+
+  it('never writes the legacy schedule column', async () => {
+    // The counter's compliance check reads that one; filling it would switch
+    // enforcement on for this drug in every hospital.
+    (prisma.drugMaster.findUnique as any).mockResolvedValue({
+      id: 'm1', name: 'Dolo-T', genericName: 'Tramadol (37.5mg)',
+      saltComposition: null, dosageForm: 'tablet',
+    });
+    await classifyDrugMasterItem('m1');
+    expect((prisma.drugMaster.update as any).mock.calls[0][0].data).not.toHaveProperty('schedule');
+  });
+
+  it('leaves the drug saved when classification fails', async () => {
+    (prisma.drugMaster.findUnique as any).mockRejectedValue(new Error('db exploded'));
+    await expect(classifyDrugMasterItem('m1')).resolves.toBeUndefined();
   });
 });
