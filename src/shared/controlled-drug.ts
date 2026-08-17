@@ -27,6 +27,21 @@
  */
 export type ControlledDispenseMode = 'legacy_block' | 'inline';
 
+/**
+ * What the counter does about a Schedule H2 pack.
+ *
+ * H2 is the Rule 96(6)-(7) list: 300 notified brand formulations whose packs
+ * carry a QR/barcode so they can be checked as genuine. It is an
+ * anti-counterfeiting obligation, NOT a prescription control — the same list
+ * holds a pregnancy test and two multivitamins alongside meropenem — which is
+ * why it is settled here rather than folded into the schedule cascade.
+ *
+ *   'off'     — say nothing
+ *   'warn'    — tell the counter the pack should be scanned (the default)
+ *   'require' — refuse the sale until a code has been read off the pack
+ */
+export type QrScanMode = 'off' | 'warn' | 'require';
+
 export interface ControlledDrugSettings {
   mode: ControlledDispenseMode;
   /**
@@ -35,11 +50,17 @@ export interface ControlledDrugSettings {
    * the entire point of a witness.
    */
   witnessRoles: string[];
+  /** What to do about a Schedule H2 pack at the counter. */
+  qrScanMode: QrScanMode;
 }
 
 export const DEFAULT_CONTROLLED_DRUG_SETTINGS: ControlledDrugSettings = {
   mode: 'legacy_block',
   witnessRoles: ['nurse', 'nurse_admin', 'doctor', 'pharmacist', 'pharmacy_admin'],
+  // Advisory by default. Blocking the sale of a multivitamin until someone
+  // scans it would be worse than the problem, but saying nothing at all left
+  // the whole H2 list classified and then ignored.
+  qrScanMode: 'warn',
 };
 
 /** Fold an untrusted patch (wire / JSON column) over the current settings. */
@@ -54,9 +75,17 @@ export function mergeControlledDrugSettings(
   const witnessRoles = Array.isArray(p.witnessRoles)
     ? p.witnessRoles.filter((r): r is string => typeof r === 'string' && r.length > 0)
     : base.witnessRoles;
+  const qrScanMode: QrScanMode =
+    p.qrScanMode === 'off' || p.qrScanMode === 'warn' || p.qrScanMode === 'require'
+      ? p.qrScanMode
+      : base.qrScanMode;
   // An empty witness list would make every witnessed transaction impossible, so
   // an accidental clear falls back rather than locking the hospital out.
-  return { mode, witnessRoles: witnessRoles.length ? witnessRoles : base.witnessRoles };
+  return {
+    mode,
+    witnessRoles: witnessRoles.length ? witnessRoles : base.witnessRoles,
+    qrScanMode,
+  };
 }
 
 /** The drug fields this policy reads. Kept minimal so any caller can select them. */

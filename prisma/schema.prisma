@@ -4821,6 +4821,12 @@ model DispensingRecord {
   dispensedBy        String   @map("dispensed_by")
   dispensedAt        DateTime @default(now()) @map("dispensed_at")
   verifiedBy         String?  @map("verified_by")
+  // The code read off the pack for a Schedule H2 formulation — the Rule
+  // 96(6)-(7) QR/barcode that says the pack is genuine. Nullable because most
+  // drugs are not on that list, and because the obligation is advisory until a
+  // hospital sets qrScanMode to 'require'. Kept so the sale can be evidenced
+  // later, which is the only thing that makes the scan worth asking for.
+  scannedCode        String?  @map("scanned_code") @db.VarChar(120)
   notes              String?
   // Sale economics captured at dispense time so the cash counter, receipt and
   // GST report read the true billed figures (not a re-derived batch price).

@@ -332,7 +332,12 @@ export const complianceCheckSchema = z.object({
     // captured at the counter.
     externalPrescriptionId: z.string().uuid().optional(),
     items: z
-      .array(z.object({ drugBatchId: z.string().uuid('Invalid drug batch ID') }))
+      .array(
+        z.object({
+          drugBatchId: z.string().uuid('Invalid drug batch ID'),
+          scannedCode: z.string().trim().max(120).optional().nullable(),
+        }),
+      )
       .min(1, 'At least one item is required'),
   }),
 });
@@ -616,6 +621,10 @@ export const createPharmacySaleSchema = z.object({
       .array(
         z.object({
           drugBatchId: z.string().uuid('Invalid drug batch ID'),
+          // The QR/barcode read off a Schedule H2 pack. Optional — most drugs
+          // are not on that list, and the obligation is advisory until a
+          // hospital sets qrScanMode to 'require'.
+          scannedCode: z.string().trim().max(120).optional().nullable(),
           prescriptionItemId: z.string().uuid('Invalid prescription item ID').optional(),
           // Quantity is in the chosen unit: packs (default) or loose sub-units.
           quantity: z.number().positive('Quantity must be positive'),

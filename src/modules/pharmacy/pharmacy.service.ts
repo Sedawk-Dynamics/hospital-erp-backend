@@ -3354,6 +3354,10 @@ export async function createPharmacySale(
     advanceAdmissionId = credit.admissionId;
   }
 
+  // Schedule H2 policy, read once per sale rather than per line. Advisory by
+  // default; only 'require' refuses.
+  const { qrScanMode } = await getControlledDrugSettings(tenantId);
+
   const runSaleTx = (attempt: number) => prisma.$transaction(async (tx) => {
     // 1. Validate every line and pre-compute its economics.
     const lines = [] as Array<{
@@ -3370,6 +3374,7 @@ export async function createPharmacySale(
       discAmt: number;
       net: number;
       taxPct: number;
+      scannedCode: string | null;
       taxAmt: number;
       nonReturnable: boolean;
       expiry: Date | null;
@@ -3395,6 +3400,7 @@ export async function createPharmacySale(
               schedule: true,
               controlledClass: true,
               vaultControlled: true,
+              requiresQrScan: true,
             },
           },
         },
@@ -3417,6 +3423,17 @@ export async function createPharmacySale(
         },
         'consumption workflow, not the counter',
       );
+
+      // Schedule H2 — the Rule 96(6)-(7) pack check. Enforced here as well as in
+      // checkSaleCompliance on purpose: a pre-check that disagrees with the gate
+      // teaches people to click through warnings.
+      const lineScan = (item as { scannedCode?: string | null }).scannedCode?.trim() || null;
+      if (batch.drug?.requiresQrScan && !lineScan && qrScanMode === 'require') {
+        throw AppError.badRequest(
+          `${batch.drug.drugName} is a Schedule H2 formulation — scan the QR/barcode on the ` +
+            'pack before dispensing it.',
+        );
+      }
 
       const packSize = batch.drug?.packSize && batch.drug.packSize > 0 ? batch.drug.packSize : 1;
       const saleUnit = item.saleUnit ?? 'pack';
@@ -3446,6 +3463,7 @@ export async function createPharmacySale(
         batchId: batch.id,
         batchNumber: batch.batchNumber,
         drugName: batch.drug?.drugName ?? 'Medication',
+        scannedCode: lineScan,
         prescriptionItemId: item.prescriptionItemId ?? null,
         saleUnit,
         baseQty,
@@ -3592,6 +3610,9 @@ export async function createPharmacySale(
           // Controlled-drug co-sign, when the gate required one for this line.
           witnessedById: l.witnessedById,
           witnessedAt: l.witnessedAt,
+          // The Schedule H2 pack code, when one was read. Stored so the sale
+          // can be evidenced later — a scan nobody keeps is theatre.
+          scannedCode: l.scannedCode,
         },
       });
 
@@ -5783,7 +5804,9 @@ export async function resolveScan(tenantId: string, code: string) {
 export async function checkSaleCompliance(
   tenantId: string,
   input: {
-    items: Array<{ drugBatchId: string }>;
+    // `scannedCode` is the code read off the pack for a Schedule H2
+    // formulation. Optional everywhere — most drugs are not on that list.
+    items: Array<{ drugBatchId: string; scannedCode?: string | null }>;
     prescriptionId?: string | null;
     externalPrescriptionId?: string | null;
   },
@@ -5795,6 +5818,10 @@ export async function checkSaleCompliance(
   const batchIds = [...new Set(input.items.map((i) => i.drugBatchId).filter(Boolean))];
   const blockers: string[] = [];
   const warnings: string[] = [];
+  // Which batches still need a pack code read off them, returned structurally so
+  // the counter can prompt for exactly those. Parsing the message text to work
+  // that out would break the first time the wording changed.
+  const needsScan: { drugBatchId: string; drugName: string }[] = [];
 
   if (!batchIds.length) return { ok: true, blockers, warnings };
 
@@ -5817,6 +5844,10 @@ export async function checkSaleCompliance(
           isNarcotic: true,
           controlledClass: true,
           vaultControlled: true,
+          // Schedule H2 — the pack carries a QR/barcode to be checked as
+          // genuine. A separate axis from the schedule: a drug can be
+          // over-the-counter and still be on this list.
+          requiresQrScan: true,
           // Kept as a fallback so a drug classified only at catalog level still
           // resolves, and so the original contract holds for either source.
           drugMaster: { select: { schedule: true } },
@@ -5828,8 +5859,13 @@ export async function checkSaleCompliance(
   // Only enforce what the sale will enforce. In the hospital's default mode
   // nothing is required, so this stays advisory and the dialog reads as it
   // always has.
-  const { mode } = await getControlledDrugSettings(tenantId);
+  const { mode, qrScanMode } = await getControlledDrugSettings(tenantId);
   const enforcing = mode === 'inline';
+
+  // Which batches the counter has already read a pack code for.
+  const scanned = new Set(
+    input.items.filter((i) => (i.scannedCode ?? '').trim()).map((i) => i.drugBatchId),
+  );
 
   for (const b of batches) {
     const name = b.drug?.drugName ?? 'Drug';
@@ -5858,9 +5894,22 @@ export async function checkSaleCompliance(
     if (enforcing && req.needsWitness) {
       blockers.push(`${name} is a controlled narcotic — a second authorised person must co-sign the hand-over.`);
     }
+
+    // Schedule H2. Deliberately not part of the schedule cascade above: it is
+    // an anti-counterfeiting obligation on a named formulation, not a
+    // prescription tier, so it applies on its own terms and to
+    // over-the-counter packs too.
+    if (b.drug?.requiresQrScan && !scanned.has(b.id) && qrScanMode !== 'off') {
+      const msg =
+        `${name} is a Schedule H2 formulation — scan the QR/barcode on the pack to ` +
+        'confirm it is genuine.';
+      if (qrScanMode === 'require') blockers.push(msg);
+      else warnings.push(msg);
+      needsScan.push({ drugBatchId: b.id, drugName: name });
+    }
   }
 
-  return { ok: blockers.length === 0, blockers, warnings };
+  return { ok: blockers.length === 0, blockers, warnings, needsScan };
 }
 
 export async function getReturns(tenantId: string, query: GetReturnsQuery) {

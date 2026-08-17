@@ -190,6 +190,63 @@ describe('Pharmacy — checkSaleCompliance (Schedule H/H1/X + HSN/GST)', () => {
     expect(r.warnings.join(' ')).toMatch(/Schedule H/);
   });
 
+  /**
+   * Schedule H2 — the Rule 96(6)-(7) pack check. It is NOT a prescription tier
+   * and NOT a rung of the schedule cascade: the notified list holds a pregnancy
+   * test and two multivitamins alongside meropenem. So it applies on its own
+   * terms, to over-the-counter packs included, and never changes the schedule.
+   *
+   * Until this existed the flag was classified, filtered and badged, and then
+   * nothing at the counter ever read it.
+   */
+  it('asks for a pack scan on a Schedule H2 formulation', async () => {
+    (prisma.drugBatch.findMany as any).mockResolvedValue([
+      {
+        id: 'b1',
+        drug: {
+          drugName: 'Dolo 650', hsnCode: '3004', taxPercent: 12,
+          requiresQrScan: true, drugMaster: null,
+        },
+      },
+    ]);
+    const r = await checkSaleCompliance(TENANT_ID, { items: [{ drugBatchId: 'b1' }] });
+    // Advisory by default — a multivitamin must not be unsellable because
+    // nobody scanned it.
+    expect(r.ok).toBe(true);
+    expect(r.warnings.join(' ')).toMatch(/Schedule H2/);
+    expect(r.warnings.join(' ')).toMatch(/QR\/barcode/);
+  });
+
+  it('stops asking once the counter has scanned the pack', async () => {
+    (prisma.drugBatch.findMany as any).mockResolvedValue([
+      {
+        id: 'b1',
+        drug: {
+          drugName: 'Dolo 650', hsnCode: '3004', taxPercent: 12,
+          requiresQrScan: true, drugMaster: null,
+        },
+      },
+    ]);
+    const r = await checkSaleCompliance(TENANT_ID, {
+      items: [{ drugBatchId: 'b1', scannedCode: '8901234567890' }],
+    });
+    expect(r.warnings.join(' ')).not.toMatch(/Schedule H2/);
+  });
+
+  it('says nothing about a drug that is not on the H2 list', async () => {
+    (prisma.drugBatch.findMany as any).mockResolvedValue([
+      {
+        id: 'b1',
+        drug: {
+          drugName: 'Paracetamol', hsnCode: '3004', taxPercent: 12,
+          requiresQrScan: false, drugMaster: null,
+        },
+      },
+    ]);
+    const r = await checkSaleCompliance(TENANT_ID, { items: [{ drugBatchId: 'b1' }] });
+    expect(r.warnings.join(' ')).not.toMatch(/H2/);
+  });
+
   it('warns when HSN code or GST rate is missing', async () => {
     (prisma.drugBatch.findMany as any).mockResolvedValue([
       { id: 'b1', drug: { drugName: 'Vitamin C', hsnCode: null, taxPercent: null, drugMaster: null } },
