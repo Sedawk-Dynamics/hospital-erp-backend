@@ -159,6 +159,105 @@ describe('therapeutic-class entries', () => {
   });
 });
 
+describe('the derived composition round-trips', () => {
+  /**
+   * The result's `composition` is written back to the column the classifier
+   * PREFERS on the next run. If it drops the strength, the next run cannot read
+   * it — and the codeine exemption, which is the one rule that needs a strength,
+   * fails safe and vaults an ordinary codeine tablet. 178 products were in that
+   * state against 32 correctly exempted.
+   */
+  it('keeps the strength, so re-classifying gives the same answer', () => {
+    const first = run('Paracetamol (650mg) + Codeine (30mg)');
+    expect(first.composition).toBe('Paracetamol (650mg) + Codeine (30mg)');
+
+    // Feed the derived composition back in, exactly as the next run would.
+    const second = classify({ composition: first.composition, genericName: null }, index);
+    expect(second.schedule).toBe(first.schedule);
+    expect(second.vaultControlled).toBe(first.vaultControlled);
+    expect(second.needsReview).toBe(false);
+  });
+
+  it('keeps a per-volume strength', () => {
+    const r = run('Codeine (10mg/5ml) + Triprolidine (1.25mg/5ml)');
+    expect(r.composition).toContain('Codeine (10mg/5ml)');
+    expect(classify({ composition: r.composition, genericName: null }, index).needsReview).toBe(false);
+  });
+
+  it('exempts a codeine combination that is within the per-unit limit', () => {
+    // 30mg is well under the 100mg/unit limit, and it is a combination — so it
+    // dispenses as H1 rather than from the safe.
+    const r = run('Paracetamol (650mg) + Codeine (30mg)');
+    expect(r.schedule).toBe('H1');
+    expect(r.vaultControlled).toBe(false);
+    expect(r.controlledClass).toBe('narcotic');
+  });
+
+  it('still writes a bare name when there is no strength to keep', () => {
+    expect(run('Paracetamol').composition).toBe('Paracetamol');
+  });
+
+  it('repairs a stripped composition from the generic name', () => {
+    // The state 246,485 catalog rows are already in.
+    const r = classify(
+      {
+        composition: 'Paracetamol + Codeine',
+        genericName: 'Paracetamol (650mg) + Codeine (30mg)',
+      },
+      index,
+    );
+    expect(r.vaultControlled).toBe(false);
+    expect(r.needsReview).toBe(false);
+    expect(r.composition).toBe('Paracetamol (650mg) + Codeine (30mg)');
+  });
+
+  it('still prefers the curated composition when it carries strengths', () => {
+    const r = classify(
+      { composition: 'Codeine (10mg)', genericName: 'Something Else (999mg)' },
+      index,
+    );
+    expect(r.composition).toBe('Codeine (10mg)');
+  });
+
+  it('leaves a genuinely strengthless drug alone', () => {
+    const r = classify({ composition: 'Paracetamol', genericName: 'Paracetamol' }, index);
+    expect(r.composition).toBe('Paracetamol');
+  });
+});
+
+describe('topical detection does not run on a flavour name', () => {
+  it('does not treat an oral syrup as an external preparation', () => {
+    // "Aroget DX Syrup American Ice Cream" was read as topical on the word
+    // "Cream", which exempted its Schedule G antihistamine down to OTC.
+    const r = classify(
+      {
+        brandName: 'Aroget DX Syrup American Ice Cream',
+        genericName: 'Phenylephrine (5mg/5ml) + Chlorpheniramine Maleate (2mg/5ml)',
+        dosageForm: 'syrup',
+      },
+      index,
+    );
+    expect(r.schedule).toBe('G');
+  });
+
+  it('still exempts a genuine topical preparation', () => {
+    const r = classify(
+      { brandName: 'Some Cream', genericName: 'Chlorpheniramine Maleate (2mg)', dosageForm: 'cream' },
+      index,
+    );
+    expect(r.schedule).toBe('OTC');
+  });
+
+  it('still guesses from the name when the dosage form is the coarse bucket', () => {
+    // Ointments and lotions all land in `other`, which is why the guess exists.
+    const r = classify(
+      { brandName: 'Something Ointment', genericName: 'Chlorpheniramine Maleate (2mg)', dosageForm: 'other' },
+      index,
+    );
+    expect(r.schedule).toBe('OTC');
+  });
+});
+
 describe('Schedule H2 — a QR obligation, never a schedule', () => {
   /**
    * H2 is the anti-counterfeiting list under Rule 96(6)-(7), not a prescription
@@ -356,8 +455,11 @@ describe('reporting', () => {
   });
 
   it('rebuilds a clean composition string for the empty column', () => {
-    const r = run('Tramadol (37.5mg) + Paracetamol (325mg)');
-    expect(r.composition).toBe('Tramadol + Paracetamol');
+    // Normalised spacing and separators, but the strengths are kept — this
+    // string is read back as input on the next run, so dropping them would
+    // lose the only data the codeine exemption depends on.
+    const r = run('Tramadol  (37.5mg)  +   Paracetamol (325mg)');
+    expect(r.composition).toBe('Tramadol (37.5mg) + Paracetamol (325mg)');
   });
 
   it('leaves composition null when nothing could be parsed', () => {

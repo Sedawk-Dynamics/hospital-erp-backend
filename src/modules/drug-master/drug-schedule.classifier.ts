@@ -47,8 +47,11 @@
  *     morphine and fentanyl no longer come out as OTC.
  * 3 — Schedule H2 became a flag instead of a schedule, and brand keys ignore
  *     pack size so the QR obligation matches at all.
+ * 4 — the derived composition keeps its strengths (it is read back on the next
+ *     run, and dropping them broke the codeine exemption), and an explicit oral
+ *     dosage form outranks the topical guess made from the brand name.
  */
-export const CLASSIFIER_VERSION = 3;
+export const CLASSIFIER_VERSION = 4;
 
 export type ScheduleCode = 'X' | 'H1' | 'H' | 'G' | 'H2' | 'OTC';
 export type ControlledClass = 'narcotic' | 'psychotropic';
@@ -76,6 +79,14 @@ const SALT_FORMS = new Set([
  * route are checked too.
  */
 const TOPICAL_WORDS = /\b(ointment|gel|lotion|topical|external|cream|balm|liniment|salve|patch)\b/i;
+
+/**
+ * Dosage forms that settle the question on their own — swallowed, injected or
+ * inhaled, none of them an "external preparation". `drops` is deliberately
+ * absent (eye and ear drops are arguably external) and so is `other`, which is
+ * the coarse bucket the brand-name guess exists to serve.
+ */
+const SYSTEMIC_FORMS = new Set(['tablet', 'capsule', 'syrup', 'injection', 'inhaler']);
 
 export interface ParsedSalt {
   /** The molecule exactly as written in the composition. */
@@ -183,6 +194,25 @@ export function normaliseBrand(raw: string | null | undefined): string {
 
 // "10mg/5ml", "1.25mg", "50mcg", "0.3% w/v"
 const STRENGTH_RE = /([\d.]+)\s*(mcg|mg|gm|g|ml|iu|%)\s*(?:\/\s*([\d.]+)?\s*(ml|gm|g))?/i;
+
+/**
+ * Write a parsed salt back the way the catalog writes it: "Codeine (30mg)".
+ *
+ * This has to round-trip. The classification result is used to backfill the
+ * `composition` column, and the classifier PREFERS that column over the generic
+ * name on the next run — so emitting the molecule without its strength quietly
+ * destroys the strength as far as every later classification is concerned. That
+ * is not hypothetical: it left "Paracetamol (650mg) + Codeine (30mg)" stored as
+ * "Paracetamol + Codeine", after which the codeine exemption could no longer
+ * read 30mg, failed safe, and put an ordinary codeine tablet under vault
+ * custody. 178 products were reading "strength could not be read" against 32
+ * correctly exempted.
+ */
+export function formatSalt(s: ParsedSalt): string {
+  if (s.strengthValue === null || !s.strengthUnit) return s.raw;
+  const per = s.perVolumeMl ? `/${s.perVolumeMl}ml` : '';
+  return `${s.raw} (${s.strengthValue}${s.strengthUnit}${per})`;
+}
 
 /**
  * Split a composition string into its molecules.
@@ -313,18 +343,50 @@ const num = (v: unknown): number | null => {
  * one would be a compliance hole, and the warning is the safer error.
  */
 function isTopical(input: ClassificationInput): boolean {
-  if ((input.dosageForm ?? '').toLowerCase() === 'cream') return true;
+  const form = (input.dosageForm ?? '').toLowerCase().trim();
+  if (form === 'cream') return true;
   if (input.route && TOPICAL_WORDS.test(input.route)) return true;
+  // A dosage form that states the medicine is swallowed or injected settles it.
+  // The brand-name guess below exists only because the DosageForm enum lumps
+  // ointments, gels and lotions into `other` — it must not overrule a form that
+  // is already explicit, or a flavour name carries the decision: "Aroget DX
+  // Syrup American Ice Cream" was read as topical on the word "Cream" and its
+  // Schedule G antihistamine was exempted down to over-the-counter.
+  if (SYSTEMIC_FORMS.has(form)) return false;
   return TOPICAL_WORDS.test(input.brandName ?? '');
+}
+
+/**
+ * Choose which field to read the molecules from.
+ *
+ * Normally the curated `composition` column wins over the generic name. The
+ * exception repairs our own damage: earlier versions backfilled that column
+ * with the molecule names alone, so 246,485 catalog rows hold "Paracetamol +
+ * Codeine" while the generic name still says "Paracetamol (650mg) + Codeine
+ * (30mg)". Reading the stripped value would keep the strengths invisible for
+ * good and keep the codeine exemption failing safe into the vault.
+ *
+ * So when the composition yields no strength at all and the generic name yields
+ * one, the generic name is used. This can only ever add information — if the
+ * composition already has strengths, or the generic name has none to offer, it
+ * changes nothing.
+ */
+function pickSalts(input: ClassificationInput): ParsedSalt[] {
+  const fromComposition = parseSalts(input.composition?.trim() || '');
+  const hasStrength = (list: ParsedSalt[]) => list.some((s) => s.strengthValue !== null);
+  if (fromComposition.length && !hasStrength(fromComposition)) {
+    const fromGeneric = parseSalts(input.genericName?.trim() || '');
+    if (hasStrength(fromGeneric)) return fromGeneric;
+  }
+  return fromComposition.length ? fromComposition : parseSalts(input.genericName?.trim() || '');
 }
 
 export function classify(
   input: ClassificationInput,
   index: RuleIndex,
 ): ClassificationResult {
-  const source = input.composition?.trim() || input.genericName?.trim() || '';
-  const salts = parseSalts(source);
-  const composition = salts.length ? salts.map((s) => s.raw).join(' + ') : null;
+  const salts = pickSalts(input);
+  const composition = salts.length ? salts.map(formatSalt).join(' + ') : null;
 
   const base = {
     salts,

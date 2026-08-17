@@ -63,8 +63,9 @@ describe('classifyFormularyItem', () => {
     const patch = await classifyFormularyItem('d2');
 
     expect(patch).toMatchObject({ schedule: 'H1', scheduleSource: 'auto' });
-    // The empty composition column is filled from the parsed salts.
-    expect(patch).toMatchObject({ composition: 'Tramadol + Paracetamol' });
+    // The empty composition column is filled from the parsed salts, strengths
+    // included — this column is what the classifier reads on the next run.
+    expect(patch).toMatchObject({ composition: 'Tramadol (37.5mg) + Paracetamol (325mg)' });
     expect(prisma.drugFormulary.update).toHaveBeenCalled();
   });
 

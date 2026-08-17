@@ -122,6 +122,57 @@ describe('the backfill finishes', () => {
   }, 10_000);
 });
 
+describe('composition repair', () => {
+  /**
+   * An earlier version wrote the composition column without the strengths, and
+   * the classifier reads that column in preference to the generic name — so the
+   * strengths were invisible from then on. Repairing them has to survive the
+   * `unchanged` early-return, or it is unreachable the moment the schedule
+   * fields already agree, which on a re-run is every row.
+   */
+  const row = {
+    id: 'm1', name: 'Xibmax 90 Tablet', genericName: 'Etoricoxib (90mg)',
+    saltComposition: 'Etoricoxib', dosageForm: 'tablet',
+    scheduleResolved: 'H', controlledClass: null, vaultControlled: false,
+    requiresQrScan: false, classifierVersion: CLASSIFIER_VERSION,
+  };
+
+  beforeEach(() => {
+    (prisma.drugScheduleRule.findMany as any).mockResolvedValue([
+      { scheduleCode: 'H', matchType: 'salt', matchValue: 'Etoricoxib', matchNorm: 'etoricoxib', aliases: [] },
+    ]);
+  });
+
+  it('rewrites a stripped composition even when the schedule has not changed', async () => {
+    let served = false;
+    (prisma.drugMaster.findMany as any).mockImplementation(async () => {
+      if (served) return [];
+      served = true;
+      return [{ ...row }];
+    });
+    (prisma.drugMaster.update as any).mockResolvedValue(row);
+
+    await runClassification(prisma, { only: 'master', force: true });
+
+    const calls = (prisma.drugMaster.update as any).mock.calls;
+    expect(calls.length, 'the row must not be skipped as unchanged').toBe(1);
+    expect(calls[0][0].data.saltComposition).toBe('Etoricoxib (90mg)');
+  });
+
+  it('leaves a composition that already carries strengths alone', async () => {
+    let served = false;
+    (prisma.drugMaster.findMany as any).mockImplementation(async () => {
+      if (served) return [];
+      served = true;
+      return [{ ...row, saltComposition: 'Etoricoxib (90mg)' }];
+    });
+    (prisma.drugMaster.update as any).mockResolvedValue(row);
+
+    await runClassification(prisma, { only: 'master', force: true });
+    expect((prisma.drugMaster.update as any).mock.calls.length).toBe(0);
+  });
+});
+
 describe('pendingClassificationCount', () => {
   it('counts unclassified rows on both tables', async () => {
     (prisma.drugMaster.count as any).mockResolvedValue(7);

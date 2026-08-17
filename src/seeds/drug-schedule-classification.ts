@@ -30,6 +30,7 @@ import {
   buildRuleIndex,
   classify,
   parseSalts,
+  formatSalt,
   CLASSIFIER_VERSION,
   type RuleIndex,
   type ScheduleRuleLike,
@@ -59,11 +60,27 @@ export interface ClassificationTotals {
   formularyChanged: number;
 }
 
-/** The cleaned "Salt + Salt" string for the composition column, or null. */
+/** The cleaned "Salt (strength) + Salt (strength)" string, or null. */
 function compositionFrom(generic: string | null | undefined): string | null {
   if (!generic) return null;
   const salts = parseSalts(generic);
-  return salts.length ? salts.map((s) => s.raw).join(' + ') : null;
+  return salts.length ? salts.map(formatSalt).join(' + ') : null;
+}
+
+/**
+ * Should the composition column be written?
+ *
+ * Blank is the obvious case. The second case is a repair: earlier versions
+ * wrote the molecule names without their strengths, and since the classifier
+ * reads this column in preference to the generic name, those rows lost the only
+ * data the codeine exemption needs. Where the new value carries a strength and
+ * the stored one does not, the stored one is replaced. A value that already has
+ * strengths is never touched.
+ */
+function shouldWriteComposition(stored: string | null, derived: string | null): boolean {
+  if (!derived) return false;
+  if (!stored) return true;
+  return derived.includes('(') && !stored.includes('(');
 }
 
 /** Has anything the classifier owns actually changed on this row? */
@@ -201,7 +218,12 @@ export async function runClassification(
         );
         totals.masterScanned += 1;
         opts.onRow?.(r, row.name, 'master');
-        if (unchanged(row as never, r, 'scheduleResolved')) return;
+        // The composition counts as a change in its own right. Without this the
+        // repair below is unreachable on a re-run: once the schedule fields
+        // match, `unchanged` returns early and the stripped composition stays
+        // stripped for good. The formulary path below has always done this.
+        const repairComposition = shouldWriteComposition(row.saltComposition, r.composition);
+        if (unchanged(row as never, r, 'scheduleResolved') && !repairComposition) return;
         totals.masterChanged += 1;
         if (opts.dryRun) return;
         await prisma.drugMaster.update({
@@ -215,8 +237,9 @@ export async function runClassification(
             saltsJson: r.salts as never,
             classifiedAt: new Date(),
             classifierVersion: CLASSIFIER_VERSION,
-            // Reference data we can enrich when blank, never overwrite.
-            ...(row.saltComposition ? {} : r.composition ? { saltComposition: r.composition } : {}),
+            // Enriched when blank, and repaired when an earlier run wrote it
+            // without the strengths. Never overwritten otherwise.
+            ...(repairComposition ? { saltComposition: r.composition } : {}),
           },
         });
       },
@@ -282,7 +305,8 @@ export async function runClassification(
 
         // Inheriting a platform schedule says nothing about the local salt
         // text, so the composition is derived from this row's own generic name.
-        const derived = !row.composition ? compositionFrom(row.genericName) : null;
+        const candidate = compositionFrom(row.genericName);
+        const derived = shouldWriteComposition(row.composition, candidate) ? candidate : null;
         if (unchanged(row as never, r, 'schedule') && !derived) return;
         totals.formularyChanged += 1;
         if (opts.dryRun) return;
