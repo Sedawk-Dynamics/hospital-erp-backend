@@ -4024,21 +4024,35 @@ export async function getAdmissionLedger(tenantId: string, admissionId: string, 
   const reimbursable = r2(posted.filter((l) => l.isReimbursable === true).reduce((s, l) => s + l.totalAmount, 0));
   const nonReimbursable = r2(posted.filter((l) => l.isReimbursable === false).reduce((s, l) => s + l.totalAmount, 0));
 
-  // Deposit position (on file / applied / refunded) + the deposit-adjusted
-  // patient balance and how much of the deposit is now refundable.
+  // Money the patient has put down sits in TWO places and only one of them was
+  // read here:
+  //
+  //   • Admission.depositAmount — a deposit taken against this stay.
+  //   • the patient's ADV- bucket — an advance taken at the front desk, which
+  //     is what the desk actually uses.
+  //
+  // So the ledger showed "Deposit ₹0.00" for a patient who had handed over
+  // ₹10,000 minutes earlier, the Deposit panel (rendered only when deposit > 0)
+  // never appeared at all, and there was no way to see the balance or return
+  // it. Both pools are now counted as what they are: money the hospital is
+  // holding for this patient.
   const dep = await getAdmissionDepositState(tenantId, admissionId);
-  const deposit = dep.onFile;
+  const advance = await getPatientAdvanceBalance(tenantId, admission.patientId);
+  const advanceOnFile = r2(Number(advance.balance ?? 0));
+  const depositOnFile = dep.onFile;
+  // What the desk should see as "held for this patient", whichever counter took it.
+  const deposit = r2(depositOnFile + advanceOnFile);
   // Real cash the patient paid at the counter (excludes deposit moved onto the bill).
   const cashPaid = r2(Math.max(0, paid - dep.applied));
   // What the patient must ultimately pay = charges minus the insurer-covered part.
   const netPatientObligation = r2(Math.max(0, grandTotal - insuranceCovered));
-  // Money the hospital currently holds from the patient = deposit on file + cash
+  // Money the hospital currently holds from the patient = both pools + cash
   // paid, LESS any deposit already returned.
   const moneyFromPatient = r2(cashPaid + deposit - dep.refunded);
   // Deposit-adjusted balance still owed by the patient.
   const balanceAfterDeposit = r2(Math.max(0, netPatientObligation - moneyFromPatient));
-  // Surplus the patient overpaid (e.g. insurance covered the charges) — refundable
-  // from the deposit (capped at the deposit not yet returned).
+  // Surplus the patient overpaid (e.g. insurance covered the charges) —
+  // refundable from whatever is still held and not already returned.
   const surplus = r2(Math.max(0, moneyFromPatient - netPatientObligation));
   const refundable = r2(Math.min(surplus, r2(Math.max(0, deposit - dep.refunded))));
 
@@ -4058,10 +4072,17 @@ export async function getAdmissionLedger(tenantId: string, admissionId: string, 
       paid,
       cashPaid,
       insuranceCovered,
+      /** Everything held for this patient — stay deposit plus front-desk advance. */
       deposit,
+      /** The two pools separately, so the desk can see where the money sits. */
+      depositOnFile,
+      advanceOnFile,
       depositApplied: dep.applied,
       depositRefunded: dep.refunded,
-      depositAvailable: dep.availableToApply,
+      // Applyable = the stay deposit not yet used, plus the whole advance
+      // balance. Both can be cut from the bill; they just live in different
+      // places.
+      depositAvailable: r2(dep.availableToApply + advanceOnFile),
       balanceAfterDeposit,
       refundable,
       reimbursable,
@@ -4088,17 +4109,50 @@ export async function applyDepositToBill(
   const admission = await prisma.admission.findFirst({ where: { id: admissionId, tenantId }, select: { id: true, patientId: true } });
   if (!admission) throw AppError.notFound('Admission not found');
 
+  // Two pools hold this patient's money: the stay deposit, and the front-desk
+  // advance. The desk collects into the advance, so applying "the deposit" had
+  // nothing to work with and the button was disabled on a patient who had paid.
+  // Spend the stay deposit first (it belongs to this admission), then the
+  // general advance.
   const dep = await getAdmissionDepositState(tenantId, admissionId);
-  if (dep.availableToApply <= 0) throw AppError.badRequest('The full deposit has already been applied to the bill.');
+  const advance = await getPatientAdvanceBalance(tenantId, admission.patientId);
+  const advanceAvailable = r2(Number(advance.balance ?? 0));
+  const totalAvailable = r2(dep.availableToApply + advanceAvailable);
+  if (totalAvailable <= 0) {
+    throw AppError.badRequest(
+      'Nothing left to apply — the deposit and advance have both been used against the bill.',
+    );
+  }
 
   const bill = await getOrCreateRunningIpBill(tenantId, admissionId, userId);
   const fresh = await prisma.bill.findFirst({ where: { id: bill.id, tenantId }, select: { balanceDue: true } });
   const balance = r2(Number(fresh?.balanceDue ?? 0));
   if (balance <= 0) throw AppError.badRequest('No outstanding balance to set the deposit against yet — charges are still building up.');
 
-  const requested = opts.amount != null ? r2(Math.max(0, opts.amount)) : dep.availableToApply;
-  const toApply = r2(Math.min(requested, dep.availableToApply, balance));
-  if (toApply <= 0) throw AppError.badRequest('Nothing to apply.');
+  const requested = opts.amount != null ? r2(Math.max(0, opts.amount)) : totalAvailable;
+  const target = r2(Math.min(requested, totalAvailable, balance));
+  if (target <= 0) throw AppError.badRequest('Nothing to apply.');
+
+  // Split the draw across the two pools, deposit first.
+  const fromDeposit = r2(Math.min(target, dep.availableToApply));
+  const fromAdvance = r2(target - fromDeposit);
+  const toApply = fromDeposit;
+
+  // The advance half goes through the advance machinery so its bucket balance
+  // falls and the money is not counted twice.
+  if (fromAdvance > 0) {
+    await adjustAdvanceToBill(tenantId, userId, {
+      patientId: admission.patientId,
+      billId: bill.id,
+      amount: fromAdvance,
+    });
+  }
+  if (toApply <= 0) {
+    // Nothing in the stay deposit — the whole draw came from the advance, which
+    // adjustAdvanceToBill has already settled onto the bill.
+    logger.info({ tenantId, admissionId, billId: bill.id, fromAdvance }, 'Advance applied to IP bill');
+    return getAdmissionLedger(tenantId, admissionId, actor);
+  }
 
   await prisma.payment.create({
     data: {
@@ -4116,7 +4170,10 @@ export async function applyDepositToBill(
     },
   });
   await recalculateBillTotals(bill.id);
-  logger.info({ tenantId, admissionId, billId: bill.id, toApply }, 'Deposit applied to IP bill');
+  logger.info(
+    { tenantId, admissionId, billId: bill.id, fromDeposit: toApply, fromAdvance },
+    'Deposit applied to IP bill',
+  );
   return getAdmissionLedger(tenantId, admissionId, actor);
 }
 
@@ -4146,6 +4203,67 @@ export async function refundDeposit(
     throw AppError.badRequest('No deposit to return — the charges (after insurance) still use up the deposit.');
   }
 
+  // The refundable figure now spans BOTH pools — the stay deposit and the
+  // patient's front-desk advance. Return the advance half out of its own
+  // bucket: minting a fresh deposit payment for money that is already sitting
+  // in the advance would hand it back while still showing it as held.
+  const dep = await getAdmissionDepositState(tenantId, admissionId);
+  const depositHeld = r2(Math.max(0, dep.onFile - dep.refunded));
+  const fromDeposit = r2(Math.min(toRefund, depositHeld));
+  const fromAdvance = r2(toRefund - fromDeposit);
+
+  if (fromAdvance > 0) {
+    const bucket = await prisma.bill.findFirst({
+      where: { tenantId, patientId: admission.patientId, billNumber: { startsWith: 'ADV-' } },
+    });
+    const available = bucket ? toNumber(bucket.amountPaid) : 0;
+    if (available + 0.001 < fromAdvance) {
+      throw AppError.badRequest(
+        `Only ₹${available} is left on the patient's advance — cannot return ₹${fromAdvance} from it.`,
+      );
+    }
+    await prisma.$transaction(async (tx) => {
+      // Draw the bucket down, and record the payout against the advance payment
+      // it came from so the money has a receipt trail on the way out as well as in.
+      await tx.bill.update({
+        where: { id: bucket!.id },
+        data: {
+          amountPaid: Math.max(0, toNumber(bucket!.amountPaid) - fromAdvance),
+          totalAmount: Math.max(0, toNumber(bucket!.totalAmount) - fromAdvance),
+        },
+      });
+      const advPayment = await tx.payment.findFirst({
+        where: { tenantId, billId: bucket!.id, paymentType: 'advance' as never, status: 'completed' },
+        orderBy: { paymentDate: 'desc' },
+        select: { id: true },
+      });
+      if (advPayment) {
+        await tx.refund.create({
+          data: {
+            tenantId,
+            billId: bucket!.id,
+            paymentId: advPayment.id,
+            patientId: admission.patientId,
+            amount: fromAdvance,
+            reason: opts.reason?.trim() || 'Advance returned to patient',
+            status: 'processed',
+            requestedBy: userId,
+            approvedBy: userId,
+            processedAt: new Date(),
+          },
+        });
+      }
+    });
+    logger.info({ tenantId, admissionId, fromAdvance }, 'Patient advance returned');
+  }
+
+  if (fromDeposit <= 0) {
+    // Nothing was held against the stay itself — the whole return came out of
+    // the advance and is already done.
+    const summaryOnly = await getAdmissionLedger(tenantId, admissionId, actor);
+    return { refund: null, ledger: summaryOnly };
+  }
+
   // We need a completed Payment to attach the Refund to. Reuse an existing deposit
   // payment with enough headroom, else record the deposit onto the running bill now.
   const bill = await getOrCreateRunningIpBill(tenantId, admissionId, userId);
@@ -4155,7 +4273,7 @@ export async function refundDeposit(
   });
   let target = depositPayments.find((p) => {
     const already = p.refunds.reduce((s, r) => s + Number(r.amount), 0);
-    return r2(Number(p.amount) - already) >= toRefund;
+    return r2(Number(p.amount) - already) >= fromDeposit;
   });
   if (!target) {
     const created = await prisma.payment.create({
@@ -4164,7 +4282,7 @@ export async function refundDeposit(
         billId: bill.id,
         patientId: admission.patientId,
         paymentDate: new Date(),
-        amount: toRefund,
+        amount: fromDeposit,
         paymentMethod: 'advance',
         paymentType: 'advance',
         transactionId: `${DEPOSIT_TXN_PREFIX}${admissionId}`,
@@ -4183,7 +4301,7 @@ export async function refundDeposit(
       billId: bill.id,
       paymentId: target.id,
       patientId: admission.patientId,
-      amount: toRefund,
+      amount: fromDeposit,
       reason: opts.reason?.trim() || 'Deposit returned — charges covered (insurance / no balance)',
       status: 'processed',
       requestedBy: userId,
@@ -4191,7 +4309,7 @@ export async function refundDeposit(
       processedAt: new Date(),
     },
   });
-  logger.info({ tenantId, admissionId, billId: bill.id, refundId: refund.id, toRefund }, 'IP deposit returned to patient');
+  logger.info({ tenantId, admissionId, billId: bill.id, refundId: refund.id, fromDeposit, fromAdvance }, 'IP deposit returned to patient');
   const summary = await getAdmissionLedger(tenantId, admissionId, actor);
   return { refund, ledger: summary };
 }
@@ -4393,8 +4511,12 @@ export async function getIpAdmissionsForBilling(
     const patientPayable = r2(bills.reduce((s, b) => s + Number(b.patientPayableAmount ?? 0), 0));
     const discountAmount = r2(bills.reduce((s, b) => s + Number(b.discountAmount ?? 0), 0));
 
+    // Same two pools as the ledger. The IP billing list showed ₹0 deposit for a
+    // patient the desk had just taken ₹10,000 from, because the advance the
+    // desk collects into was not counted here either.
     const dep = await getAdmissionDepositState(tenantId, a.id);
-    const deposit = dep.onFile;
+    const adv = await getPatientAdvanceBalance(tenantId, a.patientId);
+    const deposit = r2(dep.onFile + Number(adv.balance ?? 0));
     const cashPaid = r2(Math.max(0, amountPaid - dep.applied));
     const netPatientObligation = r2(Math.max(0, totalAmount - insuranceCovered));
     const moneyFromPatient = r2(cashPaid + deposit - dep.refunded);
