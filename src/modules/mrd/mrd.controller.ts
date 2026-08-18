@@ -84,6 +84,23 @@ export async function getDischargeSummaryById(
   }
 }
 
+// A patient's past discharge summaries, for the clinical history panel.
+export async function getDischargeSummariesForPatient(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await mrdService.getDischargeSummariesForPatient(
+      req.user!.tenantId,
+      req.params.patientId as string,
+    );
+    sendResponse({ res, message: 'Discharge summaries retrieved', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getDischargeSummaryByAdmission(
   req: AuthenticatedRequest,
   res: Response,

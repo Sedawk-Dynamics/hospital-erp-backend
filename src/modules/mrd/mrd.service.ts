@@ -1073,6 +1073,59 @@ export async function getDischargeDocumentForExport(tenantId: string, id: string
 /**
  * Patient-portal accessor: only published summaries for patients whose patient records match.
  */
+/**
+ * A patient's past discharge summaries, for the clinician-facing history panel.
+ *
+ * The panel a doctor actually opens during a consultation asked only the four
+ * `/medical-history/*` endpoints, so a previous admission's summary — often the
+ * single most useful document about this patient — was not reachable from it.
+ * The full patient file does carry them, but that is a different, much heavier
+ * screen.
+ *
+ * Deliberately a light list: enough to choose one, not the document itself.
+ * The existing `/discharge-summary/:id/document` renders the chosen one.
+ *
+ * Drafts are included, unlike the patient-portal reader — a doctor reviewing a
+ * stay in progress needs to see the summary being written, and the status is on
+ * the row so an unfinished one reads as unfinished.
+ */
+export async function getDischargeSummariesForPatient(tenantId: string, patientId: string) {
+  const rows = await prisma.dischargeSummary.findMany({
+    // DischargeSummary has no tenant column — it hangs off the admission, so
+    // the tenant scope comes through that.
+    where: { patientId, admission: { tenantId } },
+    orderBy: [{ dischargeDate: 'desc' }, { createdAt: 'desc' }],
+    take: 30,
+    select: {
+      id: true,
+      status: true,
+      dischargeDate: true,
+      admissionDate: true,
+      // The one-line clinical answer to "what was this stay about" — enough to
+      // pick the right summary without opening each one.
+      diagnosesSummary: true,
+      createdAt: true,
+      admissionId: true,
+      admission: { select: { id: true, admissionType: true } },
+      doctor: { select: { user: { select: { firstName: true, lastName: true } } } },
+    },
+  });
+
+  return rows.map((r) => ({
+    id: r.id,
+    status: r.status,
+    admissionId: r.admissionId,
+    admissionType: r.admission?.admissionType ?? null,
+    admissionDate: r.admissionDate,
+    dischargeDate: r.dischargeDate,
+    diagnosesSummary: r.diagnosesSummary,
+    doctorName: r.doctor?.user
+      ? `${r.doctor.user.firstName} ${r.doctor.user.lastName ?? ''}`.trim()
+      : null,
+    createdAt: r.createdAt,
+  }));
+}
+
 export async function getPublishedDischargeSummariesForPatients(patientIds: string[]) {
   if (patientIds.length === 0) return [];
   return prisma.dischargeSummary.findMany({

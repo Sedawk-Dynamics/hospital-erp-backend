@@ -14,6 +14,10 @@ export const getDischargeSummaryByIdSchema = z.object({
   }),
 });
 
+export const patientIdParamSchema = z.object({
+  params: z.object({ patientId: z.string().uuid('Invalid patient ID') }),
+});
+
 export const getDischargeSummaryByAdmissionSchema = z.object({
   params: z.object({
     admissionId: z.string().uuid('Invalid admission ID'),

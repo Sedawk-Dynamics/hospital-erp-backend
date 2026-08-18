@@ -6,6 +6,7 @@ import {
   generateDischargeSummarySchema,
   getDischargeSummaryByIdSchema,
   getDischargeSummaryByAdmissionSchema,
+  patientIdParamSchema,
   updateDischargeSummarySchema,
   dischargeSummaryIdParamSchema,
   signDischargeSummarySchema,
@@ -36,6 +37,16 @@ mrdRoutes.get(
   requirePermission('admissions', 'read'),
   validate(generateDischargeSummarySchema),
   controller.generateDischargeSummary,
+);
+
+// A patient's past discharge summaries — the clinical history panel lists them
+// so a previous admission is reachable during a consultation.
+mrdRoutes.get(
+  '/discharge-summary/by-patient/:patientId',
+  authenticate,
+  requirePermission('admissions', 'read'),
+  validate(patientIdParamSchema),
+  controller.getDischargeSummariesForPatient,
 );
 
 mrdRoutes.get(
