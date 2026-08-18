@@ -1602,6 +1602,36 @@ export async function updateAppointmentStatus(
     },
   });
 
+  // Cancelling has to settle the consultation charge, or the fee stays on the
+  // books and rebooking raises a second one for the same consultation. Only
+  // reachable before `in_consultation`, so the visit never happened and the
+  // money cannot have been earned.
+  //
+  // Best-effort: a booking that could not be cancelled because its bill would
+  // not tidy up is a worse outcome than a bill needing a manual look.
+  if (newStatus === 'cancelled') {
+    try {
+      const billing = await import('../billing/billing.service');
+      const settled = await billing.settleCancelledAppointmentCharge(
+        tenantId,
+        userId,
+        id,
+        data.cancellationReason || 'cancelled by staff',
+      );
+      if (settled.creditedToAdvance > 0) {
+        logger.info(
+          { tenantId, appointmentId: id, amount: settled.creditedToAdvance },
+          'Cancelled consultation fee carried to patient advance',
+        );
+      }
+    } catch (err) {
+      logger.warn(
+        { tenantId, appointmentId: id, err },
+        'Could not settle the consultation charge on cancellation (non-fatal)',
+      );
+    }
+  }
+
   logger.info(
     { tenantId, appointmentId: id, from: currentStatus, to: newStatus },
     'Appointment status updated',
