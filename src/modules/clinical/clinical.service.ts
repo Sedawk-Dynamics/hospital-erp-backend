@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
+import { istDayStart, istDayEnd } from '../../shared/date.utils';
 import { getPaginationParams } from '../../shared/pagination';
 import { normalizeAdmissionType, type AdmissionType } from '../../shared/admission-type';
 import { ACTIVE_ADMISSION_STATUS, isActiveAdmission } from '../../shared/admission-status';
@@ -1667,6 +1668,15 @@ export async function getAllVitals(tenantId: string, query: GetAllVitalsQuery) {
 
   if (query.patientId) where.patientId = query.patientId;
   if (query.visitId) where.visitId = query.visitId;
+
+  // IST day boundaries — the ward's "today" is the local one, and a UTC cut
+  // would drop the evening round into the next day.
+  if ((query as any).fromDate) {
+    where.recordedAt = { ...(where.recordedAt ?? {}), gte: istDayStart((query as any).fromDate) };
+  }
+  if ((query as any).toDate) {
+    where.recordedAt = { ...(where.recordedAt ?? {}), lte: istDayEnd((query as any).toDate) };
+  }
 
   if (query.search) {
     where.patient = {

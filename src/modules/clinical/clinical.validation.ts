@@ -320,6 +320,11 @@ export const getAllVitalsQuerySchema = z.object({
   query: paginationSchema.extend({
     patientId: z.string().uuid().optional(),
     visitId: z.string().uuid().optional(),
+    // Window on recordedAt (yyyy-MM-dd, IST day boundaries). Lets a queue ask
+    // "who has had vitals taken today?" in one request instead of one per
+    // patient on screen.
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
   }),
 });
 
