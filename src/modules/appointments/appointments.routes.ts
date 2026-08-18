@@ -20,6 +20,7 @@ import {
   getDoctorProfilesQuerySchema,
   doctorIdParamSchema,
   appointmentIdParamSchema,
+  frontdeskPaymentSchema,
   rescheduleAppointmentSchema,
   frontdeskCheckoutSchema,
   slotsQuerySchema,
@@ -256,8 +257,18 @@ appointmentRoutes.post(
   '/:id/frontdesk-payment',
   authenticate,
   requirePermission('appointments', 'update'),
-  validate(appointmentIdParamSchema),
+  validate(frontdeskPaymentSchema),
   controller.initiateFrontdeskPayment,
+);
+
+// Itemised preview of what the counter is about to charge — consultation fee
+// plus the one-time registration fee, with the reason it does or does not apply.
+appointmentRoutes.get(
+  '/:id/charge-preview',
+  authenticate,
+  requirePermission('appointments', 'read'),
+  validate(appointmentIdParamSchema),
+  controller.getAppointmentChargePreview,
 );
 
 // Fetch assembled consultation form data for prefill + editability check

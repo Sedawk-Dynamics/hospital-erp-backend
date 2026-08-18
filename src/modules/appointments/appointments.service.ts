@@ -1910,11 +1910,91 @@ async function readRegistrationChoice(appointmentId: string): Promise<boolean | 
   return rows[0]?.charge_registration_fee ?? null;
 }
 
+/**
+ * What the counter is about to charge for this appointment, itemised, BEFORE
+ * any bill exists.
+ *
+ * The registration fee was invisible: it is decided inside
+ * `ensureAppointmentBill` from three inputs the desk cannot see (the hospital
+ * setting, whether this is the patient's first visit here, and an override
+ * that only `createAppointment` could ever write). QA went looking for a
+ * "collect registration charge" action and reasonably concluded there wasn't
+ * one. This is what the desk needs to see: whether the fee applies, how much
+ * it is, and WHY it does or does not apply.
+ */
+export async function getAppointmentChargePreview(tenantId: string, appointmentId: string) {
+  const appointment = await prisma.appointment.findFirst({
+    where: { id: appointmentId, tenantId },
+    include: { doctor: { select: { consultationFee: true } } },
+  });
+  if (!appointment) throw AppError.notFound('Appointment not found');
+
+  const [settings, visitStatus, deskChoice] = await Promise.all([
+    getRegistrationFeeSettings(tenantId),
+    getPatientVisitStatus(tenantId, appointment.patientId, { excludeAppointmentId: appointmentId }),
+    readRegistrationChoice(appointmentId),
+  ]);
+
+  const applies = shouldChargeRegistrationFee({
+    settings,
+    isFirstVisit: visitStatus.isFirstVisit,
+    alreadyCharged: visitStatus.registrationFeeCharged,
+    deskChoice,
+  });
+  const totals = registrationFeeTotals(settings);
+  const consultationFee = appointment.doctor?.consultationFee
+    ? Number(appointment.doctor.consultationFee)
+    : 0;
+
+  // Say plainly why the fee is or is not on the bill, so a desk that expected
+  // one and does not see it knows which of the three reasons applies.
+  const reason = !settings.enabled
+    ? 'This hospital has no registration fee configured.'
+    : visitStatus.registrationFeeCharged
+      ? 'Already charged to this patient at this hospital.'
+      : !visitStatus.isFirstVisit && settings.oncePerPatient
+        ? 'Not a first visit — the fee is once per patient.'
+        : deskChoice === false
+          ? 'Waived at the counter.'
+          : 'First visit at this hospital.';
+
+  return {
+    consultationFee,
+    registration: {
+      // Can the desk act on it at all? Only when the hospital charges one.
+      configured: settings.enabled,
+      applies,
+      label: settings.label,
+      amount: totals.unitPrice,
+      taxAmount: totals.taxAmount,
+      totalAmount: totals.totalAmount,
+      isFirstVisit: visitStatus.isFirstVisit,
+      alreadyCharged: visitStatus.registrationFeeCharged,
+      /** null = the desk has not said; the rule decides. */
+      deskChoice,
+      reason,
+    },
+    total: round2(consultationFee + (applies ? totals.totalAmount : 0)),
+  };
+}
+
 export async function initiateFrontdeskPayment(
   tenantId: string,
   appointmentId: string,
   userId: string,
+  opts: { chargeRegistrationFee?: boolean } = {},
 ) {
+  // Record the desk's decision BEFORE the bill is assembled — the fee is
+  // resolved while the bill is built, so a choice made afterwards would not
+  // reach it. Only an explicit choice is stored; leaving it alone means "the
+  // desk did not say" and the rule decides.
+  if (typeof opts.chargeRegistrationFee === 'boolean') {
+    await prisma.$executeRaw`
+      UPDATE appointments SET charge_registration_fee = ${opts.chargeRegistrationFee}
+      WHERE id = ${appointmentId} AND tenant_id = ${tenantId}
+    `;
+  }
+
   const { appointment, bill } = await ensureAppointmentBill(tenantId, appointmentId, userId);
 
   // Move pending_payment → booked. Other statuses are left alone — the bill
@@ -1927,6 +2007,14 @@ export async function initiateFrontdeskPayment(
     });
   }
 
+  // The lines, not just the total — the desk could see "₹700 due" with no way
+  // to tell that ₹100 of it was the registration fee.
+  const items = await prisma.billItem.findMany({
+    where: { billId: bill.id },
+    select: { id: true, description: true, category: true, quantity: true, totalAmount: true },
+    orderBy: { createdAt: 'asc' },
+  });
+
   return {
     billId: bill.id,
     billNumber: bill.billNumber,
@@ -1934,6 +2022,13 @@ export async function initiateFrontdeskPayment(
     amountPaid: Number(bill.amountPaid),
     balanceDue: Number(bill.balanceDue),
     status: bill.status,
+    items: items.map((i) => ({
+      id: i.id,
+      description: i.description,
+      category: i.category,
+      quantity: i.quantity,
+      amount: Number(i.totalAmount),
+    })),
   };
 }
 

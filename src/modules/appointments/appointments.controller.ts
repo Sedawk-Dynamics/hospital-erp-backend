@@ -484,6 +484,24 @@ export async function frontdeskCheckout(
   }
 }
 
+// What the counter is about to charge, itemised, before any bill exists — so
+// the registration fee is visible (and explicable) rather than implicit.
+export async function getAppointmentChargePreview(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await appointmentsService.getAppointmentChargePreview(
+      req.user!.tenantId,
+      req.params.id as string,
+    );
+    sendResponse({ res, message: 'Charge preview', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function initiateFrontdeskPayment(
   req: AuthenticatedRequest,
   res: Response,
@@ -496,6 +514,7 @@ export async function initiateFrontdeskPayment(
       tenantId,
       req.params.id as string,
       userId,
+      { chargeRegistrationFee: req.body?.chargeRegistrationFee },
     );
     sendResponse({
       res,

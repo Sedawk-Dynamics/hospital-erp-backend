@@ -288,6 +288,18 @@ export const doctorIdParamSchema = z.object({
   }),
 });
 
+/**
+ * Raising the counter bill, with the desk's explicit registration-fee call.
+ * Omitting the flag leaves it to the rule (first visit + hospital setting).
+ */
+export const frontdeskPaymentSchema = z.object({
+  params: z.object({ id: z.string().uuid('Invalid appointment ID') }),
+  body: z
+    .object({ chargeRegistrationFee: z.boolean().optional() })
+    .optional()
+    .default({}),
+});
+
 export const appointmentIdParamSchema = z.object({
   params: z.object({
     id: z.string().uuid('Invalid appointment ID'),
