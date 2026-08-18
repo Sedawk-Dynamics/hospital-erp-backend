@@ -77,6 +77,27 @@ export async function generateText(
 }
 
 /**
+ * Structured output needs far more room than a chat reply, and the shared
+ * `AiConfig.maxOutputTokens` defaults to 1024 — a limit chosen for
+ * conversational answers. A blood-report analysis returning a per-parameter
+ * note for a full panel blows through that easily, and the reply comes back
+ * cut off mid-object. `JSON.parse` then fails and the doctor was told the model
+ * "returned an unexpected format", which is true but useless: the model was
+ * fine, it was simply not given enough room to finish.
+ *
+ * So JSON calls get their own floor. A hospital that has deliberately raised
+ * the configured limit still wins.
+ */
+const JSON_OUTPUT_TOKEN_FLOOR = 4096;
+
+/** Looks like a JSON object the model never got to close. */
+function looksTruncated(text: string): boolean {
+  const opens = (text.match(/\{/g) ?? []).length;
+  const closes = (text.match(/\}/g) ?? []).length;
+  return opens > closes;
+}
+
+/**
  * Generate and parse a strict JSON object. Defensive against models that wrap
  * the JSON in prose or code fences despite responseMimeType.
  */
@@ -84,7 +105,28 @@ export async function generateJson<T = unknown>(
   opts: AiGenerateOptions,
   ctx: AiCallContext = {},
 ): Promise<T> {
-  const { text } = await generateText({ ...opts, json: true }, ctx);
+  const { text } = await generateText(
+    {
+      ...opts,
+      json: true,
+      maxOutputTokens: Math.max(opts.maxOutputTokens ?? 0, JSON_OUTPUT_TOKEN_FLOOR),
+    },
+    ctx,
+  );
+
+  // Say WHICH failure it was. "Cut off" is actionable — send less, or raise the
+  // limit; "unexpected format" sends everyone looking at the wrong thing.
+  if (looksTruncated(text)) {
+    logger.warn(
+      { length: text.length, preview: text.slice(-200) },
+      'AI JSON response was truncated before the object closed',
+    );
+    throw AppError.internal(
+      'The AI response was cut off before it finished. Try again with a narrower request — ' +
+        'or raise the output token limit in AI settings if this keeps happening.',
+    );
+  }
+
   const match = text.match(/\{[\s\S]*\}/);
   if (!match) {
     logger.warn({ preview: text.slice(0, 200) }, 'AI JSON response had no object');

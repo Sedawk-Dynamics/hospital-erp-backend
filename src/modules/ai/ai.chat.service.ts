@@ -123,6 +123,11 @@ export async function bloodReportAnalysis(
     );
   }
 
+  // Abnormal values first, then the rest. If a panel is large enough that the
+  // model has to be selective, the out-of-range figures are the ones that must
+  // survive the cut — they are what the analysis is for.
+  results.sort((a, b) => Number(b.isAbnormal) - Number(a.isAbnormal));
+
   const reportText = results
     .map((r) => {
       const test = r.labOrderItem?.test?.testName ?? 'Lab';
