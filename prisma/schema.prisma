@@ -2420,6 +2420,14 @@ model Visit {
   visitType      VisitType   @map("visit_type")
   visitDate      DateTime    @map("visit_date")
   chiefComplaint String?     @map("chief_complaint")
+  // What the NURSE was told at intake, kept apart from the doctor's own
+  // framing above. One shared box meant whoever saved last replaced the other
+  // and nothing recorded who said what — but the patient's words at the door
+  // and the clinician's reading of the problem are different statements and
+  // both are worth keeping.
+  nurseChiefComplaint     String?   @map("nurse_chief_complaint")
+  nurseChiefComplaintById String?   @map("nurse_chief_complaint_by")
+  nurseChiefComplaintAt   DateTime? @map("nurse_chief_complaint_at")
   status         VisitStatus @default(active)
   createdAt      DateTime    @default(now()) @map("created_at")
   updatedAt      DateTime    @default(now()) @updatedAt @map("updated_at")

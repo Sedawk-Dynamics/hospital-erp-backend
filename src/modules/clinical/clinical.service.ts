@@ -320,7 +320,7 @@ export async function getVisitById(tenantId: string, id: string) {
 /**
  * Update a visit.
  */
-export async function updateVisit(tenantId: string, id: string, data: UpdateVisitInput) {
+export async function updateVisit(tenantId: string, id: string, data: UpdateVisitInput, userId?: string) {
   const visit = await prisma.visit.findFirst({
     where: { id, tenantId },
   });
@@ -347,6 +347,14 @@ export async function updateVisit(tenantId: string, id: string, data: UpdateVisi
     data: {
       ...(data.doctorId && { doctorId: data.doctorId }),
       ...(data.chiefComplaint !== undefined && { chiefComplaint: data.chiefComplaint }),
+      // Attribution is stamped here rather than trusted from the caller — the
+      // point of a separate field is knowing who recorded it, so the client
+      // must not be able to claim someone else said it.
+      ...(data.nurseChiefComplaint !== undefined && {
+        nurseChiefComplaint: data.nurseChiefComplaint || null,
+        nurseChiefComplaintById: data.nurseChiefComplaint ? (userId ?? null) : null,
+        nurseChiefComplaintAt: data.nurseChiefComplaint ? new Date() : null,
+      }),
       ...(data.visitType && { visitType: data.visitType }),
     },
     include: {

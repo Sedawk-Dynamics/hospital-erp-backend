@@ -41,6 +41,9 @@ export const updateVisitSchema = z.object({
   body: z.object({
     doctorId: z.string().uuid('Invalid doctor ID').optional(),
     chiefComplaint: z.string().max(2000).optional(),
+    // The nurse's intake version, recorded and attributed separately from the
+    // doctor's. Empty string clears it.
+    nurseChiefComplaint: z.string().max(2000).optional(),
     visitType: z.enum(['op', 'ip']).optional(),
   }),
 });

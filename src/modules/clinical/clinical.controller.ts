@@ -66,7 +66,12 @@ export async function updateVisit(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const visit = await clinicalService.updateVisit(tenantId, req.params.id as string, req.body);
+    const visit = await clinicalService.updateVisit(
+      tenantId,
+      req.params.id as string,
+      req.body,
+      req.user!.userId,
+    );
     sendResponse({
       res,
       message: 'Visit updated successfully',
