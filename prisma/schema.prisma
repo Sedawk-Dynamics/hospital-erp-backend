@@ -3768,6 +3768,11 @@ model LabResult {
   enterer      User?        @relation(fields: [enteredBy], references: [id])
   verifier     User?        @relation("LabResultVerifier", fields: [verifiedBy], references: [id])
 
+  // One value per parameter per test. The real constraint is a UNIQUE index on
+  // (lab_order_item_id, LOWER(parameter_name)) — Prisma cannot express the
+  // LOWER(), so it lives in the migration and this index keeps `db push` from
+  // planning around a column pair it thinks is unconstrained.
+  @@index([labOrderItemId, parameterName])
   @@map("lab_results")
 }
 

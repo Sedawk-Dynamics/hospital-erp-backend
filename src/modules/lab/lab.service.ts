@@ -1517,8 +1517,15 @@ export async function enterResults(tenantId: string, userId: string, data: Enter
     for (const result of byParam.values()) {
       const auto = evaluateAbnormal(result.value, result.normalRange);
       const isAbnormal = auto !== null ? auto : !!result.isAbnormal;
+      // Case-insensitive, matching the unique index the database now enforces.
+      // The manual path compared the name exactly while the OCR path lowercased,
+      // so the two disagreed about whether a parameter was already present and
+      // "Hb" could sit beside "HB" on the same report.
       await tx.labResult.deleteMany({
-        where: { labOrderItemId: data.labOrderItemId, parameterName: result.parameterName },
+        where: {
+          labOrderItemId: data.labOrderItemId,
+          parameterName: { equals: result.parameterName, mode: 'insensitive' },
+        },
       });
       created.push(
         await tx.labResult.create({
