@@ -3009,6 +3009,60 @@ const ADMISSION_REQUEST_INCLUDE = {
   processedBy: { select: { id: true, firstName: true, lastName: true } },
 } as const;
 
+/**
+ * Who needs to know an admission request has come in. The front desk allocates
+ * the bed, so they are the ones waiting on it; billing/admin see it because a
+ * bed is a chargeable decision.
+ */
+const ADMISSION_REQUEST_RECIPIENT_ROLES = ['front_desk', 'admin', 'billing_admin'];
+
+/**
+ * Best-effort in-app notification. A notification that cannot be delivered must
+ * never take the clinical action down with it — the request itself is the
+ * record, and it is already saved by the time this runs.
+ */
+async function notifyAdmissionRequest(params: {
+  tenantId: string;
+  userIds: string[];
+  title: string;
+  message: string;
+  requestId: string;
+  urgent?: boolean;
+}): Promise<void> {
+  try {
+    if (params.userIds.length === 0) return;
+    await prisma.notification.createMany({
+      data: params.userIds.map((userId) => ({
+        tenantId: params.tenantId,
+        userId,
+        title: params.title,
+        message: params.message,
+        // An emergency admission request is not something to leave sitting in
+        // the same pile as routine traffic.
+        notificationType: (params.urgent ? 'alert' : 'general') as never,
+        channel: 'in_app' as never,
+        referenceType: 'admission_request',
+        referenceId: params.requestId,
+      })),
+    });
+  } catch (err) {
+    logger.warn({ err, requestId: params.requestId }, 'Admission request notification failed');
+  }
+}
+
+/** Active users holding any of the given role slugs. */
+async function usersWithRoles(tenantId: string, roleSlugs: string[]): Promise<string[]> {
+  const users = await prisma.user.findMany({
+    where: {
+      tenantId,
+      isActive: true,
+      userRoles: { some: { role: { name: { in: roleSlugs } } } },
+    },
+    select: { id: true },
+  });
+  return users.map((u) => u.id);
+}
+
 export async function createAdmissionRequest(
   tenantId: string,
   userId: string,
@@ -3062,6 +3116,23 @@ export async function createAdmissionRequest(
       requestedById: userId,
     },
     include: ADMISSION_REQUEST_INCLUDE,
+  });
+
+  // Tell the front desk. The whole request lifecycle dispatched nothing at all,
+  // so a doctor raising an IP request had no way to hand it over — QA found the
+  // desk had to keep checking the list manually to notice one had arrived.
+  const patientName = `${request.patient?.firstName ?? ''} ${request.patient?.lastName ?? ''}`.trim();
+  const urgent = request.urgency === 'emergency' || request.urgency === 'urgent';
+  void notifyAdmissionRequest({
+    tenantId,
+    userIds: await usersWithRoles(tenantId, ADMISSION_REQUEST_RECIPIENT_ROLES),
+    title: urgent ? `${request.urgency === 'emergency' ? 'Emergency' : 'Urgent'} admission request` : 'New admission request',
+    message:
+      `${patientName || 'A patient'}${request.patient?.mrn ? ` · ${request.patient.mrn}` : ''}` +
+      ` needs a bed${request.preferredWardType ? ` (${request.preferredWardType})` : ''}.` +
+      `${request.reason ? ` ${request.reason}` : ''}`,
+    requestId: request.id,
+    urgent,
   });
 
   logger.info({ tenantId, admissionRequestId: request.id }, 'Admission request created');
@@ -3168,6 +3239,22 @@ export async function rejectAdmissionRequest(
     },
     include: ADMISSION_REQUEST_INCLUDE,
   });
+  // Close the loop back to the doctor who asked. Without this they only learn
+  // their request was turned down by going to look.
+  if (updated.requestedById) {
+    const name = `${updated.patient?.firstName ?? ''} ${updated.patient?.lastName ?? ''}`.trim();
+    void notifyAdmissionRequest({
+      tenantId,
+      userIds: [updated.requestedById],
+      title: 'Admission request declined',
+      message:
+        `${name || 'Your patient'} was not admitted.` +
+        `${data.rejectionReason ? ` Reason: ${data.rejectionReason}` : ''}`,
+      requestId: id,
+      urgent: true,
+    });
+  }
+
   logger.info({ tenantId, admissionRequestId: id, userId }, 'Admission request rejected');
   return updated;
 }
@@ -3406,6 +3493,22 @@ export async function acceptAdmissionRequest(
       { tenantId, admissionRequestId: id, userId, reservationId, admissionId },
       'Admission request accepted',
     );
+
+    // Tell the doctor their patient has a bed. Fired outside the transaction's
+    // critical path (void) — a notification must never roll back an admission.
+    if (updated.requestedById) {
+      const name = `${updated.patient?.firstName ?? ''} ${updated.patient?.lastName ?? ''}`.trim();
+      void notifyAdmissionRequest({
+        tenantId,
+        userIds: [updated.requestedById],
+        title: admissionId ? 'Patient admitted' : 'Bed reserved',
+        message: admissionId
+          ? `${name || 'Your patient'} has been admitted.`
+          : `${name || 'Your patient'} has a bed reserved.`,
+        requestId: id,
+      });
+    }
+
     return updated;
   });
 }
