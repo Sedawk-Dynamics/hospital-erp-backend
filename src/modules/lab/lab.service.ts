@@ -1936,16 +1936,56 @@ export async function publishLabReport(
 
   if (notify) {
     const patientName = `${report.labOrder.patient.firstName} ${report.labOrder.patient.lastName ?? ''}`.trim();
-    const message = `Lab report for ${patientName} is ready.`;
+    const mrn = (report.labOrder.patient as { mrn?: string | null })?.mrn ?? null;
+    const orderItems = await prisma.labOrderItem.findMany({
+      where: { labOrderId: report.labOrderId },
+      select: { test: { select: { testName: true } } },
+    });
+    const testNames = orderItems
+      .map((i) => i.test?.testName)
+      .filter((n): n is string => !!n);
+
+    // What is actually out of range. A notification that says only "a report is
+    // ready" makes the doctor open it to find out whether it matters, and QA
+    // reported exactly that — an abnormal-result alert they had to open blind
+    // to even tell which patient it was about.
+    const abnormal = await prisma.labResult.findMany({
+      where: { labOrderId: report.labOrderId, isAbnormal: true },
+      select: { parameterName: true, value: true, unit: true },
+      take: 6,
+    });
+    const abnormalCount = await prisma.labResult.count({
+      where: { labOrderId: report.labOrderId, isAbnormal: true },
+    });
+
+    const who = [patientName, mrn].filter(Boolean).join(' · ');
+    const what = testNames.length ? testNames.slice(0, 3).join(', ') : 'Lab report';
+    const more = testNames.length > 3 ? ` +${testNames.length - 3} more` : '';
+
+    // Lead with the abnormal values when there are any — that is the whole
+    // reason to look now rather than later.
+    const flagged = abnormal
+      .map((r) => `${r.parameterName} ${r.value ?? ''}${r.unit ? ' ' + r.unit : ''}`.trim())
+      .join(', ');
+    const overflow = abnormalCount > abnormal.length ? ` +${abnormalCount - abnormal.length} more` : '';
+
+    const title = abnormalCount > 0
+      ? `Abnormal lab result — ${patientName}`
+      : `Lab report ready — ${patientName}`;
+    const message = abnormalCount > 0
+      ? `${who} · ${what}${more}\nOut of range: ${flagged}${overflow}`
+      : `${who} · ${what}${more}`;
 
     // Notify ordering doctor
     if (report.labOrder.orderedBy) {
       await safeNotify({
         tenantId,
         userId: report.labOrder.orderedBy,
-        title: 'Lab report ready',
+        title,
         message,
-        notificationType: 'lab_result',
+        // An abnormal result is not routine traffic — it sorts and badges as an
+        // alert so it does not sit unread among the ready-report notices.
+        notificationType: abnormalCount > 0 ? 'alert' : 'lab_result',
         referenceType: 'lab_report',
         referenceId: reportId,
       });
