@@ -254,12 +254,23 @@ async function assertLabOrderPaid(
     select: { paymentVerified: true, paymentDeferredReason: true, acceptedAt: true },
   });
   if (!row) return; // downstream will surface not-found
+
+  // An order nobody has accepted has not entered the lab's workflow at all —
+  // no counter payment, no assignment, no clock started. This used to fall
+  // through rather than block, which is what let the Workload tab enter results
+  // and upload files for orders Intake had never accepted and nobody had paid
+  // for: two views of one order with no shared state between them.
+  //
+  // Accepting is a single action in Intake, so nothing is stranded by this —
+  // it just has to happen first, which is the point.
+  if (!row.acceptedAt) {
+    throw AppError.badRequest(
+      'This order has not been accepted yet. Accept it from the Intake tab first — that is where payment is taken and the order enters the lab workflow.',
+    );
+  }
+
   if (row.paymentVerified) return;
   if (row.paymentDeferredReason) return; // accepted unpaid, on purpose
-
-  // Never accepted at all: fall through rather than block, so an order that
-  // predates the accept flow (or one worked on directly) is not stranded.
-  if (!row.acceptedAt) return;
 
   throw AppError.badRequest(
     'Payment is pending for this lab order. The lab admin must collect it (or accept the order on credit) before results can be recorded.',

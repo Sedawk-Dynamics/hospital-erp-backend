@@ -516,6 +516,13 @@ describe('Lab Service', () => {
         status: 'pending',
         labOrder: { id: 'order-1', tenantId: TENANT_ID, status: 'sample_collected' },
       });
+      // An order at result-entry time has been through Intake: accepted, and
+      // its payment settled. Results cannot be entered before that.
+      (prisma.labOrder.findFirst as any).mockResolvedValue({
+        acceptedAt: new Date(),
+        paymentVerified: true,
+        paymentDeferredReason: null,
+      });
 
       const txMock = mockTransaction();
 
@@ -545,6 +552,32 @@ describe('Lab Service', () => {
         where: { id: 'order-1' },
         data: { status: 'in_progress' },
       });
+    });
+
+    it('refuses results on an order Intake has never accepted', async () => {
+      // The Workload tab used to enter results and upload files for orders
+      // Intake had never accepted and nobody had paid for — two views of one
+      // order with no shared state. The gate had an escape hatch for orders
+      // predating the accept flow, and that hatch was the hole.
+      (prisma.labOrderItem.findFirst as any).mockResolvedValue({
+        id: 'item-1',
+        status: 'pending',
+        labOrder: { id: 'order-1', tenantId: TENANT_ID, status: 'ordered' },
+      });
+      (prisma.labOrder.findFirst as any).mockResolvedValue({
+        acceptedAt: null,
+        paymentVerified: false,
+        paymentDeferredReason: null,
+      });
+
+      await expect(
+        enterResults(TENANT_ID, USER_ID, {
+          labOrderItemId: 'item-1',
+          labOrderId: 'order-1',
+          patientId: 'patient-1',
+          results: [{ parameterName: 'WBC', value: '7500' }],
+        } as any),
+      ).rejects.toThrow(/not been accepted/i);
     });
 
     it('should throw not found if order item does not exist', async () => {
