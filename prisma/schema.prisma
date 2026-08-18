@@ -4902,6 +4902,12 @@ model DrugReturn {
   // Credit Notes report. On approval a vendor return REDUCES stock.
   creditNoteNumber   String?          @map("credit_note_number") @db.VarChar(80)
   creditAmount       Decimal?         @map("credit_amount") @db.Decimal(12, 2)
+  // One vendor return can cover several medicines. The lines share a group id
+  // and a human-readable return number so the supplier's single credit note
+  // maps to a single return, not to one row per batch. Nullable: a return
+  // raised before this (or any patient/counter return) simply has no group.
+  returnGroupId      String?          @map("return_group_id") @db.Uuid
+  returnNumber       String?          @map("return_number") @db.VarChar(40)
   createdAt          DateTime         @default(now()) @map("created_at")
 
   tenant           Tenant            @relation(fields: [tenantId], references: [id])
@@ -4914,6 +4920,7 @@ model DrugReturn {
   bill             Bill?             @relation(fields: [billId], references: [id])
   refund           Refund?           @relation(fields: [refundId], references: [id])
 
+  @@index([returnGroupId])
   @@map("drug_returns")
 }
 

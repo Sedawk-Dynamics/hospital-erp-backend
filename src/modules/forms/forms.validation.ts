@@ -14,10 +14,22 @@ export const FORM_FIELD_TYPES = [
   'number',
   'date',
   'datetime',
+  // Clock time with no date attached — "pain started at 04:30". `datetime`
+  // forces a date the nurse often does not know and should not have to guess.
+  'time',
   'select',
   'multiselect',
   'radio',
   'checkbox',
+  // A real Yes/No with a third, untouched state. `checkbox` cannot express
+  // "not answered" — an unticked box and an explicit No look identical, which
+  // is not a distinction a clinical record can afford to lose.
+  'yesno',
+  // Composite fields. Each stores an OBJECT rather than a scalar, because the
+  // two halves are only meaningful together: a symptom and how long it has
+  // been going on, a reading and the moment it was taken.
+  'text_duration',
+  'number_date',
   'section',
   'divider',
 ] as const;
@@ -25,6 +37,25 @@ export const FORM_FIELD_TYPES = [
 export type FormFieldType = (typeof FORM_FIELD_TYPES)[number];
 
 const widthSchema = z.enum(['full', 'half', 'third']).default('full');
+
+/**
+ * Patient attributes a field can be prefilled from when the form is launched
+ * under a patient. Whitelisted rather than free-form so a form can never be
+ * authored to pull an arbitrary column off the patient record.
+ */
+export const PATIENT_AUTOFILL_KEYS = [
+  'patient_name',
+  'mrn',
+  'age',
+  'gender',
+  'date_of_birth',
+  'blood_group',
+  'phone',
+  'ward',
+  'bed',
+  'admission_date',
+  'consultant',
+] as const;
 
 const baseField = z.object({
   id: z.string().min(1),
@@ -39,6 +70,10 @@ const baseField = z.object({
   helpText: z.string().max(500).optional().nullable(),
   required: z.boolean().default(false),
   width: widthSchema,
+  // Prefill this field from the patient the form is opened under. The value is
+  // still stored on the submission like any other answer — autofill saves
+  // typing, it does not create a live reference.
+  autofill: z.enum(PATIENT_AUTOFILL_KEYS).optional().nullable(),
 });
 
 const optionSchema = z.object({
@@ -106,6 +141,54 @@ const checkboxField = baseField.extend({
   defaultValue: z.boolean().optional().nullable(),
 });
 
+// Clock time only, stored as "HH:mm" (24h). Deliberately not a Date — the
+// value has no day, and turning it into one invents information.
+const timeField = baseField.extend({
+  type: z.literal('time'),
+  defaultValue: z
+    .string()
+    .regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Time must be HH:mm')
+    .optional()
+    .nullable(),
+});
+
+// Tri-state Yes / No. `defaultValue` null means "leave unanswered".
+const yesnoField = baseField.extend({
+  type: z.literal('yesno'),
+  defaultValue: z.boolean().optional().nullable(),
+  yesLabel: z.string().max(30).default('Yes'),
+  noLabel: z.string().max(30).default('No'),
+});
+
+// The units a duration may be expressed in. Kept as one list so the builder,
+// the renderer and the coercion layer cannot drift apart.
+export const DURATION_UNITS = ['minutes', 'hours', 'days', 'weeks', 'months', 'years'] as const;
+const durationUnitEnum = z.enum(DURATION_UNITS);
+
+// Free text plus "for how long" — "burning micturition, 3 days". Stored as
+// { text, duration, unit }.
+const textDurationField = baseField.extend({
+  type: z.literal('text_duration'),
+  placeholder: z.string().max(150).optional().nullable(),
+  // Which units this particular field offers. Empty/absent = all of them.
+  durationUnits: z.array(durationUnitEnum).optional().nullable(),
+  defaultDurationUnit: durationUnitEnum.default('days'),
+  maxLength: z.number().int().positive().max(2000).optional().nullable(),
+});
+
+// A measurement plus the date it was taken — "Hb 9.4 on 2026-08-12". Stored as
+// { value, date }.
+const numberDateField = baseField.extend({
+  type: z.literal('number_date'),
+  placeholder: z.string().max(150).optional().nullable(),
+  min: z.number().optional().nullable(),
+  max: z.number().optional().nullable(),
+  step: z.number().positive().optional().nullable(),
+  unit: z.string().max(20).optional().nullable(),
+  // Label for the date half, e.g. "Taken on", "Last dose".
+  dateLabel: z.string().max(60).optional().nullable(),
+});
+
 // Section + divider are layout-only; nothing in the submission data refers
 // to them, but the renderer needs them in order so we keep them in the
 // `fields` array. Required is forced to false.
@@ -128,6 +211,10 @@ export const formFieldSchema = z.discriminatedUnion('type', [
   multiselectField,
   radioField,
   checkboxField,
+  timeField,
+  yesnoField,
+  textDurationField,
+  numberDateField,
   sectionField,
   dividerField,
 ]);

@@ -289,6 +289,18 @@ async function recalculateBillTotals(billId: string) {
 }
 
 /**
+ * Re-total a bill from its own line items, for callers outside this module.
+ *
+ * Any module that writes BillItem rows directly (the OT kit reconciliation, for
+ * one) must settle the header through this rather than adding to the stored
+ * figures by hand — incrementing ignores bill-level concessions and re-inflates
+ * a bill that has already been part-paid.
+ */
+export async function recalculateBillTotalsPublic(billId: string): Promise<void> {
+  await recalculateBillTotals(billId);
+}
+
+/**
  * A patient's advance money lives on a sentinel `ADV-…` bill so it can reuse the
  * Payment/Receipt machinery. It is a holding bucket, not something anyone was
  * ever billed for, so it must be kept out of every bill list and revenue total —

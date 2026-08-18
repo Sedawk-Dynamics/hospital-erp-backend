@@ -440,6 +440,14 @@ export const getBatchesQuerySchema = z.object({
       .string()
       .transform((val) => val === 'true')
       .optional(),
+    // Batches expiring within N days (inclusive of already-expired ones), so
+    // the vendor-return picker can lead with the stock that actually needs
+    // sending back. `/batches/expiring` answers this too but takes no search
+    // term, which makes it useless for a picker.
+    // 0 means "already expired" (cutoff = now), which is more reliable than the
+    // stored isExpired flag — that is only set when the nightly maintenance job
+    // runs, so a pack that expired this morning still reads as fine.
+    expiringInDays: z.coerce.number().int().nonnegative().max(3650).optional(),
   }),
 });
 
@@ -790,11 +798,44 @@ export const createVendorReturnSchema = z.object({
   }),
 });
 
+/**
+ * A vendor return covering SEVERAL medicines in one transaction.
+ *
+ * One supplier and one credit note per return, because that is what the
+ * distributor actually issues — a credit note is a single document raised
+ * against a single consignment going back. Batches from two suppliers are two
+ * returns.
+ */
+export const createVendorReturnBatchSchema = z.object({
+  body: z.object({
+    supplierId: z.string().uuid('Supplier is required for vendor returns'),
+    // Header-level credit note. Per-line amounts sum into it unless an explicit
+    // total is given.
+    creditNoteNumber: z.string().max(80).optional(),
+    creditAmount: z.number().nonnegative().optional(),
+    reason: z.string().max(1000).optional(),
+    lines: z
+      .array(
+        z.object({
+          drugBatchId: z.string().uuid('Invalid drug batch ID'),
+          quantity: z.number().int().positive('Quantity must be positive'),
+          // Overrides the auto-computed qty x purchase price for this line.
+          creditAmount: z.number().nonnegative().optional(),
+          reason: z.string().max(1000).optional(),
+        }),
+      )
+      .min(1, 'Add at least one medicine to the return')
+      .max(100, 'A single return can cover at most 100 medicines'),
+  }),
+});
+
 export const returnIdParamSchema = z.object({
   params: z.object({
     id: z.string().uuid('Invalid return ID'),
   }),
 });
+
+export type CreateVendorReturnBatchInput = z.infer<typeof createVendorReturnBatchSchema>['body'];
 
 export const getReturnsQuerySchema = z.object({
   query: paginationSchema.extend({

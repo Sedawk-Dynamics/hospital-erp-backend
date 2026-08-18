@@ -1232,6 +1232,30 @@ export async function createVendorReturn(
   }
 }
 
+// Multi-medicine vendor return: one supplier, one credit note, many batches.
+export async function createVendorReturnBatch(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const result = await pharmacyService.createVendorReturnBatch(
+      req.user!.tenantId,
+      req.user!.userId,
+      req.user!.roles ?? [],
+      req.body,
+    );
+    sendResponse({
+      res,
+      statusCode: 201,
+      message: `Vendor return ${result.returnNumber} logged — ${result.lineCount} medicine(s)`,
+      data: result,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getReturns(
   req: AuthenticatedRequest,
   res: Response,

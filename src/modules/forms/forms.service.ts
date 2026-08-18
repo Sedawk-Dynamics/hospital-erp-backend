@@ -7,6 +7,7 @@ import { getPaginationParams } from '../../shared/pagination';
 import { resolveVisitContext } from '../../shared/visit-context';
 import {
   formSchemaShape,
+  DURATION_UNITS,
   type FormField,
   type FormSchemaJson,
   type CreateTemplateInput,
@@ -113,6 +114,88 @@ function coerceFieldValue(field: FormField, raw: unknown): unknown {
       if (raw === 'true' || raw === 1 || raw === '1') return true;
       if (raw === 'false' || raw === 0 || raw === '0') return false;
       throw AppError.badRequest(`Field "${field.label}" must be a boolean`);
+    }
+    case 'time': {
+      // "HH:mm", 24-hour. Stored as the literal string: a clock time has no
+      // day, and coercing it to a Date would invent one.
+      const t = String(raw).trim();
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(t)) {
+        throw AppError.badRequest(`Field "${field.label}" must be a time in HH:mm`);
+      }
+      return t;
+    }
+    case 'yesno': {
+      // Tri-state. The empty cases were already returned above, so anything
+      // arriving here is a real answer.
+      if (typeof raw === 'boolean') return raw;
+      if (raw === 'true' || raw === 'yes' || raw === 1 || raw === '1') return true;
+      if (raw === 'false' || raw === 'no' || raw === 0 || raw === '0') return false;
+      throw AppError.badRequest(`Field "${field.label}" must be Yes or No`);
+    }
+    case 'text_duration': {
+      if (!isPlainObject(raw)) {
+        throw AppError.badRequest(`Field "${field.label}" must have a value and a duration`);
+      }
+      const text = raw.text === undefined || raw.text === null ? null : String(raw.text);
+      const max = field.maxLength;
+      if (max && text && text.length > max) {
+        throw AppError.badRequest(`Field "${field.label}" exceeds max length of ${max}`);
+      }
+      const rawDuration = raw.duration;
+      let duration: number | null = null;
+      if (rawDuration !== undefined && rawDuration !== null && rawDuration !== '') {
+        const n = Number(rawDuration);
+        if (!Number.isFinite(n) || n < 0) {
+          throw AppError.badRequest(`Field "${field.label}" duration must be a positive number`);
+        }
+        duration = n;
+      }
+      const allowed = field.durationUnits?.length ? field.durationUnits : DURATION_UNITS;
+      const unit = raw.unit === undefined || raw.unit === null
+        ? field.defaultDurationUnit
+        : String(raw.unit);
+      if (!(allowed as readonly string[]).includes(unit)) {
+        throw AppError.badRequest(`Field "${field.label}" has an invalid duration unit`);
+      }
+      // Required means the text half is answered — a duration on its own says
+      // nothing, and a symptom without one is still a usable record.
+      if (field.required && !text) {
+        throw AppError.badRequest(`Field "${field.label}" is required`);
+      }
+      return { text, duration, unit };
+    }
+    case 'number_date': {
+      if (!isPlainObject(raw)) {
+        throw AppError.badRequest(`Field "${field.label}" must have a value and a date`);
+      }
+      const rawValue = raw.value;
+      let value: number | null = null;
+      if (rawValue !== undefined && rawValue !== null && rawValue !== '') {
+        const n = Number(rawValue);
+        if (!Number.isFinite(n)) {
+          throw AppError.badRequest(`Field "${field.label}" must be a number`);
+        }
+        if (field.min != null && n < field.min) {
+          throw AppError.badRequest(`Field "${field.label}" must be ≥ ${field.min}`);
+        }
+        if (field.max != null && n > field.max) {
+          throw AppError.badRequest(`Field "${field.label}" must be ≤ ${field.max}`);
+        }
+        value = n;
+      }
+      let date: string | null = null;
+      if (raw.date !== undefined && raw.date !== null && raw.date !== '') {
+        const d = new Date(String(raw.date));
+        if (Number.isNaN(d.getTime())) {
+          throw AppError.badRequest(`Field "${field.label}" must have a valid date`);
+        }
+        date = d.toISOString();
+      }
+      // The reading is the point of the field; the date qualifies it.
+      if (field.required && value === null) {
+        throw AppError.badRequest(`Field "${field.label}" is required`);
+      }
+      return { value, date };
     }
     case 'section':
     case 'divider':

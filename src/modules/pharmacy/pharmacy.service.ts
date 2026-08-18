@@ -48,6 +48,7 @@ import type {
   CancelSaleInput,
   GetDispenseQuery,
   CreateReturnInput,
+  CreateVendorReturnBatchInput,
   GetReturnsQuery,
   ProcessReturnInput,
   RecallBatchInput,
@@ -2250,6 +2251,16 @@ export async function getBatches(tenantId: string, query: GetBatchesQuery) {
     where.isRecalled = (query as any).isRecalled;
   }
 
+  // Everything expiring on or before N days from now. Already-expired batches
+  // are included on purpose: a vendor return is raised for both, and asking the
+  // pharmacist to run two filters to assemble one crate helps nobody.
+  const expiringInDays = (query as any).expiringInDays as number | undefined;
+  if (expiringInDays !== undefined) {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() + expiringInDays);
+    where.expiryDate = { ...(where.expiryDate ?? {}), lte: cutoff };
+  }
+
   if (query.search) {
     where.OR = [
       { batchNumber: { contains: query.search, mode: 'insensitive' } },
@@ -2282,9 +2293,15 @@ export async function getBatches(tenantId: string, query: GetBatchesQuery) {
       // so the default selection is the soonest-to-expire batch and a `take`
       // limit never truncates the earliest-expiry batch out of the list. The
       // management view keeps newest-received-first.
-      orderBy: (query as any).availableOnly
-        ? [{ expiryDate: 'asc' as const }, { createdAt: 'asc' as const }]
-        : { createdAt: 'desc' as const },
+      // FEFO for the POS/dispensing picker so the soonest-to-expire batch is the
+      // default selection and a `take` limit never truncates it out of the list.
+      // The same holds when the caller is filtering BY expiry (the vendor-return
+      // picker): what needs sending back first belongs at the top. Otherwise the
+      // management view keeps newest-received-first.
+      orderBy:
+        (query as any).availableOnly || expiringInDays !== undefined
+          ? [{ expiryDate: 'asc' as const }, { createdAt: 'asc' as const }]
+          : { createdAt: 'desc' as const },
     }),
     prisma.drugBatch.count({ where }),
   ]);
@@ -5910,6 +5927,183 @@ export async function checkSaleCompliance(
   }
 
   return { ok: blockers.length === 0, blockers, warnings, needsScan };
+}
+
+/**
+ * Next human-readable vendor-return number for the day: `VR-YYYYMMDD-0001`.
+ * Derived from the MAX existing number rather than a count, so a deleted row
+ * cannot make the next number collide with a surviving higher one.
+ */
+async function nextVendorReturnNumber(tx: Prisma.TransactionClient, tenantId: string) {
+  const now = new Date();
+  const ymd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+  const prefix = `VR-${ymd}-`;
+  const last = await tx.drugReturn.findFirst({
+    where: { tenantId, returnNumber: { startsWith: prefix } },
+    orderBy: { returnNumber: 'desc' },
+    select: { returnNumber: true },
+  });
+  const lastSeq = last?.returnNumber ? parseInt(last.returnNumber.slice(prefix.length), 10) || 0 : 0;
+  return `${prefix}${String(lastSeq + 1).padStart(4, '0')}`;
+}
+
+/**
+ * Vendor return covering several medicines at once.
+ *
+ * Sending expired stock back is a stock-take job, not a one-medicine-at-a-time
+ * one: the pharmacist pulls a crate of short-dated packs off the shelf and the
+ * distributor issues ONE credit note for the lot. Each medicine still becomes
+ * its own `DrugReturn` row — that is what the stock ledger needs — but the rows
+ * share a `returnGroupId` and a `returnNumber`, so the return reads as the
+ * single transaction it was.
+ *
+ * Every line is validated BEFORE anything moves. A crate that includes one
+ * over-quantity line must fail whole rather than send four medicines back and
+ * report an error on the fifth.
+ */
+export async function createVendorReturnBatch(
+  tenantId: string,
+  userId: string,
+  roles: string[],
+  data: CreateVendorReturnBatchInput,
+) {
+  assertPharmacyAdmin(roles, 'record vendor returns');
+
+  const supplier = await prisma.supplier.findFirst({
+    where: { id: data.supplierId, tenantId },
+    select: { id: true, name: true },
+  });
+  if (!supplier) throw AppError.notFound('Supplier not found');
+
+  // One batch may only appear once — two lines against the same batch would
+  // each be checked against the full stock and together send back more than
+  // the shelf holds.
+  const seen = new Set<string>();
+  for (const line of data.lines) {
+    if (seen.has(line.drugBatchId)) {
+      throw AppError.badRequest('The same batch is listed twice — combine it into one line.');
+    }
+    seen.add(line.drugBatchId);
+  }
+
+  const batches = await prisma.drugBatch.findMany({
+    where: { id: { in: data.lines.map((l) => l.drugBatchId) }, tenantId },
+    include: { drug: { select: { id: true, drugName: true } } },
+  });
+  const byId = new Map(batches.map((b) => [b.id, b]));
+
+  // Validate the whole basket up front.
+  const prepared = data.lines.map((line) => {
+    const batch = byId.get(line.drugBatchId);
+    if (!batch) throw AppError.notFound('Drug batch not found');
+    if (line.quantity > batch.quantityInStock) {
+      throw AppError.badRequest(
+        `Cannot return ${line.quantity} unit(s) of ${batch.drug?.drugName ?? 'this medicine'} — batch ${batch.batchNumber} only has ${batch.quantityInStock} in stock.`,
+      );
+    }
+    const credit =
+      line.creditAmount != null
+        ? round2(Number(line.creditAmount))
+        : batch.purchasePrice != null
+          ? round2(Number(batch.purchasePrice) * line.quantity)
+          : null;
+    return { line, batch, credit };
+  });
+
+  // An explicit header total wins; otherwise the lines add up to it.
+  const lineCreditTotal = round2(prepared.reduce((sum, p) => sum + (p.credit ?? 0), 0));
+  const headerCredit =
+    data.creditAmount != null ? round2(Number(data.creditAmount)) : lineCreditTotal;
+
+  const { groupId, returnNumber, ids } = await prisma.$transaction(async (tx) => {
+    const returnNumber = await nextVendorReturnNumber(tx, tenantId);
+    const groupId = randomUUID();
+    const ids: string[] = [];
+    for (const { line, credit } of prepared) {
+      const row = await tx.drugReturn.create({
+        data: {
+          tenantId,
+          returnType: 'vendor_return',
+          drugBatchId: line.drugBatchId,
+          supplierId: data.supplierId,
+          quantity: line.quantity,
+          reason: line.reason ?? data.reason,
+          status: 'pending',
+          creditNoteNumber: data.creditNoteNumber ?? null,
+          creditAmount: credit,
+          returnGroupId: groupId,
+          returnNumber,
+        },
+        select: { id: true },
+      });
+      ids.push(row.id);
+    }
+    return { groupId, returnNumber, ids };
+  });
+
+  // Restock/destock runs per line through the same path a single return uses,
+  // so controlled-drug handling and the stock ledger behave identically.
+  for (const id of ids) {
+    await processReturn(tenantId, id, userId, { status: 'processed' } as never);
+  }
+
+  void safePharmacyAudit({
+    tenantId,
+    userId,
+    action: 'create',
+    entityType: 'drug_return',
+    entityId: groupId,
+    description:
+      `Vendor return ${returnNumber} to ${supplier.name}: ${prepared.length} medicine(s), ` +
+      `${prepared.reduce((n, p) => n + p.line.quantity, 0)} unit(s)` +
+      (data.creditNoteNumber ? ` — credit note ${data.creditNoteNumber}` : ''),
+    newValues: {
+      returnNumber,
+      returnGroupId: groupId,
+      supplierId: data.supplierId,
+      creditNoteNumber: data.creditNoteNumber ?? null,
+      creditAmount: headerCredit,
+      lines: prepared.map((p) => ({
+        drugBatchId: p.line.drugBatchId,
+        drugName: p.batch.drug?.drugName ?? null,
+        batchNumber: p.batch.batchNumber,
+        quantity: p.line.quantity,
+        creditAmount: p.credit,
+      })),
+    },
+  });
+
+  logger.info(
+    { tenantId, returnNumber, groupId, lines: prepared.length, supplierId: data.supplierId },
+    'Multi-line vendor return recorded',
+  );
+
+  const rows = await prisma.drugReturn.findMany({
+    where: { returnGroupId: groupId },
+    include: {
+      drugBatch: {
+        select: {
+          id: true,
+          batchNumber: true,
+          expiryDate: true,
+          drug: { select: { id: true, drugName: true, category: true } },
+        },
+      },
+      supplier: { select: { id: true, name: true } },
+    },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  return {
+    returnGroupId: groupId,
+    returnNumber,
+    supplier,
+    creditNoteNumber: data.creditNoteNumber ?? null,
+    creditAmount: headerCredit,
+    lineCount: rows.length,
+    totalQuantity: rows.reduce((n, r) => n + r.quantity, 0),
+    returns: rows,
+  };
 }
 
 export async function getReturns(tenantId: string, query: GetReturnsQuery) {

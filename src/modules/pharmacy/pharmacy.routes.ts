@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { Response, NextFunction } from 'express';
 import { authenticate } from '../../middleware/authenticate';
-import { requirePermission } from '../../middleware/authorize';
+import { requirePermission, requireRoles } from '../../middleware/authorize';
 import { validate } from '../../middleware/validate';
 import { uploadSingle } from '../../services/upload.service';
 import type { AuthenticatedRequest } from '../../shared/types';
@@ -50,6 +50,7 @@ import {
   dispenseIdParamSchema,
   createReturnSchema,
   createVendorReturnSchema,
+  createVendorReturnBatchSchema,
   getReturnsQuerySchema,
   returnableQuerySchema,
   returnIdParamSchema,
@@ -77,6 +78,22 @@ import {
   wardLedgerQuerySchema,
   creditStatusQuerySchema,
 } from './pharmacy.validation';
+
+/**
+ * Who may see and work a ward's own medicine shelf. Nursing needs it because
+ * the shelf is theirs; pharmacy and inventory need it because they stock and
+ * audit it. Adjusting a ward count and pushing new stock to a ward stay
+ * pharmacy-only — those are stock control, not bedside care.
+ */
+const WARD_STOCK_ROLES = [
+  'super_admin',
+  'admin',
+  'nurse',
+  'nurse_admin',
+  'pharmacist',
+  'pharmacy_admin',
+  'inventory_manager',
+] as const;
 
 export const pharmacyRoutes = Router();
 
@@ -200,12 +217,26 @@ pharmacyRoutes.post('/queue/:id/dispense-ip', authenticate, requirePermission('p
 pharmacyRoutes.get('/ip-dispensed', authenticate, requirePermission('pharmacy', 'read'), controller.getIpDispensedMedicines);
 
 // --- G13: Ward stock (central pharmacy → ward, ward → patient, ward ledger) ---
-pharmacyRoutes.get('/ward-stock', authenticate, requirePermission('pharmacy', 'read'), validate(wardStockQuerySchema), controller.getWardStock);
-pharmacyRoutes.get('/ward-stock/ledger', authenticate, requirePermission('pharmacy', 'read'), validate(wardLedgerQuerySchema), controller.getWardLedger);
+// Ward stock is shared ground between the ward and the pharmacy, so the routes
+// split by WHO does the action rather than by module:
+//
+//   - reading the ward's own shelf, giving a dose off it, and sending unused
+//     stock back are NURSING actions. They were gated on `pharmacy:read` /
+//     `pharmacy:create`, which the nurse role does not hold and should not —
+//     that permission opens the whole pharmacy module. So Ward Inventory 403'd
+//     for every nurse. They are role-gated here instead, the same way the
+//     ward-facing indent routes already are.
+//   - pushing stock OUT to a ward and correcting a ward's count are stock
+//     control, and stay with the pharmacy.
+//
+// To take ward stock away from nursing again, drop the nurse roles from
+// WARD_STOCK_ROLES below.
+pharmacyRoutes.get('/ward-stock', authenticate, requireRoles(...WARD_STOCK_ROLES), validate(wardStockQuerySchema), controller.getWardStock);
+pharmacyRoutes.get('/ward-stock/ledger', authenticate, requireRoles(...WARD_STOCK_ROLES), validate(wardLedgerQuerySchema), controller.getWardLedger);
 pharmacyRoutes.post('/ward-stock/transfer', authenticate, requirePermission('pharmacy', 'create'), validate(wardStockTransferSchema), controller.transferToWard);
-pharmacyRoutes.post('/ward-stock/dispense', authenticate, requirePermission('pharmacy', 'create'), validate(wardStockDispenseSchema), controller.dispenseFromWard);
+pharmacyRoutes.post('/ward-stock/dispense', authenticate, requireRoles(...WARD_STOCK_ROLES), validate(wardStockDispenseSchema), controller.dispenseFromWard);
 // G13: reverse flows — return excess/near-expiry ward stock to central; correct count.
-pharmacyRoutes.post('/ward-stock/return', authenticate, requirePermission('pharmacy', 'create'), validate(wardStockReturnSchema), controller.returnWardStock);
+pharmacyRoutes.post('/ward-stock/return', authenticate, requireRoles(...WARD_STOCK_ROLES), validate(wardStockReturnSchema), controller.returnWardStock);
 pharmacyRoutes.post('/ward-stock/adjust', authenticate, requirePermission('pharmacy', 'update'), validate(wardStockAdjustSchema), controller.adjustWardStock);
 // IP credit & clearance check — patient's live deposit-vs-bill picture.
 pharmacyRoutes.get('/credit-status', authenticate, requirePermission('pharmacy', 'read'), validate(creditStatusQuerySchema), controller.getCreditStatus);
@@ -225,6 +256,9 @@ pharmacyRoutes.get('/stock-ledger', authenticate, requirePermission('pharmacy', 
 pharmacyRoutes.post('/returns', authenticate, requirePermission('pharmacy', 'create'), validate(createReturnSchema), controller.createReturn);
 // SOW-literal alias: POST /pharmacy/vendor-returns (vendor return; admin-only).
 pharmacyRoutes.post('/vendor-returns', authenticate, requirePermission('pharmacy', 'create'), validate(createVendorReturnSchema), controller.createVendorReturn);
+// Multi-medicine vendor return (one supplier + one credit note, many batches).
+// Literal path, so it must be declared before any '/vendor-returns/:id'.
+pharmacyRoutes.post('/vendor-returns/batch', authenticate, requirePermission('pharmacy', 'create'), validate(createVendorReturnBatchSchema), controller.createVendorReturnBatch);
 pharmacyRoutes.get('/returns', authenticate, requirePermission('pharmacy', 'read'), validate(getReturnsQuerySchema), controller.getReturns);
 // Returnable counter-sale lines for a patient (patient-return picker).
 pharmacyRoutes.get('/returnable', authenticate, requirePermission('pharmacy', 'read'), validate(returnableQuerySchema), controller.getReturnableDispenses);

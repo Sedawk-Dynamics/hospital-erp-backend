@@ -410,7 +410,7 @@ export async function reconcileKit(
   const result = await prisma.$transaction(async (tx) => {
     let consumedTotal = 0;
     let consumedTax = 0;
-    const consumedLines: Array<{ drugName: string; consumedQty: number; unitPrice: number; taxPct: number; gross: number; isReimbursable: boolean | null }> = [];
+    const consumedLines: Array<{ drugName: string; drugBatchId: string | null; consumedQty: number; unitPrice: number; taxPct: number; gross: number; isReimbursable: boolean | null }> = [];
 
     for (const it of issue.items) {
       const ret = returnMap.get(it.id) ?? 0;
@@ -431,29 +431,71 @@ export async function reconcileKit(
       if (consumed > 0) {
         consumedTotal = round2(consumedTotal + gross);
         consumedTax = round2(consumedTax + taxAmt);
-        consumedLines.push({ drugName: drugNames.get(it.drugFormularyId)?.drugName ?? 'Item', consumedQty: consumed, unitPrice, taxPct, gross, isReimbursable: drugNames.get(it.drugFormularyId)?.isReimbursable ?? null });
+        consumedLines.push({ drugName: drugNames.get(it.drugFormularyId)?.drugName ?? 'Item', drugBatchId: it.drugBatchId ?? null, consumedQty: consumed, unitPrice, taxPct, gross, isReimbursable: drugNames.get(it.drugFormularyId)?.isReimbursable ?? null });
       }
     }
 
-    // Net-bill: post the consumed cost to the patient's open bill (or a draft IP bill).
+    // Net-bill: post the consumed cost to the patient's bill.
+    //
+    // This used to pick a bill with just { patientId, status in [draft, pending,
+    // partially_paid] } ordered newest-first, with no admission scope. Two things
+    // went wrong with that:
+    //
+    //   1. The patient's ADV- advance bucket is a `pending` bill belonging to
+    //      that patient, so if an advance had been collected recently it WON —
+    //      and the OT consumables posted onto it. Every bill list filters ADV-
+    //      out, so the charge vanished from view and quietly corrupted the
+    //      advance balance at the same time.
+    //   2. For an admitted patient the charge could land on an unrelated OP bill
+    //      rather than the running IP ledger for the stay.
+    //
+    // So: an admitted patient bills to that stay's running IP bill, everyone
+    // else to their own open non-advance bill, and a fresh OTK- bill only when
+    // there is genuinely nothing to post to.
     let billId: string | null = null;
     if (consumedTotal > 0) {
-      // G2: scope the OT bill to the patient's active admission so the running IP
-      // ledger is per-stay (an OT case for an admitted patient bills to that stay).
       const admId = (await tx.admission.findFirst({ where: { tenantId, patientId: issue.patientId, status: ACTIVE_ADMISSION_STATUS }, orderBy: { admissionDate: 'desc' }, select: { id: true } }))?.id ?? null;
-      let bill = await tx.bill.findFirst({
-        where: { tenantId, patientId: issue.patientId, status: { in: ['draft', 'pending', 'partially_paid'] } },
-        orderBy: { createdAt: 'desc' },
-      });
+
+      let bill = admId
+        ? await tx.bill.findFirst({
+            where: { tenantId, admissionId: admId, status: 'draft', billNumber: { not: { startsWith: 'ADV-' } } },
+            orderBy: { createdAt: 'desc' },
+          })
+        : null;
+
+      if (!bill) {
+        bill = await tx.bill.findFirst({
+          where: {
+            tenantId,
+            patientId: issue.patientId,
+            status: { in: ['draft', 'pending', 'partially_paid'] },
+            // NEVER the advance bucket: it is a holding account for the
+            // patient's own money, not something they were billed for.
+            billNumber: { not: { startsWith: 'ADV-' } },
+            // With an active admission, only that stay's bill will do.
+            ...(admId ? { admissionId: admId } : {}),
+          },
+          orderBy: { createdAt: 'desc' },
+        });
+      }
+
       if (!bill) {
         const now = new Date();
         const ymd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
         const prefix = `OTK-${ymd}-`;
-        const seq = await tx.bill.count({ where: { tenantId, billNumber: { startsWith: prefix } } });
+        // From the MAX existing number, not a count — a deleted bill would make
+        // a count collide with a surviving higher number. bill_number is
+        // globally unique, so the max is taken across all tenants.
+        const last = await tx.bill.findFirst({
+          where: { billNumber: { startsWith: prefix } },
+          orderBy: { billNumber: 'desc' },
+          select: { billNumber: true },
+        });
+        const lastSeq = last ? parseInt(last.billNumber.slice(prefix.length), 10) || 0 : 0;
         bill = await tx.bill.create({
           data: {
             tenantId,
-            billNumber: `${prefix}${String(seq + 1).padStart(4, '0')}`,
+            billNumber: `${prefix}${String(lastSeq + 1).padStart(4, '0')}`,
             patientId: issue.patientId,
             visitId: issue.visitId ?? undefined,
             admissionId: admId ?? undefined,
@@ -492,16 +534,42 @@ export async function reconcileKit(
           },
         });
       }
-      await tx.bill.update({
-        where: { id: bill.id },
-        data: {
-          subtotal: round2(Number(bill.subtotal) + consumedTotal),
-          taxAmount: round2(Number(bill.taxAmount) + consumedTax),
-          totalAmount: round2(Number(bill.totalAmount) + consumedTotal),
-          patientPayableAmount: round2(Number(bill.patientPayableAmount) + consumedTotal),
-          balanceDue: round2(Number(bill.balanceDue) + consumedTotal),
-        },
-      });
+
+      // Record the movement in the drug stock ledger.
+      //
+      // Issuing a kit decrements DrugBatch.quantityInStock directly and wrote
+      // NOTHING anywhere else — no DispensingRecord, no StockTransaction. The
+      // pharmacy stock ledger is composed from batches, dispensing records and
+      // returns, and the inventory consumption report reads StockTransaction,
+      // so OT usage appeared in neither. Stock left the shelf and no report
+      // could say where it went.
+      //
+      // A consumed kit unit IS a dispense: a specific batch, to a specific
+      // patient, billed to them. Recording it as one puts the movement in the
+      // same ledger every other drug leaving stock lands in, with the same
+      // sale economics the bill line carries.
+      for (const line of consumedLines) {
+        if (!line.drugBatchId) continue; // nothing to attribute the movement to
+        await tx.dispensingRecord.create({
+          data: {
+            tenantId,
+            patientId: issue.patientId,
+            drugBatchId: line.drugBatchId,
+            quantityDispensed: line.consumedQty,
+            dispensedBy: userId,
+            dispensedAt: new Date(),
+            billId: bill.id,
+            saleUnit: 'pack',
+            unitPrice: line.unitPrice,
+            taxPercent: line.taxPct,
+            lineTotal: line.gross,
+            // An opened surgical consumable cannot be taken back.
+            nonReturnable: true,
+            notes: `OT kit ${issue.issueNumber} — consumed in theatre`,
+          },
+        });
+      }
+
       billId = bill.id;
     }
 
@@ -517,6 +585,25 @@ export async function reconcileKit(
       include: { items: true },
     });
   });
+
+  // Re-total the bill from its own lines rather than adding to the stored
+  // figures. The old code did `subtotal + consumedTotal`, `balanceDue +
+  // consumedTotal` and so on by hand, which ignored any counter concession
+  // recorded as a bill-level Discount and re-inflated a bill that had already
+  // been part-paid. recalculateBillTotals is the one definition the whole
+  // billing module settles by; run it outside the transaction so a slow
+  // recalculation cannot hold the stock locks open.
+  if (result.billId) {
+    try {
+      const billing = await import('../billing/billing.service');
+      await billing.recalculateBillTotalsPublic(result.billId);
+    } catch (err) {
+      // The charge IS on the bill; only the header figures are stale, and the
+      // next charge or bill read fixes them. Never fail a completed
+      // reconciliation — the stock has already moved.
+      logger.warn({ tenantId, issueId: issue.id, billId: result.billId, err }, 'OT kit bill re-total failed (non-fatal)');
+    }
+  }
 
   logger.info({ tenantId, issueId: issue.id, billId: result.billId }, 'OT kit reconciled (net billed)');
   return result;
