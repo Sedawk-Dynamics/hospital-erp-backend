@@ -503,6 +503,11 @@ export const smartSuggestionsSchema = z.object({
     certainty: z.enum(['provisional', 'confirmed']).optional(),
     medications: z.string().max(5000).optional(),
     advice: z.string().max(5000).optional(),
+    // Lets the server pull this patient's published lab results into the
+    // context. Without it the model can only reason from what the doctor has
+    // typed, which is why suggestions stayed on the general profile and never
+    // mentioned the report sitting on the same screen.
+    patientId: z.string().uuid().optional(),
     patientAge: z.number().int().min(0).max(150).nullable().optional(),
     patientSex: z.string().max(20).nullable().optional(),
     knownAllergies: z.array(z.string().max(200)).max(50).optional(),

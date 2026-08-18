@@ -1,3 +1,4 @@
+import { prisma } from '../../config/database';
 import { AppError } from '../../shared/appError';
 import { logger } from '../../config/logger';
 
@@ -25,9 +26,18 @@ export interface SmartSuggestionInput {
   medications?: string;
   advice?: string;
   // Optional patient context — keep PHI minimal; only age/sex/allergies.
+  patientId?: string;
   patientAge?: number | null;
   patientSex?: string | null;
   knownAllergies?: string[];
+  /**
+   * Published lab values for this patient, resolved server-side. The doctor's
+   * `investigations` field is free text describing what they ORDERED; this is
+   * what actually came back. QA asked the assistant to reason about a blood
+   * report and got answers about the general patient profile, because the
+   * numbers were never in the prompt.
+   */
+  labResults?: Array<{ test: string; parameter: string; value: string; unit?: string; range?: string; abnormal: boolean }>;
 }
 
 export interface SmartSuggestionResult {
@@ -46,6 +56,16 @@ function buildPrompt(input: SmartSuggestionInput): string {
     }),
   );
 
+  // Lab values are pulled out of the note blob and stated separately, under a
+  // heading that says what they are. Buried inside the JSON they read as one
+  // more field; called out, they are the thing to reason from.
+  const labs = (input.labResults ?? []).map((r) =>
+    `${r.test} — ${r.parameter}: ${r.value}${r.unit ? ' ' + r.unit : ''}` +
+    `${r.range ? ` (ref ${r.range})` : ''}${r.abnormal ? '  [ABNORMAL]' : ''}`,
+  );
+  delete (cleaned as Record<string, unknown>).labResults;
+  delete (cleaned as Record<string, unknown>).patientId;
+
   return [
     'You are a clinical decision-support assistant helping a doctor decide the next steps for a patient based on the current progress note.',
     '',
@@ -55,7 +75,13 @@ function buildPrompt(input: SmartSuggestionInput): string {
     '- Keep each suggestion under 15 words.',
     '- Do not add caveats or disclaimers in the suggestion text itself.',
     '- If the note is too sparse to reason about, still return 3 reasonable general-workup suggestions.',
+    ...(labs.length
+      ? [
+          '- Lab results are given below. Where a value is out of range, your suggestions MUST address it before anything else.',
+        ]
+      : []),
     '',
+    ...(labs.length ? ['Recent lab results:', labs.join('\n'), ''] : []),
     'Current progress note:',
     JSON.stringify(cleaned, null, 2),
     '',
@@ -88,7 +114,42 @@ function parseSuggestions(text: string): string[] {
 
 export async function getSmartSuggestions(
   input: SmartSuggestionInput,
+  tenantId?: string,
 ): Promise<SmartSuggestionResult> {
+  // Pull the patient's published lab values server-side rather than trusting
+  // the client to send them: the browser has no business deciding which
+  // results reach a clinical prompt, and the doctor's own screen may only be
+  // showing one report.
+  //
+  // Published/corrected only — quoting a value the supervisor has not signed
+  // off would put an unreviewed number into clinical reasoning.
+  let labResults = input.labResults;
+  if (!labResults && input.patientId && tenantId) {
+    try {
+      const rows = await prisma.labResult.findMany({
+        where: {
+          patientId: input.patientId,
+          labOrder: { tenantId, labReport: { status: { in: ['published', 'corrected'] } } },
+        },
+        orderBy: [{ isAbnormal: 'desc' }, { enteredAt: 'desc' }],
+        take: 40,
+        include: { labOrderItem: { include: { test: { select: { testName: true } } } } },
+      });
+      labResults = rows.map((r) => ({
+        test: r.labOrderItem?.test?.testName ?? 'Lab',
+        parameter: r.parameterName,
+        value: r.value ?? '?',
+        unit: r.unit ?? undefined,
+        range: r.normalRange ?? undefined,
+        abnormal: r.isAbnormal,
+      }));
+    } catch (err) {
+      // Suggestions without labs beat no suggestions at all.
+      logger.warn({ err, patientId: input.patientId }, 'Could not load labs for AI suggestions');
+    }
+  }
+  input = { ...input, labResults };
+
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw AppError.badRequest(

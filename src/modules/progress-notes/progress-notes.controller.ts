@@ -190,7 +190,7 @@ export async function smartSuggestions(
   try {
     // Super-admin can disable progress-note AI suggestions per hospital.
     await assertFeatureEnabled('progressNotesAi', req.user!.tenantId);
-    const result = await getSmartSuggestions(req.body);
+    const result = await getSmartSuggestions(req.body, req.user!.tenantId);
     sendResponse({ res, message: 'AI suggestions generated', data: result });
   } catch (err) {
     next(err);
