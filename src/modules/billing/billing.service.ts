@@ -1448,7 +1448,9 @@ export async function createPayment(
   }
 
   if (bill.status === 'draft') {
-    throw AppError.badRequest('Cannot pay a draft bill. Finalize the bill first.');
+    throw AppError.badRequest(
+      'This bill is still open for charges. Generate / refresh the bill first — that pulls the pending charges on and finalizes it for payment.',
+    );
   }
 
   if (bill.status === 'paid') {
@@ -5196,7 +5198,16 @@ export async function adjustAdvanceToBill(
     where: { id: data.billId, tenantId, patientId: data.patientId },
   });
   if (!bill) throw AppError.notFound('Bill not found');
-  if (bill.status === 'draft' || bill.status === 'cancelled' || bill.status === 'paid') {
+  if (bill.status === 'draft') {
+    // The running IP bill is a draft for the whole stay while charges accrue —
+    // it has to be consolidated and finalized before money can be set against
+    // it. "Bill cannot accept payment (status: draft)" told the desk nothing
+    // they could act on, and this is the 400 QA hit on every "From advance".
+    throw AppError.badRequest(
+      'This bill is still open for charges. Generate / refresh the bill first — that pulls the pending charges on and finalizes it for payment.',
+    );
+  }
+  if (bill.status === 'cancelled' || bill.status === 'paid') {
     throw AppError.badRequest(`Bill cannot accept payment (status: ${bill.status})`);
   }
 

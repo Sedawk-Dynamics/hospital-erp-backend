@@ -639,7 +639,10 @@ describe('BillingService', () => {
           amount: 100,
           paymentMethod: 'cash',
         }),
-      ).rejects.toThrow('Cannot pay a draft bill');
+      // The wording now names the action that unblocks it (Generate / refresh
+      // bill) rather than restating the status. Matched loosely so the message
+      // can be improved without breaking the rule this test is guarding.
+      ).rejects.toThrow(/still open for charges/i);
     });
 
     it('should throw badRequest when bill is already fully paid', async () => {
