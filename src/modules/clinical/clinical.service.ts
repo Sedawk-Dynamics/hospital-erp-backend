@@ -1618,6 +1618,11 @@ export async function getVitals(tenantId: string, patientId: string, query: GetV
   const where: any = {
     patientId,
     visit: { tenantId },
+    // Only rows nobody has superseded. A corrected reading and its correction
+    // are the SAME observation, so listing both plots the patient twice on
+    // every trend chart and shows a value that has since been amended as if it
+    // still stood. The full chain stays available at /vitals/:id/history.
+    correctedBy: { none: {} },
   };
 
   if (query.visitId) {
@@ -1631,6 +1636,7 @@ export async function getVitals(tenantId: string, patientId: string, query: GetV
       take,
       include: {
         recorder: { select: { id: true, firstName: true, lastName: true } },
+        corrector: { select: { id: true, firstName: true, lastName: true } },
         visit: { select: { id: true, visitDate: true, visitType: true } },
       },
       orderBy: { recordedAt: 'desc' },
@@ -1699,9 +1705,18 @@ export async function getLatestVitals(tenantId: string, patientId: string) {
     where: {
       patientId,
       visit: { tenantId },
+      // The canonical reading is the row NOBODY has superseded — the schema
+      // says so and nothing enforced it. A corrected reading and its
+      // correction both sat in this query, so whichever happened to have the
+      // later timestamp won and the other silently disappeared. That is what
+      // made a doctor's edit look like it had overwritten the nurse's value.
+      correctedBy: { none: {} },
     },
     include: {
       recorder: { select: { id: true, firstName: true, lastName: true } },
+      // Who amended it, so the reading can say so instead of presenting a
+      // changed number as if it were the original.
+      corrector: { select: { id: true, firstName: true, lastName: true } },
       visit: { select: { id: true, visitDate: true, visitType: true } },
     },
     orderBy: { recordedAt: 'desc' },
