@@ -431,6 +431,8 @@ export async function updateDoctorProfile(
     bio?: string;
     isAvailable?: boolean;
     departmentId?: string;
+    /** Days after a paid consultation in which a return visit is free. */
+    freeFollowUpDays?: number | null;
   },
 ) {
   const doctor = await prisma.doctorProfile.findFirst({
@@ -438,9 +440,29 @@ export async function updateDoctorProfile(
   });
   if (!doctor) throw AppError.notFound('Doctor profile not found');
 
+  // Pick the editable fields explicitly. The route has no validation
+  // middleware and the controller hands `req.body` straight through, so
+  // spreading it into `update` let a caller set anything on the row —
+  // tenantId and userId included. Only these belong to the profile form.
+  const patch: Record<string, unknown> = {};
+  if (data.specialization !== undefined) patch.specialization = data.specialization;
+  if (data.qualifications !== undefined) patch.qualifications = data.qualifications;
+  if (data.consultationFee !== undefined) patch.consultationFee = data.consultationFee;
+  if (data.experienceYears !== undefined) patch.experienceYears = data.experienceYears;
+  if (data.bio !== undefined) patch.bio = data.bio;
+  if (data.isAvailable !== undefined) patch.isAvailable = data.isAvailable;
+  if (data.departmentId !== undefined) patch.departmentId = data.departmentId;
+  if (data.freeFollowUpDays !== undefined) {
+    // Clamped: a negative window is meaningless and a huge one would silently
+    // make every consultation free. 0/null both mean "no free follow-up".
+    const n = Number(data.freeFollowUpDays);
+    patch.freeFollowUpDays =
+      Number.isFinite(n) && n > 0 ? Math.min(365, Math.trunc(n)) : null;
+  }
+
   const updated = await prisma.doctorProfile.update({
     where: { id },
-    data,
+    data: patch,
     include: {
       user: { select: { firstName: true, lastName: true, email: true, phone: true } },
       department: { select: { id: true, name: true } },
@@ -1786,6 +1808,75 @@ export async function cancelAppointment(
  * be paid (`createPayment` rejects it) and never shows as revenue. Idempotent —
  * a second call returns the bill that already references this appointment.
  */
+/**
+ * Whether this appointment is a free follow-up, and what the consultation
+ * therefore costs.
+ *
+ * Every consultation used to charge the doctor's full fee, so a patient asked
+ * back in a week to have a wound looked at paid twice for a visit the doctor
+ * had scheduled themselves. A doctor can now set a window in days; a return to
+ * the SAME doctor inside it carries no consultation fee.
+ *
+ * Deliberately narrow:
+ *   - same doctor only. A follow-up is with the clinician who asked for it;
+ *     waiving another doctor's fee is not this feature's business.
+ *   - the previous visit must have been PAID. A free follow-up follows a
+ *     consultation the hospital was actually paid for — chaining it off an
+ *     unpaid visit would let a whole course of treatment run for nothing.
+ *   - it never touches the registration fee, which is a separate one-time
+ *     charge for opening the file.
+ *
+ * A patient can therefore have consecutive free follow-ups only if each one is
+ * itself paid, which by definition it is not — the window always measures back
+ * to the last PAID consultation.
+ */
+async function resolveConsultationFee(
+  tenantId: string,
+  appointment: { id: string; patientId: string; doctorId: string; doctor: { consultationFee: unknown; freeFollowUpDays?: number | null } },
+): Promise<{ fee: number; isFreeFollowUp: boolean; basedOn: Date | null; windowDays: number }> {
+  const listFee = appointment.doctor?.consultationFee ? Number(appointment.doctor.consultationFee) : 0;
+  const windowDays = Number(appointment.doctor?.freeFollowUpDays ?? 0) || 0;
+  if (windowDays <= 0 || listFee <= 0) {
+    return { fee: listFee, isFreeFollowUp: false, basedOn: null, windowDays: 0 };
+  }
+
+  const since = new Date();
+  since.setDate(since.getDate() - windowDays);
+
+  // The most recent consultation with this doctor whose bill was actually
+  // settled. `paid` only — a partially paid bill has not been paid for.
+  const previous = await prisma.appointment.findFirst({
+    where: {
+      tenantId,
+      patientId: appointment.patientId,
+      doctorId: appointment.doctorId,
+      id: { not: appointment.id },
+      appointmentDate: { gte: since },
+      status: { in: ['completed', 'in_consultation', 'checked_in', 'confirmed'] },
+    },
+    orderBy: { appointmentDate: 'desc' },
+    select: { id: true, appointmentDate: true },
+  });
+  if (!previous) {
+    return { fee: listFee, isFreeFollowUp: false, basedOn: null, windowDays };
+  }
+
+  const paidBill = await prisma.bill.findFirst({
+    where: {
+      tenantId,
+      patientId: appointment.patientId,
+      status: 'paid',
+      billItems: { some: { referenceType: 'appointment', referenceId: previous.id } },
+    },
+    select: { id: true },
+  });
+  if (!paidBill) {
+    return { fee: listFee, isFreeFollowUp: false, basedOn: null, windowDays };
+  }
+
+  return { fee: 0, isFreeFollowUp: true, basedOn: previous.appointmentDate, windowDays };
+}
+
 async function ensureAppointmentBill(
   tenantId: string,
   appointmentId: string,
@@ -1811,10 +1902,11 @@ async function ensureAppointmentBill(
 
   if (existingBill) return { appointment, bill: existingBill };
 
-  const consultationFee = appointment.doctor.consultationFee
-    ? Number(appointment.doctor.consultationFee)
-    : 0;
-  const amount = consultationFee > 0 ? consultationFee : 0;
+  // A return to the same doctor inside their free-follow-up window carries no
+  // consultation fee. The registration fee below is untouched — that is a
+  // separate one-time charge for opening the file.
+  const feeResolution = await resolveConsultationFee(tenantId, appointment as never);
+  const amount = feeResolution.fee > 0 ? feeResolution.fee : 0;
 
   // The one-time registration fee for opening a file at THIS hospital. Decided
   // here rather than at booking so it is applied however the appointment was
@@ -1896,7 +1988,15 @@ async function ensureAppointmentBill(
   });
 
   logger.info(
-    { tenantId, appointmentId, billId: bill.id, amount, registrationTotal, by: userId },
+    {
+      tenantId,
+      appointmentId,
+      billId: bill.id,
+      amount,
+      registrationTotal,
+      freeFollowUp: feeResolution.isFreeFollowUp,
+      by: userId,
+    },
     'Consultation bill created for appointment',
   );
   return { appointment, bill };
@@ -1925,7 +2025,7 @@ async function readRegistrationChoice(appointmentId: string): Promise<boolean | 
 export async function getAppointmentChargePreview(tenantId: string, appointmentId: string) {
   const appointment = await prisma.appointment.findFirst({
     where: { id: appointmentId, tenantId },
-    include: { doctor: { select: { consultationFee: true } } },
+    include: { doctor: { select: { consultationFee: true, freeFollowUpDays: true } } },
   });
   if (!appointment) throw AppError.notFound('Appointment not found');
 
@@ -1942,7 +2042,9 @@ export async function getAppointmentChargePreview(tenantId: string, appointmentI
     deskChoice,
   });
   const totals = registrationFeeTotals(settings);
-  const consultationFee = appointment.doctor?.consultationFee
+  const feeResolution = await resolveConsultationFee(tenantId, appointment as never);
+  const consultationFee = feeResolution.fee;
+  const listFee = appointment.doctor?.consultationFee
     ? Number(appointment.doctor.consultationFee)
     : 0;
 
@@ -1960,6 +2062,14 @@ export async function getAppointmentChargePreview(tenantId: string, appointmentI
 
   return {
     consultationFee,
+    // Say when the fee has been waived and why, so a desk seeing ₹0 against a
+    // doctor who charges ₹600 is not left wondering whether something broke.
+    followUp: {
+      isFree: feeResolution.isFreeFollowUp,
+      listFee,
+      windowDays: feeResolution.windowDays,
+      previousVisitDate: feeResolution.basedOn,
+    },
     registration: {
       // Can the desk act on it at all? Only when the hospital charges one.
       configured: settings.enabled,

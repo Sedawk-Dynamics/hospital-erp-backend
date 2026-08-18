@@ -2246,6 +2246,12 @@ model DoctorProfile {
   licenseNumber   String?  @map("license_number") @db.VarChar(100)
   experienceYears Int?     @map("experience_years")
   consultationFee Decimal? @map("consultation_fee") @db.Decimal(10, 2)
+  // Days after a paid consultation with THIS doctor during which a return
+  // visit carries no consultation fee. Per doctor, not per hospital: the window
+  // that suits a surgeon reviewing a post-op wound is not the one for a
+  // physician following a chronic case, and it is their fee being waived.
+  // Null or 0 = no free follow-up (what every existing doctor keeps).
+  freeFollowUpDays Int?    @map("free_follow_up_days")
   bio             String?
   isAvailable     Boolean  @default(true) @map("is_available")
   createdAt       DateTime @default(now()) @map("created_at")
