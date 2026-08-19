@@ -277,14 +277,6 @@ export async function getVisits(tenantId: string, query: GetVisitsQuery) {
   if (query.visitType) where.visitType = query.visitType;
   if (query.status) where.status = query.status;
 
-  // Encounters nobody has claimed. An emergency or temporary patient is
-  // registered before anyone knows which consultant will take them, so their
-  // visit carries no doctor — and since every doctor-facing list reads
-  // APPOINTMENTS rather than visits, they appeared in none of them.
-  if ((query as any).unassigned) {
-    where.doctorId = null;
-  }
-
   if (query.fromDate) {
     where.visitDate = { ...where.visitDate, gte: new Date(query.fromDate) };
   }
