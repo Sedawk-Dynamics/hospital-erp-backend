@@ -23,6 +23,15 @@ export const getVisitsQuerySchema = z.object({
     doctorId: z.string().uuid().optional(),
     visitType: z.enum(['op', 'ip']).optional(),
     status: z.enum(['active', 'completed', 'transferred', 'discharged']).optional(),
+    /**
+     * Encounters nobody has picked up — no doctor on the visit.
+     *
+     * An emergency or temporary patient is registered before anyone knows which
+     * consultant will take them, so their visit has no doctor and no
+     * appointment. Every doctor-facing list reads APPOINTMENTS, which means
+     * such a patient appears in none of them. This is how they get found.
+     */
+    unassigned: booleanQueryParam.optional(),
     fromDate: z.string().optional(),
     toDate: z.string().optional(),
   }),
