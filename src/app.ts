@@ -16,6 +16,7 @@ import { corsOptions } from './config/cors';
 import { env } from './config/env';
 import { logger } from './config/logger';
 import { runWithRequestContext } from './config/request-context';
+import { serverTiming, slowRequestLogger } from './middleware/slowRequestLogger';
 import { errorHandler } from './middleware/errorHandler';
 import { globalIpLimiter } from './middleware/rateLimiter';
 import { apiRouter } from './modules/router';
@@ -98,6 +99,12 @@ app.use(
 
 // Logging
 app.use(pinoHttp({ logger, autoLogging: { ignore: (req) => req.url === '/health' } }));
+
+// Timing. Mounted high so it wraps EVERYTHING below it — including the static
+// /uploads handler, which is exactly the path under investigation for the slow
+// report download and which the API-scoped logging never covered.
+app.use(serverTiming);
+app.use(slowRequestLogger);
 
 // Health check
 app.get('/health', (_req, res) => {
