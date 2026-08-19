@@ -80,8 +80,21 @@ app.use('/api/v1/subscription-plans/webhook', express.raw({ type: 'application/j
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb', parameterLimit: 1000 }));
 
-// Compression
-app.use(compression());
+// Compression.
+//
+// Skipped for /uploads: everything there is already-compressed binary — PDFs,
+// JPEGs, PNGs, DICOM. Re-compressing costs CPU per byte, returns essentially
+// nothing, and makes the response buffer through the compressor instead of
+// streaming straight off disk. That is the opposite of what a report download
+// wants.
+app.use(
+  compression({
+    filter: (req, res) => {
+      if (req.path.startsWith('/uploads')) return false;
+      return compression.filter(req, res);
+    },
+  }),
+);
 
 // Logging
 app.use(pinoHttp({ logger, autoLogging: { ignore: (req) => req.url === '/health' } }));
@@ -91,8 +104,25 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: formatDateTimeIST(new Date()) });
 });
 
-// Serve uploaded files statically
-app.use('/uploads', express.static(path.resolve(process.cwd(), 'uploads')));
+// Serve uploaded files statically.
+//
+// Upload filenames are content-unique (`file-<timestamp>-<random>.ext`) and are
+// never rewritten in place, so a given URL always returns the same bytes. That
+// makes them safe to cache hard. Without this every re-open of a report pulled
+// the whole file down again — the report a doctor looks at three times was
+// fetched three times.
+//
+// `immutable` stops the browser even revalidating; `etag`/`lastModified` remain
+// on for any client that ignores it.
+app.use(
+  '/uploads',
+  express.static(path.resolve(process.cwd(), 'uploads'), {
+    maxAge: '7d',
+    immutable: true,
+    etag: true,
+    lastModified: true,
+  }),
+);
 
 // Per-request context (client IP + user-agent = the "Machine" of an action).
 // Runs the rest of the request inside an AsyncLocalStorage store so audit
