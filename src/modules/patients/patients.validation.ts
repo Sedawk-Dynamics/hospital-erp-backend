@@ -131,6 +131,16 @@ export const createTemporaryPatientSchema = z.object({
     state: z.string().max(100).optional(),
     zipCode: z.string().max(20).optional(),
     notes: z.string().max(1000).optional(),
+    /**
+     * The account this patient belongs under — the attender who brought them
+     * in. Pass it explicitly, or leave it out and let the phone resolve to an
+     * existing account holder.
+     */
+    userId: z.string().uuid('Invalid account holder ID').optional(),
+    /** How the patient relates to that account holder. */
+    relationship: z
+      .enum(['self', 'spouse', 'child', 'parent', 'sibling', 'guardian', 'other'])
+      .optional(),
   }),
 });
 

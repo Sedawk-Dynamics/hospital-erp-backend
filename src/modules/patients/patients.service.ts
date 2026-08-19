@@ -102,6 +102,34 @@ function mapDocumentType(type: string): string {
  *
  * Returns the resolved/created User id to link the patient to.
  */
+/**
+ * Find the account holder who owns this phone number, WITHOUT creating one.
+ *
+ * `resolveOrCreateAccountHolder` mints a portal account when no match is found,
+ * which is right when a patient is registering themselves. It is wrong for a
+ * temporary record: the number on the form usually belongs to whoever brought
+ * the patient in, and an unidentified patient must not have a login account
+ * created in their name off the back of a relative's phone.
+ *
+ * Returns null when nobody owns the number — the caller then simply records no
+ * linkage, which is the honest answer.
+ */
+export async function findAccountHolderByPhone(phone?: string | null): Promise<string | null> {
+  if (!phone?.trim()) return null;
+  const normalized = normalizeAccountPhone(phone);
+  if (!normalized) return null;
+
+  const candidates = await prisma.user.findMany({
+    where: { phone: { in: [normalized, phone] }, isActive: true },
+    select: { id: true, tenant: { select: { slug: true } } },
+    orderBy: { createdAt: 'asc' },
+  });
+  if (candidates.length === 0) return null;
+  // Prefer the platform-tenant copy — the one a patient can actually log into.
+  const platform = candidates.find((u) => u.tenant?.slug === '__platform__');
+  return (platform ?? candidates[0]).id;
+}
+
 async function resolveOrCreateAccountHolder(input: {
   phone: string;
   firstName?: string;

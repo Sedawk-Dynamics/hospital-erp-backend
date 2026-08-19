@@ -3,6 +3,7 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { TEMP_MRN_PREFIX, isTemporaryMrn } from '../../shared/temporary-patient';
+import { findAccountHolderByPhone } from './patients.service';
 import { generateMRN } from './patients.service';
 import type {
   CreateTemporaryPatientInput,
@@ -118,6 +119,28 @@ export async function createTemporaryPatient(
   const mrn = await generateTemporaryMrn(tenantId);
   const fallbackName = await generateTemporaryName(tenantId);
 
+  // Who this patient belongs under. The number on an emergency form is usually
+  // the attender's — the relative who brought them in — so if it already owns
+  // an account, the patient is filed under it exactly as an ordinary family
+  // member would be.
+  //
+  // Resolve-only, never create. `create()` mints a portal account when a phone
+  // matches nothing, which is right for someone registering themselves and
+  // wrong here: an unidentified patient must not end up with a login account in
+  // their name off the back of a relative's phone number. No match simply means
+  // no linkage.
+  const accountHolderId =
+    data.userId ?? (await findAccountHolderByPhone(data.phone));
+
+  // Mirrors create(): the first profile on an account is that person, anything
+  // after it is somebody they are responsible for. The desk overrides this by
+  // passing the actual relationship.
+  let relationship = data.relationship;
+  if (accountHolderId && !relationship) {
+    const existingForUser = await prisma.patient.count({ where: { userId: accountHolderId } });
+    relationship = existingForUser === 0 ? 'self' : 'other';
+  }
+
   const patient = await prisma.patient.create({
     data: {
       tenantId,
@@ -136,10 +159,17 @@ export async function createTemporaryPatient(
       registrationSource: 'front_desk',
       notes: data.notes?.trim() || 'Temporary patient — register or connect later',
       isNew: false,
+      // The attender linkage. Without these the record was an island: it did
+      // not appear under the account of the person who brought the patient in,
+      // which is what QA reported.
+      ...(accountHolderId ? { userId: accountHolderId } : {}),
+      ...(relationship ? { relationship: relationship as never } : {}),
+      ...(relationship ? { isSelf: relationship === 'self' } : {}),
     },
     select: {
       id: true, mrn: true, firstName: true, lastName: true, phone: true,
       gender: true, dateOfBirth: true, email: true,
+      userId: true, relationship: true,
     },
   });
 
@@ -167,7 +197,7 @@ export async function createTemporaryPatient(
   void safeAudit({
     tenantId, userId, action: 'create', entityType: 'temporary_patient', entityId: patient.id,
     description: `Temporary patient ${mrn} created`,
-    newValues: { mrn, firstName: patient.firstName, visitId },
+    newValues: { mrn, firstName: patient.firstName, visitId, userId: accountHolderId, relationship },
   });
   logger.info({ tenantId, patientId: patient.id, mrn, visitId }, 'Temporary patient created');
   return { ...patient, visitId };
