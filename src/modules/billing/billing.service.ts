@@ -4475,6 +4475,25 @@ export async function getIpAdmissionsForBilling(
     : [];
   const typeById = new Map(typeRows.map((r) => [r.id, normalizeAdmissionType(r.admission_type)]));
 
+  // Advance balances for every patient on this page, in ONE query.
+  //
+  // The per-row version called getPatientAdvanceBalance inside the loop, which
+  // is two more round-trips per admission on a list that already does several.
+  // At 16 rows that is measurable; at a few hundred it is the reason the page
+  // stops loading. The balance is just the ADV- bucket's amountPaid, so the
+  // whole page's worth can be fetched at once and read from a map.
+  const advanceByPatient = new Map<string, number>();
+  const patientIds = Array.from(new Set(admissions.map((a) => a.patientId)));
+  if (patientIds.length > 0) {
+    const buckets = await prisma.bill.findMany({
+      where: { tenantId, patientId: { in: patientIds }, billNumber: { startsWith: 'ADV-' } },
+      select: { patientId: true, amountPaid: true },
+    });
+    for (const b of buckets) {
+      advanceByPatient.set(b.patientId, r2(toNumber(b.amountPaid)));
+    }
+  }
+
   const rows = [];
   for (const a of admissions) {
     // Every ACTIVE admission gets a running bill so it appears here from day one
@@ -4517,8 +4536,7 @@ export async function getIpAdmissionsForBilling(
     // patient the desk had just taken ₹10,000 from, because the advance the
     // desk collects into was not counted here either.
     const dep = await getAdmissionDepositState(tenantId, a.id);
-    const adv = await getPatientAdvanceBalance(tenantId, a.patientId);
-    const deposit = r2(dep.onFile + Number(adv.balance ?? 0));
+    const deposit = r2(dep.onFile + (advanceByPatient.get(a.patientId) ?? 0));
     const cashPaid = r2(Math.max(0, amountPaid - dep.applied));
     const netPatientObligation = r2(Math.max(0, totalAmount - insuranceCovered));
     const moneyFromPatient = r2(cashPaid + deposit - dep.refunded);
