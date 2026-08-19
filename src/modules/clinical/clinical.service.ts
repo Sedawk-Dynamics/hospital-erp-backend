@@ -207,6 +207,44 @@ export async function ensureVisitForAppointment(
     return existing;
   }
 
+  // An UNCLAIMED encounter for this patient — active, no doctor, no
+  // appointment. That is what an emergency or temporary registration leaves
+  // behind: the patient was taken in before anyone knew which consultant would
+  // see them.
+  //
+  // Adopt it rather than opening a second one. The check above matches on
+  // doctorId, so a doctorless visit never matched and the patient ended up with
+  // two active OP visits for one attendance — orders and notes then scattered
+  // across both, which is worse than having no encounter at all.
+  const unclaimed = await prisma.visit.findFirst({
+    where: {
+      tenantId,
+      patientId: appointment.patientId,
+      status: 'active',
+      doctorId: null,
+      appointmentId: null,
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (unclaimed) {
+    const adopted = await prisma.visit.update({
+      where: { id: unclaimed.id },
+      data: {
+        doctorId: appointment.doctorId,
+        appointmentId: appointment.id,
+        // Keep whatever the desk wrote at registration — it is the patient's
+        // own account of why they came, and the appointment reason is usually
+        // the same thing typed again.
+        chiefComplaint: unclaimed.chiefComplaint ?? appointment.reason ?? undefined,
+      },
+    });
+    logger.info(
+      { tenantId, appointmentId, visitId: adopted.id },
+      'Unclaimed encounter adopted by appointment',
+    );
+    return adopted;
+  }
+
   const visit = await prisma.visit.create({
     data: {
       tenantId,
