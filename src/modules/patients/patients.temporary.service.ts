@@ -245,7 +245,7 @@ async function reconcileOpenEncounters(
   tx: Prisma.TransactionClient,
   tenantId: string,
   patientId: string,
-): Promise<{ closed: number; leftForReview: number }> {
+): Promise<{ closed: number; needsReview: number }> {
   const open = await tx.visit.findMany({
     where: { tenantId, patientId, status: 'active', visitType: 'op' },
     orderBy: { createdAt: 'asc' },
@@ -265,7 +265,7 @@ async function reconcileOpenEncounters(
       },
     },
   });
-  if (open.length <= 1) return { closed: 0, leftForReview: 0 };
+  if (open.length <= 1) return { closed: 0, needsReview: 0 };
 
   const weight = (v: (typeof open)[number]) =>
     Object.values(v._count).reduce((sum, n) => sum + n, 0);
@@ -286,7 +286,7 @@ async function reconcileOpenEncounters(
     });
   }
 
-  return { closed: toClose.length, leftForReview: withWork.length > 1 ? withWork.length : 0 };
+  return { closed: toClose.length, needsReview: withWork.length > 1 ? withWork.length : 0 };
 }
 
 /**
@@ -312,7 +312,7 @@ export async function mergeTemporaryPatient(
   if (!isTemporaryMrn(temp.mrn)) throw AppError.badRequest('Source is not a temporary patient');
   if (isTemporaryMrn(target.mrn)) throw AppError.badRequest('Target must be a registered (permanent) patient');
 
-  const counts = await prisma.$transaction(async (tx) => {
+  const { moved: counts, encounters } = await prisma.$transaction(async (tx) => {
     const moved: Record<string, number> = {};
     for (const delegate of PATIENT_REPOINT_DELEGATES) {
       const res = await (tx as any)[delegate].updateMany({
@@ -329,20 +329,41 @@ export async function mergeTemporaryPatient(
     // The episode has followed the patient; make sure they are not now holding
     // two open outpatient encounters for one attendance.
     const rec = await reconcileOpenEncounters(tx, tenantId, targetPatientId);
-    if (rec.closed > 0) moved.__closedEmptyEncounters = rec.closed;
-    if (rec.leftForReview > 0) moved.__openEncountersNeedingReview = rec.leftForReview;
 
-    return moved;
+    // `moved` is a per-model count map — callers total it to say "7 records
+    // moved". Encounter housekeeping is a different fact and travels beside it
+    // rather than inside it.
+    return { moved, encounters: rec };
   });
 
   void safeAudit({
     tenantId, userId, action: 'update', entityType: 'temporary_patient', entityId: targetPatientId,
-    description: `Temporary patient ${temp.mrn} connected to ${target.mrn}`,
+    description:
+      `Temporary patient ${temp.mrn} connected to ${target.mrn}` +
+      (encounters.needsReview > 0
+        ? ` — ${encounters.needsReview} open encounters both carry care and were left for review`
+        : ''),
     oldValues: { tempId, tempMrn: temp.mrn },
-    newValues: { targetPatientId, targetMrn: target.mrn, moved: counts },
+    newValues: { targetPatientId, targetMrn: target.mrn, moved: counts, encounters },
   });
-  logger.info({ tenantId, tempId, targetPatientId, moved: counts }, 'Temporary patient connected to registered patient');
-  return { target, moved: counts };
+
+  // Both records had care on them, so neither could be closed automatically.
+  // The merge is correct and nothing is lost, but the patient is now holding
+  // two open encounters and somebody has to decide which one the rest of this
+  // attendance belongs on. Logged at warn so it is not discovered weeks later
+  // in an audit trail.
+  if (encounters.needsReview > 0) {
+    logger.warn(
+      { tenantId, targetPatientId, openEncounters: encounters.needsReview },
+      'Merge left multiple open encounters, both carrying care — needs a clinical decision',
+    );
+  }
+
+  logger.info(
+    { tenantId, tempId, targetPatientId, moved: counts, encounters },
+    'Temporary patient connected to registered patient',
+  );
+  return { target, moved: counts, encounters };
 }
 
 async function safeAudit(entry: {
