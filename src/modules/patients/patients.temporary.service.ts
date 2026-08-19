@@ -94,9 +94,21 @@ async function generateTemporaryName(tenantId: string): Promise<string> {
 /**
  * Create a temporary patient from whatever the front desk knows. Only a first
  * name is stored as a hard field (defaulted to `Temporary <n>` when blank);
- * everything else is optional. Returns a plain Patient — routing to OP
- * (appointment) or IP (admission) then happens through the normal flows, since
- * it is a normal row.
+ * everything else is optional.
+ *
+ * ALSO opens an active OP visit for them.
+ *
+ * A temporary patient is an ordinary `Patient` row with no flag and no access
+ * restriction, so "visible only to the front desk" was never a permissions
+ * problem — it is that nothing else could REFERENCE them. `LabOrder.visitId`,
+ * `Prescription.visitId` and `ImagingRequest.visitId` are all non-null, so with
+ * no visit on file the lab could not raise an order, the doctor could not
+ * prescribe and radiology could not book a study. Not "the departments cannot
+ * see them" but "there is nothing for a department to attach work to".
+ *
+ * The visit carries no doctor: at the door of an emergency nobody knows which
+ * consultant will take the patient, and `Visit.doctorId` is nullable precisely
+ * for that. It is filled in when someone picks the patient up.
  */
 export async function createTemporaryPatient(
   tenantId: string,
@@ -131,13 +143,34 @@ export async function createTemporaryPatient(
     },
   });
 
+  // Open the encounter that makes them workable. Deliberately NOT fatal: an
+  // emergency registration must complete even if this fails — a patient at the
+  // door with a half-made record still beats a registration that refused. The
+  // caller gets visitId: null and can retry.
+  let visitId: string | null = null;
+  try {
+    const clinical = await import('../clinical/clinical.service');
+    const visit = await clinical.createVisit(tenantId, {
+      patientId: patient.id,
+      visitType: 'op',
+      visitDate: new Date().toISOString(),
+      chiefComplaint: data.notes?.trim() || undefined,
+    } as never);
+    visitId = (visit as { id?: string })?.id ?? null;
+  } catch (err) {
+    logger.warn(
+      { tenantId, patientId: patient.id, err },
+      'Temporary patient created but its visit could not be opened',
+    );
+  }
+
   void safeAudit({
     tenantId, userId, action: 'create', entityType: 'temporary_patient', entityId: patient.id,
     description: `Temporary patient ${mrn} created`,
-    newValues: { mrn, firstName: patient.firstName },
+    newValues: { mrn, firstName: patient.firstName, visitId },
   });
-  logger.info({ tenantId, patientId: patient.id, mrn }, 'Temporary patient created');
-  return patient;
+  logger.info({ tenantId, patientId: patient.id, mrn, visitId }, 'Temporary patient created');
+  return { ...patient, visitId };
 }
 
 /**
