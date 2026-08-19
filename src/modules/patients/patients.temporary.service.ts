@@ -226,6 +226,70 @@ export async function registerTemporaryPatient(
 }
 
 /**
+ * After a merge, close any OPEN outpatient encounter that carries no clinical
+ * work — provided at least one open encounter survives.
+ *
+ * Merge repoints the temporary record's visit onto the target, which is right:
+ * the episode has to follow the patient. But if the target was already
+ * mid-episode — they walked in this morning, and someone has just realised the
+ * unconscious admission is the same person — they end up holding TWO open
+ * outpatient encounters. From then on a prescription can land on one and the
+ * lab order on the other, and neither view shows the whole attendance.
+ *
+ * Only an EMPTY encounter is closed. An encounter with a single vital, note,
+ * order or bill against it is somebody's record of care and is never touched
+ * automatically; if two of those collide the merge leaves both and says so in
+ * the log, because picking a winner is a clinical decision.
+ */
+async function reconcileOpenEncounters(
+  tx: Prisma.TransactionClient,
+  tenantId: string,
+  patientId: string,
+): Promise<{ closed: number; leftForReview: number }> {
+  const open = await tx.visit.findMany({
+    where: { tenantId, patientId, status: 'active', visitType: 'op' },
+    orderBy: { createdAt: 'asc' },
+    select: {
+      id: true,
+      _count: {
+        select: {
+          vitals: true,
+          diagnoses: true,
+          progressNotes: true,
+          nursingNotes: true,
+          prescriptions: true,
+          labOrders: true,
+          imagingRequests: true,
+          bills: true,
+        },
+      },
+    },
+  });
+  if (open.length <= 1) return { closed: 0, leftForReview: 0 };
+
+  const weight = (v: (typeof open)[number]) =>
+    Object.values(v._count).reduce((sum, n) => sum + n, 0);
+
+  const withWork = open.filter((v) => weight(v) > 0);
+  const empty = open.filter((v) => weight(v) === 0);
+
+  // Keep every encounter that has care recorded against it. If none has, keep
+  // the oldest — it is the one the desk opened first.
+  const keep = new Set(withWork.map((v) => v.id));
+  if (keep.size === 0) keep.add(open[0].id);
+
+  const toClose = empty.filter((v) => !keep.has(v.id)).map((v) => v.id);
+  if (toClose.length > 0) {
+    await tx.visit.updateMany({
+      where: { id: { in: toClose } },
+      data: { status: 'completed' },
+    });
+  }
+
+  return { closed: toClose.length, leftForReview: withWork.length > 1 ? withWork.length : 0 };
+}
+
+/**
  * Merge a temp record into an already-registered patient. Repoints every
  * non-unique `patientId` reference onto the target in one transaction, then
  * retires the temp (isActive false, MRN suffixed `-MERGED`). No duplicate row
@@ -261,6 +325,13 @@ export async function mergeTemporaryPatient(
       where: { id: tempId },
       data: { isActive: false, mrn: `${temp.mrn}-MERGED`, notes: `Merged into ${target.mrn}` },
     });
+
+    // The episode has followed the patient; make sure they are not now holding
+    // two open outpatient encounters for one attendance.
+    const rec = await reconcileOpenEncounters(tx, tenantId, targetPatientId);
+    if (rec.closed > 0) moved.__closedEmptyEncounters = rec.closed;
+    if (rec.leftForReview > 0) moved.__openEncountersNeedingReview = rec.leftForReview;
+
     return moved;
   });
 
