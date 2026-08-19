@@ -223,6 +223,13 @@ export async function ensureVisitForAppointment(
       status: 'active',
       doctorId: null,
       appointmentId: null,
+      // OUTPATIENT encounters only. Direct-admit adopts the same registration
+      // visit and converts it to `ip` — leaving an active IP visit that is also
+      // doctorless and appointment-less. Without this filter, booking an OP
+      // appointment for an admitted patient would claim their INPATIENT
+      // encounter and stamp an outpatient appointment onto the middle of their
+      // stay. An admitted patient's encounter is never up for adoption.
+      visitType: 'op',
     },
     orderBy: { createdAt: 'desc' },
   });
