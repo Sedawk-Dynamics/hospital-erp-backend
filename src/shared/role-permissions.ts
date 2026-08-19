@@ -68,6 +68,12 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'vitals', action: 'read' }, { module: 'vitals', action: 'create' }, { module: 'vitals', action: 'update' },
       { module: 'diagnoses', action: 'read' }, { module: 'diagnoses', action: 'create' }, { module: 'diagnoses', action: 'update' }, { module: 'diagnoses', action: 'delete' },
       { module: 'progress_notes', action: 'read' }, { module: 'progress_notes', action: 'create' }, { module: 'progress_notes', action: 'update' }, { module: 'progress_notes', action: 'approve' },
+      // Read-only on nursing notes. The doctor has to be able to read what
+      // nursing observed during the same encounter — without this the Nursing
+      // Notes panel on the consultation page 403s and silently shows nothing.
+      // Writing stays with nursing: these notes are their record, and the
+      // doctor's own observations belong in progress_notes above.
+      { module: 'nursing_notes', action: 'read' },
       { module: 'prescriptions', action: 'read' }, { module: 'prescriptions', action: 'create' }, { module: 'prescriptions', action: 'update' },
       { module: 'lab_orders', action: 'read' }, { module: 'lab_orders', action: 'create' }, { module: 'lab_reports', action: 'read' },
       { module: 'imaging', action: 'read' }, { module: 'imaging', action: 'create' },
