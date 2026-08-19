@@ -13,6 +13,13 @@ vi.mock('../../../../src/modules/clinical/clinical.service', () => ({
 }));
 import { createVisit } from '../../../../src/modules/clinical/clinical.service';
 
+// Resolve-only account-holder lookup. Mocked so these tests are about whether
+// the linkage is recorded, not about how a phone number resolves.
+vi.mock('../../../../src/modules/patients/patients.service', () => ({
+  findAccountHolderByPhone: vi.fn(async () => null),
+}));
+import { findAccountHolderByPhone } from '../../../../src/modules/patients/patients.service';
+
 const TENANT = 'tenant-1';
 const USER = 'user-1';
 
@@ -29,6 +36,8 @@ describe('createTemporaryPatient', () => {
       lastName: null,
     });
     (createVisit as any).mockResolvedValue({ id: 'visit-1' });
+    (findAccountHolderByPhone as any).mockResolvedValue(null);
+    (prisma.patient.count as any).mockResolvedValue(1);
   });
 
   // THE point of the temporary-patient flow. LabOrder.visitId,
@@ -165,5 +174,69 @@ describe('mergeTemporaryPatient', () => {
 
     expect(res.encounters.closed).toBe(0);
     expect(res.encounters.needsReview).toBe(2);
+  });
+});
+
+describe('createTemporaryPatient — attender linkage', () => {
+  const ACCOUNT = 'account-holder-1';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (prisma.patient.findFirst as any).mockResolvedValue(null);
+    (prisma.patient.findMany as any).mockResolvedValue([]);
+    (prisma.patient.count as any).mockResolvedValue(1);
+    (prisma.patient.create as any).mockResolvedValue({
+      id: 'patient-1', mrn: 'TEMP-20260819-001', firstName: 'Temporary 1',
+    });
+    (createVisit as any).mockResolvedValue({ id: 'visit-1' });
+    (findAccountHolderByPhone as any).mockResolvedValue(null);
+  });
+
+  // The reported bug: registering under an existing attender posted no linkage
+  // to that attender's account. Patient.userId is what puts the record under
+  // an account; without it the record belongs to nobody.
+  it('files the record under the account that owns the phone', async () => {
+    (findAccountHolderByPhone as any).mockResolvedValue(ACCOUNT);
+
+    await createTemporaryPatient(TENANT, USER, { phone: '9876543210' } as never);
+
+    const created = (prisma.patient.create as any).mock.calls[0][0].data;
+    expect(created.userId).toBe(ACCOUNT);
+    expect(created.relationship).toBe('other');
+  });
+
+  // The desk's explicit choice always wins over the inferred default.
+  it('keeps the relationship the desk chose', async () => {
+    (findAccountHolderByPhone as any).mockResolvedValue(ACCOUNT);
+
+    await createTemporaryPatient(
+      TENANT, USER, { phone: '9876543210', relationship: 'child' } as never,
+    );
+
+    expect((prisma.patient.create as any).mock.calls[0][0].data.relationship).toBe('child');
+  });
+
+  // An unidentified patient must never acquire a login account in their name
+  // off the back of a relative's phone number. No match means no linkage.
+  it('does not invent an account when the number matches nobody', async () => {
+    (findAccountHolderByPhone as any).mockResolvedValue(null);
+
+    await createTemporaryPatient(TENANT, USER, { phone: '9000000000' } as never);
+
+    const created = (prisma.patient.create as any).mock.calls[0][0].data;
+    expect(created.userId).toBeUndefined();
+    expect(created.relationship).toBeUndefined();
+  });
+
+  // An explicit account id is honoured without needing a phone at all — the
+  // desk picking the attender off screen.
+  it('accepts an explicitly chosen account holder', async () => {
+    await createTemporaryPatient(
+      TENANT, USER, { userId: ACCOUNT, relationship: 'parent' } as never,
+    );
+
+    const created = (prisma.patient.create as any).mock.calls[0][0].data;
+    expect(created.userId).toBe(ACCOUNT);
+    expect(created.relationship).toBe('parent');
   });
 });
