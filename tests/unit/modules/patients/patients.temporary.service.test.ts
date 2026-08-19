@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { prisma } from '../../../../src/config/database';
-import { createTemporaryPatient } from '../../../../src/modules/patients/patients.temporary.service';
+import {
+  createTemporaryPatient,
+  mergeTemporaryPatient,
+} from '../../../../src/modules/patients/patients.temporary.service';
 
 // The service opens the encounter through the clinical module. Mocked so the
 // test is about WHETHER an encounter is opened, not about how a visit row is
@@ -72,5 +75,95 @@ describe('createTemporaryPatient', () => {
     const created = (prisma.patient.create as any).mock.calls[0][0].data;
     expect(created.firstName).toMatch(/^Temporary /);
     expect(created.mrn).toMatch(/^TEMP-/);
+  });
+});
+
+describe('mergeTemporaryPatient', () => {
+  const TEMP = 'temp-1';
+  const TARGET = 'target-1';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (prisma.patient.findFirst as any).mockImplementation(async ({ where }: any) =>
+      where.id === TEMP
+        ? { id: TEMP, mrn: 'TEMP-20260819-001' }
+        : { id: TARGET, mrn: 'MRN-0001' },
+    );
+    (prisma.patient.update as any).mockResolvedValue({});
+    (prisma.visit.findMany as any).mockResolvedValue([]);
+    (prisma.visit.updateMany as any).mockResolvedValue({ count: 0 });
+    // The transaction callback runs against the same mocked client.
+    (prisma.$transaction as any).mockImplementation(async (fn: any) => fn(prisma));
+  });
+
+  // D4's actual requirement: "connectable to the final identity WITHOUT LOSING
+  // HISTORY". Every model carrying a non-unique patientId is repointed, which
+  // is what carries the orders, prescriptions, imaging, vitals and bills across
+  // with the patient. A model quietly dropped from that sweep is an episode
+  // silently detached from the person it belongs to.
+  it('repoints every patient-owned record onto the target', async () => {
+    const seen: string[] = [];
+    for (const key of ['visit', 'vital', 'prescription', 'labOrder', 'imagingRequest', 'bill']) {
+      (prisma as any)[key].updateMany = vi.fn(async ({ where, data }: any) => {
+        if (where.patientId === TEMP && data.patientId === TARGET) seen.push(key);
+        return { count: 1 };
+      });
+    }
+
+    await mergeTemporaryPatient('tenant-1', 'user-1', TEMP, TARGET);
+
+    // The episode is exactly these: what was ordered, given, imaged and billed.
+    expect(seen).toEqual(
+      expect.arrayContaining(['visit', 'vital', 'prescription', 'labOrder', 'imagingRequest', 'bill']),
+    );
+  });
+
+  // The temporary row is retired rather than deleted — it is the audit trail of
+  // how the patient first arrived.
+  it('retires the temporary record instead of deleting it', async () => {
+    await mergeTemporaryPatient('tenant-1', 'user-1', TEMP, TARGET);
+
+    const call = (prisma.patient.update as any).mock.calls.find(
+      (c: any[]) => c[0]?.where?.id === TEMP,
+    );
+    expect(call).toBeTruthy();
+    expect(call[0].data).toMatchObject({ isActive: false });
+    expect(call[0].data.mrn).toMatch(/-MERGED$/);
+    expect((prisma.patient as any).delete).not.toHaveBeenCalled();
+  });
+
+  // Reconciliation must never close an encounter that has care recorded on it.
+  // Losing a record of care is the one outcome worse than a duplicate.
+  it('never closes an encounter that carries care', async () => {
+    // The care-bearing encounter is deliberately SECOND. Ordered first, a
+    // "keep the oldest, close the rest" implementation would pass this test by
+    // accident while still being wrong.
+    (prisma.visit.findMany as any).mockResolvedValue([
+      { id: 'v-empty', _count: { vitals: 0, diagnoses: 0, progressNotes: 0, nursingNotes: 0, prescriptions: 0, labOrders: 0, imagingRequests: 0, bills: 0 } },
+      { id: 'v-care', _count: { vitals: 0, diagnoses: 0, progressNotes: 0, nursingNotes: 0, prescriptions: 1, labOrders: 2, imagingRequests: 0, bills: 1 } },
+    ]);
+
+    await mergeTemporaryPatient('tenant-1', 'user-1', TEMP, TARGET);
+
+    const closed = (prisma.visit.updateMany as any).mock.calls.find(
+      (c: any[]) => c[0]?.data?.status === 'completed',
+    );
+    expect(closed[0].where.id.in).toEqual(['v-empty']);
+    expect(closed[0].where.id.in).not.toContain('v-care');
+  });
+
+  // Two encounters both carrying care cannot be resolved automatically — that
+  // is a clinical decision. The merge must still succeed and say so.
+  it('leaves two care-bearing encounters open and flags them', async () => {
+    const withCare = (id: string) => ({
+      id,
+      _count: { vitals: 1, diagnoses: 0, progressNotes: 0, nursingNotes: 0, prescriptions: 0, labOrders: 0, imagingRequests: 0, bills: 0 },
+    });
+    (prisma.visit.findMany as any).mockResolvedValue([withCare('v-1'), withCare('v-2')]);
+
+    const res = await mergeTemporaryPatient('tenant-1', 'user-1', TEMP, TARGET);
+
+    expect(res.encounters.closed).toBe(0);
+    expect(res.encounters.needsReview).toBe(2);
   });
 });
