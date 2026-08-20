@@ -1118,7 +1118,7 @@ export async function listConsultationsAwaitingSignature(
     take: 50,
     include: {
       patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
-      visit: { select: { id: true, visitDate: true, chiefComplaint: true } },
+      visit: { select: { id: true, visitDate: true, chiefComplaint: true, appointmentId: true } },
       _count: { select: { pins: true } },
     },
   });
