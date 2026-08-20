@@ -2740,6 +2740,12 @@ model ProgressNote {
   plan                  Json?
   customFields          Json?              @map("custom_fields")
   weightKgAtEntry       Decimal?           @map("weight_kg_at_entry") @db.Decimal(5, 2)
+  // How the patient is doing, as the doctor judges it on this round. Lets a
+  // routine ward round be recorded as "prescription written, patient stable"
+  // without prose, and gives the timeline and discharge summary a trend to
+  // read. Same vocabulary nursing already uses on ClinicalObservation, so the
+  // two sides of the chart describe a patient the same way.
+  generalCondition      GeneralCondition?  @map("general_condition")
   pinToDischargeSummary Boolean            @default(false) @map("pin_to_discharge_summary")
   isAutoFilled          Boolean            @default(false) @map("is_auto_filled")
   status                ProgressNoteStatus @default(active)

@@ -56,6 +56,14 @@ export const createProgressNoteSchema = z.object({
     impressions: z.string().max(10000).optional().nullable(),
     discussions: z.string().max(10000).optional().nullable(),
     conclusions: z.string().max(10000).optional().nullable(),
+    // How the patient is doing on this round. On its own it is enough to
+    // record a routine ward round — a prescription plus "stable" — without
+    // prose. Same four values nursing uses, including `deteriorating`, which a
+    // reader needs more than any of the others.
+    generalCondition: z
+      .enum(['stable', 'critical', 'improving', 'deteriorating'])
+      .optional()
+      .nullable(),
     subjective: soapSchema.optional().nullable(),
     objective: soapSchema.optional().nullable(),
     assessment: soapSchema.optional().nullable(),
@@ -76,6 +84,14 @@ export const updateProgressNoteSchema = z.object({
     impressions: z.string().max(10000).optional().nullable(),
     discussions: z.string().max(10000).optional().nullable(),
     conclusions: z.string().max(10000).optional().nullable(),
+    // How the patient is doing on this round. On its own it is enough to
+    // record a routine ward round — a prescription plus "stable" — without
+    // prose. Same four values nursing uses, including `deteriorating`, which a
+    // reader needs more than any of the others.
+    generalCondition: z
+      .enum(['stable', 'critical', 'improving', 'deteriorating'])
+      .optional()
+      .nullable(),
     subjective: soapSchema.optional().nullable(),
     objective: soapSchema.optional().nullable(),
     assessment: soapSchema.optional().nullable(),

@@ -39,6 +39,9 @@ const AUDITED_FIELDS = [
   'plan',
   'customFields',
   'weightKgAtEntry',
+  // A doctor changing their read of the patient is precisely what an
+  // amendment trail is for.
+  'generalCondition',
   'pinToDischargeSummary',
 ] as const;
 
@@ -171,6 +174,7 @@ export async function createProgressNote(
       plan: (data.plan as any) ?? undefined,
       customFields: (data.customFields as any) ?? undefined,
       weightKgAtEntry: data.weightKgAtEntry ?? null,
+      generalCondition: (data.generalCondition as any) ?? null,
       pinToDischargeSummary: data.pinToDischargeSummary ?? false,
       pins: data.pins && data.pins.length > 0
         ? {
