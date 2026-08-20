@@ -700,6 +700,10 @@ export async function getAdmissions(tenantId: string, query: GetAdmissionsQuery)
   }
   if ((query as any).nurseId) where.nurseId = (query as any).nurseId;
   if (query.wardId) where.wardId = query.wardId;
+  // Stays still waiting on a bed. Deliberately keyed on bedId alone: wardId can
+  // be set while the bed is not (a patient placed on a ward before a specific
+  // bed frees up), and it is the bed that says where they actually are.
+  if ((query as { unassignedBed?: boolean }).unassignedBed) where.bedId = null;
   // `status=admitted` means "still on the ward", which INCLUDES a patient the
   // doctor has signed off who is waiting on the counter. Every caller that asks
   // for admitted patients — eMAR, charting, forms, ward orders, the nurse

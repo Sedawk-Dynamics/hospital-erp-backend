@@ -106,6 +106,11 @@ export const getAdmissionsQuerySchema = z.object({
     // An emergency admission opened by the front desk has none, so without this
     // it belongs to nobody and shows on nobody's list.
     includeUnassigned: booleanQueryParam.optional(),
+    // Only stays with no bed yet. An admission can be opened before a bed is
+    // free, so the desk needs to be able to ask which patients are still
+    // waiting on one — nothing else could distinguish them from a stay whose
+    // bed column simply had not been looked at.
+    unassignedBed: booleanQueryParam.optional(),
     search: z.string().max(255).optional(),
     date: z.string().optional(),
     // Date-range window on admissionDate — used by the hospital reports screen.
