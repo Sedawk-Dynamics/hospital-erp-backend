@@ -498,6 +498,10 @@ enum GeneralCondition {
   critical      @map("critical")
   improving     @map("improving")
   deteriorating @map("deteriorating")
+  // The IP round composer has always offered "Unchanged" and doctors have been
+  // picking it — it just went into the note text and nowhere structured. It is
+  // a real answer on a ward round and distinct from "stable".
+  unchanged     @map("unchanged")
 }
 
 enum MobilityLevel {

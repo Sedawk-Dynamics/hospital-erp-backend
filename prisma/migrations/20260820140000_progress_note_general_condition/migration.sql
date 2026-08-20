@@ -7,3 +7,7 @@
 -- report's own list omits, and the one a reader most needs to see.
 ALTER TABLE "progress_notes"
   ADD COLUMN IF NOT EXISTS "general_condition" "GeneralCondition";
+
+-- "Unchanged" has been on the IP round composer all along; it just had nowhere
+-- structured to go. Additive, and no existing row can be using it.
+ALTER TYPE "GeneralCondition" ADD VALUE IF NOT EXISTS 'unchanged';

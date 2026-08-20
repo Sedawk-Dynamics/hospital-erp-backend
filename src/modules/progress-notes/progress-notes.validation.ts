@@ -61,7 +61,7 @@ export const createProgressNoteSchema = z.object({
     // prose. Same four values nursing uses, including `deteriorating`, which a
     // reader needs more than any of the others.
     generalCondition: z
-      .enum(['stable', 'critical', 'improving', 'deteriorating'])
+      .enum(['stable', 'critical', 'improving', 'deteriorating', 'unchanged'])
       .optional()
       .nullable(),
     subjective: soapSchema.optional().nullable(),
@@ -89,7 +89,7 @@ export const updateProgressNoteSchema = z.object({
     // prose. Same four values nursing uses, including `deteriorating`, which a
     // reader needs more than any of the others.
     generalCondition: z
-      .enum(['stable', 'critical', 'improving', 'deteriorating'])
+      .enum(['stable', 'critical', 'improving', 'deteriorating', 'unchanged'])
       .optional()
       .nullable(),
     subjective: soapSchema.optional().nullable(),
