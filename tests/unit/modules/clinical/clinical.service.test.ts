@@ -837,6 +837,83 @@ describe('ClinicalService', () => {
       );
     });
 
+    // Test Report 3 / C16. Nursing was given transfer authority so a ward
+    // move no longer needs the front desk. One route serves both a placement
+    // move and a consultant handoff, and the second rewrites visit, admission
+    // and appointment doctorId — clinical responsibility, not placement.
+    it('lets a nurse move a patient between wards', async () => {
+      vi.mocked(prisma.visit.findFirst).mockResolvedValue(mockVisitActive as any);
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue(mockPatient as any);
+      vi.mocked(prisma.patientTransfer.create).mockResolvedValue({ ...mockTransfer } as any);
+
+      await expect(
+        createTransfer(
+          TENANT_ID,
+          USER_ID,
+          { patientId: 'patient-1', visitId: 'visit-1', transferType: 'ward_to_ward', toWardId: 'ward-2' } as any,
+          ['nurse'],
+        ),
+      ).resolves.toBeDefined();
+    });
+
+    it('refuses to let a nurse reassign the consultant', async () => {
+      vi.mocked(prisma.visit.findFirst).mockResolvedValue(mockVisitActive as any);
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue(mockPatient as any);
+
+      await expect(
+        createTransfer(
+          TENANT_ID,
+          USER_ID,
+          { patientId: 'patient-1', visitId: 'visit-1', transferType: 'doctor_to_doctor', toDoctorId: 'doc-2' } as any,
+          ['nurse'],
+        ),
+      ).rejects.toThrow(/clinical decision/i);
+      // Refused before anything is written.
+      expect(prisma.patientTransfer.create).not.toHaveBeenCalled();
+    });
+
+    it('refuses a nurse_admin consultant handoff too', async () => {
+      await expect(
+        createTransfer(
+          TENANT_ID,
+          USER_ID,
+          { patientId: 'patient-1', visitId: 'visit-1', transferType: 'doctor_to_doctor', toDoctorId: 'doc-2' } as any,
+          ['nurse_admin'],
+        ),
+      ).rejects.toThrow(/clinical decision/i);
+    });
+
+    it('still lets a doctor hand the consultant over', async () => {
+      vi.mocked(prisma.visit.findFirst).mockResolvedValue(mockVisitActive as any);
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue(mockPatient as any);
+      vi.mocked(prisma.patientTransfer.create).mockResolvedValue({ ...mockTransfer } as any);
+
+      await expect(
+        createTransfer(
+          TENANT_ID,
+          USER_ID,
+          { patientId: 'patient-1', visitId: 'visit-1', transferType: 'doctor_to_doctor', toDoctorId: 'doc-2' } as any,
+          ['doctor'],
+        ),
+      ).resolves.toBeDefined();
+    });
+
+    it('does not block someone who is a nurse AND a doctor here', async () => {
+      // The weaker of two roles must not veto the stronger.
+      vi.mocked(prisma.visit.findFirst).mockResolvedValue(mockVisitActive as any);
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue(mockPatient as any);
+      vi.mocked(prisma.patientTransfer.create).mockResolvedValue({ ...mockTransfer } as any);
+
+      await expect(
+        createTransfer(
+          TENANT_ID,
+          USER_ID,
+          { patientId: 'patient-1', visitId: 'visit-1', transferType: 'doctor_to_doctor', toDoctorId: 'doc-2' } as any,
+          ['nurse', 'doctor'],
+        ),
+      ).resolves.toBeDefined();
+    });
+
     it('should throw notFound if visit does not exist for transfer', async () => {
       vi.mocked(prisma.visit.findFirst).mockResolvedValue(null);
 

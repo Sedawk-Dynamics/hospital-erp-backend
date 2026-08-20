@@ -113,14 +113,19 @@ clinicalRoutes.patch('/admissions/:id/type', authenticate, requireRoles('front_d
 clinicalRoutes.patch('/admissions/:id/discharge', authenticate, requireRoles('front_desk', 'billing_admin', 'cashier', 'admin', 'super_admin'), validate(dischargePatientSchema), controller.dischargePatient);
 
 // --- Transfers ---
-clinicalRoutes.post('/transfers', authenticate, requirePermission('admissions', 'create'), validate(createTransferSchema), controller.createTransfer);
+// Moving an admitted patient. Gated on its own permission rather than
+// `admissions:create`, which also grants admitting a patient, opening a
+// reservation and raising or cancelling an IP request — far more than nursing
+// needs to walk someone to another ward. The doctor_to_doctor carve-out is
+// enforced in the service, where the transfer type is known.
+clinicalRoutes.post('/transfers', authenticate, requirePermission('patient_transfers', 'create'), validate(createTransferSchema), controller.createTransfer);
 clinicalRoutes.get('/transfers', authenticate, requirePermission('admissions', 'read'), validate(getTransfersQuerySchema), controller.getTransfers);
 clinicalRoutes.get('/transfers/:id', authenticate, requirePermission('admissions', 'read'), validate(transferIdParamSchema), controller.getTransferById);
 // Patient transfers are doctor-to-doctor / bed / ward handoffs against a Visit.
-// The receiving doctor (or nurse, for bed/ward moves) is the one who accepts —
-// gate on `visits:update` rather than `admissions:approve` so doctors can
-// approve handoffs addressed to them without needing admin-level rights.
-clinicalRoutes.patch('/transfers/:id/approve', authenticate, requirePermission('visits', 'update'), validate(approveTransferSchema), controller.approveTransfer);
+// The receiving doctor (or nurse, for bed/ward moves) is the one who accepts,
+// so this stays off admin-level rights. Everyone who could approve before
+// holds patient_transfers:approve, and nursing is added to it.
+clinicalRoutes.patch('/transfers/:id/approve', authenticate, requirePermission('patient_transfers', 'approve'), validate(approveTransferSchema), controller.approveTransfer);
 
 // --- Vitals ---
 clinicalRoutes.post('/vitals', authenticate, requirePermission('vitals', 'create'), validate(recordVitalsSchema), controller.recordVitals);

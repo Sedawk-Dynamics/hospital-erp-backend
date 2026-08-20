@@ -22,6 +22,12 @@ export const PERMISSION_MODULES = [
   'imaging', 'pharmacy', 'inventory', 'billing', 'payments', 'insurance',
   'blood_bank', 'hr', 'notifications', 'tickets', 'reports', 'audit_logs', 'compliance',
   'forms', 'nurse_assignments', 'duty_rosters',
+  // Moving an admitted patient — ward-to-ward, bed-to-bed, or handing the
+  // consultant over. This used to ride on `admissions:create`, which also
+  // grants admitting a patient, opening reservations and raising/cancelling
+  // IP requests. Nursing needs to move a patient between wards without any of
+  // that, so the transfer gets its own permission.
+  'patient_transfers',
   // OT bookings. The clinical OT routes already gated on this name, but it was
   // never declared here so no RolePermission row could exist and every doctor
   // got "Missing permission: ot_requests:create".
@@ -74,6 +80,8 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       // Writing stays with nursing: these notes are their record, and the
       // doctor's own observations belong in progress_notes above.
       { module: 'nursing_notes', action: 'read' },
+      // Moves a patient and accepts a consultant handoff addressed to them.
+      { module: 'patient_transfers', action: 'create' }, { module: 'patient_transfers', action: 'approve' },
       { module: 'prescriptions', action: 'read' }, { module: 'prescriptions', action: 'create' }, { module: 'prescriptions', action: 'update' },
       { module: 'lab_orders', action: 'read' }, { module: 'lab_orders', action: 'create' }, { module: 'lab_reports', action: 'read' },
       { module: 'imaging', action: 'read' }, { module: 'imaging', action: 'create' },
@@ -97,6 +105,10 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'appointments', action: 'read' }, { module: 'appointments', action: 'update' },
       { module: 'visits', action: 'read' }, { module: 'visits', action: 'update' },
       { module: 'admissions', action: 'read' }, { module: 'admissions', action: 'update' },
+      // Ward-to-ward and bed-to-bed moves. The service refuses a
+      // doctor_to_doctor transfer from here — reassigning the consultant is a
+      // clinical decision, not a nursing one.
+      { module: 'patient_transfers', action: 'create' }, { module: 'patient_transfers', action: 'approve' },
       { module: 'vitals', action: 'read' }, { module: 'vitals', action: 'create' }, { module: 'vitals', action: 'update' },
       { module: 'diagnoses', action: 'read' },
       // Read-through on OT bookings so the theatre list is visible here.
@@ -130,6 +142,10 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'appointments', action: 'read' },
       { module: 'visits', action: 'read' },
       { module: 'admissions', action: 'read' },
+      // Bed/ward moves across the wards they run — the one clinical-adjacent
+      // WRITE this role has, and it is a placement decision rather than a
+      // treatment one.
+      { module: 'patient_transfers', action: 'create' }, { module: 'patient_transfers', action: 'approve' },
       { module: 'vitals', action: 'read' },
       { module: 'diagnoses', action: 'read' },
       { module: 'nursing_notes', action: 'read' },
@@ -176,6 +192,9 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       // need read-through on infrastructure and write on visits/admissions.
       { module: 'visits', action: 'read' }, { module: 'visits', action: 'create' }, { module: 'visits', action: 'update' },
       { module: 'admissions', action: 'read' }, { module: 'admissions', action: 'create' }, { module: 'admissions', action: 'update' },
+      // Transfers moved off admissions:create onto their own permission; the
+      // desk keeps exactly what it had.
+      { module: 'patient_transfers', action: 'create' }, { module: 'patient_transfers', action: 'approve' },
       { module: 'floors', action: 'read' },
       { module: 'wards', action: 'read' },
       { module: 'beds', action: 'read' },

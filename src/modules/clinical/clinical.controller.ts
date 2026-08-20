@@ -290,7 +290,7 @@ export async function createTransfer(
   try {
     const tenantId = req.user!.tenantId;
     const userId = req.user!.userId;
-    const transfer = await clinicalService.createTransfer(tenantId, userId, req.body);
+    const transfer = await clinicalService.createTransfer(tenantId, userId, req.body, req.user!.roles);
     sendResponse({
       res,
       statusCode: 201,

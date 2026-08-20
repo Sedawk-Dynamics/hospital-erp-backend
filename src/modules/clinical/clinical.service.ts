@@ -1266,7 +1266,36 @@ export async function getDischargeReadyAdmissions(tenantId: string) {
 /**
  * Create a patient transfer request.
  */
-export async function createTransfer(tenantId: string, userId: string, data: CreateTransferInput) {
+/**
+ * Roles whose transfer authority is placement only.
+ *
+ * Moving a patient to another ward or bed is a placement decision nursing
+ * makes every day. Changing who the consultant is reassigns clinical
+ * responsibility for the patient — it rewrites visit, admission and
+ * appointment doctorId — and that is not nursing's call. One route serves both,
+ * so the line is drawn here where the transfer type is known.
+ */
+const PLACEMENT_ONLY_TRANSFER_ROLES = new Set(['nurse', 'nurse_admin']);
+
+export async function createTransfer(
+  tenantId: string,
+  userId: string,
+  data: CreateTransferInput,
+  actorRoles: string[] = [],
+) {
+  if (data.transferType === 'doctor_to_doctor') {
+    // Refused only when EVERY role the caller holds is placement-only, so a
+    // nurse who is also a doctor on this tenant is not blocked by the weaker
+    // of their two roles.
+    const placementOnly =
+      actorRoles.length > 0 && actorRoles.every((r) => PLACEMENT_ONLY_TRANSFER_ROLES.has(r));
+    if (placementOnly) {
+      throw AppError.forbidden(
+        'Changing the consultant is a clinical decision. You can move a patient between wards or beds.',
+      );
+    }
+  }
+
   // Verify visit belongs to tenant
   const visit = await prisma.visit.findFirst({
     where: { id: data.visitId, tenantId },
