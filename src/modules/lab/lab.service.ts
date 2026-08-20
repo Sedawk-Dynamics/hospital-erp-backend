@@ -1,5 +1,6 @@
 import path from 'path';
 import { prisma } from '../../config/database';
+import { resolveConsultationStates } from '../../shared/consultation-state';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
@@ -784,11 +785,23 @@ export async function getLabOrders(tenantId: string, query: GetLabOrdersQuery) {
  * radiology's `linkedBill` has carried since the payment-verify gate, so one
  * component renders both.
  */
-async function decorateWithBill<T extends { id: string; patientId: string }>(
+async function decorateWithBill<T extends { id: string; patientId: string; visitId?: string | null }>(
   tenantId: string,
   orders: T[],
 ) {
-  if (!orders.length) return orders.map((o) => ({ ...o, linkedBill: null, encounter: null }));
+  if (!orders.length) {
+    return orders.map((o) => ({ ...o, linkedBill: null, encounter: null, consultation: null }));
+  }
+
+  // Where the patient is in their consultation. An order normally arrives
+  // mid-consultation and the patient goes back to the doctor with the result,
+  // so the queue needs to say whether the doctor has actually seen them —
+  // otherwise a row looks the same whether the consultation happened or the
+  // patient is still in the waiting room. Batched for the page, not per row.
+  const consultations = await resolveConsultationStates(
+    tenantId,
+    orders.map((o) => o.visitId ?? null),
+  );
 
   // Whether this patient is admitted decides whether accepting asks for money
   // or posts to the stay ledger, so the row has to say it before the admin
@@ -797,7 +810,11 @@ async function decorateWithBill<T extends { id: string; patientId: string }>(
     tenantId,
     orders.map((o) => o.patientId),
   );
-  const withEncounter = (o: T) => ({ ...o, encounter: payers.get(o.patientId) ?? null });
+  const withEncounter = (o: T) => ({
+    ...o,
+    encounter: payers.get(o.patientId) ?? null,
+    consultation: o.visitId ? (consultations.get(o.visitId) ?? null) : null,
+  });
 
   const items = await prisma.labOrderItem.findMany({
     where: { labOrderId: { in: orders.map((o) => o.id) } },

@@ -10,6 +10,7 @@ import {
   createPayment,
   type DiagnosticChargeInput,
 } from '../billing/billing.service';
+import { resolveConsultationStates } from '../../shared/consultation-state';
 import type {
   CreateImagingRequestInput,
   AcceptImagingRequestInput,
@@ -700,12 +701,21 @@ export async function getImagingRequests(
     requests.map((r) => r.patientId),
   );
 
+  // Same question the lab queue answers: has the doctor actually seen this
+  // patient yet? A scan is normally ordered mid-consultation, and the row alone
+  // cannot distinguish that from a patient still waiting to be called.
+  const consultations = await resolveConsultationStates(
+    tenantId,
+    requests.map((r) => r.visitId ?? null),
+  );
+
   const decorated = requests.map((r) => {
     const bi = billByRequestId.get(r.id);
     const released = isImagingReportReleased(r.imagingResult?.status);
     return {
       ...r,
       encounter: payers.get(r.patientId) ?? null,
+      consultation: r.visitId ? (consultations.get(r.visitId) ?? null) : null,
       released,
       awaitingApproval: !!r.imagingResult && !released,
       imagingResult: isInsider || released ? r.imagingResult : null,
