@@ -105,7 +105,19 @@ export async function upsertPersonalHistory(
  */
 export async function getMedicalSurgicalHistory(tenantId: string, patientId: string) {
   const [personal, diagnoses, notes] = await Promise.all([
-    prisma.patientPersonalHistory.findUnique({ where: { patientId } }),
+    // Through getPersonalHistory, not findUnique on this row.
+    //
+    // upsertPersonalHistory writes to the person's CANONICAL patient row so
+    // they never accumulate one lifestyle record per hospital. Reading the row
+    // the doctor happens to be looking at therefore misses history the moment
+    // those two differ — the narrative is saved, and the tab that saved it
+    // shows nothing back. The lifestyle fields on this same panel already read
+    // across the person, so the two halves disagreed with each other.
+    //
+    // Diagnoses and notes below stay on this patientId deliberately: they are
+    // this hospital's clinical record of this encounter series, not a
+    // person-level fact like habits or past surgery.
+    getPersonalHistory(patientId),
 
     // Every diagnosis on file, newest first, with the visit it came from.
     prisma.diagnosis.findMany({

@@ -1,6 +1,7 @@
 import { prisma } from '../../config/database';
 import { AppError } from '../../shared/appError';
 import { buildDrugHistory } from '../prescriptions/drug-history.service';
+import { resolvePersonPatientIds } from '../../shared/patient-identity';
 
 // Aggregates a patient's clinical record into a compact text block for the
 // patient AI chatbot (Use Case 2, Level 1 — text only, no radiology image
@@ -109,7 +110,17 @@ export async function buildPatientContext(
         take: 6,
         include: { imagingResult: { select: { impression: true, status: true } } },
       }),
-      prisma.patientPersonalHistory.findUnique({ where: { patientId } }),
+      // Across the person's rows, matching where upsertPersonalHistory writes.
+      // A findUnique on this row alone hands the model an empty history for a
+      // patient who has one, which is worse than no context: it reads as
+      // "no risk factors recorded" rather than "not looked up".
+      prisma.patientPersonalHistory
+        .findMany({
+          where: { patientId: { in: await resolvePersonPatientIds(patientId) } },
+          orderBy: { updatedAt: 'desc' },
+          take: 1,
+        })
+        .then((r) => r[0] ?? null),
       prisma.patientFamilyHistory.findMany({ where: { patientId }, take: 10 }),
       prisma.vital.findMany({
         where: { patientId, visit: { tenantId } },
