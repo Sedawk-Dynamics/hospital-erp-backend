@@ -1078,6 +1078,52 @@ export async function listUnlockedProgressNotes(
     }));
 }
 
+/**
+ * OP consultations this doctor has pinned but not yet signed.
+ *
+ * A pinned section is the doctor saying "this belongs in the summary the
+ * patient reads". Until the note is signed it stays out of the portal, so an
+ * unsigned pinned consultation is work that looks finished to the doctor and
+ * is invisible to the patient. Nothing surfaced them, so they simply
+ * accumulated.
+ *
+ * Only pinned notes are listed: with no pins there is no summary to publish,
+ * and the summary panel offers no Sign action, so listing one would send the
+ * doctor somewhere they cannot act.
+ *
+ * `archived` is included deliberately — the 24h OP cron flips an unsigned note
+ * to archived, and signProgressNote still accepts it. Excluding archived would
+ * mean a consultation became permanently unpublishable a day after it happened.
+ */
+export async function listConsultationsAwaitingSignature(
+  tenantId: string,
+  userId: string,
+) {
+  const doctorProfile = await prisma.doctorProfile.findFirst({
+    where: { userId, tenantId },
+    select: { id: true },
+  });
+  // Not a doctor on this tenant — nothing of theirs to sign.
+  if (!doctorProfile) return [];
+
+  return prisma.progressNote.findMany({
+    where: {
+      doctorId: doctorProfile.id,
+      status: { in: ['active', 'archived'] },
+      admissionId: null,
+      visit: { tenantId, visitType: 'op' },
+      pins: { some: {} },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 50,
+    include: {
+      patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
+      visit: { select: { id: true, visitDate: true, chiefComplaint: true } },
+      _count: { select: { pins: true } },
+    },
+  });
+}
+
 // ============================================================
 // Structured nursing records — Wound Care / IV Line / Intake-Output
 // ============================================================

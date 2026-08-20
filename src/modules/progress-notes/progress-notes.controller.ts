@@ -273,6 +273,23 @@ export async function relockProgressNote(
   }
 }
 
+/** GET /progress-notes/awaiting-signature — the caller's own unsigned, pinned OP consultations. */
+export async function listConsultationsAwaitingSignature(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await progressNotesService.listConsultationsAwaitingSignature(
+      req.user!.tenantId,
+      req.user!.userId,
+    );
+    sendResponse({ res, message: 'Consultations awaiting signature', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function listUnlockedProgressNotes(
   req: AuthenticatedRequest,
   res: Response,

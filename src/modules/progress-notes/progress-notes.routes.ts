@@ -62,6 +62,9 @@ progressNotesRoutes.put('/templates/:id', authenticate, requirePermission('progr
 progressNotesRoutes.delete('/templates/:id', authenticate, requirePermission('progress_notes', 'delete'), validate(templateIdParamSchema), controller.deleteProgressNoteTemplate);
 
 // --- Unlocked Notes (must be before /:id to avoid conflict) ---
+// Literal path — must precede '/:id' below or it resolves as an id.
+progressNotesRoutes.get('/awaiting-signature', authenticate, requirePermission('progress_notes', 'read'), controller.listConsultationsAwaitingSignature);
+
 progressNotesRoutes.get('/unlocked', authenticate, requirePermission('progress_notes', 'read'), validate(listUnlockedProgressNotesSchema), controller.listUnlockedProgressNotes);
 
 // --- AI Smart Suggestions (must be before /:id to avoid conflict) ---
