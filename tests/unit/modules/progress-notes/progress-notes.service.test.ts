@@ -10,6 +10,7 @@ import {
   updateNursingNote,
   deleteNursingNote,
   getNursingNoteById,
+  listConsultationsAwaitingSignature,
 } from '../../../../src/modules/progress-notes/progress-notes.service';
 
 const TENANT_ID = 'tenant-1';
@@ -219,5 +220,61 @@ describe('Progress Notes Service', () => {
         updateNursingNote(TENANT_ID, 'bad-id', { content: 'x' } as any),
       ).rejects.toThrow('Nursing note not found');
     });
+  });
+});
+
+// ============================================================
+// Consultations awaiting signature (Test Report 3 / A7)
+// ============================================================
+
+describe('listConsultationsAwaitingSignature', () => {
+  it('scopes the query to the calling doctor and to pinned OP notes', async () => {
+    vi.mocked(prisma.doctorProfile.findFirst).mockResolvedValueOnce({ id: 'doc-1' } as any);
+    vi.mocked(prisma.progressNote.findMany).mockResolvedValueOnce([] as any);
+
+    await listConsultationsAwaitingSignature(TENANT_ID, USER_ID);
+
+    const where = vi.mocked(prisma.progressNote.findMany).mock.calls[0]![0]!.where as any;
+    expect(where.doctorId).toBe('doc-1');
+    // A pinned section is the only thing there is to publish.
+    expect(where.pins).toEqual({ some: {} });
+    // OP only — IP rounds belong to the discharge summary, not this list.
+    expect(where.admissionId).toBeNull();
+    expect(where.visit).toMatchObject({ tenantId: TENANT_ID, visitType: 'op' });
+  });
+
+  it('still offers a note the 24h cron archived, which can be signed', async () => {
+    vi.mocked(prisma.doctorProfile.findFirst).mockResolvedValueOnce({ id: 'doc-1' } as any);
+    vi.mocked(prisma.progressNote.findMany).mockResolvedValueOnce([] as any);
+
+    await listConsultationsAwaitingSignature(TENANT_ID, USER_ID);
+
+    // Excluding archived would make a consultation permanently unpublishable
+    // a day after it happened.
+    const where = vi.mocked(prisma.progressNote.findMany).mock.calls[0]![0]!.where as any;
+    expect(where.status.in).toContain('active');
+    expect(where.status.in).toContain('archived');
+    expect(where.status.in).not.toContain('finalized');
+  });
+
+  it('returns nothing for a user who is not a doctor here', async () => {
+    vi.mocked(prisma.doctorProfile.findFirst).mockResolvedValueOnce(null as any);
+
+    const rows = await listConsultationsAwaitingSignature(TENANT_ID, 'not-a-doctor');
+
+    expect(rows).toEqual([]);
+    // Must not fall through to an unscoped query that would expose the
+    // whole tenant's unsigned notes.
+    expect(prisma.progressNote.findMany).not.toHaveBeenCalled();
+  });
+
+  it('carries the appointmentId the dashboard needs to deep-link', async () => {
+    vi.mocked(prisma.doctorProfile.findFirst).mockResolvedValueOnce({ id: 'doc-1' } as any);
+    vi.mocked(prisma.progressNote.findMany).mockResolvedValueOnce([] as any);
+
+    await listConsultationsAwaitingSignature(TENANT_ID, USER_ID);
+
+    const include = vi.mocked(prisma.progressNote.findMany).mock.calls[0]![0]!.include as any;
+    expect(include.visit.select.appointmentId).toBe(true);
   });
 });
