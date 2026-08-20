@@ -145,6 +145,15 @@ function orthancAuthHeader(): string | null {
 export function buildPacsRouter(): Router {
   const router = Router();
 
+  // Is the archive answering? Any authenticated user may ask: the viewer needs
+  // it to explain why a study will not open, and the radiology settings screen
+  // needs it to show the department whether imaging is up. It reports only
+  // reachability — no host, credentials or configuration detail.
+  router.get('/health', authenticate, async (_req: Request, res: Response) => {
+    const { getPacsHealth } = await import('./index');
+    res.json({ success: true, data: await getPacsHealth() });
+  });
+
   // Mint a tenant-scoped session cookie from the Bearer-authenticated user.
   router.post('/session', authenticate, (req: AuthenticatedRequest, res: Response) => {
     const ttlMin = env.PACS_SESSION_TTL_MIN;
