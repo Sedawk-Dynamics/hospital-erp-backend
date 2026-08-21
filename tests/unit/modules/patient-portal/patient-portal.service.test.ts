@@ -33,7 +33,7 @@ describe('Patient portal — consultation summaries', () => {
     expect(notes).toHaveLength(1);
     const where = vi.mocked(prisma.progressNote.findMany).mock.calls[0][0]?.where as any;
     expect(where.pins).toBeUndefined();
-    expect(where.status).toBe('finalized');
+    expect(where.status.in).toContain('finalized');
   });
 
   // Ward rounds belong to the discharge summary, not the OP consultation list.
@@ -47,14 +47,36 @@ describe('Patient portal — consultation summaries', () => {
     expect(where.admissionId).toBeNull();
   });
 
-  it('never exposes an unsigned draft', async () => {
+  // Rule reversed on purpose (Test Report 3 / A7 follow-up). Requiring a
+  // signature meant the patient saw nothing until the doctor got round to
+  // signing, which on real data was almost never — one consultation was
+  // visible across the whole database while ten existed.
+  //
+  // An unsigned note is not a half-written one: it is created when the doctor
+  // ENDS the consultation, and the in-progress draft lives in the browser
+  // rather than this table. The portal marks these as awaiting sign-off.
+  it('includes an unsigned consultation so the patient is not left waiting', async () => {
     ownsPatient();
     vi.mocked(prisma.progressNote.findMany).mockResolvedValue([] as any);
 
     await getPatientConsultationSummaries(USER_ID, EMAIL, {});
 
     const where = vi.mocked(prisma.progressNote.findMany).mock.calls[0][0]?.where as any;
-    expect(where.status).toBe('finalized');
+    expect(where.status.in).toEqual(
+      expect.arrayContaining(['finalized', 'active', 'archived']),
+    );
+  });
+
+  // signedAt is null on an unsigned note, so ordering by it would bury the most
+  // recent consultations at the bottom of the patient's list.
+  it('orders by when the consultation happened, not when it was signed', async () => {
+    ownsPatient();
+    vi.mocked(prisma.progressNote.findMany).mockResolvedValue([] as any);
+
+    await getPatientConsultationSummaries(USER_ID, EMAIL, {});
+
+    const args = vi.mocked(prisma.progressNote.findMany).mock.calls[0][0] as any;
+    expect(args.orderBy).toEqual({ createdAt: 'desc' });
   });
 });
 
