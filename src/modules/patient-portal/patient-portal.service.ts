@@ -532,7 +532,15 @@ export async function getPatientProfile(userId: string, email: string) {
 export async function getPatientAppointments(
   userId: string,
   email: string,
-  query: { status?: string; limit?: number; sortOrder?: 'asc' | 'desc'; tenantId?: string; profileId?: string },
+  query: {
+    status?: string;
+    limit?: number;
+    sortOrder?: 'asc' | 'desc';
+    tenantId?: string;
+    profileId?: string;
+    /** Only appointments still to come — see the filter below. */
+    upcoming?: boolean;
+  },
 ) {
   const patientIds = await resolvePatientIds(userId, email, query.tenantId, query.profileId);
   if (patientIds.length === 0) return { data: [] };
@@ -540,6 +548,24 @@ export async function getPatientAppointments(
   const limit = query.limit || 50;
   const where: Record<string, unknown> = { patientId: { in: patientIds } };
   if (query.status) where.status = query.status;
+
+  // "Upcoming" has to be resolved HERE, not by sorting and taking the first N.
+  //
+  // The portal dashboard asked for sortOrder=asc with limit=5, which returns
+  // the five OLDEST appointments on record — so a patient with any history saw
+  // visits from months ago under "Upcoming", and an appointment they had just
+  // booked was nowhere, because it sorts last. There was no date filter to make
+  // the sort mean what the caller intended.
+  //
+  // Cancelled / completed / no-show are excluded even when the date is still
+  // ahead: a cancelled appointment next Tuesday is not something to turn up for.
+  // Same rule the appointments LIST page applies, so the two agree.
+  if (query.upcoming) {
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    where.appointmentDate = { gte: startOfToday };
+    where.status = { notIn: ['completed', 'cancelled', 'no_show'] };
+  }
 
   const appointments = await prisma.appointment.findMany({
     where,

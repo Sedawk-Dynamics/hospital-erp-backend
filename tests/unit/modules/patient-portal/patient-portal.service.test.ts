@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { prisma } from '../../../../src/config/database';
 import {
+  getPatientAppointments,
   getPatientConsultationSummaries,
   getPatientPrescriptions,
 } from '../../../../src/modules/patient-portal/patient-portal.service';
@@ -107,5 +108,60 @@ describe('Patient portal — profile scoping', () => {
 
     const where = vi.mocked(prisma.prescription.findMany).mock.calls[0][0]?.where as any;
     expect(where.patientId.in).toEqual(['p2']);
+  });
+});
+
+describe('Patient portal — upcoming appointments', () => {
+  // The dashboard panel asked for sortOrder=asc with limit=5 and no date
+  // filter, which returns the five OLDEST appointments on record. A patient
+  // with any history saw visits from months ago under "Upcoming", and an
+  // appointment they had just booked appeared nowhere, because it sorts last.
+  it('filters to appointments still ahead, rather than relying on the sort', async () => {
+    ownsPatient();
+    vi.mocked(prisma.appointment.findMany).mockResolvedValue([] as any);
+
+    await getPatientAppointments(USER_ID, EMAIL, { upcoming: true, limit: 5, sortOrder: 'asc' });
+
+    const where = vi.mocked(prisma.appointment.findMany).mock.calls[0][0]?.where as any;
+    expect(where.appointmentDate?.gte).toBeInstanceOf(Date);
+    // From the START of today — an appointment later today is still upcoming.
+    const gte = where.appointmentDate.gte as Date;
+    expect([gte.getHours(), gte.getMinutes(), gte.getSeconds()]).toEqual([0, 0, 0]);
+  });
+
+  it('leaves out a future appointment that will not happen', async () => {
+    ownsPatient();
+    vi.mocked(prisma.appointment.findMany).mockResolvedValue([] as any);
+
+    await getPatientAppointments(USER_ID, EMAIL, { upcoming: true });
+
+    // A cancelled appointment next Tuesday is not something to turn up for,
+    // and the list page applies the same rule.
+    const where = vi.mocked(prisma.appointment.findMany).mock.calls[0][0]?.where as any;
+    expect(where.status.notIn).toEqual(
+      expect.arrayContaining(['completed', 'cancelled', 'no_show']),
+    );
+  });
+
+  it('does not filter anything when upcoming is not asked for', async () => {
+    ownsPatient();
+    vi.mocked(prisma.appointment.findMany).mockResolvedValue([] as any);
+
+    await getPatientAppointments(USER_ID, EMAIL, {});
+
+    // The full history is what the appointments page renders.
+    const where = vi.mocked(prisma.appointment.findMany).mock.calls[0][0]?.where as any;
+    expect(where.appointmentDate).toBeUndefined();
+    expect(where.status).toBeUndefined();
+  });
+
+  it('still honours an explicit status filter', async () => {
+    ownsPatient();
+    vi.mocked(prisma.appointment.findMany).mockResolvedValue([] as any);
+
+    await getPatientAppointments(USER_ID, EMAIL, { status: 'booked' });
+
+    const where = vi.mocked(prisma.appointment.findMany).mock.calls[0][0]?.where as any;
+    expect(where.status).toBe('booked');
   });
 });

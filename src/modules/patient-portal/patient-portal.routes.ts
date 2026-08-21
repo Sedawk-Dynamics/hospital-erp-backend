@@ -204,6 +204,7 @@ router.get('/appointments', async (req: AuthenticatedRequest, res: Response, nex
       sortOrder: (req.query.sortOrder as 'asc' | 'desc') || undefined,
       tenantId: req.query.tenantId as string | undefined,
       profileId: req.query.profileId as string | undefined,
+      upcoming: req.query.upcoming === 'true' || req.query.upcoming === '1',
     });
     sendResponse({ res, statusCode: 200, message: 'Patient appointments', data: result.data });
   } catch (err) {
