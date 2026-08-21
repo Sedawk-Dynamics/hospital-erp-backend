@@ -168,45 +168,44 @@ describe('Patient portal — upcoming appointments', () => {
   });
 });
 
-describe('Patient portal — profile switcher', () => {
-  // Signup used to mint a Patient row on the PLATFORM tenant. Platform is not
-  // a hospital — no doctors, wards or bills — so that row could never hold a
-  // record, but it survived until the person booked somewhere real and got a
-  // second row. One human, two entries with the SAME MRN, the platform one
-  // always empty; picking it showed them nothing, because the portal narrows
-  // to the single chosen row.
-  it('never offers a platform-tenant row as a profile', async () => {
+describe('Patient portal — platform placeholders', () => {
+  const platform = { id: 'platform-1', name: 'Platform', slug: '__platform__', logoUrl: null };
+  const hospital = { id: 'h1', name: 'Green city Hospital', slug: 'gch', logoUrl: null };
+
+  beforeEach(() => {
     vi.mocked(prisma.tenant.findFirst).mockResolvedValue({ id: 'platform-1' } as any);
-    vi.mocked(prisma.patient.findMany).mockResolvedValue([] as any);
     vi.mocked(prisma.patientHospitalConnection.findMany).mockResolvedValue([] as any);
-
-    await listMyProfiles(USER_ID, EMAIL);
-
-    const where = vi.mocked(prisma.patient.findMany).mock.calls[0][0]?.where as any;
-    expect(where.tenantId).toEqual({ not: 'platform-1' });
   });
 
-  it('applies the same rule to the legacy email fallback', async () => {
-    vi.mocked(prisma.tenant.findFirst).mockResolvedValue({ id: 'platform-1' } as any);
-    vi.mocked(prisma.patient.findMany).mockResolvedValue([] as any);
-    vi.mocked(prisma.patientHospitalConnection.findMany).mockResolvedValue([] as any);
+  // The reported bug: one human, two entries with the same MRN, the platform
+  // one always empty — and picking it showed them nothing.
+  it('hides the platform placeholder once the person has a real hospital row', async () => {
+    vi.mocked(prisma.patient.findMany).mockResolvedValue([
+      { id: 'p-plat', mrn: 'MRN-1', firstName: 'Don', isSelf: true, tenantId: 'platform-1', tenant: platform },
+      { id: 'p-hosp', mrn: 'MRN-1', firstName: 'Don', isSelf: false, tenantId: 'h1', tenant: hospital },
+    ] as any);
+    vi.spyOn(identity, 'resolvePersonPatientIds').mockResolvedValue(['p-plat', 'p-hosp']);
 
-    await listMyProfiles(USER_ID, EMAIL);
+    const profiles: any[] = await listMyProfiles(USER_ID, EMAIL);
 
-    // Second patient.findMany call is the email-match fallback.
-    const calls = vi.mocked(prisma.patient.findMany).mock.calls;
-    const emailWhere = calls[calls.length - 1][0]?.where as any;
-    expect(emailWhere.tenantId).toEqual({ not: 'platform-1' });
+    expect(profiles).toHaveLength(1);
+    expect(profiles[0].id).toBe('p-hosp');
+    expect(profiles[0].alsoAt).toEqual([]);
   });
 
-  it('still works if there is no platform tenant to exclude', async () => {
-    vi.mocked(prisma.tenant.findFirst).mockResolvedValue(null as any);
-    vi.mocked(prisma.patient.findMany).mockResolvedValue([] as any);
-    vi.mocked(prisma.patientHospitalConnection.findMany).mockResolvedValue([] as any);
+  // The regression this replaced: blanket-hiding platform rows made a newly
+  // added family member vanish, because that is where they are created until
+  // the person has picked a hospital.
+  it('keeps a person who has ONLY a placeholder', async () => {
+    vi.mocked(prisma.patient.findMany).mockResolvedValue([
+      { id: 'child', mrn: 'MRN-C', firstName: 'Child', isSelf: false, tenantId: 'platform-1', tenant: platform },
+    ] as any);
+    vi.spyOn(identity, 'resolvePersonPatientIds').mockImplementation(async (id) => [id]);
 
-    await expect(listMyProfiles(USER_ID, EMAIL)).resolves.toBeDefined();
-    const where = vi.mocked(prisma.patient.findMany).mock.calls[0][0]?.where as any;
-    expect(where.tenantId).toBeUndefined();
+    const profiles: any[] = await listMyProfiles(USER_ID, EMAIL);
+
+    expect(profiles).toHaveLength(1);
+    expect(profiles[0].id).toBe('child');
   });
 });
 

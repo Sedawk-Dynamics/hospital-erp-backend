@@ -55,26 +55,27 @@ async function generateMRN(_tenantId?: string): Promise<string> {
  * Used by the Patient Portal's profile selector.
  */
 export async function listMyProfiles(userId: string, email: string) {
-  // Rows on the PLATFORM tenant are never profiles.
+  // A PLATFORM row is a placeholder, not a hospital record.
   //
-  // Platform is not a hospital — no doctors, wards or bills — so a Patient row
-  // there can hold no record. Signup used to mint one, and the person then got
-  // a second, real row the first time they booked somewhere: one human, two
-  // entries in the switcher with the same MRN, the platform one always empty.
-  // Picking it showed them nothing, because the portal narrows to the single
-  // chosen row.
+  // Platform has no doctors, wards or bills, so a Patient row there holds
+  // nothing. Two things put rows there: signup used to (it no longer does), and
+  // adding a family member still does, because the person has not picked a
+  // hospital yet.
   //
-  // Signup no longer creates them; this keeps the ones already on file out of
-  // sight without deleting anything.
+  // So the rule cannot be "hide platform rows" — that would make a newly added
+  // family member vanish. It is "hide a platform row once the same person has
+  // a REAL one", which is the duplicate that was being reported: one human,
+  // two entries with the same MRN, the platform one always empty. Applied
+  // during grouping below, where the person's rows are known.
   const platformTenant = await prisma.tenant.findFirst({
     where: { slug: '__platform__' },
     select: { id: true },
   });
-  const notPlatform = platformTenant ? { tenantId: { not: platformTenant.id } } : {};
+  const platformId = platformTenant?.id ?? null;
 
   // 1. Direct Patient records owned by this user.
   const owned = await prisma.patient.findMany({
-    where: { userId, ...notPlatform },
+    where: { userId },
     include: { tenant: { select: { id: true, name: true, slug: true, logoUrl: true } } },
     orderBy: [{ isSelf: 'desc' }, { createdAt: 'asc' }],
   });
@@ -92,7 +93,7 @@ export async function listMyProfiles(userId: string, email: string) {
   // 3. Fallback email-match for pre-connection patient records.
   const byEmail = email
     ? await prisma.patient.findMany({
-        where: { email: { equals: email, mode: 'insensitive' }, userId: null, ...notPlatform },
+        where: { email: { equals: email, mode: 'insensitive' }, userId: null },
         include: { tenant: { select: { id: true, name: true, slug: true, logoUrl: true } } },
       })
     : [];
@@ -136,14 +137,21 @@ export async function listMyProfiles(userId: string, email: string) {
     const group = (mine.length ? mine : [p.id]).map((id) => byId.get(id)!);
     group.forEach((g) => assigned.add(g.id));
 
+    // Once the person has a real hospital row, the platform placeholder is
+    // the empty duplicate — drop it. A person who has ONLY a placeholder (a
+    // family member added but not yet seen anywhere) keeps it, or they would
+    // disappear from their own switcher.
+    const real = platformId ? group.filter((g) => g.tenantId !== platformId) : group;
+    const effective = real.length ? real : group;
+
     // The row that represents the person: their own "self" record if there is
     // one, else the oldest — `combined` is already ordered isSelf then created.
-    const lead = group.find((g) => g.isSelf) ?? group[0];
+    const lead = effective.find((g) => g.isSelf) ?? effective[0];
     profiles.push({
       ...lead,
       // Where else the same person is on file, so one entry can still show
       // that they are known at more than one hospital.
-      alsoAt: group
+      alsoAt: effective
         .filter((g) => g.id !== lead.id && g.tenant)
         .map((g) => ({ id: g.tenant!.id, name: g.tenant!.name })),
     });
@@ -559,6 +567,21 @@ async function createPatientInTenant(userId: string, email: string, tenantId: st
   }
   if (!mrn) mrn = await generateMRN(tenantId);
 
+  // Carry the person's details across, not just the account's.
+  //
+  // A User has no date of birth or gender, so a row built from the account
+  // alone came out with dateOfBirth NULL — and the identity rule that decides
+  // "these two rows are the same human" requires a date of birth on both. The
+  // person therefore could not be recognised as themselves across hospitals:
+  // two rows, same MRN, two entries in their switcher, and no way to merge
+  // them. Copying from a row they already have is what makes the new one
+  // recognisably the same person.
+  const source = await prisma.patient.findFirst({
+    where: { userId, NOT: { mrn: { startsWith: 'TEMP-' } } },
+    orderBy: { createdAt: 'asc' },
+    select: { dateOfBirth: true, gender: true, bloodGroup: true },
+  });
+
   const patient = await prisma.patient.create({
     data: {
       tenantId,
@@ -568,6 +591,9 @@ async function createPatientInTenant(userId: string, email: string, tenantId: st
       lastName: user.lastName,
       email: user.email,
       phone: user.phone,
+      dateOfBirth: source?.dateOfBirth ?? undefined,
+      gender: source?.gender ?? undefined,
+      bloodGroup: source?.bloodGroup ?? undefined,
       registrationSource: 'self_signup',
       patientType: 'outpatient',
     },
