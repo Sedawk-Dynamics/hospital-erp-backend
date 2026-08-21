@@ -661,6 +661,9 @@ interface UpdateDischargeSummaryInput {
   medicationReconciliation?: string;
   dischargeInstructions?: string;
   followUpDate?: string;
+  /** "After 3 months" — an interval with no fixed day. */
+  followUpAfterValue?: number | null;
+  followUpAfterUnit?: string | null;
   followUpInstructions?: string;
 }
 
@@ -1046,6 +1049,9 @@ export async function buildDischargeDocument(tenantId: string, id: string): Prom
       medicationsText: summary.medicationReconciliation ?? null,
       dischargeInstructions: summary.dischargeInstructions ?? null,
       followUpDate: summary.followUpDate ? summary.followUpDate.toISOString() : null,
+      // Rendered in place of a date when the doctor meant an interval.
+      followUpAfterValue: summary.followUpAfterValue ?? null,
+      followUpAfterUnit: summary.followUpAfterUnit ?? null,
       followUpInstructions: summary.followUpInstructions ?? null,
     },
     medications: prescriptions.flatMap((p) =>

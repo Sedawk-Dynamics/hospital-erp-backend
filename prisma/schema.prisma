@@ -3225,6 +3225,14 @@ model DischargeSummary {
   medicationReconciliation String?                @map("medication_reconciliation")
   dischargeInstructions    String?                @map("discharge_instructions")
   followUpDate             DateTime?              @map("follow_up_date") @db.Date
+  // "Come back in about three months" — an interval with no fixed day, which
+  // is what a discharging doctor usually means. Resolving it to a calendar date
+  // at the moment of signing invents a precision nobody intended, and the
+  // patient then reads a specific day as an appointment they have missed.
+  // Held ALONGSIDE followUpDate, not instead of it: a review that genuinely is
+  // on the 14th should still say the 14th.
+  followUpAfterValue       Int?                   @map("follow_up_after_value")
+  followUpAfterUnit        String?                @map("follow_up_after_unit") @db.VarChar(10)
   followUpInstructions     String?                @map("follow_up_instructions")
   status                   DischargeSummaryStatus @default(draft)
   signedBy                 String?                @map("signed_by")

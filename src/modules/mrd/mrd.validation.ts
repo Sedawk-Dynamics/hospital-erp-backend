@@ -38,6 +38,10 @@ export const updateDischargeSummarySchema = z.object({
       .string()
       .refine((val) => !isNaN(Date.parse(val)), { message: 'Invalid follow-up date' })
       .optional(),
+    // "After 3 months" — an interval instead of a fixed day. Nullable so a
+    // doctor switching back to a real date can clear it.
+    followUpAfterValue: z.number().int().positive().max(365).optional().nullable(),
+    followUpAfterUnit: z.enum(['days', 'weeks', 'months']).optional().nullable(),
     followUpInstructions: z.string().optional(),
   }),
 });

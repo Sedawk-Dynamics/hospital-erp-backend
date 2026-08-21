@@ -72,6 +72,8 @@ export interface DischargeDocument {
     medicationsText: string | null;
     dischargeInstructions: string | null;
     followUpDate: string | null;
+    followUpAfterValue?: number | null;
+    followUpAfterUnit?: string | null;
     followUpInstructions: string | null;
   };
   medications: Array<{ drug: string; dosage: string; frequency: string; duration: string | null; route: string; instructions: string | null }>;
@@ -307,9 +309,19 @@ export function streamDischargeSummaryPdf(
   }
 
   // ---- Follow-up ----
-  if (doc.sections.followUpDate || doc.sections.followUpInstructions) {
+  const followUpAfter =
+    doc.sections.followUpAfterValue && doc.sections.followUpAfterUnit
+      ? `After ${doc.sections.followUpAfterValue} ${doc.sections.followUpAfterUnit}`
+      : null;
+  if (doc.sections.followUpDate || followUpAfter || doc.sections.followUpInstructions) {
     heading('Follow-up');
-    if (doc.sections.followUpDate) {
+    // An interval takes precedence over a date. When the doctor said "after
+    // three months", printing a specific day gives the patient a deadline they
+    // were never given, and one they can then be late for.
+    if (followUpAfter) {
+      pdf.font(theme.font.bold).fontSize(9).fillColor(INK).text(`Next review: ${followUpAfter}`, left, pdf.y, { width: CONTENT_W });
+      pdf.moveDown(0.15);
+    } else if (doc.sections.followUpDate) {
       pdf.font(theme.font.bold).fontSize(9).fillColor(INK).text(`Next review: ${fmtDate(doc.sections.followUpDate)}`, left, pdf.y, { width: CONTENT_W });
       pdf.moveDown(0.15);
     }
