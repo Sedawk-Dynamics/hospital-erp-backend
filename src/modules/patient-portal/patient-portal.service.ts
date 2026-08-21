@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { prisma } from '../../config/database';
+import { resolvePersonPatientIds } from '../../shared/patient-identity';
 import { razorpay } from '../../config/razorpay';
 import { env } from '../../config/env';
 import { logger } from '../../config/logger';
@@ -111,7 +112,44 @@ export async function listMyProfiles(userId: string, email: string) {
     if (!seen.has(p.id)) { seen.add(p.id); combined.push(p); }
   }
 
-  return combined;
+  // Collapse the same PERSON into one profile.
+  //
+  // A row is a hospital's record, so somebody treated at two hospitals has two
+  // of them — and the switcher listed each, which reads as two people.
+  //
+  // Grouped on `resolvePersonPatientIds`, NOT on userId: a parent's account
+  // holds their own row and their children's under the same userId, so
+  // grouping by account would merge a parent with their child. That helper's
+  // identity rule is deliberately strict (ABHA, or name + date of birth
+  // alongside the account or phone) and is not loosened here.
+  const byId = new Map(combined.map((p) => [p.id, p]));
+  const assigned = new Set<string>();
+  const profiles: Array<(typeof combined)[number] & { alsoAt?: Array<{ id: string; name: string }> }> = [];
+
+  for (const p of combined) {
+    if (assigned.has(p.id)) continue;
+
+    const personIds = await resolvePersonPatientIds(p.id);
+    // Only rows this user can already reach — resolving a person must never
+    // widen what the account can see.
+    const mine = personIds.filter((id) => byId.has(id));
+    const group = (mine.length ? mine : [p.id]).map((id) => byId.get(id)!);
+    group.forEach((g) => assigned.add(g.id));
+
+    // The row that represents the person: their own "self" record if there is
+    // one, else the oldest — `combined` is already ordered isSelf then created.
+    const lead = group.find((g) => g.isSelf) ?? group[0];
+    profiles.push({
+      ...lead,
+      // Where else the same person is on file, so one entry can still show
+      // that they are known at more than one hospital.
+      alsoAt: group
+        .filter((g) => g.id !== lead.id && g.tenant)
+        .map((g) => ({ id: g.tenant!.id, name: g.tenant!.name })),
+    });
+  }
+
+  return profiles;
 }
 
 /**
@@ -227,7 +265,18 @@ async function resolvePatientIds(
     // previous session. Returning [] made every list on the page render empty
     // with no explanation; falling back to "all my profiles" shows the user
     // their own records instead of a blank portal.
-    if (ids.has(profileId)) return [profileId];
+    if (ids.has(profileId)) {
+      // One profile can now stand for the same person's rows at several
+      // hospitals, so narrow to that PERSON rather than to the single row that
+      // happens to represent them — otherwise choosing a profile hides
+      // everything recorded for them anywhere else.
+      //
+      // Intersected with what the account can already reach, so resolving a
+      // person can never widen access.
+      const personIds = await resolvePersonPatientIds(profileId);
+      const mine = personIds.filter((id) => ids.has(id));
+      return mine.length ? mine : [profileId];
+    }
     logger.warn({ userId, profileId }, 'Portal profileId not owned by user — showing all profiles');
   }
   return Array.from(ids);

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { prisma } from '../../../../src/config/database';
+import * as identity from '../../../../src/shared/patient-identity';
 import {
   getPatientAppointments,
   listMyProfiles,
@@ -206,5 +207,79 @@ describe('Patient portal — profile switcher', () => {
     await expect(listMyProfiles(USER_ID, EMAIL)).resolves.toBeDefined();
     const where = vi.mocked(prisma.patient.findMany).mock.calls[0][0]?.where as any;
     expect(where.tenantId).toBeUndefined();
+  });
+});
+
+describe('Patient portal — one person, one profile', () => {
+  const tenantA = { id: 'ta', name: 'Hospital A', slug: 'a', logoUrl: null };
+  const tenantB = { id: 'tb', name: 'Hospital B', slug: 'b', logoUrl: null };
+
+  beforeEach(() => {
+    vi.mocked(prisma.tenant.findFirst).mockResolvedValue({ id: 'platform-1' } as any);
+    vi.mocked(prisma.patientHospitalConnection.findMany).mockResolvedValue([] as any);
+  });
+
+  // A row is a hospital's record, so one person treated at two hospitals has
+  // two of them — and the switcher listed each, which reads as two people.
+  it('shows one entry for the same person held at two hospitals', async () => {
+    vi.mocked(prisma.patient.findMany).mockResolvedValue([
+      { id: 'p-a', mrn: 'MRN-1', firstName: 'Same', isSelf: true, tenant: tenantA },
+      { id: 'p-b', mrn: 'MRN-1', firstName: 'Same', isSelf: false, tenant: tenantB },
+    ] as any);
+    vi.spyOn(identity, 'resolvePersonPatientIds').mockResolvedValue(['p-a', 'p-b']);
+
+    const profiles: any[] = await listMyProfiles(USER_ID, EMAIL);
+
+    expect(profiles).toHaveLength(1);
+    // The person's own record represents them.
+    expect(profiles[0].id).toBe('p-a');
+    // …and the entry still records where else they are known.
+    expect(profiles[0].alsoAt).toEqual([{ id: 'tb', name: 'Hospital B' }]);
+  });
+
+  // The trap: a parent's account holds their own row AND their children's
+  // under the SAME userId. Grouping by account would merge a parent with
+  // their child.
+  it('never merges a parent with their child', async () => {
+    vi.mocked(prisma.patient.findMany).mockResolvedValue([
+      { id: 'parent', mrn: 'M-P', firstName: 'Parent', isSelf: true, tenant: tenantA },
+      { id: 'child', mrn: 'M-C', firstName: 'Child', isSelf: false, tenant: tenantA },
+    ] as any);
+    // The identity rule keeps different people apart.
+    vi.spyOn(identity, 'resolvePersonPatientIds').mockImplementation(async (id) => [id]);
+
+    const profiles: any[] = await listMyProfiles(USER_ID, EMAIL);
+
+    expect(profiles.map((p) => p.id).sort()).toEqual(['child', 'parent']);
+  });
+
+  it('never widens what the account can reach', async () => {
+    vi.mocked(prisma.patient.findMany).mockResolvedValue([
+      { id: 'mine', mrn: 'M-1', firstName: 'Same', isSelf: true, tenant: tenantA },
+    ] as any);
+    // The person also exists on a row this account cannot see.
+    vi.spyOn(identity, 'resolvePersonPatientIds').mockResolvedValue(['mine', 'someone-elses-row']);
+
+    const profiles: any[] = await listMyProfiles(USER_ID, EMAIL);
+
+    expect(profiles).toHaveLength(1);
+    expect(profiles[0].alsoAt).toEqual([]);
+  });
+
+  // Selecting a collapsed profile must surface the person's records
+  // everywhere, not just the row that represents them.
+  it('resolves a chosen profile to the whole person', async () => {
+    ownsPatient('p-a');
+    vi.mocked(prisma.patient.findMany).mockResolvedValue([
+      { id: 'p-a', tenantId: 't1' },
+      { id: 'p-b', tenantId: 't2' },
+    ] as any);
+    vi.spyOn(identity, 'resolvePersonPatientIds').mockResolvedValue(['p-a', 'p-b']);
+    vi.mocked(prisma.appointment.findMany).mockResolvedValue([] as any);
+
+    await getPatientAppointments(USER_ID, EMAIL, { profileId: 'p-a' });
+
+    const where = vi.mocked(prisma.appointment.findMany).mock.calls[0][0]?.where as any;
+    expect(where.patientId.in.sort()).toEqual(['p-a', 'p-b']);
   });
 });
