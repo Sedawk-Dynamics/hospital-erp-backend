@@ -1156,7 +1156,14 @@ export async function getPatientConsultationSummaries(
   const notes = await prisma.progressNote.findMany({
     where: {
       patientId: { in: patientIds },
-      status: 'finalized',
+      // Unsigned notes are included too. A note is written when the doctor
+      // ENDS the consultation — the in-progress draft lives in the browser,
+      // not here — so an unsigned note is a finished consultation waiting on
+      // a signature, not a half-written one. Withholding it left the patient
+      // with nothing to read while the signature sat outstanding, which on
+      // this database was almost every consultation. The caller marks these
+      // as awaiting sign-off rather than presenting them as final.
+      status: { in: ['finalized', 'active', 'archived'] },
       // Every signed consultation note belongs to the patient — it is their
       // record of the visit. Requiring at least one pinned section meant a
       // perfectly ordinary consultation, written up and signed but with nothing
@@ -1167,7 +1174,9 @@ export async function getPatientConsultationSummaries(
       // those carry an admissionId, an OP consultation does not.
       admissionId: null,
     },
-    orderBy: { signedAt: 'desc' },
+    // Not signedAt — null on an unsigned note, which would bury the most
+    // recent consultations at the bottom of the patient's list.
+    orderBy: { createdAt: 'desc' },
     take: 50,
     include: {
       doctor: {
@@ -1212,7 +1221,8 @@ export async function getPatientConsultationSummaryById(
     where: {
       id,
       patientId: { in: patientIds },
-      status: 'finalized',
+      // Matches the list: an unsigned consultation is readable, and marked.
+      status: { in: ['finalized', 'active', 'archived'] },
     },
     include: {
       doctor: {
