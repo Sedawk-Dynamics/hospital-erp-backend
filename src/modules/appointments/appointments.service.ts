@@ -1215,6 +1215,15 @@ export async function bookAppointment(tenantId: string, data: BookAppointmentInp
   if (!patient) {
     throw AppError.notFound('Patient not found');
   }
+  if ((patient as { deceasedAt?: Date | null }).deceasedAt) {
+    // Refused rather than warned. Booking a dead patient is either a
+    // mis-selected record or a death recorded against the wrong one, and both
+    // want stopping at the counter rather than surfacing later as a reminder
+    // to the family.
+    throw AppError.badRequest(
+      'This patient is recorded as deceased. If that is wrong, an administrator can remove the death record.',
+    );
+  }
 
   // Verify doctor exists
   const doctor = await prisma.doctorProfile.findFirst({

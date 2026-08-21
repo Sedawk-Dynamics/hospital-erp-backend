@@ -29,6 +29,11 @@ export async function runAppointmentReminderJob(): Promise<{ sent: number; skipp
     where: {
       appointmentDate: { gte: tomorrow, lt: dayAfter },
       status: { in: [...TARGET_STATUSES] },
+      // Recording a death cancels the patient's future bookings, so this is a
+      // belt-and-braces guard for one booked afterwards, or a death recorded
+      // straight in the database. Reminding a family about tomorrow's
+      // appointment is the worst message this system can send.
+      patient: { deceasedAt: null },
     },
     include: {
       patient: { select: { id: true, firstName: true, lastName: true, email: true, userId: true } },

@@ -259,3 +259,26 @@ export type AddEmergencyContactInput = z.infer<typeof addEmergencyContactSchema>
 export type AddAllergyInput = z.infer<typeof addAllergySchema>['body'];
 export type AddDocumentInput = z.infer<typeof addDocumentSchema>['body'];
 export type AddFamilyHistoryInput = z.infer<typeof addFamilyHistorySchema>['body'];
+
+/**
+ * Recording a death. Both fields optional: the common case is "now", entered
+ * by the person who was there.
+ */
+export const recordPatientDeathSchema = z.object({
+  params: z.object({ id: z.string().uuid('Invalid patient ID') }),
+  body: z.object({
+    deceasedAt: z
+      .string()
+      .refine((v) => !Number.isNaN(Date.parse(v)), { message: 'Invalid date of death' })
+      .optional(),
+    note: z.string().max(2000).optional().nullable(),
+  }),
+});
+
+/** Withdrawing one — a reason is required, because this rewrites a legal fact. */
+export const clearPatientDeathSchema = z.object({
+  params: z.object({ id: z.string().uuid('Invalid patient ID') }),
+  body: z.object({
+    reason: z.string().min(1, 'A reason is required').max(500),
+  }),
+});

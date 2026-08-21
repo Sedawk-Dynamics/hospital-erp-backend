@@ -4,6 +4,7 @@ import { sendResponse, sendPaginatedResponse } from '../../shared/apiResponse';
 import { AppError } from '../../shared/appError';
 import * as patientsService from './patients.service';
 import * as tempService from './patients.temporary.service';
+import * as deathService from './patients.death.service';
 import * as fileService from './patients.file.service';
 
 export async function create(req: AuthenticatedRequest, res: Response, next: NextFunction) {
@@ -371,6 +372,36 @@ export async function mergeTemporary(
       message: 'Temporary patient connected to existing patient successfully',
       data: result,
     });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** POST /patients/:id/death — record that a patient has died. */
+export async function recordDeath(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const result = await deathService.recordPatientDeath(
+      req.user!.tenantId,
+      req.params.id as string,
+      req.user!.userId,
+      req.body,
+    );
+    sendResponse({ res, statusCode: 201, message: 'Death recorded', data: result });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** DELETE /patients/:id/death — withdraw a death recorded in error. */
+export async function clearDeath(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const result = await deathService.clearPatientDeath(
+      req.user!.tenantId,
+      req.params.id as string,
+      req.user!.userId,
+      req.body?.reason,
+    );
+    sendResponse({ res, message: 'Death record removed', data: result });
   } catch (err) {
     next(err);
   }

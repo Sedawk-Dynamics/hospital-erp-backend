@@ -240,6 +240,10 @@ enum AdmissionStatus {
   discharged  @map("discharged")
   transferred @map("transferred")
   absconded   @map("absconded")
+  // The stay ended in death. Distinct from `discharged`, which would otherwise
+  // be the only way to close it — and would tell the family, the bill and every
+  // report that the patient went home.
+  deceased    @map("deceased")
 }
 
 enum ReservationStatus {
@@ -1534,6 +1538,7 @@ model User {
   loginAuditLogs                 LoginAuditLog[]
   departmentsHeaded              Department[]
   patientPersonalHistoryUpdates  PatientPersonalHistory[]     @relation("PersonalHistoryUpdater")
+  patientDeathsRecorded          Patient[]                    @relation("PatientDeathRecorder")
   patientFamilyHistoryUpdates    PatientFamilyHistory[]       @relation("FamilyHistoryUpdater")
   patientAllergyNotes            PatientAllergy[]             @relation("AllergyNoter")
   patientCurrentMedAdds          PatientCurrentMedication[]   @relation("CurrentMedAdder")
@@ -1988,11 +1993,25 @@ model Patient {
   patientType        PatientType?        @map("patient_type")
   isNew              Boolean             @default(true) @map("is_new")
   registrationSource RegistrationSource? @map("registration_source")
+  // Death is recorded on the PATIENT, not on an admission.
+  //
+  // A death can happen before there is any admission to close — someone
+  // brought in already dead, or dying in casualty before the paperwork catches
+  // up. That is the case Test Report 3 asks about, and an admission status
+  // cannot express it because there is no admission.
+  //
+  // isActive is a soft-delete flag and is deliberately NOT reused: a deceased
+  // patient's record stays fully readable and billable, it just must not be
+  // treated as a living patient.
+  deceasedAt         DateTime?           @map("deceased_at")
+  deceasedRecordedBy String?             @map("deceased_recorded_by")
+  deceasedNote       String?             @map("deceased_note")
   isActive           Boolean             @default(true) @map("is_active")
   createdAt          DateTime            @default(now()) @map("created_at")
   updatedAt          DateTime            @default(now()) @updatedAt @map("updated_at")
 
   tenant                    Tenant                       @relation(fields: [tenantId], references: [id])
+  deceasedRecorder          User?                        @relation("PatientDeathRecorder", fields: [deceasedRecordedBy], references: [id])
   user                      User?                        @relation(fields: [userId], references: [id])
   beds                      Bed[]
   emergencyContacts         PatientEmergencyContact[]

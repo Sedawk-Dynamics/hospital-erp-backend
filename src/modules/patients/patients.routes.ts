@@ -12,6 +12,8 @@ import {
   createTemporaryPatientSchema,
   registerTemporaryPatientSchema,
   mergeTemporaryPatientSchema,
+  recordPatientDeathSchema,
+  clearPatientDeathSchema,
 } from './patients.validation';
 import * as controller from './patients.controller';
 
@@ -33,6 +35,32 @@ patientRoutes.post(
   requirePermission('patients', 'create'),
   validate(createTemporaryPatientSchema),
   controller.createTemporary,
+);
+
+// ── Death ──────────────────────────────────────────────────────────────────
+// Literal subpaths, so they must precede '/:id'.
+//
+// Certifying a death is a medical act, so this is role-gated rather than
+// permission-gated: a receptionist holding patients:update has no business
+// recording one. `super_admin` is included because it bypasses permission
+// checks everywhere else and would otherwise be the one role that cannot.
+patientRoutes.post(
+  '/:id/death',
+  authenticate,
+  requireRoles('doctor', 'admin', 'super_admin'),
+  validate(recordPatientDeathSchema),
+  controller.recordDeath,
+);
+
+// Withdrawing one is narrower still. Mis-identification is exactly what the
+// unidentified-patient flow is prone to, so there has to be a way back — but
+// it rewrites a legal fact, so it is not the certifying doctor's to undo alone.
+patientRoutes.delete(
+  '/:id/death',
+  authenticate,
+  requireRoles('admin', 'super_admin'),
+  validate(clearPatientDeathSchema),
+  controller.clearDeath,
 );
 
 // List patients (paginated)
