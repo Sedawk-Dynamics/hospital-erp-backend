@@ -210,15 +210,60 @@ describe('resolvePersonCanonicalPatientId', () => {
     vi.mocked(prisma.patient.findUnique).mockResolvedValue({
       ...SELF, userId: 'user-1',
     } as never);
-    vi.mocked(prisma.patient.findMany)
-      .mockResolvedValueOnce([
+    // Dispatch on the query, not on call order: resolving a person gathers
+    // candidates with more than one findMany, and a chain of ...Once mocks
+    // silently reassigns itself the moment that changes.
+    vi.mocked(prisma.patient.findMany).mockImplementation((async (args: any) => {
+      // The oldest-row lookup is the only one that takes a single ordered row.
+      if (args?.take === 1) return [{ id: 'p-oldest' }];
+      return [
         { ...SELF, id: 'p-self', userId: 'user-1' },
         { ...SELF, id: 'p-dup', userId: 'user-1' },
-      ] as never)
-      .mockResolvedValueOnce([{ id: 'p-oldest' }] as never);
+      ];
+    }) as never);
+    vi.mocked(prisma.$queryRaw).mockResolvedValue([] as never);
     vi.mocked(prisma.patientPersonalHistory.findMany).mockResolvedValue([] as never);
 
     await expect(resolvePersonCanonicalPatientId('p-self')).resolves.toBe('p-oldest');
+  });
+});
+
+describe('resolvePersonPatientIds — symmetry', () => {
+  // The counter row and the account row are the same human, and which one you
+  // start from must not change the answer. Searching only the account when a
+  // row had one made it one-way: from the unlinked counter row the account row
+  // was found by phone, but not the reverse. The portal then built two groups
+  // for one person that both resolved to the same record, and listed it twice.
+  const SELF = {
+    firstName: 'User', lastName: 'Test',
+    dateOfBirth: new Date('2001-12-31'), phone: '7894567894', abhaNumber: null,
+  };
+  const accountRow = { ...SELF, id: 'p-account', userId: 'user-1' };
+  const counterRow = { ...SELF, id: 'p-counter', userId: null };
+
+  it('finds the unlinked counter row when starting from the account row', async () => {
+    vi.mocked(prisma.patient.findUnique).mockResolvedValue(accountRow as never);
+    // Same account holds only this row; the counter row shares the phone.
+    vi.mocked(prisma.patient.findMany)
+      .mockResolvedValueOnce([{ id: 'p-account' }] as never)
+      .mockResolvedValueOnce([counterRow] as never);
+    vi.mocked(prisma.$queryRaw).mockResolvedValue([{ id: 'p-counter' }] as never);
+
+    await expect(resolvePersonPatientIds('p-account')).resolves.toEqual(
+      expect.arrayContaining(['p-account', 'p-counter']),
+    );
+  });
+
+  it('still refuses to merge on a name when the dates of birth differ', async () => {
+    vi.mocked(prisma.patient.findUnique).mockResolvedValue(accountRow as never);
+    vi.mocked(prisma.patient.findMany)
+      .mockResolvedValueOnce([{ id: 'p-account' }] as never)
+      .mockResolvedValueOnce([
+        { ...counterRow, dateOfBirth: new Date('2015-08-09') },
+      ] as never);
+    vi.mocked(prisma.$queryRaw).mockResolvedValue([{ id: 'p-counter' }] as never);
+
+    await expect(resolvePersonPatientIds('p-account')).resolves.toEqual(['p-account']);
   });
 });
 

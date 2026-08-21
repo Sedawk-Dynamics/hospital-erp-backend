@@ -88,27 +88,41 @@ export async function resolvePersonPatientIds(patientId: string): Promise<string
   // Without a date of birth the name alone is too weak to merge on safely.
   if (!selfDob || !selfName) return [patientId];
 
-  // 2. Same account, same human inside it.
+  // 2. Gather candidates from the same account AND the same phone number.
+  //
+  // Both, not one or the other. Searching the account alone when there is one
+  // made this asymmetric: a row registered at the counter has no account, so
+  // from that row the person's own account row was found by phone, while from
+  // the account row the counter row was invisible. The portal then built two
+  // groups for one human that both resolved to the same record, and listed it
+  // twice.
+  //
+  // The identity TEST below is untouched and still strict — name and date of
+  // birth have to agree either way. This only stops the answer depending on
+  // which of the two rows you start from.
+  const candidateIds = new Set<string>();
   if (self.userId) {
     const rows = await prisma.patient.findMany({
       where: { isActive: true, userId: self.userId },
-      select: IDENTITY_SELECT,
+      select: { id: true },
     });
-    return dedupe([patientId, ...rows.filter((r) => samePerson(r, selfName, selfDob)).map((r) => r.id)]);
+    rows.forEach((r) => candidateIds.add(r.id));
   }
-
-  // 3. No account: name + DOB + phone must all line up.
   const last10 = self.phone ? phoneLast10(self.phone) : '';
-  if (last10.length < 7) return [patientId];
-  const idRows = await prisma.$queryRaw<{ id: string }[]>`
-    SELECT id FROM patients
-    WHERE is_active = true
-      AND right(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), 10) = ${last10}
-    LIMIT 200
-  `;
-  if (idRows.length === 0) return [patientId];
+  if (last10.length >= 7) {
+    const rows = await prisma.$queryRaw<{ id: string }[]>`
+      SELECT id FROM patients
+      WHERE is_active = true
+        AND right(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), 10) = ${last10}
+      LIMIT 200
+    `;
+    rows.forEach((r) => candidateIds.add(r.id));
+  }
+  candidateIds.delete(patientId);
+  if (candidateIds.size === 0) return [patientId];
+
   const candidates = await prisma.patient.findMany({
-    where: { id: { in: idRows.map((r) => r.id) } },
+    where: { id: { in: [...candidateIds] } },
     select: IDENTITY_SELECT,
   });
   return dedupe([
