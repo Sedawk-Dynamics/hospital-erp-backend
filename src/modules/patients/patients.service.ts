@@ -251,6 +251,37 @@ async function resolveExistingGlobalMrn(p: {
   return existing?.mrn ?? null;
 }
 
+/** The columns the phone-collision query reads back. */
+interface PhoneMatchRow {
+  id: string;
+  user_id: string | null;
+  mrn: string;
+  first_name: string | null;
+  last_name: string | null;
+  date_of_birth: Date | null;
+}
+
+/** Case and inner spacing carry no meaning in a name. */
+const normalizeName = (s?: string | null) => (s ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+
+/** Day precision, so a stored timestamp still matches a date-only input. */
+const dayKey = (d?: Date | string | null) => (d ? new Date(d).toISOString().slice(0, 10) : null);
+
+/**
+ * Whether an existing row is the same human as the one being registered.
+ *
+ * Strict on purpose, and the same rule `shared/patient-identity.ts` applies:
+ * a name alone would collide two real siblings, so the date of birth has to
+ * agree as well. Two rows that BOTH lack one still count as the same person —
+ * front desk skipping the field twice is likelier than untracked twins, and
+ * `allowDuplicate` is there for when it genuinely is not.
+ */
+function isSamePerson(row: PhoneMatchRow, data: CreatePatientInput): boolean {
+  if (normalizeName(row.first_name) !== normalizeName(data.firstName)) return false;
+  if (normalizeName(row.last_name) !== normalizeName(data.lastName)) return false;
+  return dayKey(row.date_of_birth) === dayKey(data.dateOfBirth);
+}
+
 export async function create(tenantId: string, data: CreatePatientInput) {
   // Phone-driven account holder: resolve or auto-create unless the caller has
   // already pinned an explicit account (e.g. portal family-profile creation).
@@ -311,8 +342,8 @@ export async function create(tenantId: string, data: CreatePatientInput) {
     // Compare on the last 10 digits so +91XXXXXXXXXX and XXXXXXXXXX collide as
     // one number; still allow the account holder's own family to share a phone.
     const last10 = phoneLast10(data.phone);
-    const rows = await prisma.$queryRaw<{ id: string; user_id: string | null }[]>`
-      SELECT id, user_id FROM patients
+    const rows = await prisma.$queryRaw<PhoneMatchRow[]>`
+      SELECT id, user_id, mrn, first_name, last_name, date_of_birth FROM patients
       WHERE tenant_id = ${tenantId}
         AND right(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), 10) = ${last10}
       LIMIT 10
@@ -320,6 +351,20 @@ export async function create(tenantId: string, data: CreatePatientInput) {
     const clash = rows.find((r) => !data.userId || r.user_id !== data.userId);
     if (clash) {
       throw AppError.conflict('A patient with this phone number already exists');
+    }
+    // Whatever is left belongs to this account holder's own family, who may
+    // legitimately share the number — a mother booked on her son's phone. What
+    // they may NOT be is the same person registered a second time, which is how
+    // one human ends up with several profiles, several MRNs, and a portal that
+    // offers them a choice between themselves.
+    if (!data.allowDuplicate) {
+      const twin = rows.find((r) => isSamePerson(r, data));
+      if (twin) {
+        throw AppError.conflict(
+          `${data.firstName} ${data.lastName} is already registered at this hospital as ${twin.mrn}. ` +
+            'Open that record instead of creating a new one.',
+        );
+      }
     }
   }
 
@@ -890,6 +935,8 @@ export async function provisionLocalPatient(tenantId: string, sourcePatientId: s
     occupation: src.occupation ?? undefined,
     abhaNumber: src.abhaNumber ?? undefined,
     nationalId: src.idProofNumber ?? undefined,
+    // This path did its own dedup above; keep its behaviour unchanged.
+    allowDuplicate: true,
   } as CreatePatientInput);
 }
 

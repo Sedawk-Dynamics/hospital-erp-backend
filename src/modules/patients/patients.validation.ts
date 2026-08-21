@@ -48,6 +48,10 @@ export const createPatientSchema = z.object({
     // Defaults to 'self' when a user link is provided for the first time.
     relationship: z.enum(RELATIONSHIPS).optional(),
     isSelf: z.boolean().optional(),
+    // Escape hatch for the same-person guard below: two different people may
+    // genuinely share a name, a date of birth and a phone. Front desk sets this
+    // only after being shown the record it would duplicate.
+    allowDuplicate: z.boolean().optional(),
   }),
 });
 

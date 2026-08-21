@@ -77,6 +77,127 @@ describe('PatientsService', () => {
       ).rejects.toThrow(AppError);
     });
 
+    // Front desk registering the SAME person a second time. The phone guard
+    // above deliberately lets an account holder's family share one number, and
+    // nothing checked that the "family member" was actually a different human —
+    // so three clicks made three MRNs for one patient, and the portal then
+    // offered them a choice between themselves.
+    it('refuses to register the same person twice on one phone', async () => {
+      mockAccountHolderPath();
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue(null as any);
+      vi.mocked(prisma.$queryRaw).mockResolvedValue([
+        {
+          id: 'existing', user_id: 'account-user-1', mrn: 'MRN-OLD-1',
+          first_name: 'John', last_name: 'Doe', date_of_birth: new Date('1990-01-01'),
+        },
+      ] as any);
+
+      await expect(
+        patientsService.create('tenant-1', {
+          firstName: 'John', lastName: 'Doe', gender: 'male',
+          dateOfBirth: '1990-01-01', phone: '1234567890',
+        }),
+      // The existing MRN is named so front desk can open it instead of guessing.
+      ).rejects.toThrow(/MRN-OLD-1/);
+      expect(prisma.patient.create).not.toHaveBeenCalled();
+    });
+
+    it('still lets a real family member share the phone', async () => {
+      mockAccountHolderPath();
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue(null as any);
+      vi.mocked(prisma.$queryRaw).mockResolvedValue([
+        {
+          id: 'existing', user_id: 'account-user-1', mrn: 'MRN-OLD-1',
+          first_name: 'John', last_name: 'Doe', date_of_birth: new Date('1990-01-01'),
+        },
+      ] as any);
+      vi.mocked(prisma.patient.create).mockResolvedValue({ id: 'p2' } as any);
+
+      // A mother booked on her son's phone — the case the allowance exists for.
+      await patientsService.create('tenant-1', {
+        firstName: 'Meera', lastName: 'Doe', gender: 'female',
+        dateOfBirth: '1965-03-02', phone: '1234567890',
+      });
+
+      expect(prisma.patient.create).toHaveBeenCalled();
+    });
+
+    it('allows the same name when the date of birth differs', async () => {
+      mockAccountHolderPath();
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue(null as any);
+      vi.mocked(prisma.$queryRaw).mockResolvedValue([
+        {
+          id: 'existing', user_id: 'account-user-1', mrn: 'MRN-OLD-1',
+          first_name: 'John', last_name: 'Doe', date_of_birth: new Date('1990-01-01'),
+        },
+      ] as any);
+      vi.mocked(prisma.patient.create).mockResolvedValue({ id: 'p2' } as any);
+
+      // A son named after his father is a real thing; a name alone must not
+      // block him.
+      await patientsService.create('tenant-1', {
+        firstName: 'John', lastName: 'Doe', gender: 'male',
+        dateOfBirth: '2015-08-09', phone: '1234567890',
+      });
+
+      expect(prisma.patient.create).toHaveBeenCalled();
+    });
+
+    it('treats two rows with no date of birth as the same person', async () => {
+      mockAccountHolderPath();
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue(null as any);
+      vi.mocked(prisma.$queryRaw).mockResolvedValue([
+        {
+          id: 'existing', user_id: 'account-user-1', mrn: 'MRN-OLD-1',
+          first_name: 'John', last_name: 'Doe', date_of_birth: null,
+        },
+      ] as any);
+
+      // Front desk skipping the field twice is likelier than untracked twins.
+      await expect(
+        patientsService.create('tenant-1', {
+          firstName: 'John', lastName: 'Doe', gender: 'male', phone: '1234567890',
+        }),
+      ).rejects.toThrow(/already registered/i);
+    });
+
+    it('matches the name past case and spacing', async () => {
+      mockAccountHolderPath();
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue(null as any);
+      vi.mocked(prisma.$queryRaw).mockResolvedValue([
+        {
+          id: 'existing', user_id: 'account-user-1', mrn: 'MRN-OLD-1',
+          first_name: 'John', last_name: 'Doe', date_of_birth: new Date('1990-01-01'),
+        },
+      ] as any);
+
+      await expect(
+        patientsService.create('tenant-1', {
+          firstName: '  jOHN ', lastName: 'doe', gender: 'male',
+          dateOfBirth: '1990-01-01', phone: '1234567890',
+        }),
+      ).rejects.toThrow(/already registered/i);
+    });
+
+    it('lets an explicit override through, for two people who really do match', async () => {
+      mockAccountHolderPath();
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue(null as any);
+      vi.mocked(prisma.$queryRaw).mockResolvedValue([
+        {
+          id: 'existing', user_id: 'account-user-1', mrn: 'MRN-OLD-1',
+          first_name: 'John', last_name: 'Doe', date_of_birth: new Date('1990-01-01'),
+        },
+      ] as any);
+      vi.mocked(prisma.patient.create).mockResolvedValue({ id: 'p2' } as any);
+
+      await patientsService.create('tenant-1', {
+        firstName: 'John', lastName: 'Doe', gender: 'male',
+        dateOfBirth: '1990-01-01', phone: '1234567890', allowDuplicate: true,
+      });
+
+      expect(prisma.patient.create).toHaveBeenCalled();
+    });
+
     it('should throw conflict if email already exists', async () => {
       vi.mocked(prisma.patient.findFirst)
         .mockResolvedValueOnce(null) // MRN findFirst
