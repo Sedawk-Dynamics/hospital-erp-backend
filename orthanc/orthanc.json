@@ -22,6 +22,10 @@
   "DicomWeb": {
     "Enable": true,
     "Root": "/dicom-web/",
+
+    "// PublicRoot": "Orthanc is reached through the backend PACS gateway, never directly. Root is where the plugin is mounted INSIDE Orthanc; PublicRoot is the URL a client is told to come back on. Without it, QIDO responses advertised RetrieveURL as http://host/dicom-web/... which 404s, because the only way in is the proxied path. OHIF was unaffected (its config uses relative roots that resolve under the proxy) but any third-party DICOMweb client following RetrieveURL would fail. Change this together with PACS_PROXY_PUBLIC_URL and the pacs router mount if the proxy path ever moves.",
+    "PublicRoot": "/api/v1/pacs/o/dicom-web/",
+
     "EnableWado": true,
     "WadoRoot": "/wado",
     "Ssl": false
