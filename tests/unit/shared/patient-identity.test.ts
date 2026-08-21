@@ -3,6 +3,7 @@ import { prisma } from '../../../src/config/database';
 import {
   resolvePersonPatientIds,
   resolvePersonCanonicalPatientId,
+  isSameNamedPerson,
 } from '../../../src/shared/patient-identity';
 
 // ============================================================
@@ -218,5 +219,42 @@ describe('resolvePersonCanonicalPatientId', () => {
     vi.mocked(prisma.patientPersonalHistory.findMany).mockResolvedValue([] as never);
 
     await expect(resolvePersonCanonicalPatientId('p-self')).resolves.toBe('p-oldest');
+  });
+});
+
+describe('isSameNamedPerson', () => {
+  const riya = { firstName: 'Riya', lastName: 'Probe', dateOfBirth: new Date('2016-04-05') };
+
+  it('matches the same name and date of birth', () => {
+    expect(isSameNamedPerson(riya, { ...riya, dateOfBirth: '2016-04-05' })).toBe(true);
+  });
+
+  it('ignores case and surrounding space in a name', () => {
+    expect(isSameNamedPerson(riya, { firstName: '  rIYa ', lastName: 'probe', dateOfBirth: '2016-04-05' })).toBe(true);
+  });
+
+  // A son named after his father, or two siblings sharing a first name: the
+  // date of birth is what keeps them apart.
+  it('separates two people who share a name', () => {
+    expect(isSameNamedPerson(riya, { ...riya, dateOfBirth: '2019-11-02' })).toBe(false);
+  });
+
+  it('separates two different names born on one day', () => {
+    expect(isSameNamedPerson(riya, { ...riya, firstName: 'Aarav' })).toBe(false);
+  });
+
+  // A field skipped twice is likelier than untracked twins — and registration
+  // offers an explicit override for when it really is not.
+  it('treats two records with no date of birth as one person', () => {
+    expect(
+      isSameNamedPerson(
+        { firstName: 'Riya', lastName: 'Probe', dateOfBirth: null },
+        { firstName: 'Riya', lastName: 'Probe' },
+      ),
+    ).toBe(true);
+  });
+
+  it('does not match a record that has a date of birth against one that does not', () => {
+    expect(isSameNamedPerson(riya, { firstName: 'Riya', lastName: 'Probe' })).toBe(false);
   });
 });

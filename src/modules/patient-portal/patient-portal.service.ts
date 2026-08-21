@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { prisma } from '../../config/database';
-import { resolvePersonPatientIds } from '../../shared/patient-identity';
+import { resolvePersonPatientIds, isSameNamedPerson } from '../../shared/patient-identity';
 import { razorpay } from '../../config/razorpay';
 import { env } from '../../config/env';
 import { logger } from '../../config/logger';
@@ -181,6 +181,21 @@ export async function createMyProfile(
 ) {
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw AppError.notFound('User not found');
+
+  // Someone already on this account must not be added to it again. Nothing
+  // checked before, so tapping Add twice — or re-adding a child who is already
+  // listed — minted a second profile and a second MRN for one person, and any
+  // booking then landed on whichever row the form happened to carry.
+  const mine = await prisma.patient.findMany({
+    where: { userId },
+    select: { id: true, mrn: true, firstName: true, lastName: true, dateOfBirth: true },
+  });
+  const twin = mine.find((p) => isSameNamedPerson(p, data));
+  if (twin) {
+    throw AppError.conflict(
+      `${data.firstName}${data.lastName ? ` ${data.lastName}` : ''} is already one of your profiles (${twin.mrn}).`,
+    );
+  }
 
   const tenantId = data.tenantId || user.tenantId;
   const mrn = await generateMRN(tenantId);

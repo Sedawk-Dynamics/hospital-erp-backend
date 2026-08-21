@@ -117,6 +117,26 @@ export async function resolvePersonPatientIds(patientId: string): Promise<string
   ]);
 }
 
+/**
+ * Whether two records describe the same human, by the rule this module already
+ * uses everywhere else: a name on its own would collide two siblings, so the
+ * date of birth has to agree as well — and two records that BOTH lack one still
+ * match, because a field skipped twice is likelier than untracked twins.
+ *
+ * Exported for the registration paths, which have to REFUSE a duplicate before
+ * it is written rather than merge one afterwards.
+ */
+export function isSameNamedPerson(
+  a: { firstName?: string | null; lastName?: string | null; dateOfBirth?: Date | string | null },
+  b: { firstName?: string | null; lastName?: string | null; dateOfBirth?: Date | string | null },
+): boolean {
+  const day = (d?: Date | string | null) => (d ? new Date(d).toISOString().slice(0, 10) : '');
+  return (
+    nameKey(a.firstName ?? null, a.lastName ?? null) ===
+      nameKey(b.firstName ?? null, b.lastName ?? null) && day(a.dateOfBirth) === day(b.dateOfBirth)
+  );
+}
+
 function samePerson(row: IdentityRow, name: string, dob: string): boolean {
   return nameKey(row.firstName, row.lastName) === name && dobKey(row.dateOfBirth) === dob;
 }

@@ -5,7 +5,7 @@ import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
 import { TEMP_MRN_PREFIX } from '../../shared/temporary-patient';
-import { resolvePersonPatientIds } from '../../shared/patient-identity';
+import { resolvePersonPatientIds, isSameNamedPerson } from '../../shared/patient-identity';
 import {
   AUTO_ACCOUNT_EMAIL_DOMAIN,
   normalizeAccountPhone,
@@ -261,25 +261,17 @@ interface PhoneMatchRow {
   date_of_birth: Date | null;
 }
 
-/** Case and inner spacing carry no meaning in a name. */
-const normalizeName = (s?: string | null) => (s ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
-
-/** Day precision, so a stored timestamp still matches a date-only input. */
-const dayKey = (d?: Date | string | null) => (d ? new Date(d).toISOString().slice(0, 10) : null);
-
 /**
  * Whether an existing row is the same human as the one being registered.
- *
- * Strict on purpose, and the same rule `shared/patient-identity.ts` applies:
- * a name alone would collide two real siblings, so the date of birth has to
- * agree as well. Two rows that BOTH lack one still count as the same person —
- * front desk skipping the field twice is likelier than untracked twins, and
- * `allowDuplicate` is there for when it genuinely is not.
+ * One rule, defined in `shared/patient-identity.ts`, so registration refuses
+ * exactly the duplicates the rest of the ERP would later try to merge.
+ * `allowDuplicate` is the way past it when two people genuinely do match.
  */
 function isSamePerson(row: PhoneMatchRow, data: CreatePatientInput): boolean {
-  if (normalizeName(row.first_name) !== normalizeName(data.firstName)) return false;
-  if (normalizeName(row.last_name) !== normalizeName(data.lastName)) return false;
-  return dayKey(row.date_of_birth) === dayKey(data.dateOfBirth);
+  return isSameNamedPerson(
+    { firstName: row.first_name, lastName: row.last_name, dateOfBirth: row.date_of_birth },
+    data,
+  );
 }
 
 export async function create(tenantId: string, data: CreatePatientInput) {

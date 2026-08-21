@@ -6,6 +6,7 @@ import {
   listMyProfiles,
   getPatientConsultationSummaries,
   getPatientPrescriptions,
+  createMyProfile,
 } from '../../../../src/modules/patient-portal/patient-portal.service';
 
 const USER_ID = 'user-1';
@@ -280,5 +281,44 @@ describe('Patient portal — one person, one profile', () => {
 
     const where = vi.mocked(prisma.appointment.findMany).mock.calls[0][0]?.where as any;
     expect(where.patientId.in.sort()).toEqual(['p-a', 'p-b']);
+  });
+});
+
+describe('Patient portal — adding a family profile', () => {
+  const user = { id: USER_ID, tenantId: 't-platform' };
+  const existing = {
+    id: 'p1', mrn: 'MRN-OLD-1', firstName: 'Riya', lastName: 'Probe',
+    dateOfBirth: new Date('2016-04-05'),
+  };
+
+  // Nothing checked the account for the person being added, so tapping Add
+  // twice — or re-adding a child already listed — minted a second profile and
+  // a second MRN for one child, and a booking then landed on whichever row the
+  // form happened to carry.
+  it('refuses someone who is already on the account', async () => {
+    vi.mocked(prisma.user.findUnique).mockResolvedValue(user as never);
+    vi.mocked(prisma.patient.findMany).mockResolvedValue([existing] as never);
+
+    await expect(
+      createMyProfile(USER_ID, {
+        firstName: 'Riya', lastName: 'Probe', relationship: 'child', dateOfBirth: '2016-04-05',
+      }),
+    // The existing MRN is named, so the patient sees which profile they have.
+    ).rejects.toThrow(/MRN-OLD-1/);
+    expect(prisma.patient.create).not.toHaveBeenCalled();
+  });
+
+  it('still adds a sibling born on another day', async () => {
+    vi.mocked(prisma.user.findUnique).mockResolvedValue(user as never);
+    vi.mocked(prisma.patient.findMany).mockResolvedValue([existing] as never);
+    vi.mocked(prisma.patient.findFirst).mockResolvedValue(null as never);
+    vi.mocked(prisma.patient.count).mockResolvedValue(1 as never);
+    vi.mocked(prisma.patient.create).mockResolvedValue({ id: 'p2' } as never);
+
+    await createMyProfile(USER_ID, {
+      firstName: 'Aarav', lastName: 'Probe', relationship: 'child', dateOfBirth: '2019-11-02',
+    });
+
+    expect(prisma.patient.create).toHaveBeenCalled();
   });
 });
