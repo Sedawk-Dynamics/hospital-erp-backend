@@ -29,7 +29,7 @@ import type {
   RescheduleAppointmentInput,
   FrontdeskCheckoutInput,
 } from './appointments.validation';
-import { createPayment } from '../billing/billing.service';
+import { createPayment, recalculateBillTotalsPublic } from '../billing/billing.service';
 
 // Valid status transitions
 const STATUS_TRANSITIONS: Record<string, string[]> = {
@@ -2097,6 +2097,80 @@ export async function getAppointmentChargePreview(tenantId: string, appointmentI
   };
 }
 
+/**
+ * Add or remove the registration line on a bill that already exists.
+ *
+ * The fee is normally decided while the bill is assembled. When the desk
+ * answers afterwards there is nothing left to decide — the bill is built — so
+ * the line has to be reconciled against the answer instead.
+ *
+ * Adding still respects the rule: if the fee is switched off for the hospital,
+ * or this patient has already paid it, an explicit "yes" cannot conjure a
+ * charge that should not exist.
+ */
+async function reconcileRegistrationFeeLine(
+  tenantId: string,
+  appointmentId: string,
+  billId: string,
+  charge: boolean,
+): Promise<void> {
+  const existing = await prisma.billItem.findFirst({
+    where: { billId, referenceType: REGISTRATION_FEE_REFERENCE_TYPE },
+    select: { id: true },
+  });
+
+  if (!charge) {
+    if (!existing) return;
+    await prisma.billItem.delete({ where: { id: existing.id } });
+    await recalculateBillTotalsPublic(billId);
+    logger.info({ tenantId, appointmentId, billId }, 'Registration fee removed from bill at desk request');
+    return;
+  }
+
+  if (existing) return; // already on the bill
+
+  const appointment = await prisma.appointment.findFirst({
+    where: { id: appointmentId, tenantId },
+    select: { patientId: true },
+  });
+  if (!appointment) return;
+
+  const [settings, visitStatus] = await Promise.all([
+    getRegistrationFeeSettings(tenantId),
+    getPatientVisitStatus(tenantId, appointment.patientId, { excludeAppointmentId: appointmentId }),
+  ]);
+  // `deskChoice: true` is the answer we are acting on; the rule still gets a
+  // veto on "not configured" and "already paid it".
+  if (!shouldChargeRegistrationFee({
+    settings,
+    isFirstVisit: visitStatus.isFirstVisit,
+    alreadyCharged: visitStatus.registrationFeeCharged,
+    deskChoice: true,
+  })) {
+    return;
+  }
+
+  const totals = registrationFeeTotals(settings);
+  await prisma.billItem.create({
+    data: {
+      billId,
+      description: settings.label,
+      category: 'registration',
+      quantity: 1,
+      unitPrice: totals.unitPrice,
+      discountPercent: 0,
+      discountAmount: 0,
+      taxPercent: settings.gstRatePercent,
+      taxAmount: totals.taxAmount,
+      totalAmount: totals.totalAmount,
+      referenceType: REGISTRATION_FEE_REFERENCE_TYPE,
+      referenceId: appointmentId,
+    },
+  });
+  await recalculateBillTotalsPublic(billId);
+  logger.info({ tenantId, appointmentId, billId }, 'Registration fee added to bill at desk request');
+}
+
 export async function initiateFrontdeskPayment(
   tenantId: string,
   appointmentId: string,
@@ -2115,6 +2189,18 @@ export async function initiateFrontdeskPayment(
   }
 
   const { appointment, bill } = await ensureAppointmentBill(tenantId, appointmentId, userId);
+
+  // ensureAppointmentBill returns an EXISTING bill untouched, so a choice made
+  // after the bill was raised reached nothing: the desk picked "charge the
+  // registration fee", the counter still showed the consultation fee alone, and
+  // nothing said why. Reconcile the line here so the decision is honoured
+  // whenever it is made.
+  //
+  // Only while the bill is still collectable — a paid or part-paid bill is a
+  // record of money taken, not a draft to edit.
+  if (typeof opts.chargeRegistrationFee === 'boolean' && bill.status === 'pending') {
+    await reconcileRegistrationFeeLine(tenantId, appointmentId, bill.id, opts.chargeRegistrationFee);
+  }
 
   // Move pending_payment → booked. Other statuses are left alone — the bill
   // is what the cashier needs; the appointment may already be booked/confirmed

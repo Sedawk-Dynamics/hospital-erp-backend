@@ -518,3 +518,87 @@ describe('AppointmentsService', () => {
     });
   });
 });
+
+describe('registration fee decided after the bill exists', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  // ensureAppointmentBill returns an EXISTING bill untouched, so a choice made
+  // after the bill was raised reached nothing: the desk picked "charge the
+  // registration fee", the counter still showed the consultation fee alone,
+  // and nothing said why.
+  const pendingBill = { id: 'bill-1', status: 'pending' };
+
+  function arrangeExistingBill() {
+    vi.mocked(prisma.appointment.findFirst).mockResolvedValue({
+      id: 'apt-1', status: 'booked', patientId: 'pat-1',
+      doctor: { consultationFee: 500, freeFollowUpDays: 0 },
+    } as any);
+    vi.mocked(prisma.bill.findFirst).mockResolvedValue(pendingBill as any);
+    vi.mocked(prisma.$executeRaw).mockResolvedValue(1 as any);
+    vi.mocked(prisma.appointment.update).mockResolvedValue({} as any);
+    // What getPatientVisitStatus reads to decide "first visit here".
+    vi.mocked(prisma.appointment.count).mockResolvedValue(0 as any);
+    vi.mocked(prisma.visit.count).mockResolvedValue(0 as any);
+    vi.mocked(prisma.admission.count).mockResolvedValue(0 as any);
+    vi.mocked(prisma.admission.findMany).mockResolvedValue([] as any);
+    vi.mocked(prisma.appointment.findMany).mockResolvedValue([] as any);
+    vi.mocked(prisma.visit.findMany).mockResolvedValue([] as any);
+    // Registration fee configured and enabled for this hospital.
+    vi.mocked(prisma.tenant.findFirst).mockResolvedValue({
+      themeConfig: { registrationFee: { enabled: true, amount: 600, gstRatePercent: 10, label: 'Registration Fee', oncePerPatient: true } },
+    } as any);
+  }
+
+  it('adds the registration line when the desk asks for it afterwards', async () => {
+    arrangeExistingBill();
+    // No registration line on the bill yet.
+    vi.mocked(prisma.billItem.findFirst).mockResolvedValue(null as any);
+    vi.mocked(prisma.billItem.create).mockResolvedValue({} as any);
+
+    await appointmentsService.initiateFrontdeskPayment('t1', 'apt-1', 'u1', {
+      chargeRegistrationFee: true,
+    });
+
+    const created = vi.mocked(prisma.billItem.create).mock.calls[0]?.[0] as any;
+    expect(created?.data?.referenceType).toBe('registration');
+    expect(created?.data?.billId).toBe('bill-1');
+  });
+
+  it('removes it again when the desk changes their mind', async () => {
+    arrangeExistingBill();
+    vi.mocked(prisma.billItem.findFirst).mockResolvedValue({ id: 'item-reg' } as any);
+    vi.mocked(prisma.billItem.delete).mockResolvedValue({} as any);
+
+    await appointmentsService.initiateFrontdeskPayment('t1', 'apt-1', 'u1', {
+      chargeRegistrationFee: false,
+    });
+
+    expect(prisma.billItem.delete).toHaveBeenCalledWith({ where: { id: 'item-reg' } });
+  });
+
+  it('leaves a collected bill alone', async () => {
+    arrangeExistingBill();
+    vi.mocked(prisma.bill.findFirst).mockResolvedValue({ id: 'bill-1', status: 'paid' } as any);
+    vi.mocked(prisma.billItem.findFirst).mockResolvedValue(null as any);
+    vi.mocked(prisma.billItem.create).mockResolvedValue({} as any);
+
+    await appointmentsService.initiateFrontdeskPayment('t1', 'apt-1', 'u1', {
+      chargeRegistrationFee: true,
+    });
+
+    // A paid bill is a record of money taken, not a draft to edit.
+    expect(prisma.billItem.create).not.toHaveBeenCalled();
+    expect(prisma.billItem.delete).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when the desk expresses no preference', async () => {
+    arrangeExistingBill();
+    vi.mocked(prisma.billItem.findFirst).mockResolvedValue(null as any);
+    vi.mocked(prisma.billItem.create).mockResolvedValue({} as any);
+
+    await appointmentsService.initiateFrontdeskPayment('t1', 'apt-1', 'u1', {});
+
+    // No answer means the rule already decided when the bill was built.
+    expect(prisma.billItem.create).not.toHaveBeenCalled();
+  });
+});
