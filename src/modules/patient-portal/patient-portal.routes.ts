@@ -103,13 +103,14 @@ router.get('/profiles', async (req: AuthenticatedRequest, res: Response, next: N
 // POST /patient-portal/profiles — add a new family-member patient profile under this user
 router.post('/profiles', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    const { firstName, lastName, dateOfBirth, gender, phone, email, relationship, bloodGroup, tenantId } = req.body;
+    const { firstName, lastName, dateOfBirth, gender, phone, email, relationship, bloodGroup, tenantId, allowDuplicate } = req.body;
     if (!firstName || !relationship) {
       sendResponse({ res, statusCode: 400, message: 'firstName and relationship are required' });
       return;
     }
     const data = await patientPortalService.createMyProfile(req.user!.userId, {
       firstName, lastName, dateOfBirth, gender, phone, email, relationship, bloodGroup, tenantId,
+      allowDuplicate,
     });
     sendResponse({ res, statusCode: 201, message: 'Profile added', data });
   } catch (err) {

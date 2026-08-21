@@ -177,6 +177,8 @@ export async function createMyProfile(
     relationship: 'self' | 'spouse' | 'child' | 'parent' | 'sibling' | 'guardian' | 'other';
     bloodGroup?: string;
     tenantId?: string;
+    /** Set once the person has been shown the match and still means to add. */
+    allowDuplicate?: boolean;
   },
 ) {
   const user = await prisma.user.findUnique({ where: { id: userId } });
@@ -186,15 +188,24 @@ export async function createMyProfile(
   // checked before, so tapping Add twice — or re-adding a child who is already
   // listed — minted a second profile and a second MRN for one person, and any
   // booking then landed on whichever row the form happened to carry.
-  const mine = await prisma.patient.findMany({
-    where: { userId },
-    select: { id: true, mrn: true, firstName: true, lastName: true, dateOfBirth: true },
-  });
-  const twin = mine.find((p) => isSameNamedPerson(p, data));
-  if (twin) {
-    throw AppError.conflict(
-      `${data.firstName}${data.lastName ? ` ${data.lastName}` : ''} is already one of your profiles (${twin.mrn}).`,
-    );
+  if (!data.allowDuplicate) {
+    const mine = await prisma.patient.findMany({
+      where: { userId },
+      select: {
+        id: true, mrn: true, firstName: true, lastName: true,
+        dateOfBirth: true, gender: true, phone: true, relationship: true,
+      },
+    });
+    const twin = mine.find((p) => isSameNamedPerson(p, data));
+    if (twin) {
+      // The matched profile travels with the error so the portal can show it
+      // and let them choose, rather than printing an MRN they cannot act on.
+      throw AppError.conflict(
+        `${data.firstName}${data.lastName ? ` ${data.lastName}` : ''} is already one of your profiles (${twin.mrn}).`,
+        'DUPLICATE_PATIENT',
+        { patient: twin },
+      );
+    }
   }
 
   const tenantId = data.tenantId || user.tenantId;
