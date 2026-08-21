@@ -25,6 +25,9 @@ export function errorHandler(err: Error, _req: Request, res: Response, _next: Ne
       message: err.message,
       data: null,
       code: err.code,
+      // Only present on errors that carry one; omitted entirely otherwise so
+      // existing clients see exactly the body they saw before.
+      ...(err.details === undefined ? {} : { details: err.details }),
     });
   }
 

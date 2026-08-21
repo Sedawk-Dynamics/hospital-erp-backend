@@ -259,6 +259,8 @@ interface PhoneMatchRow {
   first_name: string | null;
   last_name: string | null;
   date_of_birth: Date | null;
+  gender: string | null;
+  phone: string | null;
 }
 
 /**
@@ -335,7 +337,7 @@ export async function create(tenantId: string, data: CreatePatientInput) {
     // one number; still allow the account holder's own family to share a phone.
     const last10 = phoneLast10(data.phone);
     const rows = await prisma.$queryRaw<PhoneMatchRow[]>`
-      SELECT id, user_id, mrn, first_name, last_name, date_of_birth FROM patients
+      SELECT id, user_id, mrn, first_name, last_name, date_of_birth, gender, phone FROM patients
       WHERE tenant_id = ${tenantId}
         AND right(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), 10) = ${last10}
       LIMIT 10
@@ -352,9 +354,23 @@ export async function create(tenantId: string, data: CreatePatientInput) {
     if (!data.allowDuplicate) {
       const twin = rows.find((r) => isSamePerson(r, data));
       if (twin) {
+        // The matched record travels with the error: front desk is shown it and
+        // picks — use this patient, or register anyway — instead of reading an
+        // MRN out of a toast and going to search for it.
         throw AppError.conflict(
-          `${data.firstName} ${data.lastName} is already registered at this hospital as ${twin.mrn}. ` +
-            'Open that record instead of creating a new one.',
+          `${data.firstName} ${data.lastName} is already registered at this hospital as ${twin.mrn}.`,
+          'DUPLICATE_PATIENT',
+          {
+            patient: {
+              id: twin.id,
+              mrn: twin.mrn,
+              firstName: twin.first_name,
+              lastName: twin.last_name,
+              dateOfBirth: twin.date_of_birth,
+              gender: twin.gender,
+              phone: twin.phone,
+            },
+          },
         );
       }
     }
