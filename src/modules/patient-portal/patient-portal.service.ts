@@ -54,9 +54,26 @@ async function generateMRN(_tenantId?: string): Promise<string> {
  * Used by the Patient Portal's profile selector.
  */
 export async function listMyProfiles(userId: string, email: string) {
+  // Rows on the PLATFORM tenant are never profiles.
+  //
+  // Platform is not a hospital — no doctors, wards or bills — so a Patient row
+  // there can hold no record. Signup used to mint one, and the person then got
+  // a second, real row the first time they booked somewhere: one human, two
+  // entries in the switcher with the same MRN, the platform one always empty.
+  // Picking it showed them nothing, because the portal narrows to the single
+  // chosen row.
+  //
+  // Signup no longer creates them; this keeps the ones already on file out of
+  // sight without deleting anything.
+  const platformTenant = await prisma.tenant.findFirst({
+    where: { slug: '__platform__' },
+    select: { id: true },
+  });
+  const notPlatform = platformTenant ? { tenantId: { not: platformTenant.id } } : {};
+
   // 1. Direct Patient records owned by this user.
   const owned = await prisma.patient.findMany({
-    where: { userId },
+    where: { userId, ...notPlatform },
     include: { tenant: { select: { id: true, name: true, slug: true, logoUrl: true } } },
     orderBy: [{ isSelf: 'desc' }, { createdAt: 'asc' }],
   });
@@ -74,7 +91,7 @@ export async function listMyProfiles(userId: string, email: string) {
   // 3. Fallback email-match for pre-connection patient records.
   const byEmail = email
     ? await prisma.patient.findMany({
-        where: { email: { equals: email, mode: 'insensitive' }, userId: null },
+        where: { email: { equals: email, mode: 'insensitive' }, userId: null, ...notPlatform },
         include: { tenant: { select: { id: true, name: true, slug: true, logoUrl: true } } },
       })
     : [];

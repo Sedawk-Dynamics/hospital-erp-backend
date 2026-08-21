@@ -570,25 +570,21 @@ export const authService = {
           'Adopted standalone patient(s) into new phone account',
         );
       } else {
-        // Brand-new number → give the patient their own (self) profile so the
-        // portal has content immediately (booking/records key off a Patient row).
-        const selfMrn = await generateMRN(tenant.id);
-        await prisma.patient.create({
-          data: {
-            mrn: selfMrn,
-            tenantId: tenant.id,
-            userId,
-            relationship: 'self' as never,
-            isSelf: true,
-            firstName: data.firstName?.trim() || 'Patient',
-            lastName: data.lastName?.trim() || null,
-            gender: (data.gender ?? undefined) as never,
-            dateOfBirth: data.dateOfBirth ? new Date(data.dateOfBirth) : undefined,
-            phone,
-            isActive: true,
-          },
-        });
-        logger.info({ userId }, 'Patient account + self profile created via phone OTP');
+        // Brand-new number → the account holder is a User, and that is all.
+        //
+        // This used to also mint a Patient row on the PLATFORM tenant "so the
+        // portal has content immediately". Platform is not a hospital: it has
+        // no doctors, wards or bills, so that row could never hold a record.
+        // What it did do was survive until the person booked somewhere real,
+        // at which point createPatientInTenant made a SECOND row — same person,
+        // same MRN, two entries in their profile switcher, one of them empty.
+        // Selecting the empty one showed them nothing, because the portal
+        // narrows to the single chosen row.
+        //
+        // A Patient row is a hospital's record of a person. It is created on
+        // first contact with that hospital — booking already does this — so a
+        // brand-new account correctly has none until then.
+        logger.info({ userId }, 'Patient account created via phone OTP');
       }
     } else {
       // Existing account. Backfill the phone if it was only on the patient

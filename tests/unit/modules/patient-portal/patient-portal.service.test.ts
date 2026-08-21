@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { prisma } from '../../../../src/config/database';
 import {
   getPatientAppointments,
+  listMyProfiles,
   getPatientConsultationSummaries,
   getPatientPrescriptions,
 } from '../../../../src/modules/patient-portal/patient-portal.service';
@@ -163,5 +164,47 @@ describe('Patient portal — upcoming appointments', () => {
 
     const where = vi.mocked(prisma.appointment.findMany).mock.calls[0][0]?.where as any;
     expect(where.status).toBe('booked');
+  });
+});
+
+describe('Patient portal — profile switcher', () => {
+  // Signup used to mint a Patient row on the PLATFORM tenant. Platform is not
+  // a hospital — no doctors, wards or bills — so that row could never hold a
+  // record, but it survived until the person booked somewhere real and got a
+  // second row. One human, two entries with the SAME MRN, the platform one
+  // always empty; picking it showed them nothing, because the portal narrows
+  // to the single chosen row.
+  it('never offers a platform-tenant row as a profile', async () => {
+    vi.mocked(prisma.tenant.findFirst).mockResolvedValue({ id: 'platform-1' } as any);
+    vi.mocked(prisma.patient.findMany).mockResolvedValue([] as any);
+    vi.mocked(prisma.patientHospitalConnection.findMany).mockResolvedValue([] as any);
+
+    await listMyProfiles(USER_ID, EMAIL);
+
+    const where = vi.mocked(prisma.patient.findMany).mock.calls[0][0]?.where as any;
+    expect(where.tenantId).toEqual({ not: 'platform-1' });
+  });
+
+  it('applies the same rule to the legacy email fallback', async () => {
+    vi.mocked(prisma.tenant.findFirst).mockResolvedValue({ id: 'platform-1' } as any);
+    vi.mocked(prisma.patient.findMany).mockResolvedValue([] as any);
+    vi.mocked(prisma.patientHospitalConnection.findMany).mockResolvedValue([] as any);
+
+    await listMyProfiles(USER_ID, EMAIL);
+
+    // Second patient.findMany call is the email-match fallback.
+    const calls = vi.mocked(prisma.patient.findMany).mock.calls;
+    const emailWhere = calls[calls.length - 1][0]?.where as any;
+    expect(emailWhere.tenantId).toEqual({ not: 'platform-1' });
+  });
+
+  it('still works if there is no platform tenant to exclude', async () => {
+    vi.mocked(prisma.tenant.findFirst).mockResolvedValue(null as any);
+    vi.mocked(prisma.patient.findMany).mockResolvedValue([] as any);
+    vi.mocked(prisma.patientHospitalConnection.findMany).mockResolvedValue([] as any);
+
+    await expect(listMyProfiles(USER_ID, EMAIL)).resolves.toBeDefined();
+    const where = vi.mocked(prisma.patient.findMany).mock.calls[0][0]?.where as any;
+    expect(where.tenantId).toBeUndefined();
   });
 });
