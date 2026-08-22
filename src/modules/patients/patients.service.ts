@@ -1028,10 +1028,23 @@ export async function getGlobalPatientHistory(tenantId: string, patientId: strin
       if (ids.length) orConds.push({ id: { in: ids } });
     }
   }
-  const linked = await prisma.patient.findMany({
+  const candidates = await prisma.patient.findMany({
     where: orConds.length ? { OR: [{ id: patientId }, ...orConds] } : { id: patientId },
-    select: { id: true, tenantId: true, mrn: true, tenant: { select: { name: true } } },
+    select: {
+      id: true, tenantId: true, mrn: true, tenant: { select: { name: true } },
+      firstName: true, lastName: true, dateOfBirth: true, abhaNumber: true,
+    },
   });
+  // An account holder's login and phone number cover their whole family, so
+  // those only nominate candidates — this timeline is ONE person's. Pulling a
+  // relative's visits, prescriptions, results and bills into it reads as the
+  // patient's own history, which is a clinical hazard, not a display quirk.
+  const linked = candidates.filter(
+    (l) =>
+      l.id === patientId ||
+      (!!base.abhaNumber && l.abhaNumber === base.abhaNumber) ||
+      isSameNamedPerson(l, base),
+  );
   const idList = linked.map((l) => l.id);
   const byId = new Map(linked.map((l) => [l.id, l]));
   const hosp = (pid: string) => byId.get(pid)?.tenant?.name ?? 'Hospital';

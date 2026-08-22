@@ -316,6 +316,85 @@ describe('PatientsService', () => {
     });
   });
 
+  describe('getGlobalPatientHistory', () => {
+    const child = {
+      id: 'child', userId: 'acct', phone: '9666555444', abhaNumber: null,
+      firstName: 'Ishaan', lastName: 'Rao', dateOfBirth: new Date('2019-09-09'), gender: 'male',
+    };
+    const row = (over: Record<string, unknown>) => ({
+      tenantId: 't1', mrn: 'M', tenant: { name: 'Hospital' }, abhaNumber: null, ...over,
+    });
+    const childRow = row({
+      id: 'child', firstName: 'Ishaan', lastName: 'Rao', dateOfBirth: new Date('2019-09-09'),
+    });
+    // Same account, same phone — and a different human.
+    const parentRow = row({
+      id: 'parent', firstName: 'Sunil', lastName: 'Rao', dateOfBirth: new Date('1975-02-02'),
+    });
+
+    function stubRecordQueries() {
+      for (const m of ['visit', 'admission', 'prescription', 'labOrder', 'imagingRequest', 'bill'] as const) {
+        vi.mocked((prisma as never as Record<string, { findMany: ReturnType<typeof vi.fn> }>)[m].findMany)
+          .mockResolvedValue([] as never);
+      }
+    }
+
+    /** Which patient ids the timeline was actually built from. */
+    function idsQueried() {
+      const call = vi.mocked(prisma.visit.findMany).mock.calls[0]![0]! as never as {
+        where: { patientId: { in: string[] } };
+      };
+      return call.where.patientId.in;
+    }
+
+    // An account holder's login and number cover a whole family. Treating that
+    // as "the same human" put a relative's visits, prescriptions, results and
+    // bills into this patient's unified history, where they read as their own.
+    it('never pulls a relative on the same account into the timeline', async () => {
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue(child as never);
+      vi.mocked(prisma.$queryRaw).mockResolvedValue([] as never);
+      vi.mocked(prisma.patient.findMany).mockResolvedValue([childRow, parentRow] as never);
+      stubRecordQueries();
+
+      await patientsService.getGlobalPatientHistory('t1', 'child');
+
+      expect(idsQueried()).toEqual(['child']);
+    });
+
+    it('still merges the same person across hospitals', async () => {
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue(child as never);
+      vi.mocked(prisma.$queryRaw).mockResolvedValue([] as never);
+      const elsewhere = row({
+        id: 'child-elsewhere', tenantId: 't2', firstName: 'Ishaan', lastName: 'Rao',
+        dateOfBirth: new Date('2019-09-09'),
+      });
+      vi.mocked(prisma.patient.findMany).mockResolvedValue([childRow, elsewhere, parentRow] as never);
+      stubRecordQueries();
+
+      await patientsService.getGlobalPatientHistory('t1', 'child');
+
+      // The whole point of the view — but only for the one person.
+      expect(idsQueried()).toEqual(['child', 'child-elsewhere']);
+    });
+
+    it('accepts an ABHA match even when the name has changed', async () => {
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue({
+        ...child, abhaNumber: '11-2222-3333-4444',
+      } as never);
+      vi.mocked(prisma.$queryRaw).mockResolvedValue([] as never);
+      const renamed = row({
+        id: 'renamed', firstName: 'Ishaani', lastName: 'Sharma',
+        dateOfBirth: new Date('2019-09-09'), abhaNumber: '11-2222-3333-4444',
+      });
+      vi.mocked(prisma.patient.findMany).mockResolvedValue([childRow, renamed, parentRow] as never);
+      stubRecordQueries();
+
+      await patientsService.getGlobalPatientHistory('t1', 'child');
+
+      expect(idsQueried()).toEqual(['child', 'renamed']);
+    });
+  });
+
   describe('findAll', () => {
     it('should return paginated patients', async () => {
       vi.mocked(prisma.patient.findMany).mockResolvedValue([{ id: 'p1' }] as any);
