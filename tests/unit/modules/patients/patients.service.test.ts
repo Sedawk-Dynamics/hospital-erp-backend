@@ -30,6 +30,25 @@ function mockAccountHolderPath() {
   vi.mocked(prisma.user.findUnique).mockResolvedValue({ id: 'account-user-1' } as any);
 }
 
+/**
+ * The guard asks the database two separate questions now, so the mock has to
+ * tell them apart: "is there a row on ANOTHER account with this number" and
+ * "which people of this name are on this number". Both used to be sifted out
+ * of one windowed result in JS, which silently skipped rows once a number
+ * carried more patients than the window held.
+ *
+ * Dispatching on the SQL rather than on call order, so an added query upstream
+ * cannot quietly reassign these.
+ */
+function stagePhoneQueries(opts: { clash?: unknown[]; candidates?: unknown[] }) {
+  vi.mocked(prisma.$queryRaw).mockImplementation(((strings: TemplateStringsArray) => {
+    const sql = Array.isArray(strings) ? Array.from(strings).join(' ') : String(strings);
+    if (sql.includes('user_id IS NULL OR user_id')) return Promise.resolve(opts.clash ?? []);
+    if (sql.includes('btrim(lower(')) return Promise.resolve(opts.candidates ?? []);
+    return Promise.resolve([]);
+  }) as never);
+}
+
 describe('PatientsService', () => {
   beforeEach(() => { vi.clearAllMocks(); });
 
@@ -85,12 +104,12 @@ describe('PatientsService', () => {
     it('refuses to register the same person twice on one phone', async () => {
       mockAccountHolderPath();
       vi.mocked(prisma.patient.findFirst).mockResolvedValue(null as any);
-      vi.mocked(prisma.$queryRaw).mockResolvedValue([
+      stagePhoneQueries({ candidates: [
         {
           id: 'existing', user_id: 'account-user-1', mrn: 'MRN-OLD-1',
           first_name: 'John', last_name: 'Doe', date_of_birth: new Date('1990-01-01'),
         },
-      ] as any);
+      ] });
 
       await expect(
         patientsService.create('tenant-1', {
@@ -105,12 +124,12 @@ describe('PatientsService', () => {
     it('still lets a real family member share the phone', async () => {
       mockAccountHolderPath();
       vi.mocked(prisma.patient.findFirst).mockResolvedValue(null as any);
-      vi.mocked(prisma.$queryRaw).mockResolvedValue([
+      stagePhoneQueries({ candidates: [
         {
           id: 'existing', user_id: 'account-user-1', mrn: 'MRN-OLD-1',
           first_name: 'John', last_name: 'Doe', date_of_birth: new Date('1990-01-01'),
         },
-      ] as any);
+      ] });
       vi.mocked(prisma.patient.create).mockResolvedValue({ id: 'p2' } as any);
 
       // A mother booked on her son's phone — the case the allowance exists for.
@@ -125,12 +144,12 @@ describe('PatientsService', () => {
     it('allows the same name when the date of birth differs', async () => {
       mockAccountHolderPath();
       vi.mocked(prisma.patient.findFirst).mockResolvedValue(null as any);
-      vi.mocked(prisma.$queryRaw).mockResolvedValue([
+      stagePhoneQueries({ candidates: [
         {
           id: 'existing', user_id: 'account-user-1', mrn: 'MRN-OLD-1',
           first_name: 'John', last_name: 'Doe', date_of_birth: new Date('1990-01-01'),
         },
-      ] as any);
+      ] });
       vi.mocked(prisma.patient.create).mockResolvedValue({ id: 'p2' } as any);
 
       // A son named after his father is a real thing; a name alone must not
@@ -146,12 +165,12 @@ describe('PatientsService', () => {
     it('treats two rows with no date of birth as the same person', async () => {
       mockAccountHolderPath();
       vi.mocked(prisma.patient.findFirst).mockResolvedValue(null as any);
-      vi.mocked(prisma.$queryRaw).mockResolvedValue([
+      stagePhoneQueries({ candidates: [
         {
           id: 'existing', user_id: 'account-user-1', mrn: 'MRN-OLD-1',
           first_name: 'John', last_name: 'Doe', date_of_birth: null,
         },
-      ] as any);
+      ] });
 
       // Front desk skipping the field twice is likelier than untracked twins.
       await expect(
@@ -164,12 +183,12 @@ describe('PatientsService', () => {
     it('matches the name past case and spacing', async () => {
       mockAccountHolderPath();
       vi.mocked(prisma.patient.findFirst).mockResolvedValue(null as any);
-      vi.mocked(prisma.$queryRaw).mockResolvedValue([
+      stagePhoneQueries({ candidates: [
         {
           id: 'existing', user_id: 'account-user-1', mrn: 'MRN-OLD-1',
           first_name: 'John', last_name: 'Doe', date_of_birth: new Date('1990-01-01'),
         },
-      ] as any);
+      ] });
 
       await expect(
         patientsService.create('tenant-1', {
@@ -182,12 +201,12 @@ describe('PatientsService', () => {
     it('lets an explicit override through, for two people who really do match', async () => {
       mockAccountHolderPath();
       vi.mocked(prisma.patient.findFirst).mockResolvedValue(null as any);
-      vi.mocked(prisma.$queryRaw).mockResolvedValue([
+      stagePhoneQueries({ candidates: [
         {
           id: 'existing', user_id: 'account-user-1', mrn: 'MRN-OLD-1',
           first_name: 'John', last_name: 'Doe', date_of_birth: new Date('1990-01-01'),
         },
-      ] as any);
+      ] });
       vi.mocked(prisma.patient.create).mockResolvedValue({ id: 'p2' } as any);
 
       await patientsService.create('tenant-1', {

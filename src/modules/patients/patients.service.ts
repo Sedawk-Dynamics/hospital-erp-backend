@@ -336,14 +336,27 @@ export async function create(tenantId: string, data: CreatePatientInput) {
     // Compare on the last 10 digits so +91XXXXXXXXXX and XXXXXXXXXX collide as
     // one number; still allow the account holder's own family to share a phone.
     const last10 = phoneLast10(data.phone);
-    const rows = await prisma.$queryRaw<PhoneMatchRow[]>`
-      SELECT id, user_id, mrn, first_name, last_name, date_of_birth, gender, phone FROM patients
-      WHERE tenant_id = ${tenantId}
-        AND right(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), 10) = ${last10}
-      LIMIT 10
-    `;
-    const clash = rows.find((r) => !data.userId || r.user_id !== data.userId);
-    if (clash) {
+
+    // Ask the database the question directly rather than pulling a window of
+    // rows and sifting it here. A shared number can carry more patients than
+    // any fixed window holds — a large family, or the placeholder number a
+    // desk reuses — and an unordered LIMIT then decides, arbitrarily, which
+    // ones get checked at all.
+    const clash = data.userId
+      ? await prisma.$queryRaw<{ id: string }[]>`
+          SELECT id FROM patients
+          WHERE tenant_id = ${tenantId}
+            AND right(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), 10) = ${last10}
+            AND (user_id IS NULL OR user_id <> ${data.userId})
+          LIMIT 1
+        `
+      : await prisma.$queryRaw<{ id: string }[]>`
+          SELECT id FROM patients
+          WHERE tenant_id = ${tenantId}
+            AND right(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), 10) = ${last10}
+          LIMIT 1
+        `;
+    if (clash.length) {
       throw AppError.conflict('A patient with this phone number already exists');
     }
     // Whatever is left belongs to this account holder's own family, who may
@@ -352,7 +365,21 @@ export async function create(tenantId: string, data: CreatePatientInput) {
     // one human ends up with several profiles, several MRNs, and a portal that
     // offers them a choice between themselves.
     if (!data.allowDuplicate) {
-      const twin = rows.find((r) => isSamePerson(r, data));
+      // Narrowed to people of this name, so the row we are looking for cannot
+      // be crowded out of the result by unrelated relatives. The name test is
+      // the trim-and-lowercase `nameKey` uses; whether they are the SAME person
+      // is still decided by isSamePerson below, which weighs the date of birth.
+      const candidates = await prisma.$queryRaw<PhoneMatchRow[]>`
+        SELECT id, user_id, mrn, first_name, last_name, date_of_birth, gender, phone
+        FROM patients
+        WHERE tenant_id = ${tenantId}
+          AND right(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), 10) = ${last10}
+          AND btrim(lower(coalesce(first_name, ''))) = ${(data.firstName ?? '').trim().toLowerCase()}
+          AND btrim(lower(coalesce(last_name, ''))) = ${(data.lastName ?? '').trim().toLowerCase()}
+        ORDER BY created_at
+        LIMIT 100
+      `;
+      const twin = candidates.find((r) => isSamePerson(r, data));
       if (twin) {
         // The matched record travels with the error: front desk is shown it and
         // picks — use this patient, or register anyway — instead of reading an
