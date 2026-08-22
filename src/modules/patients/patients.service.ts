@@ -933,24 +933,38 @@ export async function provisionLocalPatient(tenantId: string, sourcePatientId: s
   });
   if (!src) throw AppError.notFound('Source patient not found');
 
-  // Already registered here? Return the existing local row (match by account
-  // holder / ABHA / phone-last10) — never create a duplicate.
+  // Already registered here? Only the SAME PERSON counts.
+  //
+  // An account holder's login and phone number belong to their whole family,
+  // so matching on those alone returned whichever relative happened to be
+  // registered here first: selecting a child in the cross-hospital picker gave
+  // back the parent's record, and every appointment, prescription and bill
+  // raised afterwards was filed against the wrong person.
   const orExisting: any[] = [];
   if (src.userId) orExisting.push({ userId: src.userId });
   if (src.abhaNumber) orExisting.push({ abhaNumber: src.abhaNumber });
-  if (orExisting.length || src.phone) {
-    if (src.phone) {
-      const last10 = phoneLast10(src.phone);
+  if (src.phone) {
+    const last10 = phoneLast10(src.phone);
+    if (last10.length >= 7) {
       const idRows = await prisma.$queryRaw<{ id: string }[]>`
         SELECT id FROM patients WHERE tenant_id = ${tenantId} AND is_active = true
           AND right(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), 10) = ${last10}
-        LIMIT 5`;
+        ORDER BY created_at
+        LIMIT 200`;
       if (idRows.length) orExisting.push({ id: { in: idRows.map((r) => r.id) } });
     }
-    if (orExisting.length) {
-      const existing = await prisma.patient.findFirst({ where: { tenantId, isActive: true, OR: orExisting } });
-      if (existing) return existing;
-    }
+  }
+  if (orExisting.length) {
+    const localRows = await prisma.patient.findMany({
+      where: { tenantId, isActive: true, OR: orExisting },
+      orderBy: { createdAt: 'asc' },
+    });
+    // ABHA is the person's own number, so it identifies them outright. Failing
+    // that it takes the name and date of birth the rest of the ERP agrees on.
+    const existing =
+      (src.abhaNumber ? localRows.find((p) => p.abhaNumber === src.abhaNumber) : undefined) ??
+      localRows.find((p) => isSameNamedPerson(p, src));
+    if (existing) return existing;
   }
 
   // Otherwise create a fresh local record (new MRN), linked to the same account

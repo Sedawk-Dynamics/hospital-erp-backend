@@ -244,6 +244,78 @@ describe('PatientsService', () => {
     });
   });
 
+  describe('provisionLocalPatient', () => {
+    const ACCOUNT = 'account-user-1';
+    // A parent and their child share one login and one phone number.
+    const child = {
+      id: 'child-away', tenantId: 'other-hospital', userId: ACCOUNT,
+      firstName: 'Anaya', lastName: 'Kumar', dateOfBirth: new Date('2018-07-07'),
+      gender: 'female', phone: '9777888999', abhaNumber: null,
+    };
+    const parentHere = {
+      id: 'parent-here', tenantId: 'tenant-1', userId: ACCOUNT,
+      firstName: 'Ravi', lastName: 'Kumar', dateOfBirth: new Date('1980-03-03'),
+      gender: 'male', phone: '9777888999', abhaNumber: null,
+    };
+
+    beforeEach(() => {
+      vi.mocked(prisma.$queryRaw).mockResolvedValue([] as never);
+    });
+
+    // Matching on the shared account alone handed back whichever relative was
+    // registered here first, so a child selected in the cross-hospital picker
+    // came back as their parent and everything booked after was filed against
+    // the wrong person.
+    it('never returns a relative who shares the account', async () => {
+      vi.mocked(prisma.patient.findUnique).mockResolvedValue(child as never);
+      vi.mocked(prisma.patient.findMany).mockResolvedValue([parentHere] as never);
+      mockAccountHolderPath();
+      vi.mocked(prisma.patient.findUnique).mockResolvedValue(child as never);
+      vi.mocked(prisma.patient.findMany).mockResolvedValue([parentHere] as never);
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue(null as never);
+      vi.mocked(prisma.patient.create).mockResolvedValue({ id: 'child-here', mrn: 'MRN-NEW' } as never);
+
+      const result = await patientsService.provisionLocalPatient('tenant-1', 'child-away');
+
+      expect(result).toMatchObject({ id: 'child-here' });
+      expect(prisma.patient.create).toHaveBeenCalled();
+    });
+
+    it('returns the existing record when it is the same person', async () => {
+      const childHere = { ...child, id: 'child-here', tenantId: 'tenant-1', mrn: 'MRN-EXISTING' };
+      vi.mocked(prisma.patient.findUnique).mockResolvedValue(child as never);
+      vi.mocked(prisma.patient.findMany).mockResolvedValue([parentHere, childHere] as never);
+
+      const result = await patientsService.provisionLocalPatient('tenant-1', 'child-away');
+
+      // Idempotent — the whole point of the function.
+      expect(result).toMatchObject({ id: 'child-here' });
+      expect(prisma.patient.create).not.toHaveBeenCalled();
+    });
+
+    it('identifies them by ABHA even when the name has changed', async () => {
+      const src = { ...child, abhaNumber: '11-2222-3333-4444' };
+      const married = {
+        ...parentHere, id: 'same-person', firstName: 'Anaya', lastName: 'Sharma',
+        abhaNumber: '11-2222-3333-4444',
+      };
+      vi.mocked(prisma.patient.findUnique).mockResolvedValue(src as never);
+      vi.mocked(prisma.patient.findMany).mockResolvedValue([married] as never);
+
+      const result = await patientsService.provisionLocalPatient('tenant-1', 'child-away');
+
+      expect(result).toMatchObject({ id: 'same-person' });
+      expect(prisma.patient.create).not.toHaveBeenCalled();
+    });
+
+    it('refuses a source patient that does not exist', async () => {
+      vi.mocked(prisma.patient.findUnique).mockResolvedValue(null as never);
+      await expect(
+        patientsService.provisionLocalPatient('tenant-1', 'nope'),
+      ).rejects.toThrow(/not found/i);
+    });
+  });
+
   describe('findAll', () => {
     it('should return paginated patients', async () => {
       vi.mocked(prisma.patient.findMany).mockResolvedValue([{ id: 'p1' }] as any);
