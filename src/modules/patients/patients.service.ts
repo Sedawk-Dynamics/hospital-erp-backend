@@ -882,9 +882,25 @@ export async function globalPatientSearch(tenantId: string, rawSearch: string) {
     },
   });
 
-  // One entry per PERSON: userId > ABHA > phone-last10 > row id.
-  const personKey = (r: (typeof rows)[number]) =>
-    r.userId ? `u:${r.userId}` : r.abhaNumber ? `a:${r.abhaNumber}` : r.phone ? `p:${phoneLast10(r.phone)}` : `id:${r.id}`;
+  // One entry per PERSON.
+  //
+  // Keying on the account holder first folded a whole family into a single
+  // result — a parent and child on one login came back as one row, so the desk
+  // searching the family surname could only ever see one of them, and the
+  // local record offered alongside could belong to the other.
+  //
+  // ABHA is a person's own number, so it stands alone. Otherwise it is the name
+  // and date of birth the rest of the ERP identifies people by, anchored to the
+  // account or number that brought the row back, so two households who happen
+  // to share a name stay apart.
+  const personKey = (r: (typeof rows)[number]) => {
+    if (r.abhaNumber) return `a:${r.abhaNumber}`;
+    const who = `${(r.firstName ?? '').trim().toLowerCase()}|${(r.lastName ?? '').trim().toLowerCase()}|${
+      r.dateOfBirth ? r.dateOfBirth.toISOString().slice(0, 10) : ''
+    }`;
+    const anchor = r.userId ? `u:${r.userId}` : r.phone ? `p:${phoneLast10(r.phone)}` : `id:${r.id}`;
+    return `${anchor}|${who}`;
+  };
 
   const localByPerson = new Map<string, string>();
   for (const r of rows) if (r.tenantId === tenantId) localByPerson.set(personKey(r), r.id);

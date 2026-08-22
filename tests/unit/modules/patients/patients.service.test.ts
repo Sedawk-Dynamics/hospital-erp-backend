@@ -395,6 +395,73 @@ describe('PatientsService', () => {
     });
   });
 
+  describe('globalPatientSearch', () => {
+    const row = (over: Record<string, unknown>) => ({
+      tenantId: 'tenant-1', userId: 'acct', mrn: 'M', phone: '9555111222',
+      abhaNumber: null, gender: 'male', tenant: { id: 'tenant-1', name: 'Hospital' },
+      ...over,
+    });
+
+    beforeEach(() => {
+      vi.mocked(prisma.$queryRaw).mockResolvedValue([] as never);
+    });
+
+    async function search(rows: unknown[]) {
+      vi.mocked(prisma.patient.findMany).mockResolvedValue(rows as never);
+      return (await patientsService.globalPatientSearch('tenant-1', 'Nair')) as unknown as {
+        firstName: string; localPatientId: string | null;
+      }[];
+    }
+
+    // Keying one entry per ACCOUNT folded a whole family into a single result,
+    // so a desk searching the family surname could only ever see one of them —
+    // and the local record offered alongside could belong to the other.
+    it('lists each family member on a shared account separately', async () => {
+      const out = await search([
+        row({ id: 'parent', firstName: 'Vikram', lastName: 'Nair', dateOfBirth: new Date('1978-04-04') }),
+        row({ id: 'child', firstName: 'Diya', lastName: 'Nair', dateOfBirth: new Date('2020-11-11') }),
+      ]);
+
+      expect(out.map((r) => r.firstName).sort()).toEqual(['Diya', 'Vikram']);
+      // Each points at their OWN local record.
+      expect(out.find((r) => r.firstName === 'Diya')?.localPatientId).toBe('child');
+      expect(out.find((r) => r.firstName === 'Vikram')?.localPatientId).toBe('parent');
+    });
+
+    it('still shows one person at two hospitals as one entry', async () => {
+      const out = await search([
+        row({ id: 'here', firstName: 'Vikram', lastName: 'Nair', dateOfBirth: new Date('1978-04-04') }),
+        row({
+          id: 'away', tenantId: 'tenant-2', firstName: 'Vikram', lastName: 'Nair',
+          dateOfBirth: new Date('1978-04-04'), tenant: { id: 'tenant-2', name: 'Other' },
+        }),
+      ]);
+
+      expect(out).toHaveLength(1);
+      // And the local row is the one in the caller's hospital.
+      expect(out[0]!.localPatientId).toBe('here');
+    });
+
+    it('treats an ABHA number as the person outright', async () => {
+      const out = await search([
+        row({ id: 'a1', firstName: 'Vikram', lastName: 'Nair', dateOfBirth: new Date('1978-04-04'), abhaNumber: '11-2222-3333-4444' }),
+        // Same human, name since changed — ABHA still ties them together.
+        row({ id: 'a2', tenantId: 'tenant-2', firstName: 'Vikram', lastName: 'Menon', dateOfBirth: new Date('1978-04-04'), abhaNumber: '11-2222-3333-4444', tenant: { id: 'tenant-2', name: 'Other' } }),
+      ]);
+
+      expect(out).toHaveLength(1);
+    });
+
+    it('keeps two households who share a name apart', async () => {
+      const out = await search([
+        row({ id: 'x', userId: 'acct-a', firstName: 'Vikram', lastName: 'Nair', dateOfBirth: new Date('1978-04-04') }),
+        row({ id: 'y', userId: 'acct-b', phone: '9000000000', firstName: 'Vikram', lastName: 'Nair', dateOfBirth: new Date('1978-04-04') }),
+      ]);
+
+      expect(out).toHaveLength(2);
+    });
+  });
+
   describe('findAll', () => {
     it('should return paginated patients', async () => {
       vi.mocked(prisma.patient.findMany).mockResolvedValue([{ id: 'p1' }] as any);
