@@ -773,6 +773,7 @@ export async function globalLookup(params: { phone?: string; abha?: string }) {
             right(regexp_replace(coalesce(p.phone, ''), '[^0-9]', '', 'g'), 10) = ${last10}
             OR right(regexp_replace(coalesce(u.phone, ''), '[^0-9]', '', 'g'), 10) = ${last10}
           )
+        ORDER BY p.created_at
         LIMIT 200
       `;
       const ids = idRows.map((r) => r.id);
@@ -797,8 +798,58 @@ export async function globalLookup(params: { phone?: string; abha?: string }) {
   });
   if (!rows.length) return { found: false, patient: null, hospitals: [], count: 0 };
 
-  // Representative identity: prefer the account holder's own ('self') profile,
-  // else the most-recently-updated row.
+  // A phone number belongs to a HOUSEHOLD, not a person — a parent's number
+  // carries their children too. Returning one representative handed the caller
+  // whoever happened to be the account holder, so a form pre-filling from it
+  // would quietly replace the identity of the person actually being registered.
+  const personOf = (r: (typeof rows)[number]) => {
+    if (r.abhaNumber) return `a:${r.abhaNumber}`;
+    const who = `${(r.firstName ?? '').trim().toLowerCase()}|${(r.lastName ?? '').trim().toLowerCase()}|${
+      r.dateOfBirth ? r.dateOfBirth.toISOString().slice(0, 10) : ''
+    }`;
+    const anchor = r.userId ? `u:${r.userId}` : r.phone ? `p:${phoneLast10(r.phone)}` : `id:${r.id}`;
+    return `${anchor}|${who}`;
+  };
+
+  const groups = new Map<string, typeof rows>();
+  for (const r of rows) {
+    const k = personOf(r);
+    const g = groups.get(k);
+    if (g) g.push(r);
+    else groups.set(k, [r]);
+  }
+
+  const identity = (group: typeof rows) => {
+    const lead = group.find((r) => r.isSelf) ?? group[0];
+    return {
+      userId: lead.userId,
+      relationship: lead.relationship,
+      isSelf: lead.isSelf,
+      firstName: lead.firstName,
+      lastName: lead.lastName,
+      dateOfBirth: lead.dateOfBirth,
+      gender: lead.gender,
+      bloodGroup: lead.bloodGroup,
+      phone: lead.phone,
+      email: lead.email,
+      address: lead.addressLine1,
+      city: lead.city,
+      state: lead.state,
+      country: lead.country,
+      zipCode: lead.postalCode,
+      maritalStatus: lead.maritalStatus,
+      nationality: lead.nationality,
+      occupation: lead.occupation,
+      abhaNumber: lead.abhaNumber,
+      abhaAddress: lead.abhaAddress,
+      nationalId: lead.idProofNumber,
+      hospitals: Array.from(
+        new Map(group.map((r) => [r.tenantId, r.tenant?.name ?? 'Hospital'])).entries(),
+      ).map(([id, name]) => ({ tenantId: id, name })),
+    };
+  };
+
+  const people = Array.from(groups.values()).map(identity);
   const rep = rows.find((r) => r.isSelf) ?? rows[0];
   const hospitals = Array.from(
     new Map(rows.map((r) => [r.tenantId, r.tenant?.name ?? 'Hospital'])).entries(),
@@ -807,26 +858,12 @@ export async function globalLookup(params: { phone?: string; abha?: string }) {
   return {
     found: true,
     userId: rep.userId,
-    patient: {
-      firstName: rep.firstName,
-      lastName: rep.lastName,
-      dateOfBirth: rep.dateOfBirth,
-      gender: rep.gender,
-      bloodGroup: rep.bloodGroup,
-      phone: rep.phone,
-      email: rep.email,
-      address: rep.addressLine1,
-      city: rep.city,
-      state: rep.state,
-      country: rep.country,
-      zipCode: rep.postalCode,
-      maritalStatus: rep.maritalStatus,
-      nationality: rep.nationality,
-      occupation: rep.occupation,
-      abhaNumber: rep.abhaNumber,
-      abhaAddress: rep.abhaAddress,
-      nationalId: rep.idProofNumber,
-    },
+    // Only when the number identifies ONE person. With a household on the line
+    // there is no right answer, and a single "representative" is what let a
+    // registration form overwrite the child being registered with the parent.
+    // Callers with more than one should ask which of `people` is being seen.
+    patient: people.length === 1 ? people[0] : null,
+    people,
     hospitals,
     count: rows.length,
   };

@@ -462,6 +462,66 @@ describe('PatientsService', () => {
     });
   });
 
+  describe('globalLookup', () => {
+    const row = (over: Record<string, unknown>) => ({
+      tenantId: 't1', userId: 'acct', isSelf: false, relationship: 'child',
+      firstName: 'Diya', lastName: 'Nair', dateOfBirth: new Date('2020-11-11'),
+      gender: 'female', bloodGroup: null, phone: '9555111222', email: null,
+      addressLine1: null, city: null, state: null, country: null, postalCode: null,
+      maritalStatus: null, nationality: null, occupation: null,
+      abhaNumber: null, abhaAddress: null, idProofNumber: null,
+      tenant: { id: 't1', name: 'Hospital' }, ...over,
+    });
+
+    async function lookup(rows: unknown[]) {
+      vi.mocked(prisma.$queryRaw).mockResolvedValue([{ id: 'x' }] as never);
+      vi.mocked(prisma.patient.findMany).mockResolvedValue(rows as never);
+      return (await patientsService.globalLookup({ phone: '9555111222' })) as unknown as {
+        found: boolean;
+        patient: { firstName: string } | null;
+        people: { firstName: string; hospitals: unknown[] }[];
+      };
+    }
+
+    // A number belongs to a household. Handing back one "representative" gave
+    // the caller whoever was the account holder, so a form pre-filling from it
+    // replaced the child being registered with the parent.
+    it('does not pick a representative when a household shares the number', async () => {
+      const res = await lookup([
+        row({ id: 'parent', firstName: 'Vikram', dateOfBirth: new Date('1978-04-04'), isSelf: true, relationship: 'self' }),
+        row({ id: 'child', firstName: 'Diya' }),
+      ]);
+
+      expect(res.found).toBe(true);
+      expect(res.people.map((p) => p.firstName).sort()).toEqual(['Diya', 'Vikram']);
+      // Nothing to pre-fill from — the caller has to ask which of them it is.
+      expect(res.patient).toBeNull();
+    });
+
+    it('still answers outright when the number is one person', async () => {
+      const res = await lookup([
+        row({ id: 'only', firstName: 'Vikram', dateOfBirth: new Date('1978-04-04'), isSelf: true }),
+      ]);
+
+      expect(res.people).toHaveLength(1);
+      expect(res.patient).toMatchObject({ firstName: 'Vikram' });
+    });
+
+    it('counts one person at two hospitals once, and names both', async () => {
+      const res = await lookup([
+        row({ id: 'here', firstName: 'Vikram', dateOfBirth: new Date('1978-04-04'), isSelf: true }),
+        row({
+          id: 'away', tenantId: 't2', firstName: 'Vikram', dateOfBirth: new Date('1978-04-04'),
+          isSelf: true, tenant: { id: 't2', name: 'Other' },
+        }),
+      ]);
+
+      expect(res.people).toHaveLength(1);
+      expect(res.patient).toMatchObject({ firstName: 'Vikram' });
+      expect(res.people[0]!.hospitals).toHaveLength(2);
+    });
+  });
+
   describe('findAll', () => {
     it('should return paginated patients', async () => {
       vi.mocked(prisma.patient.findMany).mockResolvedValue([{ id: 'p1' }] as any);
