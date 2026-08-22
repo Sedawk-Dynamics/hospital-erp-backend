@@ -489,6 +489,12 @@ export async function findByUser(userId: string, tenantId?: string) {
  * of the same 10-digit number. A longer query that includes the country code
  * (e.g. "9199…") narrows to that country.
  */
+/**
+ * Most recent first, so a truncated search still surfaces the patients a desk
+ * is most likely to be looking for.
+ */
+const PHONE_SEARCH_LIMIT = 2000;
+
 async function patientIdsByPhoneDigits(tenantId: string, digits: string): Promise<string[]> {
   if (digits.length < 3) return [];
   // Two matchers, so +91XXXXXXXXXX and XXXXXXXXXX (and 0-prefixed) are the SAME
@@ -496,6 +502,11 @@ async function patientIdsByPhoneDigits(tenantId: string, digits: string): Promis
   //   • substring on the normalised digits (partial typing), AND
   //   • last-10-digit equality once a full mobile number is entered.
   const last10 = digits.slice(-10);
+  // Ordered and bounded, rather than however many the database felt like
+  // returning. These ids become an OR arm of the paginated list query, so a
+  // patient left out of this set is invisible to the search no matter how far
+  // the user pages — and with no ORDER BY, which ones were left out changed
+  // between identical searches.
   const rows = await prisma.$queryRaw<{ id: string }[]>`
     SELECT id FROM patients
     WHERE tenant_id = ${tenantId}
@@ -503,8 +514,17 @@ async function patientIdsByPhoneDigits(tenantId: string, digits: string): Promis
         regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g') LIKE ${'%' + digits + '%'}
         OR (${digits.length >= 10} AND right(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), 10) = ${last10})
       )
-    LIMIT 500
+    ORDER BY created_at DESC
+    LIMIT ${PHONE_SEARCH_LIMIT}
   `;
+  if (rows.length === PHONE_SEARCH_LIMIT) {
+    // Say so rather than quietly returning a slice: a short fragment can match
+    // most of a hospital, and the answer is a longer number, not more paging.
+    logger.warn(
+      { tenantId, digits: digits.length, limit: PHONE_SEARCH_LIMIT },
+      'Phone search hit its result cap; matches beyond it are not shown',
+    );
+  }
   return rows.map((r) => r.id);
 }
 
