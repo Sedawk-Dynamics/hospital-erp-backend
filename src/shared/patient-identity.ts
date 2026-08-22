@@ -110,10 +110,20 @@ export async function resolvePersonPatientIds(patientId: string): Promise<string
   }
   const last10 = self.phone ? phoneLast10(self.phone) : '';
   if (last10.length >= 7) {
+    // Narrowed to people of this name. A number shared by a large family, or a
+    // placeholder a desk reuses, can carry more rows than any window holds, and
+    // an unordered LIMIT then decides arbitrarily which ones are even
+    // considered — so the person's own second record could be left out and they
+    // would keep appearing twice. This is the trim-and-lowercase `nameKey`
+    // applies, so it cannot exclude a row `samePerson` would have accepted; the
+    // date of birth is still what settles it, below.
     const rows = await prisma.$queryRaw<{ id: string }[]>`
       SELECT id FROM patients
       WHERE is_active = true
         AND right(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), 10) = ${last10}
+        AND btrim(lower(coalesce(first_name, ''))) = ${(self.firstName ?? '').trim().toLowerCase()}
+        AND btrim(lower(coalesce(last_name, ''))) = ${(self.lastName ?? '').trim().toLowerCase()}
+      ORDER BY created_at
       LIMIT 200
     `;
     rows.forEach((r) => candidateIds.add(r.id));
