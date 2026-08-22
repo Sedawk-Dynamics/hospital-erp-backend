@@ -235,9 +235,13 @@ async function resolveExistingGlobalMrn(p: {
   if (p.phone) {
     const last10 = phoneLast10(p.phone);
     if (last10.length >= 7) {
+      // Oldest first: the caller below takes the EARLIEST of these as the
+      // person's existing number, so an unordered window could hand it a later
+      // row and mint a fresh MRN for somebody who already had one.
       const rows = await prisma.$queryRaw<{ id: string }[]>`
         SELECT id FROM patients WHERE is_active = true
           AND right(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), 10) = ${last10}
+        ORDER BY created_at
         LIMIT 50`;
       if (rows.length) or.push({ id: { in: rows.map((r) => r.id) } });
     }
