@@ -5,6 +5,8 @@ import { razorpay } from '../../config/razorpay';
 import { env } from '../../config/env';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
+import { notifyUsers, usersWithRoles, doctorUserIdFromProfile } from '../../shared/notify';
+import { formatDateTimeIST } from '../../shared/date.utils';
 import { commissionService } from '../commission/commission.service';
 import { settleGatewayPayment } from '../billing/billing.service';
 import { getAvailableSlots } from '../appointments/appointments.service';
@@ -1948,6 +1950,27 @@ export async function getDoctorSlotsForPatient(
 /**
  * Book an appointment as a patient.
  */
+/**
+ * Who at the hospital needs to know a patient booked or cancelled online. The
+ * desk takes payment and checks the patient in; admin sees the day's list.
+ */
+const PORTAL_APPOINTMENT_DESK_ROLES = ['front_desk', 'admin'];
+
+type NamedPatient = { firstName: string; lastName?: string | null; mrn?: string | null } | null | undefined;
+type NamedDoctor = { user?: { firstName?: string | null; lastName?: string | null } | null } | null | undefined;
+
+function patientLabel(p: NamedPatient): string {
+  if (!p) return 'A patient';
+  const name = `${p.firstName} ${p.lastName ?? ''}`.trim();
+  return p.mrn ? `${name} (${p.mrn})` : name;
+}
+
+function doctorLabel(d: NamedDoctor): string {
+  const u = d?.user;
+  if (!u) return 'the doctor';
+  return `Dr. ${u.firstName ?? ''} ${u.lastName ?? ''}`.trim();
+}
+
 export async function bookAppointmentAsPatient(
   userId: string,
   email: string,
@@ -2078,6 +2101,22 @@ export async function bookAppointmentAsPatient(
     },
   });
 
+  // A booking made in the portal used to reach the hospital silently — nothing
+  // told the doctor or the desk it had happened, so it was found only by
+  // someone refreshing a list. The doctor holds the slot; the desk takes the
+  // payment and checks the patient in, so both need it.
+  await notifyUsers({
+    tenantId,
+    userIds: [
+      await doctorUserIdFromProfile(tenantId, data.doctorId),
+      ...(await usersWithRoles(tenantId, PORTAL_APPOINTMENT_DESK_ROLES)),
+    ],
+    title: 'New appointment booked online',
+    message: `${patientLabel(appointment.patient)} booked ${formatDateTimeIST(appointment.appointmentDate)} with ${doctorLabel(appointment.doctor)}.`,
+    referenceType: 'appointment_booked',
+    referenceId: appointment.id,
+  });
+
   return appointment;
 }
 
@@ -2158,6 +2197,21 @@ export async function cancelAppointmentAsPatient(
         },
       },
     },
+  });
+
+  // A cancelled slot is time somebody else could use, and the desk cannot see
+  // it come free unless something says so. The doctor is told because it is
+  // their list that just changed.
+  await notifyUsers({
+    tenantId: updated.tenantId,
+    userIds: [
+      await doctorUserIdFromProfile(updated.tenantId, updated.doctorId),
+      ...(await usersWithRoles(updated.tenantId, PORTAL_APPOINTMENT_DESK_ROLES)),
+    ],
+    title: 'Appointment cancelled by patient',
+    message: `${patientLabel(updated.patient)} cancelled ${formatDateTimeIST(updated.appointmentDate)} with ${doctorLabel(updated.doctor)}.`,
+    referenceType: 'appointment_cancelled',
+    referenceId: updated.id,
   });
 
   return updated;
