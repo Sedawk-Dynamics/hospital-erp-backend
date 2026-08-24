@@ -360,7 +360,20 @@ export async function getVisitById(tenantId: string, id: string) {
     throw AppError.notFound('Visit not found');
   }
 
-  return visit;
+  // Name whoever recorded the intake complaint. `nurseChiefComplaintById` is a
+  // bare FK column with no Prisma relation on it, so it cannot be `include`d —
+  // and an id tells the doctor nothing. Resolved here rather than adding a
+  // relation, which would mean a new foreign-key constraint on a live table
+  // for a label.
+  let nurseChiefComplaintBy: { id: string; firstName: string; lastName: string | null } | null = null;
+  if (visit.nurseChiefComplaintById) {
+    nurseChiefComplaintBy = await prisma.user.findFirst({
+      where: { id: visit.nurseChiefComplaintById },
+      select: { id: true, firstName: true, lastName: true },
+    });
+  }
+
+  return { ...visit, nurseChiefComplaintBy };
 }
 
 /**
