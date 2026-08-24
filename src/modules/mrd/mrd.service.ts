@@ -1112,7 +1112,11 @@ export async function getDischargeSummariesForPatient(tenantId: string, patientI
       diagnosesSummary: true,
       createdAt: true,
       admissionId: true,
-      admission: { select: { id: true, admissionType: true } },
+      // The admission's own dates are the fallback below — the summary is
+      // written BEFORE the patient goes home, so its copy is often null.
+      admission: {
+        select: { id: true, admissionType: true, admissionDate: true, dischargeDate: true },
+      },
       doctor: { select: { user: { select: { firstName: true, lastName: true } } } },
     },
   });
@@ -1122,8 +1126,18 @@ export async function getDischargeSummariesForPatient(tenantId: string, patientI
     status: r.status,
     admissionId: r.admissionId,
     admissionType: r.admission?.admissionType ?? null,
-    admissionDate: r.admissionDate,
-    dischargeDate: r.dischargeDate,
+    admissionDate: r.admissionDate ?? r.admission?.admissionDate ?? null,
+    // The summary snapshots the admission's discharge date when it is written
+    // — but the summary IS the discharge gate, so it is written while the
+    // patient is still admitted and that date does not exist yet. Nothing
+    // backfilled it afterwards, so every stored copy was null: on the dev
+    // database 9 out of 9, while the admission itself had a real date on 7.
+    // The history panel renders that field as each row's headline, so every
+    // past discharge summary read "Not yet discharged" — which is exactly how
+    // "past discharge summaries are not available" looks to a doctor scanning
+    // the list. Falling back to the admission fixes the rows already on file
+    // without a migration, and stops a future gap reproducing it.
+    dischargeDate: r.dischargeDate ?? r.admission?.dischargeDate ?? null,
     diagnosesSummary: r.diagnosesSummary,
     doctorName: r.doctor?.user
       ? `${r.doctor.user.firstName} ${r.doctor.user.lastName ?? ''}`.trim()
