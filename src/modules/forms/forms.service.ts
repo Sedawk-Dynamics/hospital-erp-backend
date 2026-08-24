@@ -77,7 +77,11 @@ function coerceFieldValue(field: FormField, raw: unknown): unknown {
       }
       return s;
     }
-    case 'number': {
+    // A measurement (`number_unit`) is coerced exactly like a plain number —
+    // the unit lives on the field definition, not on the answer, so there is
+    // nothing extra to validate here and the stored value stays a bare number.
+    case 'number':
+    case 'number_unit': {
       const n = typeof raw === 'number' ? raw : Number(raw);
       if (!Number.isFinite(n)) throw AppError.badRequest(`Field "${field.label}" must be a number`);
       const min = (field as { min?: number | null }).min;

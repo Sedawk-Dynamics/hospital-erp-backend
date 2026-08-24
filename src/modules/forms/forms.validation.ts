@@ -12,6 +12,13 @@ export const FORM_FIELD_TYPES = [
   'text',
   'textarea',
   'number',
+  // A measurement: a number that is meaningless without its unit — 72 bpm,
+  // 36.8 °C, 120 mmHg. Distinct from `number`, which is for counts and scores
+  // (pain score, GCS total, units of blood arranged) where a unit would be
+  // noise. The value is stored as a plain number exactly like `number`, so it
+  // stays sortable and aggregatable; the unit belongs to the field, not to the
+  // answer, which is what stops one nurse recording kg and the next lb.
+  'number_unit',
   'date',
   'datetime',
   // Clock time with no date attached — "pain started at 04:30". `datetime`
@@ -104,6 +111,19 @@ const numberField = baseField.extend({
   max: z.number().optional().nullable(),
   step: z.number().positive().optional().nullable(),
   unit: z.string().max(20).optional().nullable(),
+});
+
+// Same value as `number`; the unit is REQUIRED, which is the whole point of
+// having a separate type. A measurement field with no unit is an authoring
+// mistake, and the builder should not let it be saved.
+const numberUnitField = baseField.extend({
+  type: z.literal('number_unit'),
+  placeholder: z.string().max(150).optional().nullable(),
+  defaultValue: z.number().optional().nullable(),
+  min: z.number().optional().nullable(),
+  max: z.number().optional().nullable(),
+  step: z.number().positive().optional().nullable(),
+  unit: z.string().trim().min(1, 'Pick or type a unit for this measurement').max(20),
 });
 
 const dateField = baseField.extend({
@@ -205,6 +225,7 @@ export const formFieldSchema = z.discriminatedUnion('type', [
   textField,
   textareaField,
   numberField,
+  numberUnitField,
   dateField,
   datetimeField,
   selectField,
