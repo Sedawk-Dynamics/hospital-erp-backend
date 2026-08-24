@@ -6288,6 +6288,13 @@ model Notification {
   tenant Tenant @relation(fields: [tenantId], references: [id])
   user   User   @relation(fields: [userId], references: [id])
 
+  // The bell polls every 30s per signed-in user; without this the unread count
+  // and the list were both sequential scans. Keyed on the RECIPIENT, not the
+  // tenant — a notification names one user and is read by user, because a
+  // patient's account lives on the platform tenant while the notice carries
+  // the hospital's.
+  @@index([userId, isRead, createdAt(sort: Desc)])
+  @@index([tenantId, referenceType, referenceId])
   @@map("notifications")
 }
 
