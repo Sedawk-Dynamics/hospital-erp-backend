@@ -2,6 +2,8 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
+import { abnormalFindings } from '../../shared/vitals-ranges';
+import { notifyUsers, doctorUserIdFromProfile } from '../../shared/notify';
 import { istDayStart, istDayEnd } from '../../shared/date.utils';
 import { getPaginationParams } from '../../shared/pagination';
 import { normalizeAdmissionType, type AdmissionType } from '../../shared/admission-type';
@@ -1696,7 +1698,49 @@ export async function recordVitals(
     },
   });
 
-  logger.info({ visitId: resolvedVisitId, vitalId: vital.id }, 'Vitals recorded');
+  // A reading outside the adult range is the one thing on this screen a doctor
+  // needs told about — nursing takes almost every vital in the hospital and
+  // nothing carried an abnormal one to the treating doctor, who found it only
+  // by opening the chart. Normal readings deliberately stay silent: a bell that
+  // fires on every routine round is a bell people stop reading.
+  const findings = abnormalFindings({
+    bloodPressureSystolic: data.bloodPressureSystolic,
+    bloodPressureDiastolic: data.bloodPressureDiastolic,
+    pulseRate: data.pulseRate,
+    temperature: data.temperature,
+    respiratoryRate: data.respiratoryRate,
+    oxygenSaturation: data.oxygenSaturation,
+  });
+  if (findings.length > 0) {
+    // `visit.doctorId` is a DoctorProfile id, not a User id.
+    const doctorUserId = await doctorUserIdFromProfile(tenantId, visit.doctorId);
+    // Never notify the person who just typed it — a doctor recording their own
+    // examination reading does not need telling about it.
+    if (doctorUserId && doctorUserId !== userId) {
+      const patient = await prisma.patient.findFirst({
+        where: { id: data.patientId, tenantId },
+        select: { firstName: true, lastName: true, mrn: true },
+      });
+      const who = patient
+        ? `${patient.firstName} ${patient.lastName ?? ''}`.trim() + (patient.mrn ? ` (${patient.mrn})` : '')
+        : 'A patient';
+      await notifyUsers({
+        tenantId,
+        userIds: [doctorUserId],
+        title: 'Abnormal vitals recorded',
+        message: `${who}: ${findings.join(', ')}.`,
+        notificationType: 'alert',
+        // The doctor needs the patient, not a list of everyone's vitals.
+        referenceType: 'vital_abnormal',
+        referenceId: data.patientId,
+      });
+    }
+  }
+
+  logger.info(
+    { visitId: resolvedVisitId, vitalId: vital.id, abnormal: findings.length },
+    'Vitals recorded',
+  );
   return vital;
 }
 
