@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { prisma } from '../../../src/config/database';
-import { notifyUsers, usersWithRoles, doctorUserIdFromProfile } from '../../../src/shared/notify';
+import {
+  notifyUsers,
+  usersWithRoles,
+  doctorUserIdFromProfile,
+  tenantOwnerUserIds,
+} from '../../../src/shared/notify';
 import { abnormalFindings, isValueAbnormal } from '../../../src/shared/vitals-ranges';
 
 const TENANT = 'tenant-1';
@@ -78,11 +83,61 @@ describe('doctorUserIdFromProfile', () => {
 describe('usersWithRoles', () => {
   it('resolves active users by role slug', async () => {
     vi.mocked(prisma.user.findMany).mockResolvedValue([{ id: 'u1' }, { id: 'u2' }] as never);
+    vi.mocked(prisma.tenantOwner.findMany).mockResolvedValue([] as never);
 
     await expect(usersWithRoles(TENANT, ['front_desk', 'admin'])).resolves.toEqual(['u1', 'u2']);
     const where = vi.mocked(prisma.user.findMany).mock.calls[0][0]!.where as any;
     expect(where).toMatchObject({ tenantId: TENANT, isActive: true });
     expect(where.userRoles.some.role.name.in).toEqual(['front_desk', 'admin']);
+  });
+
+  // A hospital's own administrator is typically its OWNER, and an owner's
+  // account lives on the PLATFORM tenant — so every tenant-scoped lookup missed
+  // them. On the dev database Green city Hospital has zero users holding the
+  // `admin` role: everything addressed to its admins reached nobody.
+  it('reaches the hospital owner when the ask includes admin', async () => {
+    vi.mocked(prisma.user.findMany).mockResolvedValue([{ id: 'u-billing' }] as never);
+    vi.mocked(prisma.tenantOwner.findMany).mockResolvedValue([{ userId: 'u-owner' }] as never);
+
+    await expect(usersWithRoles(TENANT, ['admin', 'billing_admin'])).resolves.toEqual([
+      'u-billing',
+      'u-owner',
+    ]);
+    const where = vi.mocked(prisma.tenantOwner.findMany).mock.calls[0][0]!.where as any;
+    // Ownership is recorded on TenantOwner, not by the user's own tenantId.
+    expect(where).toMatchObject({ tenantId: TENANT });
+    expect(where.user).toMatchObject({ isActive: true });
+  });
+
+  it('does not drag the owner into a notice meant for clinical staff', async () => {
+    vi.mocked(prisma.user.findMany).mockResolvedValue([{ id: 'u-nurse' }] as never);
+
+    await expect(usersWithRoles(TENANT, ['nurse', 'doctor'])).resolves.toEqual(['u-nurse']);
+    expect(prisma.tenantOwner.findMany).not.toHaveBeenCalled();
+  });
+
+  it('tells an owner who is also staff once, not twice', async () => {
+    vi.mocked(prisma.user.findMany).mockResolvedValue([{ id: 'u-owner' }] as never);
+    vi.mocked(prisma.tenantOwner.findMany).mockResolvedValue([{ userId: 'u-owner' }] as never);
+
+    await expect(usersWithRoles(TENANT, ['admin'])).resolves.toEqual(['u-owner']);
+  });
+
+  it('still answers when the owner lookup fails', async () => {
+    vi.mocked(prisma.user.findMany).mockResolvedValue([{ id: 'u1' }] as never);
+    vi.mocked(prisma.tenantOwner.findMany).mockRejectedValue(new Error('db down') as never);
+
+    await expect(usersWithRoles(TENANT, ['admin'])).resolves.toEqual(['u1']);
+  });
+});
+
+describe('tenantOwnerUserIds', () => {
+  it('skips a deactivated owner account', async () => {
+    vi.mocked(prisma.tenantOwner.findMany).mockResolvedValue([] as never);
+
+    await expect(tenantOwnerUserIds(TENANT)).resolves.toEqual([]);
+    const where = vi.mocked(prisma.tenantOwner.findMany).mock.calls[0][0]!.where as any;
+    expect(where.user).toMatchObject({ isActive: true });
   });
 });
 

@@ -65,18 +65,56 @@ export async function notifyUsers(params: NotifyParams): Promise<number> {
   }
 }
 
-/** Active users in this tenant holding any of the given role slugs. */
+/**
+ * The users registered as OWNERS of this hospital.
+ *
+ * An owner's `User` row lives on the PLATFORM tenant, not on the hospital they
+ * run — they are a platform-level account that switches into a hospital with
+ * `X-Tenant-Id`, and one account can own several. Ownership is recorded in
+ * `TenantOwner`, not by the user's own tenantId.
+ */
+export async function tenantOwnerUserIds(tenantId: string): Promise<string[]> {
+  try {
+    const owners = await prisma.tenantOwner.findMany({
+      where: { tenantId, user: { isActive: true } },
+      select: { userId: true },
+    });
+    return owners.map((o) => o.userId);
+  } catch (err) {
+    logger.warn({ err, tenantId }, 'Could not resolve tenant owners for notification');
+    return [];
+  }
+}
+
+/**
+ * Active users to notify in this tenant, by role.
+ *
+ * **Asking for `admin` also reaches the hospital's owners.** Every one of these
+ * lookups filters on `user.tenantId`, and a hospital's own administrator is
+ * typically its OWNER, whose account sits on the platform tenant — so a
+ * tenant-scoped query cannot see them. On the dev database "Green city
+ * Hospital" has ZERO users holding the `admin` role: its only administrator is
+ * the owner. Every notice addressed to that hospital's admins reached nobody.
+ *
+ * Owners are folded in for `admin` rather than behind a flag because that is
+ * what the relationship means — owning the hospital IS administering it — and a
+ * flag would have to be remembered at every future call site, which is exactly
+ * how this went wrong the first time.
+ */
 export async function usersWithRoles(tenantId: string, roleSlugs: string[]): Promise<string[]> {
   try {
-    const users = await prisma.user.findMany({
-      where: {
-        tenantId,
-        isActive: true,
-        userRoles: { some: { role: { name: { in: roleSlugs } } } },
-      },
-      select: { id: true },
-    });
-    return users.map((u) => u.id);
+    const [users, owners] = await Promise.all([
+      prisma.user.findMany({
+        where: {
+          tenantId,
+          isActive: true,
+          userRoles: { some: { role: { name: { in: roleSlugs } } } },
+        },
+        select: { id: true },
+      }),
+      roleSlugs.includes('admin') ? tenantOwnerUserIds(tenantId) : Promise.resolve([]),
+    ]);
+    return [...new Set([...users.map((u) => u.id), ...owners])];
   } catch (err) {
     logger.warn({ err, roleSlugs }, 'Could not resolve notification recipients by role');
     return [];
