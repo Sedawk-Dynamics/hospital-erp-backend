@@ -6,6 +6,7 @@ import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
 import { findOpenChargeBill } from '../../shared/charge-bill';
+import { usersWithRoles } from '../../shared/notify';
 import { createBillInSeries } from '../../shared/bill-number';
 import { resolvePackSize, inferLooseUnitLabel } from '../drug-master/drug-master.dataset';
 import { resolveHsnGst, getHsnGstRows, matchHsnGst } from '../drug-master/drug-master.service';
@@ -6939,18 +6940,14 @@ export async function recallBatch(
 
   // Notify pharmacy admins
   try {
-    const pharmacyUsers = await prisma.user.findMany({
-      where: {
-        tenantId,
-        isActive: true,
-        userRoles: {
-          some: { role: { name: { in: ['pharmacy_admin', 'pharmacist', 'admin'] } } },
-        },
-      },
-      select: { id: true },
-      take: 25,
-    });
-    for (const u of pharmacyUsers) {
+    // Through the shared resolver so `admin` also reaches the hospital's owner,
+    // whose account lives on the platform tenant and so was invisible here.
+    const pharmacyUserIds = await usersWithRoles(tenantId, [
+      'pharmacy_admin',
+      'pharmacist',
+      'admin',
+    ]);
+    for (const u of pharmacyUserIds.slice(0, 25).map((id) => ({ id }))) {
       void safePharmacyNotify({
         tenantId,
         userId: u.id,
