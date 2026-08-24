@@ -2,19 +2,18 @@ import { prisma } from '../config/database';
 import { logger } from '../config/logger';
 import { formatDateIST } from '../shared/date.utils';
 import { sweepExpiredPoliciesAndPreAuths } from '../modules/insurance/insurance.service';
+import { usersWithRoles } from '../shared/notify';
 
 // Look up users to notify when policy/pre-auth alerts have no obvious owner.
 // Tenant admins + insurance_staff get pinged so the deadline isn't missed.
+/**
+ * Who chases an expiring policy, claim or pre-auth. Goes through the shared
+ * resolver so `admin` reaches the hospital's OWNER too — their account sits on
+ * the platform tenant, so the tenant-scoped query this replaces could not see
+ * them, and a hospital whose only administrator is its owner was told nothing.
+ */
 async function getInsuranceRecipients(tenantId: string): Promise<string[]> {
-  const rows = await prisma.userRole.findMany({
-    where: {
-      user: { tenantId, isActive: true },
-      role: { name: { in: ['admin', 'insurance_staff', 'billing_admin'] } },
-    },
-    select: { userId: true },
-    take: 25,
-  });
-  return Array.from(new Set(rows.map((r) => r.userId)));
+  return usersWithRoles(tenantId, ['admin', 'insurance_staff', 'billing_admin']);
 }
 
 /**
