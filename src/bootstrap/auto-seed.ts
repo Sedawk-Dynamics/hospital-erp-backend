@@ -30,6 +30,7 @@ import { seedPlatform } from '../seeds/platform';
 import { resyncRolePermissions } from '../seeds/resync-role-permissions';
 import { seedLabUnits } from '../seeds/lab-units';
 import { seedLabTestTemplates } from '../seeds/lab-test-templates';
+import { seedTenantLabCatalogs } from '../seeds/tenant-lab-catalog';
 import { seedFormTemplates } from '../seeds/form-templates';
 import { seedPhysicalObservations } from '../seeds/physical-observations';
 import { seedIcdCodes } from '../seeds/icd-codes';
@@ -91,6 +92,9 @@ export async function runSeeds(db: PrismaClient): Promise<void> {
   //    release that ships new entries picks them up.
   await step('lab-units', () => seedLabUnits(db));
   await step('lab-test-templates', () => seedLabTestTemplates(db));
+  // Must follow the templates: it clones them into any hospital whose own
+  // catalog is empty, which is what a doctor's lab-order search reads.
+  await step('tenant-lab-catalogs', () => seedTenantLabCatalogs(db));
   await step('form-templates', () => seedFormTemplates(db));
   await step('physical-observations', () => seedPhysicalObservations(db));
 
