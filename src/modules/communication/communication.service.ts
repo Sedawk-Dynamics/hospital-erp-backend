@@ -21,17 +21,38 @@ import type {
 // ============================================================
 // Notifications
 // ============================================================
+//
+// A notification names exactly ONE user, and `userId` on every read below comes
+// from the authenticated token — so the user is the scope. It is deliberately
+// NOT also filtered by the session's tenant, and that is the whole fix here.
+//
+// A patient's account lives on the PLATFORM tenant by design (auth.service:
+// "Create the account holder on the platform tenant"), because one person can
+// attend several hospitals and cannot belong to one of them. Notifications
+// about their care are written with the HOSPITAL's tenantId. So
+// `where: { tenantId, userId }` could never match for a patient: on the dev
+// database ALL 11 patient-targeted notifications were filed under a tenant the
+// recipient does not belong to, and none matched. Patients were not missing
+// some notifications — they had never received one.
+//
+// The tenantId stays ON the row: it records which hospital the notice is about,
+// which is exactly what a patient with records at two hospitals needs.
 
 /**
  * Create and send a notification to a user.
  */
 export async function createNotification(tenantId: string, data: CreateNotificationInput) {
-  // Verify the target user exists within the tenant
-  const user = await prisma.user.findFirst({
-    where: { id: data.userId, tenantId },
-  });
+  // The recipient must be someone this hospital deals with — staff on the
+  // tenant, or a patient it actually treats. The check stays (this route is
+  // permissioned but still lets a caller name any userId, and without it one
+  // hospital could notify another's users) but it can no longer refuse a
+  // patient, whose account sits on the platform tenant rather than here.
+  const [staffUser, patientOfTenant] = await Promise.all([
+    prisma.user.findFirst({ where: { id: data.userId, tenantId }, select: { id: true } }),
+    prisma.patient.findFirst({ where: { tenantId, userId: data.userId }, select: { id: true } }),
+  ]);
 
-  if (!user) {
+  if (!staffUser && !patientOfTenant) {
     throw AppError.notFound('Target user not found in this tenant');
   }
 
@@ -65,7 +86,8 @@ export async function getNotifications(
 ) {
   const { skip, take, page, limit } = getPaginationParams(query);
 
-  const where: any = { tenantId, userId };
+  // Scoped by the token's user, not the session tenant — see the note above.
+  const where: any = { userId };
 
   if (query.isRead !== undefined) {
     where.isRead = query.isRead;
@@ -100,7 +122,7 @@ export async function getNotifications(
  */
 export async function getUnreadCount(tenantId: string, userId: string) {
   const count = await prisma.notification.count({
-    where: { tenantId, userId, isRead: false },
+    where: { userId, isRead: false },
   });
 
   return { unreadCount: count };
@@ -111,7 +133,7 @@ export async function getUnreadCount(tenantId: string, userId: string) {
  */
 export async function markNotificationRead(tenantId: string, userId: string, id: string) {
   const notification = await prisma.notification.findFirst({
-    where: { id, tenantId, userId },
+    where: { id, userId },
   });
 
   if (!notification) {
@@ -131,7 +153,7 @@ export async function markNotificationRead(tenantId: string, userId: string, id:
  */
 export async function markAllNotificationsRead(tenantId: string, userId: string) {
   const result = await prisma.notification.updateMany({
-    where: { tenantId, userId, isRead: false },
+    where: { userId, isRead: false },
     data: { isRead: true, readAt: new Date() },
   });
 
@@ -144,7 +166,7 @@ export async function markAllNotificationsRead(tenantId: string, userId: string)
  */
 export async function deleteNotification(tenantId: string, userId: string, id: string) {
   const notification = await prisma.notification.findFirst({
-    where: { id, tenantId, userId },
+    where: { id, userId },
   });
 
   if (!notification) {
