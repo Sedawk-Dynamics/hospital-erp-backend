@@ -1217,6 +1217,21 @@ export async function dischargePatient(
       data: { status: 'discharged' },
     });
 
+    // Stamp the discharge date onto the summary.
+    //
+    // The summary copies it from the admission when it is written — but the
+    // summary IS the discharge gate, so it is written while the patient is
+    // still admitted and there is no date to copy yet. Nothing filled it in
+    // afterwards, so every stored copy stayed null and the clinical history
+    // panel, which renders that field as each row's headline, showed every past
+    // stay as "Not yet discharged".
+    //
+    // Only fills a blank: a summary that already carries a date keeps it.
+    await tx.dischargeSummary.updateMany({
+      where: { admissionId: id, dischargeDate: null },
+      data: { dischargeDate },
+    });
+
     return discharged;
   });
 
