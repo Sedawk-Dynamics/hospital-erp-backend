@@ -3,6 +3,7 @@ import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { findOpenChargeBill } from '../../shared/charge-bill';
+import { createBillInSeries } from '../../shared/bill-number';
 
 // ============================================================
 // NDPS Narcotic Accounting (spec — Essential Narcotic Drug lifecycle)
@@ -68,15 +69,6 @@ async function assertNarcoticDrug(tenantId: string, drugFormularyId: string) {
   return drug;
 }
 
-/** Next IP bill number (IPW-YYYYMMDD-####), matching the ward-dispense series. */
-async function nextIpBillNumber(tx: any, tenantId: string): Promise<string> {
-  const now = new Date();
-  const ymd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
-  const prefix = `IPW-${ymd}-`;
-  const todays = await tx.bill.count({ where: { tenantId, billNumber: { startsWith: prefix } } });
-  return `${prefix}${String(todays + 1).padStart(4, '0')}`;
-}
-
 /**
  * Spec Step 3 — post the narcotic dose cost to the patient's active inpatient
  * bill, simultaneously with the clinical Form 3E record. Mirrors the pharmacy
@@ -104,16 +96,15 @@ async function postConsumptionCharge(
   // See shared/charge-bill.
   let bill = await findOpenChargeBill(tx, { tenantId, patientId: p.patientId, admissionId: admission?.id ?? null });
   if (!bill) {
-    bill = await tx.bill.create({
-      data: {
-        tenantId,
-        patientId: p.patientId,
-        admissionId: admission?.id ?? null,
-        billNumber: await nextIpBillNumber(tx, tenantId),
-        billDate: new Date(),
-        status: 'draft',
-        generatedBy: userId,
-      },
+    // IPW- is the ward-dispense series; a bedside narcotic dose joins the same
+    // running IP bill the ward pharmacy posts to.
+    bill = await createBillInSeries(tx, 'IPW', {
+      tenantId,
+      patientId: p.patientId,
+      admissionId: admission?.id ?? null,
+      billDate: new Date(),
+      status: 'draft',
+      generatedBy: userId,
     });
   }
 

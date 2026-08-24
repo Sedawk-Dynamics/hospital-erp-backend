@@ -6,6 +6,7 @@ import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
 import { findOpenChargeBill } from '../../shared/charge-bill';
+import { createBillInSeries } from '../../shared/bill-number';
 import { resolvePackSize, inferLooseUnitLabel } from '../drug-master/drug-master.dataset';
 import { resolveHsnGst, getHsnGstRows, matchHsnGst } from '../drug-master/drug-master.service';
 import {
@@ -4282,13 +4283,6 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
 
 // Generator for ward-charge bill numbers (IP Ward) when a patient has no open
 // bill to post the ward dispense onto.
-async function nextWardBillNumber(tx: any, tenantId: string): Promise<string> {
-  const now = new Date();
-  const ymd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
-  const prefix = `IPW-${ymd}-`;
-  const todays = await tx.bill.count({ where: { tenantId, billNumber: { startsWith: prefix } } });
-  return `${prefix}${String(todays + 1).padStart(4, '0')}`;
-}
 
 /** G13: move stock from the central pharmacy into a ward's own stock. */
 export async function transferToWard(
@@ -4849,23 +4843,13 @@ export async function dispenseFromWard(
     // another visit's counter bill; see shared/charge-bill.
     let bill = await findOpenChargeBill(tx, { tenantId, patientId: data.patientId, admissionId: admId });
     if (!bill) {
-      bill = await tx.bill.create({
-        data: {
-          tenantId,
-          billNumber: await nextWardBillNumber(tx, tenantId),
-          patientId: data.patientId,
-          admissionId: admId,
-          billDate: new Date(),
-          subtotal: 0,
-          discountAmount: 0,
-          taxAmount: 0,
-          totalAmount: 0,
-          patientPayableAmount: 0,
-          amountPaid: 0,
-          balanceDue: 0,
-          status: 'draft',
-          generatedBy: userId,
-        },
+      bill = await createBillInSeries(tx, 'IPW', {
+        tenantId,
+        patientId: data.patientId,
+        admissionId: admId,
+        billDate: new Date(),
+        status: 'draft',
+        generatedBy: userId,
       });
     } else if (!bill.admissionId && admId) {
       bill = await tx.bill.update({ where: { id: bill.id }, data: { admissionId: admId } });

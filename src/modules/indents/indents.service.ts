@@ -1,6 +1,7 @@
 import { prisma } from '../../config/database';
 import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
 import { findOpenChargeBill } from '../../shared/charge-bill';
+import { createBillInSeries } from '../../shared/bill-number';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { checkControlledDispense } from '../pharmacy/controlled-dispense';
@@ -370,25 +371,13 @@ export async function dispenseIndent(
     // never the `ADV-` advance bucket; see shared/charge-bill.
     let bill = await findOpenChargeBill(tx, { tenantId, patientId: indent.patientId, admissionId: admId });
     if (!bill) {
-      const now = new Date();
-      const ymd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
-      const prefix = `IPW-${ymd}-`;
-      const seq = await tx.bill.count({ where: { tenantId, billNumber: { startsWith: prefix } } });
-      bill = await tx.bill.create({
-        data: {
-          tenantId,
-          billNumber: `${prefix}${String(seq + 1).padStart(4, '0')}`,
-          patientId: indent.patientId,
-          admissionId: admId ?? undefined,
-          billDate: new Date(),
-          subtotal: 0,
-          taxAmount: 0,
-          totalAmount: 0,
-          patientPayableAmount: 0,
-          balanceDue: 0,
-          status: 'draft',
-          generatedBy: userId,
-        },
+      bill = await createBillInSeries(tx, 'IPW', {
+        tenantId,
+        patientId: indent.patientId,
+        admissionId: admId ?? undefined,
+        billDate: new Date(),
+        status: 'draft',
+        generatedBy: userId,
       });
     } else if (!bill.admissionId && admId) {
       bill = await tx.bill.update({ where: { id: bill.id }, data: { admissionId: admId } });
@@ -600,16 +589,13 @@ export async function dispenseIpPrescription(
     // shared/charge-bill.
     let bill = await findOpenChargeBill(tx, { tenantId, patientId: rx.patientId, admissionId: admId });
     if (!bill) {
-      const now = new Date();
-      const ymd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
-      const prefix = `IPW-${ymd}-`;
-      const seq = await tx.bill.count({ where: { tenantId, billNumber: { startsWith: prefix } } });
-      bill = await tx.bill.create({
-        data: {
-          tenantId, billNumber: `${prefix}${String(seq + 1).padStart(4, '0')}`, patientId: rx.patientId,
-          admissionId: admId ?? undefined, billDate: new Date(), subtotal: 0, taxAmount: 0, totalAmount: 0,
-          patientPayableAmount: 0, balanceDue: 0, status: 'draft', generatedBy: userId,
-        },
+      bill = await createBillInSeries(tx, 'IPW', {
+        tenantId,
+        patientId: rx.patientId,
+        admissionId: admId ?? undefined,
+        billDate: new Date(),
+        status: 'draft',
+        generatedBy: userId,
       });
     } else if (!bill.admissionId && admId) {
       bill = await tx.bill.update({ where: { id: bill.id }, data: { admissionId: admId } });
