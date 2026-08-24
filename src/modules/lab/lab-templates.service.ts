@@ -378,7 +378,25 @@ export async function cloneAllLabTemplates(
   body: CloneAllLabTemplatesInput,
 ) {
   assertCanCloneTemplates(roles);
+  return cloneTemplatesIntoTenant(tenantId, body);
+}
 
+/**
+ * The clone itself, with no caller to authorise.
+ *
+ * Split out so provisioning can use it: the platform templates are seeded on
+ * every boot, but `LabTestCatalog` is PER TENANT and was only ever filled by an
+ * admin pressing "clone all" by hand. A hospital nobody had pressed it for had
+ * an empty catalog, so a doctor's lab-order search returned nothing at all —
+ * however well the search itself worked. See bootstrap/auto-seed.
+ *
+ * Every write is keyed on `templateId`, so a hospital's own edits survive and
+ * its custom tests (templateId null) are never touched.
+ */
+export async function cloneTemplatesIntoTenant(
+  tenantId: string,
+  body: CloneAllLabTemplatesInput,
+) {
   const templates = await prisma.labTestTemplate.findMany({
     where: {
       isPublished: true,
