@@ -1,5 +1,6 @@
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
+import { usersWithRoles } from '../../shared/notify';
 
 // ============================================================
 // Inventory notifications — "alert inventory manager".
@@ -21,15 +22,10 @@ export async function getAlertRecipientUserIds(
   roleSlugs: string[],
 ): Promise<string[]> {
   const roles = roleSlugs.length > 0 ? roleSlugs : DEFAULT_ALERT_RECIPIENT_ROLES;
-  const users = await prisma.user.findMany({
-    where: {
-      tenantId,
-      isActive: true,
-      userRoles: { some: { role: { name: { in: roles } } } },
-    },
-    select: { id: true },
-  });
-  return users.map((u) => u.id);
+  // Through the shared resolver so `admin` also reaches the hospital's owner —
+  // whose account lives on the platform tenant and so was invisible to the
+  // tenant-scoped query this replaces.
+  return usersWithRoles(tenantId, roles);
 }
 
 /**

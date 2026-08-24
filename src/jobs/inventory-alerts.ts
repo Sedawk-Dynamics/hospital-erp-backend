@@ -2,6 +2,7 @@ import { prisma } from '../config/database';
 import { logger } from '../config/logger';
 import { runInventoryAlerts } from '../modules/inventory/inventory.service';
 import { runPharmacyExpiryAlerts } from '../modules/pharmacy/pharmacy.service';
+import { tenantOwnerUserIds } from '../shared/notify';
 
 /**
  * Daily inventory alert sweep across all active tenants. For each tenant it
@@ -33,9 +34,16 @@ export async function runInventoryAlertsJob() {
         },
         select: { id: true },
       });
-      if (!actor) continue;
+      // Fall back to the hospital's owner. This query is tenant-scoped and an
+      // owner's account lives on the platform tenant, so a hospital whose only
+      // administrator is its owner found nobody here — and the job then skipped
+      // that hospital entirely, meaning no low-stock or expiry alerts at all.
+      // Last resort on purpose: an existing hospital with staff in these roles
+      // keeps attributing the job's stock writes to exactly who it did before.
+      const actorId = actor?.id ?? (await tenantOwnerUserIds(tenant.id))[0];
+      if (!actorId) continue;
 
-      const result = await runInventoryAlerts(tenant.id, actor.id);
+      const result = await runInventoryAlerts(tenant.id, actorId);
       if (result.lowStockAlerts || result.expiryAlerts || result.expiredFlagged) {
         logger.info({ tenantId: tenant.id, ...result }, 'Inventory alerts dispatched');
       }
@@ -43,7 +51,7 @@ export async function runInventoryAlertsJob() {
       // G5: pharmacy drug-batch expiry — auto-flag expired + near-expiry alerts.
       // Drug batches live in a separate store from inventory consumables, so they
       // need their own pass (honouring the same per-tenant expiry settings).
-      const rxResult = await runPharmacyExpiryAlerts(tenant.id, actor.id);
+      const rxResult = await runPharmacyExpiryAlerts(tenant.id, actorId);
       if (rxResult.expiredFlagged || rxResult.expiryAlerts) {
         logger.info({ tenantId: tenant.id, ...rxResult }, 'Pharmacy expiry alerts dispatched');
       }
