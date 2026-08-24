@@ -5,6 +5,7 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
+import { findOpenChargeBill } from '../../shared/charge-bill';
 import { resolvePackSize, inferLooseUnitLabel } from '../drug-master/drug-master.dataset';
 import { resolveHsnGst, getHsnGstRows, matchHsnGst } from '../drug-master/drug-master.service';
 import {
@@ -4844,10 +4845,9 @@ export async function dispenseFromWard(
       ?? null;
 
     // Post the charge to the patient's open bill; else open a draft IP-ward bill.
-    let bill = await tx.bill.findFirst({
-      where: { tenantId, patientId: data.patientId, status: { in: ['draft', 'pending', 'partially_paid'] } },
-      orderBy: { createdAt: 'desc' },
-    });
+    // Never the `ADV-` advance bucket, and — with a stay in progress — never
+    // another visit's counter bill; see shared/charge-bill.
+    let bill = await findOpenChargeBill(tx, { tenantId, patientId: data.patientId, admissionId: admId });
     if (!bill) {
       bill = await tx.bill.create({
         data: {

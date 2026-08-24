@@ -2,6 +2,7 @@ import { prisma } from '../../config/database';
 import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
+import { findOpenChargeBill } from '../../shared/charge-bill';
 
 // ============================================================
 // NDPS Narcotic Accounting (spec — Essential Narcotic Drug lifecycle)
@@ -98,10 +99,10 @@ async function postConsumptionCharge(
     select: { id: true },
   });
 
-  let bill = await tx.bill.findFirst({
-    where: { tenantId, patientId: p.patientId, status: { in: ['draft', 'pending', 'partially_paid'] } },
-    orderBy: { createdAt: 'desc' },
-  });
+  // Prefers this stay's running draft, and never the `ADV-` advance bucket — a
+  // narcotic dose posted there was invisible on every list and every ledger.
+  // See shared/charge-bill.
+  let bill = await findOpenChargeBill(tx, { tenantId, patientId: p.patientId, admissionId: admission?.id ?? null });
   if (!bill) {
     bill = await tx.bill.create({
       data: {

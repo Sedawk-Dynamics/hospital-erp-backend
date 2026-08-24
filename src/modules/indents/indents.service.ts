@@ -1,5 +1,6 @@
 import { prisma } from '../../config/database';
 import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
+import { findOpenChargeBill } from '../../shared/charge-bill';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { checkControlledDispense } from '../pharmacy/controlled-dispense';
@@ -365,11 +366,9 @@ export async function dispenseIndent(
       ?? (await tx.admission.findFirst({ where: { tenantId, patientId: indent.patientId, status: ACTIVE_ADMISSION_STATUS }, orderBy: { admissionDate: 'desc' }, select: { id: true } }))?.id
       ?? null;
 
-    // Find/open the patient's IP bill.
-    let bill = await tx.bill.findFirst({
-      where: { tenantId, patientId: indent.patientId, status: { in: ['draft', 'pending', 'partially_paid'] } },
-      orderBy: { createdAt: 'desc' },
-    });
+    // Find/open the patient's IP bill. Prefers this stay's running draft and
+    // never the `ADV-` advance bucket; see shared/charge-bill.
+    let bill = await findOpenChargeBill(tx, { tenantId, patientId: indent.patientId, admissionId: admId });
     if (!bill) {
       const now = new Date();
       const ymd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
@@ -596,11 +595,10 @@ export async function dispenseIpPrescription(
       ?? (await tx.admission.findFirst({ where: { tenantId, patientId: rx.patientId, status: ACTIVE_ADMISSION_STATUS }, orderBy: { admissionDate: 'desc' }, select: { id: true } }))?.id
       ?? null;
 
-    // Attach to the patient's running IP bill (draft/pending/partially_paid), else open one.
-    let bill = await tx.bill.findFirst({
-      where: { tenantId, patientId: rx.patientId, status: { in: ['draft', 'pending', 'partially_paid'] } },
-      orderBy: { createdAt: 'desc' },
-    });
+    // Attach to this stay's running IP bill, else the patient's newest open
+    // bill, else open one. Never the `ADV-` advance bucket; see
+    // shared/charge-bill.
+    let bill = await findOpenChargeBill(tx, { tenantId, patientId: rx.patientId, admissionId: admId });
     if (!bill) {
       const now = new Date();
       const ymd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;

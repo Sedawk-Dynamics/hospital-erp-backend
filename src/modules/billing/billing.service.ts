@@ -3,6 +3,7 @@ import { Decimal } from '@prisma/client/runtime/library';
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
+import { isAdvanceBucket } from '../../shared/charge-bill';
 import { getPaginationParams } from '../../shared/pagination';
 import {
   getISTDateStr,
@@ -3940,9 +3941,18 @@ export async function getAdmissionLedger(tenantId: string, admissionId: string, 
   // bills (admissionId set), AND orphan bills auto-created for the admission's
   // VISIT with no admissionId — this is where lab (autoLinkLabOrderToBill) and
   // imaging charges land. Without the visit branch those never appear here.
-  const bills = await prisma.bill.findMany({
+  //
+  // The `ADV-` advance bucket is excluded even when it carries this
+  // admissionId. Ward charge paths used to be able to pick the bucket as "the
+  // patient's open bill" and then stamp the admission onto it; any row left
+  // that way would be summed here as a bill, and its `amountPaid` IS the
+  // advance balance — so `paid` below would count the advance a second time,
+  // on top of `advanceOnFile`. That understates what the patient still owes
+  // and overstates what is refundable to them.
+  const allBills = await prisma.bill.findMany({
     where: {
       tenantId,
+      ...NOT_ADVANCE_BUCKET,
       status: { not: 'cancelled' },
       OR: [
         { admissionId },
@@ -3952,6 +3962,9 @@ export async function getAdmissionLedger(tenantId: string, admissionId: string, 
     orderBy: { createdAt: 'asc' },
     include: { billItems: { orderBy: { createdAt: 'asc' } } },
   });
+  // Belt and braces on a money invariant: the filter above keeps the bucket out
+  // in SQL, and this keeps it out of the sums no matter how the rows arrived.
+  const bills = allBills.filter((b) => !isAdvanceBucket(b.billNumber));
 
   // Dedupe by charge reference so a charge that somehow sits on both an IP bill
   // and a visit bill is only counted once.
