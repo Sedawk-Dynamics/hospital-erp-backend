@@ -2562,6 +2562,19 @@ export async function extractResultsFromAttachment(
   if (!attachment) throw AppError.notFound('Attachment not found');
 
   const order = attachment.labOrder;
+
+  // Reading a file WRITES lab results, so it is result entry by another route
+  // and has to clear the same gate. It did not: the upload endpoint checks
+  // payment, but `POST /attachments/:id/extract` — the "read this file again"
+  // action — went straight to writing. Any attachment already on file could be
+  // re-read at any time, which reopened exactly the hole the gate was added to
+  // close: results recorded for an order nobody accepted and nobody paid for.
+  //
+  // The AI chat's bulk backfill funnels through here too, and it already logs
+  // and continues per attachment — so an unpaid order is skipped there rather
+  // than failing the whole conversation.
+  await assertLabOrderPaid(tenantId, { id: order.id, visitId: '' });
+
   // Which order item the values belong to. The upload usually names one; when
   // it doesn't, a single-test order is unambiguous and anything else needs the
   // lab to say which test the file is for.

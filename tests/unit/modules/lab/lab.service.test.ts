@@ -619,6 +619,18 @@ describe('Lab Service', () => {
   // the discharge summary and CDSS all saw a patient with no labs.
   // ============================================================
   describe('extractResultsFromAttachment', () => {
+    // Reading a file WRITES results, so it clears the same payment gate as
+    // typing them in. Every case below is about what the reader does with what
+    // it got back, so each one stages an accepted, paid order — the gate itself
+    // is covered in extract-payment-gate.test.ts.
+    beforeEach(() => {
+      (prisma.labOrder.findFirst as any).mockResolvedValue({
+        acceptedAt: new Date('2026-08-01T00:00:00.000Z'),
+        paymentVerified: true,
+        paymentDeferredReason: null,
+      });
+    });
+
     const attachment = (over: Record<string, unknown> = {}) => ({
       id: 'att-1',
       fileUrl: '/uploads/report.pdf',
