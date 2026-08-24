@@ -3,7 +3,7 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { abnormalFindings } from '../../shared/vitals-ranges';
-import { notifyUsers, doctorUserIdFromProfile } from '../../shared/notify';
+import { notifyUsers, doctorUserIdFromProfile, usersWithRoles } from '../../shared/notify';
 import { istDayStart, istDayEnd } from '../../shared/date.utils';
 import { getPaginationParams } from '../../shared/pagination';
 import { normalizeAdmissionType, type AdmissionType } from '../../shared/admission-type';
@@ -3183,19 +3183,6 @@ async function notifyAdmissionRequest(params: {
   } catch (err) {
     logger.warn({ err, requestId: params.requestId }, 'Admission request notification failed');
   }
-}
-
-/** Active users holding any of the given role slugs. */
-async function usersWithRoles(tenantId: string, roleSlugs: string[]): Promise<string[]> {
-  const users = await prisma.user.findMany({
-    where: {
-      tenantId,
-      isActive: true,
-      userRoles: { some: { role: { name: { in: roleSlugs } } } },
-    },
-    select: { id: true },
-  });
-  return users.map((u) => u.id);
 }
 
 export async function createAdmissionRequest(
