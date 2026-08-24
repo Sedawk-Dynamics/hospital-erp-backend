@@ -388,7 +388,11 @@ export async function getTests(tenantId: string, query: GetTestsQuery) {
       where,
       skip,
       take,
-      orderBy: { createdAt: 'desc' },
+      // Alphabetical, not newest-first. This is a catalog a doctor SCANS —
+      // "which of these is the one I want" — and the order a test happened to
+      // be cloned in carries no meaning to them. It also makes a truncated
+      // page predictable instead of arbitrary.
+      orderBy: { testName: 'asc' },
     }),
     prisma.labTestCatalog.count({ where }),
   ]);
