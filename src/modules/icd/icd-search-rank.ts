@@ -50,6 +50,10 @@ export interface RankableIcd {
  * That only holds while `keywords` stays curated. It is also why WHO's
  * inclusion terms rank down at `SynonymWordStart` instead: they are searchable,
  * but "fever" must not return Puerperal sepsis just because O85 lists it.
+ *
+ * The last two tiers are for queries of more than one word, and both rank below
+ * every contiguous-phrase match — a row containing the words scattered is a
+ * weaker answer than one containing the phrase.
  */
 const enum Tier {
   CodeExact = 0,
@@ -60,6 +64,16 @@ const enum Tier {
   KeywordWordStart = 5,
   SynonymWordStart = 6,
   Anywhere = 7,
+  /** Every word present, but not as a phrase — "fracture femur". */
+  AllWords = 8,
+  /** All but one word present — "lower back pain" against "Low back pain". */
+  MostWords = 9,
+  NoMatch = 10,
+}
+
+/** The words of a query. Capped, so a pasted paragraph cannot fan out. */
+export function queryWords(q: string): string[] {
+  return q.trim().toLowerCase().split(/\s+/).filter(Boolean).slice(0, 6);
 }
 
 /** True when `term` starts a word in `text` — "fever" in "Typhoid fever". */
@@ -89,8 +103,29 @@ export function icdMatchTier(row: RankableIcd, term: string): Tier {
   if (title.startsWith(term)) return Tier.TitlePrefix;
   if (startsWord(title, term)) return Tier.TitleWordStart;
   if (keywords.some((k) => startsWord(k, term))) return Tier.KeywordWordStart;
-  if (startsWord(row.searchTokens ?? '', term)) return Tier.SynonymWordStart;
-  return Tier.Anywhere;
+  const tokens = row.searchTokens ?? '';
+  if (startsWord(tokens, term)) return Tier.SynonymWordStart;
+  if (tokens.includes(term)) return Tier.Anywhere;
+
+  // Nothing matched the phrase. For a multi-word query, fall back to how many
+  // of its words the row carries at all — word order in a query rarely matches
+  // ICD's own ("fracture femur" against "Fracture of neck of femur"), and its
+  // vocabulary often differs by a word ("lower back pain" against "Low back
+  // pain"), so demanding the exact phrase returned nothing at all.
+  const words = queryWords(term);
+  if (words.length > 1) {
+    const hits = words.filter((w) => tokens.includes(w)).length;
+    if (hits === words.length) return Tier.AllWords;
+    if (hits === words.length - 1 && words.length > 2) return Tier.MostWords;
+  }
+  return Tier.NoMatch;
+}
+
+/** How many query words start a word of the title — a multi-word tiebreak. */
+function titleWordHits(row: RankableIcd, words: string[]): number {
+  if (words.length < 2) return 0;
+  const title = row.title.toLowerCase();
+  return words.filter((w) => startsWord(title, w)).length;
 }
 
 /**
@@ -120,8 +155,17 @@ export function rankIcdResults<T extends RankableIcd>(rows: T[], q: string, limi
     unique.push(row);
   }
 
+  const words = queryWords(term);
   return unique
-    .map((row, i) => ({ row, i, tier: icdMatchTier(row, term) }))
+    .map((row, i) => ({
+      row,
+      i,
+      tier: icdMatchTier(row, term),
+      titleHits: titleWordHits(row, words),
+    }))
+    // A row that carries none of the words is not a result. It can arrive here
+    // from a window that matched on something the ranker does not score.
+    .filter((s) => s.tier < Tier.NoMatch)
     // A short term matches a substring almost everywhere, and none of it means
     // anything: "tb" pulled in "Heartburn", "Flatback syndrome" and four kinds
     // of frostbite alongside the tuberculosis code that actually carries the
@@ -130,6 +174,11 @@ export function rankIcdResults<T extends RankableIcd>(rows: T[], q: string, limi
     .sort(
       (a, b) =>
         a.tier - b.tier ||
+        // Among equally-scattered matches, the row whose TITLE carries more of
+        // the words is the better answer: for "upper abdominal pain" that is
+        // R10.1 "Pain localized to upper abdomen" rather than R10.0 "Acute
+        // abdomen", which only qualifies through its inclusion terms.
+        b.titleHits - a.titleHits ||
         Number(!!b.row.tenantId) - Number(!!a.row.tenantId) ||
         Number(b.row.isBillable ?? false) - Number(a.row.isBillable ?? false) ||
         a.row.title.length - b.row.title.length ||
