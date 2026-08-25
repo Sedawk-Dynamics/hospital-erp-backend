@@ -35,6 +35,7 @@ import { seedFormTemplates } from '../seeds/form-templates';
 import { seedPhysicalObservations } from '../seeds/physical-observations';
 import { seedIcdCodes } from '../seeds/icd-codes';
 import { seedIcdFromClaml } from '../seeds/icd-claml';
+import { retireDemoIcdCodes } from '../seeds/icd-retire-demo-codes';
 import { seedDrugMaster } from '../seeds/drug-master';
 import { seedPackSizes } from '../seeds/pack-sizes';
 import { seedPackPrices } from '../seeds/pack-prices';
@@ -115,6 +116,11 @@ export async function runSeeds(db: PrismaClient): Promise<void> {
   //    no-ops when the release is already in, so a build shipping a newer WHO
   //    version lands by itself. ~5s on a cold database, a single read after.
   await step('icd-who', () => seedIcdFromClaml(db));
+  //    Finally drop the five illustrative numeric codes from the TRMS CDSS
+  //    document. Removing them from `icd.data.ts` does not reach a database
+  //    that already has them, because the curated seed only creates and updates
+  //    and is guarded on an empty catalogue. No-op once done.
+  await step('icd-retire-demo', () => retireDemoIcdCodes(db));
 
   // 4. Drug master — the heavy one (~hundreds of thousands of rows from the
   //    bundled CSV). Seed only when empty. Pack size/price backfills only make

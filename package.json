@@ -36,6 +36,7 @@
     "db:seed:inventory-to-formulary": "tsx src/seeds/inventory-to-formulary.ts",
     "db:seed:icd": "tsx src/seeds/icd-codes.ts",
     "db:seed:icd-full": "tsx src/seeds/icd-claml.ts",
+    "db:seed:icd-retire-demo": "tsx src/seeds/icd-retire-demo-codes.ts",
     "db:seed:patient-phones": "tsx prisma/scripts/backfill-patient-phones.ts",
     "db:seed:prod": "node dist-seed/prisma/seed.js",
     "db:studio": "prisma studio",
