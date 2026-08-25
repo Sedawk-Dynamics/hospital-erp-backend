@@ -11,6 +11,8 @@
  * within each, exact < prefix < word-start < substring.
  */
 
+import { trigramSimilarity } from './trigram';
+
 const WORD_SPLIT = /[\s,\-/()+.]+/;
 
 /**
@@ -46,25 +48,6 @@ const FUZZY_MIN_QUERY_LEN = 4;
 // Minimum trigram similarity for a word/name to count as a fuzzy match. Mirrors
 // the Postgres pg_trgm default (0.3) so JS ranking agrees with the DB fetch.
 const FUZZY_MIN_SIM = 0.3;
-
-/** Trigram set of a string, space-padded like pg_trgm so word edges count. */
-function trigrams(s: string): Set<string> {
-  const t = `  ${s} `;
-  const out = new Set<string>();
-  for (let i = 0; i < t.length - 2; i++) out.add(t.slice(i, i + 3));
-  return out;
-}
-
-/** Jaccard trigram similarity in [0,1], matching pg_trgm `similarity()`. */
-function trigramSimilarity(a: string, b: string): number {
-  if (!a || !b) return 0;
-  const A = trigrams(a);
-  const B = trigrams(b);
-  if (!A.size || !B.size) return 0;
-  let inter = 0;
-  for (const g of A) if (B.has(g)) inter++;
-  return inter / (A.size + B.size - inter);
-}
 
 /**
  * Best fuzzy similarity of `query` against the whole value and its meaningful
