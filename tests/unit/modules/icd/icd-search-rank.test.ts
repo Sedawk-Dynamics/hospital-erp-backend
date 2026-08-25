@@ -202,6 +202,85 @@ describe('ranking ICD search results', () => {
     });
   });
 
+  describe('a misspelled query', () => {
+    it('finds the code the doctor was one keystroke away from', () => {
+      // Literal matching empties the catalogue for "diabtes", and an empty
+      // picker gives the doctor nothing to correct from.
+      const rows = [icd('E11.9', 'Type 2 diabetes mellitus, without complications')];
+      expect(codes(rankIcdResults(rows, 'diabtes', 5))).toEqual(['E11.9']);
+    });
+
+    it('ranks every literal match above every fuzzy one', () => {
+      // The whole point of the tier: fuzzy fills empty slots, it never
+      // reorders a search that already works.
+      const rows = [
+        icd('J45.1', 'Nonallergic asthma'),
+        icd('B01.2', 'Varicella pneumonia'),
+      ];
+      expect(codes(rankIcdResults(rows, 'asthma', 5))).toEqual(['J45.1']);
+    });
+
+    it('corrects the ordering the database returns', () => {
+      // Postgres picks candidates by word similarity across the whole token
+      // blob, so G73.0 comes back FIRST for "diabtes" — its WHO inclusion
+      // terms mention diabetes. The doctor means a code whose own name is the
+      // word they mistyped.
+      const rows = [
+        icd('G73.0', 'Myasthenic syndromes in endocrine diseases', {
+          searchTokens: 'g73.0 myasthenic syndromes in endocrine diseases diabetes mellitus',
+        }),
+        icd('E11.0', 'Type 2 diabetes mellitus, with coma'),
+      ];
+      expect(codes(rankIcdResults(rows, 'diabtes', 5))).toEqual(['E11.0']);
+    });
+
+    it('matches a mistyped word among correctly spelled ones', () => {
+      // Measured: this returned nothing while the query had found I63.9
+      // perfectly well — the ranker was discarding what the database offered.
+      const rows = [icd('I63.9', 'Cerebral infarction, unspecified')];
+      expect(codes(rankIcdResults(rows, 'cerebal infarction', 5))).toEqual(['I63.9']);
+    });
+
+    it('will not let one good word carry a nonsense query', () => {
+      // "cerebal appendicitis" must not match on the strength of the second
+      // word alone.
+      const rows = [icd('K35.8', 'Acute appendicitis, other and unspecified')];
+      expect(rankIcdResults(rows, 'cerebal appendicitis', 5)).toEqual([]);
+    });
+
+    it('matches a mistyped curated keyword', () => {
+      const rows = [icd('I21.9', 'Acute myocardial infarction, unspecified', {
+        keywords: ['heart attack', 'mi', 'stemi'],
+      })];
+      expect(codes(rankIcdResults(rows, 'stemmi', 5))).toEqual(['I21.9']);
+    });
+
+    it('returns nothing for a query that is not a misspelling of anything', () => {
+      const rows = [icd('A00', 'Cholera'), icd('S72.0', 'Fracture of neck of femur')];
+      expect(rankIcdResults(rows, 'qwertyuiop', 5)).toEqual([]);
+    });
+
+    it('does not fuzzy-match a query too short to be a typo', () => {
+      // Three letters are trigram-similar to a large part of any catalogue.
+      // "chl" is not a prefix or substring of "Cholera", so nothing but fuzzy
+      // could match it — and fuzzy is gated off below four characters.
+      const rows = [icd('A00', 'Cholera')];
+      expect(rankIcdResults(rows, 'chl', 5)).toEqual([]);
+      // One letter more and it does match, which is the gate doing its job.
+      expect(codes(rankIcdResults(rows, 'chlera', 5))).toEqual(['A00']);
+    });
+
+    it('puts the closer spelling first', () => {
+      const rows = [
+        icd('J45.1', 'Nonallergic asthma'),
+        icd('J45', 'Asthma'),
+      ];
+      // Both carry the word; ordering inside the tier is by similarity, and
+      // both score the same on "asthma" — so the shorter title settles it.
+      expect(codes(rankIcdResults(rows, 'asthama', 5))[0]).toBe('J45');
+    });
+  });
+
   it('orders deterministically when everything else ties', () => {
     const rows = [icd('J45.8', 'Mixed asthma'), icd('J45.1', 'Mixed asthma')];
     expect(codes(rankIcdResults(rows, 'asthma', 2))).toEqual(['J45.1', 'J45.8']);
