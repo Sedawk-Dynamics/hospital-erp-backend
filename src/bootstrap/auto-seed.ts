@@ -34,6 +34,7 @@ import { seedTenantLabCatalogs } from '../seeds/tenant-lab-catalog';
 import { seedFormTemplates } from '../seeds/form-templates';
 import { seedPhysicalObservations } from '../seeds/physical-observations';
 import { seedIcdCodes } from '../seeds/icd-codes';
+import { seedIcdFromClaml } from '../seeds/icd-claml';
 import { seedDrugMaster } from '../seeds/drug-master';
 import { seedPackSizes } from '../seeds/pack-sizes';
 import { seedPackPrices } from '../seeds/pack-prices';
@@ -98,13 +99,22 @@ export async function runSeeds(db: PrismaClient): Promise<void> {
   await step('form-templates', () => seedFormTemplates(db));
   await step('physical-observations', () => seedPhysicalObservations(db));
 
-  // 3. ICD-10 catalog — a few thousand rows; seed once, then skip.
+  // 3. ICD-10 catalog. Two seeds, and the order matters.
+  //    `icd-codes` is the curated starter set, and its real job now is the
+  //    everyday slang WHO never prints — "flu", "heart attack", "cad". It
+  //    REPLACES keywords, so it has to run first; running it after would strip
+  //    what the search ranks on. Seed once, then skip.
   const icdCount = await db.icdCode.count({ where: { tenantId: null } });
   if (icdCount === 0) {
     await step('icd-codes', () => seedIcdCodes(db));
   } else {
     logger.info(`[auto-seed] ↷ icd-codes skipped (${icdCount} present)`);
   }
+  //    Then the full WHO release (~12,300 codes). Not behind an "is it empty"
+  //    guard: it diffs against what is there, writes only what differs and
+  //    no-ops when the release is already in, so a build shipping a newer WHO
+  //    version lands by itself. ~5s on a cold database, a single read after.
+  await step('icd-who', () => seedIcdFromClaml(db));
 
   // 4. Drug master — the heavy one (~hundreds of thousands of rows from the
   //    bundled CSV). Seed only when empty. Pack size/price backfills only make
