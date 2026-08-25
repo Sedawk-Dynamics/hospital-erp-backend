@@ -6,6 +6,7 @@ import { env } from '../../config/env';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { notifyUsers, usersWithRoles, doctorUserIdFromProfile } from '../../shared/notify';
+import { nextBillNumberInSeries } from '../../shared/bill-number';
 import { formatDateTimeIST } from '../../shared/date.utils';
 import { commissionService } from '../commission/commission.service';
 import { settleGatewayPayment } from '../billing/billing.service';
@@ -2250,33 +2251,16 @@ export async function getPaymentInfo(tenantId: string) {
 }
 
 /**
- * Generate a bill number in IST timezone (BILL-YYYYMMDD-XXXX).
+ * The next `BILL-YYYYMMDD-XXXX`.
+ *
+ * Through the shared allocator, which reads the maximum ACROSS ALL TENANTS.
+ * This scoped both the maximum and its duplicate re-check to one tenant, and
+ * `bill_number` is unique globally — so two hospitals taking an online booking
+ * on the same day both computed `…-0001` and the second insert was refused. The
+ * tenant-scoped re-check was looking in the one place the clash could not be.
  */
-async function generateBillNumber(tenantId: string): Promise<string> {
-  const now = new Date();
-  const ist = new Date(now.getTime() + 5.5 * 60 * 60 * 1000);
-  const y = ist.getUTCFullYear();
-  const m = (ist.getUTCMonth() + 1).toString().padStart(2, '0');
-  const d = ist.getUTCDate().toString().padStart(2, '0');
-  const prefix = `BILL-${y}${m}${d}-`;
-
-  const latest = await prisma.bill.findFirst({
-    where: { tenantId, billNumber: { startsWith: prefix } },
-    orderBy: { billNumber: 'desc' },
-    select: { billNumber: true },
-  });
-
-  let next = 1;
-  if (latest?.billNumber) {
-    next = parseInt(latest.billNumber.split('-').pop() || '0', 10) + 1;
-  }
-
-  const billNumber = `${prefix}${next.toString().padStart(4, '0')}`;
-
-  const dup = await prisma.bill.findFirst({ where: { tenantId, billNumber } });
-  if (dup) return generateBillNumber(tenantId);
-
-  return billNumber;
+async function generateBillNumber(_tenantId: string): Promise<string> {
+  return nextBillNumberInSeries(prisma, 'BILL');
 }
 
 /**

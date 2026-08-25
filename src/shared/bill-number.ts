@@ -112,3 +112,41 @@ export async function createBillInSeries(
     throw err;
   }
 }
+
+/**
+ * Create a bill in a dated series, retrying the whole create if the number is
+ * taken.
+ *
+ * For callers that run OUTSIDE a transaction. That is the difference that makes
+ * retry possible at all: a unique violation aborts a Postgres transaction, so
+ * the in-transaction ward paths above have to settle for MAX-across-tenants and
+ * a retriable error. These callers have no such limit, so a lost race is
+ * absorbed rather than shown to the user.
+ *
+ * The pharmacy POS already worked this way — it re-runs its whole sale
+ * transaction on a bill-number clash — and this is the same idea for the
+ * single-statement creates.
+ *
+ * @param data the bill to create, minus `billNumber`. Nested writes
+ *             (`billItems: { create: [...] }`) are passed through untouched.
+ */
+export async function createBillInSeriesWithRetry(
+  client: any,
+  series: string,
+  data: Record<string, unknown>,
+  attempts = 10,
+): Promise<any> {
+  for (let i = 0; i < attempts; i++) {
+    // Re-read the maximum each time round: losing the race means somebody else
+    // has just taken a number, so the next one has moved.
+    const billNumber = await nextBillNumberInSeries(client, series);
+    try {
+      return await client.bill.create({ data: { ...data, billNumber } });
+    } catch (err) {
+      if (!isBillNumberClash(err)) throw err;
+    }
+  }
+  throw AppError.badRequest(
+    `Could not allocate a bill number in series ${series} after ${attempts} attempts. Please retry.`,
+  );
+}

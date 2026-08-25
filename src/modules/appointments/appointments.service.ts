@@ -30,6 +30,7 @@ import type {
   FrontdeskCheckoutInput,
 } from './appointments.validation';
 import { createPayment, recalculateBillTotalsPublic } from '../billing/billing.service';
+import { createBillInSeriesWithRetry } from '../../shared/bill-number';
 
 // Valid status transitions
 const STATUS_TRANSITIONS: Record<string, string[]> = {
@@ -1939,13 +1940,15 @@ async function ensureAppointmentBill(
   const taxAmount = chargeRegistration ? regTotals.taxAmount : 0;
   const total = round2(amount + registrationTotal);
 
-  const billNumber = await generateFrontdeskBillNumber(tenantId);
-
-  const bill = await prisma.bill.create({
-    data: {
+  // `bill_number` is unique GLOBALLY, so a per-tenant sequence collides between
+  // hospitals: two of them raising a consultation bill on the same day both
+  // computed BILL-<ymd>-0001 and the second insert violated the index. This is
+  // the busiest bill path there is, so it retries rather than surfacing a 500 —
+  // it runs outside a transaction, which is what makes retry possible here and
+  // not on the ward paths.
+  const bill = await createBillInSeriesWithRetry(prisma, 'BILL', {
       tenantId,
       patientId: appointment.patientId,
-      billNumber,
       billDate: new Date(),
       subtotal,
       discountAmount: 0,
@@ -1993,7 +1996,6 @@ async function ensureAppointmentBill(
             : []),
         ],
       },
-    },
   });
 
   logger.info(
@@ -2313,33 +2315,6 @@ export async function frontdeskCheckout(
   };
 }
 
-/**
- * Build a BILL-YYYYMMDD-XXXX number scoped to the tenant. Mirrors the helper
- * inside patient-portal.service.ts; duplicated here to keep the module's
- * dependency graph clean (appointments → patient-portal would invert layers).
- */
-async function generateFrontdeskBillNumber(tenantId: string): Promise<string> {
-  const now = new Date();
-  const ist = new Date(now.getTime() + 5.5 * 60 * 60 * 1000);
-  const y = ist.getUTCFullYear();
-  const m = (ist.getUTCMonth() + 1).toString().padStart(2, '0');
-  const d = ist.getUTCDate().toString().padStart(2, '0');
-  const dateStr = `${y}${m}${d}`;
-  const prefix = `BILL-${dateStr}-`;
-
-  const last = await prisma.bill.findFirst({
-    where: { tenantId, billNumber: { startsWith: prefix } },
-    orderBy: { billNumber: 'desc' },
-    select: { billNumber: true },
-  });
-
-  let next = 1;
-  if (last?.billNumber) {
-    const n = parseInt(last.billNumber.replace(prefix, ''), 10);
-    if (!isNaN(n)) next = n + 1;
-  }
-  return `${prefix}${next.toString().padStart(4, '0')}`;
-}
 
 /**
  * Generate a queue token for an appointment (auto-incrementing daily number).

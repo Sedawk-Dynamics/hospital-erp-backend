@@ -231,10 +231,15 @@ describe('BillingService', () => {
   describe('createBill', () => {
     it('should create a bill with a generated bill number', async () => {
       vi.mocked(prisma.patient.findFirst).mockResolvedValue(mockPatient as any);
-      // generateBillNumber: first findFirst for latest bill, second for collision check
-      vi.mocked(prisma.bill.findFirst)
-        .mockResolvedValueOnce(null) // no existing bills today
-        .mockResolvedValueOnce(null); // no collision
+      // generateBillNumber makes ONE lookup now: the highest number for today,
+      // read across all tenants. The second call it used to make was a
+      // tenant-scoped re-check for a collision, which could never find one —
+      // the clash it was guarding against is with ANOTHER tenant's bill.
+      //
+      // Queueing a spare `Once` here is not harmless: `clearAllMocks` keeps
+      // implementations, so an unconsumed value leaks into the next test and
+      // made addBillItem fail with "Bill not found".
+      vi.mocked(prisma.bill.findFirst).mockResolvedValueOnce(null); // no bills today
       const mockCreatedBill = {
         ...mockBillDraft,
         patient: { id: 'patient-1', mrn: 'MRN-001', firstName: 'Alice', lastName: 'Smith' },

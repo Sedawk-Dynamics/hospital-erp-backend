@@ -4,6 +4,7 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { isAdvanceBucket } from '../../shared/charge-bill';
+import { nextBillNumberInSeries } from '../../shared/bill-number';
 import { getPaginationParams } from '../../shared/pagination';
 import {
   getISTDateStr,
@@ -116,40 +117,17 @@ function toNumber(val: Decimal | number | null | undefined): number {
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
 /**
- * Generate a unique bill number.
- * Format: BILL-YYYYMMDD-XXXX
+ * The next `BILL-YYYYMMDD-XXXX`.
+ *
+ * Delegates to the shared allocator, which reads the maximum ACROSS ALL
+ * TENANTS. This used to scope both the maximum and its duplicate re-check to
+ * one tenant — and `bill_number` is unique globally, so two hospitals billing
+ * on the same day both computed `…-0001` and the second insert violated the
+ * index. The tenant-scoped re-check could never catch it either: it was looking
+ * in the one place the clash could not be.
  */
-async function generateBillNumber(tenantId: string): Promise<string> {
-  const dateStr = getISTDateStr();
-
-  const prefix = `BILL-${dateStr}-`;
-
-  const latestBill = await prisma.bill.findFirst({
-    where: {
-      tenantId,
-      billNumber: { startsWith: prefix },
-    },
-    orderBy: { billNumber: 'desc' },
-    select: { billNumber: true },
-  });
-
-  let nextNumber = 1;
-  if (latestBill?.billNumber) {
-    const lastNumber = parseInt(latestBill.billNumber.split('-').pop() || '0', 10);
-    nextNumber = lastNumber + 1;
-  }
-
-  const billNumber = `${prefix}${nextNumber.toString().padStart(4, '0')}`;
-
-  const existing = await prisma.bill.findFirst({
-    where: { tenantId, billNumber },
-  });
-
-  if (existing) {
-    return generateBillNumber(tenantId);
-  }
-
-  return billNumber;
+async function generateBillNumber(_tenantId: string): Promise<string> {
+  return nextBillNumberInSeries(prisma, 'BILL');
 }
 
 /**
