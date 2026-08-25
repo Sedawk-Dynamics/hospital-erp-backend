@@ -144,3 +144,84 @@ export async function doctorUserIdFromProfile(
     return null;
   }
 }
+
+/**
+ * Every clinician who should hear about a result for this encounter.
+ *
+ * The lab pipeline notified `LabOrder.orderedBy` and nobody else — but the
+ * doctor who PLACED an order is not always the doctor LOOKING AFTER the
+ * patient. A colleague covering a round, a previous visit's doctor, an order
+ * raised on someone's behalf: on the dev database 4 of 17 lab orders were
+ * ordered by someone other than the visit's own doctor, and in every one of
+ * those the treating doctor was told nothing.
+ *
+ * So both are notified, deduped. Being told twice about your own patient is a
+ * non-event; not being told at all is the bug.
+ */
+export async function clinicianUserIdsForVisit(
+  tenantId: string,
+  params: { visitId?: string | null; orderedBy?: string | null },
+): Promise<string[]> {
+  const ids: Array<string | null> = [params.orderedBy ?? null];
+
+  if (params.visitId) {
+    try {
+      const visit = await prisma.visit.findFirst({
+        where: { id: params.visitId, tenantId },
+        select: {
+          doctor: { select: { userId: true } },
+          // An inpatient's stay can name a different consultant than the visit.
+          admission: { select: { doctor: { select: { userId: true } } } },
+        },
+      });
+      ids.push(visit?.doctor?.userId ?? null);
+      ids.push(visit?.admission?.doctor?.userId ?? null);
+    } catch (err) {
+      logger.warn({ err, visitId: params.visitId }, 'Could not resolve the visit doctor for a notification');
+    }
+  }
+
+  return [...new Set(ids.filter((id): id is string => !!id))];
+}
+
+/**
+ * How a patient should be named in a notification: `Asha Rao (MRN-9), Bed A-4`.
+ *
+ * A clinical alert that says only what is wrong and not who it is about has to
+ * be opened before it means anything — and an alert nobody can triage at a
+ * glance is one that waits.
+ */
+export async function describePatientForNotification(
+  tenantId: string,
+  patientId: string,
+): Promise<string> {
+  try {
+    const patient = await prisma.patient.findFirst({
+      where: { id: patientId, tenantId },
+      select: {
+        firstName: true,
+        lastName: true,
+        mrn: true,
+        admissions: {
+          where: { status: { in: ['admitted', 'transferred'] } },
+          orderBy: { admissionDate: 'desc' },
+          take: 1,
+          select: { bed: { select: { bedNumber: true } }, ward: { select: { name: true } } },
+        },
+      },
+    });
+    if (!patient) return 'A patient';
+
+    const name = `${patient.firstName} ${patient.lastName ?? ''}`.trim();
+    const parts = [patient.mrn ? `${name} (${patient.mrn})` : name];
+    const stay = patient.admissions[0];
+    // Where to find them, when they are on a ward — the difference between
+    // acting now and going looking.
+    const place = [stay?.ward?.name, stay?.bed?.bedNumber].filter(Boolean).join(' ');
+    if (place) parts.push(place);
+    return parts.join(', ');
+  } catch (err) {
+    logger.warn({ err, patientId }, 'Could not describe the patient for a notification');
+    return 'A patient';
+  }
+}
