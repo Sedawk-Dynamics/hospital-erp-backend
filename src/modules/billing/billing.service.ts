@@ -1549,6 +1549,27 @@ export async function getPayments(tenantId: string, query: GetPaymentsQuery) {
     where.paymentDate = { ...where.paymentDate, lte: istDayEnd(query.toDate) };
   }
 
+  // The Cash Counter has a search box and it did nothing at all. `search` is
+  // part of the shared pagination schema so it reached the service, and the
+  // service simply never looked at it — no client-side filter either, so the
+  // list came back whole and typing a bill number changed nothing on screen.
+  //
+  // Matched against what a cashier actually has in front of them: the bill
+  // number, the patient's name or MRN, and the payment's own reference — a UPI
+  // or card reference is often the only thing on the slip they are holding.
+  if (query.search?.trim()) {
+    const q = query.search.trim();
+    where.OR = [
+      { bill: { billNumber: { contains: q, mode: 'insensitive' } } },
+      { transactionId: { contains: q, mode: 'insensitive' } },
+      { gatewayReference: { contains: q, mode: 'insensitive' } },
+      { receipt: { receiptNumber: { contains: q, mode: 'insensitive' } } },
+      { patient: { mrn: { contains: q, mode: 'insensitive' } } },
+      { patient: { firstName: { contains: q, mode: 'insensitive' } } },
+      { patient: { lastName: { contains: q, mode: 'insensitive' } } },
+    ];
+  }
+
   const [payments, total] = await Promise.all([
     prisma.payment.findMany({
       where,
