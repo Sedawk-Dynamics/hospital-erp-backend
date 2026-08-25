@@ -3,6 +3,7 @@ import { prisma } from '../../config/database';
 import { AppError } from '../../shared/appError';
 import type { IcdCodeInput, UpdateIcdInput } from './icd.validation';
 import { rankIcdResults, queryWords } from './icd-search-rank';
+import { fuzzyIcdMatchIds } from './icd-fuzzy';
 
 const ICD_WRITER_ROLES = new Set(['super_admin']);
 
@@ -99,6 +100,22 @@ export async function searchIcdCodes(tenantId: string, q: string, limit = 20) {
       words.map((_, i) => allWords(words.filter((__, j) => j !== i))),
     );
     ranked = rankIcdResults(partial.flat(), term, limit);
+  }
+
+  // Last resort: the query may simply be misspelled. Everything above matches
+  // letter for letter, so "diabtes" finds nothing at all — and an empty picker
+  // gives the doctor nothing to correct from. Trigram-similar rows are fetched
+  // only here, where the alternative is an empty screen, and the ranker scores
+  // them in a tier below every literal match, so no working search is disturbed.
+  if (!ranked.length) {
+    const fuzzyIds = await fuzzyIcdMatchIds({ query: term, tenantId, limit: ICD_SEARCH_WINDOW });
+    if (fuzzyIds.length) {
+      const fuzzyRows = await prisma.icdCode.findMany({
+        where: { ...visible, id: { in: fuzzyIds } },
+        select: ICD_SEARCH_SELECT,
+      });
+      ranked = rankIcdResults(fuzzyRows, term, limit);
+    }
   }
 
   // `keywords` and `searchTokens` are only here to rank with — neither is part
