@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../../config/database';
 import { AppError } from '../../shared/appError';
 import type { IcdCodeInput, UpdateIcdInput } from './icd.validation';
+import { rankIcdResults } from './icd-search-rank';
 
 const ICD_WRITER_ROLES = new Set(['super_admin']);
 
@@ -15,43 +16,71 @@ function buildSearchTokens(code: string, title: string, keywords: string[] = [])
   return [code, title, ...keywords].join(' ').toLowerCase();
 }
 
+const ICD_SEARCH_SELECT = {
+  id: true,
+  code: true,
+  title: true,
+  category: true,
+  chapter: true,
+  isBillable: true,
+  isCustom: true,
+  tenantId: true,
+  keywords: true,
+  searchTokens: true,
+} as const;
+
+/** Candidates pulled per window before ranking; 20 are returned. */
+const ICD_SEARCH_WINDOW = 60;
+
 /**
  * Search ICD codes available to a tenant: the shared platform set (tenantId
  * null) plus the tenant's own custom codes. Matches code, title or keywords.
+ *
+ * The substring window alone is not enough now that the catalogue is the full
+ * WHO release. It is capped, and a plain `contains` puts the obvious answer
+ * wherever the alphabet happens to leave it — "pneumonia" returned salmonella
+ * and tuberculosis while J18.9 sat 54th. So the code-prefix, title-prefix and
+ * exact-keyword matches are fetched as their own windows, guaranteeing the
+ * strongest matches survive the cap, and {@link rankIcdResults} then orders the
+ * union. Same shape as the drug catalogue search.
  */
 export async function searchIcdCodes(tenantId: string, q: string, limit = 20) {
   const term = q.trim().toLowerCase();
-  const where: Prisma.IcdCodeWhereInput = {
+  if (!term) return [];
+
+  const visible: Prisma.IcdCodeWhereInput = {
     isActive: true,
     OR: [{ tenantId: null }, { tenantId }],
-    AND: [
-      {
-        OR: [
-          { code: { contains: term, mode: 'insensitive' } },
-          { title: { contains: term, mode: 'insensitive' } },
-          { searchTokens: { contains: term } },
-          { keywords: { has: term } },
-        ],
-      },
-    ],
   };
+  const window = (extra: Prisma.IcdCodeWhereInput) =>
+    prisma.icdCode.findMany({
+      where: { ...visible, ...extra },
+      take: ICD_SEARCH_WINDOW,
+      orderBy: [{ code: 'asc' }],
+      select: ICD_SEARCH_SELECT,
+    });
 
-  return prisma.icdCode.findMany({
-    where,
-    take: limit,
-    // Exact/prefix code matches first, then alphabetical by code.
-    orderBy: [{ code: 'asc' }],
-    select: {
-      id: true,
-      code: true,
-      title: true,
-      category: true,
-      chapter: true,
-      isBillable: true,
-      isCustom: true,
-      tenantId: true,
-    },
-  });
+  const [byCode, byTitle, byKeyword, anywhere] = await Promise.all([
+    window({ code: { startsWith: term, mode: 'insensitive' } }),
+    window({ title: { startsWith: term, mode: 'insensitive' } }),
+    window({ keywords: { has: term } }),
+    window({
+      AND: [
+        {
+          OR: [
+            { code: { contains: term, mode: 'insensitive' } },
+            { title: { contains: term, mode: 'insensitive' } },
+            { searchTokens: { contains: term } },
+          ],
+        },
+      ],
+    }),
+  ]);
+
+  const ranked = rankIcdResults([...byCode, ...byTitle, ...byKeyword, ...anywhere], term, limit);
+  // `keywords` and `searchTokens` are only here to rank with — neither is part
+  // of the picker's shape.
+  return ranked.map(({ keywords: _keywords, searchTokens: _searchTokens, ...row }) => row);
 }
 
 /** Super-admin paginated list of the platform catalog. */
