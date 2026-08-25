@@ -18,9 +18,18 @@
  * the everyday slang a doctor types but WHO never prints — "flu", "heart
  * attack", "cad", "loose motions". Those rows are NOT overwritten here:
  *
- *   keywords          MERGED, never replaced. This is the whole point — losing
- *                     "heart attack" off I21 would make search worse than
- *                     before the ingestion.
+ *   keywords          NOT TOUCHED. `keywords` means "a person said this is what
+ *                     people call it", and that is what the ranker treats as a
+ *                     strong signal. WHO's inclusion terms are a different
+ *                     thing — they say which concepts classify TO a code, not
+ *                     what a clinician means when they type the word. Merging
+ *                     them in measurably broke search: O85 carries the
+ *                     inclusion "fever", so "fever" returned Puerperal sepsis
+ *                     above "Fever, unspecified". The inclusions go into
+ *                     `searchTokens` instead, where they stay findable but rank
+ *                     below a deliberate keyword. Losing "heart attack" off
+ *                     I21.9 would have made search worse than before the
+ *                     ingestion, so those rows keep exactly what they had.
  *   title/block/chapter  taken from WHO, which is authoritative and keeps one
  *                     vocabulary across all 12,300 rows instead of 76 rows on a
  *                     hand-written one. Safe to restate: `Diagnosis` snapshots
@@ -67,27 +76,26 @@ const RELEASE: { version: string; codes: ClamlCode[] } = ICD10 as {
 /** Postgres caps a parameterised statement well below one 12,300-row insert. */
 const INSERT_CHUNK = 1000;
 
-/** Same shape the search endpoint and `icd.service` build — keep in step. */
-function buildSearchTokens(code: string, title: string, keywords: string[]): string {
-  return [code, title, ...keywords].join(' ').toLowerCase();
-}
-
-/** Union of two keyword lists, compared case-insensitively, order stable. */
-function mergeKeywords(existing: string[], incoming: string[]): string[] {
-  const seen = new Set(existing.map((k) => k.toLowerCase()));
-  const merged = [...existing];
-  for (const k of incoming) {
-    const key = k.toLowerCase();
-    if (!seen.has(key)) {
+/**
+ * Same shape `icd.service` builds, plus WHO's inclusion terms. This is the only
+ * place the two kinds of term meet: searchable together, rankable apart.
+ */
+function buildSearchTokens(
+  code: string,
+  title: string,
+  keywords: string[],
+  synonyms: string[] = [],
+): string {
+  const seen = new Set<string>();
+  const terms: string[] = [];
+  for (const t of [code, title, ...keywords, ...synonyms]) {
+    const key = t.toLowerCase();
+    if (key && !seen.has(key)) {
       seen.add(key);
-      merged.push(k);
+      terms.push(key);
     }
   }
-  return merged;
-}
-
-function sameKeywords(a: string[], b: string[]): boolean {
-  return a.length === b.length && a.every((v, i) => v === b[i]);
+  return terms.join(' ');
 }
 
 export async function seedIcdFromClaml(client?: PrismaClient): Promise<void> {
@@ -125,7 +133,7 @@ export async function seedIcdFromClaml(client?: PrismaClient): Promise<void> {
     const updates: { id: string; data: Record<string, unknown> }[] = [];
 
     for (const entry of RELEASE.codes) {
-      const keywordsIn = entry.k ?? [];
+      const synonyms = entry.k ?? [];
       const row = byCode.get(entry.c);
 
       if (!row) {
@@ -135,8 +143,8 @@ export async function seedIcdFromClaml(client?: PrismaClient): Promise<void> {
           title: entry.t,
           category: entry.b,
           chapter: entry.ch,
-          keywords: keywordsIn,
-          searchTokens: buildSearchTokens(entry.c, entry.t, keywordsIn),
+          keywords: [],
+          searchTokens: buildSearchTokens(entry.c, entry.t, [], synonyms),
           isBillable: entry.leaf,
           isCustom: false,
           isActive: true,
@@ -144,27 +152,24 @@ export async function seedIcdFromClaml(client?: PrismaClient): Promise<void> {
         continue;
       }
 
-      // Curated slang survives: merge onto what is already there, never assign.
-      const keywords = mergeKeywords(row.keywords, keywordsIn);
-      const searchTokens = buildSearchTokens(entry.c, entry.t, keywords);
+      // `keywords` stays exactly as the curated seed left it.
+      const searchTokens = buildSearchTokens(entry.c, entry.t, row.keywords, synonyms);
       const changed =
         row.title !== entry.t ||
         row.category !== entry.b ||
         row.chapter !== entry.ch ||
         row.isBillable !== entry.leaf ||
-        row.searchTokens !== searchTokens ||
-        !sameKeywords(row.keywords, keywords);
+        row.searchTokens !== searchTokens;
 
       if (changed) {
         updates.push({
           id: row.id,
-          // `isActive` is deliberately absent — a code switched off by hand
-          // stays off.
+          // `isActive` and `keywords` are deliberately absent — a code switched
+          // off by hand stays off, and curated slang is never rewritten here.
           data: {
             title: entry.t,
             category: entry.b,
             chapter: entry.ch,
-            keywords,
             searchTokens,
             isBillable: entry.leaf,
             isCustom: false,
