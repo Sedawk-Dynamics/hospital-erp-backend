@@ -1,6 +1,11 @@
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
+import {
+  notifyUsers,
+  clinicianUserIdsForVisit,
+  describePatientForNotification,
+} from '../../shared/notify';
 import { checkInteractions } from '../prescriptions/prescriptions.service';
 import { buildDrugHistory } from '../prescriptions/drug-history.service';
 import {
@@ -389,23 +394,32 @@ export async function evaluateLabResults(
     return { alerts: [] as typeof alerts, notified: 0 };
   }
 
-  // Resolve ordering doctor + patient for notification.
-  let doctorUserId: string | null = null;
+  // Who hears about a panic value.
+  //
+  // This used to be `LabOrder.orderedBy` alone, falling back to the PATIENT's
+  // own user account. Both were wrong. The doctor who placed an order is not
+  // always the one looking after the patient — on the dev database 4 of 17 lab
+  // orders were ordered by someone other than the visit's doctor, and the
+  // treating doctor was told nothing in every one. And the fallback meant that
+  // when no ordering doctor could be resolved, a panic value went to the
+  // PATIENT: "Critical potassium — cardiac arrhythmia risk", unmediated, while
+  // no clinician was told at all.
+  let order: { orderedBy: string | null; visitId: string | null } | null = null;
   if (data.labOrderId) {
-    const order = await prisma.labOrder.findFirst({
+    order = await prisma.labOrder.findFirst({
       where: { id: data.labOrderId, tenantId },
-      select: { orderedBy: true },
+      select: { orderedBy: true, visitId: true },
     });
-    doctorUserId = order?.orderedBy ?? null;
   }
-  // Fallback: patient.user
-  if (!doctorUserId) {
-    const patient = await prisma.patient.findFirst({
-      where: { id: data.patientId, tenantId },
-      select: { userId: true },
-    });
-    doctorUserId = patient?.userId ?? null;
-  }
+  const recipients = await clinicianUserIdsForVisit(tenantId, {
+    visitId: order?.visitId,
+    orderedBy: order?.orderedBy,
+  });
+
+  // Named so the alert can be triaged from the bell. A critical value that says
+  // only what is wrong and not who it is about has to be opened before it means
+  // anything.
+  const patientLabel = await describePatientForNotification(tenantId, data.patientId);
 
   let notified = 0;
   for (const a of alerts) {
@@ -423,34 +437,27 @@ export async function evaluateLabResults(
           parameterValue: String(a.value),
           referenceType: 'lab_order',
           referenceId: data.labOrderId,
-          notifiedUserId: doctorUserId,
+          notifiedUserId: recipients[0] ?? null,
         },
       });
     } catch (err) {
       logger.warn({ err }, 'CDSS critical-value alert persistence failed');
     }
 
-    if (!doctorUserId) continue;
-    try {
-      await prisma.notification.create({
-        data: {
-          tenantId,
-          userId: doctorUserId,
-          title: 'Critical lab value',
-          message: a.message,
-          // CDSS critical-value alerts ride on the existing 'alert' enum
-          // and tag themselves via referenceType='lab_critical' so the
-          // alerts feed can filter precisely without a schema migration.
-          notificationType: 'alert',
-          channel: 'in_app',
-          referenceType: 'lab_critical',
-          referenceId: data.labOrderId,
-        },
-      });
-      notified += 1;
-    } catch (err) {
-      logger.warn({ err }, 'CDSS critical-value notification failed');
-    }
+    if (recipients.length === 0) continue;
+    // CDSS critical-value alerts ride on the existing 'alert' enum and tag
+    // themselves via referenceType='lab_critical' so the alerts feed can
+    // filter precisely without a schema migration.
+    notified += await notifyUsers({
+      tenantId,
+      userIds: recipients,
+      title: `Critical lab value — ${patientLabel}`,
+      message: `${patientLabel}
+${a.message}`,
+      notificationType: 'alert',
+      referenceType: 'lab_critical',
+      referenceId: data.labOrderId,
+    });
   }
 
   logger.info({ tenantId, alerts: alerts.length, notified }, 'CDSS evaluated lab results');
