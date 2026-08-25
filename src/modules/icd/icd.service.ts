@@ -2,7 +2,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../../config/database';
 import { AppError } from '../../shared/appError';
 import type { IcdCodeInput, UpdateIcdInput } from './icd.validation';
-import { rankIcdResults } from './icd-search-rank';
+import { rankIcdResults, queryWords } from './icd-search-rank';
 
 const ICD_WRITER_ROLES = new Set(['super_admin']);
 
@@ -60,7 +60,13 @@ export async function searchIcdCodes(tenantId: string, q: string, limit = 20) {
       select: ICD_SEARCH_SELECT,
     });
 
-  const [byCode, byTitle, byKeyword, anywhere] = await Promise.all([
+  // Every word present, in any order. The phrase windows above only match text
+  // written the way ICD writes it, so "fracture femur" found nothing at all
+  // against "Fracture of neck of femur".
+  const words = queryWords(term);
+  const allWords = (ws: string[]) => window({ AND: ws.map((w) => ({ searchTokens: { contains: w } })) });
+
+  const [byCode, byTitle, byKeyword, anywhere, byWords] = await Promise.all([
     window({ code: { startsWith: term, mode: 'insensitive' } }),
     window({ title: { startsWith: term, mode: 'insensitive' } }),
     window({ keywords: { has: term } }),
@@ -75,9 +81,26 @@ export async function searchIcdCodes(tenantId: string, q: string, limit = 20) {
         },
       ],
     }),
+    words.length > 1 ? allWords(words) : Promise.resolve([]),
   ]);
 
-  const ranked = rankIcdResults([...byCode, ...byTitle, ...byKeyword, ...anywhere], term, limit);
+  let ranked = rankIcdResults([...byCode, ...byTitle, ...byKeyword, ...anywhere, ...byWords], term, limit);
+
+  // Still nothing, and enough words to spare one: ICD's vocabulary differs from
+  // clinical speech by a word more often than it differs by two. "lower back
+  // pain" against "Low back pain", "severe chest pain" against "Chest pain on
+  // breathing". Dropping each word in turn recovers those; requiring three
+  // words to start with keeps it from degenerating into a single-word search.
+  //
+  // This costs one extra round of queries and only runs where the alternative
+  // is showing the doctor "No matching ICD codes".
+  if (!ranked.length && words.length > 2) {
+    const partial = await Promise.all(
+      words.map((_, i) => allWords(words.filter((__, j) => j !== i))),
+    );
+    ranked = rankIcdResults(partial.flat(), term, limit);
+  }
+
   // `keywords` and `searchTokens` are only here to rank with — neither is part
   // of the picker's shape.
   return ranked.map(({ keywords: _keywords, searchTokens: _searchTokens, ...row }) => row);
