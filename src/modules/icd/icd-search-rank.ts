@@ -22,6 +22,8 @@
  * then prefix, then word-start, then anywhere.
  */
 
+import { bestWordSimilarity, trigramSimilarity } from '../../shared/trigram';
+
 export interface RankableIcd {
   code: string;
   title: string;
@@ -68,8 +70,21 @@ const enum Tier {
   AllWords = 8,
   /** All but one word present — "lower back pain" against "Low back pain". */
   MostWords = 9,
-  NoMatch = 10,
+  /** Nothing matched literally, but a word is trigram-close — "diabtes". */
+  Fuzzy = 10,
+  NoMatch = 11,
 }
+
+/**
+ * How close a word must be to count as a typo rather than a different word.
+ * Kept in step with `pg_trgm.word_similarity_threshold` in `icd-fuzzy.ts`: the
+ * database chooses the candidates and this decides where they sit, so a row the
+ * database offered must not be scored as no match here and silently dropped.
+ */
+const FUZZY_MIN_SIMILARITY = 0.45;
+
+/** Below this a query is served by prefix matching and fuzzy is only noise. */
+const FUZZY_MIN_QUERY_LEN = 4;
 
 /** The words of a query. Capped, so a pasted paragraph cannot fan out. */
 export function queryWords(q: string): string[] {
@@ -118,7 +133,46 @@ export function icdMatchTier(row: RankableIcd, term: string): Tier {
     if (hits === words.length) return Tier.AllWords;
     if (hits === words.length - 1 && words.length > 2) return Tier.MostWords;
   }
+  if (fuzzySimilarity(row, term) > 0) return Tier.Fuzzy;
   return Tier.NoMatch;
+}
+
+/**
+ * How close the row is to `term` as a misspelling, or 0 if it is not one.
+ *
+ * Scored against the TITLE first and the curated keywords second, deliberately
+ * NOT against `searchTokens`. The database selects fuzzy candidates by word
+ * similarity across the whole token blob, which ranks "Myasthenic syndromes in
+ * endocrine diseases" above E11 for "diabtes" — its WHO inclusion terms mention
+ * diabetes. What the doctor means is a code whose own name is the word they
+ * mistyped.
+ */
+export function fuzzySimilarity(row: RankableIcd, term: string): number {
+  if (term.length < FUZZY_MIN_QUERY_LEN) return 0;
+  const title = row.title.toLowerCase();
+
+  const wordScore = (w: string) => {
+    let best = bestWordSimilarity(title, w);
+    for (const k of row.keywords ?? []) {
+      // A keyword is a whole phrase people use, so it is compared as one.
+      best = Math.max(best, trigramSimilarity(k.toLowerCase(), w));
+    }
+    return best;
+  };
+
+  const words = queryWords(term);
+  if (words.length > 1) {
+    // A multi-word query is usually one mistyped word among correct ones —
+    // "cerebal infarction". Every word still has to be accounted for, or
+    // "cerebal appendicitis" would match on the strength of one of them.
+    const tokens = row.searchTokens ?? '';
+    const scores = words.map((w) => (tokens.includes(w) ? 1 : wordScore(w)));
+    if (scores.some((sc) => sc < FUZZY_MIN_SIMILARITY)) return 0;
+    return scores.reduce((a, b) => a + b, 0) / scores.length;
+  }
+
+  const best = wordScore(term);
+  return best >= FUZZY_MIN_SIMILARITY ? best : 0;
 }
 
 /** How many query words start a word of the title — a multi-word tiebreak. */
@@ -162,6 +216,7 @@ export function rankIcdResults<T extends RankableIcd>(rows: T[], q: string, limi
       i,
       tier: icdMatchTier(row, term),
       titleHits: titleWordHits(row, words),
+      fuzzy: fuzzySimilarity(row, term),
     }))
     // A row that carries none of the words is not a result. It can arrive here
     // from a window that matched on something the ranker does not score.
@@ -174,6 +229,9 @@ export function rankIcdResults<T extends RankableIcd>(rows: T[], q: string, limi
     .sort(
       (a, b) =>
         a.tier - b.tier ||
+        // Within the fuzzy tier, the closest spelling wins — this is what
+        // corrects the database's own ordering.
+        b.fuzzy - a.fuzzy ||
         // Among equally-scattered matches, the row whose TITLE carries more of
         // the words is the better answer: for "upper abdominal pain" that is
         // R10.1 "Pain localized to upper abdomen" rather than R10.0 "Acute
