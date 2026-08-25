@@ -145,6 +145,63 @@ describe('ranking ICD search results', () => {
     expect(rankIcdResults(rows, 'asthma', 20)).toHaveLength(20);
   });
 
+  describe('a query of more than one word', () => {
+    it('finds a code whose title uses the words in a different order', () => {
+      // Measured: "fracture femur" returned nothing at all, because the phrase
+      // windows only match text written the way ICD writes it.
+      const rows = [icd('S72.0', 'Fracture of neck of femur')];
+      expect(codes(rankIcdResults(rows, 'fracture femur', 5))).toEqual(['S72.0']);
+    });
+
+    it("survives ICD's vocabulary differing by one word", () => {
+      // "lower back pain" against "Low back pain" — "lower" appears nowhere.
+      const rows = [icd('M54.5', 'Low back pain')];
+      expect(codes(rankIcdResults(rows, 'lower back pain', 5))).toEqual(['M54.5']);
+    });
+
+    it('will not drop a word from a two-word query', () => {
+      // Dropping one of two leaves a single-word search, which is broad enough
+      // to be worse than an honest "no matches" — "femur" alone is 40 codes.
+      const rows = [icd('S72.3', 'Fracture of shaft of femur')];
+      expect(rankIcdResults(rows, 'tibia femur', 5)).toEqual([]);
+    });
+
+    it('ranks a contiguous phrase above the same words scattered', () => {
+      const rows = [
+        icd('S30.0', 'Contusion of lower back and pelvis'),
+        icd('M54.5', 'Low back pain', {
+          searchTokens: 'm54.5 low back pain lumbago loin pain low back strain',
+        }),
+      ];
+      // M54.5 has the phrase "low back pain"; S30.0 only has the words.
+      expect(codes(rankIcdResults(rows, 'low back pain', 5))[0]).toBe('M54.5');
+    });
+
+    it('prefers the row whose title carries more of the words', () => {
+      // Both qualify, but R10.0 only does so through its inclusion terms.
+      const rows = [
+        icd('R10.0', 'Acute abdomen', {
+          searchTokens: 'r10.0 acute abdomen abdominal rigidity pain upper',
+        }),
+        icd('R10.1', 'Pain localized to upper abdomen', {
+          searchTokens: 'r10.1 pain localized to upper abdomen abdominal',
+        }),
+      ];
+      expect(codes(rankIcdResults(rows, 'upper abdominal pain', 5))[0]).toBe('R10.1');
+    });
+
+    it('drops a row that carries none of the words', () => {
+      // Windows can return rows the ranker does not score; they are not results.
+      const rows = [icd('A00', 'Cholera'), icd('S72.0', 'Fracture of neck of femur')];
+      expect(codes(rankIcdResults(rows, 'fracture femur', 5))).toEqual(['S72.0']);
+    });
+
+    it('ignores word order for a single-word query, as before', () => {
+      const rows = [icd('R50.9', 'Fever, unspecified')];
+      expect(codes(rankIcdResults(rows, 'fever', 5))).toEqual(['R50.9']);
+    });
+  });
+
   it('orders deterministically when everything else ties', () => {
     const rows = [icd('J45.8', 'Mixed asthma'), icd('J45.1', 'Mixed asthma')];
     expect(codes(rankIcdResults(rows, 'asthma', 2))).toEqual(['J45.1', 'J45.8']);
