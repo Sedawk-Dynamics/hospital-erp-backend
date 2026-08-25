@@ -3,6 +3,7 @@ import { prisma } from '../../config/database';
 import { resolveConsultationStates } from '../../shared/consultation-state';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
+import { clinicianUserIdsForVisit } from '../../shared/notify';
 import { getPaginationParams } from '../../shared/pagination';
 import { istDayRange, istDayStart, istDayEnd } from '../../shared/date.utils';
 import { UPLOAD_DIR } from '../../services/upload.service';
@@ -1921,7 +1922,7 @@ export async function publishLabReport(
   const report = await prisma.labReport.findFirst({
     where: { id: reportId, labOrder: { tenantId } },
     include: {
-      labOrder: { select: { id: true, orderedBy: true, patient: true } },
+      labOrder: { select: { id: true, orderedBy: true, visitId: true, patient: true } },
     },
   });
   if (!report) throw AppError.notFound('Lab report not found');
@@ -1997,11 +1998,21 @@ export async function publishLabReport(
       ? `${who} · ${what}${more}\nOut of range: ${flagged}${overflow}`
       : `${who} · ${what}${more}`;
 
-    // Notify ordering doctor
-    if (report.labOrder.orderedBy) {
+    // Notify the ordering doctor AND the doctor treating the patient.
+    //
+    // This went to `orderedBy` alone, and the doctor who placed an order is not
+    // always the one looking after the patient — a colleague covering a round,
+    // an order carried over from an earlier visit. On the dev database 4 of 17
+    // lab orders were ordered by someone other than the visit's own doctor, and
+    // the treating doctor heard nothing about any of them.
+    const clinicians = await clinicianUserIdsForVisit(tenantId, {
+      visitId: report.labOrder.visitId,
+      orderedBy: report.labOrder.orderedBy,
+    });
+    for (const userId of clinicians) {
       await safeNotify({
         tenantId,
-        userId: report.labOrder.orderedBy,
+        userId,
         title,
         message,
         // An abnormal result is not routine traffic — it sorts and badges as an
