@@ -1,8 +1,13 @@
 // Curated common ICD-10 codes for the platform reference catalog. This is a
 // pragmatic starter set covering the diagnoses an OPD/IPD hospital sees most;
 // the super-admin can extend it from the panel and hospitals can add custom
-// codes. The five numeric demo codes from the TRMS CDSS Level doc are included
-// at the end so the document's worked example resolves.
+// codes.
+//
+// Since the full WHO ICD-10 release is seeded alongside this (seeds/icd-claml.ts),
+// this set's real job is no longer coverage — it is the everyday slang WHO
+// never prints: "flu", "heart attack", "cad", "loose motions". Those keywords
+// are what the search ranks on, and the WHO seed deliberately never rewrites
+// them.
 
 export interface SeedIcdCode {
   code: string;
@@ -110,10 +115,10 @@ export const SEED_ICD_CODES: SeedIcdCode[] = [
   { code: 'Z00.00', title: 'Encounter for general adult medical exam without abnormal findings', category: 'Health status', keywords: ['health checkup', 'general examination'] },
   { code: 'Z34.90', title: 'Encounter for supervision of normal pregnancy, unspecified', category: 'Pregnancy', keywords: ['antenatal', 'pregnancy checkup'] },
 
-  // --- TRMS CDSS Level document demo codes (illustrative numeric codes) ---
-  { code: '100', title: 'Fever', category: 'TRMS demo', keywords: ['fever'] },
-  { code: '101', title: 'Fever with Chills', category: 'TRMS demo', keywords: ['fever', 'chills', 'rigors'] },
-  { code: '102', title: 'Diarrhea', category: 'TRMS demo', keywords: ['diarrhea', 'loose motions'] },
-  { code: '103', title: 'Malaria', category: 'TRMS demo', keywords: ['malaria'] },
-  { code: '104', title: 'Skin Allergy', category: 'TRMS demo', keywords: ['skin allergy', 'allergy', 'itching'] },
+  // The five illustrative numeric codes from the TRMS CDSS Level document used
+  // to live here so the document's worked example resolved. They were removed
+  // once the real WHO catalogue landed: `100 Fever` and `103 Malaria` carry
+  // curated keywords, so they outranked R50.9 and B54 and became the top hit
+  // for the two commonest OPD searches — while being codes no claim or
+  // morbidity return would accept. See seeds/icd-retire-demo-codes.ts.
 ];
