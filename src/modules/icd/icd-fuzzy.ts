@@ -63,9 +63,14 @@ export function ensureIcdTrgmReady(): Promise<void> {
   if (!trgmReady) {
     trgmReady = (async () => {
       await prisma.$executeRawUnsafe('CREATE EXTENSION IF NOT EXISTS pg_trgm');
+      // Only `title` needs a lowercased index. `search_tokens` is written
+      // lowercase by every writer (`buildSearchTokens` lowercases the lot), and
+      // the rest of the app already relies on that — the `contains` window
+      // queries it without `mode: 'insensitive'`. So it is matched raw below,
+      // against the index `search-indexes.ts` builds for that same column,
+      // rather than carrying a second identical copy of it.
       const statements = [
         `CREATE INDEX IF NOT EXISTS idx_trgm_icd_codes_title ON icd_codes USING gin (lower(title) gin_trgm_ops)`,
-        `CREATE INDEX IF NOT EXISTS idx_trgm_icd_codes_tokens ON icd_codes USING gin (lower(coalesce(search_tokens, '')) gin_trgm_ops)`,
       ];
       for (const sql of statements) {
         try {
@@ -116,10 +121,10 @@ export async function fuzzyIcdMatchIds(opts: {
         SELECT id FROM icd_codes
         WHERE is_active = true
           AND (tenant_id IS NULL OR tenant_id = ${opts.tenantId})
-          AND (${q} <% lower(title) OR ${q} <% lower(coalesce(search_tokens, '')))
+          AND (${q} <% lower(title) OR ${q} <% search_tokens)
         ORDER BY GREATEST(
           word_similarity(${q}, lower(title)),
-          word_similarity(${q}, lower(coalesce(search_tokens, '')))
+          word_similarity(${q}, coalesce(search_tokens, ''))
         ) DESC
         LIMIT ${opts.limit ?? 40}
       `);
