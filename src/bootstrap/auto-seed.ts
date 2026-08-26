@@ -36,6 +36,7 @@ import { seedPhysicalObservations } from '../seeds/physical-observations';
 import { seedIcdCodes } from '../seeds/icd-codes';
 import { seedIcdFromClaml } from '../seeds/icd-claml';
 import { retireDemoIcdCodes } from '../seeds/icd-retire-demo-codes';
+import { ensureIcdTrgmReady } from '../modules/icd/icd-fuzzy';
 import { seedDrugMaster } from '../seeds/drug-master';
 import { seedPackSizes } from '../seeds/pack-sizes';
 import { seedPackPrices } from '../seeds/pack-prices';
@@ -121,6 +122,14 @@ export async function runSeeds(db: PrismaClient): Promise<void> {
   //    that already has them, because the curated seed only creates and updates
   //    and is guarded on an empty catalogue. No-op once done.
   await step('icd-retire-demo', () => retireDemoIcdCodes(db));
+  //    Enable pg_trgm and build the trigram indexes the typo-tolerant search
+  //    rides on. Done here rather than lazily on the first search for two
+  //    reasons. A managed Postgres often refuses CREATE EXTENSION to the
+  //    application role, and left lazy that failure is invisible — fuzzy simply
+  //    never works and nothing says why; as a step it shows up as a ✗ in the
+  //    deploy log. And it moves the one-off index build (~800ms) off whichever
+  //    doctor happens to mistype first. Idempotent, so restarts are free.
+  await step('icd-trgm', () => ensureIcdTrgmReady());
 
   // 4. Drug master — the heavy one (~hundreds of thousands of rows from the
   //    bundled CSV). Seed only when empty. Pack size/price backfills only make
