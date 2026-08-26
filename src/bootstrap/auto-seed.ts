@@ -38,6 +38,7 @@ import { seedIcdFromClaml } from '../seeds/icd-claml';
 import { retireDemoIcdCodes } from '../seeds/icd-retire-demo-codes';
 import { ensureIcdTrgmReady } from '../modules/icd/icd-fuzzy';
 import { ensureTrgmReady as ensureMedicineTrgmReady } from '../shared/medicine-fuzzy';
+import { ensureSearchIndexes } from '../shared/search-indexes';
 import { seedDrugMaster } from '../seeds/drug-master';
 import { seedPackSizes } from '../seeds/pack-sizes';
 import { seedPackPrices } from '../seeds/pack-prices';
@@ -209,6 +210,14 @@ export async function runSeeds(db: PrismaClient): Promise<void> {
   //    the deploy log. It also keeps the 14s off whichever pharmacist first
   //    mistypes a drug name.
   await step('medicine-trgm', () => ensureMedicineTrgmReady());
+
+  //    And the indexes the ORDINARY searches use. Separate from the two above
+  //    because Prisma's `contains` emits `col ILIKE`, which a `lower(col)`
+  //    index cannot serve — the everyday drug search was scanning all 254k rows
+  //    while three trigram indexes sat there unused. See search-indexes.ts.
+  //    Last, alongside the others, for the same reason: it builds over
+  //    drug_master.
+  await step('search-indexes', () => ensureSearchIndexes());
 }
 
 /**
