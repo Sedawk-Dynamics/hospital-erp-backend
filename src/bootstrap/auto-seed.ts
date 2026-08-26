@@ -37,6 +37,7 @@ import { seedIcdCodes } from '../seeds/icd-codes';
 import { seedIcdFromClaml } from '../seeds/icd-claml';
 import { retireDemoIcdCodes } from '../seeds/icd-retire-demo-codes';
 import { ensureIcdTrgmReady } from '../modules/icd/icd-fuzzy';
+import { ensureTrgmReady as ensureMedicineTrgmReady } from '../shared/medicine-fuzzy';
 import { seedDrugMaster } from '../seeds/drug-master';
 import { seedPackSizes } from '../seeds/pack-sizes';
 import { seedPackPrices } from '../seeds/pack-prices';
@@ -193,6 +194,21 @@ export async function runSeeds(db: PrismaClient): Promise<void> {
   //    deploys. No-ops on a fresh DB that only has the platform tenant.
   await step('imaging-modalities', () => seedImagingModalities(db));
   await step('resync-role-permissions', () => resyncRolePermissions(db));
+
+  // 6. Trigram indexes for the typo-tolerant medicine / inventory search.
+  //    LAST on purpose. Two of the five are GIN indexes over drug_master, which
+  //    is a quarter of a million rows — building them before the import would
+  //    make the importer maintain an index per row, and building them before
+  //    the classification pass would do the same for its updates. Measured on
+  //    the real catalog: 5.5s and 8.7s, ~14s for all five, once per database.
+  //
+  //    A step rather than the lazy setup it replaces, for the same reason as
+  //    icd-trgm: a managed Postgres often refuses CREATE EXTENSION to the
+  //    application role, and left lazy that failure is invisible — the search
+  //    silently stops tolerating typos and nothing says why. Here it is a ✗ in
+  //    the deploy log. It also keeps the 14s off whichever pharmacist first
+  //    mistypes a drug name.
+  await step('medicine-trgm', () => ensureMedicineTrgmReady());
 }
 
 /**

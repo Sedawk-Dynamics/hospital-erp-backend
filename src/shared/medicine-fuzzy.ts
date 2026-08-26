@@ -44,6 +44,13 @@ const GENERIC_COL: Partial<Record<FuzzyTable, string>> = {
 // One-time setup: enable pg_trgm and create the GIN trigram indexes the fuzzy
 // queries ride on. Cached so it runs at most once per process; `IF NOT EXISTS`
 // keeps it idempotent and safe to call on every fuzzy search.
+//
+// Normally this has already happened: auto-seed calls it as the `medicine-trgm`
+// step, last in the pipeline so the drug_master indexes are built AFTER the
+// quarter-million-row import rather than during it, and so a CREATE EXTENSION
+// the database role is not allowed shows up in the deploy log instead of
+// silently switching typo tolerance off. The call below stays as the fallback
+// for when auto-seed is disabled.
 let trgmReady: Promise<void> | null = null;
 // Latched once CREATE EXTENSION fails (e.g. the DB role lacks the privilege) so
 // we don't attempt DDL on every subsequent search — fuzzy simply stays off.
