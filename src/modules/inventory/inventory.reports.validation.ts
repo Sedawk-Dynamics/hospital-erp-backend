@@ -120,6 +120,10 @@ export const dispatchStockTransferSchema = z.object({
   body: z
     .object({
       quantityDispatched: z.number().int().positive().optional(),
+      // The person taking custody of a vault narcotic. Compulsory for those and
+      // ignored for everything else — declared here or validate() drops it and
+      // the dispatch would refuse a hand-over that was actually named.
+      custodianId: z.string().uuid('Invalid custodian').optional().nullable(),
     })
     .optional(),
 });

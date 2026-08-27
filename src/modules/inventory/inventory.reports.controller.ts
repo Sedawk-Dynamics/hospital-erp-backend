@@ -101,6 +101,7 @@ export async function dispatchTransfer(req: AuthenticatedRequest, res: Response,
       req.params.id as string,
       req.user!.userId,
       req.body?.quantityDispatched,
+      req.body?.custodianId ?? null,
     );
     sendResponse({ res, message: 'Stock transfer dispatched', data });
   } catch (err) { next(err); }

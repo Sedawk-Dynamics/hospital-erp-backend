@@ -1602,6 +1602,7 @@ model User {
   stockTransfersApproved         StockTransfer[]              @relation("StockTransferApprover")
   stockTransfersDispatched       StockTransfer[]              @relation("StockTransferDispatcher")
   stockTransfersReceived         StockTransfer[]              @relation("StockTransferReceiver")
+  stockTransfersCustodied        StockTransfer[]              @relation("StockTransferCustodian")
   billsGenerated                 Bill[]                       @relation("BillGenerator")
   billsApproved                  Bill[]                       @relation("BillApprover")
   billsCancelled                 Bill[]                       @relation("BillCanceller")
@@ -5419,6 +5420,14 @@ model StockTransfer {
   receivedBy          String?             @map("received_by")
   receivedAt          DateTime?           @map("received_at")
   rejectionReason     String?             @map("rejection_reason")
+  // ── Controlled-drug custody ──
+  // Moving a vault narcotic is a hand-off between two people, not one person
+  // pressing dispatch. The receiving custodian is named here and must be
+  // someone other than the dispatcher — the same rule the NDPS challan has
+  // always enforced, now applied on the merged transfer board so a narcotic
+  // cannot be moved through the ordinary flow without it.
+  custodianId         String?             @map("custodian_id")
+  custodyAt           DateTime?           @map("custody_at")
   createdAt           DateTime            @default(now()) @map("created_at")
   updatedAt           DateTime            @default(now()) @updatedAt @map("updated_at")
 
@@ -5431,6 +5440,7 @@ model StockTransfer {
   approver       User?          @relation("StockTransferApprover", fields: [approvedBy], references: [id])
   dispatcher     User?          @relation("StockTransferDispatcher", fields: [dispatchedBy], references: [id])
   receiver       User?          @relation("StockTransferReceiver", fields: [receivedBy], references: [id])
+  custodian      User?          @relation("StockTransferCustodian", fields: [custodianId], references: [id])
 
   @@index([tenantId, status])
   @@index([tenantId, inventoryItemId])

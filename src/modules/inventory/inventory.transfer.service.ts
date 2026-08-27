@@ -1,4 +1,5 @@
 import { prisma } from '../../config/database';
+import { assertTransferCustody } from './transfer-custody';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
@@ -306,12 +307,28 @@ export async function dispatchStockTransfer(
   id: string,
   userId: string,
   quantityDispatched?: number,
+  custodianId?: string | null,
 ) {
   const transfer = await prisma.stockTransfer.findFirst({
     where: { id, tenantId },
     include: {
       inventoryItem: true,
-      drugBatch: { select: { id: true, quantityInStock: true, drug: { select: { drugName: true } } } },
+      drugBatch: {
+        select: {
+          id: true,
+          quantityInStock: true,
+          drug: {
+            select: {
+              drugName: true,
+              // Read so the custody gate can fire. Without these the board
+              // moved narcotics with no second person and no register entry.
+              controlledClass: true,
+              vaultControlled: true,
+              schedule: true,
+            },
+          },
+        },
+      },
     },
   });
   if (!transfer) throw AppError.notFound('Stock transfer not found');
@@ -321,6 +338,15 @@ export async function dispatchStockTransfer(
 
   const qty = quantityDispatched ?? transfer.quantityRequested;
   if (qty <= 0) throw AppError.badRequest('Quantity must be positive');
+
+  // Controlled-drug custody, enforced BEFORE anything moves. A vault narcotic
+  // is handed to a named second person — the same rule the NDPS challan has
+  // always applied, now applied here too so the merged board cannot become the
+  // way round it.
+  const custody = await assertTransferCustody(tenantId, transfer.drugBatch?.drug, {
+    dispatcherId: userId,
+    custodianId,
+  });
 
   const includeForUpdate = {
     inventoryItem: { select: { id: true, itemName: true, itemCode: true, currentStock: true } },
@@ -346,7 +372,14 @@ export async function dispatchStockTransfer(
       });
       return tx.stockTransfer.update({
         where: { id },
-        data: { status: 'dispatched', quantityTransferred: qty, dispatchedBy: userId, dispatchedAt: new Date() },
+        data: {
+          status: 'dispatched',
+          quantityTransferred: qty,
+          dispatchedBy: userId,
+          dispatchedAt: new Date(),
+          custodianId: custody.custodianId,
+          custodyAt: custody.custodyAt,
+        },
         include: includeForUpdate,
       });
     });

@@ -149,7 +149,7 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
     return [base, d.strength].filter(Boolean).join(' ') || null;
   };
 
-  const [batches, returns, dispenses, ndpsTxns, adjustments] = await Promise.all([
+  const [batches, returns, dispenses, ndpsTxns, adjustments, stockTransfers] = await Promise.all([
     prisma.drugBatch.findMany({
       where: {
         tenantId, drugId: { in: drugIds }, createdAt: inWindow(from, to),
@@ -193,6 +193,26 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
       where: {
         tenantId, entityType: 'drug_batch', createdAt: inWindow(from, to),
         newValues: { path: ['type'], equals: 'stock_adjustment' },
+      },
+    }),
+    // The EIGHTH source. Narcotic transfers used to happen only on the NDPS
+    // challan screen and were read from NdpsTransaction. Now that the transfer
+    // board handles every drug, a controlled move recorded there has to appear
+    // here too — otherwise merging the two screens would quietly delete
+    // transfers from the inspector's ledger.
+    prisma.stockTransfer.findMany({
+      where: {
+        tenantId,
+        status: { in: ['dispatched', 'received'] },
+        dispatchedAt: inWindow(from, to),
+        drugBatch: { drugId: { in: drugIds } },
+      },
+      include: {
+        drugBatch: { select: { drugId: true, batchNumber: true, expiryDate: true } },
+        fromDepartment: { select: { name: true } },
+        toDepartment: { select: { name: true } },
+        custodian: { select: { firstName: true, lastName: true } },
+        dispatcher: { select: { firstName: true, lastName: true } },
       },
     }),
   ]);
@@ -310,6 +330,28 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
         userName.get(t.coSignById ?? '') ??
         userName.get(t.recordedById) ??
         null,
+    });
+  }
+
+  for (const t of stockTransfers) {
+    if (!t.drugBatch) continue;
+    const fromName = t.fromDepartment?.name ?? t.fromLocation ?? 'Pharmacy store';
+    const toName = t.toDepartment?.name ?? t.toLocation ?? '?';
+    rows.push({
+      ...base(t.drugBatch.drugId),
+      occurredAt: t.dispatchedAt ?? t.createdAt,
+      txnId: t.transferNumber,
+      txnType: 'Internal Transfer',
+      batchNumber: t.drugBatch.batchNumber,
+      expiryDate: t.drugBatch.expiryDate,
+      // A transfer is custody moving, not stock leaving the hospital — it is
+      // shown for the chain of custody and nets to zero hospital-wide, exactly
+      // like the NDPS challan rows above.
+      transferQty: t.quantityTransferred || t.quantityRequested,
+      patientOrDept: `${fromName} → ${toName}`,
+      // A custody move has no prescriber — nobody prescribed it.
+      prescriber: null,
+      verification: personName(t.custodian) ?? personName(t.dispatcher),
     });
   }
 
