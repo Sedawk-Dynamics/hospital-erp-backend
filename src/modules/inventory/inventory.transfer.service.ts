@@ -130,7 +130,7 @@ export async function createStockTransfer(
     },
     include: {
       inventoryItem: { select: { id: true, itemName: true, itemCode: true, unitOfMeasurement: true, currentStock: true } },
-      drugBatch: { select: { id: true, batchNumber: true, quantityInStock: true, drug: { select: { drugName: true } } } },
+      drugBatch: { select: { id: true, batchNumber: true, quantityInStock: true, drug: { select: { drugName: true, controlledClass: true, vaultControlled: true, schedule: true } } } },
       fromDepartment: { select: { id: true, name: true } },
       toDepartment: { select: { id: true, name: true } },
       requester: { select: { id: true, firstName: true, lastName: true } },
@@ -198,7 +198,18 @@ export async function listStockTransfers(tenantId: string, query: ListStockTrans
       take,
       include: {
         inventoryItem: { select: { id: true, itemName: true, itemCode: true, unitOfMeasurement: true, currentStock: true } },
-        drugBatch: { select: { id: true, batchNumber: true, quantityInStock: true, drug: { select: { drugName: true } } } },
+        // The controlled flags travel with the row so the board knows, before
+        // anyone presses Dispatch, that this move needs a second person.
+        drugBatch: {
+          select: {
+            id: true, batchNumber: true, quantityInStock: true,
+            drug: {
+              select: {
+                drugName: true, controlledClass: true, vaultControlled: true, schedule: true,
+              },
+            },
+          },
+        },
         fromDepartment: { select: { id: true, name: true } },
         toDepartment: { select: { id: true, name: true } },
         requester: { select: { id: true, firstName: true, lastName: true } },
@@ -217,7 +228,7 @@ export async function getStockTransferById(tenantId: string, id: string) {
     where: { id, tenantId },
     include: {
       inventoryItem: true,
-      drugBatch: { select: { id: true, batchNumber: true, quantityInStock: true, drug: { select: { drugName: true } } } },
+      drugBatch: { select: { id: true, batchNumber: true, quantityInStock: true, drug: { select: { drugName: true, controlledClass: true, vaultControlled: true, schedule: true } } } },
       fromDepartment: true,
       toDepartment: true,
       requester: { select: { id: true, firstName: true, lastName: true, email: true } },
@@ -350,7 +361,7 @@ export async function dispatchStockTransfer(
 
   const includeForUpdate = {
     inventoryItem: { select: { id: true, itemName: true, itemCode: true, currentStock: true } },
-    drugBatch: { select: { id: true, batchNumber: true, quantityInStock: true, drug: { select: { drugName: true } } } },
+    drugBatch: { select: { id: true, batchNumber: true, quantityInStock: true, drug: { select: { drugName: true, controlledClass: true, vaultControlled: true, schedule: true } } } },
     fromDepartment: { select: { id: true, name: true } },
     toDepartment: { select: { id: true, name: true } },
   };
@@ -452,7 +463,7 @@ export async function receiveStockTransfer(tenantId: string, id: string, userId:
 
   const includeForUpdate = {
     inventoryItem: { select: { id: true, itemName: true, itemCode: true, currentStock: true } },
-    drugBatch: { select: { id: true, batchNumber: true, quantityInStock: true, drug: { select: { drugName: true } } } },
+    drugBatch: { select: { id: true, batchNumber: true, quantityInStock: true, drug: { select: { drugName: true, controlledClass: true, vaultControlled: true, schedule: true } } } },
     fromDepartment: { select: { id: true, name: true } },
     toDepartment: { select: { id: true, name: true } },
   };
