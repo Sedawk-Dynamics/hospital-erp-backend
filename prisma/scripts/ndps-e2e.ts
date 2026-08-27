@@ -106,6 +106,14 @@ async function main() {
     where: { tenantId: TENANT, email: 'pharmacyadmin1@email.com' },
     select: { id: true },
   });
+  const coSigner: any = await p.user.findFirst({
+    where: { tenantId: TENANT, email: 'nurse2@email.com' },
+    select: { id: true },
+  });
+  const patient: any = await p.patient.findFirst({
+    where: { tenantId: TENANT },
+    select: { id: true, mrn: true },
+  });
   check('fixture: vault narcotic + batch', Boolean(drug.id && batch.id), 'qty 100');
 
   // ── 1. The removed transfer endpoint ──
@@ -183,6 +191,58 @@ async function main() {
     check('batch decremented by the dispatch', after?.quantityInStock === 95, `qty ${after?.quantityInStock}`);
   }
 
+  // ── 3b. Form 3E administration and disposal, from their new home ──
+  // Both moved off the deleted NDPS page onto the Controlled Register. They
+  // draw on an NDPS LOCATION balance, which the Form 3C receipt above credited
+  // to the vault — so this also proves the receipt actually landed somewhere
+  // spendable rather than only writing an audit row.
+  const consume = await api('POST', '/ndps/consumption', {
+    drugFormularyId: drug.id,
+    fromLocationId: vault?.id,
+    quantity: 2,
+    patientId: patient?.id,
+    doctorRegNo: 'NMC-9875',
+    bedNumber: 'ICU-04',
+    diagnosis: 'Post-operative pain',
+  });
+  check('Form 3E administration accepted', consume.status === 200 || consume.status === 201,
+    `status ${consume.status} ${consume.json?.message ?? ''}`);
+
+  const disposal = await api('POST', '/ndps/disposals', {
+    drugFormularyId: drug.id,
+    locationId: vault?.id,
+    quantity: 1,
+    reasonCode: 'breakage',
+    referenceNumber: `${TAG}-POLICE-1`,
+    coSignById: coSigner?.id,
+  });
+  check('disposal accepted with a reference and a co-sign',
+    disposal.status === 200 || disposal.status === 201,
+    `status ${disposal.status} ${disposal.json?.message ?? ''}`);
+
+  const noRef = await api('POST', '/ndps/disposals', {
+    drugFormularyId: drug.id, locationId: vault?.id, quantity: 1,
+    reasonCode: 'breakage', coSignById: coSigner?.id,
+  });
+  check('disposal REFUSED without a destruction reference', noRef.status >= 400, `${noRef.status}`);
+
+  // ── 3c. Form 3H daily close ──
+  const close = await api('POST', '/ndps/daily-close', {});
+  check('Form 3H daily close runs', close.status === 200 || close.status === 201,
+    `status ${close.status}`);
+
+  // Narrowed server-side: the mapped response carries drugName but NOT
+  // drugFormularyId, so filtering by id on the client would silently match
+  // nothing and report a failure that is not there.
+  const daily = await api('GET', `/ndps/daily-balances?drugFormularyId=${drug.id}`);
+  const mine = (daily.json?.data?.items ?? daily.json?.data ?? [])[0];
+  check('the daily account balances: opening + received − dispensed − disposed = closing',
+    Boolean(mine) &&
+      mine.openingBalance + mine.received - mine.dispensed - mine.disposed === mine.closingBalance,
+    mine
+      ? `${mine.openingBalance} + ${mine.received} − ${mine.dispensed} − ${mine.disposed} = ${mine.closingBalance}`
+      : 'no daily row for this drug');
+
   // ── 4. The register sees it (the 8th source) ──
   const from = new Date(Date.now() - 2 * 864e5).toISOString().slice(0, 10);
   const to = new Date(Date.now() + 864e5).toISOString().slice(0, 10);
@@ -207,6 +267,16 @@ async function main() {
 
   const inward = rows.find((r: any) => r.qtyIn > 0);
   check('the Form 3C receipt appears as inward', Boolean(inward), inward ? `${inward.txnType} +${inward.qtyIn}` : 'none');
+
+  const admin3e = rows.find((r: any) => /3E/i.test(r.txnType));
+  check('the Form 3E administration appears as outward', Boolean(admin3e) && admin3e.qtyOut === 2,
+    admin3e ? `${admin3e.txnType} −${admin3e.qtyOut} · ${admin3e.patientOrDept} · ${admin3e.prescriber}` : 'NOT FOUND');
+  check('the prescriber registration number is carried through',
+    admin3e?.prescriber === 'NMC-9875', admin3e?.prescriber ?? '');
+
+  const disp = rows.find((r: any) => /disposal/i.test(r.txnType));
+  check('the disposal appears as outward', Boolean(disp) && disp.qtyOut === 1,
+    disp ? `${disp.txnType} −${disp.qtyOut}` : 'NOT FOUND');
 
   // ── 5. Filters ──
   const onlyXfer = await api(
@@ -265,6 +335,7 @@ async function main() {
 
   // ── 8. Cleanup ──
   await p.stockTransfer.deleteMany({ where: { drugBatchId: batch.id } });
+  await p.ndpsDailyBalance.deleteMany({ where: { drugFormularyId: drug.id } });
   await p.ndpsTransaction.deleteMany({ where: { drugFormularyId: drug.id } });
   await p.ndpsStockBalance.deleteMany({ where: { drugFormularyId: drug.id } });
   await p.drugBatch.deleteMany({ where: { drugId: drug.id } });
