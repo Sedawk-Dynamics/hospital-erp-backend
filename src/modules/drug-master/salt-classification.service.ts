@@ -158,6 +158,38 @@ export async function loadDrugSaltRows(drugMasterId: string): Promise<SaltRow[] 
 }
 
 /**
+ * Record a molecule the salt master has never seen, as UNDECIDED.
+ *
+ * scheduleCode stays NULL on purpose — that is the difference between "nobody
+ * has decided" and "it is over the counter", and it is what puts the molecule
+ * in the review queue rather than letting it read as safe.
+ *
+ * Returns the id, or null if it could not be created (a race with another
+ * request creating the same molecule is resolved by reading it back).
+ */
+async function ensureUndecidedSalt(raw: string, norm: string): Promise<string | null> {
+  if (!norm) return null;
+  try {
+    const row = await prisma.salt.create({
+      data: {
+        name: raw.trim() || norm,
+        norm,
+        scheduleCode: null,
+        source: null,
+        scheduleNote:
+          'Seen in a drug added after the schedule lists were loaded, and not named in any of them — needs a decision.',
+      },
+    });
+    return row.id;
+  } catch {
+    // Unique violation: another request got there first. Read it back rather
+    // than failing — two requests adding the same new molecule is normal.
+    const existing = await prisma.salt.findUnique({ where: { norm }, select: { id: true } });
+    return existing?.id ?? null;
+  }
+}
+
+/**
  * Re-derive one catalog drug's stored molecules from its composition text.
  *
  * Called when a drug is created or its composition edited — this is the ONE
@@ -184,10 +216,21 @@ export async function syncDrugSalts(drugMasterId: string): Promise<number> {
       perVolumeValue: number | null; perVolumeUnit: string | null; position: number;
     }[] = [];
 
+    let discovered = 0;
     for (const p of parsed) {
       // Two spellings of one molecule resolve to the same id, so they cannot
       // become two links on the same drug.
-      const saltId = lookupId(p.norm, index);
+      let saltId = lookupId(p.norm, index);
+
+      // A molecule nobody has ever recorded. It used to be skipped, which meant
+      // the drug was classified from a PARTIAL composition and the new molecule
+      // never reached the review queue — the one place it should have surfaced.
+      // Adding it undecided is the honest outcome: the system does not pretend
+      // to know a schedule it has never been told, and a person is asked.
+      if (!saltId) {
+        saltId = await ensureUndecidedSalt(p.raw, p.norm);
+        if (saltId) discovered += 1;
+      }
       if (!saltId || seen.has(saltId)) continue;
       seen.add(saltId);
       rows.push({
@@ -199,6 +242,15 @@ export async function syncDrugSalts(drugMasterId: string): Promise<number> {
         perVolumeUnit: p.perVolumeMl ? 'ml' : null,
         position: rows.length,
       });
+    }
+
+    if (discovered) {
+      // The index is now stale — it was built before these rows existed.
+      invalidateSaltCache();
+      logger.info(
+        { drugMasterId, discovered },
+        'New molecule(s) recorded as undecided; they now appear in the salt review queue',
+      );
     }
 
     await prisma.$transaction([

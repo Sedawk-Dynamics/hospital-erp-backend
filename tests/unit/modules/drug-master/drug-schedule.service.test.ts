@@ -221,3 +221,42 @@ describe('classifyDrugMasterItem', () => {
     await expect(classifyDrugMasterItem('m1')).resolves.toBeUndefined();
   });
 });
+
+describe('adding a drug whose composition names an unknown molecule', () => {
+  /**
+   * The case that matters most when a NEW drug arrives: a molecule the salt
+   * master has never seen.
+   *
+   * It used to be dropped twice over. The link was skipped, so the drug was
+   * classified from a partial composition — and then the derived composition,
+   * built from the molecules that HAD resolved, was written back over the
+   * stored one. "Paracetamol (500mg) + Zyxomorphine (10mg)" became
+   * "Paracetamol (500mg)": the system deleted the ingredient it did not
+   * recognise, which is the ingredient a person most needed to look at.
+   */
+  it('never lets a derived composition drop a molecule the text named', async () => {
+    (prisma.drugMaster.findUnique as any).mockResolvedValue({
+      id: 'm1', name: 'Novel', genericName: 'Paracetamol (500mg) + Zyxomorphine (10mg)',
+      saltComposition: null, dosageForm: 'tablet',
+    });
+    // The salt master resolves only one of the two molecules.
+    (prisma.salt.findMany as any).mockResolvedValue([
+      { id: 's1', name: 'Paracetamol', norm: 'paracetamol', scheduleCode: 'OTC',
+        controlledClass: null, narcoticClass: null, vaultControlled: false,
+        exemptIfCombination: false, maxPerUnitMg: null, maxConcentrationPercent: null,
+        fallbackSchedule: null, topicalExempt: false, synonyms: [], classes: [] },
+    ]);
+    (prisma.salt.create as any).mockRejectedValue(new Error('cannot create'));
+    (prisma.salt.findUnique as any).mockResolvedValue(null);
+    (prisma.drugSalt.findMany as any).mockResolvedValue([
+      { saltId: 's1', strengthValue: 500, strengthUnit: 'mg', perVolumeValue: null },
+    ]);
+
+    await classifyDrugMasterItem('m1');
+
+    const data = (prisma.drugMaster.update as any).mock.calls[0][0].data;
+    // One molecule resolved out of two, so the derived string is short — it
+    // must not be written over what the pharmacist typed.
+    expect(data).not.toHaveProperty('saltComposition');
+  });
+});

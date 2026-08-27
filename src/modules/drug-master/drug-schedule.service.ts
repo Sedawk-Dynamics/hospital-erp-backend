@@ -282,16 +282,43 @@ export async function classifyDrugMasterItem(
         saltsJson: result.salts as unknown as object,
         classifiedAt: new Date(),
         classifierVersion: CLASSIFIER_VERSION,
-        ...(opts.refreshComposition || !row.saltComposition
-          ? result.composition
-            ? { saltComposition: result.composition }
-            : {}
+        // The derived composition may only REPLACE the stored one when it still
+        // accounts for every molecule the source text named. When a drug is
+        // added with a molecule the salt master does not know, the derived
+        // string used to come back one ingredient short and overwrite the truth
+        // — "Paracetamol (500mg) + Zyxomorphine (10mg)" was stored as
+        // "Paracetamol (500mg)", quietly deleting the very ingredient that
+        // needed attention.
+        ...(safeToWriteComposition(row, result, opts.refreshComposition)
+          ? { saltComposition: result.composition }
           : {}),
       },
     });
   } catch (err) {
     logger.warn({ err, drugMasterId: id }, 'Catalog schedule classification failed; drug left unclassified');
   }
+}
+
+/**
+ * May the derived composition be written over what is stored?
+ *
+ * Only when there is something to write, the slot is free (or the caller knows
+ * the stored value is stale), AND the derived string did not lose a molecule on
+ * the way. That last condition is the one that matters: a composition is the
+ * drug's identity, and a classifier that cannot recognise an ingredient has no
+ * business deleting it.
+ */
+function safeToWriteComposition(
+  row: { saltComposition: string | null; genericName: string | null },
+  result: ClassificationResult,
+  refresh?: boolean,
+): boolean {
+  if (!result.composition) return false;
+  if (!refresh && row.saltComposition) return false;
+
+  const source = (refresh ? row.genericName : row.saltComposition || row.genericName) ?? '';
+  const inSource = parseSalts(source).length;
+  return result.salts.length >= inSource;
 }
 
 /**
