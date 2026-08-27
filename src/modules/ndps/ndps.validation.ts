@@ -23,16 +23,6 @@ export const receiveConsignmentSchema = z.object({
   }),
 });
 
-export const transferSchema = z.object({
-  body: z.object({
-    drugFormularyId: z.string().uuid('Invalid drug ID'),
-    fromLocationId: z.string().uuid('Invalid source location'),
-    toLocationId: z.string().uuid('Invalid destination location'),
-    quantity: z.number().int().positive('Quantity must be positive'),
-    counterpartyId: z.string().uuid('A receiving custodian is required'),
-    notes: z.string().max(1000).optional(),
-  }),
-});
 
 export const consumptionSchema = z.object({
   body: z.object({

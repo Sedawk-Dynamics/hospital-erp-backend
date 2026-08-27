@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { prisma } from '../../../../src/config/database';
 import {
   receiveConsignment,
-  transferStock,
+
   recordConsumption,
   logDisposal,
   runDailyClose,
@@ -57,43 +57,11 @@ describe('NDPS — Form 3C inward', () => {
   });
 });
 
-describe('NDPS — transfer (dual-authentication challan)', () => {
-  it('requires a distinct second custodian to co-sign', async () => {
-    narcotic();
-    await expect(
-      transferStock(TENANT, USER, ADMIN, { drugFormularyId: 'd1', fromLocationId: VAULT.id, toLocationId: ICU.id, quantity: 5, counterpartyId: USER }),
-    ).rejects.toThrow(/second person/);
-  });
-
-  it('moves stock vault→sub-store and writes the transfer with both custodians', async () => {
-    narcotic();
-    (prisma.ndpsLocation.findFirst as any).mockImplementation((args: any) =>
-      args.where.id === VAULT.id ? VAULT : ICU,
-    );
-    (prisma.ndpsStockBalance.findFirst as any).mockImplementation((args: any) =>
-      args.where.locationId === VAULT.id ? { id: 'b1', quantity: 100 } : null,
-    );
-    (prisma.ndpsStockBalance.update as any).mockResolvedValue({});
-    (prisma.ndpsStockBalance.create as any).mockResolvedValue({});
-
-    const txn = await transferStock(TENANT, USER, ADMIN, {
-      drugFormularyId: 'd1', fromLocationId: VAULT.id, toLocationId: ICU.id, quantity: 5, counterpartyId: 'nurse-2',
-    });
-    expect(txn.entryType).toBe('transfer');
-    expect(txn.counterpartyId).toBe('nurse-2');
-    // source decremented, destination created
-    expect(prisma.ndpsStockBalance.update).toHaveBeenCalled();
-  });
-
-  it('refuses to over-draw the source location', async () => {
-    narcotic();
-    (prisma.ndpsLocation.findFirst as any).mockImplementation((args: any) => (args.where.id === VAULT.id ? VAULT : ICU));
-    (prisma.ndpsStockBalance.findFirst as any).mockResolvedValue({ id: 'b1', quantity: 2 }); // only 2 in vault
-    await expect(
-      transferStock(TENANT, USER, ADMIN, { drugFormularyId: 'd1', fromLocationId: VAULT.id, toLocationId: ICU.id, quantity: 5, counterpartyId: 'nurse-2' }),
-    ).rejects.toThrow(/Insufficient narcotic stock/);
-  });
-});
+// The dual-authentication challan moved to the stock-transfer board, so its
+// rules are tested there now — see tests/unit/modules/inventory/
+// transfer-dispatch.test.ts (custody, and the over-draw refusal) and
+// transfer-custody.test.ts (the policy itself). Deleting a screen must not
+// delete the checks on the rules it enforced.
 
 describe('NDPS — Form 3E consumption', () => {
   it('enforces the mandatory doctor reg / bed / diagnosis fields', async () => {

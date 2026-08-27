@@ -8,7 +8,6 @@ import * as controller from './ndps.controller';
 import {
   createLocationSchema,
   receiveConsignmentSchema,
-  transferSchema,
   consumptionSchema,
   disposalSchema,
   dailyCloseSchema,
@@ -25,7 +24,10 @@ ndpsRoutes.post('/locations', authenticate, requirePermission('pharmacy', 'creat
 
 // Lifecycle: Form 3C inward → transfer (challan) → Form 3E consumption → disposal.
 ndpsRoutes.post('/consignments', authenticate, requirePermission('pharmacy', 'create'), validate(receiveConsignmentSchema), controller.receiveConsignment);
-ndpsRoutes.post('/transfers', authenticate, requirePermission('pharmacy', 'create'), validate(transferSchema), controller.transferStock);
+// POST /transfers is gone. Moving a narcotic is a stock transfer like any
+// other and goes through /inventory/transfers, which applies the same
+// dual-custody rule. This route wrote the pre-unification NdpsStockBalance
+// ledger, so leaving it would have let the two disagree about the same stock.
 ndpsRoutes.post('/consumption', authenticate, requirePermission('pharmacy', 'create'), validate(consumptionSchema), controller.recordConsumption);
 ndpsRoutes.post('/disposals', authenticate, requirePermission('pharmacy', 'create'), validate(disposalSchema), controller.logDisposal);
 ndpsRoutes.post(

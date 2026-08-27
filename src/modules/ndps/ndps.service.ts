@@ -312,58 +312,23 @@ export async function receiveConsignment(
 }
 
 /**
- * Step 2 — Internal NDPS Delivery Challan (dual-authentication). Moves stock
- * from one location to another (vault → ICU/OT cart), crediting the source and
- * debiting the destination, and recording BOTH the issuing and receiving
- * individuals so the chain of custody is continuous.
+ * Internal NDPS transfer was REMOVED, not lost.
+ *
+ * It moved narcotic stock between locations by adjusting NdpsStockBalance — the
+ * ledger that existed before narcotic stock was unified onto DrugBatch. Keeping
+ * it alive after the NDPS page was merged into the stock-transfer board left a
+ * second, UI-less write path that moved the OLD ledger while the board moved
+ * batches: call both and the two disagree about how much morphine the hospital
+ * holds.
+ *
+ * Moving a narcotic is now a stock transfer like any other, on the one board
+ * that handles every schedule, with the same dual-custody rule ported into
+ * `inventory/transfer-custody.ts`.
+ *
+ * Historical `entryType: 'transfer'` rows are untouched and still read by the
+ * controlled register — deleting the writer must not erase what it already
+ * wrote.
  */
-export async function transferStock(
-  tenantId: string,
-  userId: string,
-  roles: string[],
-  data: {
-    drugFormularyId: string;
-    fromLocationId: string;
-    toLocationId: string;
-    quantity: number;
-    counterpartyId: string;
-    notes?: string;
-  },
-) {
-  assertNdpsAdmin(roles, 'transfer NDPS stock');
-  await assertNarcoticDrug(tenantId, data.drugFormularyId);
-  if (data.quantity <= 0) throw AppError.badRequest('Quantity must be positive');
-  if (data.fromLocationId === data.toLocationId) {
-    throw AppError.badRequest('Source and destination locations must differ');
-  }
-  if (!data.counterpartyId || data.counterpartyId === userId) {
-    throw AppError.badRequest('A second person (the receiving custodian) must co-sign the transfer.');
-  }
-  const [from, to] = await Promise.all([
-    prisma.ndpsLocation.findFirst({ where: { id: data.fromLocationId, tenantId } }),
-    prisma.ndpsLocation.findFirst({ where: { id: data.toLocationId, tenantId } }),
-  ]);
-  if (!from) throw AppError.notFound('Source location not found');
-  if (!to) throw AppError.notFound('Destination location not found');
-
-  return prisma.$transaction(async (tx) => {
-    await adjustBalance(tx, tenantId, data.drugFormularyId, data.fromLocationId, -data.quantity);
-    await adjustBalance(tx, tenantId, data.drugFormularyId, data.toLocationId, data.quantity);
-    return tx.ndpsTransaction.create({
-      data: {
-        tenantId,
-        drugFormularyId: data.drugFormularyId,
-        entryType: 'transfer',
-        quantity: data.quantity,
-        fromLocationId: data.fromLocationId,
-        toLocationId: data.toLocationId,
-        recordedById: userId,
-        counterpartyId: data.counterpartyId,
-        notes: data.notes ?? null,
-      },
-    });
-  });
-}
 
 /**
  * Step 3 — Form 3E patient consumption. Logs a bedside administration: drops the

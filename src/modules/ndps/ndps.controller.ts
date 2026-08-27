@@ -34,14 +34,6 @@ export async function receiveConsignment(req: AuthenticatedRequest, res: Respons
   } catch (err) { next(err); }
 }
 
-export async function transferStock(req: AuthenticatedRequest, res: Response, next: NextFunction) {
-  try {
-    const { tenantId, userId, roles } = ctx(req);
-    const data = await service.transferStock(tenantId, userId, roles, req.body);
-    sendResponse({ res, statusCode: 201, message: 'NDPS stock transferred', data });
-  } catch (err) { next(err); }
-}
-
 export async function recordConsumption(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const { tenantId, userId, roles } = ctx(req);
