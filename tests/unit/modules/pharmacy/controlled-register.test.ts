@@ -26,6 +26,7 @@ const noMovementSince = () => {
   (prisma.dispensingRecord.aggregate as any).mockResolvedValue({ _sum: { quantityDispensed: 0 } });
   (prisma.drugReturn.aggregate as any).mockResolvedValue({ _sum: { quantity: 0 } });
   (prisma.ndpsTransaction.aggregate as any).mockResolvedValue({ _sum: { quantity: 0 } });
+  (prisma.stockTransfer.aggregate as any).mockResolvedValue({ _sum: { quantityTransferred: 0 } });
 };
 
 beforeEach(() => {
@@ -39,6 +40,7 @@ beforeEach(() => {
   (prisma.user.findMany as any).mockResolvedValue([]);
   (prisma.patient.findMany as any).mockResolvedValue([]);
   (prisma.ndpsLocation.findMany as any).mockResolvedValue([]);
+  (prisma.stockTransfer.findMany as any).mockResolvedValue([]);
   setLiveStock(0);
   noMovementSince();
 });
@@ -265,5 +267,77 @@ describe('filters', () => {
   it('prints the active ingredient, which is what an inspector cross-references', async () => {
     const r = await getControlledRegister(TENANT, {});
     expect(r.rows[0].apiStrength).toBe('Morphine 10mg');
+  });
+});
+
+describe('a stock-transfer dispatch really does leave the pharmacy', () => {
+  /**
+   * The two kinds of transfer behave differently and the balance has to know.
+   *
+   * An NDPS challan moved NdpsStockBalance between locations and never touched
+   * a batch, so it changes nothing here. A stock-transfer dispatch decrements
+   * quantityInStock — the stock left the pool this balance is over. Treating
+   * both as weightless put the opening balance out by exactly the amount
+   * transferred: on a live run it came back as MINUS FIVE, which is not a
+   * number a register can print.
+   */
+  const dispatched = (qty: number) => [{
+    id: 'st-1', transferNumber: 'ST-1', quantityTransferred: qty, quantityRequested: qty,
+    dispatchedAt: new Date('2026-08-10T09:00:00Z'), createdAt: new Date('2026-08-10T09:00:00Z'),
+    fromLocation: 'Pharmacy', toLocation: null, fromDepartment: null,
+    toDepartment: { name: 'ICU' },
+    custodian: { firstName: 'Nurse', lastName: 'One' },
+    dispatcher: { firstName: 'Pharm', lastName: 'Admin' },
+    drugBatch: { drugId: DRUG, batchNumber: 'B1', expiryDate: new Date('2027-01-01') },
+  }];
+
+  it('subtracts the dispatch from the balance while showing it as a transfer', async () => {
+    setLiveStock(95); // 100 received, 5 dispatched away
+    (prisma.drugBatch.aggregate as any).mockResolvedValue({ _sum: { quantityReceived: 100 } });
+    (prisma.stockTransfer.aggregate as any).mockResolvedValue({ _sum: { quantityTransferred: 5 } });
+    (prisma.stockTransfer.findMany as any).mockResolvedValue(dispatched(5));
+    (prisma.drugBatch.findMany as any).mockResolvedValue([{
+      id: 'b1', drugId: DRUG, batchNumber: 'B1', quantityReceived: 100,
+      expiryDate: new Date('2027-01-01'), createdAt: new Date('2026-08-09T09:00:00Z'),
+      supplier: { name: 'Acme' },
+    }]);
+
+    const r = await getControlledRegister(TENANT, { fromDate: '2026-08-01', toDate: '2026-08-31' });
+
+    // The opening balance must be possible.
+    expect(r.summary.openingStock).toBe(0);
+    expect(r.summary.openingStock).toBeGreaterThanOrEqual(0);
+    // It is still presented as custody, not as stock dispensed.
+    const xfer = r.rows.find((x) => x.txnType === 'Internal Transfer')!;
+    expect(xfer.transferQty).toBe(5);
+    expect(xfer.qtyOut).toBe(0);
+    // But the balance felt it leave, and closing matches live stock.
+    expect(r.summary.transferredOut).toBe(5);
+    expect(r.summary.closingBalance).toBe(95);
+    expect(
+      r.summary.openingStock + r.summary.inward - r.summary.outward - r.summary.transferredOut,
+    ).toBe(r.summary.closingBalance);
+  });
+
+  it('leaves an NDPS challan weightless, because it never touched a batch', async () => {
+    setLiveStock(100);
+    (prisma.drugBatch.aggregate as any).mockResolvedValue({ _sum: { quantityReceived: 100 } });
+    (prisma.ndpsTransaction.findMany as any).mockResolvedValue([{
+      id: 'ndps-1', drugFormularyId: DRUG, entryType: 'transfer', quantity: 5,
+      occurredAt: new Date('2026-08-10T09:00:00Z'), batchNumber: 'B1',
+      expiryDate: new Date('2027-01-01'), fromLocationId: 'v1', toLocationId: 'icu',
+      recordedById: 'u1', counterpartyId: 'u2', patientId: null, doctorRegNo: null,
+    }]);
+    (prisma.drugBatch.findMany as any).mockResolvedValue([{
+      id: 'b1', drugId: DRUG, batchNumber: 'B1', quantityReceived: 100,
+      expiryDate: new Date('2027-01-01'), createdAt: new Date('2026-08-09T09:00:00Z'),
+      supplier: { name: 'Acme' },
+    }]);
+
+    const r = await getControlledRegister(TENANT, { fromDate: '2026-08-01', toDate: '2026-08-31' });
+
+    expect(r.summary.internalTransfer).toBe(5);
+    expect(r.summary.transferredOut).toBe(0); // nothing left the pharmacy
+    expect(r.summary.closingBalance).toBe(100);
   });
 });

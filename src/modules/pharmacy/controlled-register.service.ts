@@ -55,6 +55,17 @@ export interface RegisterRow {
   qtyIn: number;
   qtyOut: number;
   transferQty: number;
+  /**
+   * What this row did to the pharmacy's dispensable batch stock.
+   *
+   * Normally qtyIn - qtyOut. A transfer is the exception, and there are two
+   * kinds that behave differently: an NDPS challan moved NdpsStockBalance and
+   * never touched a batch, so it is 0; a stock-transfer dispatch decrements
+   * quantityInStock, so it is negative. Collapsing them would put the opening
+   * balance out by exactly the amount transferred — it came out NEGATIVE on a
+   * real run, which is indefensible on a register.
+   */
+  stockDelta: number;
   /** Filled by the running-balance pass. */
   opening: number;
   closing: number;
@@ -247,6 +258,8 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
     qtyIn: 0,
     qtyOut: 0,
     transferQty: 0,
+    // Overridden below for the one row type where it is not qtyIn - qtyOut.
+    stockDelta: 0,
   });
 
   for (const b of batches) {
@@ -348,6 +361,9 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
       // shown for the chain of custody and nets to zero hospital-wide, exactly
       // like the NDPS challan rows above.
       transferQty: t.quantityTransferred || t.quantityRequested,
+      // Unlike an NDPS challan, this dispatch decremented the batch — so the
+      // balance has to see it leave even though it is displayed as custody.
+      stockDelta: -(t.quantityTransferred || t.quantityRequested),
       patientOrDept: `${fromName} → ${toName}`,
       // A custody move has no prescriber — nobody prescribed it.
       prescriber: null,
@@ -413,7 +429,9 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
   const opening = running;
   for (const r of filtered) {
     r.opening = running;
-    running += r.qtyIn - r.qtyOut;
+    // stockDelta, not qtyIn - qtyOut: a stock-transfer dispatch shows in the
+    // transfer column but really did leave the pharmacy's batches.
+    running += r.stockDelta || r.qtyIn - r.qtyOut;
     r.closing = running;
   }
 
@@ -422,6 +440,10 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
     inward: filtered.reduce((s, r) => s + r.qtyIn, 0),
     outward: filtered.reduce((s, r) => s + r.qtyOut, 0),
     internalTransfer: filtered.reduce((s, r) => s + r.transferQty, 0),
+    // The part of that which actually left the pharmacy's dispensable stock.
+    // A challan move between NDPS locations contributes 0; a stock-transfer
+    // dispatch contributes what it took.
+    transferredOut: filtered.reduce((s, r) => s + Math.max(0, -r.stockDelta - r.qtyOut), 0),
     closingBalance: running,
   };
 
@@ -434,16 +456,21 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
 }
 
 const emptySummary = () => ({
-  openingStock: 0, inward: 0, outward: 0, internalTransfer: 0, closingBalance: 0,
+  openingStock: 0, inward: 0, outward: 0, internalTransfer: 0, transferredOut: 0, closingBalance: 0,
 });
 
 /**
  * Net stock movement for these drugs from `since` until now — used to walk the
- * live balance backwards to the start of the window. Transfers are excluded
- * because they move stock between locations without changing the total.
+ * live balance backwards to the start of the window.
+ *
+ * NDPS challan transfers are excluded because they moved NdpsStockBalance
+ * between locations without touching a batch. Stock-transfer DISPATCHES are
+ * not: they decrement quantityInStock, so the stock genuinely left the pool
+ * this balance is over. Leaving them out made the opening balance come out
+ * NEGATIVE — the live total had lost the stock while the walk-back had not.
  */
 async function netMovementSince(tenantId: string, drugIds: string[], since: Date): Promise<number> {
-  const [received, dispensed, returned, ndpsOut] = await Promise.all([
+  const [received, dispensed, returned, ndpsOut, transferredOut] = await Promise.all([
     prisma.drugBatch.aggregate({
       where: {
         tenantId, drugId: { in: drugIds }, createdAt: { gte: since },
@@ -469,12 +496,22 @@ async function netMovementSince(tenantId: string, drugIds: string[], since: Date
       },
       _sum: { quantity: true },
     }),
+    prisma.stockTransfer.aggregate({
+      where: {
+        tenantId,
+        status: { in: ['dispatched', 'received'] },
+        dispatchedAt: { gte: since },
+        drugBatch: { drugId: { in: drugIds } },
+      },
+      _sum: { quantityTransferred: true },
+    }),
   ]);
   return (
     (received._sum.quantityReceived ?? 0) +
     (returned._sum.quantity ?? 0) -
     (dispensed._sum.quantityDispensed ?? 0) -
-    (ndpsOut._sum.quantity ?? 0)
+    (ndpsOut._sum.quantity ?? 0) -
+    (transferredOut._sum.quantityTransferred ?? 0)
   );
 }
 
