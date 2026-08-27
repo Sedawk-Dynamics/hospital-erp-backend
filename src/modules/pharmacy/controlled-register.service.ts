@@ -477,3 +477,23 @@ async function netMovementSince(tenantId: string, drugIds: string[], since: Date
     (ndpsOut._sum.quantity ?? 0)
   );
 }
+
+/**
+ * Every controlled drug the hospital stocks, for the register's item picker.
+ *
+ * The report already returns the drugs it covered, but once a filter is applied
+ * that list narrows to the filtered set — which would make the picker forget
+ * the options the moment you used it. This is the unfiltered list.
+ */
+export async function listControlledDrugs(tenantId: string) {
+  const drugs = await resolveDrugs(tenantId, {});
+  return drugs
+    .map((d) => ({
+      id: d.id,
+      drugName: d.drugName,
+      schedule: d.schedule,
+      controlledClass: d.controlledClass,
+      apiStrength: [d.composition || d.genericName, d.strength].filter(Boolean).join(' ') || null,
+    }))
+    .sort((a, b) => a.drugName.localeCompare(b.drugName));
+}

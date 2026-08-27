@@ -199,6 +199,10 @@ export const controlledRegisterQuerySchema = z.object({
     search: z.string().max(120).optional(),
     doctorRegNo: z.string().max(60).optional(),
     locationId: z.string().uuid().optional(),
+    // 'form35' prints the Inspection Book sheet instead of the house register.
+    // Declared or validate() drops it and the button would silently print the
+    // wrong document.
+    format: z.enum(['register', 'form35']).optional(),
   }),
 });
 

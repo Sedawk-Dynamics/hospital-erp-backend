@@ -171,6 +171,10 @@ pharmacyRoutes.patch('/holds/:id/release', authenticate, requirePermission('phar
 // --- Controlled-Drug Register (the drug inspector's audit view) ---
 pharmacyRoutes.get('/controlled-register', authenticate, requirePermission('pharmacy', 'read'), validate(controlledRegisterQuerySchema), controller.getControlledRegisterReport);
 
+// The item picker's options — every controlled drug the hospital stocks. A
+// literal subpath, declared with the other register routes.
+pharmacyRoutes.get('/controlled-register/drugs', authenticate, requirePermission('pharmacy', 'read'), controller.listControlledRegisterDrugs);
+
 pharmacyRoutes.get('/controlled-register/pdf', authenticate, requirePermission('pharmacy', 'read'), validate(controlledRegisterQuerySchema), controller.getControlledRegisterPdf);
 
 // --- Outside (paper) prescriptions presented at the counter ---

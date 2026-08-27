@@ -8,7 +8,7 @@ import { parseInvoiceFile } from './pharmacy.ocr';
 import { assertFeatureEnabled } from '../ai/ai.config.service';
 import { getPharmacyDetailedReport as getDetailedReport } from './pharmacy.detailed-report.service';
 import { overrideFormularySchedule as overrideSchedule } from '../drug-master/drug-schedule.service';
-import { getControlledRegister } from './controlled-register.service';
+import { getControlledRegister, listControlledDrugs } from './controlled-register.service';
 
 // ============================================================
 // Formulary
@@ -1504,6 +1504,19 @@ export async function runPharmacyExpiryAlerts(
 }
 
 // The Controlled-Drug Register — the audit view a drug inspector reads.
+export async function listControlledRegisterDrugs(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await listControlledDrugs(req.user!.tenantId);
+    sendResponse({ res, message: 'Controlled drugs retrieved', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getControlledRegisterReport(
   req: AuthenticatedRequest,
   res: Response,
@@ -1540,7 +1553,11 @@ export async function getControlledRegisterPdf(
   try {
     const tenantId = req.user!.tenantId;
     const q = req.query as Record<string, string | undefined>;
-    const [{ getHospitalBranding, resolvePdfTemplate }, { getDrugLicenceSettings }, { streamControlledRegisterPdf }] =
+    const [
+      { getHospitalBranding, resolvePdfTemplate },
+      { getDrugLicenceSettings },
+      { streamControlledRegisterPdf, streamForm35Pdf },
+    ] =
       await Promise.all([
         import('../hospital-branding/hospital-branding.service'),
         import('../hospital-settings/hospital-settings.service'),
@@ -1573,6 +1590,13 @@ export async function getControlledRegisterPdf(
       .filter(Boolean)
       .join(' · ');
 
+    // Two documents from one report. The register is how the hospital reads its
+    // own stock; Form 35 is the Inspection Book sheet an inspector signs, with
+    // its own fixed twelve columns and sign-off block.
+    if (q.format === 'form35') {
+      streamForm35Pdf(res, { ...data, licence, scopeLabel }, branding, template);
+      return;
+    }
     streamControlledRegisterPdf(res, { ...data, licence, scopeLabel }, branding, template);
   } catch (err) {
     next(err);

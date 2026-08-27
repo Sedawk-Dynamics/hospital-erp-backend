@@ -230,3 +230,125 @@ export function streamControlledRegisterPdf(
 
   finalizeBrandedDocument({ pdf, theme, branding });
 }
+
+// ---------------------------------------------------------------------------
+// FORM 35 — the Inspection Book layout.
+//
+// The register above is how the hospital reads its own controlled stock. This
+// is the sheet a drug inspector is handed and signs, and its shape is not ours
+// to choose: twelve fixed columns, the licence and premises named in a band
+// across the top, and a signature block for the head pharmacist AND the
+// inspector at the foot. An unsigned print-out is not a Form 35.
+//
+// Landscape is forced. Twelve columns do not fit portrait, and a register that
+// wraps its columns is one an inspector will refuse.
+// ---------------------------------------------------------------------------
+
+// Widths are set so each header's LONGEST WORD fits on one line. Left to
+// themselves the numeric columns broke "OUTWARD" into "OUTWAR / D", which looks
+// like a fault on a sheet a drug inspector signs.
+const FORM35_COLUMNS: { header: string; width: number; align?: 'left' | 'right' | 'center' }[] = [
+  { header: 'DATE', width: 0.055 },
+  { header: 'VOUCHER/INVOICE #', width: 0.085 },
+  { header: 'ITEM NAME', width: 0.125 },
+  { header: 'BATCH #', width: 0.065 },
+  { header: 'EXPIRY', width: 0.050, align: 'center' },
+  { header: 'OPENING STOCK', width: 0.065, align: 'right' },
+  { header: 'INWARD QTY', width: 0.060, align: 'right' },
+  { header: 'OUTWARD QTY', width: 0.068, align: 'right' },
+  { header: 'TRANSFERS (3H)', width: 0.075, align: 'right' },
+  { header: 'CLOSING BALANCE', width: 0.068, align: 'right' },
+  { header: 'PATIENT/DOCTOR/STORE DETAILS', width: 0.155 },
+  { header: 'VERIFIED BY', width: 0.129 },
+];
+
+export function streamForm35Pdf(
+  res: Response,
+  input: RegisterPdfInput,
+  branding: HospitalBranding,
+  template?: PdfTemplate,
+) {
+  const { rows, window, licence } = input;
+
+  // Force landscape whatever the hospital's template says — see above.
+  const landscape: PdfTemplate | undefined = template
+    ? { ...template, page: { ...template.page, orientation: 'landscape' } }
+    : undefined;
+
+  const { pdf, theme } = createBrandedDocument({
+    res,
+    branding,
+    template: landscape,
+    title: 'FORM 35 / DRUG REGISTER — SCHEDULE X / NDPS (NARCOTICS)',
+    subtitle: input.scopeLabel,
+    filename: `form-35-${dmy(window.from).replace(/\//g, '-')}.pdf`,
+  });
+
+  // ── The identifying band ────────────────────────────────────────────────
+  // Licence, premises and period on one line, the way the printed book has it.
+  // Missing values print as an em dash rather than a blank, so a reader can
+  // tell an unconfigured system from a licence with genuinely no number.
+  const band = [
+    `NDPS LICENCE NO: ${dash(licence.ndpsLicenceNumber)}`,
+    `FACILITY: ${(licence.licenceHolderName || branding.name || '—').toUpperCase()}`,
+    `PREMISES: ${dash(licence.premisesAddress)}`,
+    `PERIOD: ${dmy(window.from)} – ${dmy(window.to)}`,
+  ].join('   |   ');
+
+  pdf.font(theme.font.bold).fontSize(theme.size.small).fillColor(theme.ink);
+  pdf.text(band, theme.margin, pdf.y, { width: theme.contentWidth });
+  pdf.moveDown(0.6);
+
+  // ── The ledger ──────────────────────────────────────────────────────────
+  const body: TableRow[] = rows.map((r) => [
+    dmy(r.occurredAt),
+    dash(r.txnId),
+    r.itemName,
+    dash(r.batchNumber),
+    r.expiryDate ? dmy(r.expiryDate).slice(3) : '—', // MM/YYYY, as the book prints it
+    String(r.opening),
+    r.qtyIn ? String(r.qtyIn) : '0',
+    r.qtyOut ? String(r.qtyOut) : '0',
+    r.transferQty ? String(r.transferQty) : '0',
+    String(r.closing),
+    // One cell for whoever the movement was for: a patient and their
+    // prescriber, or the store the stock moved to.
+    [r.patientOrDept, r.prescriber].filter(Boolean).join(', ') || '—',
+    dash(r.verification),
+  ]);
+
+  if (!body.length) {
+    pdf.font(theme.font.regular).fontSize(theme.size.small).fillColor(theme.muted);
+    pdf.text('No controlled-drug movement was recorded in this period.', theme.margin, pdf.y, {
+      width: theme.contentWidth,
+    });
+    pdf.moveDown(1);
+  } else {
+    drawTable(pdf, theme, FORM35_COLUMNS, body);
+  }
+
+  // ── Sign-off ────────────────────────────────────────────────────────────
+  pdf.moveDown(1.2);
+  pdf.font(theme.font.bold).fontSize(theme.size.small).fillColor(theme.ink);
+  pdf.text('VERIFICATION SIGN-OFF', theme.margin, pdf.y, { width: theme.contentWidth });
+  pdf.moveDown(1.4);
+
+  const half = theme.contentWidth / 2;
+  const y = pdf.y;
+  pdf.font(theme.font.regular).fontSize(theme.size.small).fillColor(theme.muted);
+  pdf.text('HEAD PHARMACIST SIGNATURE & SEAL: ______________________', theme.margin, y, {
+    width: half,
+  });
+  pdf.text('DRUG INSPECTOR SIGNATURE & SEAL: ______________________', theme.margin + half, y, {
+    width: half,
+  });
+
+  pdf.moveDown(1.2);
+  pdf.fontSize(theme.size.small - 1).fillColor(theme.muted);
+  pdf.text(`Printed: ${dmyTime(new Date())}`, theme.margin, pdf.y, {
+    width: theme.contentWidth,
+    align: 'right',
+  });
+
+  finalizeBrandedDocument({ pdf, theme, branding });
+}
