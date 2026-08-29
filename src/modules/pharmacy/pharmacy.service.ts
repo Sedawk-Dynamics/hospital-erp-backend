@@ -4351,7 +4351,7 @@ export async function getWardStock(tenantId: string, wardId: string) {
   const batches = batchIds.length
     ? await prisma.drugBatch.findMany({
         where: { id: { in: batchIds } },
-        select: { id: true, batchNumber: true, expiryDate: true, sellingPrice: true, drug: { select: { id: true, drugName: true, category: true, looseUnitLabel: true } } },
+        select: { id: true, batchNumber: true, expiryDate: true, sellingPrice: true, isExpired: true, isRecalled: true, recallReason: true, drug: { select: { id: true, drugName: true, category: true, looseUnitLabel: true } } },
       })
     : [];
   const byId = new Map(batches.map((b) => [b.id, b]));
@@ -4367,6 +4367,12 @@ export async function getWardStock(tenantId: string, wardId: string) {
       expiryDate: b?.expiryDate ?? null,
       sellingPrice: b?.sellingPrice != null ? Number(b.sellingPrice) : null,
       quantityInStock: r.quantityInStock,
+      // Stock can go bad while it sits here. The dispense call refuses it, but
+      // finding that out at the trolley with a patient waiting is too late —
+      // the shelf itself has to say which boxes to pull.
+      isExpired: b ? b.isExpired || new Date(b.expiryDate) < new Date(new Date().toDateString()) : false,
+      isRecalled: b?.isRecalled ?? false,
+      recallReason: b?.recallReason ?? null,
     };
   });
   return { items, total: items.length };
