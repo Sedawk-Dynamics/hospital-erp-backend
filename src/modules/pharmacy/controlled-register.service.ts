@@ -8,13 +8,15 @@ import { prisma } from '../../config/database';
 // stock was unified onto DrugBatch this report was impossible: half the
 // movements lived in a ledger with no batch, no expiry and no link to a GRN.
 //
-// SEVEN SOURCES, each the canonical record of its own movement:
+// NINE SOURCES, each the canonical record of its own movement:
 //   in   DrugBatch          a receipt — vendor GRN and Form 3C inward alike
 //   in   DrugReturn         stock handed back and actually restocked
-//   out  DispensingRecord   counter, ward and IP dispensing
+//   out  DispensingRecord   counter and IP dispensing
 //   out  NdpsTransaction    'dispense'  bedside Form 3E administration
 //   out  NdpsTransaction    'disposal'  breakage, spillage, destruction
 //   move NdpsTransaction    'transfer'  vault → sub-store custody hand-off
+//   move StockTransfer      the transfer board, for every drug alike
+//   both WardStockLedger    a ward shelf issuing and giving out doses
 //   adj  AuditLog           deliberate stock-count corrections
 //
 // Form 3C inward is deliberately NOT read from NdpsTransaction: since
@@ -160,7 +162,7 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
     return [base, d.strength].filter(Boolean).join(' ') || null;
   };
 
-  const [batches, returns, dispenses, ndpsTxns, adjustments, stockTransfers] = await Promise.all([
+  const [batches, returns, dispenses, ndpsTxns, adjustments, stockTransfers, wardMoves] = await Promise.all([
     prisma.drugBatch.findMany({
       where: {
         tenantId, drugId: { in: drugIds }, createdAt: inWindow(from, to),
@@ -226,24 +228,50 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
         dispatcher: { select: { firstName: true, lastName: true } },
       },
     }),
+    // The NINTH source. A ward shelf is a second inventory: stock leaves the
+    // pharmacy's batch and is given to patients from the ward, and none of it
+    // writes a DispensingRecord. So a Schedule H1 psychotropic could be handed
+    // to a patient at a bedside and appear nowhere on this register — the one
+    // document that is supposed to account for every movement of it.
+    //
+    // A vault narcotic never reaches here (the controlled gate sends it to the
+    // Form 3E workflow), which is why this went unnoticed: the tier the
+    // register was built for was never the tier that leaked.
+    // WardStockLedger carries scalar FKs and no Prisma relations, by design —
+    // the ward-stock sub-module resolves them in the service, and so does this.
+    prisma.wardStockLedger.findMany({
+      where: { tenantId, createdAt: inWindow(from, to), drugId: { in: drugIds } },
+    }),
   ]);
 
   // Resolve the people named on NDPS rows and the batches those rows touched.
-  const userIds = [...new Set(ndpsTxns.flatMap((t) => [t.recordedById, t.counterpartyId, t.coSignById]).filter(Boolean))] as string[];
-  const patientIds = [...new Set(ndpsTxns.map((t) => t.patientId).filter(Boolean))] as string[];
+  const userIds = [...new Set([
+    ...ndpsTxns.flatMap((t) => [t.recordedById, t.counterpartyId, t.coSignById]),
+    ...wardMoves.map((w) => w.performedBy),
+  ].filter(Boolean))] as string[];
+  const patientIds = [...new Set([
+    ...ndpsTxns.map((t) => t.patientId),
+    ...wardMoves.map((w) => w.patientId),
+  ].filter(Boolean))] as string[];
+  const wardIds = [...new Set(wardMoves.map((w) => w.wardId))];
+  const wardBatchIds = [...new Set(wardMoves.map((w) => w.drugBatchId))];
   const locationIds = [...new Set(ndpsTxns.flatMap((t) => [t.fromLocationId, t.toLocationId]).filter(Boolean))] as string[];
   const adjBatchIds = [...new Set(adjustments.map((a) => a.entityId).filter(Boolean))] as string[];
 
-  const [users, patients, locations, adjBatches] = await Promise.all([
+  const [users, patients, locations, adjBatches, wards, wardBatches] = await Promise.all([
     userIds.length ? prisma.user.findMany({ where: { id: { in: userIds } }, select: { id: true, firstName: true, lastName: true } }) : [],
     patientIds.length ? prisma.patient.findMany({ where: { id: { in: patientIds } }, select: { id: true, mrn: true, firstName: true, lastName: true } }) : [],
     locationIds.length ? prisma.ndpsLocation.findMany({ where: { id: { in: locationIds } }, select: { id: true, name: true } }) : [],
     adjBatchIds.length ? prisma.drugBatch.findMany({ where: { id: { in: adjBatchIds }, drugId: { in: drugIds } }, select: { id: true, batchNumber: true, expiryDate: true, drugId: true } }) : [],
+    wardIds.length ? prisma.ward.findMany({ where: { id: { in: wardIds } }, select: { id: true, name: true } }) : [],
+    wardBatchIds.length ? prisma.drugBatch.findMany({ where: { id: { in: wardBatchIds } }, select: { id: true, batchNumber: true, expiryDate: true } }) : [],
   ]);
   const userName = new Map(users.map((u) => [u.id, personName(u)]));
   const patientById = new Map(patients.map((p) => [p.id, p]));
   const locName = new Map(locations.map((l) => [l.id, l.name]));
   const adjBatchById = new Map(adjBatches.map((b) => [b.id, b]));
+  const wardNameById = new Map(wards.map((w) => [w.id, w.name]));
+  const wardBatchById = new Map(wardBatches.map((b) => [b.id, b]));
 
   const rows: RegisterRow[] = [];
   const base = (drugId: string) => ({
@@ -371,6 +399,51 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
     });
   }
 
+  for (const w of wardMoves) {
+    const wardName = wardNameById.get(w.wardId) ?? 'Ward';
+    const pt = w.patientId ? patientById.get(w.patientId) : null;
+    const wb = wardBatchById.get(w.drugBatchId);
+    // What each movement did to the PHARMACY's dispensable stock, which is what
+    // the running balance is over:
+    //   received  the batch was decremented when it was issued, so -qty
+    //   returned  it goes back into the batch, so +qty
+    //   dispensed the stock left the batch when it was issued to the ward, so 0
+    //   adjusted  a ward-only correction; the batch is untouched, so 0
+    // The quantity columns describe what happened on the ward; stockDelta
+    // describes what happened to the pharmacy. They differ here, and conflating
+    // them would double-count every ward dose.
+    const isIssue = w.movementType === 'received';
+    const isReturn = w.movementType === 'returned';
+    const isDose = w.movementType === 'dispensed';
+    rows.push({
+      ...base(w.drugId),
+      occurredAt: w.createdAt,
+      txnId: w.id.slice(0, 8),
+      txnType:
+        isDose ? 'Ward Admin.'
+          : isIssue ? 'Ward Issue'
+            : isReturn ? 'Ward Return'
+              : 'Ward Adjustment',
+      batchNumber: wb?.batchNumber ?? null,
+      expiryDate: wb?.expiryDate ?? null,
+      qtyIn: isReturn ? w.quantity : w.movementType === 'adjusted' && w.quantity > 0 ? w.quantity : 0,
+      qtyOut: isDose ? w.quantity : w.movementType === 'adjusted' && w.quantity < 0 ? -w.quantity : 0,
+      // An issue is custody moving to the ward, not stock leaving the hospital
+      // — the same treatment the transfer board's dispatches get.
+      transferQty: isIssue ? w.quantity : 0,
+      stockDelta: isIssue ? -w.quantity : isReturn ? w.quantity : 0,
+      patientOrDept: pt
+        ? `${personName(pt)} (${pt.mrn})`
+        : isIssue
+          ? `Pharmacy store → ${wardName}`
+          : isReturn
+            ? `${wardName} → Pharmacy store`
+            : `${wardName}${w.reason ? ` — ${w.reason}` : ''}`,
+      prescriber: null,
+      verification: w.performedBy ? userName.get(w.performedBy) ?? null : null,
+    });
+  }
+
   for (const a of adjustments) {
     const batch = a.entityId ? adjBatchById.get(a.entityId) : null;
     if (!batch) continue; // an adjustment on a drug outside this report
@@ -470,7 +543,7 @@ const emptySummary = () => ({
  * NEGATIVE — the live total had lost the stock while the walk-back had not.
  */
 async function netMovementSince(tenantId: string, drugIds: string[], since: Date): Promise<number> {
-  const [received, dispensed, returned, ndpsOut, transferredOut, adjusted] = await Promise.all([
+  const [received, dispensed, returned, ndpsOut, transferredOut, wardMoved, adjusted] = await Promise.all([
     prisma.drugBatch.aggregate({
       where: {
         tenantId, drugId: { in: drugIds }, createdAt: { gte: since },
@@ -505,6 +578,22 @@ async function netMovementSince(tenantId: string, drugIds: string[], since: Date
       },
       _sum: { quantityTransferred: true },
     }),
+    // Stock issued to, or returned from, a ward shelf. Issuing decrements the
+    // pharmacy's batch and returning restores it, so both belong in the pool
+    // this balance is over. Leaving them out meant a transfer made TODAY moved
+    // the opening balance of a window that closed last week — the live total
+    // had lost the stock while the walk-back had not.
+    //
+    // Doses given from the shelf are NOT counted: that stock left the batch
+    // when it was issued, and counting it again would remove it twice.
+    prisma.wardStockLedger.groupBy({
+      by: ['movementType'],
+      where: {
+        tenantId, drugId: { in: drugIds }, createdAt: { gte: since },
+        movementType: { in: ['received', 'returned'] },
+      },
+      _sum: { quantity: true },
+    }),
     // Count corrections. They appear on the register as rows, so leaving them
     // out here put the two halves of the report at odds: the walk-back reached
     // an opening balance the rows then moved off by exactly the net correction,
@@ -537,13 +626,18 @@ async function netMovementSince(tenantId: string, drugIds: string[], since: Date
     return sum + Number(nv.delta ?? nv.change ?? 0);
   }, 0);
 
+  const issuedToWards = wardMoved.find((g) => g.movementType === 'received')?._sum.quantity ?? 0;
+  const returnedFromWards = wardMoved.find((g) => g.movementType === 'returned')?._sum.quantity ?? 0;
+
   return (
     (received._sum.quantityReceived ?? 0) +
     (returned._sum.quantity ?? 0) +
+    returnedFromWards +
     adjustedNet -
     (dispensed._sum.quantityDispensed ?? 0) -
     (ndpsOut._sum.quantity ?? 0) -
-    (transferredOut._sum.quantityTransferred ?? 0)
+    (transferredOut._sum.quantityTransferred ?? 0) -
+    issuedToWards
   );
 }
 
