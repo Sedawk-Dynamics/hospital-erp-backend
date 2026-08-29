@@ -4922,7 +4922,12 @@ export async function dispenseFromWard(
         movementType: 'dispensed',
         quantity: data.quantity,
         patientId: data.patientId,
-        admissionId: data.admissionId ?? null,
+        // The stay the charge was posted against, not just the one the caller
+        // happened to name. The bill is scoped to `admId` — which falls back to
+        // the patient's open admission — and the ledger has to agree with it,
+        // or a per-stay medicine consumption report reads zero for every dose
+        // given from a ward shelf, which is most of them.
+        admissionId: admId,
         billId: bill.id,
         performedBy: userId,
         reason: data.reason ?? null,
