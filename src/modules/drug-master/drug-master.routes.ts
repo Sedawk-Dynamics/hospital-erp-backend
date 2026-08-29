@@ -40,6 +40,11 @@ drugMasterRoutes.get(
 // A molecule no published schedule names is stored UNDECIDED rather than
 // over-the-counter, so it shows up here as work instead of quietly reading as
 // safe. Declared before '/:id' so 'salts' is not captured as a drug id.
+// Type-ahead for the composition editor. Open to any authenticated user, like
+// the catalog search above — the salt master is platform reference data, and a
+// pharmacist entering a drug needs it as much as a platform admin does.
+drugMasterRoutes.get('/salts/search', authenticate, controller.searchSalts);
+
 drugMasterRoutes.get(
   '/salts',
   authenticate,

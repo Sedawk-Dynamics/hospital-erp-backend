@@ -163,3 +163,45 @@ export async function decideSalt(
   );
   return { salt: updated, reclassified: links.length };
 }
+
+/**
+ * Type-ahead over the molecules, for the composition editor.
+ *
+ * Open to any authenticated user, like the drug catalog search: the salt master
+ * is platform reference data, not a hospital's own information.
+ *
+ * The schedule travels with each suggestion so the person entering a drug can
+ * see what they are choosing — picking "Tramadol" and being told it is Schedule
+ * H1 is the moment that knowledge is worth having, not three screens later.
+ *
+ * Prefix matches rank above mere substring ones, so typing "para" offers
+ * Paracetamol before Chlorpheniramine.
+ */
+export async function searchSalts(q: string, limit = 15) {
+  const term = q.trim().toLowerCase();
+  if (term.length < 2) return [];
+
+  const rows = await prisma.salt.findMany({
+    where: {
+      OR: [
+        { norm: { contains: term } },
+        { name: { contains: term, mode: 'insensitive' } },
+        { synonyms: { some: { norm: { contains: term } } } },
+      ],
+    },
+    select: {
+      id: true, name: true, norm: true, scheduleCode: true,
+      controlledClass: true, vaultControlled: true,
+    },
+    take: Math.min(limit * 4, 60),
+  });
+
+  return rows
+    .sort((a, b) => {
+      const ap = a.norm.startsWith(term) ? 0 : 1;
+      const bp = b.norm.startsWith(term) ? 0 : 1;
+      if (ap !== bp) return ap - bp;
+      return a.name.localeCompare(b.name);
+    })
+    .slice(0, limit);
+}

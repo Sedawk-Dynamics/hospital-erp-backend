@@ -269,6 +269,16 @@ export async function deleteHsnGstRate(
 // A molecule no published schedule names is stored undecided rather than
 // over-the-counter. These endpoints are how that gets cleared.
 
+export async function searchSalts(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const q = String((req.query as Record<string, unknown>).q ?? '');
+    const data = await saltReview.searchSalts(q);
+    sendResponse({ res, message: 'Molecules retrieved', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function listSalts(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const { items, total, page, limit } = await saltReview.listSalts(req.query as never);
