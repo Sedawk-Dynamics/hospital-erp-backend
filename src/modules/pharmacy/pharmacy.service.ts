@@ -4800,6 +4800,29 @@ export async function dispenseFromWard(
       },
     });
     if (!batch) throw AppError.notFound('Drug batch not found');
+
+    // Stock that went bad AFTER it reached the ward.
+    //
+    // transferToWard refuses an expired or recalled batch, but that is the
+    // pharmacy door: a batch passes through it good and then sits in the ward
+    // cupboard for weeks. Nothing looked at it again, so an expired tablet
+    // could be given to a patient and billed for, and a recall could be
+    // declared while the stock it covers stayed quietly dispensable on every
+    // ward that held it — the one place a recall most needs to reach.
+    //
+    // Checked here rather than only in the shelf listing because the listing is
+    // a convenience and this is the decision.
+    if (isBatchExpired(batch)) {
+      throw AppError.badRequest(
+        `This batch expired on ${new Date(batch.expiryDate).toLocaleDateString('en-IN')}. Do not give it. Send it back to the pharmacy for disposal.`,
+      );
+    }
+    if (batch.isRecalled) {
+      throw AppError.badRequest(
+        `This batch has been recalled${batch.recallReason ? ` — ${batch.recallReason}` : ''}. Do not give it. Send it back to the pharmacy.`,
+      );
+    }
+
     // Controlled-drug gate — see createDispense above. This is the path a nurse
     // uses at the bedside, and the one the old hard block made unusable for her.
     const control = await checkControlledDispense(
