@@ -32,6 +32,7 @@
     "db:classify-schedules": "tsx prisma/scripts/classify-drug-schedules.ts",
     "db:check-composition": "tsx prisma/scripts/structured-composition-check.ts",
     "db:stock-transfer-e2e": "tsx prisma/scripts/stock-transfer-e2e.ts",
+    "db:check-ward-stock": "tsx prisma/scripts/ward-stock-e2e.ts",
     "db:check-ward-transfer": "tsx prisma/scripts/ward-transfer-check.ts",
     "db:ndps-e2e": "tsx prisma/scripts/ndps-e2e.ts",
     "db:diff-salt-classifier": "tsx prisma/scripts/diff-salt-classifier.ts",
