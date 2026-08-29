@@ -48,6 +48,8 @@ export interface CreateStockTransferInput {
   drugBatchId?: string;
   fromDepartmentId?: string;
   toDepartmentId?: string;
+  /** Where a DRUG transfer lands — wards hold drug stock, departments do not. */
+  toWardId?: string;
   fromLocation?: string;
   toLocation?: string;
   quantityRequested: number;
@@ -64,8 +66,8 @@ export async function createStockTransfer(
   if (!data.fromDepartmentId && !data.fromLocation) {
     throw AppError.badRequest('Either fromDepartmentId or fromLocation is required');
   }
-  if (!data.toDepartmentId && !data.toLocation) {
-    throw AppError.badRequest('Either toDepartmentId or toLocation is required');
+  if (!data.toDepartmentId && !data.toLocation && !data.toWardId) {
+    throw AppError.badRequest('A destination is required — a ward for drugs, a department otherwise');
   }
   if (data.fromDepartmentId && data.toDepartmentId && data.fromDepartmentId === data.toDepartmentId) {
     throw AppError.badRequest('From and to departments cannot be the same');
@@ -120,6 +122,7 @@ export async function createStockTransfer(
       drugBatchId: data.drugBatchId ?? null,
       fromDepartmentId: data.fromDepartmentId,
       toDepartmentId: data.toDepartmentId,
+      toWardId: data.toWardId ?? null,
       fromLocation: data.fromLocation,
       toLocation: data.toLocation,
       quantityRequested: data.quantityRequested,
@@ -455,6 +458,8 @@ export async function dispatchStockTransfer(
 export async function receiveStockTransfer(tenantId: string, id: string, userId: string) {
   const transfer = await prisma.stockTransfer.findFirst({
     where: { id, tenantId },
+    // The batch's drug id is needed to credit the ward's shelf.
+    include: { drugBatch: { select: { drugId: true } } },
   });
   if (!transfer) throw AppError.notFound('Stock transfer not found');
   if (transfer.status !== 'dispatched') {
@@ -470,12 +475,58 @@ export async function receiveStockTransfer(tenantId: string, id: string, userId:
 
   let result;
   if (transfer.drugBatchId) {
-    // Drug transfer: the batch was already decremented on dispatch (issued from
-    // the pharmacy). Receiving just confirms delivery — no stock change.
-    result = await prisma.stockTransfer.update({
-      where: { id },
-      data: { status: 'received', receivedBy: userId, receivedAt: new Date() },
-      include: includeForUpdate,
+    // Drug transfer. Dispatch already took the stock OUT of the pharmacy batch;
+    // receiving puts it ON the ward's shelf.
+    //
+    // This used to do neither — the comment said "receiving just confirms
+    // delivery, no stock change", which meant a drug left the pharmacy and was
+    // credited nowhere at all. Every dispatched drug transfer in this database
+    // had produced zero ward-stock ledger rows. Departments do not hold drug
+    // stock, so there was nowhere for it to land until a transfer could name a
+    // ward.
+    const qty = transfer.quantityTransferred || transfer.quantityRequested;
+    result = await prisma.$transaction(async (tx) => {
+      if (transfer.toWardId && qty > 0) {
+        const existing = await tx.wardStock.findFirst({
+          where: { tenantId, wardId: transfer.toWardId, drugBatchId: transfer.drugBatchId! },
+          select: { id: true },
+        });
+        if (existing) {
+          await tx.wardStock.update({
+            where: { id: existing.id },
+            data: { quantityInStock: { increment: qty } },
+          });
+        } else {
+          await tx.wardStock.create({
+            data: {
+              tenantId,
+              wardId: transfer.toWardId,
+              drugId: transfer.drugBatch!.drugId,
+              drugBatchId: transfer.drugBatchId!,
+              quantityInStock: qty,
+            },
+          });
+        }
+        // The ledger is the ward's record of where its medicines came from —
+        // without a row here the stock appears on the shelf with no history.
+        await tx.wardStockLedger.create({
+          data: {
+            tenantId,
+            wardId: transfer.toWardId,
+            drugId: transfer.drugBatch!.drugId,
+            drugBatchId: transfer.drugBatchId!,
+            movementType: 'received',
+            quantity: qty,
+            performedBy: userId,
+            reason: `Stock transfer ${transfer.transferNumber}`,
+          },
+        });
+      }
+      return tx.stockTransfer.update({
+        where: { id },
+        data: { status: 'received', receivedBy: userId, receivedAt: new Date() },
+        include: includeForUpdate,
+      });
     });
   } else {
     const inventoryItemId = transfer.inventoryItemId;

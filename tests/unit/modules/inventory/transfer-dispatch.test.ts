@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { prisma } from '../../../../src/config/database';
-import { dispatchStockTransfer } from '../../../../src/modules/inventory/inventory.transfer.service';
+import {
+  dispatchStockTransfer,
+  receiveStockTransfer,
+} from '../../../../src/modules/inventory/inventory.transfer.service';
 
 /**
  * Dispatch is where stock actually moves, and it had no tests at all.
@@ -104,5 +107,78 @@ describe('dispatching a controlled transfer', () => {
     await expect(dispatchStockTransfer(TENANT, 'st1', USER, undefined, 'u2')).rejects.toThrow(
       /Only approved transfers/i,
     );
+  });
+});
+
+describe('receiving a drug transfer puts it on the ward shelf', () => {
+  /**
+   * The whole point of naming a ward.
+   *
+   * Receiving used to do nothing at all — the comment said "just confirms
+   * delivery, no stock change" — so a drug was decremented from the pharmacy
+   * batch on dispatch and credited nowhere. Every dispatched drug transfer in
+   * the live database had produced zero ward-stock ledger rows: the medicine
+   * left the pharmacy and was tracked nowhere.
+   */
+  const dispatched = (over: Record<string, unknown> = {}) => ({
+    id: 'st1',
+    tenantId: TENANT,
+    transferNumber: 'ST-1',
+    status: 'dispatched',
+    quantityRequested: 10,
+    quantityTransferred: 10,
+    drugBatchId: 'b1',
+    inventoryItemId: null,
+    toWardId: 'ward-1',
+    drugBatch: { drugId: 'd1' },
+    ...over,
+  });
+
+  beforeEach(() => {
+    (prisma.wardStock.findFirst as any).mockResolvedValue(null);
+    (prisma.wardStock.create as any).mockResolvedValue({ id: 'ws1' });
+    (prisma.wardStock.update as any).mockResolvedValue({ id: 'ws1' });
+    (prisma.wardStockLedger.create as any).mockResolvedValue({ id: 'wl1' });
+  });
+
+  it('credits the ward and writes a ledger row', async () => {
+    (prisma.stockTransfer.findFirst as any).mockResolvedValue(dispatched());
+    await receiveStockTransfer(TENANT, 'st1', USER);
+
+    expect(prisma.wardStock.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ wardId: 'ward-1', drugBatchId: 'b1', quantityInStock: 10 }),
+      }),
+    );
+    const ledger = (prisma.wardStockLedger.create as any).mock.calls[0][0].data;
+    expect(ledger).toMatchObject({ wardId: 'ward-1', movementType: 'received', quantity: 10 });
+    // Where it came from, so the ward can trace its own shelf.
+    expect(ledger.reason).toMatch(/ST-1/);
+  });
+
+  it('adds to the shelf when the ward already holds that batch', async () => {
+    (prisma.stockTransfer.findFirst as any).mockResolvedValue(dispatched());
+    (prisma.wardStock.findFirst as any).mockResolvedValue({ id: 'ws-existing' });
+    await receiveStockTransfer(TENANT, 'st1', USER);
+
+    expect(prisma.wardStock.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { quantityInStock: { increment: 10 } } }),
+    );
+    expect(prisma.wardStock.create).not.toHaveBeenCalled();
+  });
+
+  it('does not touch ward stock for a transfer with no ward', async () => {
+    // Consumables and equipment stay department-scoped, exactly as before.
+    (prisma.stockTransfer.findFirst as any).mockResolvedValue(dispatched({ toWardId: null }));
+    await receiveStockTransfer(TENANT, 'st1', USER);
+    expect(prisma.wardStock.create).not.toHaveBeenCalled();
+    expect(prisma.wardStockLedger.create).not.toHaveBeenCalled();
+  });
+
+  it('still marks the transfer received either way', async () => {
+    (prisma.stockTransfer.findFirst as any).mockResolvedValue(dispatched());
+    await receiveStockTransfer(TENANT, 'st1', USER);
+    const data = (prisma.stockTransfer.update as any).mock.calls[0][0].data;
+    expect(data).toMatchObject({ status: 'received', receivedBy: USER });
   });
 });

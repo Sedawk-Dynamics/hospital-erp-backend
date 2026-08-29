@@ -62,6 +62,8 @@ export const createStockTransferSchema = z.object({
       drugBatchId: z.string().uuid('Invalid drug batch ID').optional(),
       fromDepartmentId: z.string().uuid().optional(),
       toDepartmentId: z.string().uuid().optional(),
+      // Where a DRUG transfer lands. Wards hold drug stock; departments do not.
+      toWardId: z.string().uuid('Invalid ward').optional(),
       fromLocation: z.string().max(100).optional(),
       toLocation: z.string().max(100).optional(),
       quantityRequested: z.number().int().positive('Quantity must be positive'),
@@ -77,9 +79,15 @@ export const createStockTransferSchema = z.object({
       message: 'Either fromDepartmentId or fromLocation is required',
       path: ['fromDepartmentId'],
     })
-    .refine((d) => d.toDepartmentId || d.toLocation, {
-      message: 'Either toDepartmentId or toLocation is required',
+    .refine((d) => d.toDepartmentId || d.toLocation || d.toWardId, {
+      message: 'A destination is required — a ward for drugs, a department otherwise',
       path: ['toDepartmentId'],
+    })
+    .refine((d) => !d.toWardId || !!d.drugBatchId, {
+      // A ward's shelf holds medicines. Sending a consumable there would credit
+      // ward stock with something the ward-stock screen cannot show.
+      message: 'Only a drug transfer can be sent to a ward',
+      path: ['toWardId'],
     }),
 });
 
