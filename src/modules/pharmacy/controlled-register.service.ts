@@ -470,7 +470,7 @@ const emptySummary = () => ({
  * NEGATIVE — the live total had lost the stock while the walk-back had not.
  */
 async function netMovementSince(tenantId: string, drugIds: string[], since: Date): Promise<number> {
-  const [received, dispensed, returned, ndpsOut, transferredOut] = await Promise.all([
+  const [received, dispensed, returned, ndpsOut, transferredOut, adjusted] = await Promise.all([
     prisma.drugBatch.aggregate({
       where: {
         tenantId, drugId: { in: drugIds }, createdAt: { gte: since },
@@ -505,10 +505,42 @@ async function netMovementSince(tenantId: string, drugIds: string[], since: Date
       },
       _sum: { quantityTransferred: true },
     }),
+    // Count corrections. They appear on the register as rows, so leaving them
+    // out here put the two halves of the report at odds: the walk-back reached
+    // an opening balance the rows then moved off by exactly the net correction,
+    // and the closing balance did not match the stock on the shelf.
+    prisma.auditLog.findMany({
+      where: {
+        tenantId, entityType: 'drug_batch', createdAt: { gte: since },
+        newValues: { path: ['type'], equals: 'stock_adjustment' },
+      },
+      select: { entityId: true, newValues: true },
+    }),
   ]);
+
+  // An audit row names a batch, not a drug, and this balance is over a specific
+  // set of drugs — so resolve the batches before counting any of it.
+  const adjBatchIds = [...new Set(adjusted.map((a) => a.entityId).filter(Boolean))] as string[];
+  const inScope = adjBatchIds.length
+    ? new Set(
+        (
+          await prisma.drugBatch.findMany({
+            where: { id: { in: adjBatchIds }, drugId: { in: drugIds } },
+            select: { id: true },
+          })
+        ).map((b) => b.id),
+      )
+    : new Set<string>();
+  const adjustedNet = adjusted.reduce((sum, a) => {
+    if (!a.entityId || !inScope.has(a.entityId)) return sum;
+    const nv = (a.newValues ?? {}) as Record<string, unknown>;
+    return sum + Number(nv.delta ?? nv.change ?? 0);
+  }, 0);
+
   return (
     (received._sum.quantityReceived ?? 0) +
-    (returned._sum.quantity ?? 0) -
+    (returned._sum.quantity ?? 0) +
+    adjustedNet -
     (dispensed._sum.quantityDispensed ?? 0) -
     (ndpsOut._sum.quantity ?? 0) -
     (transferredOut._sum.quantityTransferred ?? 0)
