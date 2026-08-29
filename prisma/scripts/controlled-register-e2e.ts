@@ -522,6 +522,20 @@ async function main() {
         afterRows.some((r: any) => (r.patientOrDept ?? '').includes(patient!.mrn)),
         'no row on the register names the patient',
       );
+      // The balance was only checked before any ward movement existed, which is
+      // how a unit test caught a double-count this walk had missed: a ward dose
+      // spends stock that already left the batch when it was ISSUED, so taking
+      // it off again is taking it twice.
+      const [{ live2 }]: any[] = await p.$queryRawUnsafe(
+        `SELECT COALESCE(SUM(b.quantity_in_stock),0)::int live2 FROM drug_batches b
+          JOIN drug_formulary d ON d.id = b.drug_id
+         WHERE b.tenant_id = $1 AND (d.controlled_class IS NOT NULL OR d.is_narcotic = true
+               OR d.vault_controlled = true OR d.schedule IN ('X','H1'))`, TENANT);
+      ck(
+        'and the balance still matches the shelf afterwards',
+        after.data?.summary?.closingBalance === live2,
+        `register says ${after.data?.summary?.closingBalance}, shelves hold ${live2}`,
+      );
     }
 
     await p.billItem.deleteMany({ where: { referenceType: 'ward_dispense', description: { contains: `${TAG} Tramadol` } } });

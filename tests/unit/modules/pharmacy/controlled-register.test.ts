@@ -27,6 +27,7 @@ const noMovementSince = () => {
   (prisma.drugReturn.aggregate as any).mockResolvedValue({ _sum: { quantity: 0 } });
   (prisma.ndpsTransaction.aggregate as any).mockResolvedValue({ _sum: { quantity: 0 } });
   (prisma.stockTransfer.aggregate as any).mockResolvedValue({ _sum: { quantityTransferred: 0 } });
+  (prisma.wardStockLedger.groupBy as any).mockResolvedValue([]);
 };
 
 beforeEach(() => {
@@ -41,9 +42,23 @@ beforeEach(() => {
   (prisma.patient.findMany as any).mockResolvedValue([]);
   (prisma.ndpsLocation.findMany as any).mockResolvedValue([]);
   (prisma.stockTransfer.findMany as any).mockResolvedValue([]);
+  (prisma.wardStockLedger.findMany as any).mockResolvedValue([]);
+  (prisma.ward.findMany as any).mockResolvedValue([]);
   setLiveStock(0);
   noMovementSince();
 });
+
+
+/**
+ * drugBatch.findMany serves three different questions here: the receipts inside
+ * the window, the batches an audit row points at, and the batches a ward row
+ * points at. Only the first is a movement, and the receipts query is the one
+ * carrying a createdAt window — so route on that rather than handing the same
+ * array to all three and turning a lookup into a phantom receipt.
+ */
+const mockBatchLookups = (rows: unknown[]) =>
+  (prisma.drugBatch.findMany as any).mockImplementation((args: any) =>
+    args?.where?.createdAt ? [] : rows);
 
 describe('scope', () => {
   it('covers controlled stock, never the whole formulary', async () => {
@@ -339,5 +354,117 @@ describe('a stock-transfer dispatch really does leave the pharmacy', () => {
     expect(r.summary.internalTransfer).toBe(5);
     expect(r.summary.transferredOut).toBe(0); // nothing left the pharmacy
     expect(r.summary.closingBalance).toBe(100);
+  });
+});
+
+
+/**
+ * A ward shelf is a second inventory, and the register had never been told
+ * about it. Stock leaves the pharmacy's batch and is given to patients from the
+ * ward, and none of it writes a DispensingRecord — so a Schedule H1
+ * psychotropic could be handed over at a bedside and appear nowhere on the
+ * register. A vault narcotic never reaches that path, which is why it held.
+ */
+describe('ward movements', () => {
+  const wardRow = (over: Record<string, unknown> = {}) => ({
+    id: 'wl-000001-aaaa', tenantId: TENANT, wardId: 'ward-1', drugId: DRUG,
+    drugBatchId: 'batch-1', movementType: 'dispensed', quantity: 5,
+    patientId: 'pat-1', admissionId: null, billId: 'bill-1', performedBy: 'user-1',
+    reason: null, createdAt: new Date('2026-08-20T06:00:00Z'),
+    ...over,
+  });
+
+  beforeEach(() => {
+    (prisma.ward.findMany as any).mockResolvedValue([{ id: 'ward-1', name: 'ICU 1' }]);
+    mockBatchLookups([{ id: 'batch-1', batchNumber: 'MOR-9', expiryDate: new Date('2027-01-31'), drugId: DRUG }]);
+    (prisma.patient.findMany as any).mockResolvedValue([
+      { id: 'pat-1', mrn: 'MRN-7', firstName: 'A', lastName: 'B' },
+    ]);
+  });
+
+  it('shows a dose given from a ward shelf, naming the patient', async () => {
+    (prisma.wardStockLedger.findMany as any).mockResolvedValue([wardRow()]);
+    const out = await getControlledRegister(TENANT, {});
+    const row = out.rows.find((r) => r.txnType === 'Ward Admin.');
+    expect(row).toBeDefined();
+    expect(row!.qtyOut).toBe(5);
+    expect(row!.patientOrDept).toContain('MRN-7');
+  });
+
+  it('does not take a ward dose off the balance twice', async () => {
+    // The stock left the pharmacy's batch when it was ISSUED to the ward.
+    // Counting the dose against the batch too would remove it a second time.
+    (prisma.wardStockLedger.findMany as any).mockResolvedValue([wardRow()]);
+    setLiveStock(100);
+    const out = await getControlledRegister(TENANT, {});
+    expect(out.rows.find((r) => r.txnType === 'Ward Admin.')!.stockDelta).toBe(0);
+    expect(out.summary.closingBalance).toBe(out.summary.openingStock);
+  });
+
+  it('counts an issue to a ward as stock leaving the pharmacy', async () => {
+    (prisma.wardStockLedger.findMany as any).mockResolvedValue([
+      wardRow({ movementType: 'received', quantity: 30, patientId: null, billId: null }),
+    ]);
+    const out = await getControlledRegister(TENANT, {});
+    const row = out.rows.find((r) => r.txnType === 'Ward Issue')!;
+    // Shown as custody moving, but it really did leave the dispensable pool.
+    expect(row.transferQty).toBe(30);
+    expect(row.stockDelta).toBe(-30);
+    expect(row.qtyOut).toBe(0);
+  });
+
+  it('puts a ward return back', async () => {
+    (prisma.wardStockLedger.findMany as any).mockResolvedValue([
+      wardRow({ movementType: 'returned', quantity: 8, patientId: null, billId: null }),
+    ]);
+    const out = await getControlledRegister(TENANT, {});
+    const row = out.rows.find((r) => r.txnType === 'Ward Return')!;
+    expect(row.qtyIn).toBe(8);
+    expect(row.stockDelta).toBe(8);
+  });
+
+  it('walks the opening balance back over ward issues, so a move today does not rewrite last week', async () => {
+    // The opening balance is derived — today's stock less everything that has
+    // moved since. A ward issue that is not in that set silently changes what
+    // the register says the hospital held before the window opened.
+    setLiveStock(70);
+    (prisma.wardStockLedger.groupBy as any).mockResolvedValue([
+      { movementType: 'received', _sum: { quantity: 30 } },
+    ]);
+    const out = await getControlledRegister(TENANT, {});
+    expect(out.summary.openingStock).toBe(100);
+  });
+});
+
+/**
+ * Count corrections were shown as rows but were missing from the walk-back that
+ * derives the opening balance, so the closing balance came out wrong by exactly
+ * the net correction.
+ */
+describe('stock corrections', () => {
+  it('counts a correction when deriving the opening balance', async () => {
+    setLiveStock(94);
+    (prisma.auditLog.findMany as any).mockResolvedValue([
+      { id: 'a1', entityId: 'batch-1', createdAt: new Date('2026-08-20T06:00:00Z'),
+        newValues: { type: 'stock_adjustment', delta: -6, reason: 'spillage' } },
+    ]);
+    mockBatchLookups([{ id: 'batch-1', batchNumber: 'MOR-9', expiryDate: new Date('2027-01-31'), drugId: DRUG }]);
+    const out = await getControlledRegister(TENANT, {});
+    // 100 before the spillage, 94 on the shelf now.
+    expect(out.summary.openingStock).toBe(100);
+    // And the closing balance is the stock actually there.
+    expect(out.summary.closingBalance).toBe(94);
+  });
+
+  it('ignores a correction to some other drug', async () => {
+    setLiveStock(50);
+    (prisma.auditLog.findMany as any).mockResolvedValue([
+      { id: 'a1', entityId: 'batch-elsewhere', createdAt: new Date('2026-08-20T06:00:00Z'),
+        newValues: { type: 'stock_adjustment', delta: -6 } },
+    ]);
+    // The batch lookup is scoped to the drugs in this report and finds nothing.
+    mockBatchLookups([]);
+    const out = await getControlledRegister(TENANT, {});
+    expect(out.summary.openingStock).toBe(50);
   });
 });

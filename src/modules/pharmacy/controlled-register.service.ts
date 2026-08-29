@@ -286,7 +286,10 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
     qtyIn: 0,
     qtyOut: 0,
     transferQty: 0,
-    // Overridden below for the one row type where it is not qtyIn - qtyOut.
+    // Every row states this explicitly. It used to default to 0 and be read as
+    // `stockDelta || qtyIn - qtyOut`, which cannot tell "not set" from a real
+    // zero — and a ward dose is a real zero with a non-zero qtyOut, so it was
+    // taken off the balance a second time.
     stockDelta: 0,
   });
 
@@ -299,6 +302,7 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
       batchNumber: b.batchNumber,
       expiryDate: b.expiryDate,
       qtyIn: b.quantityReceived ?? b.quantityInStock,
+      stockDelta: b.quantityReceived ?? b.quantityInStock,
       patientOrDept: b.supplier?.name ?? null,
       prescriber: null,
       verification: null,
@@ -315,6 +319,7 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
       batchNumber: r.drugBatch?.batchNumber ?? null,
       expiryDate: r.drugBatch?.expiryDate ?? null,
       qtyIn: r.quantity,
+      stockDelta: r.quantity,
       patientOrDept: p ? `${personName(p)} (${p.mrn})` : null,
       prescriber: null,
       verification: null,
@@ -337,6 +342,7 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
       batchNumber: d.drugBatch?.batchNumber ?? null,
       expiryDate: d.drugBatch?.expiryDate ?? null,
       qtyOut: d.quantityDispensed,
+      stockDelta: -d.quantityDispensed,
       patientOrDept: p ? `${personName(p)} (${p.mrn})` : null,
       prescriber,
       // The witness is the statutory signature; the dispenser is who handed it
@@ -358,6 +364,10 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
       expiryDate: t.expiryDate,
       qtyOut: isTransfer ? 0 : t.quantity,
       transferQty: isTransfer ? t.quantity : 0,
+      // A challan moved NdpsStockBalance between locations and never touched a
+      // batch, so hospital-wide it weighs nothing. A 3E administration or a
+      // disposal does spend the stock.
+      stockDelta: isTransfer ? 0 : -t.quantity,
       patientOrDept: p
         ? `${personName(p)} (${p.mrn})`
         : isTransfer
@@ -458,6 +468,7 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
       expiryDate: batch.expiryDate,
       qtyIn: delta > 0 ? delta : 0,
       qtyOut: delta < 0 ? -delta : 0,
+      stockDelta: delta,
       patientOrDept: typeof nv.reason === 'string' ? nv.reason : null,
       prescriber: null,
       verification: null,
@@ -547,9 +558,11 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
   const opening = running;
   for (const r of filtered) {
     r.opening = running;
-    // stockDelta, not qtyIn - qtyOut: a stock-transfer dispatch shows in the
-    // transfer column but really did leave the pharmacy's batches.
-    running += r.stockDelta || r.qtyIn - r.qtyOut;
+    // Always stockDelta. What a row DISPLAYS and what it did to the pharmacy's
+    // stock are different questions: a transfer-board dispatch shows in the
+    // transfer column but really left the batches, and a ward dose shows a
+    // quantity out but spent stock that had already left when it was issued.
+    running += r.stockDelta;
     r.closing = running;
   }
 
