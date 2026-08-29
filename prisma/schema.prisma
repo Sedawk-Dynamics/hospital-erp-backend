@@ -4908,6 +4908,13 @@ model DispensingRecord {
   // from `dispensedBy` — a witness who is the dispenser is not a witness.
   witnessedById      String?   @map("witnessed_by_id")
   witnessedAt        DateTime? @map("witnessed_at")
+  // Voided with its invoice. The row is KEPT rather than deleted: it is the
+  // controlled-drug register's record that this medicine left the counter, and
+  // a statutory register is corrected by a further entry, never by erasing one.
+  // Everything that counts what was dispensed excludes these; the register
+  // shows them, alongside a reversal row putting the stock back.
+  cancelledAt        DateTime? @map("cancelled_at")
+  cancelledBy        String?   @map("cancelled_by")
 
   tenant           Tenant            @relation(fields: [tenantId], references: [id])
   prescription     Prescription?     @relation(fields: [prescriptionId], references: [id])

@@ -569,7 +569,7 @@ export async function dispenseIpPrescription(
     throw AppError.badRequest('Only IP prescriptions are billed to the patient IP ledger.');
   }
 
-  const already = await prisma.dispensingRecord.findFirst({ where: { tenantId, prescriptionId }, select: { id: true } });
+  const already = await prisma.dispensingRecord.findFirst({ where: { tenantId, prescriptionId, cancelledAt: null }, select: { id: true } });
   if (already) throw AppError.badRequest('This prescription has already been dispensed.');
 
   // Only stocked (formulary) non-PRN lines with a quantity can be dispensed to stock.

@@ -23,7 +23,7 @@ const setLiveStock = (n: number) =>
 
 const noMovementSince = () => {
   (prisma.drugBatch.aggregate as any).mockResolvedValue({ _sum: { quantityReceived: 0 } });
-  (prisma.dispensingRecord.aggregate as any).mockResolvedValue({ _sum: { quantityDispensed: 0 } });
+  mockDispenseTotals(0);
   (prisma.drugReturn.aggregate as any).mockResolvedValue({ _sum: { quantity: 0 } });
   (prisma.ndpsTransaction.aggregate as any).mockResolvedValue({ _sum: { quantity: 0 } });
   (prisma.stockTransfer.aggregate as any).mockResolvedValue({ _sum: { quantityTransferred: 0 } });
@@ -35,7 +35,7 @@ beforeEach(() => {
   (prisma.drugFormulary.findMany as any).mockResolvedValue(DRUGS);
   (prisma.drugBatch.findMany as any).mockResolvedValue([]);
   (prisma.drugReturn.findMany as any).mockResolvedValue([]);
-  (prisma.dispensingRecord.findMany as any).mockResolvedValue([]);
+  mockDispenses([]);
   (prisma.ndpsTransaction.findMany as any).mockResolvedValue([]);
   (prisma.auditLog.findMany as any).mockResolvedValue([]);
   (prisma.user.findMany as any).mockResolvedValue([]);
@@ -56,6 +56,24 @@ beforeEach(() => {
  * carrying a createdAt window — so route on that rather than handing the same
  * array to all three and turning a lookup into a phantom receipt.
  */
+
+/**
+ * dispensingRecord.findMany now answers two questions: the sales in the window,
+ * and the VOIDS in the window — a void being its own dated event, since a sale
+ * and its cancellation can fall in different windows. Only the void query
+ * filters on cancelledAt, so route on that; handing the same array to both
+ * turns every sale into a phantom reversal.
+ */
+const mockDispenses = (rows: unknown[], voided: unknown[] = []) =>
+  (prisma.dispensingRecord.findMany as any).mockImplementation((args: any) =>
+    args?.where?.cancelledAt ? voided : rows);
+
+/** The same split for the walk-back totals: what went out, and what came back. */
+const mockDispenseTotals = (out: number, backFromVoids = 0) =>
+  (prisma.dispensingRecord.aggregate as any).mockImplementation((args: any) => ({
+    _sum: { quantityDispensed: args?.where?.cancelledAt ? backFromVoids : out },
+  }));
+
 const mockBatchLookups = (rows: unknown[]) =>
   (prisma.drugBatch.findMany as any).mockImplementation((args: any) =>
     args?.where?.createdAt ? [] : rows);
@@ -117,7 +135,7 @@ describe('movements', () => {
   });
 
   it('shows the prescriber and the witness on a dispense', async () => {
-    (prisma.dispensingRecord.findMany as any).mockResolvedValue([
+    mockDispenses([
       {
         id: 'd1', billId: 'bill-1234', dispensedAt: new Date('2026-08-02'), quantityDispensed: 2,
         drugBatch: { batchNumber: 'FEN-B901', expiryDate: new Date('2028-05-31'), drugId: DRUG },
@@ -136,7 +154,7 @@ describe('movements', () => {
   });
 
   it('takes the prescriber from an outside prescription when there is one', async () => {
-    (prisma.dispensingRecord.findMany as any).mockResolvedValue([
+    mockDispenses([
       {
         id: 'd1', billId: null, dispensedAt: new Date('2026-08-02'), quantityDispensed: 1,
         drugBatch: { batchNumber: 'B1', expiryDate: null, drugId: DRUG },
@@ -201,7 +219,7 @@ describe('opening-balance batches are not receipts', () => {
   it('never reports a negative opening balance from ordinary movement', async () => {
     setLiveStock(50);
     (prisma.drugBatch.aggregate as any).mockResolvedValue({ _sum: { quantityReceived: 20 } });
-    (prisma.dispensingRecord.aggregate as any).mockResolvedValue({ _sum: { quantityDispensed: 5 } });
+    mockDispenseTotals(5);
     const r = await getControlledRegister(TENANT, {});
     // 50 now, +20 −5 since the window opened ⇒ it opened at 35.
     expect(r.summary.openingStock).toBe(35);
@@ -214,7 +232,7 @@ describe('running balance', () => {
       { id: 'b1', drugId: DRUG, batchNumber: 'B1', expiryDate: null, quantityReceived: 10,
         quantityInStock: 10, createdAt: new Date('2026-08-01T10:00:00Z'), supplier: null },
     ]);
-    (prisma.dispensingRecord.findMany as any).mockResolvedValue([
+    mockDispenses([
       { id: 'd1', billId: null, dispensedAt: new Date('2026-08-02T10:00:00Z'), quantityDispensed: 3,
         drugBatch: { batchNumber: 'B1', expiryDate: null, drugId: DRUG },
         patient: null, dispenser: null, witness: null, externalPrescription: null, prescription: null },
@@ -222,7 +240,7 @@ describe('running balance', () => {
     setLiveStock(27);
     // 27 now, +10 −3 inside the window ⇒ the window opened at 20.
     (prisma.drugBatch.aggregate as any).mockResolvedValue({ _sum: { quantityReceived: 10 } });
-    (prisma.dispensingRecord.aggregate as any).mockResolvedValue({ _sum: { quantityDispensed: 3 } });
+    mockDispenseTotals(3);
 
     const r = await getControlledRegister(TENANT, {});
     expect(r.summary.openingStock).toBe(20);
@@ -237,7 +255,7 @@ describe('running balance', () => {
       { id: 'b1', drugId: DRUG, batchNumber: 'B1', expiryDate: null, quantityReceived: 5,
         quantityInStock: 5, createdAt: new Date('2026-08-05'), supplier: null },
     ]);
-    (prisma.dispensingRecord.findMany as any).mockResolvedValue([
+    mockDispenses([
       { id: 'd1', billId: null, dispensedAt: new Date('2026-08-01'), quantityDispensed: 1,
         drugBatch: { batchNumber: 'B1', expiryDate: null, drugId: DRUG },
         patient: null, dispenser: null, witness: null, externalPrescription: null, prescription: null },
@@ -253,7 +271,7 @@ describe('filters', () => {
       { id: 'b1', drugId: DRUG, batchNumber: 'FEN-B901', expiryDate: null, quantityReceived: 10,
         quantityInStock: 10, createdAt: new Date('2026-08-01'), supplier: null },
     ]);
-    (prisma.dispensingRecord.findMany as any).mockResolvedValue([
+    mockDispenses([
       { id: 'd1', billId: null, dispensedAt: new Date('2026-08-02'), quantityDispensed: 2,
         drugBatch: { batchNumber: 'OTHER-1', expiryDate: null, drugId: DRUG },
         patient: { mrn: 'IPD-907', firstName: 'Kumar', lastName: '' },
@@ -466,5 +484,65 @@ describe('stock corrections', () => {
     mockBatchLookups([]);
     const out = await getControlledRegister(TENANT, {});
     expect(out.summary.openingStock).toBe(50);
+  });
+});
+
+/**
+ * A statutory register is corrected by a further entry, never by erasing one.
+ *
+ * Voiding a counter sale used to DELETE its dispensing records, and those are
+ * what this register reads for outward movement — so a voided Schedule X sale
+ * vanished from every window, including ones an inspector had already been
+ * shown. The row is kept now and the void is its own dated entry.
+ */
+describe('a voided sale', () => {
+  const voidedRow = {
+    id: 'disp-000001', quantityDispensed: 10,
+    dispensedAt: new Date('2026-08-20T06:00:00Z'),
+    cancelledAt: new Date('2026-08-21T09:00:00Z'),
+    cancelledBy: 'user-1', billId: 'bill-1',
+    drugBatch: { batchNumber: 'ALP-3', expiryDate: new Date('2027-06-30'), drugId: DRUG },
+    patient: { mrn: 'MRN-7', firstName: 'A', lastName: 'B' },
+  };
+
+  it('keeps the sale on the register and adds a reversal beside it', async () => {
+    mockDispenses([{ ...voidedRow, witness: null, dispenser: null }], [voidedRow]);
+    const out = await getControlledRegister(TENANT, {});
+    expect(out.rows.find((r) => r.txnType === 'Patient Disp.')?.qtyOut).toBe(10);
+    const rev = out.rows.find((r) => r.txnType === 'Sale Voided');
+    expect(rev).toBeDefined();
+    expect(rev!.qtyIn).toBe(10);
+    expect(rev!.patientOrDept).toContain('MRN-7');
+  });
+
+  it('dates the reversal when it was voided, not when it was sold', async () => {
+    // A sale in one window can be voided in the next. Dating the correction to
+    // the sale would put it in a period that has already been reported.
+    mockDispenses([{ ...voidedRow, witness: null, dispenser: null }], [voidedRow]);
+    const out = await getControlledRegister(TENANT, {});
+    expect(out.rows.find((r) => r.txnType === 'Sale Voided')!.occurredAt)
+      .toEqual(voidedRow.cancelledAt);
+  });
+
+  it('leaves the balance where it started, since nothing actually went out', async () => {
+    setLiveStock(100);
+    // Both events fall inside the window, so the walk-back sees 10 out and 10
+    // back and the pair nets to nothing.
+    mockDispenseTotals(10, 10);
+    mockDispenses([{ ...voidedRow, witness: null, dispenser: null }], [voidedRow]);
+    const out = await getControlledRegister(TENANT, {});
+    expect(out.summary.openingStock).toBe(100);
+    expect(out.summary.closingBalance).toBe(100);
+  });
+
+  it('counts the stock coming back when the sale predates the window', async () => {
+    // Sold last month, voided this one. Only the return happened in this
+    // window, so only the return moves the opening balance.
+    setLiveStock(100);
+    mockDispenseTotals(0, 10);
+    mockDispenses([], [voidedRow]);
+    const out = await getControlledRegister(TENANT, {});
+    expect(out.summary.openingStock).toBe(90);
+    expect(out.summary.closingBalance).toBe(100);
   });
 });

@@ -2706,6 +2706,9 @@ export async function getIpDispensedMedicines(
   const records = await prisma.dispensingRecord.findMany({
     where: {
       tenantId,
+      // A voided sale dispensed nothing — the row survives only for the
+      // controlled-drug register.
+      cancelledAt: null,
       billId: { not: null },
       ...(query.patientId ? { patientId: query.patientId } : {}),
       ...(query.fromDate || query.toDate ? { dispensedAt } : {}),
@@ -2862,7 +2865,9 @@ async function recomputePrescriptionStatus(
     include: {
       prescriptionItems: {
         include: {
-          dispensingRecords: { select: { quantityDispensed: true } },
+          // A voided sale dispensed nothing, so the prescription goes back
+          // to needing it — the row is kept only for the register.
+          dispensingRecords: { where: { cancelledAt: null }, select: { quantityDispensed: true } },
         },
       },
     },
@@ -3860,7 +3865,7 @@ export async function cancelPharmacySale(
   }
 
   const records = await prisma.dispensingRecord.findMany({
-    where: { billId, tenantId },
+    where: { billId, tenantId, cancelledAt: null },
     select: { id: true, drugBatchId: true, quantityDispensed: true, prescriptionId: true },
   });
   const rxIds = [...new Set(records.map((r) => r.prescriptionId).filter((v): v is string => !!v))];
@@ -3873,8 +3878,20 @@ export async function cancelPharmacySale(
         data: { quantityInStock: { increment: rec.quantityDispensed } },
       });
     }
-    // 2. Drop the sale lines (keep the Bill as the cancelled record).
-    await tx.dispensingRecord.deleteMany({ where: { billId } });
+    // 2. Mark the dispensing lines voided — do NOT delete them.
+    //
+    // They are the controlled-drug register's record that this medicine left
+    // the counter, and a statutory register is corrected by a further entry,
+    // never by erasing one. Deleting them removed a Schedule X sale from every
+    // window of the register, including ones an inspector had already been
+    // shown; the register now carries the original line plus a reversal.
+    //
+    // Everything that counts what was dispensed filters on `cancelledAt: null`.
+    await tx.dispensingRecord.updateMany({
+      where: { billId, cancelledAt: null },
+      data: { cancelledAt: new Date(), cancelledBy: userId },
+    });
+    // The invoice lines go, since the invoice itself is void.
     await tx.billItem.deleteMany({ where: { billId } });
     // 3. Reverse the counter payment (cash handed back).
     await tx.payment.updateMany({
@@ -3915,7 +3932,8 @@ export async function cancelPharmacySale(
 export async function getDispenseRecords(tenantId: string, query: GetDispenseQuery) {
   const { skip, take, page, limit } = getPaginationParams(query);
 
-  const where: any = { tenantId };
+  // A voided sale dispensed nothing.
+  const where: any = { tenantId, cancelledAt: null };
 
   if (query.patientId) where.patientId = query.patientId;
 
@@ -4567,7 +4585,7 @@ export async function getIpBillingSummary(tenantId: string, patientId: string) {
   // settles out-of-pocket. Plus the take-home (TTO) discharge meds total. Derived
   // from this patient's pharmacy dispenses via each drug's isReimbursable flag.
   const dispenses = (await prisma.dispensingRecord.findMany({
-    where: { tenantId, patientId },
+    where: { tenantId, patientId, cancelledAt: null },
     select: {
       lineTotal: true,
       isTto: true,
@@ -5688,6 +5706,7 @@ export async function getNarcoticRegister(
       quantityDispensed: true,
       dispensedAt: true,
       billId: true,
+      cancelledAt: true,
       patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
       dispenser: { select: { id: true, firstName: true, lastName: true } },
       drugBatch: {
@@ -5714,6 +5733,10 @@ export async function getNarcoticRegister(
     patientMrn: r.patient?.mrn ?? null,
     dispensedBy: r.dispenser ? `${r.dispenser.firstName} ${r.dispenser.lastName ?? ''}`.trim() : null,
     billId: r.billId,
+    // Kept deliberately. This is a statutory view, so a voided sale is shown as
+    // voided rather than vanishing — the same rule as the controlled-drug
+    // register.
+    cancelled: Boolean(r.cancelledAt),
   }));
 
   return { items, total: items.length };
@@ -6243,7 +6266,8 @@ export async function getReturnableDispenses(
   // driven purely off the physical bill (and surface whose bill it is).
   let billPatient: { id: string; mrn: string | null; firstName: string; lastName: string | null } | null =
     null;
-  const where: any = { tenantId, billId: { not: null }, dispensedAt: { gte: since } };
+  // A voided sale cannot be returned — there is nothing to give back.
+  const where: any = { tenantId, cancelledAt: null, billId: { not: null }, dispensedAt: { gte: since } };
   if (params.billNumber) {
     const bill = await prisma.bill.findFirst({
       where: { tenantId, billNumber: params.billNumber },
@@ -6688,7 +6712,7 @@ export async function getStockLedger(tenantId: string, query: GetStockLedgerQuer
       },
     }),
     prisma.dispensingRecord.findMany({
-      where: { tenantId, dispensedAt: window, ...batchDrugFilter },
+      where: { tenantId, cancelledAt: null, dispensedAt: window, ...batchDrugFilter },
       include: {
         drugBatch: { select: { batchNumber: true, drug: { select: { id: true, drugName: true, category: true } } } },
         patient: { select: { firstName: true, lastName: true, mrn: true } },
@@ -6793,7 +6817,8 @@ export async function getPharmacyAnalytics(
   const monthAgo = new Date(today); monthAgo.setDate(monthAgo.getDate() - 30);
   const ninetyDaysFromNow = new Date(today); ninetyDaysFromNow.setDate(ninetyDaysFromNow.getDate() + 90);
 
-  const dispenseWhere: any = { tenantId };
+  // A voided sale is not a sale.
+  const dispenseWhere: any = { tenantId, cancelledAt: null };
   if (range.fromDate) dispenseWhere.dispensedAt = { ...dispenseWhere.dispensedAt, gte: new Date(range.fromDate) };
   if (range.toDate) dispenseWhere.dispensedAt = { ...dispenseWhere.dispensedAt, lte: new Date(range.toDate) };
 
@@ -6819,15 +6844,15 @@ export async function getPharmacyAnalytics(
       },
     }),
     prisma.dispensingRecord.findMany({
-      where: { tenantId, dispensedAt: { gte: today } },
+      where: { tenantId, cancelledAt: null, dispensedAt: { gte: today } },
       include: { drugBatch: { select: { sellingPrice: true } } },
     }),
     prisma.dispensingRecord.findMany({
-      where: { tenantId, dispensedAt: { gte: weekAgo } },
+      where: { tenantId, cancelledAt: null, dispensedAt: { gte: weekAgo } },
       include: { drugBatch: { select: { sellingPrice: true } } },
     }),
     prisma.dispensingRecord.findMany({
-      where: { tenantId, dispensedAt: { gte: monthAgo } },
+      where: { tenantId, cancelledAt: null, dispensedAt: { gte: monthAgo } },
       include: { drugBatch: { select: { sellingPrice: true } } },
     }),
     prisma.drugBatch.findMany({
@@ -7040,7 +7065,7 @@ export async function getRecallAffectedPatients(tenantId: string, batchId: strin
   if (!batch) throw AppError.notFound('Drug batch not found');
 
   const records = await prisma.dispensingRecord.findMany({
-    where: { tenantId, drugBatchId: batchId },
+    where: { tenantId, drugBatchId: batchId, cancelledAt: null },
     include: {
       patient: {
         select: {
@@ -7147,7 +7172,8 @@ export async function getRecalledItems(tenantId: string, _query: GetRecalledItem
 export async function getGstReport(tenantId: string, query: GetGstReportQuery) {
   const gstRate = query.gstRate ?? 12;
 
-  const where: any = { tenantId };
+  // A voided invoice collected no GST.
+  const where: any = { tenantId, cancelledAt: null };
   if (query.fromDate) where.dispensedAt = { ...where.dispensedAt, gte: new Date(query.fromDate) };
   if (query.toDate) where.dispensedAt = { ...where.dispensedAt, lte: new Date(query.toDate) };
 

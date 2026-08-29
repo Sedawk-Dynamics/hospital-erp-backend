@@ -92,7 +92,7 @@ export async function getStockBalanceReport(tenantId: string, query: StockBalanc
         select: { createdAt: true, quantityReceived: true, drug: { select: drugSelect } },
       }),
       prisma.dispensingRecord.findMany({
-        where: { tenantId, dispensedAt: window, ...batchDrugFilter },
+        where: { tenantId, cancelledAt: null, dispensedAt: window, ...batchDrugFilter },
         select: {
           dispensedAt: true, quantityDispensed: true,
           drugBatch: { select: { drug: { select: drugSelect } } },
@@ -376,7 +376,7 @@ export async function getDepartmentConsumptionReport(tenantId: string, query: De
   // price (consumption cost, not the billed MRP).
   if (!query.departmentId && !query.inventoryItemId) {
     const dispenses = await prisma.dispensingRecord.findMany({
-      where: { tenantId, dispensedAt: { gte: fromDate, lte: toDate } },
+      where: { tenantId, cancelledAt: null, dispensedAt: { gte: fromDate, lte: toDate } },
       include: {
         drugBatch: {
           select: {

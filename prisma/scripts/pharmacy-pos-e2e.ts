@@ -371,6 +371,20 @@ async function main() {
       countAfter >= countBefore,
       `${countBefore} dispense row(s) before the void, ${countAfter} after`,
     );
+    const voidRows = (regAfter.data?.rows ?? []).filter(
+      (r: any) => r.itemName === `${TAG} Alprazolam 0.5` && r.txnType === 'Sale Voided',
+    );
+    ck(
+      'the void is a correcting entry of its own',
+      voidRows.length > 0,
+      `${voidRows.length} reversal row(s)`,
+    );
+    ck(
+      'putting the stock back, and saying who it had gone to',
+      // One PACK of ten, so ten units go back on the shelf.
+      voidRows[0]?.qtyIn === 10 && /Returned to stock/.test(voidRows[0]?.patientOrDept ?? ''),
+      `qtyIn ${voidRows[0]?.qtyIn}, ${voidRows[0]?.patientOrDept}`,
+    );
     ck(
       'and the register still balances against the shelf afterwards',
       regAfter.data?.summary?.closingBalance !== undefined &&
@@ -409,8 +423,15 @@ async function main() {
 
   // -- 10. Nothing leaked ---------------------------------------------------
   section('10. Nothing leaked');
+  // A voided sale's record is KEPT, for the register. So "what was sold" has to
+  // exclude it — which is the trap every consumer of this table had to avoid,
+  // and worth stating here as the rule rather than as an incantation.
   const sold = await p.dispensingRecord.aggregate({
-    where: { drugBatchId: batch.id },
+    where: { drugBatchId: batch.id, cancelledAt: null },
+    _sum: { quantityDispensed: true },
+  });
+  const keptOnRecord = await p.dispensingRecord.aggregate({
+    where: { drugBatchId: batch.id, cancelledAt: { not: null } },
     _sum: { quantityDispensed: true },
   });
   const onShelf = await qty(batch.id);
@@ -418,6 +439,11 @@ async function main() {
     'what is left, plus what was sold, is what we started with',
     onShelf + (sold._sum.quantityDispensed ?? 0) === START,
     `${onShelf} + ${sold._sum.quantityDispensed} = ${onShelf + (sold._sum.quantityDispensed ?? 0)}, started ${START}`,
+  );
+  ck(
+    'and a voided sale is kept on the record without counting as sold',
+    (keptOnRecord._sum.quantityDispensed ?? 0) > 0,
+    `${keptOnRecord._sum.quantityDispensed ?? 0} unit(s) voided and still on record`,
   );
 
   // -- Cleanup --------------------------------------------------------------

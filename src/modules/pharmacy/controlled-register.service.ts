@@ -162,7 +162,7 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
     return [base, d.strength].filter(Boolean).join(' ') || null;
   };
 
-  const [batches, returns, dispenses, ndpsTxns, adjustments, stockTransfers, wardMoves] = await Promise.all([
+  const [batches, returns, dispenses, ndpsTxns, adjustments, stockTransfers, voidedDispenses, wardMoves] = await Promise.all([
     prisma.drugBatch.findMany({
       where: {
         tenantId, drugId: { in: drugIds }, createdAt: inWindow(from, to),
@@ -180,6 +180,9 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
         patient: { select: { mrn: true, firstName: true, lastName: true } },
       },
     }),
+    // Voided lines are read too, deliberately. A statutory register is
+    // corrected by a further entry, never by erasing one — so a voided sale
+    // keeps its outward row and gains a reversal beside it.
     prisma.dispensingRecord.findMany({
       where: {
         tenantId, dispensedAt: inWindow(from, to), drugBatch: { drugId: { in: drugIds } },
@@ -237,6 +240,16 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
     // A vault narcotic never reaches here (the controlled gate sends it to the
     // Form 3E workflow), which is why this went unnoticed: the tier the
     // register was built for was never the tier that leaked.
+    // Voids, by the date they were voided.
+    prisma.dispensingRecord.findMany({
+      where: {
+        tenantId, cancelledAt: inWindow(from, to), drugBatch: { drugId: { in: drugIds } },
+      },
+      include: {
+        drugBatch: { select: { batchNumber: true, expiryDate: true, drugId: true } },
+        patient: { select: { mrn: true, firstName: true, lastName: true } },
+      },
+    }),
     // WardStockLedger carries scalar FKs and no Prisma relations, by design —
     // the ward-stock sub-module resolves them in the service, and so does this.
     prisma.wardStockLedger.findMany({
@@ -248,6 +261,7 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
   const userIds = [...new Set([
     ...ndpsTxns.flatMap((t) => [t.recordedById, t.counterpartyId, t.coSignById]),
     ...wardMoves.map((w) => w.performedBy),
+    ...voidedDispenses.map((v) => v.cancelledBy),
   ].filter(Boolean))] as string[];
   const patientIds = [...new Set([
     ...ndpsTxns.map((t) => t.patientId),
@@ -348,6 +362,30 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
       // The witness is the statutory signature; the dispenser is who handed it
       // over. Both matter, and the register shows whichever exists.
       verification: personName(d.witness) ?? personName(d.dispenser),
+    });
+
+  }
+
+  // The correcting entries. A void is its own event, dated when it happened —
+  // which can be a different window from the sale, so these are fetched on
+  // their own rather than alongside the dispense. The sale keeps its outward
+  // row and gains this one; the register never loses an entry.
+  for (const v of voidedDispenses) {
+    const pt = v.patient;
+    rows.push({
+      ...base(v.drugBatch!.drugId),
+      occurredAt: v.cancelledAt!,
+      txnId: v.id.slice(0, 8),
+      txnType: 'Sale Voided',
+      batchNumber: v.drugBatch?.batchNumber ?? null,
+      expiryDate: v.drugBatch?.expiryDate ?? null,
+      qtyIn: v.quantityDispensed,
+      stockDelta: v.quantityDispensed,
+      patientOrDept: pt
+        ? `Returned to stock - was ${personName(pt)} (${pt.mrn})`
+        : 'Returned to stock',
+      prescriber: null,
+      verification: v.cancelledBy ? userName.get(v.cancelledBy) ?? null : null,
     });
   }
 
@@ -610,7 +648,7 @@ const emptySummary = () => ({
  * NEGATIVE — the live total had lost the stock while the walk-back had not.
  */
 async function netMovementSince(tenantId: string, drugIds: string[], since: Date): Promise<number> {
-  const [received, dispensed, returned, ndpsOut, transferredOut, wardMoved, adjusted] = await Promise.all([
+  const [received, dispensed, unsold, returned, ndpsOut, transferredOut, wardMoved, adjusted] = await Promise.all([
     prisma.drugBatch.aggregate({
       where: {
         tenantId, drugId: { in: drugIds }, createdAt: { gte: since },
@@ -618,8 +656,16 @@ async function netMovementSince(tenantId: string, drugIds: string[], since: Date
       },
       _sum: { quantityReceived: true },
     }),
+    // Everything that left, voided or not — the void is counted separately as
+    // stock coming back. Two independent events, because a sale and its void
+    // can fall on either side of the window start: netting them into one would
+    // lose the arrival when the sale predates the window.
     prisma.dispensingRecord.aggregate({
       where: { tenantId, dispensedAt: { gte: since }, drugBatch: { drugId: { in: drugIds } } },
+      _sum: { quantityDispensed: true },
+    }),
+    prisma.dispensingRecord.aggregate({
+      where: { tenantId, cancelledAt: { gte: since }, drugBatch: { drugId: { in: drugIds } } },
       _sum: { quantityDispensed: true },
     }),
     prisma.drugReturn.aggregate({
@@ -698,6 +744,7 @@ async function netMovementSince(tenantId: string, drugIds: string[], since: Date
 
   return (
     (received._sum.quantityReceived ?? 0) +
+    (unsold._sum.quantityDispensed ?? 0) +
     (returned._sum.quantity ?? 0) +
     returnedFromWards +
     adjustedNet -

@@ -2170,7 +2170,8 @@ async function getPharmacyCharges(
   taxRates: Record<string, number>,
 ): Promise<ChargeRow[]> {
   const records = await prisma.dispensingRecord.findMany({
-    where: { tenantId, patientId },
+    // A voided sale is not a charge.
+    where: { tenantId, patientId, cancelledAt: null },
     include: {
       drugBatch: {
         select: {

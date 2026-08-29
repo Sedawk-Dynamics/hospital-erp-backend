@@ -48,7 +48,8 @@ export async function getPharmacyDetailedReport(tenantId: string, range: Range) 
 
   const [dispenses, returns, liveBatches, purchasedBatches, users] = await Promise.all([
     prisma.dispensingRecord.findMany({
-      where: { tenantId, dispensedAt: { gte: from, lte: to } },
+      // A voided sale is not a sale.
+      where: { tenantId, cancelledAt: null, dispensedAt: { gte: from, lte: to } },
       select: {
         quantityDispensed: true, unitPrice: true, lineTotal: true, dispensedAt: true,
         dispensedBy: true, billId: true,
