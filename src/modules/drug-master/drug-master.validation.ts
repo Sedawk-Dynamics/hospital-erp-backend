@@ -64,6 +64,23 @@ export const createDrugMasterSchema = z.object({
     genericName: z.string().max(500).optional().nullable(),
     // Salt composition — a separate field from the generic name.
     saltComposition: z.string().max(500).optional().nullable(),
+    // Structured composition. When present this is AUTHORITATIVE — no parsing
+    // runs, the strength is a number and the unit is a unit. The text form is
+    // derived from it. Absent, the text path works exactly as before, which is
+    // what keeps bulk imports and older clients working.
+    salts: z
+      .array(
+        z.object({
+          name: z.string().trim().min(1, 'A molecule name is required').max(255),
+          strengthValue: z.number().positive('Strength must be positive').optional().nullable(),
+          strengthUnit: z.enum(['mg', 'mcg', 'g', 'ml', 'iu', '%']).optional().nullable(),
+          perVolumeValue: z.number().positive().optional().nullable(),
+          perVolumeUnit: z.enum(['ml', 'g']).optional().nullable(),
+        }),
+      )
+      .max(20, 'A composition of more than 20 molecules is not a real medicine')
+      .optional(),
+
     manufacturer: z.string().max(255).optional().nullable(),
     type: z.string().max(50).optional().nullable(),
     dosageForm: dosageFormEnum.optional().nullable(),

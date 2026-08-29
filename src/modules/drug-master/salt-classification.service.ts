@@ -17,7 +17,7 @@
 
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
-import { parseSalts, saltLookupKeys } from './drug-schedule.classifier';
+import { parseSalts, saltLookupKeys, normaliseSalt } from './drug-schedule.classifier';
 import type { SaltRow } from './salt-classifier';
 
 /** Salt reference, cached. ~1,858 molecules plus their synonyms. */
@@ -186,6 +186,83 @@ async function ensureUndecidedSalt(raw: string, norm: string): Promise<string | 
     // than failing — two requests adding the same new molecule is normal.
     const existing = await prisma.salt.findUnique({ where: { norm }, select: { id: true } });
     return existing?.id ?? null;
+  }
+}
+
+/**
+ * Write a drug's molecules from STRUCTURED input — no parsing at all.
+ *
+ * The other path, syncDrugSalts, reads a sentence and works out what it means.
+ * This one is handed the answer: a molecule, a number and a unit. It is the
+ * better path and the one the add-drug form now uses; parsing survives for
+ * bulk imports, pasted text and the 254K rows that arrived as prose.
+ *
+ * A molecule nobody has recorded is added UNDECIDED, exactly as the parsing
+ * path does — typing a new molecule into the form is precisely the moment it
+ * should reach the review queue.
+ *
+ * Never throws: a drug must still save even if its molecules cannot be linked.
+ */
+export async function writeStructuredSalts(
+  drugMasterId: string,
+  salts: Array<{
+    name: string;
+    strengthValue?: number | null;
+    strengthUnit?: string | null;
+    perVolumeValue?: number | null;
+    perVolumeUnit?: string | null;
+  }>,
+): Promise<number> {
+  try {
+    const index = await getSaltIndex();
+    if (!index) return 0;
+
+    const seen = new Set<string>();
+    const rows: {
+      drugMasterId: string; saltId: string;
+      strengthValue: number | null; strengthUnit: string | null;
+      perVolumeValue: number | null; perVolumeUnit: string | null; position: number;
+    }[] = [];
+    let discovered = 0;
+
+    for (const s of salts) {
+      const norm = normaliseSalt(s.name);
+      let saltId = lookupId(norm, index);
+      if (!saltId) {
+        saltId = await ensureUndecidedSalt(s.name, norm);
+        if (saltId) discovered += 1;
+      }
+      if (!saltId || seen.has(saltId)) continue;
+      seen.add(saltId);
+      rows.push({
+        drugMasterId,
+        saltId,
+        strengthValue: s.strengthValue ?? null,
+        strengthUnit: s.strengthUnit ?? null,
+        perVolumeValue: s.perVolumeValue ?? null,
+        perVolumeUnit: s.perVolumeUnit ?? null,
+        position: rows.length,
+      });
+    }
+
+    if (discovered) {
+      invalidateSaltCache();
+      logger.info(
+        { drugMasterId, discovered },
+        'New molecule(s) recorded as undecided from a structured composition',
+      );
+    }
+
+    await prisma.$transaction([
+      prisma.drugSalt.deleteMany({ where: { drugMasterId } }),
+      ...(rows.length
+        ? [prisma.drugSalt.createMany({ data: rows as never, skipDuplicates: true })]
+        : []),
+    ]);
+    return rows.length;
+  } catch (err) {
+    logger.warn({ err, drugMasterId }, 'Could not write structured salts; drug left as it was');
+    return 0;
   }
 }
 

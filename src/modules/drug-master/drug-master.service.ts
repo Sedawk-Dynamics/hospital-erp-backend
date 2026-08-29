@@ -1,5 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { classifyDrugMasterItem, affectsClassification } from './drug-schedule.service';
+import { cleanSalts, compositionText, type SaltInput } from './composition';
+import { writeStructuredSalts } from './salt-classification.service';
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
@@ -215,11 +217,17 @@ export async function createDrugMaster(
 
   const aliases = data.aliases ?? [];
   const tags = data.tags ?? [];
+  // Structured salts are authoritative when sent: the composition text is
+  // rendered from them rather than parsed back out of a sentence.
+  const structured = cleanSalts((data as { salts?: SaltInput[] }).salts);
+  const composition = structured.length
+    ? compositionText(structured)
+    : ((data as any).saltComposition ?? null);
   const drug = await prisma.drugMaster.create({
     data: {
       name: data.name,
       genericName: data.genericName ?? null,
-      saltComposition: (data as any).saltComposition ?? null,
+      saltComposition: composition,
       manufacturer: data.manufacturer ?? null,
       type: data.type ?? null,
       dosageForm: (data.dosageForm ?? null) as any,
@@ -249,6 +257,8 @@ export async function createDrugMaster(
   });
 
   logger.info({ drugMasterId: drug.id }, 'Drug master entry created');
+  // Link the molecules from the structured rows directly — nothing to parse.
+  if (structured.length) await writeStructuredSalts(drug.id, structured);
   // Label it now rather than waiting for the next deploy's backfill — a catalog
   // drug with no schedule is invisible to every badge, filter and register that
   // reads one. Never throws; a failure leaves it for the backfill.
@@ -320,12 +330,23 @@ export async function updateDrugMaster(
   const aliases = data.aliases ?? existing.aliases;
   const tags = data.tags ?? existing.tags;
 
+  // Structured salts, when the caller sent them. `undefined` means "not sent"
+  // and leaves the stored text alone; anything else replaces it.
+  const editedSalts = cleanSalts((data as { salts?: SaltInput[] }).salts);
+  const editedComposition = editedSalts.length ? compositionText(editedSalts) : undefined;
+
   const drug = await prisma.drugMaster.update({
     where: { id },
     data: {
       name,
       genericName,
-      saltComposition: (data as any).saltComposition !== undefined ? (data as any).saltComposition : undefined,
+      // Structured salts win: the text is rendered from them, so the two
+      // representations cannot disagree after an edit.
+      saltComposition: editedComposition !== undefined
+        ? editedComposition
+        : (data as any).saltComposition !== undefined
+          ? (data as any).saltComposition
+          : undefined,
       manufacturer,
       type: data.type !== undefined ? data.type : undefined,
       dosageForm: data.dosageForm !== undefined ? (data.dosageForm as any) : undefined,
@@ -346,6 +367,9 @@ export async function updateDrugMaster(
       searchTokens: buildDrugSearchTokens({ name, genericName, manufacturer, aliases, tags }),
     },
   });
+
+  // Write the links straight from the structured rows — nothing to parse.
+  if (editedSalts.length) await writeStructuredSalts(drug.id, editedSalts);
 
   logger.info({ drugMasterId: drug.id }, 'Drug master entry updated');
   // Re-label only when something the classifier reads actually changed. An
