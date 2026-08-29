@@ -81,6 +81,7 @@ async function main() {
     const ids = stale.map((d) => d.id);
     const b = (await p.drugBatch.findMany({ where: { drugId: { in: ids } }, select: { id: true } })).map((x) => x.id);
     await p.ndpsTransaction.deleteMany({ where: { drugFormularyId: { in: ids } } });
+    await p.ndpsStockBalance.deleteMany({ where: { drugFormularyId: { in: ids } } });
     await p.dispensingRecord.deleteMany({ where: { drugBatchId: { in: b } } });
     await p.drugReturn.deleteMany({ where: { drugBatchId: { in: b } } });
     await p.stockTransfer.deleteMany({ where: { drugBatchId: { in: b } } });
@@ -185,6 +186,16 @@ async function main() {
         recordedById: admin!.id, counterpartyId: admin!.id, occurredAt: new Date(),
       } as never,
     });
+    // A challan moves NdpsStockBalance too. Writing only the transaction row
+    // would leave a state the application never produces, and the register
+    // would then be measured against a balance nobody credited.
+    for (const [locationId, sign] of [[locations[0].id, -1], [locations[1].id, 1]] as const) {
+      await p.ndpsStockBalance.upsert({
+        where: { tenantId_drugFormularyId_locationId: { tenantId: TENANT, drugFormularyId: drug.id, locationId } },
+        create: { tenantId: TENANT, drugFormularyId: drug.id, locationId, quantity: sign * CHALLAN },
+        update: { quantity: { increment: sign * CHALLAN } },
+      } as never);
+    }
   }
 
   // A stock-transfer dispatch off the transfer board. This one DOES decrement
@@ -415,13 +426,33 @@ async function main() {
   );
 
   if (locations.length >= 2) {
-    // The screen offers a sub-store dropdown and the API accepts the id.
     const atLocation = await register(`&locationId=${locations[1].id}`);
     const unfiltered = await register();
     ck(
       'narrowing to one sub-store actually narrows something',
       (atLocation.data?.rows ?? []).length < (unfiltered.data?.rows ?? []).length,
       `${(atLocation.data?.rows ?? []).length} rows vs ${(unfiltered.data?.rows ?? []).length} unfiltered`,
+    );
+    ck(
+      'and shows only movements that touched that safe',
+      (atLocation.data?.rows ?? []).every((r: any) => r.txnType === 'Internal Transfer' || r.txnType === 'Form 3E Admin.' || r.txnType === 'Disposal'),
+      [...new Set((atLocation.data?.rows ?? []).map((r: any) => r.txnType))].join(', '),
+    );
+    // The screen promises the balance re-bases to the safe. A vault-wide figure
+    // beside rows from one cupboard would be worse than no figure.
+    const safeBalance = await p.ndpsStockBalance.aggregate({
+      where: { tenantId: TENANT, locationId: locations[1].id },
+      _sum: { quantity: true },
+    });
+    ck(
+      'the balance re-bases to that safe, as the screen promises',
+      atLocation.data?.summary?.closingBalance === (safeBalance._sum.quantity ?? 0),
+      `register says ${atLocation.data?.summary?.closingBalance}, the safe holds ${safeBalance._sum.quantity ?? 0}`,
+    );
+    ck(
+      'and is not the pharmacy-wide figure',
+      atLocation.data?.summary?.closingBalance !== unfiltered.data?.summary?.closingBalance,
+      `${atLocation.data?.summary?.closingBalance} vs ${unfiltered.data?.summary?.closingBalance} pharmacy-wide`,
     );
   }
 
@@ -576,6 +607,7 @@ async function main() {
   section('Cleanup');
   const batchIds = (await p.drugBatch.findMany({ where: { drugId: drug.id }, select: { id: true } })).map((b) => b.id);
   await p.ndpsTransaction.deleteMany({ where: { drugFormularyId: drug.id } });
+  await p.ndpsStockBalance.deleteMany({ where: { drugFormularyId: drug.id } });
   await p.dispensingRecord.deleteMany({ where: { drugBatchId: { in: batchIds } } });
   await p.drugReturn.deleteMany({ where: { drugBatchId: { in: batchIds } } });
   await p.stockTransfer.deleteMany({ where: { drugBatchId: { in: batchIds } } });

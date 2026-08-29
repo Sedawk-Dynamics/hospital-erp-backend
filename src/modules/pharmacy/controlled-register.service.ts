@@ -477,6 +477,36 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
     const s = q.doctorRegNo.trim().toLowerCase();
     filtered = filtered.filter((r) => r.prescriber?.toLowerCase().includes(s));
   }
+  if (q.locationId) {
+    // A sub-store is an NDPS location, and only NDPS rows carry one. Receipts,
+    // counter dispensing, transfer-board moves and ward issues all happen in
+    // the main store and have no location at all, so narrowing to one safe
+    // means "the movements in and out of that safe" — which is the question an
+    // inspector standing in front of it is asking.
+    //
+    // This was accepted by the API, shown as a chip on the screen, and never
+    // read: picking a safe changed nothing at all.
+    const loc = q.locationId;
+    // A challan nets to zero across the hospital — which is why its stockDelta
+    // is 0 — but it is emphatically not zero for the safe it left or arrived
+    // in. Scoped to one location, the delta has to be read from that safe's
+    // point of view, or the running balance sits still while the cupboard
+    // fills up.
+    const deltaHere = new Map<string, number>();
+    for (const t of ndpsTxns) {
+      if (t.fromLocationId !== loc && t.toLocationId !== loc) continue;
+      const key = t.id.slice(0, 8);
+      if (t.entryType === 'transfer') {
+        deltaHere.set(key, t.toLocationId === loc ? t.quantity : -t.quantity);
+      } else {
+        // A Form 3E administration or a disposal spends the safe it came from.
+        deltaHere.set(key, t.fromLocationId === loc ? -t.quantity : 0);
+      }
+    }
+    filtered = filtered
+      .filter((r) => deltaHere.has(r.txnId))
+      .map((r) => ({ ...r, stockDelta: deltaHere.get(r.txnId) ?? 0 }));
+  }
   if (q.reportType && q.reportType !== 'all') {
     filtered = filtered.filter((r) =>
       q.reportType === 'inward' ? r.qtyIn > 0
@@ -492,12 +522,27 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
   // today's stock, less everything that has moved since the window opened.
   // A transfer never changes hospital-wide stock, so it is reported in its own
   // column and left out of the running total — see the note on the report page.
-  const [{ live }] = await prisma.$queryRawUnsafe<Array<{ live: number }>>(`
-    SELECT COALESCE(SUM(quantity_in_stock), 0)::int AS live
-      FROM drug_batches
-     WHERE tenant_id = $1 AND drug_id = ANY($2::text[])`, tenantId, drugIds);
+  // Narrowed to one safe, the balance is that safe's — the pharmacy-wide figure
+  // would be nonsense next to rows that only cover one location. NdpsStockBalance
+  // is the per-location count the NDPS module keeps.
+  let live: number;
+  if (q.locationId) {
+    const bal = await prisma.ndpsStockBalance.aggregate({
+      where: { tenantId, locationId: q.locationId, drugFormularyId: { in: drugIds } },
+      _sum: { quantity: true },
+    });
+    live = bal._sum.quantity ?? 0;
+  } else {
+    const [row] = await prisma.$queryRawUnsafe<Array<{ live: number }>>(`
+      SELECT COALESCE(SUM(quantity_in_stock), 0)::int AS live
+        FROM drug_batches
+       WHERE tenant_id = $1 AND drug_id = ANY($2::text[])`, tenantId, drugIds);
+    live = row.live;
+  }
 
-  const movedSinceWindowStart = await netMovementSince(tenantId, drugIds, from);
+  const movedSinceWindowStart = q.locationId
+    ? await netMovementAtLocation(tenantId, drugIds, from, q.locationId)
+    : await netMovementSince(tenantId, drugIds, from);
   let running = live - movedSinceWindowStart;
   const opening = running;
   for (const r of filtered) {
@@ -639,6 +684,41 @@ async function netMovementSince(tenantId: string, drugIds: string[], since: Date
     (transferredOut._sum.quantityTransferred ?? 0) -
     issuedToWards
   );
+}
+
+/**
+ * The same walk-back, for one sub-store.
+ *
+ * A safe's stock only changes through NDPS transactions: a challan brings it in
+ * or takes it out, and a Form 3E administration or a disposal spends it. The
+ * pharmacy-wide movements — GRNs, counter sales, the transfer board, ward
+ * shelves — never touch a safe, so counting them here would walk this balance
+ * back over stock that was never in it.
+ */
+async function netMovementAtLocation(
+  tenantId: string,
+  drugIds: string[],
+  since: Date,
+  locationId: string,
+): Promise<number> {
+  const txns = await prisma.ndpsTransaction.findMany({
+    where: {
+      tenantId, drugFormularyId: { in: drugIds }, occurredAt: { gte: since },
+      OR: [{ fromLocationId: locationId }, { toLocationId: locationId }],
+    },
+    select: { entryType: true, quantity: true, fromLocationId: true, toLocationId: true },
+  });
+  return txns.reduce((sum, t) => {
+    if (t.entryType === 'transfer') {
+      // One challan, two effects — it leaves one safe and arrives in another.
+      if (t.toLocationId === locationId) return sum + t.quantity;
+      if (t.fromLocationId === locationId) return sum - t.quantity;
+      return sum;
+    }
+    if (t.entryType === 'inward') return t.toLocationId === locationId ? sum + t.quantity : sum;
+    // dispense and disposal both spend the safe they came out of.
+    return t.fromLocationId === locationId ? sum - t.quantity : sum;
+  }, 0);
 }
 
 /**
