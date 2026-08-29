@@ -72,6 +72,29 @@ async function main() {
   if (!token) return;
 
   // ── Fixtures ─────────────────────────────────────────────────────────────
+  // A run that throws before the cleanup leaves its fixtures in the database.
+  // Three crashed runs of this walk left ward-ledger rows behind that later
+  // showed up in an unrelated check as if they were real hospital data, so
+  // sweep anything an earlier run abandoned before creating more.
+  const stale = await p.drugFormulary.findMany({
+    where: { tenantId: TENANT, drugName: { startsWith: 'STE2E-' } },
+    select: { id: true },
+  });
+  if (stale.length) {
+    const ids = stale.map((d) => d.id);
+    const staleBatches = (
+      await p.drugBatch.findMany({ where: { drugId: { in: ids } }, select: { id: true } })
+    ).map((b) => b.id);
+    await p.wardStockLedger.deleteMany({ where: { drugBatchId: { in: staleBatches } } });
+    await p.wardStock.deleteMany({ where: { drugBatchId: { in: staleBatches } } });
+    await p.dispensingRecord.deleteMany({ where: { drugBatchId: { in: staleBatches } } });
+    await p.stockTransfer.deleteMany({ where: { drugBatchId: { in: staleBatches } } });
+    await p.drugBatch.deleteMany({ where: { drugId: { in: ids } } });
+    await p.drugFormulary.deleteMany({ where: { id: { in: ids } } });
+    console.log(`  (swept ${stale.length} leftover fixture drug(s) from an earlier run)`);
+  }
+  await p.wardStockLedger.deleteMany({ where: { reason: { startsWith: 'STE2E-' } } });
+
   const drug: any = await p.drugFormulary.create({
     data: {
       tenantId: TENANT,
