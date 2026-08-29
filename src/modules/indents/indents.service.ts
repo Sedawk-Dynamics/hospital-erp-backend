@@ -644,28 +644,43 @@ export async function dispenseIpPrescription(
         }
       }
       const shortfall = remaining;
+      // What actually came off the shelf. The ordered quantity is what the
+      // doctor asked for; when the shelf cannot meet it, the patient must be
+      // billed for what they were handed and the record must say how many units
+      // really moved — it used to claim the full order on both counts, so a
+      // patient could be charged for thirty capsules after receiving four, and
+      // the stock ledger showed twenty-six units leaving that never did.
+      const handedOver = baseQty - shortfall;
+      if (handedOver <= 0) {
+        throw AppError.badRequest(
+          `No stock left for ${drug.drugName} — nothing could be dispensed. Restock and try again.`,
+        );
+      }
 
       const unitPrice = Number(batch.sellingPrice ?? drug.price ?? batch.purchasePrice ?? 0);
       const taxPct = drug.taxPercent != null ? Number(drug.taxPercent) : 0;
-      const gross = round2(unitPrice * baseQty);
+      const gross = round2(unitPrice * handedOver);
       const taxAmt = round2(gross - gross / (1 + taxPct / 100));
       const unitLabel = drug.looseUnitLabel ?? 'unit';
       const expTag = batch.expiryDate ? `, exp ${new Date(batch.expiryDate).toLocaleDateString('en-GB')}` : '';
+      const shortTag = shortfall > 0 ? ` — ${shortfall} of ${baseQty} still owed` : '';
 
       const rec = await tx.dispensingRecord.create({
         data: {
           tenantId, prescriptionId, prescriptionItemId: it.id, patientId: rx.patientId, drugBatchId: batch.id,
-          quantityDispensed: baseQty, dispensedBy: userId, saleUnit: 'loose', unitPrice, taxPercent: taxPct,
+          quantityDispensed: handedOver, dispensedBy: userId, saleUnit: 'loose', unitPrice, taxPercent: taxPct,
           lineTotal: gross, isTto: false, billId: bill.id,
-          notes: `IP Rx dispense${shortfall > 0 ? ` — stock short by ${shortfall}` : ''}`,
+          notes: `IP Rx dispense${shortfall > 0 ? ` — ordered ${baseQty}, stock short by ${shortfall}` : ''}`,
         },
       });
 
       await tx.billItem.create({
         data: {
           billId: bill.id,
-          description: `${drug.drugName} (Batch ${batch.batchNumber}${expTag}) — IP prescription, ${baseQty} ${unitLabel}(s)`,
-          category: 'pharmacy', quantity: baseQty, unitPrice, taxPercent: taxPct, taxAmount: taxAmt, totalAmount: gross,
+          // The shortfall is on the bill, not only in a note nobody reads — the
+          // ward has to know the rest is still owed.
+          description: `${drug.drugName} (Batch ${batch.batchNumber}${expTag}) — IP prescription, ${handedOver} ${unitLabel}(s)${shortTag}`,
+          category: 'pharmacy', quantity: handedOver, unitPrice, taxPercent: taxPct, taxAmount: taxAmt, totalAmount: gross,
           referenceType: 'dispensing_record', referenceId: rec.id, isAutoPulled: true,
           isReimbursable: drug.isReimbursable ?? null,
         },

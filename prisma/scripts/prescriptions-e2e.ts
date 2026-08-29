@@ -420,6 +420,13 @@ async function main() {
           !shortLine,
           shortLine ? `billed ${shortLine.quantity} x ${shortLine.unitPrice} = ${shortLine.totalAmount} when only 4 were in stock` : 'billed the dispensed quantity',
         );
+        const realLine = (shortBill?.billItems ?? []).find((i: any) => String(i.description).includes(`${TAG} Amoxicillin`) && Number(i.quantity) === 4);
+        ck('...which is 4 x 5', near(money(realLine?.totalAmount), 20), `${realLine?.totalAmount}`);
+        ck(
+          'and the bill says what is still owed, rather than hiding it in a note',
+          /still owed/.test(realLine?.description ?? ''),
+          realLine?.description ?? '',
+        );
         const shortRec = await p.dispensingRecord.findFirst({
           where: { prescriptionId: shortRx.data.id },
           select: { quantityDispensed: true, notes: true },
