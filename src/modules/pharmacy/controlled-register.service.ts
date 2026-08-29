@@ -575,6 +575,14 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
     // A challan move between NDPS locations contributes 0; a stock-transfer
     // dispatch contributes what it took.
     transferredOut: filtered.reduce((s, r) => s + Math.max(0, -r.stockDelta - r.qtyOut), 0),
+    // The part of `outward` that spent stock the pharmacy had already parted
+    // with — a dose given from a ward shelf. It is genuinely outward, and it
+    // belongs on the register as such, but the pharmacy's balance lost it when
+    // the stock was ISSUED to the ward. Without this the printed sum
+    // (opening + inward − outward − transferredOut) does not reach the closing
+    // balance, and the report contradicts itself in the one place a person is
+    // most likely to check it with a pen.
+    outwardAlreadyIssued: filtered.reduce((s, r) => s + (r.stockDelta === 0 && r.qtyOut > 0 ? r.qtyOut : 0), 0),
     closingBalance: running,
   };
 
@@ -587,7 +595,8 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
 }
 
 const emptySummary = () => ({
-  openingStock: 0, inward: 0, outward: 0, internalTransfer: 0, transferredOut: 0, closingBalance: 0,
+  openingStock: 0, inward: 0, outward: 0, internalTransfer: 0, transferredOut: 0,
+  outwardAlreadyIssued: 0, closingBalance: 0,
 });
 
 /**

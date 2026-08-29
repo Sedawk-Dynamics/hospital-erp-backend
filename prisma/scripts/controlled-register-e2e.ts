@@ -531,6 +531,16 @@ async function main() {
           JOIN drug_formulary d ON d.id = b.drug_id
          WHERE b.tenant_id = $1 AND (d.controlled_class IS NOT NULL OR d.is_narcotic = true
                OR d.vault_controlled = true OR d.schedule IN ('X','H1'))`, TENANT);
+      // The screen prints the sum as a line an inspector can follow:
+      //   opening + inward - outward - transferredOut = closing
+      // If that no longer adds up, the report contradicts itself in the one
+      // place someone is most likely to check it with a pen.
+      const t = after.data?.summary ?? {};
+      ck(
+        'the arithmetic printed on the screen still adds up',
+        t.openingStock + t.inward - t.outward - (t.transferredOut ?? 0) + (t.outwardAlreadyIssued ?? 0) === t.closingBalance,
+        `${t.openingStock} + ${t.inward} - ${t.outward} - ${t.transferredOut} + ${t.outwardAlreadyIssued} = ${t.openingStock + t.inward - t.outward - (t.transferredOut ?? 0) + (t.outwardAlreadyIssued ?? 0)}, but closing says ${t.closingBalance}`,
+      );
       ck(
         'and the balance still matches the shelf afterwards',
         after.data?.summary?.closingBalance === live2,
