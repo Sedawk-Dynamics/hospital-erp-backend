@@ -509,12 +509,12 @@ async function main() {
   const finalShelf = await shelfQty(ward.id, batch.id);
   led = await ledgerRows(ward.id, batch.id);
   const dispensed = led.filter((r) => r.movementType === 'dispensed').reduce((s, r) => s + Math.abs(r.quantity), 0);
+  // Read off the signed quantity now that adjustments carry one. Reading the
+  // direction out of the English in `reason` was only ever a workaround for
+  // that sign being thrown away.
   const adjustedNet = led
     .filter((r) => r.movementType === 'adjusted')
-    .reduce((s, r) => {
-      const m = /\((\d+) (?:→|->) (\d+)\)/.exec(r.reason ?? '');
-      return s + (m ? Number(m[2]) - Number(m[1]) : 0);
-    }, 0);
+    .reduce((s, r) => s + r.quantity, 0);
   const accounted = finalCentral + finalShelf + dispensed - adjustedNet;
   ck(
     'pharmacy + ward + doses given, less corrections, is what we started with',

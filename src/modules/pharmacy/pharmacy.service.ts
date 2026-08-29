@@ -5022,7 +5022,15 @@ export async function adjustWardStock(
         drugId: ws.drugId,
         drugBatchId: data.drugBatchId,
         movementType: 'adjusted',
-        quantity: Math.abs(delta),
+        // Signed, deliberately. Finding five in a cupboard and breaking three
+        // are opposite events, and Math.abs recorded them identically — which
+        // left the direction of every correction recoverable only by reading
+        // the English in `reason`. A stock report cannot add that up.
+        //
+        // The other three movement types are directional by their name
+        // (received in, dispensed out) and stay positive; only an adjustment
+        // can go either way.
+        quantity: delta,
         performedBy: userId,
         reason: `${data.reason} (${from} → ${data.newQuantity})`,
       },
