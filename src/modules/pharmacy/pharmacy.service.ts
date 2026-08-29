@@ -4140,6 +4140,19 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
       where: { id: data.dispensingRecordId, tenantId },
     });
     if (!record) throw AppError.notFound('Original dispensing record not found');
+    // A voided sale has already given its stock back and reversed its payment.
+    // Returning it on top would restock a second time and refund money that was
+    // never kept.
+    //
+    // This used to be impossible by accident: the void DELETED the dispensing
+    // record, so the lookup above found nothing. The record is kept now — the
+    // controlled-drug register needs it — so the refusal has to be said out
+    // loud rather than relied on.
+    if (record.cancelledAt) {
+      throw AppError.badRequest(
+        'That sale was voided — the medicine already went back on the shelf and the payment was reversed. There is nothing to return.',
+      );
+    }
     // §4.4: an item marked non-returnable on the bill can never be taken back.
     if (record.nonReturnable) {
       throw AppError.badRequest('This item was marked non-returnable on the bill and cannot be returned.');
