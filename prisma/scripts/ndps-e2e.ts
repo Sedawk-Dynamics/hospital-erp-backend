@@ -311,8 +311,15 @@ async function main() {
     s ? `${s.openingStock} + ${s.inward} − ${s.outward} − ${s.transferredOut ?? 0} = ${s.closingBalance}` : '',
   );
   check('opening stock is not negative', Boolean(s) && s.openingStock >= 0, `opening ${s?.openingStock}`);
-  check('closing matches the live batch total', Boolean(s) && s.closingBalance === 115,
-    `closing ${s?.closingBalance} (100 + 20 receipt − 5 transferred)`);
+  // Derived, never hardcoded. A literal here went stale the moment the walk
+  // gained its Form 3E and disposal steps — the arithmetic was right and the
+  // constant was not, which is a test reporting a bug that is not there.
+  const [live]: any[] = await p.$queryRawUnsafe(
+    `SELECT COALESCE(SUM(quantity_in_stock), 0)::int AS n FROM drug_batches WHERE drug_id = $1`,
+    drug.id,
+  );
+  check('closing matches the live batch total', Boolean(s) && s.closingBalance === live.n,
+    `closing ${s?.closingBalance} vs live ${live.n}`);
 
   // ── 7. The documents ──
   const pdf = await apiRaw(
