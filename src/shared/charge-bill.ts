@@ -22,7 +22,9 @@
 //
 // 2. AN OPEN BILL FROM SOMEWHERE ELSE IS NOT THIS STAY'S BILL. With an active
 //    admission, a ward charge belongs on that admission's running bill — not on
-//    an unpaid OP counter bill from a different visit.
+//    an unpaid OP counter bill from a different visit, and not on an EARLIER
+//    STAY's bill either. A readmission before the last bill is settled leaves
+//    two open admissions, and this stay's doses were landing on the old one.
 //
 // This mirrors what the OT kit path already does; it is centralised here so a
 // fifth charge path cannot drift away from it again.
@@ -52,11 +54,17 @@ export function isAdvanceBucket(billNumber: string | null | undefined): boolean 
  * With a stay in progress the admission's own running draft is PREFERRED, so a
  * ward charge lands on that stay's bill rather than on whatever happened to be
  * created most recently. The fallback is then the patient's newest open bill —
- * deliberately unrestricted, because a lab or imaging charge for an admitted
- * patient can sit on an orphan bill raised against the admission's VISIT with
- * no admissionId, and the callers adopt that bill onto the stay. Narrowing the
- * fallback to `admissionId` would have stopped adopting it and opened a second
- * bill per dispense instead.
+ * but only one that is ADOPTABLE: an orphan raised against the admission's
+ * VISIT with no admissionId, which the callers then tag onto the stay. That
+ * orphan case is why the fallback exists at all; narrowing it away entirely
+ * would open a second bill per dispense.
+ *
+ * A bill belonging to a DIFFERENT admission is not adoptable and is now
+ * excluded. It used to match, and a patient with two open stays — which
+ * happens, a readmission before the earlier bill is settled — had this stay's
+ * ward doses charged to the previous stay's bill. The callers cannot even
+ * correct it: they retag a bill only when its admissionId is null, so the
+ * charge stayed on the wrong stay silently.
  *
  * The advance bucket is never returned from either branch.
  *
@@ -84,6 +92,9 @@ export async function findOpenChargeBill(
       patientId,
       status: { in: [...OPEN_BILL_STATUSES] },
       ...NOT_ADVANCE_BUCKET,
+      // Adoptable only: an orphan, or this stay's own bill in a status the
+      // preferred lookup above did not cover.
+      ...(admissionId ? { OR: [{ admissionId: null }, { admissionId }] } : {}),
     },
     orderBy: { createdAt: 'desc' },
   });

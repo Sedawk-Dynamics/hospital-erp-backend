@@ -111,3 +111,51 @@ describe('findOpenChargeBill', () => {
     for (const c of calls) expect(c.where.tenantId).toBe(TENANT);
   });
 });
+
+/**
+ * A readmission before the previous bill is settled leaves a patient with two
+ * open admissions. This stay's ward doses were landing on the EARLIER stay's
+ * bill: the preferred lookup found no draft for this admission, and the
+ * fallback took the patient's newest open bill without caring whose stay it
+ * belonged to. The callers could not correct it either — they retag a bill only
+ * when its admissionId is null — so the charge stayed on the wrong stay
+ * silently, understating this stay and inflating one already being settled.
+ */
+describe('a patient with two open stays', () => {
+  it('will not charge this stay to another admission bill', async () => {
+    const { tx, calls } = fakeTx([null, null]);
+    await findOpenChargeBill(tx as never, {
+      tenantId: TENANT, patientId: PATIENT, admissionId: ADMISSION,
+    });
+    // The fallback is the second lookup.
+    expect(calls[1].where.OR).toEqual([{ admissionId: null }, { admissionId: ADMISSION }]);
+  });
+
+  it('still adopts an orphan bill raised against the visit', async () => {
+    // The reason the fallback exists: a lab or imaging charge can sit on a bill
+    // with no admission, and the caller tags it onto the stay. Narrowing that
+    // away would open a second bill per dispense.
+    const orphan = { id: 'bill-orphan', admissionId: null };
+    const { tx } = fakeTx([null, orphan]);
+    const found = await findOpenChargeBill(tx as never, {
+      tenantId: TENANT, patientId: PATIENT, admissionId: ADMISSION,
+    });
+    expect(found).toBe(orphan);
+  });
+
+  it('prefers this stay own draft before any fallback', async () => {
+    const own = { id: 'bill-own', admissionId: ADMISSION, status: 'draft' };
+    const { tx, calls } = fakeTx([own]);
+    const found = await findOpenChargeBill(tx as never, {
+      tenantId: TENANT, patientId: PATIENT, admissionId: ADMISSION,
+    });
+    expect(found).toBe(own);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('leaves an outpatient charge unrestricted, since there is no stay to confuse', async () => {
+    const { tx, calls } = fakeTx([null]);
+    await findOpenChargeBill(tx as never, { tenantId: TENANT, patientId: PATIENT });
+    expect(calls[0].where.OR).toBeUndefined();
+  });
+});
