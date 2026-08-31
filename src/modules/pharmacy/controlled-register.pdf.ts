@@ -249,6 +249,12 @@ export function streamControlledRegisterPdf(
 // Widths are set so each header's LONGEST WORD fits on one line. Left to
 // themselves the numeric columns broke "OUTWARD" into "OUTWAR / D", which looks
 // like a fault on a sheet a drug inspector signs.
+// The form is printed black on white. These are its only two tones: ink for
+// every mark, and the same tone for the rules, so a photocopy stays legible.
+const FORM_INK = '#000000';
+const FORM_RULE = '#333333';
+const FORM35_TITLE = 'FORM 35 / DRUG REGISTER — SCHEDULE X / NDPS (NARCOTICS)';
+
 const FORM35_COLUMNS: { header: string; width: number; align?: 'left' | 'right' | 'center' }[] = [
   // DATE and EXPIRY carry whole dates and must never wrap: "13/06/2026" split
   // after the seventh character reads as a different date, on a sheet whose
@@ -275,29 +281,32 @@ export function streamForm35Pdf(
 ) {
   const { rows, window, licence } = input;
 
-  // Form 35 overrides three things whatever the hospital's template says, because
-  // they are properties of the statutory form rather than of house style:
+  // Form 35 is printed as the statutory form, not as a house document. It is
+  // what a drug inspector is handed and what a head pharmacist signs, so it is
+  // deliberately plain: no letterhead, no logo, no accent colour, a ruled grid
+  // and black on white. Everything the hospital chose in the PDF Builder is
+  // therefore overridden HERE AND ONLY HERE — the controlled-drug register that
+  // shares this template still prints fully branded.
   //
-  //   landscape   twelve columns do not fit portrait, and a register that wraps
-  //               its columns is one an inspector will refuse;
-  //   ruled grid  the printed book is a ruled grid, and every figure has to sit
-  //               in a box that can be read across and down without ambiguity;
-  //   no zebra    banding is a screen affordance. On a form that gets
-  //               photocopied and signed it reads as a shaded, altered row.
+  //   landscape        twelve columns do not fit portrait, and a register that
+  //                    wraps its columns is one an inspector will refuse;
+  //   no letterhead    the form starts at its own title;
+  //   headerFill none  the column heads are black on white, like the book;
+  //   ruled grid       every figure sits in a box that reads across and down;
+  //   no zebra         banding is a screen affordance — on a sheet that gets
+  //                    photocopied and signed it reads as an altered row;
+  //   no signature     the form names its own signatories, below.
   //
-  // The template's own signature block is suppressed for the same reason: the
-  // form names its signatories — head pharmacist and drug inspector — and
-  // printing the hospital's generic "Pharmacist / Witness / Verified by" under
-  // them gives a statutory sheet five signature lines where it prescribes two.
-  // The register itself still uses whatever the hospital configured.
-  //
-  // Everything else — the letterhead, the accent, the fonts, the footer — stays
-  // the hospital's, so the document is still theirs.
+  // Page numbers are the one thing kept from the footer: a register running to
+  // several pages has to show an inspector that none are missing.
   const base = template ?? DEFAULT_TEMPLATE;
   const formTemplate: PdfTemplate = {
     ...base,
     page: { ...base.page, orientation: 'landscape' },
-    table: { ...base.table, gridLines: 'all', zebraRows: false },
+    colors: { ...base.colors, accent: FORM_RULE },
+    header: { ...base.header, showLetterhead: false, showTitleBar: false, showMetaStrip: false },
+    footer: { ...base.footer, showFooter: true, showGeneratedAt: false, showPageNumbers: true },
+    table: { ...base.table, headerFill: 'none', gridLines: 'all', zebraRows: false },
     signature: { ...base.signature, enabled: false },
   };
 
@@ -305,25 +314,51 @@ export function streamForm35Pdf(
     res,
     branding,
     template: formTemplate,
-    title: 'FORM 35 / DRUG REGISTER — SCHEDULE X / NDPS (NARCOTICS)',
-    subtitle: input.scopeLabel,
+    title: FORM35_TITLE,
     filename: `form-35-${dmy(window.from).replace(/\//g, '-')}.pdf`,
   });
+  // Hairlines are a screen tone. A form that gets photocopied needs rules that
+  // survive it.
+  theme.hairline = FORM_RULE;
+  theme.ink = FORM_INK;
+
+  // Column geometry, computed the same way drawTable does it, so the band above
+  // the table and the merged cell below line up with the columns exactly.
+  const totalShare = FORM35_COLUMNS.reduce((n, c) => n + c.width, 0) || 1;
+  const widths = FORM35_COLUMNS.map((c) => (c.width / totalShare) * theme.contentWidth);
+
+  // ── Title ───────────────────────────────────────────────────────────────
+  pdf
+    .font(theme.font.bold)
+    .fontSize(theme.size.heading + 1)
+    .fillColor(FORM_INK)
+    .text(FORM35_TITLE, theme.margin, pdf.y, { width: theme.contentWidth, align: 'center' });
+  pdf.moveDown(0.5);
 
   // ── The identifying band ────────────────────────────────────────────────
-  // Licence, premises and period on one line, the way the printed book has it.
-  // Missing values print as an em dash rather than a blank, so a reader can
-  // tell an unconfigured system from a licence with genuinely no number.
+  // Licence, premises and period in a ruled box across the head of the sheet,
+  // the way the printed book has it. Missing values print as an em dash rather
+  // than a blank, so a reader can tell an unconfigured system from a licence
+  // with genuinely no number.
   const band = [
     `NDPS LICENCE NO: ${dash(licence.ndpsLicenceNumber)}`,
     `FACILITY: ${(licence.licenceHolderName || branding.name || '—').toUpperCase()}`,
-    `PREMISES: ${dash(licence.premisesAddress)}`,
+    `FOR: ${dash(licence.premisesAddress)}`,
     `PERIOD: ${dmy(window.from)} – ${dmy(window.to)}`,
   ].join('   |   ');
 
-  pdf.font(theme.font.bold).fontSize(theme.size.small).fillColor(theme.ink);
-  pdf.text(band, theme.margin, pdf.y, { width: theme.contentWidth });
-  pdf.moveDown(0.6);
+  pdf.font(theme.font.bold).fontSize(theme.size.small);
+  const bandH = pdf.heightOfString(band, { width: theme.contentWidth - 12 }) + 8;
+  const bandY = pdf.y;
+  pdf
+    .rect(theme.margin, bandY, theme.contentWidth, bandH)
+    .strokeColor(FORM_RULE)
+    .lineWidth(0.6)
+    .stroke();
+  pdf
+    .fillColor(FORM_INK)
+    .text(band, theme.margin + 6, bandY + 4, { width: theme.contentWidth - 12 });
+  pdf.y = bandY + bandH;
 
   // ── The ledger ──────────────────────────────────────────────────────────
   const body: TableRow[] = rows.map((r) => [
@@ -343,6 +378,7 @@ export function streamForm35Pdf(
     dash(r.verification),
   ]);
 
+  let tableBottom = pdf.y;
   if (!body.length) {
     pdf.font(theme.font.regular).fontSize(theme.size.small).fillColor(theme.muted);
     pdf.text('No controlled-drug movement was recorded in this period.', theme.margin, pdf.y, {
@@ -350,18 +386,36 @@ export function streamForm35Pdf(
     });
     pdf.moveDown(1);
   } else {
-    drawTable(pdf, theme, FORM35_COLUMNS, body);
+    tableBottom = drawTable(pdf, theme, FORM35_COLUMNS, body);
   }
 
   // ── Sign-off ────────────────────────────────────────────────────────────
-  pdf.moveDown(1.2);
-  pdf.font(theme.font.bold).fontSize(theme.size.small).fillColor(theme.ink);
-  pdf.text('VERIFICATION SIGN-OFF', theme.margin, pdf.y, { width: theme.contentWidth });
-  pdf.moveDown(1.4);
+  // The label sits in the grid, merged across the last two columns and butted
+  // onto the bottom rule, so the sheet reads as one ruled document rather than
+  // a table with a note under it. Anchored to the table's own reported bottom
+  // rather than guessed back from the row height, which overlapped the last row.
+  if (body.length) {
+    const signW = widths[10] + widths[11];
+    const signX = theme.margin + widths.slice(0, 10).reduce((a, b) => a + b, 0);
+    const signH = theme.rowHeight;
+    const signY = tableBottom;
+    pdf.rect(signX, signY, signW, signH).strokeColor(FORM_RULE).lineWidth(0.6).stroke();
+    pdf
+      .font(theme.font.bold)
+      .fontSize(theme.size.small)
+      .fillColor(FORM_INK)
+      .text('VERIFICATION SIGN-OFF', signX + 4, signY + (signH - theme.size.small) / 2 - 0.5, {
+        width: signW - 8,
+        align: 'center',
+        lineBreak: false,
+      });
+    pdf.y = signY + signH;
+  }
 
+  pdf.moveDown(1.6);
   const half = theme.contentWidth / 2;
   const y = pdf.y;
-  pdf.font(theme.font.regular).fontSize(theme.size.small).fillColor(theme.muted);
+  pdf.font(theme.font.regular).fontSize(theme.size.small).fillColor(FORM_INK);
   pdf.text('HEAD PHARMACIST SIGNATURE & SEAL: ______________________', theme.margin, y, {
     width: half,
   });
@@ -371,7 +425,7 @@ export function streamForm35Pdf(
 
   pdf.moveDown(1.2);
   pdf.fontSize(theme.size.small - 1).fillColor(theme.muted);
-  pdf.text(`Printed: ${dmyTime(new Date())}`, theme.margin, pdf.y, {
+  pdf.text(`Printed Date/Time: ${dmyTime(new Date())}`, theme.margin, pdf.y, {
     width: theme.contentWidth,
     align: 'right',
   });
