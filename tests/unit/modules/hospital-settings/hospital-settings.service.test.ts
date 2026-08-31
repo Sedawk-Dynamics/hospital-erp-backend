@@ -100,12 +100,45 @@ describe('getPatientVisitStatus', () => {
     (prisma.admission.findMany as any).mockResolvedValue([
       { admissionDate: new Date('2026-06-20') },
     ]);
+    // An admission ALWAYS has a visit — `Admission.visitId` is a required
+    // unique FK — so a stay implies a Visit row. Mocking one without the other
+    // describes a database state that cannot exist.
+    (prisma.visit.count as any).mockResolvedValue(1);
 
     const s = await getPatientVisitStatus(TENANT, PATIENT);
 
     expect(s.lastVisitKind).toBe('admission');
     expect(s.lastVisitAt).toBe(new Date('2026-06-20').toISOString());
+    // Two attendances: the January appointment and the June stay. The stay's
+    // Visit row IS the stay, so it is not counted again as an admission.
     expect(s.priorEncounters).toBe(2);
+  });
+
+  it('counts one attendance once, however many rows it left behind', async () => {
+    // The bug this replaces: an OPD attendance leaves an Appointment AND the
+    // Visit the desk opens from it, and an inpatient stay leaves an Admission
+    // AND its Visit. Adding the three counts told the desk a patient who had
+    // been in ten times had been in fifteen.
+    (prisma.appointment.count as any)
+      .mockResolvedValueOnce(7) // kept appointments
+      .mockResolvedValueOnce(4); // ...of which 4 never became a visit
+    (prisma.visit.count as any).mockResolvedValue(6);
+    (prisma.admission.count as any).mockResolvedValue(2);
+
+    const s = await getPatientVisitStatus(TENANT, PATIENT);
+
+    expect(s.priorEncounters).toBe(10); // 6 visits + 4 appointments with none
+    expect(s.isFirstVisit).toBe(false);
+  });
+
+  it('does not call a future booking the patient’s last visit', async () => {
+    // A booking is not an attendance. Unbounded, an appointment made for next
+    // month came back as "Last visit" — a date in the future on a line saying
+    // when the patient was last here.
+    await getPatientVisitStatus(TENANT, PATIENT);
+
+    const where = (prisma.appointment.findMany as any).mock.calls[0][0].where;
+    expect(where.appointmentDate.lte).toBeInstanceOf(Date);
   });
 
   // Booking an appointment and then asking "is this their first visit?" must
