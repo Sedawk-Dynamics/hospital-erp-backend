@@ -36,6 +36,7 @@ import { seedPhysicalObservations } from '../seeds/physical-observations';
 import { seedIcdCodes } from '../seeds/icd-codes';
 import { seedIcdFromClaml } from '../seeds/icd-claml';
 import { retireDemoIcdCodes } from '../seeds/icd-retire-demo-codes';
+import { seedDisorders } from '../seeds/disorders';
 import { ensureIcdTrgmReady } from '../modules/icd/icd-fuzzy';
 import { ensureTrgmReady as ensureMedicineTrgmReady } from '../shared/medicine-fuzzy';
 import { ensureSearchIndexes } from '../shared/search-indexes';
@@ -124,6 +125,11 @@ export async function runSeeds(db: PrismaClient): Promise<void> {
   //    that already has them, because the curated seed only creates and updates
   //    and is guarded on an empty catalogue. No-op once done.
   await step('icd-retire-demo', () => retireDemoIcdCodes(db));
+  //    The disorder pick-list, seeded from the ICD disease chapters (A-N, Q).
+  //    Runs after them because it reads that table. Only ever ADDS names it has
+  //    not seen — never updates and never reactivates, so a disorder the super
+  //    admin removed stays removed.
+  await step('disorders', () => seedDisorders(db));
   //    Enable pg_trgm and build the trigram indexes the typo-tolerant search
   //    rides on. Done here rather than lazily on the first search for two
   //    reasons. A managed Postgres often refuses CREATE EXTENSION to the

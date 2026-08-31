@@ -51,6 +51,7 @@ import { logger } from '../config/logger';
  *   patients           ~16ms, 32 kB         — tiny now, the fastest-growing
  *                                             table in any hospital, and
  *                                             searched at every front desk
+ *   disorders          small                 — the existing-disorder picker
  */
 const SEARCH_COLUMNS: Record<string, string[]> = {
   drug_master: ['name', 'generic_name'],
@@ -61,6 +62,8 @@ const SEARCH_COLUMNS: Record<string, string[]> = {
   // become a single bitmap OR. One un-indexed branch sends the whole thing back
   // to a sequential scan, so leaving it out would waste the other two.
   icd_codes: ['title', 'search_tokens', 'code'],
+  // The disorder pick-list a patient and a clinician both search, ~7,200 rows.
+  disorders: ['name', 'search_tokens'],
 };
 
 /** Deterministic, and short enough for Postgres's 63-character identifier cap. */

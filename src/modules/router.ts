@@ -51,6 +51,7 @@ import { drugMasterRoutes } from './drug-master/drug-master.routes';
 import { discountPolicyRoutes } from './discount-policy/discount-policy.routes';
 import { aiRoutes } from './ai/ai.routes';
 import { icdRoutes } from './icd/icd.routes';
+import { disorderRoutes } from './disorders/disorders.routes';
 import { platformBrandingRoutes } from './platform-branding/platform-branding.routes';
 import { hospitalBrandingRoutes } from './hospital-branding/hospital-branding.routes';
 import { hospitalSettingsRoutes } from './hospital-settings/hospital-settings.routes';
@@ -82,6 +83,7 @@ apiRouter.use('/drug-master', authenticate, userTierLimiter, drugMasterRoutes);
 // feature gate: super-admin manages the shared set; any clinical user searches
 // it for diagnosis autocomplete.
 apiRouter.use('/icd', authenticate, userTierLimiter, icdRoutes);
+apiRouter.use('/disorders', authenticate, userTierLimiter, disorderRoutes);
 // AI / LLM use cases (patient chatbot, platform support chatbot, discharge
 // generation) + super-admin LLM provider config. Cross-cutting, so mounted as
 // a core module with per-route permission checks (no single feature gate).
