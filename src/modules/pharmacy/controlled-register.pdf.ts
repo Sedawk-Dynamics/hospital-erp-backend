@@ -7,7 +7,7 @@ import {
   drawTable,
   type TableRow,
 } from '../../services/pdf-doc';
-import type { PdfTemplate } from '../../services/pdf-template';
+import { DEFAULT_TEMPLATE, type PdfTemplate } from '../../services/pdf-template';
 import type { DrugLicenceSettings } from '../../shared/controlled-drug';
 import type { RegisterRow } from './controlled-register.service';
 
@@ -250,18 +250,21 @@ export function streamControlledRegisterPdf(
 // themselves the numeric columns broke "OUTWARD" into "OUTWAR / D", which looks
 // like a fault on a sheet a drug inspector signs.
 const FORM35_COLUMNS: { header: string; width: number; align?: 'left' | 'right' | 'center' }[] = [
-  { header: 'DATE', width: 0.055 },
+  // DATE and EXPIRY carry whole dates and must never wrap: "13/06/2026" split
+  // after the seventh character reads as a different date, on a sheet whose
+  // whole purpose is to say when a narcotic moved and when it expires.
+  { header: 'DATE', width: 0.075 },
   { header: 'VOUCHER/INVOICE #', width: 0.085 },
   { header: 'ITEM NAME', width: 0.125 },
   { header: 'BATCH #', width: 0.065 },
-  { header: 'EXPIRY', width: 0.050, align: 'center' },
+  { header: 'EXPIRY', width: 0.058, align: 'center' },
   { header: 'OPENING STOCK', width: 0.065, align: 'right' },
   { header: 'INWARD QTY', width: 0.060, align: 'right' },
   { header: 'OUTWARD QTY', width: 0.068, align: 'right' },
   { header: 'TRANSFERS (3H)', width: 0.075, align: 'right' },
   { header: 'CLOSING BALANCE', width: 0.068, align: 'right' },
-  { header: 'PATIENT/DOCTOR/STORE DETAILS', width: 0.155 },
-  { header: 'VERIFIED BY', width: 0.129 },
+  { header: 'PATIENT/DOCTOR/STORE DETAILS', width: 0.145 },
+  { header: 'VERIFIED BY', width: 0.111 },
 ];
 
 export function streamForm35Pdf(
@@ -272,15 +275,36 @@ export function streamForm35Pdf(
 ) {
   const { rows, window, licence } = input;
 
-  // Force landscape whatever the hospital's template says — see above.
-  const landscape: PdfTemplate | undefined = template
-    ? { ...template, page: { ...template.page, orientation: 'landscape' } }
-    : undefined;
+  // Form 35 overrides three things whatever the hospital's template says, because
+  // they are properties of the statutory form rather than of house style:
+  //
+  //   landscape   twelve columns do not fit portrait, and a register that wraps
+  //               its columns is one an inspector will refuse;
+  //   ruled grid  the printed book is a ruled grid, and every figure has to sit
+  //               in a box that can be read across and down without ambiguity;
+  //   no zebra    banding is a screen affordance. On a form that gets
+  //               photocopied and signed it reads as a shaded, altered row.
+  //
+  // The template's own signature block is suppressed for the same reason: the
+  // form names its signatories — head pharmacist and drug inspector — and
+  // printing the hospital's generic "Pharmacist / Witness / Verified by" under
+  // them gives a statutory sheet five signature lines where it prescribes two.
+  // The register itself still uses whatever the hospital configured.
+  //
+  // Everything else — the letterhead, the accent, the fonts, the footer — stays
+  // the hospital's, so the document is still theirs.
+  const base = template ?? DEFAULT_TEMPLATE;
+  const formTemplate: PdfTemplate = {
+    ...base,
+    page: { ...base.page, orientation: 'landscape' },
+    table: { ...base.table, gridLines: 'all', zebraRows: false },
+    signature: { ...base.signature, enabled: false },
+  };
 
   const { pdf, theme } = createBrandedDocument({
     res,
     branding,
-    template: landscape,
+    template: formTemplate,
     title: 'FORM 35 / DRUG REGISTER — SCHEDULE X / NDPS (NARCOTICS)',
     subtitle: input.scopeLabel,
     filename: `form-35-${dmy(window.from).replace(/\//g, '-')}.pdf`,
