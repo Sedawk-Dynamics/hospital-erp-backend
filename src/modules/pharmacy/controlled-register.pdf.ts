@@ -160,15 +160,17 @@ export function streamControlledRegisterPdf(
       { header: 'Txn', width: 1.4 },
       { header: 'Item / API', width: 2.6 },
       { header: 'Batch', width: 1.2 },
-      { header: 'Expiry', width: 1 },
+      // Wide enough for a whole date. At 1.0 "31/12/2026" wrapped after the
+      // eighth character and the column read as a different date entirely.
+      { header: 'Expiry', width: 1.35 },
       { header: 'Open', width: 0.7, align: 'right' },
       { header: 'In', width: 0.6, align: 'right' },
       { header: 'Out', width: 0.6, align: 'right' },
       { header: 'Tfr', width: 0.6, align: 'right' },
       { header: 'Close', width: 0.7, align: 'right' },
       { header: 'Patient / Dept', width: 1.8 },
-      { header: 'Prescriber', width: 1.6 },
-      { header: 'Verified by', width: 1.3 },
+      { header: 'Prescriber', width: 1.45 },
+      { header: 'Verified by', width: 1.1 },
     ],
     rows.map((r) => [
       dmyTime(r.occurredAt),
