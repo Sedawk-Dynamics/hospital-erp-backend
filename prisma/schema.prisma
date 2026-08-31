@@ -1246,6 +1246,7 @@ model Tenant {
 
   featureToggles             FeatureToggle[]
   icdCodes                   IcdCode[]
+  disorders                  Disorder[]
   aiConfig                   AiConfig?
   users                      User[]
   roles                      Role[]
@@ -1481,6 +1482,43 @@ model AiConfig {
 // are the shared platform reference set (managed by super-admin); rows with a
 // tenantId are a hospital's own custom codes. Powers diagnosis autocomplete and
 // the CDSS use cases that reference ICD codes.
+/// The list of disorders a patient or clinician can pick from when recording
+/// "existing disorders".
+///
+/// Separate from IcdCode on purpose, though it is seeded from it. IcdCode is
+/// the WHO CLASSIFICATION — all 12,325 rows of it, including injuries, external
+/// causes, pregnancy states and "factors influencing health status", none of
+/// which is a disorder someone lives with. This is the shorter, curated list a
+/// super admin owns: seeded from the disease chapters (A-N, Q) and then theirs
+/// to add to or prune.
+///
+/// `tenantId` null is the platform list every hospital sees, matching IcdCode.
+/// A row keeps its `icdCode` where it has one, so a picked disorder is still
+/// coded; a hand-added one may have none.
+model Disorder {
+  id           String   @id @default(uuid())
+  tenantId     String?  @map("tenant_id")
+  name         String   @db.VarChar(500)
+  /// The ICD-10 code this came from, where it has one. Null for a disorder a
+  /// super admin added by hand.
+  icdCode      String?  @map("icd_code") @db.VarChar(20)
+  category     String?  @db.VarChar(255)
+  /// Denormalised lowercase name + code + keywords, recomputed on write.
+  searchTokens String?  @map("search_tokens")
+  keywords     String[] @default([])
+  isCustom     Boolean  @default(false) @map("is_custom")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdById  String?  @map("created_by_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant Tenant? @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, name])
+  @@index([icdCode])
+  @@map("disorders")
+}
+
 model IcdCode {
   id           String   @id @default(uuid())
   tenantId     String?  @map("tenant_id")
