@@ -244,28 +244,77 @@ export function drawTable(
   const rowH = theme.rowHeight;
   const left = theme.margin;
 
+  // A cell may carry more than one line — the controlled-drug register puts the
+  // transaction id under its type and the API strength under the drug name.
+  // A fixed row height drew those extra lines on top of the row beneath. Rows
+  // are measured instead; a single-line row keeps exactly the height it had, so
+  // no other document moves.
+  pdf.font(theme.font.regular).fontSize(theme.size.small);
+  // Self-calibrated rather than assumed: `currentLineHeight()` excludes the gap
+  // PDFKit actually leaves between lines, so measuring one real line is the
+  // only reliable unit.
+  const lineH = pdf.heightOfString('X', { width: 10_000 });
+  // What a one-line row has spare, reused so a taller row is padded the same
+  // way instead of looking cramped.
+  const vPad = Math.max(0, rowH - lineH);
+  // Lines a cell will actually occupy. `heightOfString` is the only honest
+  // answer, because a cell WRAPS as well as carrying explicit newlines —
+  // "Tramadol (37.5mg) + Paracetamol (325mg)" is one newline but three lines in
+  // its column, which is why counting newlines still left rows overlapping.
+  const linesIn = (text: string, width: number) =>
+    text ? Math.max(1, Math.round(pdf.heightOfString(text, { width }) / lineH)) : 1;
+  const heightFor = (cells: string[], bold: boolean) => {
+    pdf.font(bold ? theme.font.bold : theme.font.regular).fontSize(theme.size.small);
+    const lines = Math.max(1, ...columns.map((_, i) => linesIn(cells[i] ?? '', widths[i] - 8)));
+    return { lines, h: lines === 1 ? rowH : lines * lineH + vPad };
+  };
+
+  let tableTop = pdf.y;
+
   const headerRow = () => {
     const y = pdf.y;
+    tableTop = y;
+    // The header wraps for the same reason a cell does — "VERIFIED BY" does not
+    // fit a narrow column — so it is measured the same way. Otherwise its second
+    // line lands on top of the first row of data.
+    pdf.font(theme.font.bold).fontSize(theme.size.tiny);
+    const headLineH = pdf.heightOfString('X', { width: 10_000 });
+    const headLines = Math.max(
+      1,
+      ...columns.map((c, i) =>
+        Math.max(
+          1,
+          Math.round(
+            pdf.heightOfString(c.header.toUpperCase(), { width: widths[i] - 8 }) / headLineH,
+          ),
+        ),
+      ),
+    );
+    const headH = headLines === 1 ? rowH : headLines * headLineH + Math.max(0, rowH - headLineH);
+
     if (t.headerFill === 'accent') {
-      pdf.rect(left, y, theme.contentWidth, rowH).fill(theme.accent);
+      pdf.rect(left, y, theme.contentWidth, headH).fill(theme.accent);
     } else if (t.headerFill === 'muted') {
-      pdf.rect(left, y, theme.contentWidth, rowH).fill(theme.soft);
+      pdf.rect(left, y, theme.contentWidth, headH).fill(theme.soft);
     }
     const headerInk = t.headerFill === 'accent' ? '#ffffff' : theme.ink;
+    const headTextY =
+      headLines === 1
+        ? y + (rowH - theme.size.tiny) / 2 - 0.5
+        : y + (headH - headLines * headLineH) / 2;
     let x = left;
     columns.forEach((c, i) => {
       pdf
         .font(theme.font.bold)
         .fontSize(theme.size.tiny)
         .fillColor(headerInk)
-        .text(c.header.toUpperCase(), x + 4, y + (rowH - theme.size.tiny) / 2 - 0.5, {
+        .text(c.header.toUpperCase(), x + 4, headTextY, {
           width: widths[i] - 8,
           align: c.align ?? 'left',
-          lineBreak: false,
         });
       x += widths[i];
     });
-    pdf.y = y + rowH;
+    pdf.y = y + headH;
     if (t.gridLines !== 'none') {
       pdf
         .moveTo(left, pdf.y)
@@ -279,19 +328,23 @@ export function drawTable(
   headerRow();
 
   rows.forEach((r, idx) => {
-    if (ensureSpace(pdf, theme, rowH + 4)) headerRow();
-    const y = pdf.y;
     const cells = rowCells(r);
     const kind = rowKind(r);
+    const bold = kind === 'group' || kind === 'total';
+    // Measured before the page-break check, so a tall row is never split.
+    const measured = heightFor(cells, bold);
+    const h = kind === 'group' ? rowH : measured.h;
+    const rowLines = kind === 'group' ? 1 : measured.lines;
+    if (ensureSpace(pdf, theme, h + 4)) headerRow();
+    const y = pdf.y;
     const striped = Array.isArray(r)
       ? t.zebraRows && idx % 2 === 1
       : t.zebraRows && (r.zebra ?? false);
     // A group heading carries the tint whether or not striping is on — it is
     // what separates one head of charges from the next.
     if (kind === 'group' || striped) {
-      pdf.rect(left, y, theme.contentWidth, rowH).fill(theme.soft);
+      pdf.rect(left, y, theme.contentWidth, h).fill(theme.soft);
     }
-    const bold = kind === 'group' || kind === 'total';
     if (kind === 'group') {
       // Spans the table: the heading reads across, not squeezed into column one.
       pdf
@@ -314,13 +367,19 @@ export function drawTable(
       }
       return;
     }
+    // One line keeps the original centring exactly; a taller row centres the
+    // whole block so its lines sit evenly between the rules.
+    const textY =
+      rowLines === 1
+        ? y + (rowH - theme.size.small) / 2 - 0.5
+        : y + (h - rowLines * lineH) / 2;
     let x = left;
     columns.forEach((c, i) => {
       pdf
         .font(bold ? theme.font.bold : theme.font.regular)
         .fontSize(theme.size.small)
         .fillColor(theme.ink)
-        .text(cells[i] ?? '', x + 4, y + (rowH - theme.size.small) / 2 - 0.5, {
+        .text(cells[i] ?? '', x + 4, textY, {
           width: widths[i] - 8,
           align: c.align ?? 'left',
           lineBreak: false,
@@ -328,7 +387,7 @@ export function drawTable(
         });
       x += widths[i];
     });
-    pdf.y = y + rowH;
+    pdf.y = y + h;
     if (t.gridLines === 'horizontal' || t.gridLines === 'all') {
       pdf
         .moveTo(left, pdf.y)
@@ -342,7 +401,9 @@ export function drawTable(
   if (t.gridLines === 'all') {
     // Verticals are drawn once at the end so they do not get painted over by
     // the zebra fills.
-    const top = pdf.y - rows.length * rowH - rowH;
+    // Anchored to where the last header was drawn — rows no longer all have the
+    // same height, so counting them cannot locate the top.
+    const top = tableTop;
     let x = left;
     for (let i = 0; i <= columns.length; i++) {
       pdf
