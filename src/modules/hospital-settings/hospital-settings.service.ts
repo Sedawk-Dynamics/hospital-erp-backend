@@ -126,10 +126,17 @@ export interface PatientVisitStatus {
   patientId: string;
   /** No prior encounter of any kind AT THIS HOSPITAL. */
   isFirstVisit: boolean;
-  /** The most recent prior encounter here, or null. */
+  /** The most recent encounter here that has ALREADY HAPPENED, or null. */
   lastVisitAt: string | null;
   lastVisitKind: 'appointment' | 'visit' | 'admission' | null;
-  /** Encounters here, capped at what we counted. */
+  /**
+   * Times this patient has actually been here — DISTINCT encounters, not rows.
+   *
+   * One attendance leaves up to three rows: an Appointment, the Visit the front
+   * desk opens from it, and for an inpatient an Admission (whose `visitId` is
+   * unique, so it always has one). Adding the three counts said 15 for a patient
+   * who had been in ten times.
+   */
   priorEncounters: number;
   /** The registration fee has already been taken from this patient here. */
   registrationFeeCharged: boolean;
@@ -162,13 +169,26 @@ export async function getPatientVisitStatus(
   });
   if (!patient) throw AppError.notFound('Patient not found');
 
-  const [appointments, appointmentCount, visits, visitCount, admissions, admissionCount, feeItem] =
+  const [
+    appointments,
+    appointmentCount,
+    visits,
+    visitCount,
+    unvisitedAppointmentCount,
+    admissions,
+    admissionCount,
+    feeItem,
+  ] =
     await Promise.all([
+      // Only appointments that have already happened can be a LAST VISIT. Left
+      // unbounded, a booking made for next month became "Last visit 14/09/2026"
+      // — a date in the future, on a line that says the patient was last here.
       prisma.appointment.findMany({
         where: {
           tenantId,
           patientId,
           status: { notIn: ['cancelled', 'no_show'] },
+          appointmentDate: { lte: new Date() },
           ...(options.excludeAppointmentId ? { id: { not: options.excludeAppointmentId } } : {}),
         },
         orderBy: { appointmentDate: 'desc' },
@@ -190,6 +210,19 @@ export async function getPatientVisitStatus(
         select: { visitDate: true },
       }),
       prisma.visit.count({ where: { tenantId, patientId } }),
+      // Appointments that never became a Visit — booked and not yet attended,
+      // or attended without the desk opening one. These are the only encounters
+      // a Visit row does not already account for, so distinct attendance is
+      // `visits + these` and nothing is counted twice.
+      prisma.appointment.count({
+        where: {
+          tenantId,
+          patientId,
+          status: { notIn: ['cancelled', 'no_show'] },
+          visits: { none: {} },
+          ...(options.excludeAppointmentId ? { id: { not: options.excludeAppointmentId } } : {}),
+        },
+      }),
       prisma.admission.findMany({
         where: { tenantId, patientId },
         orderBy: { admissionDate: 'desc' },
@@ -216,8 +249,15 @@ export async function getPatientVisitStatus(
   candidates.sort((a, b) => b.at.getTime() - a.at.getTime());
   const last = candidates[0] ?? null;
 
-  const priorEncounters = appointmentCount + visitCount + admissionCount;
-  const isFirstVisit = priorEncounters === 0;
+  // Distinct attendance. An Admission always has a Visit (`Admission.visitId`
+  // is unique) and a kept appointment usually becomes one, so a Visit row is
+  // the encounter; only appointments that produced none are additional.
+  const priorEncounters = visitCount + unvisitedAppointmentCount;
+  // Deliberately NOT derived from the count above. "First visit here" gates the
+  // registration fee, so it stays the broadest possible reading — any row of
+  // any kind means they are not new — rather than anything that could newly
+  // read a returning patient as first-time and charge them again.
+  const isFirstVisit = appointmentCount + visitCount + admissionCount === 0;
   const settings = await getRegistrationFeeSettings(tenantId);
   const registrationFeeCharged = !!feeItem;
 
