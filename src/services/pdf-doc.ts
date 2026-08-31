@@ -232,12 +232,17 @@ const rowKind = (r: TableRow) => (Array.isArray(r) ? undefined : r.kind);
  * row density all come from there, so one setting restyles every table in the
  * app. Repeats the header row after a page break.
  */
+/**
+ * Returns the y of the table's bottom rule, BEFORE the trailing gap, so a
+ * caller can butt something up against the grid — Form 35 merges a sign-off
+ * cell onto the end of it. Callers that do not need it ignore the return.
+ */
 export function drawTable(
   pdf: PDFKit.PDFDocument,
   theme: PdfTheme,
   columns: TableColumn[],
   rows: TableRow[],
-): void {
+): number {
   const t = theme.template.table;
   const totalShare = columns.reduce((n, c) => n + c.width, 0) || 1;
   const widths = columns.map((c) => (c.width / totalShare) * theme.contentWidth);
@@ -429,7 +434,9 @@ export function drawTable(
     }
     pdf.switchToPage(resumeAt);
   }
+  const bottom = pdf.y;
   pdf.moveDown(0.6);
+  return bottom;
 }
 
 /** The two-column label/value card most documents open with. */
