@@ -269,11 +269,18 @@ export function drawTable(
     return { lines, h: lines === 1 ? rowH : lines * lineH + vPad };
   };
 
-  let tableTop = pdf.y;
+  // Where each run of rows sits, so the vertical rules can be drawn on every
+  // page the table spans rather than only the last.
+  const pageIndex = () => {
+    const r = pdf.bufferedPageRange();
+    return r.start + r.count - 1;
+  };
+  const segments: { page: number; top: number; bottom: number }[] = [];
 
   const headerRow = () => {
     const y = pdf.y;
-    tableTop = y;
+    if (segments.length) segments[segments.length - 1].bottom = y;
+    segments.push({ page: pageIndex(), top: y, bottom: y });
     // The header wraps for the same reason a cell does — "VERIFIED BY" does not
     // fit a narrow column — so it is measured the same way. Otherwise its second
     // line lands on top of the first row of data.
@@ -399,21 +406,28 @@ export function drawTable(
   });
 
   if (t.gridLines === 'all') {
-    // Verticals are drawn once at the end so they do not get painted over by
-    // the zebra fills.
-    // Anchored to where the last header was drawn — rows no longer all have the
-    // same height, so counting them cannot locate the top.
-    const top = tableTop;
-    let x = left;
-    for (let i = 0; i <= columns.length; i++) {
-      pdf
-        .moveTo(x, top)
-        .lineTo(x, pdf.y)
-        .strokeColor(theme.hairline)
-        .lineWidth(0.4)
-        .stroke();
-      x += widths[i] ?? 0;
+    // Verticals are drawn last so the zebra fills do not paint over them, and
+    // PER PAGE: a table that breaks has a run of rows on each one, and drawing a
+    // single span would rule only the page the document happens to end on.
+    // Counting rows cannot locate the top either, now that rows differ in
+    // height, so each run records where it started.
+    if (segments.length) segments[segments.length - 1].bottom = pdf.y;
+    const resumeAt = pageIndex();
+    for (const seg of segments) {
+      if (seg.bottom <= seg.top) continue;
+      pdf.switchToPage(seg.page);
+      let x = left;
+      for (let i = 0; i <= columns.length; i++) {
+        pdf
+          .moveTo(x, seg.top)
+          .lineTo(x, seg.bottom)
+          .strokeColor(theme.hairline)
+          .lineWidth(0.4)
+          .stroke();
+        x += widths[i] ?? 0;
+      }
     }
+    pdf.switchToPage(resumeAt);
   }
   pdf.moveDown(0.6);
 }
