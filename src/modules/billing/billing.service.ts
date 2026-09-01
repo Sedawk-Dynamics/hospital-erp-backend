@@ -141,39 +141,39 @@ async function generateBillNumber(_tenantId: string): Promise<string> {
  * the `Receipt.receiptNumber` unique constraint on the 2nd split.
  */
 async function generateReceiptNumber(
-  tenantId: string,
+  _tenantId: string,
   db: Prisma.TransactionClient = prisma,
 ): Promise<string> {
-  const dateStr = getISTDateStr();
+  const prefix = `RCP-${getISTDateStr()}-`;
 
-  const prefix = `RCP-${dateStr}-`;
-
+  // Read the day's highest number ACROSS ALL TENANTS, because that is the scope
+  // `Receipt.receiptNumber`'s unique index actually has. Reading it per tenant
+  // handed a second hospital a number a first one already held: the insert
+  // violated the global index, and in Postgres that ABORTS the transaction, so
+  // a split payment lost every leg rather than just misnaming one receipt.
+  // Reproduced with two real tenants — `npm run db:check-split-payment`.
+  //
+  // Same bug and same fix as `shared/bill-number.ts`, which this deliberately
+  // mirrors; bills were corrected when it was found on the ward charge paths
+  // and receipts were missed.
+  //
+  // Ordering by the string is numeric ordering because the sequence is padded
+  // to a fixed width.
   const latestReceipt = await db.receipt.findFirst({
-    where: {
-      tenantId,
-      receiptNumber: { startsWith: prefix },
-    },
+    where: { receiptNumber: { startsWith: prefix } },
     orderBy: { receiptNumber: 'desc' },
     select: { receiptNumber: true },
   });
 
-  let nextNumber = 1;
-  if (latestReceipt?.receiptNumber) {
-    const lastNumber = parseInt(latestReceipt.receiptNumber.split('-').pop() || '0', 10);
-    nextNumber = lastNumber + 1;
-  }
+  const lastNumber = latestReceipt?.receiptNumber
+    ? parseInt(latestReceipt.receiptNumber.split('-').pop() || '0', 10) || 0
+    : 0;
 
-  const receiptNumber = `${prefix}${nextNumber.toString().padStart(4, '0')}`;
-
-  const existing = await db.receipt.findFirst({
-    where: { tenantId, receiptNumber },
-  });
-
-  if (existing) {
-    return generateReceiptNumber(tenantId, db);
-  }
-
-  return receiptNumber;
+  // No re-check against the number just computed: it came from the maximum, so
+  // it cannot already exist. The check that used to sit here was scoped to one
+  // tenant, could therefore never fire, and would have recursed for ever if it
+  // had — it recomputed the same number from the same rows.
+  return `${prefix}${String(lastNumber + 1).padStart(4, '0')}`;
 }
 
 /**
