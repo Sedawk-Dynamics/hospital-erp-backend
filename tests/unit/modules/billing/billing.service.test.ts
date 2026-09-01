@@ -526,6 +526,48 @@ describe('BillingService', () => {
 
     const pendingBill = { ...mockBillPending, amountPaid: 0, balanceDue: 1100 };
 
+    it('looks for the day’s highest receipt number across all tenants', async () => {
+      // receiptNumber is unique across the whole database. Scoping this lookup
+      // to one tenant handed a second hospital a number a first already held,
+      // and the unique violation aborts the transaction — so a split payment
+      // lost every leg. Reproduced with two real tenants in
+      // `npm run db:check-split-payment`.
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue(pendingBill as any);
+      mockLedger({ total: 1100, collected: 1100 });
+
+      await createPayment(TENANT_ID, USER_ID, {
+        billId: 'bill-1',
+        amount: 1100,
+        paymentMethod: 'cash',
+      });
+
+      const where = vi.mocked(prisma.receipt.findFirst).mock.calls[0]?.[0]?.where as
+        | Record<string, unknown>
+        | undefined;
+      expect(where).toBeDefined();
+      expect(where).not.toHaveProperty('tenantId');
+      expect(where?.receiptNumber).toMatchObject({ startsWith: expect.stringMatching(/^RCP-\d{8}-$/) });
+    });
+
+    it('continues the day’s sequence from the highest number already issued', async () => {
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue(pendingBill as any);
+      mockLedger({ total: 1100, collected: 1100 });
+      // Whoever holds it — this hospital or another — the next one is 0043.
+      vi.mocked(prisma.receipt.findFirst).mockResolvedValue({
+        receiptNumber: 'RCP-20260901-0042',
+      } as any);
+
+      await createPayment(TENANT_ID, USER_ID, {
+        billId: 'bill-1',
+        amount: 1100,
+        paymentMethod: 'cash',
+      });
+
+      expect(prisma.receipt.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ receiptNumber: expect.stringMatching(/-0043$/) }),
+      });
+    });
+
     it('records the cashier on the payment', async () => {
       vi.mocked(prisma.bill.findFirst).mockResolvedValue(pendingBill as any);
       mockLedger({ total: 1100, collected: 1100 });
