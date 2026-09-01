@@ -2288,6 +2288,12 @@ export async function getBatches(tenantId: string, query: GetBatchesQuery) {
             packSize: true,
             looseUnitLabel: true,
             taxPercent: true,
+            // Carried so a picker knows BEFORE the move is submitted that this
+            // is a custody hand-over needing a second person — rather than the
+            // server refusing it with a requirement the form never asked for.
+            controlledClass: true,
+            vaultControlled: true,
+            schedule: true,
           },
         },
         supplier: { select: { id: true, name: true } },

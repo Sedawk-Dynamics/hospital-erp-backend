@@ -122,13 +122,14 @@ async function main() {
 
   const START = 200;
 
-  // ── 1. Creating ──────────────────────────────────────────────────────────
-  section('creating');
+  // ── 1. What a transfer refuses ───────────────────────────────────────────
+  section('what a transfer refuses');
 
   const noDest = await api('POST', '/inventory/transfers', {
     drugBatchId: batch.id, fromLocation: 'Main Pharmacy', quantityRequested: 5,
   });
   ck('refuses a transfer with no destination', noDest.status >= 400, `${noDest.status}`);
+  ck('and nothing moved', (await batchQty(batch.id)) === START, `pharmacy ${await batchQty(batch.id)}`);
 
   const bothKinds = await api('POST', '/inventory/transfers', {
     drugBatchId: batch.id, inventoryItemId: batch.id,
@@ -136,74 +137,38 @@ async function main() {
   });
   ck('refuses both a drug and an item on one transfer', bothKinds.status >= 400, `${bothKinds.status}`);
 
+  const overDraw = await api('POST', '/inventory/transfers', {
+    drugBatchId: batch.id, fromLocation: 'Main Pharmacy', toWardId: ward.id,
+    toLocation: ward.name, quantityRequested: 9999,
+  });
+  ck('refuses to draw more than the batch holds',
+    overDraw.status >= 400 && /Insufficient/i.test(overDraw.msg), overDraw.msg.slice(0, 46));
+  ck('and still nothing moved', (await batchQty(batch.id)) === START, `pharmacy ${await batchQty(batch.id)}`);
+
+  // ── 2. The movement itself ───────────────────────────────────────────────
+  // Recording the transfer IS the transfer: one call, and the stock is on the
+  // ward's shelf. There is no pending row to chase and no half-done state.
+  section('the movement itself');
+
   const created = await api('POST', '/inventory/transfers', {
     drugBatchId: batch.id,
     fromLocation: 'Main Pharmacy',
     toWardId: ward.id,
     toLocation: ward.name,
-    quantityRequested: 40,
+    quantityRequested: 25,
     reason: `${TAG} ward issue`,
   });
   const id = created.json?.data?.id;
   ck('creates a drug transfer naming a ward', Boolean(id), `${created.status} ${created.msg}`);
-  ck('it starts pending', created.json?.data?.status === 'pending', created.json?.data?.status);
-  ck('nothing has moved yet', (await batchQty(batch.id)) === START, `pharmacy ${await batchQty(batch.id)}`);
+  ck('it is done, not pending', created.json?.data?.status === 'received', created.json?.data?.status);
+  ck('the quantity moved is recorded, not just requested',
+    created.json?.data?.quantityTransferred === 25, `${created.json?.data?.quantityTransferred}`);
+  ck('and it is stamped as dispatched, which is what the statutory register reads',
+    Boolean(created.json?.data?.dispatchedAt), `${created.json?.data?.dispatchedAt}`);
 
-  // ── 2. Out-of-order transitions ──────────────────────────────────────────
-  section('order of operations');
-
-  const earlyDispatch = await api('PATCH', `/inventory/transfers/${id}/dispatch`, {});
-  ck('refuses to dispatch before approval', earlyDispatch.status >= 400 && /approved/i.test(earlyDispatch.msg),
-    earlyDispatch.msg.slice(0, 50));
-
-  const earlyReceive = await api('PATCH', `/inventory/transfers/${id}/receive`, {});
-  ck('refuses to receive before dispatch', earlyReceive.status >= 400 && /dispatched/i.test(earlyReceive.msg),
-    earlyReceive.msg.slice(0, 50));
-
-  // ── 3. Reject, then a fresh one ──────────────────────────────────────────
-  section('reject and cancel');
-
-  const toReject = await api('POST', '/inventory/transfers', {
-    drugBatchId: batch.id, fromLocation: 'Main Pharmacy', toWardId: ward.id,
-    toLocation: ward.name, quantityRequested: 5,
-  });
-  const rejected = await api('PATCH', `/inventory/transfers/${toReject.json?.data?.id}/reject`, {
-    rejectionReason: 'Not needed on the ward',
-  });
-  ck('a transfer can be rejected with a reason', rejected.json?.data?.status === 'rejected', rejected.json?.data?.status);
-  ck('rejecting moves no stock', (await batchQty(batch.id)) === START, `pharmacy ${await batchQty(batch.id)}`);
-
-  const toCancel = await api('POST', '/inventory/transfers', {
-    drugBatchId: batch.id, fromLocation: 'Main Pharmacy', toWardId: ward.id,
-    toLocation: ward.name, quantityRequested: 5,
-  });
-  const cancelled = await api('PATCH', `/inventory/transfers/${toCancel.json?.data?.id}/cancel`, {
-    reason: 'Raised by mistake',
-  });
-  ck('a transfer can be cancelled', cancelled.json?.data?.status === 'cancelled', cancelled.json?.data?.status);
-  ck('cancelling moves no stock', (await batchQty(batch.id)) === START, `pharmacy ${await batchQty(batch.id)}`);
-
-  // ── 4. Approve → dispatch → receive ──────────────────────────────────────
-  section('the movement itself');
-
-  const approved = await api('PATCH', `/inventory/transfers/${id}/approve`, {});
-  ck('approve moves it to approved', approved.json?.data?.status === 'approved', approved.json?.data?.status);
-  ck('approving still moves no stock', (await batchQty(batch.id)) === START);
-
-  const overDraw = await api('PATCH', `/inventory/transfers/${id}/dispatch`, { quantityDispatched: 9999 });
-  ck('refuses to dispatch more than the batch holds',
-    overDraw.status >= 400 && /Insufficient/i.test(overDraw.msg), overDraw.msg.slice(0, 46));
-
-  // Dispatch LESS than requested — the shelf must get what actually moved.
-  const dispatched = await api('PATCH', `/inventory/transfers/${id}/dispatch`, { quantityDispatched: 25 });
-  ck('dispatches an ordinary drug with no custodian', dispatched.status < 400, `${dispatched.status}`);
-  ck('pharmacy decremented by what was DISPATCHED, not requested',
-    (await batchQty(batch.id)) === START - 25, `pharmacy ${await batchQty(batch.id)} (requested 40, sent 25)`);
-  ck('nothing on the shelf until it is received', (await shelfQty(ward.id, batch.id)) === 0);
-
-  const received = await api('PATCH', `/inventory/transfers/${id}/receive`, {});
-  ck('receive accepted', received.status < 400, `${received.status}`);
-  ck('the shelf holds what was dispatched', (await shelfQty(ward.id, batch.id)) === 25,
+  ck('the pharmacy is decremented', (await batchQty(batch.id)) === START - 25,
+    `pharmacy ${await batchQty(batch.id)}`);
+  ck('the shelf holds it', (await shelfQty(ward.id, batch.id)) === 25,
     `ward ${await shelfQty(ward.id, batch.id)}`);
   ck('CONSERVATION: pharmacy + ward = the start',
     (await batchQty(batch.id)) + (await shelfQty(ward.id, batch.id)) === START,
@@ -214,11 +179,32 @@ async function main() {
   });
   ck('a received ledger row names the transfer', /ST-/.test(ledgerIn?.reason ?? ''), ledgerIn?.reason ?? '');
 
-  const twice = await api('PATCH', `/inventory/transfers/${id}/receive`, {});
-  ck('refuses to receive the same transfer twice', twice.status >= 400, `${twice.status}`);
-  ck('...and the shelf was not credited again', (await shelfQty(ward.id, batch.id)) === 25);
+  // A second transfer adds to the shelf rather than replacing it.
+  const again = await api('POST', '/inventory/transfers', {
+    drugBatchId: batch.id, fromLocation: 'Main Pharmacy', toWardId: ward.id,
+    toLocation: ward.name, quantityRequested: 10,
+  });
+  ck('a second transfer of the same batch is accepted', again.status < 400, `${again.status} ${again.msg}`);
+  ck('the shelf adds up rather than being replaced', (await shelfQty(ward.id, batch.id)) === 35,
+    `ward ${await shelfQty(ward.id, batch.id)}`);
+  ck('CONSERVATION still holds',
+    (await batchQty(batch.id)) + (await shelfQty(ward.id, batch.id)) === START,
+    `${await batchQty(batch.id)} + ${await shelfQty(ward.id, batch.id)} = ${START}`);
 
-  // ── 5. Spending what arrived ─────────────────────────────────────────────
+  // ── 3. The steps that used to exist are gone ─────────────────────────────
+  // Four clicks for one person moving a box. Nothing may answer on those paths
+  // any more — a lingering endpoint is how a half-done state comes back.
+  section('the old four-step board is gone');
+
+  for (const step of ['approve', 'reject', 'dispatch', 'receive', 'cancel']) {
+    const res = await api('PATCH', `/inventory/transfers/${id}/${step}`, {});
+    ck(`no ${step} endpoint answers any more`, res.status === 404,
+      `${res.status} — a surviving step endpoint could move stock a second time`);
+  }
+  ck('and the shelf is untouched by any of it', (await shelfQty(ward.id, batch.id)) === 35,
+    `ward ${await shelfQty(ward.id, batch.id)}`);
+
+  // ── 4. Spending what arrived ─────────────────────────────────────────────
   section('ward operations');
 
   if (patient?.id) {
@@ -226,7 +212,8 @@ async function main() {
       wardId: ward.id, drugBatchId: batch.id, patientId: patient.id, quantity: 5,
     });
     ck('dispense to a patient from the ward shelf', dispense.status < 400, `${dispense.status} ${dispense.msg}`);
-    ck('the shelf went down by the dose', (await shelfQty(ward.id, batch.id)) === 20,
+    // 25 + 10 transferred, less the 5-unit dose.
+    ck('the shelf went down by the dose', (await shelfQty(ward.id, batch.id)) === 30,
       `ward ${await shelfQty(ward.id, batch.id)}`);
   } else {
     ck('dispense skipped — no patient in this tenant', true);
@@ -256,7 +243,7 @@ async function main() {
   ck('every movement is on the ledger', kinds.has('received') && kinds.has('returned') && kinds.has('adjusted'),
     [...kinds].join(', '));
 
-  // ── 6. A ward is for medicines ───────────────────────────────────────────
+  // ── 5. A ward is for medicines ───────────────────────────────────────────
   section('destination rules');
 
   const item: any = await p.inventoryItem.findFirst({
@@ -281,7 +268,7 @@ async function main() {
     ck('consumable checks skipped — no inventory item in this tenant', true);
   }
 
-  // ── 7. It shows up where people look ─────────────────────────────────────
+  // ── 6. It shows up where people look ─────────────────────────────────────
   section('visibility');
 
   const list = await api('GET', '/inventory/transfers?limit=100');
