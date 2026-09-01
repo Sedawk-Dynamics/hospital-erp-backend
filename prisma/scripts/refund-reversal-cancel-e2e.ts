@@ -315,18 +315,67 @@ async function main() {
       paymentId: pay3Id,
       reason: 'And now reverse the whole thing',
     });
+    ck(
+      'reversing it as well is refused',
+      doubleUndo.status === 400,
+      `HTTP ${doubleUndo.status} ${doubleUndo.message} — money physically went back across the ` +
+        `counter, so the payment cannot also be treated as never having happened`,
+    );
     const afterBoth = await billState(b3);
     ck(
       'the bill never claims the patient is owed money',
       afterBoth.paid >= 0,
       `paid ${afterBoth.paid} — reversal removes the ₹2,000 from the collected sum while the ` +
-        `approved ₹500 refund is still subtracted, so the same ₹500 is taken off twice ` +
-        `(reversal returned HTTP ${doubleUndo.status})`,
+        `approved ₹500 refund is still subtracted, so the same ₹500 comes off twice`,
     );
     ck(
       'and never claims more is due than the bill is worth',
       afterBoth.due <= afterBoth.total,
       `due ${afterBoth.due} on a bill of ${afterBoth.total}`,
+    );
+    ck(
+      'the ₹1,500 still stands',
+      afterBoth.paid === 1500 && afterBoth.due === 500,
+      JSON.stringify(afterBoth),
+    );
+
+    // The same mistake the other way round: request the refund while the
+    // payment is live, reverse the payment, then try to approve the payout.
+    const b3b = await makeBill(1000);
+    await pay(b3b, 1000);
+    const pay3bId = (await p.payment.findFirst({
+      where: { billId: b3b, paymentType: 'regular' },
+      select: { id: true },
+    }))!.id;
+    const lateRefund = await api('admin', 'POST', '/billing/refunds', {
+      paymentId: pay3bId,
+      amount: 400,
+      reason: 'Requested before the reversal',
+    });
+    const revFirst = await api('admin', 'POST', '/billing/reversals', {
+      paymentId: pay3bId,
+      reason: 'Reversed while a refund was pending',
+    });
+    ck(
+      'a payment with only a REQUESTED refund can still be reversed',
+      revFirst.status === 200,
+      `HTTP ${revFirst.status} ${revFirst.message} — nothing has been paid out yet`,
+    );
+    const approveAfterReversal = await api(
+      'admin',
+      'PATCH',
+      `/billing/refunds/${lateRefund.data?.id}/approve`,
+    );
+    ck(
+      'but that refund can no longer be paid out',
+      approveAfterReversal.status === 400,
+      `HTTP ${approveAfterReversal.status} ${approveAfterReversal.message}`,
+    );
+    const afterLate = await billState(b3b);
+    ck(
+      'and the bill is simply unpaid, not negative',
+      afterLate.paid === 0 && afterLate.due === 1000,
+      JSON.stringify(afterLate),
     );
 
     // -- Cancellation ----------------------------------------------------------

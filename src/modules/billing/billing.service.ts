@@ -1654,6 +1654,15 @@ export async function approveRefund(tenantId: string, refundId: string, approved
     throw AppError.notFound('Refund not found or not in pending status');
   }
 
+  // The other order of the same mistake: a refund requested while the payment
+  // was live, then approved after it was reversed. Paying out against money the
+  // ledger no longer counts as collected drives the bill negative just the same.
+  if (refund.payment?.status === 'reversed') {
+    throw AppError.badRequest(
+      'The payment behind this refund has been reversed, so there is nothing to refund.',
+    );
+  }
+
   const refundAmount = toNumber(refund.amount);
   // Hand the money back the way it came in, so the drawer and the card/UPI
   // settlement each reconcile against their own line.
@@ -5407,6 +5416,26 @@ export async function reversePayment(
   }
   if (payment.status !== 'completed') {
     throw AppError.badRequest('Only completed payments can be reversed');
+  }
+
+  // A payment that has already been refunded in part cannot also be reversed.
+  //
+  // Reversal says the payment never happened, but a refund means money
+  // physically went back across the counter — both at once is incoherent, and
+  // the arithmetic showed it: reversal drops the payment out of the collected
+  // sum while the approved Refund is still subtracted, so the same money comes
+  // off twice. A ₹2,000 bill refunded ₹500 and then reversed read as ₹500
+  // COLLECTED and ₹2,500 due on a ₹2,000 bill.
+  const refunded = await prisma.refund.aggregate({
+    where: { paymentId: data.paymentId, status: { in: ['approved', 'processed'] as any } },
+    _sum: { amount: true },
+  });
+  const refundedAmount = toNumber(refunded._sum.amount);
+  if (refundedAmount > 0) {
+    throw AppError.badRequest(
+      `₹${refundedAmount} has already been refunded against this payment, so it cannot also be ` +
+        `reversed. Refund the remainder instead.`,
+    );
   }
 
   const result = await prisma.$transaction(async (tx) => {
