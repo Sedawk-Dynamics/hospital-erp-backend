@@ -38,6 +38,7 @@
     "db:check-controlled-register": "tsx prisma/scripts/controlled-register-e2e.ts",
     "db:check-stock-transfer": "tsx prisma/scripts/stock-transfer-e2e.ts",
     "db:check-ward-stock": "tsx prisma/scripts/ward-stock-e2e.ts",
+    "db:check-discount-approval": "tsx prisma/scripts/discount-approval-e2e.ts",
     "db:check-tpa-logs": "tsx prisma/scripts/tpa-logs-e2e.ts",
     "db:check-ward-transfer": "tsx prisma/scripts/ward-transfer-check.ts",
     "db:ndps-e2e": "tsx prisma/scripts/ndps-e2e.ts",
