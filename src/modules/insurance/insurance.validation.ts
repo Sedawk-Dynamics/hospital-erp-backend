@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { paginationSchema } from '../../shared/pagination';
+import { paginationSchema, booleanQueryParam } from '../../shared/pagination';
 
 // ============================================================
 // Param schemas
@@ -363,6 +363,53 @@ export const reportsQuerySchema = z.object({
 });
 
 // ============================================================
+// TPA Communication Logs
+// ============================================================
+
+/**
+ * A logged interaction hangs off a claim, a pre-authorization, or a TPA on its
+ * own (a general enquiry). One of the three is required — a log attached to
+ * nothing cannot be found again, and a row nobody can retrieve is not an audit
+ * trail.
+ */
+export const createTpaLogSchema = z.object({
+  body: z
+    .object({
+      claimId: z.string().uuid('Invalid claim ID').optional(),
+      preAuthId: z.string().uuid('Invalid pre-authorization ID').optional(),
+      tpaId: z.string().uuid('Invalid TPA ID').optional(),
+      communicationType: z.enum(['email', 'phone', 'portal', 'letter'], {
+        message: 'Communication type is required',
+      }),
+      direction: z.enum(['inbound', 'outbound'], { message: 'Direction is required' }),
+      subject: z.string().min(1, 'Subject is required').max(255),
+      content: z.string().max(5000).optional(),
+    })
+    .refine((b) => !!(b.claimId || b.preAuthId || b.tpaId), {
+      message: 'Attach the log to a claim, a pre-authorization or a TPA',
+      path: ['claimId'],
+    }),
+});
+
+/**
+ * Every filter the log list offers must be declared here: `validate()` replaces
+ * `req.query` with the parsed object, so an undeclared filter is dropped
+ * silently rather than rejected.
+ */
+export const getTpaLogsQuerySchema = z.object({
+  query: paginationSchema.extend({
+    claimId: z.string().uuid().optional(),
+    preAuthId: z.string().uuid().optional(),
+    tpaId: z.string().uuid().optional(),
+    direction: z.enum(['inbound', 'outbound']).optional(),
+    communicationType: z.enum(['email', 'phone', 'portal', 'letter']).optional(),
+    isSystem: booleanQueryParam,
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
+  }),
+});
+
+// ============================================================
 // Inferred types
 // ============================================================
 
@@ -386,3 +433,4 @@ export type ApprovePreAuthInput = z.infer<typeof approvePreAuthSchema>['body'];
 export type RejectPreAuthInput = z.infer<typeof rejectPreAuthSchema>['body'];
 export type HoldPreAuthInput = z.infer<typeof holdPreAuthSchema>['body'];
 export type SplitBillInput = z.infer<typeof splitBillSchema>['body'];
+export type CreateTpaLogInput = z.infer<typeof createTpaLogSchema>['body'];
