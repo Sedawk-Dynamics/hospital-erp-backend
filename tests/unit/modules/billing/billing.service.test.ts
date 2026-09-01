@@ -1658,6 +1658,49 @@ describe('BillingService', () => {
         data: { amountPaid: 400, balanceDue: 600, status: 'partially_paid' },
       });
     });
+
+    it('refuses to reverse a payment that has already been refunded', async () => {
+      // Both at once takes the same money off twice: reversal drops the payment
+      // out of the collected sum while the approved Refund is still subtracted.
+      // A ₹2,000 bill refunded ₹500 then reversed read as MINUS ₹500 collected.
+      vi.mocked((prisma.payment as any).findFirst).mockResolvedValue({
+        id: 'payment-1',
+        amount: 2000,
+        status: 'completed',
+        notes: null,
+        bill: { id: 'bill-1', billNumber: 'BILL-1', amountPaid: 1500, totalAmount: 2000 },
+      } as any);
+      vi.mocked((prisma.refund as any).aggregate).mockResolvedValue({
+        _sum: { amount: 500 },
+      } as any);
+
+      await expect(
+        reversePayment(TENANT_ID, USER_ID, { paymentId: 'payment-1', reason: 'Undo it all' }),
+      ).rejects.toThrow('already been refunded');
+
+      expect(prisma.payment.update).not.toHaveBeenCalled();
+    });
+
+    it('still allows reversal when a refund was only requested', async () => {
+      // Nothing has been paid out yet, so there is no second movement of money
+      // to collide with — only the later approval is refused.
+      vi.mocked((prisma.payment as any).findFirst).mockResolvedValue({
+        id: 'payment-1',
+        amount: 600,
+        status: 'completed',
+        notes: null,
+        bill: { id: 'bill-1', billNumber: 'BILL-1', amountPaid: 600, totalAmount: 600 },
+      } as any);
+      vi.mocked((prisma.refund as any).aggregate).mockResolvedValue({ _sum: { amount: 0 } } as any);
+      vi.mocked(prisma.payment.update).mockResolvedValue({} as any);
+      vi.mocked(prisma.bill.findUnique).mockResolvedValue({ totalAmount: 600, status: 'paid' } as any);
+      vi.mocked(prisma.payment.aggregate).mockResolvedValue({ _sum: { amount: 0 } } as any);
+      vi.mocked(prisma.bill.update).mockResolvedValue({} as any);
+
+      await expect(
+        reversePayment(TENANT_ID, USER_ID, { paymentId: 'payment-1', reason: 'Keyed twice' }),
+      ).resolves.toMatchObject({ reversed: true });
+    });
   });
 
   // ═══════════════════════════════════════════
