@@ -45,6 +45,7 @@ import {
   toDateKey,
   toTimeKey,
 } from '../../shared/ot-schedule';
+import { fullName } from '../../shared/person-name';
 
 // ============================================================
 // Tickets
@@ -1360,7 +1361,7 @@ export async function getOTAnalytics(tenantId: string, query: OtAnalyticsQuery) 
   for (const r of requests) {
     const sid = r.surgeonId ?? r.doctorId;
     const sUser = r.surgeon?.user ?? r.doctor?.user;
-    const sName = sUser ? `Dr. ${sUser.firstName} ${sUser.lastName}` : 'Unassigned';
+    const sName = sUser ? `Dr. ${fullName(sUser)}` : 'Unassigned';
     let row = surgeonAgg.get(sid);
     if (!row) {
       row = {
@@ -1466,9 +1467,9 @@ export async function getOTAnalytics(tenantId: string, query: OtAnalyticsQuery) 
       surgeryType: r.surgeryType,
       speciality: r.speciality,
       surgeonName: r.surgeon?.user
-        ? `Dr. ${r.surgeon.user.firstName} ${r.surgeon.user.lastName}`
+        ? `Dr. ${fullName(r.surgeon.user)}`
         : r.doctor?.user
-          ? `Dr. ${r.doctor.user.firstName} ${r.doctor.user.lastName}`
+          ? `Dr. ${fullName(r.doctor.user)}`
           : '—',
       otName: r.ot?.name ?? null,
       status: r.status,

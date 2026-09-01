@@ -6,6 +6,7 @@ import { formatDateIST } from '../../shared/date.utils';
 import { sendDischargeSummaryPublishedEmail } from '../../services/email.service';
 import type { DischargeDocument, DischargeVitalRow } from './discharge-summary-pdf';
 import { getHospitalBranding } from '../hospital-branding/hospital-branding.service';
+import { fullName } from '../../shared/person-name';
 
 interface GetMrdQuery {
   page?: number;
@@ -289,10 +290,10 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
     ? Math.floor((Date.now() - new Date(p.dateOfBirth).getTime()) / (365.25 * 24 * 60 * 60 * 1000))
     : null;
   const doctorFullName = admission.doctor?.user
-    ? `Dr. ${admission.doctor.user.firstName} ${admission.doctor.user.lastName}`
+    ? `Dr. ${fullName(admission.doctor.user)}`
     : 'Attending Physician';
   const headerLines = [
-    `Patient: ${p.firstName} ${p.lastName} (MRN: ${p.mrn})`,
+    `Patient: ${fullName(p)} (MRN: ${p.mrn})`,
     `${age !== null ? `Age: ${age}` : ''}${p.gender ? ` | Gender: ${p.gender}` : ''}${p.bloodGroup ? ` | Blood Group: ${p.bloodGroup}` : ''}`.trim(),
     p.phone ? `Phone: ${p.phone}` : '',
     `Admitted: ${admission.admissionDate ? new Date(admission.admissionDate).toLocaleDateString('en-IN') : '—'}`,

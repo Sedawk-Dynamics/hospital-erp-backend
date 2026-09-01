@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { SubscriptionsService } from './subscriptions.service';
 import { sendResponse } from '../../shared/apiResponse';
 import { AuthenticatedRequest } from '../../shared/types';
+import { fullName } from '../../shared/person-name';
 
 export class SubscriptionsController {
   private service = new SubscriptionsService();
@@ -139,7 +140,7 @@ export class SubscriptionsController {
       sendResponse({
         res,
         statusCode: 201,
-        message: `Plans (${planNames}) offered to ${result.user.firstName} ${result.user.lastName}`,
+        message: `Plans (${planNames}) offered to ${fullName(result.user)}`,
         data: result,
       });
     } catch (error) { next(error); }

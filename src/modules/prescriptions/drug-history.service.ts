@@ -1,5 +1,6 @@
 import { prisma } from '../../config/database';
 import { AppError } from '../../shared/appError';
+import { fullName } from '../../shared/person-name';
 
 /**
  * Parse a free-text duration like "5 days", "2 weeks", "1 month" → milliseconds.
@@ -115,7 +116,7 @@ export async function buildDrugHistory({ patientIds, tenantId, limit = 100 }: Dr
   const seenDrugs = new Set<string>();
 
   for (const rx of prescriptions) {
-    const doctorName = rx.doctor?.user ? `Dr. ${rx.doctor.user.firstName} ${rx.doctor.user.lastName}` : 'Doctor';
+    const doctorName = rx.doctor?.user ? `Dr. ${fullName(rx.doctor.user)}` : 'Doctor';
     for (const item of rx.prescriptionItems) {
       const entry = {
         itemId: item.id,

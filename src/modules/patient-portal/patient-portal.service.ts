@@ -11,6 +11,7 @@ import { formatDateTimeIST } from '../../shared/date.utils';
 import { commissionService } from '../commission/commission.service';
 import { settleGatewayPayment } from '../billing/billing.service';
 import { getAvailableSlots } from '../appointments/appointments.service';
+import { fullName } from '../../shared/person-name';
 
 // ────────────────────────────────────────────────────────────
 // MRN Generation (mirrors patients.service.ts)
@@ -1572,7 +1573,7 @@ export async function getPatientAdmissionDetail(userId: string, email: string, a
     status: a.status,
     hospital: a.tenant?.name ?? null,
     patient: {
-      name: `${a.patient.firstName} ${a.patient.lastName}`.trim(),
+      name: fullName(a.patient),
       mrn: a.patient.mrn,
       dateOfBirth: a.patient.dateOfBirth,
       gender: a.patient.gender,

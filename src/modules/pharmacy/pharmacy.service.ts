@@ -61,6 +61,7 @@ import type {
   CommitInwardInput,
   StockTakeReconcileInput,
 } from './pharmacy.validation';
+import { fullName } from '../../shared/person-name';
 
 // ============================================================
 // Role guard — master/stock management is pharmacy_admin only
@@ -6770,7 +6771,7 @@ export async function getStockLedger(tenantId: string, query: GetStockLedgerQuer
       batchNumber: d.drugBatch.batchNumber,
       quantityIn: 0,
       quantityOut: d.quantityDispensed,
-      party: d.patient ? `${d.patient.firstName} ${d.patient.lastName} (${d.patient.mrn})` : null,
+      party: d.patient ? `${fullName(d.patient)} (${d.patient.mrn})` : null,
       referenceId: d.id,
     })),
     ...returns.map((r): StockLedgerEntry => ({
@@ -7113,7 +7114,7 @@ export async function getRecallAffectedPatients(tenantId: string, batchId: strin
     const key = p.id;
     const existing = grouped.get(key);
     const doctorName = r.prescription?.doctor?.user
-      ? `${r.prescription.doctor.user.firstName} ${r.prescription.doctor.user.lastName}`.trim()
+      ? fullName(r.prescription.doctor.user)
       : null;
     const dispense = {
       dispensedAt: r.dispensedAt,

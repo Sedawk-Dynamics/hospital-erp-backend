@@ -473,7 +473,11 @@ export async function getWorklist(tenantId: string, query: WorklistQuery) {
       urgency: r.urgency,
       status: r.status,
     },
-    referringPhysician: r.orderer ? `${r.orderer.firstName}^${r.orderer.lastName}` : null,
+    referringPhysician: r.orderer
+      ? // DICOM PersonName is caret-separated, so the shared name helper's space
+        // is wrong here — a missing surname just leaves the component empty.
+        `${r.orderer.firstName}^${r.orderer.lastName ?? ''}`
+      : null,
   }));
 }
 

@@ -12,6 +12,7 @@ import type {
   UpdateRoleInput,
   AssignPermissionsInput,
 } from './users.validation';
+import { fullName } from '../../shared/person-name';
 
 export const usersService = {
   // ─── USER CRUD ───────────────────────────────────────────────────────
@@ -429,7 +430,7 @@ export const usersService = {
 
     logger.info({ userId, email: existing.email }, 'User hard-deleted (global)');
 
-    return { message: `User "${existing.firstName} ${existing.lastName}" has been permanently deleted` };
+    return { message: `User "${fullName(existing)}" has been permanently deleted` };
   },
 
   /** Toggle active status for a user across any tenant (super_admin only) */

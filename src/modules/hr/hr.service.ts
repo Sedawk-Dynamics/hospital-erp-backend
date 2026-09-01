@@ -29,6 +29,7 @@ import type {
   GetPayrollListQuery,
   HrReportsQuery,
 } from './hr.validation';
+import { fullName } from '../../shared/person-name';
 
 // ============================================================
 // Staff Profiles
@@ -963,7 +964,7 @@ export async function getAttendanceSummary(tenantId: string, query: GetAttendanc
     if (!staffMap.has(key)) {
       staffMap.set(key, {
         staffId: key,
-        staffName: `${record.staff.user.firstName} ${record.staff.user.lastName}`,
+        staffName: fullName(record.staff.user),
         present: 0,
         absent: 0,
         halfDay: 0,

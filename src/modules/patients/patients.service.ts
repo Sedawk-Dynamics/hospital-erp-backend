@@ -21,6 +21,7 @@ import type {
   AddDocumentInput,
   AddFamilyHistoryInput,
 } from './patients.validation';
+import { fullName } from '../../shared/person-name';
 
 /**
  * Generate a unique MRN (Medical Record Number) for a tenant.
@@ -389,7 +390,7 @@ export async function create(tenantId: string, data: CreatePatientInput) {
         // picks — use this patient, or register anyway — instead of reading an
         // MRN out of a toast and going to search for it.
         throw AppError.conflict(
-          `${data.firstName} ${data.lastName} is already registered at this hospital as ${twin.mrn}.`,
+          `${fullName(data)} is already registered at this hospital as ${twin.mrn}.`,
           'DUPLICATE_PATIENT',
           {
             patient: {
