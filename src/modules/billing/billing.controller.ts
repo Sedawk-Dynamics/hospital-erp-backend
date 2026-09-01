@@ -945,7 +945,12 @@ export async function applyDiscount(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const discount = await billingService.applyDiscount(tenantId, req.params.id as string, req.body);
+    const discount = await billingService.applyDiscount(
+      tenantId,
+      req.params.id as string,
+      req.body,
+      req.user!.userId,
+    );
     sendResponse({
       res,
       statusCode: 201,

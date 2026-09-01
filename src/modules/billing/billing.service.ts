@@ -1754,7 +1754,12 @@ export async function approveRefund(tenantId: string, refundId: string, approved
 
 // --- Discounts ---
 
-export async function applyDiscount(tenantId: string, billId: string, data: ApplyDiscountInput) {
+export async function applyDiscount(
+  tenantId: string,
+  billId: string,
+  data: ApplyDiscountInput,
+  userId?: string,
+) {
   const bill = await prisma.bill.findFirst({
     where: { id: billId, tenantId },
   });
@@ -1781,7 +1786,14 @@ export async function applyDiscount(tenantId: string, billId: string, data: Appl
     }
   }
 
-  // Record the discount using prisma.discount
+  // The same gate the counter's own concession field goes through. Without it
+  // this endpoint was a second door into the same table: it took `billing:update`
+  // rather than `billing:approve`, wrote the row at its default status of
+  // `approved`, and the money came off at once however large the concession —
+  // which makes the limit on the other path a matter of which endpoint you call.
+  const approvalPolicy = await getDiscountApprovalSettings(tenantId);
+  const needsApproval = discountNeedsApproval(approvalPolicy, discountValue, subtotal);
+
   const discount = await prisma.discount.create({
     data: {
       tenantId,
@@ -1789,7 +1801,10 @@ export async function applyDiscount(tenantId: string, billId: string, data: Appl
       discountType: data.discountType as any,
       value: discountValue,
       reason: data.reason,
-      approvedBy: data.approvedBy,
+      status: needsApproval ? 'pending' : 'approved',
+      requestedBy: userId,
+      approvedBy: needsApproval ? null : userId,
+      decidedAt: needsApproval ? null : new Date(),
     },
   });
 
@@ -1801,8 +1816,13 @@ export async function applyDiscount(tenantId: string, billId: string, data: Appl
   // three places that used to hold this arithmetic can no longer drift apart.
   await recalculateBillTotals(billId);
 
-  logger.info({ tenantId, billId, discountValue }, 'Discount applied');
-  return discount;
+  logger.info(
+    { tenantId, billId, discountValue, needsApproval },
+    needsApproval ? 'Discount awaiting approval' : 'Discount applied',
+  );
+  // The caller needs to know whether the money actually came off, so it can say
+  // "sent for approval" rather than implying it is done.
+  return Object.assign(discount, { discountPendingApproval: needsApproval });
 }
 
 // --- Patient Charges (auto-pull from clinical sources) ---

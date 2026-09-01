@@ -166,7 +166,7 @@ export const applyDiscountSchema = z.object({
     discountType: z.enum(['percentage', 'fixed']),
     discountValue: z.number().positive('Discount value must be positive'),
     reason: z.string().min(1, 'Discount reason is required').max(500),
-    approvedBy: z.string().uuid('Invalid approver ID').optional(),
+    // No `approvedBy` — see setBillDiscountSchema. Who acted comes from the token.
   }),
   params: z.object({
     id: z.string().uuid('Invalid bill ID'),
