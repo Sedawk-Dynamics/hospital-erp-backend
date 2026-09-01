@@ -24,6 +24,7 @@ import type {
   RejectPreAuthInput,
   HoldPreAuthInput,
   SplitBillInput,
+  CreateTpaLogInput,
 } from './insurance.validation';
 
 // ============================================================
@@ -2120,4 +2121,121 @@ export async function getOutstandingReport(tenantId: string, filters: ReportFilt
       approvalDate: c.approvalDate,
     })),
   };
+}
+
+// ============================================================
+// TPA Communication Logs
+// ============================================================
+
+/** What the list and the claim/pre-auth panels need to render one entry. */
+const tpaLogInclude = {
+  claim: { select: { id: true, claimNumber: true, status: true } },
+  preAuth: { select: { id: true, procedureDescription: true, status: true } },
+  tpa: { select: { id: true, name: true } },
+  communicator: { select: { id: true, firstName: true, lastName: true } },
+} satisfies Prisma.TpaCommunicationLogInclude;
+
+/**
+ * Record an interaction with a TPA or insurer.
+ *
+ * Whichever of claim / pre-auth / TPA the caller names is checked against the
+ * caller's own tenant before it is stored: these ids arrive from the client,
+ * and an unchecked one would file this hospital's log against another's claim.
+ *
+ * When the caller names a claim or pre-auth but no TPA, the TPA is taken from
+ * the policy behind it, so a log lands under the right provider without the
+ * user having to restate it. A policy that names no TPA leaves it null — the
+ * hospital is dealing with the insurer directly.
+ */
+export async function createTpaLog(tenantId: string, userId: string, data: CreateTpaLogInput) {
+  let resolvedTpaId: string | null = data.tpaId ?? null;
+
+  if (data.tpaId) {
+    const tpa = await prisma.tpaProvider.findFirst({
+      where: { id: data.tpaId, tenantId },
+      select: { id: true },
+    });
+    if (!tpa) throw AppError.notFound('TPA provider not found');
+  }
+
+  if (data.claimId) {
+    const claim = await prisma.insuranceClaim.findFirst({
+      where: { id: data.claimId, tenantId },
+      select: { id: true, policy: { select: { tpaId: true } } },
+    });
+    if (!claim) throw AppError.notFound('Insurance claim not found');
+    resolvedTpaId = resolvedTpaId ?? claim.policy?.tpaId ?? null;
+  }
+
+  if (data.preAuthId) {
+    const preAuth = await prisma.preAuthorizationRequest.findFirst({
+      where: { id: data.preAuthId, tenantId },
+      select: { id: true, policy: { select: { tpaId: true } } },
+    });
+    if (!preAuth) throw AppError.notFound('Pre-authorization request not found');
+    resolvedTpaId = resolvedTpaId ?? preAuth.policy?.tpaId ?? null;
+  }
+
+  const log = await prisma.tpaCommunicationLog.create({
+    data: {
+      tenantId,
+      claimId: data.claimId ?? null,
+      preAuthId: data.preAuthId ?? null,
+      tpaId: resolvedTpaId,
+      communicationType: data.communicationType,
+      direction: data.direction,
+      subject: data.subject,
+      content: data.content ?? null,
+      isSystem: false,
+      communicatedBy: userId,
+    },
+    include: tpaLogInclude,
+  });
+
+  logger.info(
+    { tenantId, logId: log.id, claimId: data.claimId, preAuthId: data.preAuthId },
+    'TPA communication logged',
+  );
+  return log;
+}
+
+export async function getTpaLogs(tenantId: string, query: any) {
+  const { skip, take, page, limit } = getPaginationParams(query);
+
+  const where: any = { tenantId };
+
+  if (query.claimId) where.claimId = query.claimId;
+  if (query.preAuthId) where.preAuthId = query.preAuthId;
+  if (query.tpaId) where.tpaId = query.tpaId;
+  if (query.direction) where.direction = query.direction;
+  if (query.communicationType) where.communicationType = query.communicationType;
+  if (query.isSystem !== undefined) where.isSystem = query.isSystem;
+
+  if (query.fromDate) {
+    where.createdAt = { ...where.createdAt, gte: new Date(query.fromDate) };
+  }
+  if (query.toDate) {
+    where.createdAt = { ...where.createdAt, lte: new Date(query.toDate) };
+  }
+
+  if (query.search) {
+    where.OR = [
+      { subject: { contains: query.search, mode: 'insensitive' } },
+      { content: { contains: query.search, mode: 'insensitive' } },
+      { claim: { claimNumber: { contains: query.search, mode: 'insensitive' } } },
+    ];
+  }
+
+  const [logs, total] = await Promise.all([
+    prisma.tpaCommunicationLog.findMany({
+      where,
+      skip,
+      take,
+      include: tpaLogInclude,
+      orderBy: { createdAt: 'desc' },
+    }),
+    prisma.tpaCommunicationLog.count({ where }),
+  ]);
+
+  return { logs, total, page, limit };
 }
