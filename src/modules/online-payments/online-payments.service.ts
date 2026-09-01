@@ -128,15 +128,32 @@ async function verifyOnlinePayment(data: VerifyOnlinePaymentInput) {
 }
 
 async function handleWebhook(rawBody: string, signature: string) {
-  if (env.RAZORPAY_WEBHOOK_SECRET) {
-    const expectedSig = crypto
-      .createHmac('sha256', env.RAZORPAY_WEBHOOK_SECRET)
-      .update(rawBody)
-      .digest('hex');
+  // This route carries no authentication by design — Razorpay calls it from
+  // the internet — so the signature is the only thing between a stranger and
+  // marking bills paid. Verification used to be skipped entirely when no
+  // secret was configured, and RAZORPAY_WEBHOOK_SECRET defaults to an empty
+  // string, so a deployment that simply forgot it accepted anything posted to
+  // this path: `payment.captured` for any order id would settle the bill and
+  // start a payout to the hospital's account.
+  //
+  // Failing closed is the only safe default. A hospital with the secret set
+  // sees no change; one without it now gets a refusal that names the variable
+  // instead of silently trusting the caller.
+  if (!env.RAZORPAY_WEBHOOK_SECRET) {
+    logger.error(
+      'Razorpay webhook rejected: RAZORPAY_WEBHOOK_SECRET is not configured, so the ' +
+        'signature cannot be checked and the request cannot be trusted.',
+    );
+    throw AppError.unauthorized('Webhook signature cannot be verified');
+  }
 
-    if (expectedSig !== signature) {
-      throw AppError.unauthorized('Invalid webhook signature');
-    }
+  const expectedSig = crypto
+    .createHmac('sha256', env.RAZORPAY_WEBHOOK_SECRET)
+    .update(rawBody)
+    .digest('hex');
+
+  if (expectedSig !== signature) {
+    throw AppError.unauthorized('Invalid webhook signature');
   }
 
   const payload = JSON.parse(rawBody);
