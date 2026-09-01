@@ -2,6 +2,7 @@ import { prisma } from '../config/database';
 import { logger } from '../config/logger';
 import { formatDateIST, formatTimeIST } from '../shared/date.utils';
 import { sendAppointmentReminder } from '../services/email.service';
+import { fullName } from '../shared/person-name';
 
 const TARGET_STATUSES = ['booked', 'confirmed'] as const;
 
@@ -61,10 +62,12 @@ export async function runAppointmentReminderJob(): Promise<{ sent: number; skipp
       continue;
     }
 
-    const patientName = `${apt.patient.firstName} ${apt.patient.lastName}`.trim();
-    const doctorName = apt.doctor.user
-      ? `${apt.doctor.user.firstName} ${apt.doctor.user.lastName}`.trim()
-      : 'your doctor';
+    // These go out to the patient by email and SMS, so a missing surname must
+    // not reach them as "Walkin null". `.trim()` does not help — the "null"
+    // lands in the middle. Only `fullName` imported here: the local
+    // `doctorName` below would otherwise shadow the helper of the same name.
+    const patientName = fullName(apt.patient);
+    const doctorName = fullName(apt.doctor.user, 'your doctor');
     const dateStr = formatDateIST(apt.appointmentDate);
     const timeStr = formatTimeIST(apt.startTime);
     const hospitalName = apt.tenant.name ?? 'your hospital';

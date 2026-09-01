@@ -3,6 +3,7 @@ import { logger } from '../config/logger';
 import { formatDateIST } from '../shared/date.utils';
 import { sweepExpiredPoliciesAndPreAuths } from '../modules/insurance/insurance.service';
 import { usersWithRoles } from '../shared/notify';
+import { fullName } from '../shared/person-name';
 
 // Look up users to notify when policy/pre-auth alerts have no obvious owner.
 // Tenant admins + insurance_staff get pinged so the deadline isn't missed.
@@ -55,7 +56,7 @@ export async function runInsuranceExpiryJob() {
             tenantId: c.tenantId,
             userId,
             title: `Insurance claim expiring in ${days} day${days > 1 ? 's' : ''}`,
-            message: `Claim ${c.claimNumber ?? c.id} for ${c.patient.firstName} ${c.patient.lastName} is due by ${c.expiryDate ? formatDateIST(c.expiryDate) : 'soon'}. Follow up with the TPA.`,
+            message: `Claim ${c.claimNumber ?? c.id} for ${fullName(c.patient)} is due by ${c.expiryDate ? formatDateIST(c.expiryDate) : 'soon'}. Follow up with the TPA.`,
             notificationType: 'alert',
             channel: 'in_app',
             referenceType: 'insurance_claim',
@@ -79,7 +80,7 @@ export async function runInsuranceExpiryJob() {
               tenantId: p.tenantId,
               userId,
               title: `Policy expiring in ${days} day${days > 1 ? 's' : ''}`,
-              message: `Policy ${p.policyNumber} (${p.patient.firstName} ${p.patient.lastName}) expires on ${formatDateIST(p.validTo)}.`,
+              message: `Policy ${p.policyNumber} (${fullName(p.patient)}) expires on ${formatDateIST(p.validTo)}.`,
               notificationType: 'alert',
               channel: 'in_app',
               referenceType: 'insurance_policy',
@@ -104,7 +105,7 @@ export async function runInsuranceExpiryJob() {
             tenantId: pa.tenantId,
             userId,
             title: `Pre-authorization expiring in ${days} day${days > 1 ? 's' : ''}`,
-            message: `Pre-auth ${pa.approvalNumber ?? pa.id} for ${pa.patient.firstName} ${pa.patient.lastName} is valid until ${pa.validTo ? formatDateIST(pa.validTo) : 'soon'}.`,
+            message: `Pre-auth ${pa.approvalNumber ?? pa.id} for ${fullName(pa.patient)} is valid until ${pa.validTo ? formatDateIST(pa.validTo) : 'soon'}.`,
             notificationType: 'alert',
             channel: 'in_app',
             referenceType: 'pre_authorization_request',
