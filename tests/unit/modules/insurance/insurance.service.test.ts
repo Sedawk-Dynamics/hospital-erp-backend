@@ -412,10 +412,11 @@ describe('Insurance Service', () => {
       vi.mocked(prisma.insurancePolicy.findFirst).mockResolvedValue(mockPolicy as any);
       vi.mocked(prisma.patient.findFirst).mockResolvedValue(mockPatient as any);
       vi.mocked(prisma.bill.findFirst).mockResolvedValue(mockBill as any);
-      // For generateClaimNumber
-      vi.mocked(prisma.insuranceClaim.findFirst)
-        .mockResolvedValueOnce(null)  // latest claim with prefix
-        .mockResolvedValueOnce(null); // uniqueness check
+      // generateClaimNumber makes ONE lookup — the day's highest number. It used
+      // to make a second, re-checking that number for the tenant, which could
+      // never fire; queueing a value for a call that no longer happens leaves it
+      // in the mock's queue for whatever test runs next.
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValueOnce(null);
       vi.mocked(prisma.insuranceClaim.create).mockResolvedValue(mockClaim as any);
 
       const result = await createClaim(TENANT_ID, USER_ID, claimInput);

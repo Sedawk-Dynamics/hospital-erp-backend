@@ -2,6 +2,7 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
+import { getISTDateStr } from '../../shared/date.utils';
 import { Prisma } from '@prisma/client';
 import type {
   CreateInsurerInput,
@@ -48,41 +49,36 @@ function decNum(value: Prisma.Decimal | number | string | null | undefined): num
 // Helpers
 // ============================================================
 
-async function generateClaimNumber(tenantId: string): Promise<string> {
-  const today = new Date();
-  const dateStr =
-    today.getFullYear().toString() +
-    (today.getMonth() + 1).toString().padStart(2, '0') +
-    today.getDate().toString().padStart(2, '0');
+async function generateClaimNumber(_tenantId: string): Promise<string> {
+  // The day is the hospital's own calendar day. `new Date().getFullYear()` and
+  // friends read the HOST's timezone, so a server running in UTC stamped
+  // yesterday's date on every claim raised before 05:30 IST.
+  const prefix = `CLM-${getISTDateStr()}-`;
 
-  const prefix = `CLM-${dateStr}-`;
-
+  // Read the day's highest number ACROSS ALL TENANTS, because that is the scope
+  // `InsuranceClaim.claimNumber`'s unique index has. Reading it per tenant
+  // handed a second hospital a number a first already held and the insert
+  // failed. Same bug and same fix as the receipt number and
+  // `shared/bill-number.ts`; reproduced with two real tenants by
+  // `npm run db:check-claim-lifecycle`.
+  //
+  // Ordering by the string is numeric ordering because the sequence is padded
+  // to a fixed width.
   const latest = await prisma.insuranceClaim.findFirst({
-    where: {
-      tenantId,
-      claimNumber: { startsWith: prefix },
-    },
+    where: { claimNumber: { startsWith: prefix } },
     orderBy: { claimNumber: 'desc' },
     select: { claimNumber: true },
   });
 
-  let nextNumber = 1;
-  if (latest?.claimNumber) {
-    const lastNumber = parseInt(latest.claimNumber.split('-').pop() || '0', 10);
-    nextNumber = lastNumber + 1;
-  }
+  const lastNumber = latest?.claimNumber
+    ? parseInt(latest.claimNumber.split('-').pop() || '0', 10) || 0
+    : 0;
 
-  const claimNumber = `${prefix}${nextNumber.toString().padStart(4, '0')}`;
-
-  const existing = await prisma.insuranceClaim.findFirst({
-    where: { tenantId, claimNumber },
-  });
-
-  if (existing) {
-    return generateClaimNumber(tenantId);
-  }
-
-  return claimNumber;
+  // No re-check against the number just computed: it came from the maximum, so
+  // it cannot already exist. The check that used to sit here was scoped to one
+  // tenant, could therefore never fire, and would have recursed for ever if it
+  // had — it recomputed the same number from the same rows.
+  return `${prefix}${String(lastNumber + 1).padStart(4, '0')}`;
 }
 
 async function generatePreAuthRequestNumber(tenantId: string): Promise<string> {
