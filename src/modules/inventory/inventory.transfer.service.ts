@@ -4,6 +4,7 @@ import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
 import { safeInventoryAudit } from './inventory.audit';
+import { getISTDateStr } from '../../shared/date.utils';
 
 // ============================================================
 // Stock Transfer — moves stock between two departments, or out of the
@@ -30,28 +31,29 @@ import { safeInventoryAudit } from './inventory.audit';
 // To undo a transfer, transfer it back — there is no half-done state to cancel.
 // ============================================================
 
-async function generateTransferNumber(tenantId: string): Promise<string> {
-  const today = new Date();
-  const dateStr =
-    today.getFullYear().toString() +
-    String(today.getMonth() + 1).padStart(2, '0') +
-    String(today.getDate()).padStart(2, '0');
-  const prefix = `ST-${dateStr}-`;
+async function generateTransferNumber(_tenantId: string): Promise<string> {
+  // The hospital's own calendar day. `new Date().getFullYear()` and friends read
+  // the HOST's timezone, so a server in UTC stamped yesterday's date on every
+  // transfer made before 05:30 IST.
+  const prefix = `ST-${getISTDateStr()}-`;
 
+  // Read the day's highest number ACROSS ALL TENANTS, because that is the scope
+  // `StockTransfer.transferNumber`'s unique index has. The old code took the
+  // maximum within one tenant and then re-checked it GLOBALLY — so a second
+  // hospital would compute a number the first already held, find the clash, and
+  // recurse with exactly the same inputs. Not a failed transfer: a hung request.
+  //
+  // Fourth instance of this bug, after bill, receipt and claim numbers; the
+  // reference implementation is `shared/bill-number.ts`.
   const latest = await prisma.stockTransfer.findFirst({
-    where: { tenantId, transferNumber: { startsWith: prefix } },
+    where: { transferNumber: { startsWith: prefix } },
     orderBy: { transferNumber: 'desc' },
     select: { transferNumber: true },
   });
-  let nextNumber = 1;
-  if (latest?.transferNumber) {
-    const lastNumber = parseInt(latest.transferNumber.split('-').pop() || '0', 10);
-    nextNumber = lastNumber + 1;
-  }
-  const transferNumber = `${prefix}${String(nextNumber).padStart(4, '0')}`;
-  const dupe = await prisma.stockTransfer.findFirst({ where: { transferNumber } });
-  if (dupe) return generateTransferNumber(tenantId);
-  return transferNumber;
+  const lastNumber = latest?.transferNumber
+    ? parseInt(latest.transferNumber.split('-').pop() || '0', 10) || 0
+    : 0;
+  return `${prefix}${String(lastNumber + 1).padStart(4, '0')}`;
 }
 
 export interface CreateStockTransferInput {
