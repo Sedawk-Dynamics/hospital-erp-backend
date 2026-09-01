@@ -1050,7 +1050,7 @@ export async function createBill(tenantId: string, userId: string, data: CreateB
     action: 'create',
     entityType: 'bill',
     entityId: bill.id,
-    description: `Bill ${billNumber} raised for ${patient.firstName} ${patient.lastName} (${patient.mrn ?? 'no MRN'})`,
+    description: `Bill ${billNumber} raised for ${fullName(patient)} (${patient.mrn ?? 'no MRN'})`,
     newValues: { billNumber, patientId: data.patientId, status: 'draft' },
   });
   return bill;
@@ -2050,7 +2050,7 @@ async function getOtCharges(
   return requests.map((r) => {
     const amount = toNumber(r.billingAmount ?? 0);
     const sUser = r.surgeon?.user ?? r.doctor?.user;
-    const surgeon = sUser ? `Dr. ${sUser.firstName} ${sUser.lastName}` : null;
+    const surgeon = sUser ? `Dr. ${fullName(sUser)}` : null;
     const billed = billedIndex.get(`ot_request:${r.id}`);
     return {
       source: 'ot' as const,
@@ -2112,7 +2112,7 @@ async function getConsultationCharges(
     .map((v) => {
       const fee = toNumber(v.doctor?.consultationFee ?? 0);
       const doctorName = v.doctor?.user
-        ? `Dr. ${v.doctor.user.firstName} ${v.doctor.user.lastName}`
+        ? `Dr. ${fullName(v.doctor.user)}`
         : 'Doctor';
       const billed = billedIndex.get(`visit:${v.id}`);
       return {
@@ -2730,7 +2730,7 @@ export async function getPendingOrders(
   const search = query.search?.trim().toLowerCase();
   const filtered = search
     ? rows.filter((r) => {
-        const name = r.patient ? `${r.patient.firstName} ${r.patient.lastName}`.toLowerCase() : '';
+        const name = fullName(r.patient).toLowerCase();
         return (
           name.includes(search) ||
           (r.patient?.mrn ?? '').toLowerCase().includes(search) ||
@@ -2793,7 +2793,7 @@ export async function billOtRequest(
   });
 
   const sUser = req.surgeon?.user ?? req.doctor?.user;
-  const surgeon = sUser ? `Dr. ${sUser.firstName} ${sUser.lastName}` : null;
+  const surgeon = sUser ? `Dr. ${fullName(sUser)}` : null;
   const otTaxRates = await buildServiceTaxRates(tenantId);
   const otCharge = {
     referenceType: 'ot_request',
@@ -4793,7 +4793,7 @@ export async function getAdmissionActivity(tenantId: string, admissionId: string
   const clinicians = clinicianIds.length
     ? await prisma.user.findMany({ where: { id: { in: clinicianIds } }, select: { id: true, firstName: true, lastName: true } })
     : [];
-  const clinicianName = new Map(clinicians.map((u) => [u.id, `${u.firstName} ${u.lastName}`.trim()]));
+  const clinicianName = new Map(clinicians.map((u) => [u.id, fullName(u)]));
   for (const it of items) {
     if (it.referenceType === 'doctor_visit') {
       const who = clinicianName.get(it.referenceId?.split(':')[0] ?? '');
@@ -5233,7 +5233,7 @@ export async function createAdvancePayment(
     entityType: 'payment',
     entityId: result.paymentId,
     description:
-      `Advance of ₹${data.amount} collected from ${patient.firstName} ${patient.lastName} ` +
+      `Advance of ₹${data.amount} collected from ${fullName(patient)} ` +
       `by ${data.paymentMethod.replace(/_/g, ' ')} — receipt ${result.receiptNumber}`,
     newValues: {
       patientId: data.patientId,
@@ -5843,7 +5843,7 @@ export async function getDayEndReport(tenantId: string, query: { date?: string }
       if (p.processedBy) {
         const who = byCashier[p.processedBy] ?? {
           name: p.processor
-            ? `${p.processor.firstName} ${p.processor.lastName}`
+            ? fullName(p.processor)
             : 'Unknown',
           collected: 0,
           refunded: 0,
@@ -5874,7 +5874,7 @@ export async function getDayEndReport(tenantId: string, query: { date?: string }
       id: p.id,
       billNumber: p.bill?.billNumber,
       patientName: p.bill?.patient
-        ? `${p.bill.patient.firstName} ${p.bill.patient.lastName}`
+        ? fullName(p.bill.patient)
         : null,
       amount: toNumber(p.amount),
       method: p.paymentMethod,
@@ -5883,7 +5883,7 @@ export async function getDayEndReport(tenantId: string, query: { date?: string }
       paymentDate: p.paymentDate,
       transactionId: p.transactionId,
       cashier: p.processor
-        ? `${p.processor.firstName} ${p.processor.lastName}`
+        ? fullName(p.processor)
         : null,
     })),
   };
@@ -6024,7 +6024,7 @@ export async function getPendingDiscounts(tenantId: string) {
       : 0,
     reason: d.reason,
     requestedBy: d.requester
-      ? `${d.requester.firstName} ${d.requester.lastName}`
+      ? fullName(d.requester)
       : null,
     requestedAt: d.createdAt,
   }));
@@ -6162,7 +6162,7 @@ export async function getDrawerStatus(
           notes: existing.notes,
           closedAt: existing.closedAt,
           closedBy: existing.closer
-            ? `${existing.closer.firstName} ${existing.closer.lastName}`
+            ? fullName(existing.closer)
             : null,
         }
       : null,
@@ -6268,14 +6268,14 @@ export async function listDrawerClosures(tenantId: string, query: { date?: strin
     closures: closures.map((c) => ({
       id: c.id,
       cashierId: c.cashierId,
-      cashierName: c.cashier ? `${c.cashier.firstName} ${c.cashier.lastName}` : '—',
+      cashierName: c.cashier ? fullName(c.cashier) : '—',
       openingFloat: toNumber(c.openingFloat),
       expectedCash: toNumber(c.expectedCash),
       countedCash: toNumber(c.countedCash),
       variance: toNumber(c.variance),
       notes: c.notes,
       closedAt: c.closedAt,
-      closedBy: c.closer ? `${c.closer.firstName} ${c.closer.lastName}` : '—',
+      closedBy: c.closer ? fullName(c.closer) : '—',
     })),
     totals: {
       expectedCash: r2(closures.reduce((s, c) => s + toNumber(c.expectedCash), 0)),
