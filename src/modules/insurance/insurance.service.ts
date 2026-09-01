@@ -2370,7 +2370,9 @@ export async function recordTpaCommunication(
         tpaId,
         communicationType: 'portal',
         direction: params.direction,
-        subject: params.subject,
+        // subject is VarChar(255); an over-long one would fail the insert and,
+        // because this recorder swallows its errors, lose the entry in silence.
+        subject: params.subject.slice(0, 255),
         content: params.content ?? null,
         isSystem: true,
         communicatedBy: params.userId ?? null,
