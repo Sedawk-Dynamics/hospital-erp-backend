@@ -70,6 +70,10 @@ export const createStockTransferSchema = z.object({
       batchNumber: z.string().max(100).optional(),
       reason: z.string().max(500).optional(),
       notes: z.string().max(2000).optional(),
+      // The person taking custody of a vault narcotic. Compulsory for those and
+      // ignored for everything else — declared here or validate() drops it and
+      // the transfer refuses a hand-over that was actually named.
+      custodianId: z.string().uuid('Invalid custodian').optional().nullable(),
     })
     .refine((d) => !!d.inventoryItemId !== !!d.drugBatchId, {
       message: 'Provide either an inventory item or a drug batch (not both)',
@@ -111,32 +115,3 @@ export const stockTransferIdSchema = z.object({
   }),
 });
 
-export const approveStockTransferSchema = z.object({
-  params: z.object({ id: z.string().uuid() }),
-  body: z.object({ notes: z.string().max(2000).optional() }).optional(),
-});
-
-export const rejectStockTransferSchema = z.object({
-  params: z.object({ id: z.string().uuid() }),
-  body: z.object({
-    rejectionReason: z.string().min(1, 'Rejection reason is required').max(1000),
-  }),
-});
-
-export const dispatchStockTransferSchema = z.object({
-  params: z.object({ id: z.string().uuid() }),
-  body: z
-    .object({
-      quantityDispatched: z.number().int().positive().optional(),
-      // The person taking custody of a vault narcotic. Compulsory for those and
-      // ignored for everything else — declared here or validate() drops it and
-      // the dispatch would refuse a hand-over that was actually named.
-      custodianId: z.string().uuid('Invalid custodian').optional().nullable(),
-    })
-    .optional(),
-});
-
-export const cancelStockTransferSchema = z.object({
-  params: z.object({ id: z.string().uuid() }),
-  body: z.object({ reason: z.string().max(1000).optional() }).optional(),
-});

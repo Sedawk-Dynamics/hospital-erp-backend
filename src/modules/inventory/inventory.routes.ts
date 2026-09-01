@@ -42,10 +42,6 @@ import {
   createStockTransferSchema,
   listStockTransfersSchema,
   stockTransferIdSchema,
-  approveStockTransferSchema,
-  rejectStockTransferSchema,
-  dispatchStockTransferSchema,
-  cancelStockTransferSchema,
 } from './inventory.reports.validation';
 
 export const inventoryRoutes = Router();
@@ -113,11 +109,6 @@ inventoryRoutes.get('/reports/audit-logs', authenticate, requirePermission('inve
 inventoryRoutes.post('/transfers', authenticate, requirePermission('inventory', 'create'), validate(createStockTransferSchema), reportsController.createTransfer);
 inventoryRoutes.get('/transfers', authenticate, requirePermission('inventory', 'read'), validate(listStockTransfersSchema), reportsController.listTransfers);
 inventoryRoutes.get('/transfers/:id', authenticate, requirePermission('inventory', 'read'), validate(stockTransferIdSchema), reportsController.getTransfer);
-inventoryRoutes.patch('/transfers/:id/approve', authenticate, requirePermission('inventory', 'approve'), validate(approveStockTransferSchema), reportsController.approveTransfer);
-inventoryRoutes.patch('/transfers/:id/reject', authenticate, requirePermission('inventory', 'approve'), validate(rejectStockTransferSchema), reportsController.rejectTransfer);
-inventoryRoutes.patch('/transfers/:id/dispatch', authenticate, requirePermission('inventory', 'update'), validate(dispatchStockTransferSchema), reportsController.dispatchTransfer);
-inventoryRoutes.patch('/transfers/:id/receive', authenticate, requirePermission('inventory', 'update'), validate(stockTransferIdSchema), reportsController.receiveTransfer);
-inventoryRoutes.patch('/transfers/:id/cancel', authenticate, requirePermission('inventory', 'update'), validate(cancelStockTransferSchema), reportsController.cancelTransfer);
 
 // --- Supply Requests ---
 inventoryRoutes.post('/supply-requests', authenticate, requirePermission('inventory', 'create'), validate(createSupplyRequestSchema), controller.createSupplyRequest);
