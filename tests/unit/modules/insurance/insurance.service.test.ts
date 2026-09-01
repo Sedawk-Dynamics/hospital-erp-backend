@@ -19,6 +19,9 @@ import {
   approvePreAuth,
   rejectPreAuth,
   updatePreAuth,
+  createTpaLog,
+  getTpaLogs,
+  recordTpaCommunication,
 } from '../../../../src/modules/insurance/insurance.service';
 
 // ─── Shared test fixtures ───
@@ -788,6 +791,215 @@ describe('Insurance Service', () => {
           'Can only deny pending or on-hold pre-authorization requests',
         );
       }
+    });
+  });
+});
+
+// ═══════════════════════════════════════════
+// TPA communication logs
+// ═══════════════════════════════════════════
+
+describe('TPA communication logs', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  describe('createTpaLog', () => {
+    it('files the entry against the claim and takes the TPA from its policy', async () => {
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue({
+        id: 'claim-1',
+        policy: { tpaId: 'tpa-1' },
+      } as any);
+      vi.mocked(prisma.tpaCommunicationLog.create).mockResolvedValue({ id: 'log-1' } as any);
+
+      await createTpaLog(TENANT_ID, USER_ID, {
+        claimId: 'claim-1',
+        communicationType: 'phone',
+        direction: 'inbound',
+        subject: 'Called about the settlement',
+        content: 'Transfer goes out on Friday.',
+      });
+
+      expect(prisma.tpaCommunicationLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            tenantId: TENANT_ID,
+            claimId: 'claim-1',
+            tpaId: 'tpa-1',
+            isSystem: false,
+            communicatedBy: USER_ID,
+          }),
+        }),
+      );
+    });
+
+    it('leaves the TPA null when the policy names none', async () => {
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue({
+        id: 'claim-1',
+        policy: { tpaId: null },
+      } as any);
+      vi.mocked(prisma.tpaCommunicationLog.create).mockResolvedValue({ id: 'log-1' } as any);
+
+      await createTpaLog(TENANT_ID, USER_ID, {
+        claimId: 'claim-1',
+        communicationType: 'email',
+        direction: 'outbound',
+        subject: 'Chasing the settlement',
+      });
+
+      const arg = vi.mocked(prisma.tpaCommunicationLog.create).mock.calls[0][0] as any;
+      expect(arg.data.tpaId).toBeNull();
+    });
+
+    it('refuses a claim belonging to another hospital', async () => {
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue(null);
+
+      await expect(
+        createTpaLog(TENANT_ID, USER_ID, {
+          claimId: 'someone-elses-claim',
+          communicationType: 'phone',
+          direction: 'inbound',
+          subject: 'Called',
+        }),
+      ).rejects.toThrow('Insurance claim not found');
+      expect(prisma.tpaCommunicationLog.create).not.toHaveBeenCalled();
+    });
+
+    it('refuses a TPA belonging to another hospital', async () => {
+      vi.mocked(prisma.tpaProvider.findFirst).mockResolvedValue(null);
+
+      await expect(
+        createTpaLog(TENANT_ID, USER_ID, {
+          tpaId: 'someone-elses-tpa',
+          communicationType: 'phone',
+          direction: 'inbound',
+          subject: 'Called',
+        }),
+      ).rejects.toThrow('TPA provider not found');
+      expect(prisma.tpaCommunicationLog.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getTpaLogs', () => {
+    it('applies every filter it is given', async () => {
+      vi.mocked(prisma.tpaCommunicationLog.findMany).mockResolvedValue([] as any);
+      vi.mocked(prisma.tpaCommunicationLog.count).mockResolvedValue(0);
+
+      await getTpaLogs(TENANT_ID, {
+        claimId: 'claim-1',
+        direction: 'inbound',
+        communicationType: 'phone',
+        isSystem: false,
+        page: 1,
+        limit: 20,
+      });
+
+      const arg = vi.mocked(prisma.tpaCommunicationLog.findMany).mock.calls[0][0] as any;
+      expect(arg.where).toMatchObject({
+        tenantId: TENANT_ID,
+        claimId: 'claim-1',
+        direction: 'inbound',
+        communicationType: 'phone',
+        isSystem: false,
+      });
+      expect(arg.orderBy).toEqual({ createdAt: 'desc' });
+    });
+
+    it('keeps an isSystem filter of false rather than treating it as absent', async () => {
+      vi.mocked(prisma.tpaCommunicationLog.findMany).mockResolvedValue([] as any);
+      vi.mocked(prisma.tpaCommunicationLog.count).mockResolvedValue(0);
+
+      await getTpaLogs(TENANT_ID, { isSystem: false, page: 1, limit: 20 });
+
+      const arg = vi.mocked(prisma.tpaCommunicationLog.findMany).mock.calls[0][0] as any;
+      expect(arg.where.isSystem).toBe(false);
+    });
+  });
+
+  describe('recordTpaCommunication', () => {
+    it('marks what the lifecycle writes as system-written', async () => {
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue({
+        policy: { tpaId: 'tpa-1' },
+      } as any);
+      vi.mocked(prisma.tpaCommunicationLog.create).mockResolvedValue({ id: 'log-1' } as any);
+
+      const wrote = await recordTpaCommunication({
+        tenantId: TENANT_ID,
+        claimId: 'claim-1',
+        userId: USER_ID,
+        direction: 'outbound',
+        subject: 'Claim CLM-1 submitted for review',
+      });
+
+      expect(wrote).toBe(true);
+      const arg = vi.mocked(prisma.tpaCommunicationLog.create).mock.calls[0][0] as any;
+      expect(arg.data.isSystem).toBe(true);
+      expect(arg.data.tpaId).toBe('tpa-1');
+    });
+
+    it('trims a subject longer than the column instead of losing the entry', async () => {
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue({
+        policy: { tpaId: null },
+      } as any);
+      vi.mocked(prisma.tpaCommunicationLog.create).mockResolvedValue({ id: 'log-1' } as any);
+
+      await recordTpaCommunication({
+        tenantId: TENANT_ID,
+        claimId: 'claim-1',
+        direction: 'outbound',
+        subject: 'x'.repeat(400),
+      });
+
+      const arg = vi.mocked(prisma.tpaCommunicationLog.create).mock.calls[0][0] as any;
+      expect(arg.data.subject).toHaveLength(255);
+    });
+
+    it('reports failure instead of throwing', async () => {
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue({
+        policy: { tpaId: null },
+      } as any);
+      vi.mocked(prisma.tpaCommunicationLog.create).mockRejectedValue(new Error('column went away'));
+
+      await expect(
+        recordTpaCommunication({
+          tenantId: TENANT_ID,
+          claimId: 'claim-1',
+          direction: 'outbound',
+          subject: 'Claim submitted',
+        }),
+      ).resolves.toBe(false);
+    });
+  });
+
+  describe('a failed log never undoes the action it describes', () => {
+    it('approves the claim even when the log write fails', async () => {
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue(mockClaim as any);
+      vi.mocked(prisma.insuranceClaim.update).mockResolvedValue({
+        ...mockClaim,
+        status: 'approved',
+        approvedAmount: 18000,
+      } as any);
+      vi.mocked(prisma.tpaCommunicationLog.create).mockRejectedValue(new Error('log table is gone'));
+
+      const result = await approveClaim(TENANT_ID, 'claim-1', USER_ID, { approvedAmount: 18000 });
+
+      expect(result.status).toBe('approved');
+      expect(prisma.insuranceClaim.update).toHaveBeenCalled();
+    });
+
+    it('rejects the claim even when the log write fails', async () => {
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue(mockClaim as any);
+      vi.mocked(prisma.insuranceClaim.update).mockResolvedValue({
+        ...mockClaim,
+        status: 'rejected',
+      } as any);
+      vi.mocked(prisma.tpaCommunicationLog.create).mockRejectedValue(new Error('log table is gone'));
+
+      const result = await rejectClaim(TENANT_ID, 'claim-1', USER_ID, {
+        rejectionReason: 'Not covered',
+      });
+
+      expect(result.status).toBe('rejected');
     });
   });
 });
