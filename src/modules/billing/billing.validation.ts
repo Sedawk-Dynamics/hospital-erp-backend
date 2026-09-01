@@ -552,7 +552,9 @@ export const setBillDiscountSchema = z.object({
     discountType: z.enum(['percentage', 'fixed']),
     discountValue: z.number().min(0, 'Discount cannot be negative'),
     reason: z.string().max(500).optional(),
-    approvedBy: z.string().uuid().optional(),
+    // Deliberately no `approvedBy`: who granted or requested a concession is
+    // taken from the caller's token. Accepting it here let a request name
+    // somebody else as the requester and then approve it as itself.
   }),
   params: z.object({
     id: z.string().uuid('Invalid bill ID'),

@@ -485,7 +485,11 @@ export async function setBillDiscount(
       req.params.id as string,
       {
         ...req.body,
-        approvedBy: req.body.approvedBy ?? req.user!.userId,
+        // Who is acting comes from the token, never from the request body.
+        // This value is stored as `requestedBy`, and decideDiscount refuses an
+        // approval by the person who requested it — so a body that could name
+        // someone else let one person do both halves of the gate.
+        approvedBy: req.user!.userId,
       },
     );
     sendResponse({ res, message: 'Discount updated', data: bill });
