@@ -6,6 +6,7 @@ import { AppError } from '../../shared/appError';
 import { isAdvanceBucket } from '../../shared/charge-bill';
 import { nextBillNumberInSeries } from '../../shared/bill-number';
 import { getPaginationParams } from '../../shared/pagination';
+import { fullName } from '../../shared/person-name';
 import {
   getISTDateStr,
   formatDateTimeIST,
@@ -681,7 +682,9 @@ export async function getCreditSettlements(
       });
     } else {
       const p = bill.patient;
-      const name = p ? `${p.firstName} ${p.lastName}` : 'Patient';
+      // A temporary patient has only a first name by design, and the template
+      // literal stringified the missing surname: this row read "Walkin null".
+      const name = fullName(p, 'Patient');
       addToGroup(`pat:${bill.patientId}`, {
         id: `pat:${bill.patientId}`,
         providerType: 'patient',
