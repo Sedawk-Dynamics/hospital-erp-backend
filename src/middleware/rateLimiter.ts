@@ -327,9 +327,22 @@ export async function loginAttemptGuard(
     const locked = await redis.get(lockoutKey(email));
     if (locked) {
       const ttl = await redis.ttl(lockoutKey(email));
+
+      // -2 means the key expired between the two calls above, so the lockout is
+      // already over and this login should simply proceed.
+      if (ttl === -2) return next();
+
+      // Anything that is not a positive number falls back to the full lockout.
+      // This guard is meant to fail OPEN when Redis is unwell, but that only
+      // works when a command throws — during a reconnect the `get` answered
+      // while the `ttl` came back undefined, nothing threw, and the caller was
+      // told to "Try again in NaN seconds". A -1 (key with no expiry) reached
+      // the same message as 60, which was equally untrue.
+      const seconds = Number.isFinite(ttl) && ttl > 0 ? Math.max(ttl, 60) : LOCKOUT_SECONDS;
+
       return next(
         new AppError(
-          `Account temporarily locked due to repeated failed logins. Try again in ${Math.max(ttl, 60)} seconds.`,
+          `Account temporarily locked due to repeated failed logins. Try again in ${seconds} seconds.`,
           429,
           'ACCOUNT_LOCKED',
         ),
