@@ -1503,6 +1503,17 @@ export async function createPreAuth(tenantId: string, userId: string, data: Crea
     },
   });
 
+  await recordTpaCommunication({
+    tenantId,
+    preAuthId: preAuth.id,
+    userId,
+    direction: 'outbound',
+    subject: 'Pre-authorization requested',
+    content:
+      `${data.procedureDescription}` +
+      (data.estimatedCost ? ` — estimated ${Number(data.estimatedCost).toFixed(2)}` : ''),
+  });
+
   logger.info({ tenantId, preAuthId: preAuth.id }, 'Pre-authorization request created');
   return preAuth;
 }
@@ -1612,7 +1623,7 @@ export async function updatePreAuth(tenantId: string, id: string, data: UpdatePr
   return preAuth;
 }
 
-export async function approvePreAuth(tenantId: string, id: string, data: ApprovePreAuthInput) {
+export async function approvePreAuth(tenantId: string, id: string, data: ApprovePreAuthInput, userId?: string) {
   const existing = await prisma.preAuthorizationRequest.findFirst({
     where: { id, tenantId },
   });
@@ -1644,11 +1655,22 @@ export async function approvePreAuth(tenantId: string, id: string, data: Approve
     },
   });
 
+  await recordTpaCommunication({
+    tenantId,
+    preAuthId: id,
+    userId,
+    direction: 'inbound',
+    subject: `Pre-authorization approved (${approvalNumber})`,
+    content:
+      `${existing.procedureDescription} approved` +
+      (data.approvedAmount ? ` for ${Number(data.approvedAmount).toFixed(2)}` : '') + '.',
+  });
+
   logger.info({ tenantId, preAuthId: id, approvalNumber }, 'Pre-authorization request approved');
   return preAuth;
 }
 
-export async function rejectPreAuth(tenantId: string, id: string, data: RejectPreAuthInput) {
+export async function rejectPreAuth(tenantId: string, id: string, data: RejectPreAuthInput, userId?: string) {
   const existing = await prisma.preAuthorizationRequest.findFirst({
     where: { id, tenantId },
   });
@@ -1674,11 +1696,20 @@ export async function rejectPreAuth(tenantId: string, id: string, data: RejectPr
     },
   });
 
+  await recordTpaCommunication({
+    tenantId,
+    preAuthId: id,
+    userId,
+    direction: 'inbound',
+    subject: 'Pre-authorization denied',
+    content: `${existing.procedureDescription} denied.` + (data.notes ? ` ${data.notes}` : ''),
+  });
+
   logger.info({ tenantId, preAuthId: id }, 'Pre-authorization request denied');
   return preAuth;
 }
 
-export async function holdPreAuth(tenantId: string, id: string, data: HoldPreAuthInput) {
+export async function holdPreAuth(tenantId: string, id: string, data: HoldPreAuthInput, userId?: string) {
   const existing = await prisma.preAuthorizationRequest.findFirst({ where: { id, tenantId } });
   if (!existing) throw AppError.notFound('Pre-authorization request not found');
 
@@ -1695,11 +1726,21 @@ export async function holdPreAuth(tenantId: string, id: string, data: HoldPreAut
     },
   });
 
+  // Inbound: a hold is the insurer coming back with a query.
+  await recordTpaCommunication({
+    tenantId,
+    preAuthId: id,
+    userId,
+    direction: 'inbound',
+    subject: 'Pre-authorization put on hold',
+    content: `Query raised: ${data.reason}`,
+  });
+
   logger.info({ tenantId, preAuthId: id }, 'Pre-authorization put on hold');
   return preAuth;
 }
 
-export async function releasePreAuthHold(tenantId: string, id: string) {
+export async function releasePreAuthHold(tenantId: string, id: string, userId?: string) {
   const existing = await prisma.preAuthorizationRequest.findFirst({ where: { id, tenantId } });
   if (!existing) throw AppError.notFound('Pre-authorization request not found');
 
@@ -1716,11 +1757,22 @@ export async function releasePreAuthHold(tenantId: string, id: string) {
     },
   });
 
+  await recordTpaCommunication({
+    tenantId,
+    preAuthId: id,
+    userId,
+    direction: 'outbound',
+    subject: 'Pre-authorization hold released',
+    content:
+      'Query answered; the request is back with the insurer.' +
+      (existing.holdReason ? ` Hold was: ${existing.holdReason}` : ''),
+  });
+
   logger.info({ tenantId, preAuthId: id }, 'Pre-authorization hold released');
   return preAuth;
 }
 
-export async function cancelPreAuth(tenantId: string, id: string) {
+export async function cancelPreAuth(tenantId: string, id: string, userId?: string) {
   const existing = await prisma.preAuthorizationRequest.findFirst({ where: { id, tenantId } });
   if (!existing) throw AppError.notFound('Pre-authorization request not found');
 
@@ -1731,6 +1783,15 @@ export async function cancelPreAuth(tenantId: string, id: string) {
   const preAuth = await prisma.preAuthorizationRequest.update({
     where: { id },
     data: { status: 'cancelled' },
+  });
+
+  await recordTpaCommunication({
+    tenantId,
+    preAuthId: id,
+    userId,
+    direction: 'outbound',
+    subject: 'Pre-authorization cancelled',
+    content: `${existing.procedureDescription} withdrawn by the hospital.`,
   });
 
   logger.info({ tenantId, preAuthId: id }, 'Pre-authorization cancelled');

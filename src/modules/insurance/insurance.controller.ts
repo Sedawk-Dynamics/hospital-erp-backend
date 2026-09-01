@@ -246,31 +246,31 @@ export async function updatePreAuth(req: AuthenticatedRequest, res: Response, ne
 }
 export async function approvePreAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
-    const data = await service.approvePreAuth(req.user!.tenantId, req.params.id as string, req.body);
+    const data = await service.approvePreAuth(req.user!.tenantId, req.params.id as string, req.body, req.user!.userId);
     sendResponse({ res, message: 'Pre-auth approved', data });
   } catch (err) { next(err); }
 }
 export async function rejectPreAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
-    const data = await service.rejectPreAuth(req.user!.tenantId, req.params.id as string, req.body);
+    const data = await service.rejectPreAuth(req.user!.tenantId, req.params.id as string, req.body, req.user!.userId);
     sendResponse({ res, message: 'Pre-auth rejected', data });
   } catch (err) { next(err); }
 }
 export async function holdPreAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
-    const data = await service.holdPreAuth(req.user!.tenantId, req.params.id as string, req.body);
+    const data = await service.holdPreAuth(req.user!.tenantId, req.params.id as string, req.body, req.user!.userId);
     sendResponse({ res, message: 'Pre-auth put on hold', data });
   } catch (err) { next(err); }
 }
 export async function releasePreAuthHold(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
-    const data = await service.releasePreAuthHold(req.user!.tenantId, req.params.id as string);
+    const data = await service.releasePreAuthHold(req.user!.tenantId, req.params.id as string, req.user!.userId);
     sendResponse({ res, message: 'Pre-auth hold released', data });
   } catch (err) { next(err); }
 }
 export async function cancelPreAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
-    const data = await service.cancelPreAuth(req.user!.tenantId, req.params.id as string);
+    const data = await service.cancelPreAuth(req.user!.tenantId, req.params.id as string, req.user!.userId);
     sendResponse({ res, message: 'Pre-auth cancelled', data });
   } catch (err) { next(err); }
 }
