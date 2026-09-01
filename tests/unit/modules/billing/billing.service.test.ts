@@ -1824,6 +1824,79 @@ describe('BillingService', () => {
         'awaiting approval',
       );
     });
+
+    // ── The other write path ──
+    // POST /billing/:id/discounts reaches the same table on billing:update
+    // rather than billing:approve. While it wrote its row at the model's
+    // default status of `approved`, the limit on setBillDiscount was a matter
+    // of which endpoint the caller chose.
+
+    /** applyDiscount reads bill.subtotal rather than summing the items. */
+    function billWithSubtotal(subtotal: number) {
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue({
+        ...mockBillDraft,
+        subtotal,
+      } as any);
+      mockRecalculate([
+        { quantity: 1, unitPrice: subtotal, discountAmount: 0, taxAmount: 0, totalAmount: subtotal },
+      ]);
+      vi.mocked(prisma.discount.create).mockResolvedValue({ id: 'disc-2' } as any);
+    }
+
+    it('parks an over-limit concession entered through applyDiscount', async () => {
+      policy({ enabled: true, maxAmountWithoutApproval: 1000, maxPercentWithoutApproval: 15 });
+      billWithSubtotal(10000);
+
+      const result = await applyDiscount(
+        TENANT_ID,
+        'bill-1',
+        { discountType: 'fixed', discountValue: 6000, reason: 'Hardship' },
+        APPROVER,
+      );
+
+      expect(prisma.discount.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          status: 'pending',
+          requestedBy: APPROVER,
+          approvedBy: null,
+          decidedAt: null,
+        }),
+      });
+      expect((result as { discountPendingApproval?: boolean }).discountPendingApproval).toBe(true);
+    });
+
+    it('applies an under-limit concession through applyDiscount at once', async () => {
+      policy({ enabled: true, maxAmountWithoutApproval: 1000, maxPercentWithoutApproval: 15 });
+      billWithSubtotal(10000);
+
+      const result = await applyDiscount(
+        TENANT_ID,
+        'bill-1',
+        { discountType: 'fixed', discountValue: 500, reason: 'Small' },
+        APPROVER,
+      );
+
+      expect(prisma.discount.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ status: 'approved', approvedBy: APPROVER }),
+      });
+      expect((result as { discountPendingApproval?: boolean }).discountPendingApproval).toBe(false);
+    });
+
+    it('leaves applyDiscount alone when the gate is off', async () => {
+      policy(null);
+      billWithSubtotal(10000);
+
+      await applyDiscount(
+        TENANT_ID,
+        'bill-1',
+        { discountType: 'fixed', discountValue: 9000, reason: 'Waiver' },
+        APPROVER,
+      );
+
+      expect(prisma.discount.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ status: 'approved' }),
+      });
+    });
   });
 
   // ═══════════════════════════════════════════
