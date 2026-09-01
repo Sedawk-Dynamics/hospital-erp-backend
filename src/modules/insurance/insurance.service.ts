@@ -903,7 +903,7 @@ export async function resyncClaimAmount(tenantId: string, claimId: string, newCl
   return updated;
 }
 
-export async function submitClaim(tenantId: string, id: string) {
+export async function submitClaim(tenantId: string, id: string, userId?: string) {
   const claim = await prisma.insuranceClaim.findFirst({
     where: { id, tenantId },
   });
@@ -930,6 +930,15 @@ export async function submitClaim(tenantId: string, id: string) {
         select: { id: true, policyNumber: true },
       },
     },
+  });
+
+  await recordTpaCommunication({
+    tenantId,
+    claimId: id,
+    userId,
+    direction: 'outbound',
+    subject: `${claimRef(claim.claimNumber)} submitted for review`,
+    content: `Claim of ${decNum(claim.claimAmount).toFixed(2)} sent to the insurer for review.`,
   });
 
   logger.info({ tenantId, claimId: id }, 'Insurance claim submitted for review');
@@ -978,6 +987,15 @@ export async function approveClaim(
 
   // Reflect on the bill: insurance side covers approvedAmount, patient covers the rest.
   await applyBillSplit(tenantId, claim.billId, approvedAmount, patientShare);
+
+  await recordTpaCommunication({
+    tenantId,
+    claimId: id,
+    userId,
+    direction: 'inbound',
+    subject: `${claimRef(claim.claimNumber)} approved`,
+    content: `Approved ${approvedAmount.toFixed(2)} of ${claimAmount.toFixed(2)}. Patient share ${patientShare.toFixed(2)}.`,
+  });
 
   logger.info(
     { tenantId, claimId: id, approvedAmount: data.approvedAmount },
@@ -1036,6 +1054,18 @@ export async function partialApproveClaim(
 
   await applyBillSplit(tenantId, claim.billId, approvedAmount, patientShare);
 
+  await recordTpaCommunication({
+    tenantId,
+    claimId: id,
+    userId,
+    direction: 'inbound',
+    subject: `${claimRef(claim.claimNumber)} partially approved`,
+    content:
+      `Approved ${approvedAmount.toFixed(2)} of ${claimAmount.toFixed(2)}. ` +
+      `Patient share ${patientShare.toFixed(2)}.` +
+      (data.rejectionReason ? ` Insurer's reason: ${data.rejectionReason}` : ''),
+  });
+
   logger.info({ tenantId, claimId: id, approvedAmount }, 'Insurance claim partially approved');
   return updated;
 }
@@ -1078,6 +1108,17 @@ export async function settleClaim(
       patient: { select: { id: true, firstName: true, lastName: true } },
       policy: { select: { id: true, policyNumber: true } },
     },
+  });
+
+  await recordTpaCommunication({
+    tenantId,
+    claimId: id,
+    userId,
+    direction: 'inbound',
+    subject: `${claimRef(claim.claimNumber)} ${fullySettled ? 'settled' : 'part-settled'}`,
+    content:
+      `Received ${data.paidAmount.toFixed(2)}. Paid to date ${newPaid.toFixed(2)} ` +
+      `of ${approved.toFixed(2)} approved; outstanding ${outstanding.toFixed(2)}.`,
   });
 
   logger.info({ tenantId, claimId: id, paid: data.paidAmount, status: updated.status }, 'Insurance claim settled (partial or full)');
@@ -1157,6 +1198,16 @@ export async function resubmitClaim(
     });
   });
 
+  // Logged against the NEW claim: that is the conversation that continues.
+  await recordTpaCommunication({
+    tenantId,
+    claimId: resubmitted.id,
+    userId,
+    direction: 'outbound',
+    subject: `Claim resubmitted as ${claimNumber}`,
+    content: `Replaces ${original.claimNumber ?? 'the previous claim'}.`,
+  });
+
   logger.info(
     { tenantId, originalClaimId: original.id, newClaimId: resubmitted.id, claimNumber },
     'Insurance claim resubmitted',
@@ -1199,6 +1250,15 @@ export async function cancelClaim(
 
   // Roll back any reservation on the bill (if previously approved).
   await applyBillSplit(tenantId, claim.billId, 0, decNum(claim.claimAmount));
+
+  await recordTpaCommunication({
+    tenantId,
+    claimId: id,
+    userId,
+    direction: 'outbound',
+    subject: `${claimRef(claim.claimNumber)} cancelled`,
+    content: `Reason: ${data.reason}`,
+  });
 
   logger.info({ tenantId, claimId: id }, 'Insurance claim cancelled');
   return updated;
@@ -1295,6 +1355,15 @@ export async function rejectClaim(
 
   // Patient now owes the entire bill since the claim was rejected.
   await applyBillSplit(tenantId, claim.billId, 0, decNum(claim.claimAmount));
+
+  await recordTpaCommunication({
+    tenantId,
+    claimId: id,
+    userId,
+    direction: 'inbound',
+    subject: `${claimRef(claim.claimNumber)} rejected`,
+    content: `Insurer's reason: ${data.rejectionReason}`,
+  });
 
   logger.info({ tenantId, claimId: id }, 'Insurance claim rejected');
   return updated;
@@ -2238,6 +2307,15 @@ export async function getTpaLogs(tenantId: string, query: any) {
   ]);
 
   return { logs, total, page, limit };
+}
+
+/**
+ * "Claim CLM-20260901-0001", or plain "Claim" before a number is issued —
+ * `claimNumber` is nullable, and interpolating it raw yields "Claim  approved"
+ * with a hole where the number should be.
+ */
+function claimRef(claimNumber: string | null | undefined): string {
+  return claimNumber ? `Claim ${claimNumber}` : 'Claim';
 }
 
 /** What the lifecycle hands the recorder when a claim or pre-auth moves. */

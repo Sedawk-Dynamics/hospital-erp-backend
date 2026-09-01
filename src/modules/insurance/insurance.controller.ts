@@ -143,7 +143,7 @@ export async function updateClaim(req: AuthenticatedRequest, res: Response, next
 }
 export async function submitClaim(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
-    const data = await service.submitClaim(req.user!.tenantId, req.params.id as string);
+    const data = await service.submitClaim(req.user!.tenantId, req.params.id as string, req.user!.userId);
     sendResponse({ res, message: 'Claim submitted', data });
   } catch (err) { next(err); }
 }
