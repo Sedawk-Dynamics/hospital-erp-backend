@@ -330,3 +330,19 @@ export async function getOutstandingReport(req: AuthenticatedRequest, res: Respo
     sendResponse({ res, message: 'Outstanding claims report', data });
   } catch (err) { next(err); }
 }
+
+// ============================================================
+// TPA Communication Logs
+// ============================================================
+export async function createTpaLog(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.createTpaLog(req.user!.tenantId, req.user!.userId, req.body);
+    sendResponse({ res, statusCode: 201, message: 'Communication logged', data });
+  } catch (err) { next(err); }
+}
+export async function getTpaLogs(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const result = await service.getTpaLogs(req.user!.tenantId, req.query as any);
+    sendPaginatedResponse(res, result.logs, result.total, result.page, result.limit, 'Communication logs retrieved');
+  } catch (err) { next(err); }
+}

@@ -33,6 +33,8 @@ import {
   calcResponsibilitySchema,
   splitBillSchema,
   reportsQuerySchema,
+  createTpaLogSchema,
+  getTpaLogsQuerySchema,
 } from './insurance.validation';
 import * as controller from './insurance.controller';
 
@@ -60,6 +62,15 @@ insuranceRoutes.get('/tpa', authenticate, requirePermission('insurance', 'read')
 insuranceRoutes.get('/tpa/:id', authenticate, requirePermission('insurance', 'read'), validate(idParamSchema), controller.getTPAById);
 insuranceRoutes.put('/tpa/:id', authenticate, requirePermission('insurance', 'update'), validate(updateTPASchema), controller.updateTPA);
 insuranceRoutes.delete('/tpa/:id', authenticate, requirePermission('insurance', 'delete'), validate(idParamSchema), controller.deleteTPA);
+
+// ============================================================
+// TPA Communication Logs
+//
+// A distinct path from `/tpa/:id` — that route only matches `/tpa/<value>`,
+// so `/tpa-logs` cannot be swallowed by it.
+// ============================================================
+insuranceRoutes.post('/tpa-logs', authenticate, requirePermission('insurance', 'create'), validate(createTpaLogSchema), controller.createTpaLog);
+insuranceRoutes.get('/tpa-logs', authenticate, requirePermission('insurance', 'read'), validate(getTpaLogsQuerySchema), controller.getTpaLogs);
 
 // ============================================================
 // Policies
