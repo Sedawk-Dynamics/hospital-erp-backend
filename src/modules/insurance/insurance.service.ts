@@ -2239,3 +2239,71 @@ export async function getTpaLogs(tenantId: string, query: any) {
 
   return { logs, total, page, limit };
 }
+
+/** What the lifecycle hands the recorder when a claim or pre-auth moves. */
+interface RecordTpaCommunicationParams {
+  tenantId: string;
+  claimId?: string | null;
+  preAuthId?: string | null;
+  /** Who performed the action. Null for a scheduled job. */
+  userId?: string | null;
+  direction: 'inbound' | 'outbound';
+  subject: string;
+  content?: string | null;
+}
+
+/**
+ * Record a lifecycle step against the TPA log, best effort.
+ *
+ * Deliberately outside the caller's transaction and deliberately unable to
+ * throw: an audit note that fails must never roll back the claim approval it
+ * was describing. Same contract as `notifyUsers` — it reports whether it wrote
+ * and swallows the reason if it did not.
+ *
+ * `portal` is the recorded type because these entries describe what the
+ * hospital did through its own system rather than a call or a letter, and
+ * `isSystem` marks them so nobody reads one as a colleague's note.
+ */
+export async function recordTpaCommunication(
+  params: RecordTpaCommunicationParams,
+): Promise<boolean> {
+  try {
+    let tpaId: string | null = null;
+
+    if (params.claimId) {
+      const claim = await prisma.insuranceClaim.findFirst({
+        where: { id: params.claimId, tenantId: params.tenantId },
+        select: { policy: { select: { tpaId: true } } },
+      });
+      tpaId = claim?.policy?.tpaId ?? null;
+    } else if (params.preAuthId) {
+      const preAuth = await prisma.preAuthorizationRequest.findFirst({
+        where: { id: params.preAuthId, tenantId: params.tenantId },
+        select: { policy: { select: { tpaId: true } } },
+      });
+      tpaId = preAuth?.policy?.tpaId ?? null;
+    }
+
+    await prisma.tpaCommunicationLog.create({
+      data: {
+        tenantId: params.tenantId,
+        claimId: params.claimId ?? null,
+        preAuthId: params.preAuthId ?? null,
+        tpaId,
+        communicationType: 'portal',
+        direction: params.direction,
+        subject: params.subject,
+        content: params.content ?? null,
+        isSystem: true,
+        communicatedBy: params.userId ?? null,
+      },
+    });
+    return true;
+  } catch (err) {
+    logger.warn(
+      { err, claimId: params.claimId, preAuthId: params.preAuthId },
+      'TPA communication log write failed — the action itself is unaffected',
+    );
+    return false;
+  }
+}
