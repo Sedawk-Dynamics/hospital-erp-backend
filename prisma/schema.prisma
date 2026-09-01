@@ -230,20 +230,20 @@ enum VisitStatus {
 }
 
 enum AdmissionStatus {
-  admitted    @map("admitted")
+  admitted           @map("admitted")
   // The doctor has published the discharge summary; the patient is clinically
   // cleared but is STILL IN THE BED until the counter clears the final bill.
   // Treat this as an active/occupying admission everywhere — see
   // shared/admission-status.ts ACTIVE_ADMISSION_STATUSES. Only `discharged`
   // frees the bed and closes the stay.
   ready_to_discharge @map("ready_to_discharge")
-  discharged  @map("discharged")
-  transferred @map("transferred")
-  absconded   @map("absconded")
+  discharged         @map("discharged")
+  transferred        @map("transferred")
+  absconded          @map("absconded")
   // The stay ended in death. Distinct from `discharged`, which would otherwise
   // be the only way to close it — and would tell the family, the bill and every
   // report that the patient went home.
-  deceased    @map("deceased")
+  deceased           @map("deceased")
 }
 
 enum ReservationStatus {
@@ -1446,32 +1446,32 @@ model FeatureToggle {
 // super-admin can run Gemini for one hospital and OpenAI for another, or turn
 // AI off entirely (provider="disabled") — without a redeploy.
 model AiConfig {
-  id                  String   @id @default(uuid())
+  id                     String   @id @default(uuid())
   // null = platform default; set = this hospital's override (one row each).
-  tenantId            String?  @unique @map("tenant_id")
+  tenantId               String?  @unique @map("tenant_id")
   // provider: which LLM backend to call — "gemini" | "openai" | "disabled".
-  provider            String   @default("gemini") @db.VarChar(20)
-  textModel           String   @default("gemini-2.5-flash") @map("text_model") @db.VarChar(100)
+  provider               String   @default("gemini") @db.VarChar(20)
+  textModel              String   @default("gemini-2.5-flash") @map("text_model") @db.VarChar(100)
   // Ordered same-provider fallback models tried when the primary is rate-limited
   // or unavailable (e.g. free-tier RPD exhausted).
-  fallbackModels      String[] @default([]) @map("fallback_models")
-  temperature         Decimal  @default(0.4) @db.Decimal(3, 2)
-  maxOutputTokens     Int      @default(1024) @map("max_output_tokens")
+  fallbackModels         String[] @default([]) @map("fallback_models")
+  temperature            Decimal  @default(0.4) @db.Decimal(3, 2)
+  maxOutputTokens        Int      @default(1024) @map("max_output_tokens")
   // Per-use-case feature flags — one switch per place AI is used, so a
   // super-admin can disable AI in any single surface independently.
-  patientChatEnabled  Boolean  @default(true) @map("patient_chat_enabled") // UC2 (Lvl 1)
-  bloodReportEnabled  Boolean  @default(true) @map("blood_report_enabled") // UC2.2 blood report analysis
-  platformChatEnabled Boolean  @default(true) @map("platform_chat_enabled") // UC3 (Lvl 1, read-only)
-  dischargeAiEnabled  Boolean  @default(true) @map("discharge_ai_enabled") // UC4
+  patientChatEnabled     Boolean  @default(true) @map("patient_chat_enabled") // UC2 (Lvl 1)
+  bloodReportEnabled     Boolean  @default(true) @map("blood_report_enabled") // UC2.2 blood report analysis
+  platformChatEnabled    Boolean  @default(true) @map("platform_chat_enabled") // UC3 (Lvl 1, read-only)
+  dischargeAiEnabled     Boolean  @default(true) @map("discharge_ai_enabled") // UC4
   // UC2.1 radiology image diagnosis — deferred to "coming soon" per MVP scope.
-  radiologyAiEnabled  Boolean  @default(false) @map("radiology_ai_enabled")
+  radiologyAiEnabled     Boolean  @default(false) @map("radiology_ai_enabled")
   // Progress-note smart suggestions (doctor SOAP pad).
-  progressNotesAiEnabled Boolean @default(true) @map("progress_notes_ai_enabled")
+  progressNotesAiEnabled Boolean  @default(true) @map("progress_notes_ai_enabled")
   // Pharmacy/inventory invoice OCR scan (Add Stock).
-  ocrInvoiceEnabled   Boolean  @default(true) @map("ocr_invoice_enabled")
-  updatedById         String?  @map("updated_by_id")
-  createdAt           DateTime @default(now()) @map("created_at")
-  updatedAt           DateTime @default(now()) @updatedAt @map("updated_at")
+  ocrInvoiceEnabled      Boolean  @default(true) @map("ocr_invoice_enabled")
+  updatedById            String?  @map("updated_by_id")
+  createdAt              DateTime @default(now()) @map("created_at")
+  updatedAt              DateTime @default(now()) @updatedAt @map("updated_at")
 
   tenant Tenant? @relation(fields: [tenantId], references: [id])
 
@@ -2136,24 +2136,24 @@ model PatientEmergencyContact {
 }
 
 model PatientPersonalHistory {
-  id                 String              @id @default(uuid())
-  patientId          String              @unique @map("patient_id")
-  appetite           String?
-  diet               String?
-  sleepPattern       String?             @map("sleep_pattern")
-  disorders          String?
+  id                  String              @id @default(uuid())
+  patientId           String              @unique @map("patient_id")
+  appetite            String?
+  diet                String?
+  sleepPattern        String?             @map("sleep_pattern")
+  disorders           String?
   // Past medical illnesses/treatments and past surgical procedures. These sit
   // with the rest of the narrative history so the doctor's Medical & Surgical
   // History tab has one place to read and write them.
-  pastMedicalHistory  String?            @map("past_medical_history")
-  pastSurgicalHistory String?            @map("past_surgical_history")
-  exerciseHabits     String?             @map("exercise_habits")
-  smokingStatus      SmokingStatus?      @map("smoking_status")
-  alcoholConsumption AlcoholConsumption? @map("alcohol_consumption")
-  notes              String?
-  updatedBy          String?             @map("updated_by")
-  createdAt          DateTime            @default(now()) @map("created_at")
-  updatedAt          DateTime            @default(now()) @updatedAt @map("updated_at")
+  pastMedicalHistory  String?             @map("past_medical_history")
+  pastSurgicalHistory String?             @map("past_surgical_history")
+  exerciseHabits      String?             @map("exercise_habits")
+  smokingStatus       SmokingStatus?      @map("smoking_status")
+  alcoholConsumption  AlcoholConsumption? @map("alcohol_consumption")
+  notes               String?
+  updatedBy           String?             @map("updated_by")
+  createdAt           DateTime            @default(now()) @map("created_at")
+  updatedAt           DateTime            @default(now()) @updatedAt @map("updated_at")
 
   patient Patient @relation(fields: [patientId], references: [id])
   updater User?   @relation("PersonalHistoryUpdater", fields: [updatedBy], references: [id])
@@ -2300,25 +2300,25 @@ model AbhaSyncLog {
 // ============================================================
 
 model DoctorProfile {
-  id              String   @id @default(uuid())
-  userId          String   @unique @map("user_id")
-  tenantId        String   @map("tenant_id")
-  departmentId    String   @map("department_id")
-  specialization  String?  @db.VarChar(255)
-  qualifications  String?
-  licenseNumber   String?  @map("license_number") @db.VarChar(100)
-  experienceYears Int?     @map("experience_years")
-  consultationFee Decimal? @map("consultation_fee") @db.Decimal(10, 2)
+  id               String   @id @default(uuid())
+  userId           String   @unique @map("user_id")
+  tenantId         String   @map("tenant_id")
+  departmentId     String   @map("department_id")
+  specialization   String?  @db.VarChar(255)
+  qualifications   String?
+  licenseNumber    String?  @map("license_number") @db.VarChar(100)
+  experienceYears  Int?     @map("experience_years")
+  consultationFee  Decimal? @map("consultation_fee") @db.Decimal(10, 2)
   // Days after a paid consultation with THIS doctor during which a return
   // visit carries no consultation fee. Per doctor, not per hospital: the window
   // that suits a surgeon reviewing a post-op wound is not the one for a
   // physician following a chronic case, and it is their fee being waived.
   // Null or 0 = no free follow-up (what every existing doctor keeps).
-  freeFollowUpDays Int?    @map("free_follow_up_days")
-  bio             String?
-  isAvailable     Boolean  @default(true) @map("is_available")
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
+  freeFollowUpDays Int?     @map("free_follow_up_days")
+  bio              String?
+  isAvailable      Boolean  @default(true) @map("is_available")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at")
 
   user                     User                     @relation(fields: [userId], references: [id])
   tenant                   Tenant                   @relation(fields: [tenantId], references: [id])
@@ -2414,31 +2414,31 @@ model DoctorLeave {
 }
 
 model Appointment {
-  id                 String            @id @default(uuid())
-  tenantId           String            @map("tenant_id")
-  patientId          String            @map("patient_id")
-  doctorId           String            @map("doctor_id")
-  appointmentDate    DateTime          @map("appointment_date") @db.Date
-  startTime          DateTime          @map("start_time") @db.Time()
-  endTime            DateTime?         @map("end_time") @db.Time()
-  appointmentType    AppointmentType   @default(scheduled) @map("appointment_type")
-  consultationType   String?           @map("consultation_type") @db.VarChar(30)
-  priority           String?           @db.VarChar(20)
-  visitType          VisitTypeAppt     @default(new) @map("visit_type")
+  id                    String            @id @default(uuid())
+  tenantId              String            @map("tenant_id")
+  patientId             String            @map("patient_id")
+  doctorId              String            @map("doctor_id")
+  appointmentDate       DateTime          @map("appointment_date") @db.Date
+  startTime             DateTime          @map("start_time") @db.Time()
+  endTime               DateTime?         @map("end_time") @db.Time()
+  appointmentType       AppointmentType   @default(scheduled) @map("appointment_type")
+  consultationType      String?           @map("consultation_type") @db.VarChar(30)
+  priority              String?           @db.VarChar(20)
+  visitType             VisitTypeAppt     @default(new) @map("visit_type")
   // Whether the front desk chose to add the hospital's one-time registration
   // fee to this appointment's bill. Null = the desk never said, so the rule
   // decides (charge it iff this is the patient's first visit HERE and it has
   // not been charged before). Accessed via raw SQL like `admission_type` —
   // the client is not regenerated for it.
-  chargeRegistrationFee Boolean?       @map("charge_registration_fee")
-  status             AppointmentStatus @default(booked)
-  reason             String?
-  notes              String?
-  bookedBy           String?           @map("booked_by")
-  cancelledBy        String?           @map("cancelled_by")
-  cancellationReason String?           @map("cancellation_reason")
-  createdAt          DateTime          @default(now()) @map("created_at")
-  updatedAt          DateTime          @default(now()) @updatedAt @map("updated_at")
+  chargeRegistrationFee Boolean?          @map("charge_registration_fee")
+  status                AppointmentStatus @default(booked)
+  reason                String?
+  notes                 String?
+  bookedBy              String?           @map("booked_by")
+  cancelledBy           String?           @map("cancelled_by")
+  cancellationReason    String?           @map("cancellation_reason")
+  createdAt             DateTime          @default(now()) @map("created_at")
+  updatedAt             DateTime          @default(now()) @updatedAt @map("updated_at")
 
   tenant          Tenant                   @relation(fields: [tenantId], references: [id])
   patient         Patient                  @relation(fields: [patientId], references: [id])
@@ -2479,27 +2479,27 @@ model QueueToken {
 // ============================================================
 
 model Visit {
-  id             String      @id @default(uuid())
-  tenantId       String      @map("tenant_id")
-  patientId      String      @map("patient_id")
+  id                      String      @id @default(uuid())
+  tenantId                String      @map("tenant_id")
+  patientId               String      @map("patient_id")
   // Nullable — a patient can be admitted (IP/Emergency/Day Care) before a
   // consultation doctor is assigned; the doctor is filled in later.
-  doctorId       String?     @map("doctor_id")
-  appointmentId  String?     @map("appointment_id")
-  visitType      VisitType   @map("visit_type")
-  visitDate      DateTime    @map("visit_date")
-  chiefComplaint String?     @map("chief_complaint")
+  doctorId                String?     @map("doctor_id")
+  appointmentId           String?     @map("appointment_id")
+  visitType               VisitType   @map("visit_type")
+  visitDate               DateTime    @map("visit_date")
+  chiefComplaint          String?     @map("chief_complaint")
   // What the NURSE was told at intake, kept apart from the doctor's own
   // framing above. One shared box meant whoever saved last replaced the other
   // and nothing recorded who said what — but the patient's words at the door
   // and the clinician's reading of the problem are different statements and
   // both are worth keeping.
-  nurseChiefComplaint     String?   @map("nurse_chief_complaint")
-  nurseChiefComplaintById String?   @map("nurse_chief_complaint_by")
-  nurseChiefComplaintAt   DateTime? @map("nurse_chief_complaint_at")
-  status         VisitStatus @default(active)
-  createdAt      DateTime    @default(now()) @map("created_at")
-  updatedAt      DateTime    @default(now()) @updatedAt @map("updated_at")
+  nurseChiefComplaint     String?     @map("nurse_chief_complaint")
+  nurseChiefComplaintById String?     @map("nurse_chief_complaint_by")
+  nurseChiefComplaintAt   DateTime?   @map("nurse_chief_complaint_at")
+  status                  VisitStatus @default(active)
+  createdAt               DateTime    @default(now()) @map("created_at")
+  updatedAt               DateTime    @default(now()) @updatedAt @map("updated_at")
 
   tenant               Tenant                       @relation(fields: [tenantId], references: [id])
   patient              Patient                      @relation(fields: [patientId], references: [id])
@@ -4133,46 +4133,46 @@ model DicomInstance {
 // lands in DrugFormulary with drugMasterId set (mirrors LabTestTemplate ->
 // LabTestCatalog). Doctors can still free-text any drug not present here.
 model DrugMaster {
-  id               String      @id @default(uuid())
-  name             String      @db.VarChar(255)
-  genericName      String?     @map("generic_name") @db.VarChar(500)
-  manufacturer     String?     @db.VarChar(255)
-  type             String?     @db.VarChar(50)
-  dosageForm       DosageForm? @map("dosage_form")
-  strength         String?     @db.VarChar(100)
-  packSizeLabel    String?     @map("pack_size_label") @db.VarChar(255)
+  id                String      @id @default(uuid())
+  name              String      @db.VarChar(255)
+  genericName       String?     @map("generic_name") @db.VarChar(500)
+  manufacturer      String?     @db.VarChar(255)
+  type              String?     @db.VarChar(50)
+  dosageForm        DosageForm? @map("dosage_form")
+  strength          String?     @db.VarChar(100)
+  packSizeLabel     String?     @map("pack_size_label") @db.VarChar(255)
   // Numeric base units per pack/strip (e.g. 10), resolved from the label. Copied
   // straight into DrugFormulary.packSize on import so a strip sells as loose
   // units. Null = indivisible container (bottle/vial/tube).
-  packSize         Int?        @map("pack_size")
-  mrp              Decimal?    @db.Decimal(10, 2)
-  isDiscontinued   Boolean     @default(false) @map("is_discontinued")
+  packSize          Int?        @map("pack_size")
+  mrp               Decimal?    @db.Decimal(10, 2)
+  isDiscontinued    Boolean     @default(false) @map("is_discontinued")
   // LEGACY, DELIBERATELY LEFT NULL. checkSaleCompliance() already reads this
   // column and is already wired into createPharmacySale, so populating it would
   // silently switch counter enforcement on. The classifier writes
   // `scheduleResolved` instead; the compliance gate is repointed at that field
   // in a later phase, behind a per-hospital enforcement setting.
-  schedule         String?     @db.VarChar(10)
+  schedule          String?     @db.VarChar(10)
   // ── Resolved by the schedule classifier (see drug-schedule.classifier.ts) ──
   // 'X' | 'H1' | 'H' | 'G' | 'H2' | 'OTC'. Null = not yet classified.
-  scheduleResolved String?     @map("schedule_resolved") @db.VarChar(10)
+  scheduleResolved  String?     @map("schedule_resolved") @db.VarChar(10)
   // Human-readable justification ("matched Schedule H1 salt Tramadol"), kept so
   // a pharmacist or an inspector can see WHY a drug carries its schedule.
-  scheduleReason   String?     @map("schedule_reason")
+  scheduleReason    String?     @map("schedule_reason")
   // NDPS overlay, independent of scheduleResolved: 'narcotic' | 'psychotropic'.
-  controlledClass  String?     @map("controlled_class") @db.VarChar(20)
+  controlledClass   String?     @map("controlled_class") @db.VarChar(20)
   // Physical safe custody + witness co-sign. False for benzodiazepines,
   // tramadol and zolpidem, which dispense over the counter under their own
   // schedule.
-  vaultControlled  Boolean     @default(false) @map("vault_controlled")
+  vaultControlled   Boolean     @default(false) @map("vault_controlled")
   // Schedule H2 brand — Rule 96(6)-(7) QR/barcode obligation, not an Rx gate.
-  requiresQrScan   Boolean     @default(false) @map("requires_qr_scan")
+  requiresQrScan    Boolean     @default(false) @map("requires_qr_scan")
   // Salts parsed out of genericName: [{ raw, norm, strengthValue, strengthUnit,
   // perVolumeMl }]. Cached so the backfill and the reports do not re-parse.
-  saltsJson        Json?       @map("salts_json")
-  classifiedAt     DateTime?   @map("classified_at")
+  saltsJson         Json?       @map("salts_json")
+  classifiedAt      DateTime?   @map("classified_at")
   // Bumped when the classifier's logic changes, so a re-run can find stale rows.
-  classifierVersion Int?       @map("classifier_version")
+  classifierVersion Int?        @map("classifier_version")
   // Product Resolution Engine identity + compliance fields. GTIN-13 is the
   // consumer unit (a single strip/bottle); casePackGtin (GTIN-14) is the outer
   // wholesale case, and unitsPerCase translates a scanned case into N consumer
@@ -4181,27 +4181,27 @@ model DrugMaster {
   // A GTIN identifies one product, so it is unique across the whole platform
   // catalog. Nulls are allowed to repeat (Postgres treats them as distinct);
   // writes normalise a blank to NULL so an empty field never trips the index.
-  gtin             String?     @unique @db.VarChar(20)
-  casePackGtin     String?     @unique @map("case_pack_gtin") @db.VarChar(20)
-  unitsPerCase     Int?        @map("units_per_case")
-  manufacturerCode String?     @map("manufacturer_code") @db.VarChar(100)
-  hsnCode          String?     @map("hsn_code") @db.VarChar(20)
-  gstRate          Decimal?    @map("gst_rate") @db.Decimal(5, 2)
-  aliases          String[]    @default([])
-  tags             String[]    @default([])
+  gtin              String?     @unique @db.VarChar(20)
+  casePackGtin      String?     @unique @map("case_pack_gtin") @db.VarChar(20)
+  unitsPerCase      Int?        @map("units_per_case")
+  manufacturerCode  String?     @map("manufacturer_code") @db.VarChar(100)
+  hsnCode           String?     @map("hsn_code") @db.VarChar(20)
+  gstRate           Decimal?    @map("gst_rate") @db.Decimal(5, 2)
+  aliases           String[]    @default([])
+  tags              String[]    @default([])
   // Rich clinical detail (populated from the richer dataset / future provider
   // feeds). Reference data shared by all hospitals.
-  saltComposition  String?     @map("salt_composition")
-  description      String? // uses / "about" text
-  sideEffects      String?     @map("side_effects")
-  drugInteractions Json?       @map("drug_interactions") // { drug[], brand[], effect[] }
+  saltComposition   String?     @map("salt_composition")
+  description       String? // uses / "about" text
+  sideEffects       String?     @map("side_effects")
+  drugInteractions  Json?       @map("drug_interactions") // { drug[], brand[], effect[] }
   // Denormalised lowercase index of name + generic + manufacturer, recomputed
   // on every create/update — drives the catalog search endpoint.
-  searchTokens     String?     @map("search_tokens")
-  isPublished      Boolean     @default(true) @map("is_published")
-  createdById      String?     @map("created_by_id")
-  createdAt        DateTime    @default(now()) @map("created_at")
-  updatedAt        DateTime    @default(now()) @updatedAt @map("updated_at")
+  searchTokens      String?     @map("search_tokens")
+  isPublished       Boolean     @default(true) @map("is_published")
+  createdById       String?     @map("created_by_id")
+  createdAt         DateTime    @default(now()) @map("created_at")
+  updatedAt         DateTime    @default(now()) @updatedAt @map("updated_at")
 
   formularyItems DrugFormulary[]
   /// Structured composition. Replaces parsing `saltComposition` at classify time.
@@ -4256,21 +4256,21 @@ model HsnGstRate {
 // normally with an H1 register line and still shows in the controlled register.
 // Collapsing those into one boolean is what would wrongly vault 26 SKUs.
 model DrugScheduleRule {
-  id           String @id @default(uuid())
+  id           String   @id @default(uuid())
   // 'X' | 'H1' | 'H' | 'G' | 'H2' | 'NDPS'. NDPS rows are an overlay: they set
   // controlledClass/vault/threshold fields and never win the cascade themselves.
-  scheduleCode String @map("schedule_code") @db.VarChar(10)
+  scheduleCode String   @map("schedule_code") @db.VarChar(10)
   // 'salt'  — match a molecule in the product's composition (the normal case)
   // 'brand' — match the whole trade name (Schedule H2's 300 named formulations)
   // 'class' — a therapeutic-class entry ("Antibiotics", "Corticosteroids"),
   //           matched by `pattern` only AFTER every salt match has failed.
-  matchType    String @map("match_type") @db.VarChar(20)
+  matchType    String   @map("match_type") @db.VarChar(20)
   // As published in the schedule, for display and audit ("why was this X?").
-  matchValue   String @map("match_value") @db.VarChar(255)
+  matchValue   String   @map("match_value") @db.VarChar(255)
   // Lookup key: lowercased, punctuation-stripped, trailing salt form removed, so
   // the schedule's "Chlorpheniramine" matches a product's "Chlorpheniramine
   // Maleate". Brand rows keep the full lowercased trade name.
-  matchNorm    String @map("match_norm") @db.VarChar(255)
+  matchNorm    String   @map("match_norm") @db.VarChar(255)
   // Extra lookup keys: Indian labelling spellings (phenobarbitone/phenobarbital),
   // INN synonyms (paracetamol/acetaminophen), and the variants generated from
   // multi-salt entries ("Diclofenac Sodium/Potassium/Acid" → "diclofenac").
@@ -4430,8 +4430,8 @@ model TherapeuticClass {
 }
 
 model SaltTherapeuticClass {
-  saltId  String @map("salt_id")
-  classId String @map("class_id")
+  saltId      String  @map("salt_id")
+  classId     String  @map("class_id")
   /// True when a human confirmed the membership rather than the pattern guessing.
   isConfirmed Boolean @default(false) @map("is_confirmed")
 
@@ -4455,9 +4455,9 @@ model DrugSalt {
   saltId       String @map("salt_id")
 
   /// 400 in "400mg". Null when the catalog recorded "(NA)".
-  strengthValue Decimal? @map("strength_value") @db.Decimal(12, 4)
+  strengthValue  Decimal? @map("strength_value") @db.Decimal(12, 4)
   /// 'mg' | 'mcg' | 'g' | 'ml' | 'iu' | '%'
-  strengthUnit  String?  @map("strength_unit") @db.VarChar(10)
+  strengthUnit   String?  @map("strength_unit") @db.VarChar(10)
   /// For "10mg/5ml" this is 5 — the volume the strength is expressed per.
   perVolumeValue Decimal? @map("per_volume_value") @db.Decimal(12, 4)
   perVolumeUnit  String?  @map("per_volume_unit") @db.VarChar(10)
@@ -4526,42 +4526,42 @@ model NdpsStockBalance {
 /// fields each form mandates. from/to locations are plain ids resolved against
 /// NdpsLocation (kept relation-free so the ledger never blocks a location edit).
 model NdpsTransaction {
-  id              String   @id @default(uuid())
-  tenantId        String   @map("tenant_id")
-  drugFormularyId String   @map("drug_formulary_id")
-  entryType       String   @map("entry_type") // 'inward' | 'transfer' | 'dispense' | 'disposal'
-  quantity        Int
-  fromLocationId  String?  @map("from_location_id")
-  toLocationId    String?  @map("to_location_id")
+  id                String    @id @default(uuid())
+  tenantId          String    @map("tenant_id")
+  drugFormularyId   String    @map("drug_formulary_id")
+  entryType         String    @map("entry_type") // 'inward' | 'transfer' | 'dispense' | 'disposal'
+  quantity          Int
+  fromLocationId    String?   @map("from_location_id")
+  toLocationId      String?   @map("to_location_id")
   // Form 3C (procurement) — consignment provenance.
-  ndpsLicenseNumber String? @map("ndps_license_number") @db.VarChar(120)
-  form3cNumber      String? @map("form_3c_number") @db.VarChar(120)
-  transportDetails  String? @map("transport_details")
-  grossWeight       String? @map("gross_weight") @db.VarChar(60)
-  supplierId        String? @map("supplier_id")
-  batchNumber       String? @map("batch_number") @db.VarChar(100)
+  ndpsLicenseNumber String?   @map("ndps_license_number") @db.VarChar(120)
+  form3cNumber      String?   @map("form_3c_number") @db.VarChar(120)
+  transportDetails  String?   @map("transport_details")
+  grossWeight       String?   @map("gross_weight") @db.VarChar(60)
+  supplierId        String?   @map("supplier_id")
+  batchNumber       String?   @map("batch_number") @db.VarChar(100)
   expiryDate        DateTime? @map("expiry_date") @db.Date
   // The real stock batch this statutory entry moved. Narcotic stock used to live
   // in a ledger of its own, invisible to valuation, expiry alerts, recalls and
   // GST; it now sits in DrugBatch like every other medicine, and this points at
   // the batch so the register and the stock agree line for line.
-  drugBatchId       String? @map("drug_batch_id")
+  drugBatchId       String?   @map("drug_batch_id")
   // Form 3E (patient consumption) — mandatory audit fields.
-  patientId   String? @map("patient_id")
-  doctorRegNo String? @map("doctor_reg_no") @db.VarChar(60)
-  bedNumber   String? @map("bed_number") @db.VarChar(40)
-  diagnosis   String?
+  patientId         String?   @map("patient_id")
+  doctorRegNo       String?   @map("doctor_reg_no") @db.VarChar(60)
+  bedNumber         String?   @map("bed_number") @db.VarChar(40)
+  diagnosis         String?
   // Disposal — non-clinical loss accounting.
-  reasonCode      String? @map("reason_code") @db.VarChar(40) // 'breakage' | 'contamination' | 'expiry' | 'other'
-  referenceNumber String? @map("reference_number") @db.VarChar(120) // police complaint / destruction memo
-  attachmentUrl   String? @map("attachment_url")
-  coSignById      String? @map("co_sign_by_id")
+  reasonCode        String?   @map("reason_code") @db.VarChar(40) // 'breakage' | 'contamination' | 'expiry' | 'other'
+  referenceNumber   String?   @map("reference_number") @db.VarChar(120) // police complaint / destruction memo
+  attachmentUrl     String?   @map("attachment_url")
+  coSignById        String?   @map("co_sign_by_id")
   // Chain of custody — who recorded it + the counterparty who received it.
-  recordedById   String  @map("recorded_by_id")
-  counterpartyId String? @map("counterparty_id")
-  notes          String?
-  occurredAt     DateTime @default(now()) @map("occurred_at")
-  createdAt      DateTime @default(now()) @map("created_at")
+  recordedById      String    @map("recorded_by_id")
+  counterpartyId    String?   @map("counterparty_id")
+  notes             String?
+  occurredAt        DateTime  @default(now()) @map("occurred_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
 
   tenant Tenant        @relation(fields: [tenantId], references: [id])
   drug   DrugFormulary @relation(fields: [drugFormularyId], references: [id])
@@ -4616,37 +4616,37 @@ model NdpsDailyBalance {
 // for, while this is evidence a patient presented. Merging them would put
 // unverified outside data into the clinical record.
 model ExternalPrescription {
-  id       String  @id @default(uuid())
-  tenantId String  @map("tenant_id")
+  id                      String    @id @default(uuid())
+  tenantId                String    @map("tenant_id")
   // Set when the counter recognised the customer as an existing patient. Null
   // for a true walk-in, whose identity lives in the raw fields below.
-  patientId       String? @map("patient_id")
-  patientNameRaw  String? @map("patient_name_raw") @db.VarChar(255)
-  patientAge      Int?    @map("patient_age")
-  patientSex      String? @map("patient_sex") @db.VarChar(20)
+  patientId               String?   @map("patient_id")
+  patientNameRaw          String?   @map("patient_name_raw") @db.VarChar(255)
+  patientAge              Int?      @map("patient_age")
+  patientSex              String?   @map("patient_sex") @db.VarChar(20)
   // The Schedule H1 register must record the patient's ADDRESS, which we hold
   // nowhere else for a walk-in.
-  patientAddress  String? @map("patient_address")
+  patientAddress          String?   @map("patient_address")
   // The prescriber. The registration number is what makes the prescription
   // verifiable, so it is captured separately from the name.
-  prescriberName  String  @map("prescriber_name") @db.VarChar(255)
-  prescriberRegNo String? @map("prescriber_reg_no") @db.VarChar(60)
-  prescriberQualification String? @map("prescriber_qualification") @db.VarChar(120)
-  hospitalName    String? @map("hospital_name") @db.VarChar(255)
-  prescribedDate  DateTime? @map("prescribed_date") @db.Date
+  prescriberName          String    @map("prescriber_name") @db.VarChar(255)
+  prescriberRegNo         String?   @map("prescriber_reg_no") @db.VarChar(60)
+  prescriberQualification String?   @map("prescriber_qualification") @db.VarChar(120)
+  hospitalName            String?   @map("hospital_name") @db.VarChar(255)
+  prescribedDate          DateTime? @map("prescribed_date") @db.Date
   // Scan/photo of the slip. Schedule X requires the pharmacy to RETAIN a copy,
   // so for those sales this is the retained copy and is mandatory.
-  imageUrl        String? @map("image_url")
+  imageUrl                String?   @map("image_url")
   // Raw OCR output, kept so a later correction can be checked against what the
   // machine actually read rather than re-running it.
-  ocrJson         Json?   @map("ocr_json")
-  notes           String?
-  capturedById    String  @map("captured_by_id")
+  ocrJson                 Json?     @map("ocr_json")
+  notes                   String?
+  capturedById            String    @map("captured_by_id")
   // Statutory retention: +2 years for Schedule X, +3 for H1. Stored per row so a
   // purge job never has to re-derive it from the sale.
-  retainUntil     DateTime? @map("retain_until") @db.Date
-  createdAt       DateTime  @default(now()) @map("created_at")
-  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
+  retainUntil             DateTime? @map("retain_until") @db.Date
+  createdAt               DateTime  @default(now()) @map("created_at")
+  updatedAt               DateTime  @default(now()) @updatedAt @map("updated_at")
 
   tenant            Tenant             @relation(fields: [tenantId], references: [id])
   patient           Patient?           @relation(fields: [patientId], references: [id])
@@ -4704,107 +4704,107 @@ model PharmacyStockHoldItem {
 }
 
 model DrugFormulary {
-  id                String      @id @default(uuid())
-  tenantId          String      @map("tenant_id")
-  drugName          String      @map("drug_name") @db.VarChar(255)
+  id                     String            @id @default(uuid())
+  tenantId               String            @map("tenant_id")
+  drugName               String            @map("drug_name") @db.VarChar(255)
   // genericName may hold ONE or MORE generic/molecule names (comma-separated
   // when a brand maps to several). `composition` is the salt composition, a
   // separate concept — sometimes identical to the generic name, sometimes not.
   // composition is written/read via raw SQL (added live, migration-free).
-  genericName       String?     @map("generic_name") @db.VarChar(500)
-  composition       String?     @map("composition") @db.VarChar(500)
-  manufacturer      String?     @db.VarChar(255)
+  genericName            String?           @map("generic_name") @db.VarChar(500)
+  composition            String?           @map("composition") @db.VarChar(500)
+  manufacturer           String?           @db.VarChar(255)
   // What KIND of stock this is. Every type (medicine, consumable, surgical,
   // equipment, other) lives here so they all share one flow: batches, expiry,
   // search, prescribing and counter billing. Defaults to `drug` (medicine).
-  category          InventoryCategory @default(drug)
-  dosageForm        DosageForm? @map("dosage_form")
-  strength          String?     @db.VarChar(100)
-  unitOfMeasurement String?     @map("unit_of_measurement") @db.VarChar(20)
-  price             Decimal?    @db.Decimal(10, 2)
+  category               InventoryCategory @default(drug)
+  dosageForm             DosageForm?       @map("dosage_form")
+  strength               String?           @db.VarChar(100)
+  unitOfMeasurement      String?           @map("unit_of_measurement") @db.VarChar(20)
+  price                  Decimal?          @db.Decimal(10, 2)
   // Loose / sub-unit sale support. packSize = number of base (loose) units in a
   // full pack/strip (e.g. 10 tablets per strip). looseUnitLabel = the sellable
   // sub-unit name shown on the POS (e.g. "Tablet"). When packSize is null/1 the
   // drug is only sold as a single unit. Stock + price are always per BASE unit.
-  packSize          Int?        @map("pack_size")
-  looseUnitLabel    String?     @map("loose_unit_label") @db.VarChar(40)
+  packSize               Int?              @map("pack_size")
+  looseUnitLabel         String?           @map("loose_unit_label") @db.VarChar(40)
   // GST rate applied to this drug (India medicine = 0/5/12/18%). Prices are MRP
   // (tax-inclusive), so the bill shows the GST breakup rather than adding on top.
-  taxPercent        Decimal?    @map("tax_percent") @db.Decimal(5, 2)
+  taxPercent             Decimal?          @map("tax_percent") @db.Decimal(5, 2)
   // Product Resolution Engine / barcode identity carried from DrugMaster on
   // import (or set on manual create). gtin = consumer-unit GTIN-13 used to
   // resolve an inward line and to look the drug up from a POS scan; casePackGtin
   // (GTIN-14) + unitsPerCase let a scanned outer case post N consumer units.
-  gtin              String?     @db.VarChar(20)
-  casePackGtin      String?     @map("case_pack_gtin") @db.VarChar(20)
-  unitsPerCase      Int?        @map("units_per_case")
-  manufacturerCode  String?     @map("manufacturer_code") @db.VarChar(100)
-  hsnCode           String?     @map("hsn_code") @db.VarChar(20)
+  gtin                   String?           @db.VarChar(20)
+  casePackGtin           String?           @map("case_pack_gtin") @db.VarChar(20)
+  unitsPerCase           Int?              @map("units_per_case")
+  manufacturerCode       String?           @map("manufacturer_code") @db.VarChar(100)
+  hsnCode                String?           @map("hsn_code") @db.VarChar(20)
   // G9: reorder level (in base units). When live stock falls to/below this, the
   // drug surfaces in the reorder list for a draft purchase order.
-  minStock          Int?        @map("min_stock")
-  indications       String?
-  contraindications String?
-  isActive          Boolean     @default(true) @map("is_active")
+  minStock               Int?              @map("min_stock")
+  indications            String?
+  contraindications      String?
+  isActive               Boolean           @default(true) @map("is_active")
   // NOTE: recall is batch-level only (see DrugBatch.isRecalled / recallReason).
   // A medicine is never recalled as a whole — a recall names a specific batch.
   // Vital / life-saving drug. Per the IP design doc, the credit-clearance gate
   // (cash patient over deposit) is bypassed for these so emergency dosing is
   // never withheld for money. Defaults to false.
-  isLifeSaving      Boolean     @default(false) @map("is_life_saving")
+  isLifeSaving           Boolean           @default(false) @map("is_life_saving")
   // NDPS Essential Narcotic Drug — when true this drug is governed by the
   // narcotic accounting workflow (Form 3C/3E/3H, vault custody, dual-auth).
   // Five dispensing paths throw on this flag, so it is NOT written by the
   // classifier: it stays hospital-controlled until the inline controlled-drug
   // flow lands. `controlledClass` + `vaultControlled` below carry the
   // classifier's opinion without changing any existing behaviour.
-  isNarcotic        Boolean     @default(false) @map("is_narcotic")
+  isNarcotic             Boolean           @default(false) @map("is_narcotic")
   // ── Resolved by the schedule classifier ──
   // 'X' | 'H1' | 'H' | 'G' | 'H2' | 'OTC'. Null = not yet classified.
-  schedule          String?     @db.VarChar(10)
+  schedule               String?           @db.VarChar(10)
   // 'auto'      — the classifier decided it from this drug's own composition
   // 'inherited' — copied from the linked DrugMaster catalog row
   // 'manual'    — a pharmacy admin overrode it; a re-run must never overwrite it
-  scheduleSource    String?     @map("schedule_source") @db.VarChar(20)
-  scheduleReason    String?     @map("schedule_reason")
-  scheduleOverriddenById String? @map("schedule_overridden_by_id")
-  scheduleOverriddenAt   DateTime? @map("schedule_overridden_at")
+  scheduleSource         String?           @map("schedule_source") @db.VarChar(20)
+  scheduleReason         String?           @map("schedule_reason")
+  scheduleOverriddenById String?           @map("schedule_overridden_by_id")
+  scheduleOverriddenAt   DateTime?         @map("schedule_overridden_at")
   // NDPS overlay: 'narcotic' | 'psychotropic'. Drives which statutory register
   // and report the drug appears in — separate from what the counter collects.
-  controlledClass   String?     @map("controlled_class") @db.VarChar(20)
-  vaultControlled   Boolean     @default(false) @map("vault_controlled")
-  requiresQrScan    Boolean     @default(false) @map("requires_qr_scan")
-  saltsJson         Json?       @map("salts_json")
-  classifiedAt      DateTime?   @map("classified_at")
-  classifierVersion Int?        @map("classifier_version")
+  controlledClass        String?           @map("controlled_class") @db.VarChar(20)
+  vaultControlled        Boolean           @default(false) @map("vault_controlled")
+  requiresQrScan         Boolean           @default(false) @map("requires_qr_scan")
+  saltsJson              Json?             @map("salts_json")
+  classifiedAt           DateTime?         @map("classified_at")
+  classifierVersion      Int?              @map("classifier_version")
   // TPA/cashless reimbursability. Most drugs are reimbursable; disposables and
   // certain consumables (syringes, gloves) are billed to the patient out-of-
   // pocket. Drives the Reimbursable vs Non-Reimbursable split on the IP summary.
-  isReimbursable    Boolean     @default(true) @map("is_reimbursable")
+  isReimbursable         Boolean           @default(true) @map("is_reimbursable")
   // Provenance: set when this formulary row was imported from the platform
   // DrugMaster catalog (vs. hospital-authored). Drives import dedupe.
-  drugMasterId      String?     @map("drug_master_id")
+  drugMasterId           String?           @map("drug_master_id")
   // Additive unification link: optionally maps this pharmacy drug to the generic
   // inventory item that represents the same product, so the combined Inventory
   // page can treat the two stock systems as one (and de-duplicate SKU counts).
   // Nullable — the default is unmapped, which leaves both systems untouched.
-  inventoryItemId   String?     @map("inventory_item_id")
-  createdAt         DateTime    @default(now()) @map("created_at")
-  updatedAt         DateTime    @default(now()) @updatedAt @map("updated_at")
+  inventoryItemId        String?           @map("inventory_item_id")
+  createdAt              DateTime          @default(now()) @map("created_at")
+  updatedAt              DateTime          @default(now()) @updatedAt @map("updated_at")
 
-  tenant             Tenant                  @relation(fields: [tenantId], references: [id])
-  drugMaster         DrugMaster?             @relation(fields: [drugMasterId], references: [id])
-  inventoryItem      InventoryItem?          @relation("FormularyInventoryLink", fields: [inventoryItemId], references: [id])
-  drugBatches         DrugBatch[]
-  prescriptionItems   PrescriptionItem[]
-  drugReturns         DrugReturn[]
-  purchaseOrderItems  DrugPurchaseOrderItem[]
+  tenant                      Tenant                  @relation(fields: [tenantId], references: [id])
+  drugMaster                  DrugMaster?             @relation(fields: [drugMasterId], references: [id])
+  inventoryItem               InventoryItem?          @relation("FormularyInventoryLink", fields: [inventoryItemId], references: [id])
+  drugBatches                 DrugBatch[]
+  prescriptionItems           PrescriptionItem[]
+  drugReturns                 DrugReturn[]
+  purchaseOrderItems          DrugPurchaseOrderItem[]
   inventoryPurchaseOrderItems PurchaseOrderItem[]
-  ndpsBalances        NdpsStockBalance[]
-  ndpsTransactions    NdpsTransaction[]
-  ndpsDailyBalances   NdpsDailyBalance[]
-  stockHoldItems      PharmacyStockHoldItem[]
-  nameMappings        DrugNameMapping[]
+  ndpsBalances                NdpsStockBalance[]
+  ndpsTransactions            NdpsTransaction[]
+  ndpsDailyBalances           NdpsDailyBalance[]
+  stockHoldItems              PharmacyStockHoldItem[]
+  nameMappings                DrugNameMapping[]
 
   // A GTIN identifies one product, so within a hospital's formulary it belongs
   // to at most one drug (else a counter/inward scan is ambiguous). Scoped per
@@ -4841,7 +4841,6 @@ model DrugNameMapping {
   @@index([drugFormularyId])
   @@map("drug_name_mappings")
 }
-
 
 model DrugBatch {
   id                      String    @id @default(uuid())
@@ -4888,9 +4887,9 @@ model DrugBatch {
   createdAt               DateTime  @default(now()) @map("created_at")
   updatedAt               DateTime  @default(now()) @updatedAt @map("updated_at")
 
-  drug              DrugFormulary      @relation(fields: [drugId], references: [id])
-  tenant            Tenant             @relation(fields: [tenantId], references: [id])
-  supplier          Supplier?          @relation(fields: [supplierId], references: [id])
+  drug              DrugFormulary           @relation(fields: [drugId], references: [id])
+  tenant            Tenant                  @relation(fields: [tenantId], references: [id])
+  supplier          Supplier?               @relation(fields: [supplierId], references: [id])
   dispensingRecords DispensingRecord[]
   drugReturns       DrugReturn[]
   stockTransfers    StockTransfer[]
@@ -4901,69 +4900,69 @@ model DrugBatch {
 }
 
 model DispensingRecord {
-  id                 String   @id @default(uuid())
-  tenantId           String   @map("tenant_id")
+  id                     String    @id @default(uuid())
+  tenantId               String    @map("tenant_id")
   // Nullable so the POS can record a walk-in / OTC counter sale that is NOT
   // tied to any doctor prescription. When present, the Rx status is recomputed.
-  prescriptionId     String?  @map("prescription_id")
-  prescriptionItemId String?  @map("prescription_item_id")
+  prescriptionId         String?   @map("prescription_id")
+  prescriptionItemId     String?   @map("prescription_item_id")
   // The OTHER way a sale can be prescription-backed: a paper Rx written outside
   // this hospital, captured at the counter. A line carries at most one of the
   // two — an in-system prescription or an external one.
-  externalPrescriptionId String? @map("external_prescription_id")
-  patientId          String   @map("patient_id")
-  drugBatchId        String   @map("drug_batch_id")
-  quantityDispensed  Int      @map("quantity_dispensed")
-  dispensedBy        String   @map("dispensed_by")
-  dispensedAt        DateTime @default(now()) @map("dispensed_at")
-  verifiedBy         String?  @map("verified_by")
+  externalPrescriptionId String?   @map("external_prescription_id")
+  patientId              String    @map("patient_id")
+  drugBatchId            String    @map("drug_batch_id")
+  quantityDispensed      Int       @map("quantity_dispensed")
+  dispensedBy            String    @map("dispensed_by")
+  dispensedAt            DateTime  @default(now()) @map("dispensed_at")
+  verifiedBy             String?   @map("verified_by")
   // The code read off the pack for a Schedule H2 formulation — the Rule
   // 96(6)-(7) QR/barcode that says the pack is genuine. Nullable because most
   // drugs are not on that list, and because the obligation is advisory until a
   // hospital sets qrScanMode to 'require'. Kept so the sale can be evidenced
   // later, which is the only thing that makes the scan worth asking for.
-  scannedCode        String?  @map("scanned_code") @db.VarChar(120)
-  notes              String?
+  scannedCode            String?   @map("scanned_code") @db.VarChar(120)
+  notes                  String?
   // Sale economics captured at dispense time so the cash counter, receipt and
   // GST report read the true billed figures (not a re-derived batch price).
   // sold = pack | loose (loose = sub-unit broken out of a strip/pack).
-  saleUnit           String?  @default("pack") @map("sale_unit") @db.VarChar(10)
-  unitPrice          Decimal? @map("unit_price") @db.Decimal(12, 2)
-  discountPercent    Decimal? @default(0) @map("discount_percent") @db.Decimal(5, 2)
-  taxPercent         Decimal? @default(0) @map("tax_percent") @db.Decimal(5, 2)
-  lineTotal          Decimal? @map("line_total") @db.Decimal(12, 2)
+  saleUnit               String?   @default("pack") @map("sale_unit") @db.VarChar(10)
+  unitPrice              Decimal?  @map("unit_price") @db.Decimal(12, 2)
+  discountPercent        Decimal?  @default(0) @map("discount_percent") @db.Decimal(5, 2)
+  taxPercent             Decimal?  @default(0) @map("tax_percent") @db.Decimal(5, 2)
+  lineTotal              Decimal?  @map("line_total") @db.Decimal(12, 2)
   // §4.4: a line marked non-returnable on the bill at sale time (e.g. opened
   // vial, cold-chain item) can never be taken back as a patient return.
-  nonReturnable      Boolean  @default(false) @map("non_returnable")
+  nonReturnable          Boolean   @default(false) @map("non_returnable")
   // TTO (To Take Out) — discharge medication dispensed in full packs and added
   // to the final hospital bill, vs. routine daily IP unit-dose drops.
-  isTto              Boolean  @default(false) @map("is_tto")
+  isTto                  Boolean   @default(false) @map("is_tto")
   // Invoice this line was billed on (the pharmacy Bill). Plain column — the
   // canonical link is BillItem.referenceId; this is a convenience back-pointer.
-  billId             String?  @map("bill_id")
+  billId                 String?   @map("bill_id")
   // Controlled-drug co-sign. Set when the line required a second authenticated
   // person to witness the hand-over (vault narcotics). Always a different user
   // from `dispensedBy` — a witness who is the dispenser is not a witness.
-  witnessedById      String?   @map("witnessed_by_id")
-  witnessedAt        DateTime? @map("witnessed_at")
+  witnessedById          String?   @map("witnessed_by_id")
+  witnessedAt            DateTime? @map("witnessed_at")
   // Voided with its invoice. The row is KEPT rather than deleted: it is the
   // controlled-drug register's record that this medicine left the counter, and
   // a statutory register is corrected by a further entry, never by erasing one.
   // Everything that counts what was dispensed excludes these; the register
   // shows them, alongside a reversal row putting the stock back.
-  cancelledAt        DateTime? @map("cancelled_at")
-  cancelledBy        String?   @map("cancelled_by")
+  cancelledAt            DateTime? @map("cancelled_at")
+  cancelledBy            String?   @map("cancelled_by")
 
-  tenant           Tenant            @relation(fields: [tenantId], references: [id])
-  prescription     Prescription?     @relation(fields: [prescriptionId], references: [id])
-  prescriptionItem PrescriptionItem? @relation(fields: [prescriptionItemId], references: [id])
+  tenant               Tenant                @relation(fields: [tenantId], references: [id])
+  prescription         Prescription?         @relation(fields: [prescriptionId], references: [id])
+  prescriptionItem     PrescriptionItem?     @relation(fields: [prescriptionItemId], references: [id])
   externalPrescription ExternalPrescription? @relation(fields: [externalPrescriptionId], references: [id])
-  patient          Patient           @relation(fields: [patientId], references: [id])
-  drugBatch        DrugBatch         @relation(fields: [drugBatchId], references: [id])
-  dispenser        User              @relation("Dispenser", fields: [dispensedBy], references: [id])
-  verifier         User?             @relation("DispensingVerifier", fields: [verifiedBy], references: [id])
-  witness          User?             @relation("DispensingWitness", fields: [witnessedById], references: [id])
-  drugReturns      DrugReturn[]
+  patient              Patient               @relation(fields: [patientId], references: [id])
+  drugBatch            DrugBatch             @relation(fields: [drugBatchId], references: [id])
+  dispenser            User                  @relation("Dispenser", fields: [dispensedBy], references: [id])
+  verifier             User?                 @relation("DispensingVerifier", fields: [verifiedBy], references: [id])
+  witness              User?                 @relation("DispensingWitness", fields: [witnessedById], references: [id])
+  drugReturns          DrugReturn[]
 
   @@map("dispensing_records")
 }
@@ -5116,26 +5115,26 @@ model MedicationIndent {
 }
 
 model MedicationIndentItem {
-  id               String   @id @default(uuid())
-  indentId         String   @map("indent_id")
-  drugFormularyId  String   @map("drug_formulary_id")
-  requestedQty     Int      @map("requested_qty")
-  approvedQty      Int?     @map("approved_qty")
+  id                 String   @id @default(uuid())
+  indentId           String   @map("indent_id")
+  drugFormularyId    String   @map("drug_formulary_id")
+  requestedQty       Int      @map("requested_qty")
+  approvedQty        Int?     @map("approved_qty")
   // Base (loose) units vs whole packs. A TTO indent forces 'pack'.
-  saleUnit         String   @default("pack") @map("sale_unit") @db.VarChar(10)
-  dispensedBatchId String?  @map("dispensed_batch_id")
-  dispensedQty     Int?     @map("dispensed_qty")
-  unitPrice        Decimal? @map("unit_price") @db.Decimal(12, 2)
-  lineTotal        Decimal? @map("line_total") @db.Decimal(12, 2)
+  saleUnit           String   @default("pack") @map("sale_unit") @db.VarChar(10)
+  dispensedBatchId   String?  @map("dispensed_batch_id")
+  dispensedQty       Int?     @map("dispensed_qty")
+  unitPrice          Decimal? @map("unit_price") @db.Decimal(12, 2)
+  lineTotal          Decimal? @map("line_total") @db.Decimal(12, 2)
   // The DispensingRecord minted when this line was dispensed — kept so the IP
   // Return-to-Stock (RTS) flow can precisely reverse the exact dispense (restock
   // the original batch, net down the sale record, credit the running bill).
-  dispensingRecordId String? @map("dispensing_record_id")
+  dispensingRecordId String?  @map("dispensing_record_id")
   // Cumulative quantity (in this line's saleUnit) already returned to pharmacy via
   // the RTS flow. dispensedQty − returnedQty = what the ward still holds.
-  returnedQty      Int?     @default(0) @map("returned_qty")
-  acknowledged     Boolean  @default(false)
-  notes            String?
+  returnedQty        Int?     @default(0) @map("returned_qty")
+  acknowledged       Boolean  @default(false)
+  notes              String?
 
   indent MedicationIndent @relation(fields: [indentId], references: [id], onDelete: Cascade)
 
@@ -5244,33 +5243,33 @@ model OtKitIssueItem {
 // ============================================================
 
 model Supplier {
-  id            String      @id @default(uuid())
-  tenantId      String      @map("tenant_id")
-  name          String      @db.VarChar(255)
-  phone         String?     @db.VarChar(20)
-  email         String?     @db.VarChar(255)
-  address       String?
-  gstNumber     String?     @map("gst_number") @db.VarChar(50)
-  licenseNumber String?     @map("license_number") @db.VarChar(100)
-  supplyType    SupplyType? @map("supply_type")
+  id              String      @id @default(uuid())
+  tenantId        String      @map("tenant_id")
+  name            String      @db.VarChar(255)
+  phone           String?     @db.VarChar(20)
+  email           String?     @db.VarChar(255)
+  address         String?
+  gstNumber       String?     @map("gst_number") @db.VarChar(50)
+  licenseNumber   String?     @map("license_number") @db.VarChar(100)
+  supplyType      SupplyType? @map("supply_type")
   // Credit period agreed with the vendor: how many days we have to pay them
   // after an invoice. Plain reference figure captured at vendor creation.
-  paymentTermDays Int?      @map("payment_term_days")
+  paymentTermDays Int?        @map("payment_term_days")
   // Max outstanding credit we'll carry with this vendor (₹). Reference figure
   // the accounts team uses when clearing dues — not enforced anywhere.
-  creditLimit   Decimal?    @map("credit_limit") @db.Decimal(12, 2)
+  creditLimit     Decimal?    @map("credit_limit") @db.Decimal(12, 2)
   // How this vendor is usually settled: cash | cheque | bank_transfer | upi |
   // credit. Reference for the accounts team; the FE offers a fixed dropdown.
-  paymentMode   String?     @map("payment_mode") @db.VarChar(30)
-  isActive      Boolean     @default(true) @map("is_active")
-  createdAt     DateTime    @default(now()) @map("created_at")
+  paymentMode     String?     @map("payment_mode") @db.VarChar(30)
+  isActive        Boolean     @default(true) @map("is_active")
+  createdAt       DateTime    @default(now()) @map("created_at")
 
-  tenant              Tenant                  @relation(fields: [tenantId], references: [id])
-  drugBatches         DrugBatch[]
-  drugReturns         DrugReturn[]
-  stockTransactions   StockTransaction[]
-  purchaseOrders      PurchaseOrder[]
-  drugPurchaseOrders  DrugPurchaseOrder[]
+  tenant             Tenant              @relation(fields: [tenantId], references: [id])
+  drugBatches        DrugBatch[]
+  drugReturns        DrugReturn[]
+  stockTransactions  StockTransaction[]
+  purchaseOrders     PurchaseOrder[]
+  drugPurchaseOrders DrugPurchaseOrder[]
 
   @@map("suppliers")
 }
@@ -5670,26 +5669,26 @@ model Payment {
 /// every payment already records who took it, so the expected figure can be
 /// derived per person rather than guessed for the counter as a whole.
 model CashDrawerClosure {
-  id           String   @id @default(uuid())
-  tenantId     String   @map("tenant_id")
+  id            String   @id @default(uuid())
+  tenantId      String   @map("tenant_id")
   /// The IST calendar day being closed, not a timestamp.
-  businessDate DateTime @map("business_date") @db.Date
+  businessDate  DateTime @map("business_date") @db.Date
   /// Whose drawer. Payments carry processedBy, so expected cash is derived.
-  cashierId    String   @map("cashier_id")
+  cashierId     String   @map("cashier_id")
   /// Cash handed over at the start of the shift to make change with.
-  openingFloat Decimal  @default(0) @map("opening_float") @db.Decimal(12, 2)
+  openingFloat  Decimal  @default(0) @map("opening_float") @db.Decimal(12, 2)
   /// System figure: openingFloat + cash collected − cash refunded.
-  expectedCash Decimal  @default(0) @map("expected_cash") @db.Decimal(12, 2)
+  expectedCash  Decimal  @default(0) @map("expected_cash") @db.Decimal(12, 2)
   /// What the cashier actually counted.
-  countedCash  Decimal  @default(0) @map("counted_cash") @db.Decimal(12, 2)
+  countedCash   Decimal  @default(0) @map("counted_cash") @db.Decimal(12, 2)
   /// countedCash − expectedCash. Negative is short, positive is over.
-  variance     Decimal  @default(0) @db.Decimal(12, 2)
+  variance      Decimal  @default(0) @db.Decimal(12, 2)
   /// Note count per denomination, e.g. {"500": 12, "200": 3}. Optional — a
   /// cashier may just enter a total.
-  denominations Json?   @map("denominations")
-  notes        String?
-  closedBy     String   @map("closed_by")
-  closedAt     DateTime @default(now()) @map("closed_at")
+  denominations Json?    @map("denominations")
+  notes         String?
+  closedBy      String   @map("closed_by")
+  closedAt      DateTime @default(now()) @map("closed_at")
 
   tenant  Tenant @relation(fields: [tenantId], references: [id])
   cashier User   @relation("DrawerCashier", fields: [cashierId], references: [id])
@@ -5950,31 +5949,44 @@ model PreAuthorizationRequest {
   createdAt            DateTime      @default(now()) @map("created_at")
   updatedAt            DateTime      @default(now()) @updatedAt @map("updated_at")
 
-  tenant    Tenant          @relation(fields: [tenantId], references: [id])
-  patient   Patient         @relation(fields: [patientId], references: [id])
-  policy    InsurancePolicy @relation(fields: [policyId], references: [id])
-  submitter User?           @relation(fields: [submittedBy], references: [id])
+  tenant               Tenant                @relation(fields: [tenantId], references: [id])
+  patient              Patient               @relation(fields: [patientId], references: [id])
+  policy               InsurancePolicy       @relation(fields: [policyId], references: [id])
+  submitter            User?                 @relation(fields: [submittedBy], references: [id])
+  tpaCommunicationLogs TpaCommunicationLog[]
 
   @@map("pre_authorization_requests")
 }
 
+/// One recorded interaction with a TPA or insurer over a claim or a pre-authorization.
+///
+/// `tpaId` is optional because a claim reaches its TPA through the policy, and
+/// a policy need not name one — a hospital that deals with the insurer direct
+/// still has a conversation worth auditing. `isSystem` separates the entries
+/// the lifecycle records automatically from the ones staff type after a call.
 model TpaCommunicationLog {
   id                String                  @id @default(uuid())
   tenantId          String                  @map("tenant_id")
   claimId           String?                 @map("claim_id")
-  tpaId             String                  @map("tpa_id")
+  preAuthId         String?                 @map("pre_auth_id")
+  tpaId             String?                 @map("tpa_id")
   communicationType CommunicationType?      @map("communication_type")
   subject           String?                 @db.VarChar(255)
   content           String?
   direction         CommunicationDirection?
+  isSystem          Boolean                 @default(false) @map("is_system")
   communicatedBy    String?                 @map("communicated_by")
   createdAt         DateTime                @default(now()) @map("created_at")
 
-  tenant       Tenant          @relation(fields: [tenantId], references: [id])
-  claim        InsuranceClaim? @relation(fields: [claimId], references: [id])
-  tpa          TpaProvider     @relation(fields: [tpaId], references: [id])
-  communicator User?           @relation(fields: [communicatedBy], references: [id])
+  tenant       Tenant                   @relation(fields: [tenantId], references: [id])
+  claim        InsuranceClaim?          @relation(fields: [claimId], references: [id])
+  preAuth      PreAuthorizationRequest? @relation(fields: [preAuthId], references: [id])
+  tpa          TpaProvider?             @relation(fields: [tpaId], references: [id])
+  communicator User?                    @relation(fields: [communicatedBy], references: [id])
 
+  @@index([tenantId, createdAt])
+  @@index([claimId])
+  @@index([preAuthId])
   @@map("tpa_communication_logs")
 }
 
@@ -6618,8 +6630,8 @@ model OtRequest {
   doctorRespondedAt     DateTime? @map("doctor_responded_at")
   rescheduleCount       Int       @default(0) @map("reschedule_count")
 
-  createdAt          DateTime         @default(now()) @map("created_at")
-  updatedAt          DateTime         @default(now()) @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
   tenant       Tenant            @relation(fields: [tenantId], references: [id])
   patient      Patient           @relation(fields: [patientId], references: [id])
