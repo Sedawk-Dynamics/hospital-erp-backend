@@ -14,6 +14,12 @@ import {
   type ControlledDrugSettings,
   type DrugLicenceSettings,
 } from '../../shared/controlled-drug';
+import {
+  DEFAULT_GST_PROFILE,
+  GstProfileError,
+  mergeGstProfile,
+  type GstProfile,
+} from '../../shared/gst-profile';
 
 // ---------------------------------------------------------------------------
 // Per-hospital operational settings that are one value, not a catalog.
@@ -116,6 +122,42 @@ export async function updateDrugLicenceSettings(
   await prisma.tenant.update({
     where: { id: tenantId },
     data: { themeConfig: { ...cfg, drugLicence: merged } as object },
+  });
+  return merged;
+}
+
+// ── GST registration ───────────────────────────────────────────────────────
+//
+// The hospital's own tax identity. Read on every billing write path to decide
+// whether tax applies at all, what the place of supply is, and therefore
+// whether a line carries CGST+SGST or IGST.
+
+export async function getGstProfile(tenantId: string): Promise<GstProfile> {
+  try {
+    const cfg = await readThemeConfig(tenantId);
+    return mergeGstProfile(DEFAULT_GST_PROFILE, cfg.gst);
+  } catch {
+    // Billing must never fail because a settings read did — and an unregistered
+    // profile is the safe fallback: no tax charged, bill of supply issued.
+    // Charging tax the hospital may not owe is the one outcome to avoid.
+    return DEFAULT_GST_PROFILE;
+  }
+}
+
+export async function updateGstProfile(tenantId: string, patch: unknown): Promise<GstProfile> {
+  const cfg = await readThemeConfig(tenantId);
+  const current = mergeGstProfile(DEFAULT_GST_PROFILE, cfg.gst);
+  let merged: GstProfile;
+  try {
+    merged = mergeGstProfile(current, patch);
+  } catch (err) {
+    // A rejected GSTIN is the admin's typo, not a server fault.
+    if (err instanceof GstProfileError) throw AppError.badRequest(err.message);
+    throw err;
+  }
+  await prisma.tenant.update({
+    where: { id: tenantId },
+    data: { themeConfig: { ...cfg, gst: merged } as object },
   });
   return merged;
 }

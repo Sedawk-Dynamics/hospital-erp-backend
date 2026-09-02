@@ -4,6 +4,8 @@ import {
   getPatientVisitStatus,
   getRegistrationFeeSettings,
   updateRegistrationFeeSettings,
+  getGstProfile,
+  updateGstProfile,
 } from '../../../../src/modules/hospital-settings/hospital-settings.service';
 
 const TENANT = 'tenant-1';
@@ -187,5 +189,96 @@ describe('getPatientVisitStatus', () => {
   it('refuses a patient from another hospital', async () => {
     (prisma.patient.findFirst as any).mockResolvedValue(null);
     await expect(getPatientVisitStatus(TENANT, PATIENT)).rejects.toThrow('Patient not found');
+  });
+});
+
+describe('GST registration', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const VALID = '27AAPFU0939F1ZV';
+
+  it('is unregistered until the hospital fills it in', async () => {
+    (prisma.tenant.findFirst as any).mockResolvedValue({ themeConfig: {} });
+    expect(await getGstProfile(TENANT)).toMatchObject({
+      registered: false,
+      gstin: null,
+      stateCode: null,
+    });
+  });
+
+  // Charging tax the hospital may not owe is the one outcome to avoid, so a
+  // failed read falls back to unregistered rather than to anything else.
+  it('falls back to unregistered when the settings cannot be read', async () => {
+    (prisma.tenant.findFirst as any).mockResolvedValue(null);
+    expect(await getGstProfile(TENANT)).toMatchObject({ registered: false });
+  });
+
+  it('reads back what was saved, with the state derived from the number', async () => {
+    (prisma.tenant.findFirst as any).mockResolvedValue({
+      themeConfig: { gst: { registered: true, gstin: VALID } },
+    });
+    expect(await getGstProfile(TENANT)).toMatchObject({
+      registered: true,
+      gstin: VALID,
+      stateCode: '27',
+      stateName: 'Maharashtra',
+    });
+  });
+
+  it('writes under its own key and leaves the rest of themeConfig alone', async () => {
+    (prisma.tenant.findFirst as any).mockResolvedValue({
+      themeConfig: {
+        pdf: { name: 'Hospital' },
+        registrationFee: { enabled: true, amount: 200 },
+      },
+    });
+
+    await updateGstProfile(TENANT, { gstin: VALID, registered: true, effectiveFrom: '2026-10-01' });
+
+    const data = (prisma.tenant.update as any).mock.calls[0][0].data.themeConfig;
+    expect(data.pdf).toEqual({ name: 'Hospital' });
+    expect(data.registrationFee).toMatchObject({ enabled: true, amount: 200 });
+    expect(data.gst).toMatchObject({
+      registered: true,
+      gstin: VALID,
+      stateCode: '27',
+      effectiveFrom: '2026-10-01',
+    });
+  });
+
+  // A rejected GSTIN is the admin's typo, so it must come back as a 400 rather
+  // than a 500 — and nothing may be written.
+  it('refuses an invalid GSTIN as a bad request and writes nothing', async () => {
+    (prisma.tenant.findFirst as any).mockResolvedValue({ themeConfig: {} });
+    await expect(updateGstProfile(TENANT, { gstin: '27AAPFU0939F1ZA' })).rejects.toMatchObject({
+      statusCode: 400,
+    });
+    expect((prisma.tenant.update as any)).not.toHaveBeenCalled();
+  });
+
+  it('refuses to register without a number', async () => {
+    (prisma.tenant.findFirst as any).mockResolvedValue({ themeConfig: {} });
+    await expect(updateGstProfile(TENANT, { registered: true })).rejects.toMatchObject({
+      statusCode: 400,
+    });
+  });
+
+  it('applies a partial patch without disturbing the registration', async () => {
+    (prisma.tenant.findFirst as any).mockResolvedValue({
+      themeConfig: { gst: { registered: true, gstin: VALID } },
+    });
+
+    await updateGstProfile(TENANT, { sixDigitHsn: true, dischargeMedicinesTaxable: false });
+
+    const gst = (prisma.tenant.update as any).mock.calls[0][0].data.themeConfig.gst;
+    expect(gst).toMatchObject({
+      registered: true,
+      gstin: VALID,
+      sixDigitHsn: true,
+      dischargeMedicinesTaxable: false,
+      inpatientCompositeExempt: true,
+    });
   });
 });

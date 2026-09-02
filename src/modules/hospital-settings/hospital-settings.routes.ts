@@ -97,6 +97,37 @@ hospitalSettingsRoutes.get(
   },
 );
 
+// GST registration. Written by an admin only — it is the hospital's own tax
+// identity and a wrong GSTIN invalidates every invoice printed against it.
+hospitalSettingsRoutes.put(
+  '/gst-profile',
+  ...adminOnly,
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const data = await service.updateGstProfile(req.user!.tenantId, req.body ?? {});
+      sendResponse({ res, message: 'GST registration saved', data });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// Readable by anyone who raises a bill, because the counter has to know whether
+// it is issuing a tax invoice or a bill of supply before it prints one.
+hospitalSettingsRoutes.get(
+  '/gst-profile',
+  authenticate,
+  requirePermission('billing', 'read'),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const data = await service.getGstProfile(req.user!.tenantId);
+      sendResponse({ res, message: 'GST registration', data });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 // Read-only, and needed by whoever books an appointment — the front desk, not
 // just the admin — so it is gated on reading patients rather than on being an
 // admin. It returns the fee settings alongside, which is fine: the desk has to
