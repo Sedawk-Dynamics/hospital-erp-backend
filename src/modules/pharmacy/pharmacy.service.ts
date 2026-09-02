@@ -10,6 +10,7 @@ import { usersWithRoles } from '../../shared/notify';
 import { createBillInSeries } from '../../shared/bill-number';
 import { resolvePackSize, inferLooseUnitLabel } from '../drug-master/drug-master.dataset';
 import { resolveHsnGst, getHsnGstRows, matchHsnGst } from '../drug-master/drug-master.service';
+import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
 import {
   classifyFormularyItem,
   inheritedScheduleFields,
@@ -4804,6 +4805,25 @@ export async function listStockHolds(tenantId: string, query: { status?: string;
 }
 
 /**
+ * Settle a bill header from its lines, after the stock transaction has
+ * committed.
+ *
+ * Outside the transaction on purpose — a header recalculation must not hold
+ * stock locks open — and best effort, because the charge IS on the bill either
+ * way. Only the header figures would be stale, and a failed recalculation must
+ * never undo a dispense that has already moved stock.
+ */
+async function settlePharmacyBillHeader(billId: string | null | undefined): Promise<void> {
+  if (!billId) return;
+  try {
+    const billing = await import('../billing/billing.service');
+    await billing.recalculateBillTotalsPublic(billId);
+  } catch (err) {
+    logger.warn({ err, billId }, 'Could not settle the bill header after a pharmacy movement');
+  }
+}
+
+/**
  * G13: a ward dispenses a drug from its own stock to a patient. Decrements ward
  * stock, logs the ward ledger, and posts the charge to the patient's open IP
  * bill (creating a draft IP-ward bill if none) so it's billed next cycle.
@@ -4822,6 +4842,10 @@ export async function dispenseFromWard(
   const patient = await prisma.patient.findFirst({ where: { id: data.patientId, tenantId }, select: { id: true } });
   if (!patient) throw AppError.notFound('Patient not found');
 
+  // Read before the transaction opens: the profile and the rate masters must
+  // not be fetched while stock locks are held.
+  const wardTaxResolver = await taxResolverFor(tenantId);
+
   const result = await prisma.$transaction(async (tx) => {
     const ws = await tx.wardStock.findFirst({
       where: { tenantId, wardId: data.wardId, drugBatchId: data.drugBatchId },
@@ -4835,7 +4859,7 @@ export async function dispenseFromWard(
       include: {
         drug: {
           select: {
-            drugName: true, category: true, price: true, taxPercent: true,
+            drugName: true, category: true, price: true, taxPercent: true, hsnCode: true,
             isLifeSaving: true, isNarcotic: true, isReimbursable: true,
             // Read by the controlled-drug gate.
             schedule: true, controlledClass: true, vaultControlled: true,
@@ -4923,6 +4947,22 @@ export async function dispenseFromWard(
       bill = await tx.bill.update({ where: { id: bill.id }, data: { admissionId: admId } });
     }
 
+    // A dose off the ward shelf is the commonest thing a hospital gives an
+    // inpatient, and it is part of the composite supply their treatment is —
+    // so it is exempt. The rules decide; this supplies the facts.
+    const priced = wardTaxResolver.price(
+      {
+        kind: 'medicine',
+        hsnCode: batch.drug?.hsnCode ?? null,
+        itemRatePercent: taxPct,
+        itemTreatment: taxPct > 0 ? 'taxable' : null,
+        taxInclusive: true,
+        patientAdmitted: true,
+        issuedForTreatment: true,
+      },
+      { unitPrice, quantity: data.quantity },
+    );
+
     await tx.billItem.create({
       data: {
         billId: bill.id,
@@ -4930,9 +4970,7 @@ export async function dispenseFromWard(
         category: 'pharmacy',
         quantity: data.quantity,
         unitPrice,
-        taxPercent: taxPct,
-        taxAmount: taxAmt,
-        totalAmount: gross,
+        ...billItemTaxFields(priced),
         referenceType: 'ward_dispense',
         referenceId: ws.id,
         isAutoPulled: true,
@@ -4940,16 +4978,9 @@ export async function dispenseFromWard(
       },
     });
 
-    await tx.bill.update({
-      where: { id: bill.id },
-      data: {
-        subtotal: round2(Number(bill.subtotal) + gross),
-        taxAmount: round2(Number(bill.taxAmount) + taxAmt),
-        totalAmount: round2(Number(bill.totalAmount) + gross),
-        patientPayableAmount: round2(Number(bill.patientPayableAmount) + gross),
-        balanceDue: round2(Number(bill.balanceDue) + gross),
-      },
-    });
+    // The header is derived from the lines once the stock transaction commits —
+    // see the settle call after this transaction. It was maintained by hand
+    // here, which drifts from the lines and cannot carry the GST split.
 
     await tx.wardStockLedger.create({
       data: {
@@ -4975,6 +5006,7 @@ export async function dispenseFromWard(
     return { billId: bill.id, billNumber: bill.billNumber, charged: gross };
   });
 
+  await settlePharmacyBillHeader((result as any)?.billId);
   logger.info({ tenantId, ...data, ...result }, 'Ward stock dispensed to patient');
   return result;
 }

@@ -1,4 +1,5 @@
 import { prisma } from '../../config/database';
+import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
 import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
@@ -46,10 +47,10 @@ async function nextIssueNumber(tx: any, tenantId: string): Promise<string> {
 /** Resolve formulary names/pricing for a set of drug ids (for list hydration). */
 async function drugMap(tenantId: string, ids: string[]) {
   const uniq = [...new Set(ids.filter(Boolean))];
-  if (!uniq.length) return new Map<string, { drugName: string; genericName: string | null; looseUnitLabel: string | null; price: number | null; taxPercent: number | null; isReimbursable: boolean | null }>();
+  if (!uniq.length) return new Map<string, { drugName: string; genericName: string | null; looseUnitLabel: string | null; price: number | null; taxPercent: number | null; hsnCode: string | null; isReimbursable: boolean | null }>();
   const rows = await prisma.drugFormulary.findMany({
     where: { tenantId, id: { in: uniq } },
-    select: { id: true, drugName: true, genericName: true, looseUnitLabel: true, price: true, taxPercent: true, isReimbursable: true },
+    select: { id: true, drugName: true, genericName: true, looseUnitLabel: true, price: true, taxPercent: true, hsnCode: true, isReimbursable: true },
   });
   return new Map(rows.map((r) => [r.id, {
     drugName: r.drugName,
@@ -57,6 +58,7 @@ async function drugMap(tenantId: string, ids: string[]) {
     looseUnitLabel: r.looseUnitLabel,
     price: r.price != null ? Number(r.price) : null,
     taxPercent: r.taxPercent != null ? Number(r.taxPercent) : null,
+    hsnCode: r.hsnCode ?? null,
     isReimbursable: r.isReimbursable ?? null,
   }]));
 }
@@ -406,11 +408,13 @@ export async function reconcileKit(
   }
 
   const drugNames = await drugMap(tenantId, issue.items.map((i) => i.drugFormularyId));
+  // Read before the transaction, which holds stock locks.
+  const resolver = await taxResolverFor(tenantId);
 
   const result = await prisma.$transaction(async (tx) => {
     let consumedTotal = 0;
     let consumedTax = 0;
-    const consumedLines: Array<{ drugName: string; drugBatchId: string | null; consumedQty: number; unitPrice: number; taxPct: number; gross: number; isReimbursable: boolean | null }> = [];
+    const consumedLines: Array<{ drugName: string; drugBatchId: string | null; consumedQty: number; unitPrice: number; taxPct: number; hsnCode: string | null; gross: number; isReimbursable: boolean | null }> = [];
 
     for (const it of issue.items) {
       const ret = returnMap.get(it.id) ?? 0;
@@ -431,7 +435,7 @@ export async function reconcileKit(
       if (consumed > 0) {
         consumedTotal = round2(consumedTotal + gross);
         consumedTax = round2(consumedTax + taxAmt);
-        consumedLines.push({ drugName: drugNames.get(it.drugFormularyId)?.drugName ?? 'Item', drugBatchId: it.drugBatchId ?? null, consumedQty: consumed, unitPrice, taxPct, gross, isReimbursable: drugNames.get(it.drugFormularyId)?.isReimbursable ?? null });
+        consumedLines.push({ drugName: drugNames.get(it.drugFormularyId)?.drugName ?? 'Item', drugBatchId: it.drugBatchId ?? null, consumedQty: consumed, unitPrice, taxPct, hsnCode: drugNames.get(it.drugFormularyId)?.hsnCode ?? null, gross, isReimbursable: drugNames.get(it.drugFormularyId)?.isReimbursable ?? null });
       }
     }
 
@@ -514,7 +518,23 @@ export async function reconcileKit(
       }
 
       for (const line of consumedLines) {
-        const taxAmt = round2(line.gross - line.gross / (1 + line.taxPct / 100));
+        // A consumable used ON the patient during their procedure follows the
+        // procedure, which for therapeutic surgery is exempt. Note the rate was
+        // frozen onto the issue line when the kit left the pharmacy, so the
+        // exemption has to be applied HERE at reconcile — a kit already in
+        // flight would otherwise still be taxed by its snapshot.
+        const priced = resolver.price(
+          {
+            kind: 'consumable',
+            hsnCode: line.hsnCode ?? null,
+            itemRatePercent: line.taxPct,
+            itemTreatment: line.taxPct > 0 ? 'taxable' : null,
+            taxInclusive: true,
+            patientAdmitted: true,
+            issuedForTreatment: true,
+          },
+          { unitPrice: line.unitPrice, quantity: line.consumedQty },
+        );
         await tx.billItem.create({
           data: {
             billId: bill.id,
@@ -524,9 +544,7 @@ export async function reconcileKit(
             category: 'consumable',
             quantity: line.consumedQty,
             unitPrice: line.unitPrice,
-            taxPercent: line.taxPct,
-            taxAmount: taxAmt,
-            totalAmount: line.gross,
+            ...billItemTaxFields(priced),
             referenceType: 'ot_kit_issue',
             referenceId: issue.id,
             isAutoPulled: true,

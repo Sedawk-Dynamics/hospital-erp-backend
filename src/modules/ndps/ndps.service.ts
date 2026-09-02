@@ -4,6 +4,7 @@ import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { findOpenChargeBill } from '../../shared/charge-bill';
 import { createBillInSeries } from '../../shared/bill-number';
+import { taxResolverFor, billItemTaxFields, type TaxResolver } from '../gst/gst-resolver.service';
 
 // ============================================================
 // NDPS Narcotic Accounting (spec — Essential Narcotic Drug lifecycle)
@@ -81,7 +82,17 @@ async function postConsumptionCharge(
   tx: any,
   tenantId: string,
   userId: string,
-  p: { patientId: string; drugName: string; unitPrice: number; taxPercent: number; quantity: number; bedNumber: string; ndpsTxnId: string },
+  p: {
+    patientId: string;
+    drugName: string;
+    unitPrice: number;
+    taxPercent: number;
+    hsnCode?: string | null;
+    quantity: number;
+    bedNumber: string;
+    ndpsTxnId: string;
+  },
+  resolver: TaxResolver,
 ) {
   if (!(p.unitPrice > 0)) return null;
 
@@ -109,7 +120,23 @@ async function postConsumptionCharge(
   }
 
   const gross = round2(p.unitPrice * p.quantity);
-  const taxAmt = p.taxPercent > 0 ? round2(gross - gross / (1 + p.taxPercent / 100)) : 0;
+
+  // A dose given at the bedside is given to an admitted patient in the course
+  // of their treatment, so it is part of the same composite supply as every
+  // other ward medicine — and exempt for the same reason.
+  const priced = resolver.price(
+    {
+      kind: 'medicine',
+      hsnCode: p.hsnCode ?? null,
+      itemRatePercent: p.taxPercent,
+      itemTreatment: p.taxPercent > 0 ? 'taxable' : null,
+      taxInclusive: true,
+      patientAdmitted: true,
+      issuedForTreatment: true,
+    },
+    { unitPrice: p.unitPrice, quantity: p.quantity },
+  );
+  const taxAmt = priced.money.taxAmount;
 
   await tx.billItem.create({
     data: {
@@ -118,9 +145,7 @@ async function postConsumptionCharge(
       category: 'pharmacy',
       quantity: p.quantity,
       unitPrice: p.unitPrice,
-      taxPercent: p.taxPercent,
-      taxAmount: taxAmt,
-      totalAmount: gross,
+      ...billItemTaxFields(priced),
       referenceType: 'ndps_consumption',
       referenceId: p.ndpsTxnId,
       isAutoPulled: true,
@@ -365,6 +390,10 @@ export async function recordConsumption(
   if (!location) throw AppError.notFound('Sub-store location not found');
   if (!patient) throw AppError.notFound('Patient not found');
 
+  // Read outside the transaction: the vault movement holds locks and must not
+  // wait on a settings or master read.
+  const resolver = await taxResolverFor(tenantId);
+
   return prisma.$transaction(async (tx) => {
     await adjustBalance(tx, tenantId, data.drugFormularyId, data.fromLocationId, -data.quantity);
     // Keep real stock in step with the register — see drawFromBatches above.
@@ -386,15 +415,22 @@ export async function recordConsumption(
       },
     });
     // Spec Step 3 — bill the dose to the patient's active IP ledger, atomically.
-    const billing = await postConsumptionCharge(tx, tenantId, userId, {
-      patientId: data.patientId,
-      drugName: drug.drugName,
-      unitPrice: Number(drug.price ?? 0),
-      taxPercent: Number(drug.taxPercent ?? 0),
-      quantity: data.quantity,
-      bedNumber: data.bedNumber.trim(),
-      ndpsTxnId: txn.id,
-    });
+    const billing = await postConsumptionCharge(
+      tx,
+      tenantId,
+      userId,
+      {
+        patientId: data.patientId,
+        drugName: drug.drugName,
+        unitPrice: Number(drug.price ?? 0),
+        taxPercent: Number(drug.taxPercent ?? 0),
+        hsnCode: (drug as any).hsnCode ?? null,
+        quantity: data.quantity,
+        bedNumber: data.bedNumber.trim(),
+        ndpsTxnId: txn.id,
+      },
+      resolver,
+    );
     return { ...txn, billing };
   });
 }
