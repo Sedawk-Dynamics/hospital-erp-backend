@@ -5612,6 +5612,24 @@ model Bill {
   totalAmount            Decimal    @default(0) @map("total_amount") @db.Decimal(12, 2)
   insuranceCoveredAmount Decimal    @default(0) @map("insurance_covered_amount") @db.Decimal(12, 2)
   patientPayableAmount   Decimal    @default(0) @map("patient_payable_amount") @db.Decimal(12, 2)
+
+  // ── GST rollup and identity ──
+  // taxAmount above is the single figure the bill has always carried. These are
+  // the same money broken out the way every GST return asks for it, plus the
+  // three facts that decide the split. They are SNAPSHOTS: the hospital's GSTIN
+  // may change, but this bill was raised under the one recorded here.
+  taxableValue           Decimal    @default(0) @map("taxable_value") @db.Decimal(12, 2)
+  cgstAmount             Decimal    @default(0) @map("cgst_amount") @db.Decimal(12, 2)
+  sgstAmount             Decimal    @default(0) @map("sgst_amount") @db.Decimal(12, 2)
+  igstAmount             Decimal    @default(0) @map("igst_amount") @db.Decimal(12, 2)
+  cessAmount             Decimal    @default(0) @map("cess_amount") @db.Decimal(12, 2)
+  roundOff               Decimal    @default(0) @map("round_off") @db.Decimal(6, 2)
+  supplierGstin          String?    @map("supplier_gstin") @db.VarChar(15)
+  supplierStateCode      String?    @map("supplier_state_code") @db.VarChar(2)
+  /// Set only for a B2B document — a corporate, insurer or TPA with a GSTIN.
+  recipientGstin         String?    @map("recipient_gstin") @db.VarChar(15)
+  placeOfSupplyStateCode String?    @map("place_of_supply_state_code") @db.VarChar(2)
+  isInterState           Boolean    @default(false) @map("is_inter_state")
   amountPaid             Decimal    @default(0) @map("amount_paid") @db.Decimal(12, 2)
   balanceDue             Decimal    @default(0) @map("balance_due") @db.Decimal(12, 2)
   status                 BillStatus @default(draft)
@@ -5653,6 +5671,33 @@ model BillItem {
   taxPercent      Decimal          @default(0) @map("tax_percent") @db.Decimal(5, 2)
   taxAmount       Decimal          @default(0) @map("tax_amount") @db.Decimal(12, 2)
   totalAmount     Decimal          @map("total_amount") @db.Decimal(12, 2)
+
+  // ── GST, as the return needs it ──
+  // taxPercent/taxAmount above say how much; these say what KIND of supply it
+  // was, under which code, and how the tax splits between the heads. All three
+  // are reported separately, and none of them can be recovered afterwards from
+  // a percentage alone.
+  hsnSacCode      String?          @map("hsn_sac_code") @db.VarChar(20)
+  /// 'taxable' | 'exempt' | 'nil_rated' | 'non_gst' | 'zero_rated'.
+  gstTreatment    String?          @map("gst_treatment") @db.VarChar(20)
+  /// True when the tax was already inside unitPrice — a medicine at MRP.
+  taxInclusive    Boolean          @default(false) @map("tax_inclusive")
+  /// What the tax was charged ON: net of discount, and net of embedded tax.
+  taxableValue    Decimal          @default(0) @map("taxable_value") @db.Decimal(12, 2)
+  cgstRate        Decimal          @default(0) @map("cgst_rate") @db.Decimal(5, 2)
+  cgstAmount      Decimal          @default(0) @map("cgst_amount") @db.Decimal(12, 2)
+  sgstRate        Decimal          @default(0) @map("sgst_rate") @db.Decimal(5, 2)
+  sgstAmount      Decimal          @default(0) @map("sgst_amount") @db.Decimal(12, 2)
+  igstRate        Decimal          @default(0) @map("igst_rate") @db.Decimal(5, 2)
+  igstAmount      Decimal          @default(0) @map("igst_amount") @db.Decimal(12, 2)
+  cessAmount      Decimal          @default(0) @map("cess_amount") @db.Decimal(12, 2)
+  /// Which rule decided the rate — 'hsn_master', 'inpatient_composite', etc.
+  /// Kept so a patient's question can be answered without reading the code.
+  rateSource      String?          @map("rate_source") @db.VarChar(32)
+  taxReason       String?          @map("tax_reason") @db.VarChar(255)
+  /// A taxable rate that only a fallback produced. Blocks finalisation.
+  requiresTaxResolution Boolean    @default(false) @map("requires_tax_resolution")
+
   referenceType   String?          @map("reference_type") @db.VarChar(50)
   referenceId     String?          @map("reference_id")
   isAutoPulled    Boolean          @default(false) @map("is_auto_pulled")
@@ -5666,6 +5711,10 @@ model BillItem {
   bill          Bill           @relation(fields: [billId], references: [id])
   serviceTariff ServiceTariff? @relation(fields: [serviceTariffId], references: [id])
 
+  // The HSN/SAC summary in GSTR-1 groups by code across a whole period.
+  @@index([hsnSacCode])
+  // Finding the lines that are blocking a bill from being finalised.
+  @@index([requiresTaxResolution])
   @@map("bill_items")
 }
 
