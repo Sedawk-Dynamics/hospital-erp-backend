@@ -4230,6 +4230,11 @@ model HsnGstRate {
   hsnCode     String   @unique @map("hsn_code") @db.VarChar(20)
   description String?  @db.VarChar(255)
   gstRate     Decimal  @map("gst_rate") @db.Decimal(5, 2)
+  // What KIND of zero a zero is: 'taxable' | 'nil_rated' | 'exempt' | 'non_gst'.
+  // A rate on its own cannot say — GSTR-1 and GSTR-3B report nil-rated, exempt
+  // and non-GST turnover on three different lines, so collapsing them all into
+  // "0%" throws away the distinction the return asks for.
+  treatment   String?  @db.VarChar(20)
   // Loose grouping for the reference UI ('medicine' | 'consumable' | 'device' | …).
   category    String?  @db.VarChar(60)
   isActive    Boolean  @default(true) @map("is_active")

@@ -8,6 +8,7 @@ import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
 import { makeMedicineRankComparator, mergePrefixFirst } from '../../shared/medicine-search-rank';
 import { fuzzyMatchIds } from '../../shared/medicine-fuzzy';
+import { isGstTreatment, type GstTreatment } from '../../shared/gst';
 import { buildDrugSearchTokens } from './drug-master.dataset';
 import { gtinVariants, normalizeGtin } from '../pharmacy/pharmacy.barcode';
 import type {
@@ -415,17 +416,39 @@ export interface HsnGstMatch {
   hsnCode: string; // the (normalised) code that was looked up
   matchedCode: string; // the reference row that matched (may be a shorter heading)
   gstRate: number;
+  /**
+   * 'taxable' | 'nil_rated' | 'exempt' | 'non_gst'. A rate of zero cannot say
+   * which of the three zeroes it is, and the return reports them separately.
+   * Rows written before the column existed fall back to the rate's own reading.
+   */
+  treatment: GstTreatment;
   description: string | null;
 }
 
-type HsnRow = { hsnCode: string; gstRate: unknown; description: string | null };
+type HsnRow = {
+  hsnCode: string;
+  gstRate: unknown;
+  treatment?: string | null;
+  description: string | null;
+};
 
 /** Full active reference — small table, safe to load and match in-memory. */
 export async function getHsnGstRows(): Promise<HsnRow[]> {
   return prisma.hsnGstRate.findMany({
     where: { isActive: true },
-    select: { hsnCode: true, gstRate: true, description: true },
+    select: { hsnCode: true, gstRate: true, treatment: true, description: true },
   });
+}
+
+/**
+ * What a row's treatment is, tolerating a row saved before the column existed.
+ * A positive rate can only be taxable; a zero with nothing recorded is read as
+ * nil-rated, which reports to the same GSTR-3B line as exempt and so cannot
+ * put the money wrong.
+ */
+function rowTreatment(raw: string | null | undefined, rate: number): GstTreatment {
+  if (isGstTreatment(raw)) return raw;
+  return rate > 0 ? 'taxable' : 'nil_rated';
 }
 
 /**
@@ -444,7 +467,14 @@ export function matchHsnGst(code: string | null | undefined, rows: HsnRow[]): Hs
     }
   }
   if (!best) return null;
-  return { hsnCode: input, matchedCode: best.hsnCode, gstRate: Number(best.gstRate), description: best.description };
+  const gstRate = Number(best.gstRate);
+  return {
+    hsnCode: input,
+    matchedCode: best.hsnCode,
+    gstRate,
+    treatment: rowTreatment(best.treatment, gstRate),
+    description: best.description,
+  };
 }
 
 /** Convenience wrapper — one lookup, its own query. */

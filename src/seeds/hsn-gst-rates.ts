@@ -31,6 +31,12 @@ interface HsnSeed {
   gst: number;
   desc: string;
   category: 'medicine' | 'consumable' | 'device' | 'supplement';
+  /**
+   * What kind of zero a zero is. Omitted means 'taxable' — the rate carries it.
+   * A zero-rated row has to say whether it is nil by tariff or exempt by
+   * notification, because GSTR-1 and GSTR-3B report those on separate lines.
+   */
+  treatment?: 'taxable' | 'nil_rated' | 'exempt';
 }
 
 // 4-digit headings are chapter-wide defaults; 6/8-digit entries override them for
@@ -44,7 +50,7 @@ const HSN_RATES: HsnSeed[] = [
   { hsn: '3005', gst: 5, desc: 'Wadding, gauze, bandages & similar dressings', category: 'consumable' },
   { hsn: '3006', gst: 5, desc: 'Pharmaceutical goods — surgical catgut, blood-grouping reagents, etc.', category: 'consumable' },
   // ── Specific tariff items that override the heading default ──
-  { hsn: '30049010', gst: 0, desc: 'Oral Rehydration Salts (ORS) — exempt / nil-rated', category: 'medicine' },
+  { hsn: '30049010', gst: 0, desc: 'Oral Rehydration Salts (ORS) — nil-rated', category: 'medicine', treatment: 'nil_rated' },
   { hsn: '30043110', gst: 5, desc: 'Insulin injections', category: 'medicine' },
   // ── Medical devices / diagnostics / consumables. GST 2.0 cut virtually all of
   //    Chapter 90 (and surgical gloves / diagnostic kits) from 12/18% to 5%. ──
@@ -93,8 +99,21 @@ async function main() {
     const hsnCode = normHsn(r.hsn);
     await prisma.hsnGstRate.upsert({
       where: { hsnCode },
-      create: { hsnCode, gstRate: r.gst, description: r.desc, category: r.category, isActive: true },
-      update: { gstRate: r.gst, description: r.desc, category: r.category, isActive: true },
+      create: {
+        hsnCode,
+        gstRate: r.gst,
+        treatment: r.treatment ?? (r.gst > 0 ? 'taxable' : 'nil_rated'),
+        description: r.desc,
+        category: r.category,
+        isActive: true,
+      },
+      update: {
+        gstRate: r.gst,
+        treatment: r.treatment ?? (r.gst > 0 ? 'taxable' : 'nil_rated'),
+        description: r.desc,
+        category: r.category,
+        isActive: true,
+      },
     });
     refUpserts += 1;
   }
