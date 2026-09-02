@@ -2088,15 +2088,23 @@ export async function getAppointmentChargePreview(tenantId: string, appointmentI
 
   // Say plainly why the fee is or is not on the bill, so a desk that expected
   // one and does not see it knows which of the three reasons applies.
+  // Order matters: "already charged" only explains a MISSING fee when the
+  // hospital charges it once per patient. Where it may be charged again, a
+  // previous charge is history, not the reason — saying otherwise told a desk
+  // the fee was absent while it was sitting on the bill.
   const reason = !settings.enabled
     ? 'This hospital has no registration fee configured.'
-    : visitStatus.registrationFeeCharged
+    : settings.oncePerPatient && visitStatus.registrationFeeCharged
       ? 'Already charged to this patient at this hospital.'
-      : !visitStatus.isFirstVisit && settings.oncePerPatient
-        ? 'Not a first visit — the fee is once per patient.'
-        : deskChoice === false
-          ? 'Waived at the counter.'
-          : 'First visit at this hospital.';
+      : deskChoice === false
+        ? 'Waived at the counter.'
+        : !visitStatus.isFirstVisit && settings.oncePerPatient
+          ? 'Not a first visit — the fee is once per patient.'
+          : visitStatus.registrationFeeCharged
+            ? 'Charged again at the counter — this hospital allows it more than once.'
+            : visitStatus.isFirstVisit
+              ? 'First visit at this hospital.'
+              : 'Charged at the counter.';
 
   return {
     consultationFee,
