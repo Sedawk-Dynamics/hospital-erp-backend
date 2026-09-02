@@ -1192,8 +1192,9 @@ export async function addBillItem(tenantId: string, billId: string, data: AddBil
   }
 
   // If service tariff is provided, verify it exists
+  let tariff: Awaited<ReturnType<typeof prisma.serviceTariff.findFirst>> = null;
   if (data.serviceTariffId) {
-    const tariff = await prisma.serviceTariff.findFirst({
+    tariff = await prisma.serviceTariff.findFirst({
       where: { id: data.serviceTariffId, tenantId },
     });
     if (!tariff) {
@@ -1204,25 +1205,40 @@ export async function addBillItem(tenantId: string, billId: string, data: AddBil
   const unitPrice = data.unitPrice;
   const quantity = data.quantity;
   const discountAmount = data.discount ?? 0;
-  const taxPercent = data.taxRate ?? 0;
-  const lineBeforeTax = quantity * unitPrice - discountAmount;
-  const taxAmount = lineBeforeTax * (taxPercent / 100);
-  const totalAmount = lineBeforeTax + taxAmount;
   const discountPercent = unitPrice > 0 ? (discountAmount / (quantity * unitPrice)) * 100 : 0;
+
+  // The rate comes from the tariff the line is for, not from the request.
+  // A rate typed at the counter is how this hospital ended up with
+  // registration fees at 10%, procedures at 2% and "other" at 2% — none of
+  // which are rates that exist in law. `data.taxRate` is still accepted for a
+  // free-text line with no tariff behind it, but such a line is flagged for
+  // resolution rather than quietly billed.
+  const resolver = await taxResolverFor(tenantId, bill.billDate ?? new Date());
+  const priced = resolver.price(
+    {
+      kind: tariff ? supplyKindForCategory(String(tariff.category)) : 'other',
+      sacCode: (tariff as any)?.sacCode ?? null,
+      itemRatePercent: (tariff as any)?.gstApproved
+        ? toNumber(tariff!.gstRatePercent)
+        : (data.taxRate ?? null),
+      itemTreatment: (tariff as any)?.gstTreatment ?? null,
+      itemApproved: (tariff as any)?.gstApproved ?? false,
+      isCosmetic: (tariff as any)?.isCosmetic ?? false,
+    },
+    { unitPrice, quantity, discountAmount },
+  );
 
   const item = await prisma.billItem.create({
     data: {
       billId,
       serviceTariffId: data.serviceTariffId,
       description: data.description,
-      category: 'other',
+      category: tariff ? (String(tariff.category) as any) : 'other',
       quantity,
       unitPrice,
       discountPercent,
       discountAmount,
-      taxPercent,
-      taxAmount,
-      totalAmount,
+      ...billItemTaxFields(priced),
     },
   });
 
@@ -1251,11 +1267,24 @@ export async function updateBillItem(
   const quantity = data.quantity ?? item.quantity;
   const unitPrice = data.unitPrice ?? Number(item.unitPrice);
   const discountAmount = data.discount ?? Number(item.discountAmount);
-  const taxPercent = data.taxRate ?? Number(item.taxPercent);
-  const lineBeforeTax = quantity * unitPrice - discountAmount;
-  const taxAmount = lineBeforeTax * (taxPercent / 100);
-  const totalAmount = lineBeforeTax + taxAmount;
   const discountPercent = unitPrice > 0 ? (discountAmount / (quantity * unitPrice)) * 100 : 0;
+
+  // Editing quantity or price re-prices the line, and the tax has to follow it.
+  // The classification the line was WRITTEN with is kept — its code, treatment
+  // and the rule that decided them — so an edit changes the money without
+  // silently re-classifying the supply.
+  const resolver = await taxResolverFor(tenantId, bill.billDate ?? new Date());
+  const priced = resolver.price(
+    {
+      kind: supplyKindForCategory(String(item.category)),
+      hsnCode: item.hsnSacCode,
+      itemRatePercent: data.taxRate ?? Number(item.taxPercent),
+      itemTreatment: (item.gstTreatment as any) ?? (Number(item.taxPercent) > 0 ? 'taxable' : null),
+      itemApproved: true,
+      taxInclusive: item.taxInclusive,
+    },
+    { unitPrice, quantity, discountAmount },
+  );
 
   const updated = await prisma.billItem.update({
     where: { id: itemId },
@@ -1265,9 +1294,7 @@ export async function updateBillItem(
       unitPrice,
       discountPercent,
       discountAmount,
-      taxPercent,
-      taxAmount,
-      totalAmount,
+      ...billItemTaxFields(priced),
     },
   });
 
@@ -3765,10 +3792,32 @@ export async function addIpCharge(
   const bill = await getOrCreateRunningIpBill(tenantId, admissionId, userId);
   const qty = Math.max(1, Math.trunc(data.quantity ?? 1));
   const unitPrice = r2(Math.max(0, data.unitPrice));
-  const taxPercent = Math.max(0, data.taxRate ?? 0);
-  const subtotal = r2(unitPrice * qty);
-  const taxAmount = r2(subtotal * (taxPercent / 100));
-  const totalAmount = r2(subtotal + taxAmount);
+
+  const tariff = data.serviceTariffId
+    ? await prisma.serviceTariff.findFirst({ where: { id: data.serviceTariffId, tenantId } })
+    : null;
+
+  // A nurse or doctor posting a charge at the bedside is not the person who
+  // should be deciding its GST rate. The tariff decides where there is one;
+  // otherwise the category does, and everything on an admission's ledger is
+  // supplied to an admitted patient in the course of their treatment.
+  const resolver = await taxResolverFor(tenantId, bill.billDate ?? new Date());
+  const priced = resolver.price(
+    {
+      kind: supplyKindForCategory(category),
+      sacCode: (tariff as any)?.sacCode ?? null,
+      itemRatePercent: (tariff as any)?.gstApproved
+        ? toNumber(tariff!.gstRatePercent)
+        : (data.taxRate ?? null),
+      itemTreatment: (tariff as any)?.gstTreatment ?? null,
+      itemApproved: (tariff as any)?.gstApproved ?? false,
+      isCosmetic: (tariff as any)?.isCosmetic ?? false,
+      patientAdmitted: true,
+      issuedForTreatment: true,
+    },
+    { unitPrice, quantity: qty },
+  );
+  const totalAmount = priced.money.totalAmount;
 
   const item = await prisma.billItem.create({
     data: {
@@ -3778,9 +3827,7 @@ export async function addIpCharge(
       category: category as any,
       quantity: qty,
       unitPrice,
-      taxPercent,
-      taxAmount,
-      totalAmount,
+      ...billItemTaxFields(priced),
       referenceType: 'manual_clinical',
       referenceId: `${userId}:${Date.now()}`,
       isAutoPulled: false,
@@ -4713,6 +4760,11 @@ export async function recordDoctorVisit(
 
   const bill = await getOrCreateRunningIpBill(tenantId, admissionId, userId);
   const review = (data.review ?? '').trim();
+  const visitResolver = await taxResolverFor(tenantId, bill.billDate ?? new Date());
+  const visitTax = visitResolver.price(
+    { kind: 'consultation', sacCode: '999312', patientAdmitted: true, issuedForTreatment: true },
+    { unitPrice: fee, quantity: 1 },
+  );
 
   const item = await prisma.billItem.create({
     data: {
@@ -4721,9 +4773,10 @@ export async function recordDoctorVisit(
       category: 'consultation' as any,
       quantity: 1,
       unitPrice: fee,
-      taxPercent: 0,
-      taxAmount: 0,
-      totalAmount: fee,
+      // Exempt because a doctor's visit is a healthcare service, not because a
+      // zero was typed here. Same answer, but now it carries its code and lands
+      // in the exempt-turnover figure.
+      ...billItemTaxFields(visitTax),
       referenceType: 'doctor_visit',
       referenceId: `${userId}:${Date.now()}`,
       isAutoPulled: false,
