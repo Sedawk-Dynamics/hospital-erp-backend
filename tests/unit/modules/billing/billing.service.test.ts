@@ -26,6 +26,7 @@ import {
   reversePayment,
   setBillDiscount,
   decideDiscount,
+  recalculateBillTotalsPublic,
 } from '../../../../src/modules/billing/billing.service';
 
 // ─── Extend mocks that setup.ts does not provide ───
@@ -1646,6 +1647,77 @@ describe('BillingService', () => {
           rateSource: 'not_registered',
         }),
       });
+    });
+  });
+
+  // ═══════════════════════════════════════════
+  // The bill header's GST rollup
+  // ═══════════════════════════════════════════
+  describe('recalculateBillTotals — GST rollup', () => {
+    it('sums the split from the lines onto the header', async () => {
+      // Two lines: an exempt surgery and a taxable room.
+      mockRecalculate([
+          {
+            quantity: 1,
+            unitPrice: 35000,
+            discountAmount: 0,
+            taxAmount: 0,
+            totalAmount: 35000,
+            taxableValue: 35000,
+            cgstAmount: 0,
+            sgstAmount: 0,
+            igstAmount: 0,
+            cessAmount: 0,
+          },
+          {
+            quantity: 3,
+            unitPrice: 6000,
+            discountAmount: 0,
+            taxAmount: 900,
+            totalAmount: 18900,
+            taxableValue: 18000,
+            cgstAmount: 450,
+            sgstAmount: 450,
+            igstAmount: 0,
+            cessAmount: 0,
+          },
+      ]);
+
+      await recalculateBillTotalsPublic('bill-1');
+
+      const data = vi.mocked(prisma.bill.update).mock.calls.at(-1)![0].data as any;
+      expect(data.taxableValue).toBe(53000);
+      expect(data.cgstAmount).toBe(450);
+      expect(data.sgstAmount).toBe(450);
+      expect(data.igstAmount).toBe(0);
+      // The money rule is untouched: the total is the sum of line totals, and
+      // tax is never re-added on top of it.
+      expect(data.totalAmount).toBe(53900);
+      expect(data.taxAmount).toBe(900);
+    });
+
+    it('rolls an inter-state bill up into IGST', async () => {
+      mockRecalculate([
+          {
+            quantity: 1,
+            unitPrice: 6000,
+            discountAmount: 0,
+            taxAmount: 300,
+            totalAmount: 6300,
+            taxableValue: 6000,
+            cgstAmount: 0,
+            sgstAmount: 0,
+            igstAmount: 300,
+            cessAmount: 0,
+          },
+      ]);
+
+      await recalculateBillTotalsPublic('bill-1');
+
+      const data = vi.mocked(prisma.bill.update).mock.calls.at(-1)![0].data as any;
+      expect(data.igstAmount).toBe(300);
+      expect(data.cgstAmount).toBe(0);
+      expect(data.sgstAmount).toBe(0);
     });
   });
 

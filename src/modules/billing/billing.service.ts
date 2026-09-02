@@ -190,6 +190,14 @@ async function recalculateBillTotals(billId: string) {
   let subtotal = 0;
   let totalTax = 0;
   let totalDiscount = 0;
+  // The same tax, broken out the way every GST return asks for it. Summed from
+  // the lines for the same reason the total is: the lines are where the tax was
+  // actually decided, and a header figure that is maintained separately drifts.
+  let taxableValue = 0;
+  let cgstAmount = 0;
+  let sgstAmount = 0;
+  let igstAmount = 0;
+  let cessAmount = 0;
   // The authoritative figure. Each line already knows what it comes to — the
   // per-line maths is where a tax-exclusive service (tax added on top) and a
   // tax-inclusive medicine price (tax embedded in the MRP) differ. Summing the
@@ -207,6 +215,11 @@ async function recalculateBillTotals(billId: string) {
     totalDiscount += itemDiscount;
     totalTax += itemTax;
     lineTotals += toNumber(item.totalAmount);
+    taxableValue += toNumber(item.taxableValue);
+    cgstAmount += toNumber(item.cgstAmount);
+    sgstAmount += toNumber(item.sgstAmount);
+    igstAmount += toNumber(item.igstAmount);
+    cessAmount += toNumber(item.cessAmount);
   }
 
   // A concession granted at the counter is a BILL-LEVEL discount: it lives as a
@@ -258,6 +271,11 @@ async function recalculateBillTotals(billId: string) {
     totalAmount: total,
     amountPaid: totalPaid,
     balanceDue: Math.max(0, r2(total - totalPaid)),
+    taxableValue: r2(taxableValue),
+    cgstAmount: r2(cgstAmount),
+    sgstAmount: r2(sgstAmount),
+    igstAmount: r2(igstAmount),
+    cessAmount: r2(cessAmount),
   };
 
   if (status) {
