@@ -4246,6 +4246,41 @@ model HsnGstRate {
 }
 
 // ============================================================
+// SAC → GST reference (platform-wide tax master, for SERVICES)
+// ============================================================
+// The other half of the pair above. HSN classifies GOODS; SAC classifies
+// SERVICES, and a hospital sells far more of the second than the first —
+// consultation, surgery, nursing, diagnostics, room accommodation. None of it
+// had a tax master at all, which is why every service rate in this system was
+// either hard-coded to zero or typed in by hand at the counter.
+//
+// Same shape and same rules as HsnGstRate on purpose: platform reference data
+// with no tenantId, matched by LONGEST PREFIX so a 6-digit code (999312,
+// medical and dental services) beats its 4-digit heading (9993, human health).
+//
+// `treatment` matters more here than it does for goods. Almost every healthcare
+// SAC is EXEMPT rather than nil-rated or zero-percent-taxable, and the return
+// reports exempt turnover on its own line — which is also the numerator of the
+// input-credit reversal a hospital has to compute every month.
+model SacCode {
+  id          String   @id @default(uuid())
+  // Digits only (spaces/dots stripped on write), like hsn_code.
+  sacCode     String   @unique @map("sac_code") @db.VarChar(20)
+  description String?  @db.VarChar(255)
+  gstRate     Decimal  @map("gst_rate") @db.Decimal(5, 2)
+  // 'taxable' | 'exempt' | 'nil_rated' | 'non_gst' | 'zero_rated'.
+  treatment   String?  @db.VarChar(20)
+  // Loose grouping for the reference UI ('healthcare' | 'accommodation' | …).
+  category    String?  @db.VarChar(60)
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([isActive])
+  @@map("sac_codes")
+}
+
+// ============================================================
 // Drug schedule reference (Drugs & Cosmetics Rules 1945 + NDPS Act)
 // ============================================================
 // Platform reference data — no tenantId, like HsnGstRate / ICD codes. Every row

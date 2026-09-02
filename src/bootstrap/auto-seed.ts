@@ -45,6 +45,7 @@ import { seedPackSizes } from '../seeds/pack-sizes';
 import { seedPackPrices } from '../seeds/pack-prices';
 import { seedImagingModalities } from '../seeds/imaging-modalities';
 import { seedHsnGstRates } from '../seeds/hsn-gst-rates';
+import { seedSacCodes } from '../seeds/sac-codes';
 import { seedDrugScheduleRules } from '../seeds/drug-schedule-rules';
 import { seedDrugScheduleClassification } from '../seeds/drug-schedule-classification';
 import { seedSalts } from '../seeds/salt-master';
@@ -158,6 +159,9 @@ export async function runSeeds(db: PrismaClient): Promise<void> {
   // that ships new/updated rates picks them up. Also tags a few common catalog
   // medicines with their HSN + GST.
   await step('hsn-gst-rates', () => seedHsnGstRates(db));
+  // The services half of the same reference. Cheap, and every service line
+  // needs it to resolve a rate at all.
+  await step('sac-codes', () => seedSacCodes(db));
 
   // Drug schedule reference (Sch. G/H/H1/H2/X + the NDPS narcotic list). Small,
   // idempotent and platform-wide, so it runs every boot and a release shipping a

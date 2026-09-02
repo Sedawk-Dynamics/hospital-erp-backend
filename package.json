@@ -28,6 +28,7 @@
     "db:seed:nurse-users": "tsx prisma/scripts/seed-nurse-users.ts",
     "db:seed:imaging-modalities": "tsx src/seeds/imaging-modalities.ts",
     "db:seed:hsn-gst": "tsx src/seeds/hsn-gst-rates.ts",
+    "db:seed:sac-codes": "tsx src/seeds/sac-codes.ts",
     "db:seed:drug-schedules": "tsx src/seeds/drug-schedule-rules.ts",
     "db:classify-schedules": "tsx prisma/scripts/classify-drug-schedules.ts",
     "db:check-composition": "tsx prisma/scripts/structured-composition-check.ts",
