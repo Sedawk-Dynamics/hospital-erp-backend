@@ -1,4 +1,8 @@
 import { prisma } from '../../config/database';
+import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
+
+/** Medical and dental services — what an OPD consultation is, and exempt. */
+const CONSULTATION_SAC = '999312';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
@@ -1934,11 +1938,33 @@ async function ensureAppointmentBill(
     deskChoice,
   });
   const regTotals = registrationFeeTotals(settings);
-  const registrationTotal = chargeRegistration ? regTotals.totalAmount : 0;
 
-  const subtotal = round2(amount + (chargeRegistration ? regTotals.unitPrice : 0));
-  const taxAmount = chargeRegistration ? regTotals.taxAmount : 0;
-  const total = round2(amount + registrationTotal);
+  // A consultation is an exempt healthcare service under SAC 999312. The
+  // registration fee is whatever the hospital configured, offered to the rules
+  // as the fee's own classification.
+  const resolver = await taxResolverFor(tenantId);
+  const consultationTax = resolver.price(
+    { kind: 'consultation', sacCode: CONSULTATION_SAC },
+    { unitPrice: amount, quantity: 1 },
+  );
+  const registrationTax = resolver.price(
+    {
+      kind: 'registration',
+      itemRatePercent: settings.gstRatePercent,
+      itemTreatment: settings.gstRatePercent > 0 ? 'taxable' : 'exempt',
+      // The hospital set this rate deliberately on its own settings screen, so
+      // it is not an unclassified guess needing resolution.
+      itemApproved: true,
+    },
+    { unitPrice: regTotals.unitPrice, quantity: 1 },
+  );
+
+  const registrationTotal = chargeRegistration ? registrationTax.money.totalAmount : 0;
+  const subtotal = round2(consultationTax.money.taxableValue + (chargeRegistration ? registrationTax.money.taxableValue : 0));
+  const taxAmount = round2(
+    consultationTax.money.taxAmount + (chargeRegistration ? registrationTax.money.taxAmount : 0),
+  );
+  const total = round2(consultationTax.money.totalAmount + registrationTotal);
 
   // `bill_number` is unique GLOBALLY, so a per-tenant sequence collides between
   // hospitals: two of them raising a consultation bill on the same day both
@@ -1969,9 +1995,12 @@ async function ensureAppointmentBill(
             unitPrice: amount,
             discountPercent: 0,
             discountAmount: 0,
-            taxPercent: 0,
-            taxAmount: 0,
-            totalAmount: amount,
+            // Exempt, but now BECAUSE the rules say so rather than because a
+            // zero was typed into the source. The answer is the same today; the
+            // difference is that it can be explained on the bill, reported as
+            // exempt turnover, and changed by configuration rather than by an
+            // edit here.
+            ...billItemTaxFields(consultationTax),
             referenceType: 'appointment',
             referenceId: appointment.id,
           },
@@ -1984,9 +2013,7 @@ async function ensureAppointmentBill(
                   unitPrice: regTotals.unitPrice,
                   discountPercent: 0,
                   discountAmount: 0,
-                  taxPercent: settings.gstRatePercent,
-                  taxAmount: regTotals.taxAmount,
-                  totalAmount: regTotals.totalAmount,
+                  ...billItemTaxFields(registrationTax),
                   // Referenced by TYPE so the once-per-patient check can find it
                   // again regardless of what the label or amount later becomes.
                   referenceType: REGISTRATION_FEE_REFERENCE_TYPE,
@@ -2153,6 +2180,16 @@ async function reconcileRegistrationFeeLine(
   }
 
   const totals = registrationFeeTotals(settings);
+  const reconcileResolver = await taxResolverFor(tenantId);
+  const reconcileTax = reconcileResolver.price(
+    {
+      kind: 'registration',
+      itemRatePercent: settings.gstRatePercent,
+      itemTreatment: settings.gstRatePercent > 0 ? 'taxable' : 'exempt',
+      itemApproved: true,
+    },
+    { unitPrice: totals.unitPrice, quantity: 1 },
+  );
   await prisma.billItem.create({
     data: {
       billId,
@@ -2162,9 +2199,7 @@ async function reconcileRegistrationFeeLine(
       unitPrice: totals.unitPrice,
       discountPercent: 0,
       discountAmount: 0,
-      taxPercent: settings.gstRatePercent,
-      taxAmount: totals.taxAmount,
-      totalAmount: totals.totalAmount,
+      ...billItemTaxFields(reconcileTax),
       referenceType: REGISTRATION_FEE_REFERENCE_TYPE,
       referenceId: appointmentId,
     },

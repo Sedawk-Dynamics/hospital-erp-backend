@@ -1,5 +1,9 @@
 import crypto from 'crypto';
 import { prisma } from '../../config/database';
+import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
+
+/** Medical and dental services — an OPD consultation, exempt. */
+const PORTAL_CONSULTATION_SAC = '999312';
 import { resolvePersonPatientIds, isSameNamedPerson } from '../../shared/patient-identity';
 import { razorpay } from '../../config/razorpay';
 import { env } from '../../config/env';
@@ -2319,6 +2323,14 @@ export async function createPatientPaymentOrder(
   } else {
     // Create a bill + bill item for the consultation fee
     const billNumber = await generateBillNumber(tenantId);
+    // A consultation booked from the portal is the same exempt healthcare
+    // service as one booked at the desk, and it resolves the same way.
+    const portalConsultationTax = billItemTaxFields(
+      (await taxResolverFor(tenantId)).price(
+        { kind: 'consultation', sacCode: PORTAL_CONSULTATION_SAC },
+        { unitPrice: consultationFee, quantity: 1 },
+      ),
+    );
     const bill = await prisma.bill.create({
       data: {
         tenantId,
@@ -2343,9 +2355,7 @@ export async function createPatientPaymentOrder(
             unitPrice: consultationFee,
             discountPercent: 0,
             discountAmount: 0,
-            taxPercent: 0,
-            taxAmount: 0,
-            totalAmount: consultationFee,
+            ...portalConsultationTax,
             referenceType: 'appointment',
             referenceId: appointment.id,
           },
@@ -2603,6 +2613,12 @@ export async function confirmFrontdeskPayment(
   // Create a pending bill for front desk collection
   const billNumber = await generateBillNumber(tenantId);
   const amount = consultationFee > 0 ? consultationFee : 0;
+  const portalConsultationTax = billItemTaxFields(
+    (await taxResolverFor(tenantId)).price(
+      { kind: 'consultation', sacCode: PORTAL_CONSULTATION_SAC },
+      { unitPrice: amount, quantity: 1 },
+    ),
+  );
 
   const bill = await prisma.bill.create({
     data: {
@@ -2628,9 +2644,7 @@ export async function confirmFrontdeskPayment(
           unitPrice: amount,
           discountPercent: 0,
           discountAmount: 0,
-          taxPercent: 0,
-          taxAmount: 0,
-          totalAmount: amount,
+          ...portalConsultationTax,
           referenceType: 'appointment',
           referenceId: appointment.id,
         },
