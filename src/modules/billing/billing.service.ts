@@ -17,6 +17,8 @@ import {
 } from '../../shared/date.utils';
 import { normalizeAdmissionType, type AdmissionType } from '../../shared/admission-type';
 import { writeAudit } from '../../shared/audit';
+import { supplyKindForCategory } from '../../shared/gst-determination';
+import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
 import {
   DEFAULT_DISCOUNT_APPROVAL,
   discountNeedsApproval,
@@ -3132,6 +3134,23 @@ export async function pullChargesToBill(
     taxRate?: number;
     taxInclusive?: boolean;
     category?: string;
+    // ── What the tax rules need to know about this supply ──
+    // Passed through rather than guessed at. A charge that supplies none of it
+    // still resolves — through its category default and, failing that, to
+    // exempt, which is the correct answer for healthcare.
+    hsnCode?: string | null;
+    sacCode?: string | null;
+    /** The patient has an active admission — IP, emergency or day care. */
+    patientAdmitted?: boolean;
+    /** Used ON the patient during the stay, rather than sold to them. */
+    issuedForTreatment?: boolean;
+    /** Discharge medicine, which the patient carries out. */
+    isTakeHome?: boolean;
+    isCosmetic?: boolean;
+    /** Room lines: what decides whether the rent crosses the threshold. */
+    dailyRate?: number;
+    bedType?: string | null;
+    wardType?: string | null;
   }>,
   opts: { fromDiagnostics?: boolean } = {},
 ) {
@@ -3188,6 +3207,9 @@ export async function pullChargesToBill(
 
   const created: any[] = [];
   const skipped: string[] = [];
+  // One resolver for the whole pull: the masters load once rather than once per
+  // line, and every line on this bill is resolved under the bill's own date.
+  const resolver = await taxResolverFor(tenantId, bill.billDate ?? new Date());
   await prisma.$transaction(async (tx) => {
     for (const c of charges) {
       if (!opts.fromDiagnostics && isDiagnosticRef(c.referenceType)) {
@@ -3205,17 +3227,28 @@ export async function pullChargesToBill(
       });
       if (exists) continue;
 
-      const taxPercent = c.taxRate ?? 0;
-      const subtotal = c.quantity * c.unitPrice;
-      // A tax-INCLUSIVE price (pharmacy MRP) already contains its GST: the line
-      // total is the price itself and the tax is shown as the embedded portion,
-      // exactly as the pharmacy counter computes it. Adding the rate on top of
-      // an MRP, which is what this used to do, charged the patient the tax twice
-      // over — ₹100 at the counter became ₹112 on the bill for the same strip.
-      const taxAmount = c.taxInclusive
-        ? r2(subtotal - subtotal / (1 + taxPercent / 100))
-        : r2(subtotal * (taxPercent / 100));
-      const totalAmount = c.taxInclusive ? r2(subtotal) : r2(subtotal + taxAmount);
+      // The rules decide, from what the supply IS and the context it is in.
+      // A rate the caller already worked out is offered as the item's own
+      // classification, which the engine uses unless a context rule outranks
+      // it — an inpatient's medicine being the case that does.
+      const priced = resolver.price(
+        {
+          kind: supplyKindForCategory(c.category),
+          hsnCode: c.hsnCode ?? null,
+          sacCode: c.sacCode ?? null,
+          itemRatePercent: c.taxRate ?? null,
+          itemTreatment: c.taxRate == null ? null : c.taxRate > 0 ? 'taxable' : null,
+          taxInclusive: c.taxInclusive ?? false,
+          patientAdmitted: c.patientAdmitted,
+          issuedForTreatment: c.issuedForTreatment,
+          isTakeHome: c.isTakeHome,
+          isCosmetic: c.isCosmetic,
+          dailyRate: c.dailyRate,
+          bedType: c.bedType,
+          wardType: c.wardType,
+        },
+        { unitPrice: c.unitPrice, quantity: c.quantity },
+      );
       const item = await tx.billItem.create({
         data: {
           billId,
@@ -3225,9 +3258,7 @@ export async function pullChargesToBill(
           unitPrice: c.unitPrice,
           discountAmount: 0,
           discountPercent: 0,
-          taxPercent,
-          taxAmount,
-          totalAmount,
+          ...billItemTaxFields(priced),
           referenceType: c.referenceType,
           referenceId: c.referenceId,
           isAutoPulled: true,
@@ -3296,14 +3327,18 @@ export async function consolidateAdmissionBill(
       await pullChargesToBill(
         tenantId,
         bill.id,
+        // Spread the whole charge rather than picking fields off it. Picking is
+        // how `taxInclusive` came to be silently dropped here: getPharmacyCharges
+        // sets it, this map did not copy it, and the validator strips anything
+        // not in its schema — so a medicine at MRP arrived at the writer looking
+        // tax-exclusive and had its GST added a second time on top of the price.
+        // Anything the rules need travels with the charge from now on.
         charges.map((c) => ({
-          referenceType: c.referenceType,
-          referenceId: c.referenceId,
-          description: c.description,
-          quantity: c.quantity,
-          unitPrice: c.unitPrice,
-          taxRate: c.taxRate,
-          category: c.category,
+          ...c,
+          // This IS the admission's own bill, so everything on it was supplied
+          // to a patient who is admitted, in the course of their treatment.
+          patientAdmitted: true,
+          issuedForTreatment: true,
         })),
       );
     }

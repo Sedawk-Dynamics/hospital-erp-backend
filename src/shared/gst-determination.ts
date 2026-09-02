@@ -56,6 +56,34 @@ export type SupplyKind =
 /** Goods that can form a composite supply with inpatient treatment. */
 const COMPOSITE_KINDS: ReadonlySet<SupplyKind> = new Set(['medicine', 'consumable']);
 
+/**
+ * The bill's own category, translated into what the rules need to know.
+ *
+ * `BillItemCategory` describes where a charge came from — which department
+ * raised it. `SupplyKind` describes what was supplied, which is a different
+ * question and the one the law asks. They mostly line up; the two that do not
+ * are `radiology`, which is imaging rather than a department name, and
+ * `surgery`, which is a procedure and can be therapeutic or cosmetic.
+ */
+const CATEGORY_TO_KIND: Record<string, SupplyKind> = {
+  consultation: 'consultation',
+  registration: 'registration',
+  surgery: 'procedure',
+  procedure: 'procedure',
+  room: 'room',
+  lab: 'lab',
+  radiology: 'imaging',
+  imaging: 'imaging',
+  pharmacy: 'medicine',
+  consumable: 'consumable',
+  nursing: 'nursing',
+  other: 'other',
+};
+
+export function supplyKindForCategory(category: string | null | undefined): SupplyKind {
+  return CATEGORY_TO_KIND[String(category ?? '').toLowerCase()] ?? 'other';
+}
+
 /** Which rule actually decided the answer. Recorded on the line, and reported. */
 export type TaxSource =
   | 'not_registered'

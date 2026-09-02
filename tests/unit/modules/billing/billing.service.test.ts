@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { prisma } from '../../../../src/config/database';
+import { clearGstMasterCache } from '../../../../src/modules/gst/gst-resolver.service';
 import { AppError } from '../../../../src/shared/appError';
 import {
   createServiceTariff,
@@ -139,6 +140,17 @@ describe('BillingService', () => {
     (prisma.$transaction as any).mockImplementation((arg: any) =>
       typeof arg === 'function' ? arg(prisma) : Promise.all(arg ?? []),
     );
+
+    // Tax resolution reads the hospital's GST registration and the rate
+    // masters. Without a registration NOTHING is taxable — which is correct
+    // behaviour, but it means every arithmetic assertion below would read zero
+    // and prove nothing. A registered Maharashtra hospital is the fixture.
+    vi.mocked(prisma.tenant.findFirst).mockResolvedValue({
+      themeConfig: { gst: { registered: true, gstin: '27AAPFU0939F1ZV' } },
+    } as any);
+    vi.mocked(prisma.hsnGstRate.findMany).mockResolvedValue([] as any);
+    vi.mocked(prisma.sacCode.findMany).mockResolvedValue([] as any);
+    clearGstMasterCache();
   });
 
   // ═══════════════════════════════════════════
@@ -1496,6 +1508,143 @@ describe('BillingService', () => {
 
       expect(prisma.billItem.create).toHaveBeenCalledWith({
         data: expect.objectContaining({ taxAmount: 0, totalAmount: 300 }),
+      });
+    });
+
+    // The rule that makes a hospital different from a shop. The identical
+    // charge is taxable at the counter and exempt in the ward, because a
+    // medicine used on an admitted patient forms a composite supply with the
+    // treatment — and the treatment is exempt.
+    it('exempts a medicine supplied to an admitted patient', async () => {
+      await pullChargesToBill(TENANT_ID, 'bill-1', [
+        {
+          referenceType: 'dispensing_record',
+          referenceId: 'disp-2',
+          description: 'Paracetamol 500mg',
+          quantity: 1,
+          unitPrice: 100,
+          taxRate: 12,
+          taxInclusive: true,
+          category: 'pharmacy',
+          patientAdmitted: true,
+          issuedForTreatment: true,
+        },
+      ]);
+
+      expect(prisma.billItem.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          taxPercent: 0,
+          taxAmount: 0,
+          // The patient still pays the MRP; the hospital simply stops
+          // reporting tax it never owed on it.
+          totalAmount: 100,
+          taxableValue: 100,
+          gstTreatment: 'exempt',
+          rateSource: 'inpatient_composite',
+        }),
+      });
+    });
+
+    it('taxes a discharge medicine the patient carries out', async () => {
+      await pullChargesToBill(TENANT_ID, 'bill-1', [
+        {
+          referenceType: 'dispensing_record',
+          referenceId: 'disp-3',
+          description: 'Take-home strip',
+          quantity: 1,
+          unitPrice: 100,
+          taxRate: 12,
+          taxInclusive: true,
+          category: 'pharmacy',
+          patientAdmitted: true,
+          issuedForTreatment: true,
+          isTakeHome: true,
+        },
+      ]);
+
+      expect(prisma.billItem.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ taxPercent: 12, taxAmount: 10.71, totalAmount: 100 }),
+      });
+    });
+
+    // Room rent above the threshold is taxable even for an inpatient — it is
+    // the exception the composite exemption does not swallow.
+    it('still taxes an expensive room on the admission own bill', async () => {
+      await pullChargesToBill(TENANT_ID, 'bill-1', [
+        {
+          referenceType: 'admission',
+          referenceId: 'adm-9',
+          description: 'Deluxe room',
+          quantity: 3,
+          unitPrice: 6000,
+          category: 'room',
+          dailyRate: 6000,
+          wardType: 'private',
+          patientAdmitted: true,
+          issuedForTreatment: true,
+        },
+      ]);
+
+      expect(prisma.billItem.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          taxPercent: 5,
+          taxableValue: 18000,
+          taxAmount: 900,
+          totalAmount: 18900,
+          cgstAmount: 450,
+          sgstAmount: 450,
+          rateSource: 'room_rule',
+        }),
+      });
+    });
+
+    it('records the split and the reason on every line it writes', async () => {
+      await pullChargesToBill(TENANT_ID, 'bill-1', [
+        {
+          referenceType: 'manual_clinical',
+          referenceId: 'proc-2',
+          description: 'Minor procedure',
+          quantity: 1,
+          unitPrice: 100,
+          taxRate: 18,
+          category: 'procedure',
+        },
+      ]);
+
+      const data = vi.mocked(prisma.billItem.create).mock.calls.at(-1)![0].data as any;
+      expect(data.cgstRate).toBe(9);
+      expect(data.sgstRate).toBe(9);
+      expect(data.cgstAmount).toBe(9);
+      expect(data.sgstAmount).toBe(9);
+      expect(data.igstAmount).toBe(0);
+      expect(data.gstTreatment).toBe('taxable');
+      expect(typeof data.taxReason).toBe('string');
+      expect(data.taxReason.length).toBeGreaterThan(0);
+    });
+
+    // An unregistered hospital charges nothing, whatever rate the charge row
+    // was carrying. This is the safe direction and the legally correct one.
+    it('charges nothing at all when the hospital is not GST registered', async () => {
+      vi.mocked(prisma.tenant.findFirst).mockResolvedValue({ themeConfig: {} } as any);
+      await pullChargesToBill(TENANT_ID, 'bill-1', [
+        {
+          referenceType: 'manual_clinical',
+          referenceId: 'proc-3',
+          description: 'Minor procedure',
+          quantity: 1,
+          unitPrice: 100,
+          taxRate: 18,
+          category: 'procedure',
+        },
+      ]);
+
+      expect(prisma.billItem.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          taxPercent: 0,
+          taxAmount: 0,
+          totalAmount: 100,
+          rateSource: 'not_registered',
+        }),
       });
     });
   });
