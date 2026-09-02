@@ -151,6 +151,12 @@ describe('BillingService', () => {
     } as any);
     vi.mocked(prisma.hsnGstRate.findMany).mockResolvedValue([] as any);
     vi.mocked(prisma.sacCode.findMany).mockResolvedValue([] as any);
+    // Finalising allots an invoice number from the hospital's series counter.
+    // The mock's upsert returns undefined by default, so give it a counter row.
+    vi.mocked((prisma as any).gstDocumentSeries.upsert).mockResolvedValue({
+      prefix: 'INV',
+      lastNumber: 1,
+    } as any);
     clearGstMasterCache();
   });
 

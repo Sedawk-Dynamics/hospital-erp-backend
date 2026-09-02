@@ -19,6 +19,8 @@ import { normalizeAdmissionType, type AdmissionType } from '../../shared/admissi
 import { writeAudit } from '../../shared/audit';
 import { supplyKindForCategory } from '../../shared/gst-determination';
 import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
+import { issueDocumentForBill } from '../gst/gst-document.service';
+import { getGstProfile } from '../hospital-settings/hospital-settings.service';
 import {
   DEFAULT_DISCOUNT_APPROVAL,
   discountNeedsApproval,
@@ -1361,16 +1363,68 @@ export async function finalizeBill(tenantId: string, userId: string, billId: str
     );
   }
 
+  // A taxable line that only a category default made taxable is a GUESSED
+  // rate. Finalising is the moment a draft becomes a demand for money, and a
+  // guessed tax rate is not something to demand money against — the item needs
+  // classifying first. Exempt fallbacks pass, because exempt is the correct
+  // default for healthcare rather than a guess.
+  const unresolvedCount = await prisma.billItem.count({
+    where: { billId, requiresTaxResolution: true },
+  });
+  if (unresolvedCount > 0) {
+    // Only fetched to name them — the counter needs to know WHICH lines to fix,
+    // not just that some exist.
+    const unresolved = await prisma.billItem.findMany({
+      where: { billId, requiresTaxResolution: true },
+      select: { description: true },
+      take: 3,
+    });
+    const names = unresolved.map((u) => u.description).join(', ');
+    throw AppError.badRequest(
+      `${unresolvedCount} line(s) on this bill have no GST classification: ${names}${
+        unresolvedCount > 3 ? '…' : ''
+      }. Set an HSN or SAC code on the item, or have the rate approved, before finalizing.`,
+    );
+  }
+
   // Recalculate final totals
   await recalculateBillTotals(billId);
 
-  const updatedBill = await prisma.bill.update({
+  const profile = await getGstProfile(tenantId);
+
+  const updatedBill = await prisma.$transaction(async (tx) => {
+    const items = await tx.billItem.findMany({
+      where: { billId },
+      select: { taxAmount: true, gstTreatment: true },
+    });
+    // Name and number the document. What it is called follows from its lines;
+    // the number comes from the hospital's own series for this financial year.
+    await issueDocumentForBill(
+      tx,
+      tenantId,
+      {
+        id: billId,
+        billDate: bill.billDate,
+        recipientGstin: (bill as any).recipientGstin ?? null,
+        invoiceNumber: (bill as any).invoiceNumber ?? null,
+      },
+      items,
+      { registered: profile.registered },
+    );
+
+    return tx.bill.update({
     where: { id: billId },
     data: {
       status: 'pending',
       // Finalising is the moment a draft becomes a demand for money — record
       // who did it, which the column exists for and nothing was setting.
       approvedBy: userId,
+      // Snapshot the hospital's own identity onto the document. It was raised
+      // under this registration, and an old bill has to stay explainable even
+      // after the hospital's details change.
+      supplierGstin: profile.gstin,
+      supplierStateCode: profile.stateCode,
+      placeOfSupplyStateCode: (bill as any).placeOfSupplyStateCode ?? profile.stateCode,
     },
     include: {
       patient: {
@@ -1378,9 +1432,19 @@ export async function finalizeBill(tenantId: string, userId: string, billId: str
       },
       billItems: true,
     },
+    });
   });
 
-  logger.info({ tenantId, billId, totalAmount: updatedBill.totalAmount }, 'Bill finalized');
+  logger.info(
+    {
+      tenantId,
+      billId,
+      totalAmount: updatedBill.totalAmount,
+      documentType: (updatedBill as any).gstDocumentType,
+      invoiceNumber: (updatedBill as any).invoiceNumber,
+    },
+    'Bill finalized',
+  );
   void writeAudit({
     tenantId,
     userId,

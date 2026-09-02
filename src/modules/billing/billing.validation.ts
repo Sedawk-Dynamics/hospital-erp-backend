@@ -487,6 +487,23 @@ export const pullChargesSchema = z.object({
           quantity: z.number().int().positive().default(1),
           unitPrice: z.number().nonnegative(),
           taxRate: z.number().min(0).max(100).optional(),
+          // What the tax rules need to know about the supply.
+          //
+          // These MUST be listed here. validate() replaces req.body with the
+          // parsed object, so a field the schema does not name is silently
+          // dropped rather than rejected — which is exactly how taxInclusive
+          // stopped reaching the writer and medicines were taxed on top of an
+          // MRP that already contained the tax.
+          taxInclusive: z.boolean().optional(),
+          hsnCode: z.string().max(20).nullish(),
+          sacCode: z.string().max(20).nullish(),
+          patientAdmitted: z.boolean().optional(),
+          issuedForTreatment: z.boolean().optional(),
+          isTakeHome: z.boolean().optional(),
+          isCosmetic: z.boolean().optional(),
+          dailyRate: z.number().nonnegative().optional(),
+          bedType: z.string().max(50).nullish(),
+          wardType: z.string().max(50).nullish(),
           category: z
             .enum([
               'consultation',

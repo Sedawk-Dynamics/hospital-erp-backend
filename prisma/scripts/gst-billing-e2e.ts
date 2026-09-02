@@ -69,7 +69,7 @@ async function main() {
       charges: [
         { referenceType: 'manual_clinical', referenceId: `${TAG}-counter`,
           description: 'Paracetamol at the counter', quantity: 2, unitPrice: 20,
-          category: 'pharmacy', taxRate: 5 },
+          category: 'pharmacy', taxRate: 5, hsnCode: '3004' },
         { referenceType: 'manual_clinical', referenceId: `${TAG}-proc`,
           description: 'Minor procedure', quantity: 1, unitPrice: 1000,
           category: 'procedure', taxRate: 0 },
@@ -105,6 +105,52 @@ async function main() {
        near(Number(i.cgstAmount) + Number(i.sgstAmount) + Number(i.igstAmount), Number(i.taxAmount)));
   }
 
+  // ── The finalisation gate ──
+  // A taxable line that nothing classified is a guessed rate, and a guessed
+  // rate must not become a demand for money.
+  const guessBill = await prisma.bill.create({
+    data: { tenantId: TENANT, patientId: patient.id, billNumber: `${TAG}-B2`,
+            billDate: new Date(), status: 'draft' },
+  });
+  await api(`/billing/${guessBill.id}/pull-charges`, {
+    method: 'POST',
+    body: { charges: [{ referenceType: 'manual_clinical', referenceId: `${TAG}-guess`,
+      description: 'Unclassified taxable thing', quantity: 1, unitPrice: 500,
+      category: 'other', taxRate: 18 }] },
+  }, token);
+  const blocked = await api(`/billing/${guessBill.id}/finalize`, { method: 'PATCH' }, token);
+  ck('an unclassified taxable line blocks finalisation', blocked.status === 400,
+     `status ${blocked.status}`);
+  ck('and the refusal names the line', String(blocked.json?.message ?? '').includes('Unclassified taxable thing'),
+     `${blocked.json?.message}`);
+
+  // ── Finalising issues the document ──
+  const fin = await api(`/billing/${bill.id}/finalize`, { method: 'PATCH' }, token);
+  ck('bill finalized', fin.status === 200, `status ${fin.status} — ${JSON.stringify(fin.json).slice(0,220)}`);
+
+  const issued: any = await prisma.bill.findUnique({ where: { id: bill.id } });
+  // A taxable medicine beside an exempt procedure is the ordinary hospital bill.
+  ck('named Invoice-cum-Bill of Supply',
+     issued?.gstDocumentType === 'invoice_cum_bill_of_supply',
+     `got ${issued?.gstDocumentType}`);
+  ck('given an invoice number', !!issued?.invoiceNumber, `got ${issued?.invoiceNumber}`);
+  ck('numbered inside a financial year',
+     /^[A-Z]+\/\d{4}-\d{2}\/\d{6}$/.test(String(issued?.invoiceNumber ?? '')),
+     `${issued?.invoiceNumber}`);
+  ck('the hospital identity is snapshotted onto it',
+     issued?.supplierGstin === '27AAPFU0939F1ZV' && issued?.supplierStateCode === '27',
+     `${issued?.supplierGstin} / ${issued?.supplierStateCode}`);
+  ck('place of supply defaults to the hospital state',
+     issued?.placeOfSupplyStateCode === '27', `${issued?.placeOfSupplyStateCode}`);
+  ck('frozen at issue', !!issued?.gstFrozenAt);
+
+  // Re-finalising must never mint a second number.
+  const before = issued?.invoiceNumber;
+  await api(`/billing/${bill.id}/finalize`, { method: 'PATCH' }, token);
+  const again: any = await prisma.bill.findUnique({ where: { id: bill.id } });
+  ck('re-finalising does not mint a second number',
+     again?.invoiceNumber === before, `${before} -> ${again?.invoiceNumber}`);
+
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail) process.exitCode = 1;
 }
@@ -112,6 +158,7 @@ async function main() {
 main()
   .finally(async () => {
     await prisma.billItem.deleteMany({ where: { bill: { billNumber: { startsWith: TAG } } } });
+    await prisma.gstDocumentSeries.deleteMany({ where: { tenantId: TENANT, prefix: '__none__' } });
     await prisma.bill.deleteMany({ where: { billNumber: { startsWith: TAG } } });
     await prisma.$disconnect();
   })

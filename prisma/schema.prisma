@@ -1351,6 +1351,7 @@ model Tenant {
   dicomSeries                DicomSeries[]
   dicomInstances             DicomInstance[]
   drugNameMappings           DrugNameMapping[]
+  gstDocumentSeries          GstDocumentSeries[]
 
   @@map("tenants")
 }
@@ -4286,6 +4287,38 @@ model SacCode {
 }
 
 // ============================================================
+// GST document numbering
+// ============================================================
+// A GST invoice series must be unique and CONSECUTIVE for a financial year,
+// per registered person, per document type. None of the five series this system
+// already has satisfies that: they all reset daily and they are all shared
+// across tenants, because bill_number is globally unique.
+//
+// So the invoice number is its own thing, allotted from a counter that is
+// scoped exactly the way the law scopes it — one hospital, one document type,
+// one financial year. The row IS the counter: `lastNumber` is incremented under
+// a row lock, which is what makes the series gap-free even when two counters
+// finalise at the same instant.
+model GstDocumentSeries {
+  id            String   @id @default(uuid())
+  tenantId      String   @map("tenant_id")
+  /// 'tax_invoice' | 'bill_of_supply' | 'invoice_cum_bill_of_supply' | 'credit_note'
+  documentType  String   @map("document_type") @db.VarChar(30)
+  /// "2026-27".
+  financialYear String   @map("financial_year") @db.VarChar(7)
+  /// What the hospital wants printed, e.g. "GC/TI". Defaults per document type.
+  prefix        String   @db.VarChar(24)
+  lastNumber    Int      @default(0) @map("last_number")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, documentType, financialYear])
+  @@map("gst_document_series")
+}
+
+// ============================================================
 // Drug schedule reference (Drugs & Cosmetics Rules 1945 + NDPS Act)
 // ============================================================
 // Platform reference data — no tenantId, like HsnGstRate / ICD codes. Every row
@@ -5649,6 +5682,19 @@ model Bill {
   recipientGstin         String?    @map("recipient_gstin") @db.VarChar(15)
   placeOfSupplyStateCode String?    @map("place_of_supply_state_code") @db.VarChar(2)
   isInterState           Boolean    @default(false) @map("is_inter_state")
+
+  // ── The document this bill IS ──
+  // billNumber above is the internal reference and resets daily. An invoice
+  // number is the one the government sees: continuous, gap-free and unique for
+  // the whole financial year. Allotted at FINALISE, never at draft, so an
+  // abandoned draft cannot burn a number and leave a hole in the series.
+  /// 'tax_invoice' | 'bill_of_supply' | 'invoice_cum_bill_of_supply'.
+  gstDocumentType        String?    @map("gst_document_type") @db.VarChar(30)
+  invoiceNumber          String?    @unique @map("invoice_number") @db.VarChar(50)
+  /// "2026-27" — the year the series belongs to.
+  financialYear          String?    @map("financial_year") @db.VarChar(7)
+  /// Set when the document was issued. Tax figures are read-only after it.
+  gstFrozenAt            DateTime?  @map("gst_frozen_at")
   amountPaid             Decimal    @default(0) @map("amount_paid") @db.Decimal(12, 2)
   balanceDue             Decimal    @default(0) @map("balance_due") @db.Decimal(12, 2)
   status                 BillStatus @default(draft)
