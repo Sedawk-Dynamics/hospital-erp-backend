@@ -2956,14 +2956,23 @@ export async function autoLinkDispenseToBill(
   tenantId: string,
   dispensingId: string,
 ) {
+  let settleAfter: string | null = null;
   try {
+    // Resolved here rather than inside the write, so a settings read cannot
+    // fail the dispense this is attached to.
+    const linkTaxResolver = await taxResolverFor(tenantId);
     const record = await tx.dispensingRecord.findFirst({
       where: { id: dispensingId, tenantId },
       include: {
         prescription: { select: { visitId: true } },
         drugBatch: {
           select: {
-            drug: { select: { drugName: true, category: true, price: true, isReimbursable: true } },
+            drug: {
+              select: {
+                drugName: true, category: true, price: true, isReimbursable: true,
+                taxPercent: true, hsnCode: true,
+              },
+            },
             sellingPrice: true,
             purchasePrice: true,
             batchNumber: true,
@@ -3007,9 +3016,32 @@ export async function autoLinkDispenseToBill(
     if (existing) return;
 
     const unit = pickDispenseUnitPrice(record.drugBatch as any);
-    const total = unit * record.quantityDispensed;
     const drugName = (record.drugBatch as any)?.drug?.drugName ?? 'Medication';
     const batchTag = (record.drugBatch as any)?.batchNumber ? ` (Batch ${(record.drugBatch as any).batchNumber})` : '';
+
+    // This line used to carry NO tax fields at all — both defaulted to zero —
+    // so every OP prescription dispensed through createDispense produced a
+    // pharmacy line with no recorded GST. Not exempt, not zero-rated: simply
+    // unrecorded, and silently inconsistent with the five other paths that
+    // billed the same medicine.
+    //
+    // Whether it is exempt depends on the patient. An admission was already
+    // being resolved here to stamp admissionId onto the bill; that same fact
+    // now decides the tax.
+    const drugForTax = (record.drugBatch as any)?.drug ?? {};
+    const linkPriced = linkTaxResolver.price(
+      {
+        kind: 'medicine',
+        hsnCode: drugForTax.hsnCode ?? null,
+        itemRatePercent: drugForTax.taxPercent != null ? Number(drugForTax.taxPercent) : null,
+        itemTreatment:
+          drugForTax.taxPercent != null && Number(drugForTax.taxPercent) > 0 ? 'taxable' : null,
+        taxInclusive: true,
+        patientAdmitted: !!adm,
+        issuedForTreatment: !!adm,
+      },
+      { unitPrice: unit, quantity: record.quantityDispensed },
+    );
 
     await tx.billItem.create({
       data: {
@@ -3018,7 +3050,7 @@ export async function autoLinkDispenseToBill(
         category: 'pharmacy',
         quantity: record.quantityDispensed,
         unitPrice: unit,
-        totalAmount: total,
+        ...billItemTaxFields(linkPriced),
         referenceType: 'dispensing_record',
         referenceId: dispensingId,
         isAutoPulled: true,
@@ -3026,20 +3058,14 @@ export async function autoLinkDispenseToBill(
       },
     });
 
-    const items = await tx.billItem.findMany({ where: { billId: bill.id } });
-    const subtotal = items.reduce((sum, x) => sum + Number(x.totalAmount ?? 0), 0);
-    await tx.bill.update({
-      where: { id: bill.id },
-      data: {
-        subtotal,
-        totalAmount: subtotal,
-        patientPayableAmount: subtotal,
-        balanceDue: subtotal - Number(bill.amountPaid ?? 0),
-      },
-    });
+    // Header derived from the lines after this commits — see
+    // settlePharmacyBillHeader. The in-place sum here ignored tax entirely,
+    // which was consistent with a line that carried none and is not any more.
+    settleAfter = bill.id;
   } catch (err) {
     logger.warn({ err, dispensingId }, 'Failed to auto-link dispense to bill');
   }
+  await settlePharmacyBillHeader(settleAfter);
 }
 
 export async function createDispense(tenantId: string, userId: string, data: CreateDispenseInput) {
@@ -3391,6 +3417,11 @@ export async function createPharmacySale(
   // default; only 'require' refuses.
   const { qrScanMode } = await getControlledDrugSettings(tenantId);
 
+  // Resolved once for the whole sale, and OUTSIDE the transaction: the sale is
+  // retried wholesale on a bill-number clash, and the masters must not be
+  // re-read on every attempt.
+  const saleTaxResolver = await taxResolverFor(tenantId);
+
   const runSaleTx = (attempt: number) => prisma.$transaction(async (tx) => {
     // 1. Validate every line and pre-compute its economics.
     const lines = [] as Array<{
@@ -3409,6 +3440,8 @@ export async function createPharmacySale(
       taxPct: number;
       scannedCode: string | null;
       taxAmt: number;
+      /** Every GST column for this line, resolved once and written verbatim. */
+      taxFields: ReturnType<typeof billItemTaxFields>;
       nonReturnable: boolean;
       expiry: Date | null;
       // Controlled-drug co-sign resolved per line by the gate.
@@ -3428,6 +3461,7 @@ export async function createPharmacySale(
               looseUnitLabel: true,
               dosageForm: true,
               taxPercent: true,
+              hsnCode: true,
               isNarcotic: true,
               // Read by the controlled-drug gate.
               schedule: true,
@@ -3488,9 +3522,27 @@ export async function createPharmacySale(
       const discPct = item.discountPercent ?? 0;
       const discAmt = round2(gross * (discPct / 100));
       const net = round2(gross - discAmt);
-      // Prices are MRP (tax-inclusive) → derive the embedded GST for the breakup.
-      const taxPct = batch.drug?.taxPercent != null ? Number(batch.drug.taxPercent) : 12;
-      const taxAmt = round2(net - net / (1 + taxPct / 100));
+      // Prices are MRP (tax-inclusive) → the GST is dug out of the price rather
+      // than added to it.
+      //
+      // The rate used to fall back to a bare 12% when a drug had none. That is
+      // not a rate any medicine carries after GST 2.0 — it invented tax on a
+      // patient's bill, and 394 of the 430 drugs in this formulary have no rate
+      // set, so it was the common case rather than the rare one. The rules
+      // resolve it now: the drug's own rate, else its HSN code, else exempt.
+      const salePriced = saleTaxResolver.price(
+        {
+          kind: 'medicine',
+          hsnCode: batch.drug?.hsnCode ?? null,
+          itemRatePercent: batch.drug?.taxPercent != null ? Number(batch.drug.taxPercent) : null,
+          itemTreatment:
+            batch.drug?.taxPercent != null && Number(batch.drug.taxPercent) > 0 ? 'taxable' : null,
+          taxInclusive: true,
+        },
+        { unitPrice, quantity: baseQty, discountAmount: discAmt },
+      );
+      const taxPct = salePriced.determination.ratePercent;
+      const taxAmt = salePriced.money.taxAmount;
 
       lines.push({
         batchId: batch.id,
@@ -3511,6 +3563,7 @@ export async function createPharmacySale(
         net,
         taxPct,
         taxAmt,
+        taxFields: billItemTaxFields(salePriced),
         nonReturnable: item.nonReturnable ?? false,
         expiry: batch.expiryDate ?? null,
         witnessedById: lineControl.witnessedById,
@@ -3677,9 +3730,7 @@ export async function createPharmacySale(
           unitPrice: l.unitPrice,
           discountPercent: l.discPct,
           discountAmount: l.discAmt,
-          taxPercent: l.taxPct,
-          taxAmount: l.taxAmt,
-          totalAmount: l.net,
+          ...l.taxFields,
           referenceType: 'dispensing_record',
           referenceId: rec.id,
           isAutoPulled: true,
