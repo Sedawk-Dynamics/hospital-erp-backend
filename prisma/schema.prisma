@@ -3591,6 +3591,11 @@ model LabTestCatalog {
   normalRange     String?  @map("normal_range")
   unit            String?  @db.VarChar(50)
   price           Decimal? @db.Decimal(10, 2)
+  // A diagnostic test is an exempt healthcare service, but the invoice still
+  // has to print its SAC and the return still has to group by it. This table
+  // had no tax field of any kind.
+  sacCode         String?  @map("sac_code") @db.VarChar(20)
+  gstTreatment    String?  @map("gst_treatment") @db.VarChar(20)
   turnaroundHours Int?     @map("turnaround_hours")
   sampleType      String?  @map("sample_type") @db.VarChar(50)
   specimen        String?  @db.VarChar(255)
@@ -5584,6 +5589,20 @@ model ServiceTariff {
   category       ServiceTariffCategory
   basePrice      Decimal               @map("base_price") @db.Decimal(12, 2)
   gstRatePercent Decimal               @default(0) @map("gst_rate_percent") @db.Decimal(4, 2)
+  // ── GST classification ──
+  // The SAC code is what the invoice prints and what GSTR-1 groups by, and it
+  // is what resolves the rate. gstRatePercent above stays as the hospital's own
+  // override for the rare case where its auditor differs from the master.
+  sacCode        String?               @map("sac_code") @db.VarChar(20)
+  /// 'taxable' | 'exempt' | 'nil_rated' | 'non_gst' | 'zero_rated'.
+  gstTreatment   String?               @map("gst_treatment") @db.VarChar(20)
+  /// The hospital's auditor has signed this classification off. An approved
+  /// classification is never overridden by a master or by a category default.
+  gstApproved    Boolean               @default(false) @map("gst_approved")
+  /// A non-therapeutic procedure — cosmetic surgery, elective aesthetic work.
+  /// Taxable however the rest of the surgery list is classified, and the code
+  /// alone cannot tell the two apart.
+  isCosmetic     Boolean               @default(false) @map("is_cosmetic")
   // For imaging (category=radiology) tariffs: which modality this study runs on,
   // so the doctor's catalog search can route a picked study to the right
   // ImagingType when ordering. Null for non-imaging categories.
