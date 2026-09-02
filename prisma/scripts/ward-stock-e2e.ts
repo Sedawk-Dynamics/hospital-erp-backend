@@ -316,10 +316,24 @@ async function main() {
     );
     ck('the line names the drug and the batch', Boolean(item), item?.description ?? '');
     ck('charged 10 x 10', Number(item?.totalAmount) === 100, `${item?.totalAmount}`);
+    // A medicine issued from the ward shelf to an ADMITTED patient is part of a
+    // composite supply with their treatment, and the treatment is exempt. The
+    // patient pays the same 100 either way — the price is an MRP — but the
+    // hospital no longer reports output tax on treatment income.
     ck(
-      'with GST shown as included, not added on top',
-      Math.abs(Number(item?.taxAmount) - 10.71) < 0.02,
-      `tax ${item?.taxAmount}`,
+      'and exempt, because the ward issued it to an inpatient',
+      Number(item?.taxAmount) === 0 && item?.gstTreatment === 'exempt',
+      `tax ${item?.taxAmount}, treatment ${item?.gstTreatment}`,
+    );
+    ck(
+      'the whole price is exempt turnover',
+      Math.abs(Number(item?.taxableValue) - 100) < 0.02,
+      `taxable ${item?.taxableValue}`,
+    );
+    ck(
+      'and the line says which rule decided that',
+      item?.rateSource === 'inpatient_composite',
+      `source ${item?.rateSource}`,
     );
 
     led = await ledgerRows(ward.id, batch.id);
