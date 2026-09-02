@@ -4,6 +4,7 @@ import {
   taxResolverFor,
   resolveTaxFor,
   clearGstMasterCache,
+  billItemTaxFields,
 } from '../../../../src/modules/gst/gst-resolver.service';
 
 const TENANT = 'tenant-1';
@@ -172,5 +173,70 @@ describe('resolveTaxFor — the single-line convenience', () => {
       new Date('2026-06-01T00:00:00Z'),
     );
     expect(after.source).toBe('hsn_master');
+  });
+});
+
+describe('billItemTaxFields', () => {
+  it('splits the RATE as well as the money on an intra-state supply', async () => {
+    const r = await taxResolverFor(TENANT);
+    const f = billItemTaxFields(
+      r.price({ kind: 'room', dailyRate: 6000 }, { unitPrice: 6000, quantity: 1 }),
+    );
+    expect(f).toMatchObject({
+      taxPercent: 5,
+      cgstRate: 2.5,
+      sgstRate: 2.5,
+      igstRate: 0,
+      cgstAmount: 150,
+      sgstAmount: 150,
+      igstAmount: 0,
+      taxableValue: 6000,
+      totalAmount: 6300,
+      gstTreatment: 'taxable',
+      rateSource: 'room_rule',
+    });
+  });
+
+  it('puts the whole rate on IGST when the supply crosses a state line', async () => {
+    const r = await taxResolverFor(TENANT);
+    const f = billItemTaxFields(
+      r.price(
+        { kind: 'room', dailyRate: 6000, placeOfSupplyStateCode: '29' },
+        { unitPrice: 6000, quantity: 1 },
+      ),
+    );
+    expect(f).toMatchObject({ igstRate: 5, igstAmount: 300, cgstRate: 0, sgstRate: 0 });
+  });
+
+  it('records the code, the treatment and why, on an exempt line', async () => {
+    const r = await taxResolverFor(TENANT);
+    const f = billItemTaxFields(
+      r.price({ kind: 'consultation', sacCode: '999312' }, { unitPrice: 500, quantity: 1 }),
+    );
+    expect(f).toMatchObject({
+      taxPercent: 0,
+      taxAmount: 0,
+      totalAmount: 500,
+      taxableValue: 500,
+      hsnSacCode: '999312',
+      gstTreatment: 'exempt',
+      rateSource: 'sac_master',
+      requiresTaxResolution: false,
+    });
+    expect(f.taxReason).toContain('Exempt');
+  });
+
+  it('carries the resolution flag through to the row', async () => {
+    const r = await taxResolverFor(TENANT);
+    const f = billItemTaxFields(r.price({ kind: 'other' }, { unitPrice: 300, quantity: 1 }));
+    expect(f.requiresTaxResolution).toBe(true);
+  });
+
+  // The column is VarChar(255) and a reason is prose, so it has to be trimmed
+  // rather than left to blow up an insert.
+  it('keeps the reason inside the column width', async () => {
+    const r = await taxResolverFor(TENANT);
+    const f = billItemTaxFields(r.price({ kind: 'medicine', hsnCode: '3004' }, { unitPrice: 1, quantity: 1 }));
+    expect(f.taxReason!.length).toBeLessThanOrEqual(255);
   });
 });

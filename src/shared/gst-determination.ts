@@ -335,7 +335,11 @@ export function determineTax(ctx: SupplyContext, masters: TaxMasters): TaxDeterm
     return {
       treatment: match.treatment,
       ratePercent: taxable ? Math.max(0, match.ratePercent) : 0,
-      hsnSacCode: match.code,
+      // The ITEM's own code, not the master row that happened to price it. A
+      // heading can price a dozen different items and GSTR-1 table 12 groups by
+      // what the line reports, so reporting the heading would collapse them all
+      // into one row. Which row supplied the rate is recorded in the reason.
+      hsnSacCode: code,
       taxInclusive,
       source: matchSource,
       reason: taxable

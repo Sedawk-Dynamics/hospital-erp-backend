@@ -160,6 +160,46 @@ export async function taxResolverFor(tenantId: string, on: Date = new Date()): P
   };
 }
 
+// ── Persisting a decision ──────────────────────────────────────────────────
+
+/**
+ * Every GST column on a `bill_items` row, from one priced line.
+ *
+ * Seventeen places in this codebase create bill lines. Each currently spells
+ * out its own `taxPercent` / `taxAmount` / `totalAmount`, which is why the same
+ * medicine is taxed six slightly different ways. This is the object they all
+ * spread instead, so a line's tax fields can only ever be set one way.
+ *
+ * The rate splits alongside the money: on an intra-state supply CGST and SGST
+ * each carry HALF the rate, and IGST carries all of it when the supply crosses
+ * a state line. The invoice prints those halves, so they are stored rather than
+ * recomputed at render time.
+ */
+export function billItemTaxFields(priced: PricedLine) {
+  const { determination: d, money: m } = priced;
+  const interState = m.igst > 0;
+  const half = Math.round((d.ratePercent / 2) * 100) / 100;
+  return {
+    taxPercent: d.ratePercent,
+    taxAmount: m.taxAmount,
+    totalAmount: m.totalAmount,
+    hsnSacCode: d.hsnSacCode,
+    gstTreatment: d.treatment,
+    taxInclusive: m.taxInclusive,
+    taxableValue: m.taxableValue,
+    cgstRate: interState ? 0 : half,
+    cgstAmount: m.cgst,
+    sgstRate: interState ? 0 : half,
+    sgstAmount: m.sgst,
+    igstRate: interState ? d.ratePercent : 0,
+    igstAmount: m.igst,
+    cessAmount: 0,
+    rateSource: d.source,
+    taxReason: d.reason.slice(0, 255),
+    requiresTaxResolution: d.requiresResolution,
+  };
+}
+
 /** One line, one call. Prefer {@link taxResolverFor} inside a loop. */
 export async function resolveTaxFor(
   tenantId: string,

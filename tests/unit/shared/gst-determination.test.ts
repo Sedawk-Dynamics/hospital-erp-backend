@@ -250,7 +250,10 @@ describe('determineTax — the masters, and the fallback safety rule', () => {
       ctx({ hsnCode: '30049099' }),
       masters({ hsnMatch: { code: '3004', ratePercent: 5, treatment: 'taxable' } }),
     );
-    expect(d).toMatchObject({ ratePercent: 5, source: 'hsn_master', hsnSacCode: '3004' });
+    // The line reports the ITEM's code; the master row that priced it is named
+    // in the reason. A heading prices many items, and the return groups by the
+    // code the line carries.
+    expect(d).toMatchObject({ ratePercent: 5, source: 'hsn_master', hsnSacCode: '30049099' });
     expect(d.reason).toBe('5% under HSN 3004');
   });
 
