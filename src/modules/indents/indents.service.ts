@@ -1,4 +1,5 @@
 import { prisma } from '../../config/database';
+import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
 import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
 import { findOpenChargeBill } from '../../shared/charge-bill';
 import { createBillInSeries } from '../../shared/bill-number';
@@ -342,6 +343,26 @@ export async function approveIndent(
 }
 
 /**
+ * Settle the bill header from its lines, after the stock transaction has
+ * committed.
+ *
+ * Deliberately outside the transaction, for the reason ot-kit gives: a header
+ * recalculation must not hold the stock locks open. And deliberately best
+ * effort — the charge IS on the bill either way; only the header figures would
+ * be stale, and a failed recalculation must not undo a dispense that has
+ * already moved stock.
+ */
+async function settleBillHeader(billId: string | null | undefined): Promise<void> {
+  if (!billId) return;
+  try {
+    const billing = await import('../billing/billing.service');
+    await billing.recalculateBillTotalsPublic(billId);
+  } catch (err) {
+    logger.warn({ err, billId }, 'Could not settle the bill header after an indent movement');
+  }
+}
+
+/**
  * Pharmacist dispenses the approved indent against FEFO batches (or an explicitly
  * scanned batch per line) and posts the charge to the patient's IP bill ledger.
  * TTO indents dispense in full packs.
@@ -359,6 +380,11 @@ export async function dispenseIndent(
   if (indent.status !== 'approved') throw AppError.badRequest(`Only an approved indent can be dispensed (this one is ${indent.status})`);
 
   const batchMap = new Map((data.batches ?? []).map((b) => [b.itemId, b.drugBatchId]));
+
+  // Built before the transaction opens: it reads the hospital's GST profile and
+  // the rate masters, and those reads must not sit inside a transaction that is
+  // holding stock locks.
+  const resolver = await taxResolverFor(tenantId);
 
   const result = await prisma.$transaction(async (tx) => {
     // G2: scope the IP bill to the admission (the indent's, else the patient's
@@ -392,7 +418,7 @@ export async function dispenseIndent(
       const drug = await tx.drugFormulary.findFirst({
         where: { id: it.drugFormularyId, tenantId },
         select: {
-          id: true, drugName: true, packSize: true, price: true, taxPercent: true,
+          id: true, drugName: true, packSize: true, price: true, taxPercent: true, hsnCode: true,
           looseUnitLabel: true, isNarcotic: true, isReimbursable: true,
           // Read by the controlled-drug gate.
           schedule: true, controlledClass: true, vaultControlled: true,
@@ -443,6 +469,8 @@ export async function dispenseIndent(
 
       const unitPrice = Number(batch.sellingPrice ?? drug.price ?? batch.purchasePrice ?? 0);
       const taxPct = drug.taxPercent != null ? Number(drug.taxPercent) : 0;
+      // NOTE: taxPct above is still written onto the DispensingRecord, which is
+      // the pharmacy's own stock document. What goes on the BILL is resolved.
       const gross = round2(unitPrice * baseQty);
       const taxAmt = round2(gross - gross / (1 + taxPct / 100));
       const unitLabel = it.saleUnit === 'loose' ? (drug.looseUnitLabel ?? 'unit') : 'pack';
@@ -470,6 +498,24 @@ export async function dispenseIndent(
         },
       });
 
+      // A medicine issued to an admitted patient is part of a composite supply
+      // with their treatment, and the treatment is exempt — so this line is
+      // exempt too, unless it is a TTO the patient carries home, which reads as
+      // an ordinary sale. The rules decide; this call only supplies the facts.
+      const priced = resolver.price(
+        {
+          kind: 'medicine',
+          hsnCode: drug.hsnCode ?? null,
+          itemRatePercent: taxPct,
+          itemTreatment: taxPct > 0 ? 'taxable' : null,
+          taxInclusive: true,
+          patientAdmitted: true,
+          issuedForTreatment: true,
+          isTakeHome: indent.isTto,
+        },
+        { unitPrice, quantity: baseQty },
+      );
+
       await tx.billItem.create({
         data: {
           billId: bill.id,
@@ -477,9 +523,7 @@ export async function dispenseIndent(
           category: 'pharmacy',
           quantity: baseQty,
           unitPrice,
-          taxPercent: taxPct,
-          taxAmount: taxAmt,
-          totalAmount: gross,
+          ...billItemTaxFields(priced),
           referenceType: 'dispensing_record',
           referenceId: rec.id,
           isAutoPulled: true,
@@ -518,18 +562,10 @@ export async function dispenseIndent(
       addedTax = round2(addedTax + taxAmt);
     }
 
-    if (addedGross > 0) {
-      await tx.bill.update({
-        where: { id: bill.id },
-        data: {
-          subtotal: round2(Number(bill.subtotal) + addedGross),
-          taxAmount: round2(Number(bill.taxAmount) + addedTax),
-          totalAmount: round2(Number(bill.totalAmount) + addedGross),
-          patientPayableAmount: round2(Number(bill.patientPayableAmount) + addedGross),
-          balanceDue: round2(Number(bill.balanceDue) + addedGross),
-        },
-      });
-    }
+    // The header is no longer nudged by hand here. It is derived from the lines
+    // after the transaction commits (see below), which is the money rule this
+    // module was quietly breaking: a hand-maintained total drifts from the lines
+    // it is supposed to summarise, and it cannot carry the GST split at all.
 
     // Dispensing an IP indent IS the delivery to the ward — one step. The charge
     // is now on the patient's IP bill; the nurse acknowledges receipt next.
@@ -540,6 +576,7 @@ export async function dispenseIndent(
     });
   });
 
+  await settleBillHeader(result.billId);
   logger.info({ tenantId, indentId: id, billId: result.billId }, 'Medication indent dispensed to IP bill + delivered');
   return hydrate(tenantId, result);
 }
@@ -579,6 +616,9 @@ export async function dispenseIpPrescription(
   }
   const batchMap = new Map((data.batches ?? []).map((b) => [b.itemId, b.drugBatchId]));
 
+  // Read the profile and masters before the transaction opens; see dispenseIndent.
+  const resolver = await taxResolverFor(tenantId);
+
   const result = await prisma.$transaction(async (tx) => {
     const admId = rx.visit?.admission?.id
       ?? (await tx.admission.findFirst({ where: { tenantId, patientId: rx.patientId, status: ACTIVE_ADMISSION_STATUS }, orderBy: { admissionDate: 'desc' }, select: { id: true } }))?.id
@@ -609,7 +649,7 @@ export async function dispenseIpPrescription(
       const drug = await tx.drugFormulary.findFirst({
         where: { id: it.drugId as string, tenantId },
         select: {
-          id: true, drugName: true, price: true, taxPercent: true, looseUnitLabel: true,
+          id: true, drugName: true, price: true, taxPercent: true, hsnCode: true, looseUnitLabel: true,
           isNarcotic: true, isReimbursable: true,
           // Read by the controlled-drug gate.
           schedule: true, controlledClass: true, vaultControlled: true,
@@ -674,13 +714,29 @@ export async function dispenseIpPrescription(
         },
       });
 
+      // Dispensed to a patient on the ward, so the same composite-supply rule
+      // applies as for an indent. Never a TTO — this is the daily queue.
+      const priced = resolver.price(
+        {
+          kind: 'medicine',
+          hsnCode: drug.hsnCode ?? null,
+          itemRatePercent: taxPct,
+          itemTreatment: taxPct > 0 ? 'taxable' : null,
+          taxInclusive: true,
+          patientAdmitted: true,
+          issuedForTreatment: true,
+        },
+        { unitPrice, quantity: handedOver },
+      );
+
       await tx.billItem.create({
         data: {
           billId: bill.id,
           // The shortfall is on the bill, not only in a note nobody reads — the
           // ward has to know the rest is still owed.
           description: `${drug.drugName} (Batch ${batch.batchNumber}${expTag}) — IP prescription, ${handedOver} ${unitLabel}(s)${shortTag}`,
-          category: 'pharmacy', quantity: handedOver, unitPrice, taxPercent: taxPct, taxAmount: taxAmt, totalAmount: gross,
+          category: 'pharmacy', quantity: handedOver, unitPrice,
+          ...billItemTaxFields(priced),
           referenceType: 'dispensing_record', referenceId: rec.id, isAutoPulled: true,
           isReimbursable: drug.isReimbursable ?? null,
         },
@@ -696,23 +752,13 @@ export async function dispenseIpPrescription(
       addedTax = round2(addedTax + taxAmt);
     }
 
-    if (addedGross > 0) {
-      await tx.bill.update({
-        where: { id: bill.id },
-        data: {
-          subtotal: round2(Number(bill.subtotal) + addedGross),
-          taxAmount: round2(Number(bill.taxAmount) + addedTax),
-          totalAmount: round2(Number(bill.totalAmount) + addedGross),
-          patientPayableAmount: round2(Number(bill.patientPayableAmount) + addedGross),
-          balanceDue: round2(Number(bill.balanceDue) + addedGross),
-        },
-      });
-    }
+    // Header derived from the lines after commit — see settleBillHeader.
 
     await tx.prescription.update({ where: { id: prescriptionId }, data: { pharmacyStatus: 'collected' } });
     return { billId: bill.id, dispensedLines: dispensable.length };
   });
 
+  await settleBillHeader(result.billId);
   logger.info({ tenantId, prescriptionId, billId: result.billId }, 'IP prescription dispensed to IP bill (queue)');
   return result;
 }
@@ -763,7 +809,7 @@ export async function returnIndentItems(
 
       const drug = await tx.drugFormulary.findFirst({
         where: { id: it.drugFormularyId, tenantId },
-        select: { id: true, drugName: true, packSize: true, taxPercent: true, looseUnitLabel: true },
+        select: { id: true, drugName: true, packSize: true, taxPercent: true, hsnCode: true, looseUnitLabel: true },
       });
       if (!drug) throw AppError.badRequest('A drug on this indent is no longer in the formulary');
       const packSize = drug.packSize && drug.packSize > 0 ? drug.packSize : 1;
@@ -772,13 +818,32 @@ export async function returnIndentItems(
       // (a) Restock the exact original batch.
       await tx.drugBatch.update({ where: { id: it.dispensedBatchId }, data: { quantityInStock: { increment: baseQty } } });
 
-      // (b) Credit the running bill — value the return at the price it was billed at
-      // (unitPrice is per base unit, GST-inclusive), mirroring the dispense math.
+      // (b) Credit the running bill — MIRRORING the line that was actually
+      // billed, not recomputing it.
+      //
+      // This used to re-derive the tax from the drug's CURRENT formulary rate.
+      // A credit is a reversal, so it has to undo the exact figures that were
+      // charged: if the rate was edited between dispense and return, or if the
+      // inpatient exemption was switched on mid-stay, a recomputed credit does
+      // not equal its debit and the difference is left behind on the bill as a
+      // tax residue nobody can account for.
+      //
+      // A partial return credits its share of the original line.
       const unitPrice = Number(it.unitPrice ?? 0);
-      const taxPct = drug.taxPercent != null ? Number(drug.taxPercent) : 0;
       const gross = round2(unitPrice * baseQty);
-      const taxAmt = round2(gross - gross / (1 + taxPct / 100));
       const unitLabel = it.saleUnit === 'loose' ? (drug.looseUnitLabel ?? 'unit') : 'pack';
+
+      const originalLine = it.dispensingRecordId
+        ? await tx.billItem.findFirst({
+            where: { referenceType: 'dispensing_record', referenceId: it.dispensingRecordId },
+          })
+        : null;
+      const originalQty = Number(originalLine?.quantity ?? 0);
+      const share = originalLine && originalQty > 0 ? Math.min(1, baseQty / originalQty) : 1;
+      const back = (v: unknown) => round2(-Number(v ?? 0) * share);
+      const taxAmt = originalLine
+        ? round2(Number(originalLine.taxAmount ?? 0) * share)
+        : 0;
 
       await tx.billItem.create({
         data: {
@@ -787,9 +852,26 @@ export async function returnIndentItems(
           category: 'pharmacy',
           quantity: -baseQty,
           unitPrice,
-          taxPercent: taxPct,
-          taxAmount: round2(-taxAmt),
-          totalAmount: round2(-gross),
+          // Every figure is the original's, scaled by what came back and
+          // negated — so the credit and the debit cancel exactly.
+          taxPercent: Number(originalLine?.taxPercent ?? 0),
+          taxAmount: back(originalLine?.taxAmount),
+          totalAmount: originalLine ? back(originalLine.totalAmount) : round2(-gross),
+          hsnSacCode: originalLine?.hsnSacCode ?? null,
+          gstTreatment: originalLine?.gstTreatment ?? null,
+          taxInclusive: originalLine?.taxInclusive ?? true,
+          taxableValue: originalLine ? back(originalLine.taxableValue) : round2(-gross),
+          cgstRate: Number(originalLine?.cgstRate ?? 0),
+          cgstAmount: back(originalLine?.cgstAmount),
+          sgstRate: Number(originalLine?.sgstRate ?? 0),
+          sgstAmount: back(originalLine?.sgstAmount),
+          igstRate: Number(originalLine?.igstRate ?? 0),
+          igstAmount: back(originalLine?.igstAmount),
+          cessAmount: back(originalLine?.cessAmount),
+          rateSource: originalLine?.rateSource ?? null,
+          taxReason: originalLine
+            ? `Reversal of the line billed at ${Number(originalLine.taxPercent ?? 0)}%`
+            : 'Reversal — the original line could not be found',
           referenceType: 'indent_return',
           referenceId: it.id,
           isAutoPulled: true,
@@ -820,6 +902,9 @@ export async function returnIndentItems(
 
     if (creditGross <= 0) throw AppError.badRequest('Nothing was eligible to return');
 
+    // Header derived from the lines after commit — see settleBillHeader. The
+    // figures below are left in place only so the returned payload still
+    // describes the change; they are overwritten by the recalculation.
     const newTotal = round2(Number(bill.totalAmount) - creditGross);
     const newBalance = Math.max(0, round2(newTotal - Number(bill.amountPaid)));
     await tx.bill.update({
@@ -838,9 +923,10 @@ export async function returnIndentItems(
       data: { notes: [indent.notes, `RTS ${new Date().toISOString().slice(0, 10)}: ${returned.map((r) => `${r.qty}× ${r.drugName}`).join(', ')}${data.reason ? ` (${data.reason})` : ''}`].filter(Boolean).join('\n') },
       include: { items: true },
     });
-    return { updated, creditGross };
+    return { updated, creditGross, billId: bill.id };
   });
 
+  await settleBillHeader(result.billId);
   logger.info({ tenantId, indentId: id, credit: result.creditGross }, 'IP indent items returned to pharmacy (RTS)');
   return hydrate(tenantId, result.updated);
 }
