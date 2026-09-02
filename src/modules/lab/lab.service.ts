@@ -141,6 +141,10 @@ async function buildLabOrderCharges(tenantId: string, labOrderId: string) {
       description: it.test.testName,
       quantity: 1,
       unitPrice: Number(it.test.price ?? 0),
+      // Each test carries its own code, so a six-test order can carry six
+      // answers rather than one rate stamped across all of them.
+      sacCode: (it.test as any).sacCode ?? null,
+      gstTreatment: (it.test as any).gstTreatment ?? null,
     }))
     .filter((c) => c.unitPrice > 0);
 

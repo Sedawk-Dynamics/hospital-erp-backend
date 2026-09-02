@@ -2932,6 +2932,13 @@ export interface DiagnosticChargeInput {
   quantity?: number;
   unitPrice: number;
   serviceTariffId?: string | null;
+  /**
+   * The test's or study's own SAC. A lab order can hold six different tests,
+   * so the code travels per LINE — one rate stamped across a whole order is
+   * only ever right by luck.
+   */
+  sacCode?: string | null;
+  gstTreatment?: string | null;
 }
 
 export interface DiagnosticBillSummary {
@@ -3070,10 +3077,15 @@ export async function billDiagnosticOrder(
 
   const taxRates = await buildServiceTaxRates(tenantId);
   const category = opts.source === 'lab' ? 'lab' : 'radiology';
-  const taxRate =
+  // The department-wide rate, kept only as the FALLBACK for a test that has no
+  // code of its own. It used to be stamped identically onto every line of an
+  // order, so a six-test panel could not carry six answers.
+  const fallbackRate =
     opts.source === 'lab'
       ? (taxRates.lab ?? CHARGE_TAX_RATES.lab)
       : (taxRates.imaging ?? CHARGE_TAX_RATES.imaging);
+  /** Medical laboratory and diagnostic-imaging services — exempt. */
+  const DIAGNOSTIC_SAC = '999316';
 
   // What is already on a bill somewhere in this tenant.
   const existing = await prisma.billItem.findMany({
@@ -3098,8 +3110,13 @@ export async function billDiagnosticOrder(
       description: c.description,
       quantity: c.quantity ?? 1,
       unitPrice: c.unitPrice,
-      taxRate,
+      // Per line: the test's own code first, the diagnostics code second, and
+      // the department fallback only where neither exists.
+      sacCode: c.sacCode ?? DIAGNOSTIC_SAC,
+      taxRate: fallbackRate,
       category,
+      patientAdmitted: payer.mode === 'ip',
+      issuedForTreatment: payer.mode === 'ip',
     }));
 
     if (payer.mode === 'ip') {

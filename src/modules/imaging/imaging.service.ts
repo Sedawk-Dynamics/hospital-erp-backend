@@ -205,6 +205,10 @@ async function buildImagingCharge(
 
   let serviceTariffId: string | null = null;
   let price = 0;
+  // The matched tariff's own classification, so a study priced by a specific
+  // tariff is taxed by that tariff rather than by a radiology-wide average.
+  let sacCode: string | null = null;
+  let gstTreatment: string | null = null;
   if (preferredTariffId) {
     const picked = await prisma.serviceTariff.findFirst({
       where: { id: preferredTariffId, tenantId, category: 'radiology', isActive: true },
@@ -212,12 +216,22 @@ async function buildImagingCharge(
     if (picked) {
       serviceTariffId = picked.id;
       price = Number(picked.basePrice ?? 0);
+      sacCode = (picked as any).sacCode ?? null;
+      gstTreatment = (picked as any).gstTreatment ?? null;
     }
   }
   if (!serviceTariffId) {
     const resolved = await lookupImagingPrice(tenantId, request.imagingType, request.bodyPart);
     serviceTariffId = resolved.id;
     price = resolved.price;
+  }
+  if (serviceTariffId && !sacCode) {
+    const t = await prisma.serviceTariff.findFirst({
+      where: { id: serviceTariffId, tenantId },
+      select: { sacCode: true, gstTreatment: true },
+    });
+    sacCode = (t as any)?.sacCode ?? null;
+    gstTreatment = (t as any)?.gstTreatment ?? null;
   }
 
   const charge: DiagnosticChargeInput = {
@@ -227,6 +241,8 @@ async function buildImagingCharge(
     quantity: 1,
     unitPrice: price,
     serviceTariffId,
+    sacCode,
+    gstTreatment,
   };
   return { request, charge };
 }
