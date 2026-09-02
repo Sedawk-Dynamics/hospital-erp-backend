@@ -11,6 +11,7 @@ import { createBillInSeries } from '../../shared/bill-number';
 import { resolvePackSize, inferLooseUnitLabel } from '../drug-master/drug-master.dataset';
 import { resolveHsnGst, getHsnGstRows, matchHsnGst } from '../drug-master/drug-master.service';
 import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
+import { issueCreditNoteBestEffort } from '../gst/credit-note.service';
 import {
   classifyFormularyItem,
   inheritedScheduleFields,
@@ -3950,6 +3951,22 @@ export async function cancelPharmacySale(
       where: { billId, cancelledAt: null },
       data: { cancelledAt: new Date(), cancelledBy: userId },
     });
+    // Reverse the tax BEFORE the lines go. This is where real GST lands — the
+    // counter is the one place a hospital charges 5%, 12% and 18% — and a
+    // voided sale used to delete every line while leaving the header's tax
+    // figure untouched, so the bill went on claiming tax on lines that no
+    // longer existed and could never be reconstructed.
+    //
+    // The credit note is self-contained: it copies each line's description,
+    // code, rate and split before they are removed, so the reversal survives
+    // the deletion.
+    await issueCreditNoteBestEffort(tx, tenantId, {
+      billId,
+      reason: 'cancellation',
+      reasonNote: data.reason,
+      issuedBy: userId,
+    });
+
     // The invoice lines go, since the invoice itself is void.
     await tx.billItem.deleteMany({ where: { billId } });
     // 3. Reverse the counter payment (cash handed back).
@@ -3966,6 +3983,18 @@ export async function cancelPharmacySale(
         cancellationReason: data.reason,
         amountPaid: 0,
         balanceDue: 0,
+        // The lines are gone, so every figure summarising them goes to zero
+        // with them. These were left at their pre-void values, which is how a
+        // cancelled bill came to claim tax on nothing at all.
+        subtotal: 0,
+        discountAmount: 0,
+        taxAmount: 0,
+        totalAmount: 0,
+        taxableValue: 0,
+        cgstAmount: 0,
+        sgstAmount: 0,
+        igstAmount: 0,
+        cessAmount: 0,
       },
     });
     // 5. Revert any Rx-linked prescription back toward active.

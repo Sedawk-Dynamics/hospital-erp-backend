@@ -151,14 +151,67 @@ async function main() {
   ck('re-finalising does not mint a second number',
      again?.invoiceNumber === before, `${before} -> ${again?.invoiceNumber}`);
 
+  // ── Cancelling the issued document reverses its tax ──
+  const cancelled = await api(`/billing/${bill.id}/cancel`, {
+    method: 'PATCH',
+    body: { reason: `${TAG} walk` },
+  }, token);
+  ck('issued bill cancelled', cancelled.status === 200,
+     `status ${cancelled.status} — ${JSON.stringify(cancelled.json).slice(0,180)}`);
+
+  const notes = await prisma.creditNote.findMany({
+    where: { billId: bill.id },
+    include: { items: true },
+  });
+  ck('a credit note was issued for it', notes.length === 1, `got ${notes.length}`);
+  const cn: any = notes[0];
+  ck('numbered from its own series',
+     /^CN\/\d{4}-\d{2}\/\d{6}$/.test(String(cn?.creditNoteNumber ?? '')),
+     `${cn?.creditNoteNumber}`);
+  ck('it names the bill it reverses', cn?.billId === bill.id);
+  ck('it credits every line', (cn?.items ?? []).length === items.length,
+     `${(cn?.items ?? []).length} vs ${items.length}`);
+
+  // The reversal must cancel the supply exactly, to the paisa.
+  const billTax = items.reduce((s, i) => s + Number(i.taxAmount), 0);
+  const billTaxable = items.reduce((s, i) => s + Number(i.taxableValue), 0);
+  const billTotal = items.reduce((s, i) => s + Number(i.totalAmount), 0);
+  ck('the credit cancels the tax exactly', near(Number(cn?.taxAmount), -billTax),
+     `${cn?.taxAmount} vs -${billTax}`);
+  ck('the credit cancels the taxable value exactly', near(Number(cn?.taxableValue), -billTaxable),
+     `${cn?.taxableValue} vs -${billTaxable}`);
+  ck('the credit cancels the total exactly', near(Number(cn?.totalAmount), -billTotal),
+     `${cn?.totalAmount} vs -${billTotal}`);
+  ck('and its own split still sums to its tax',
+     near(Number(cn?.cgstAmount) + Number(cn?.sgstAmount) + Number(cn?.igstAmount), Number(cn?.taxAmount)));
+  ck('it carries the supplier identity', cn?.supplierGstin === '27AAPFU0939F1ZV');
+  ck('it is within the time limit', cn?.withinTimeLimit === true);
+
+  // Each credited line mirrors its original rather than being recomputed.
+  const roomCredit = (cn?.items ?? []).find((i: any) => String(i.description).includes('Paracetamol'));
+  const roomOrig = items.find((i) => i.description.includes('Paracetamol'));
+  ck('a credited line keeps the original code and rate',
+     roomCredit?.hsnSacCode === roomOrig?.hsnSacCode &&
+     Number(roomCredit?.taxPercent) === Number(roomOrig?.taxPercent),
+     `${roomCredit?.hsnSacCode}@${roomCredit?.taxPercent} vs ${roomOrig?.hsnSacCode}@${roomOrig?.taxPercent}`);
+  ck('and traces back to the line it came off', roomCredit?.billItemId === roomOrig?.id);
+
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail) process.exitCode = 1;
 }
 
 main()
   .finally(async () => {
+    // The document series counter is deliberately NOT reset. Deleting it while
+    // an issued invoice number survives is exactly how the next allocation
+    // collides — the counter restarts at 1 and claims a number already taken.
+    // The series is meant to grow forever; that is the whole point of it.
+    // Cancelling mints a sentinel payment + receipt, so those go first.
+    await prisma.receipt.deleteMany({ where: { payment: { bill: { billNumber: { startsWith: TAG } } } } });
+    await prisma.payment.deleteMany({ where: { bill: { billNumber: { startsWith: TAG } } } });
+    await prisma.creditNoteItem.deleteMany({ where: { creditNote: { bill: { billNumber: { startsWith: TAG } } } } });
+    await prisma.creditNote.deleteMany({ where: { bill: { billNumber: { startsWith: TAG } } } });
     await prisma.billItem.deleteMany({ where: { bill: { billNumber: { startsWith: TAG } } } });
-    await prisma.gstDocumentSeries.deleteMany({ where: { tenantId: TENANT, prefix: '__none__' } });
     await prisma.bill.deleteMany({ where: { billNumber: { startsWith: TAG } } });
     await prisma.$disconnect();
   })

@@ -109,6 +109,8 @@ async function main() {
     const staleBatches = (await p.drugBatch.findMany({ where: { drugId: { in: ids } }, select: { id: true } })).map((b) => b.id);
     await p.wardStockLedger.deleteMany({ where: { drugBatchId: { in: staleBatches } } });
     await p.wardStock.deleteMany({ where: { drugBatchId: { in: staleBatches } } });
+    // A voided or cancelled bill now carries a credit note that references it.
+    await p.creditNote.deleteMany({ where: { referenceType: 'ward_dispense', description: { contains: 'WARDSTOCK-' } } }).catch(() => {});
     await p.billItem.deleteMany({ where: { referenceType: 'ward_dispense', description: { contains: 'WARDSTOCK-' } } });
     await p.drugBatch.deleteMany({ where: { drugId: { in: ids } } });
     await p.drugFormulary.deleteMany({ where: { id: { in: ids } } });
@@ -587,6 +589,8 @@ async function main() {
   ];
   await p.wardStockLedger.deleteMany({ where: { drugBatchId: { in: drugBatchIds } } });
   await p.wardStock.deleteMany({ where: { drugBatchId: { in: drugBatchIds } } });
+  // A voided or cancelled bill now carries a credit note that references it.
+  await p.creditNote.deleteMany({ where: { referenceType: 'ward_dispense', description: { contains: TAG } } }).catch(() => {});
   await p.billItem.deleteMany({ where: { referenceType: 'ward_dispense', description: { contains: TAG } } });
   for (const id of billIds) {
     const remaining = await p.billItem.count({ where: { billId: id } });

@@ -318,6 +318,8 @@ async function main() {
     await p.insuranceClaim.deleteMany({ where: { id: { in: claimIds } } });
     await p.receipt.deleteMany({ where: { payment: { billId: { in: billIds } } } });
     await p.payment.deleteMany({ where: { billId: { in: billIds } } });
+    // A voided or cancelled bill now carries a credit note that references it.
+    await p.creditNote.deleteMany({ where: { billId: { in: billIds } } }).catch(() => {});
     await p.billItem.deleteMany({ where: { billId: { in: billIds } } });
     await p.bill.deleteMany({ where: { id: { in: billIds } } });
     await p.insurancePolicy.deleteMany({ where: { policyNumber: { startsWith: TAG } } });

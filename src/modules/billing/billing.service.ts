@@ -20,6 +20,7 @@ import { writeAudit } from '../../shared/audit';
 import { supplyKindForCategory } from '../../shared/gst-determination';
 import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
 import { issueDocumentForBill } from '../gst/gst-document.service';
+import { issueCreditNoteBestEffort } from '../gst/credit-note.service';
 import { getGstProfile } from '../hospital-settings/hospital-settings.service';
 import {
   DEFAULT_DISCOUNT_APPROVAL,
@@ -1843,6 +1844,31 @@ export async function approveRefund(tenantId: string, refundId: string, approved
         status: newStatus,
       },
     });
+
+    // The money has gone back; the tax on it has to go back too, or the
+    // hospital keeps owing the department output tax on a supply it reversed.
+    //
+    // A refund here is a rupee amount with no link to any line — that is what
+    // the Refund model records — so the share it represents of the whole bill
+    // is the only thing that can be known. A full refund credits everything; a
+    // part refund credits that proportion of every line, which keeps each
+    // line's own rate and split intact rather than guessing a blended one.
+    const refundedAmount = toNumber(refund.amount);
+    const share = totalAmount > 0 ? Math.min(1, refundedAmount / totalAmount) : 0;
+    if (share > 0) {
+      const lines = await tx.billItem.findMany({
+        where: { billId: bill.id },
+        select: { id: true },
+      });
+      await issueCreditNoteBestEffort(tx, tenantId, {
+        billId: bill.id,
+        reason: 'sales_return',
+        reasonNote: refund.reason,
+        refundId: refund.id,
+        issuedBy: approvedBy,
+        lines: lines.map((l: { id: string }) => ({ billItemId: l.id, share })),
+      });
+    }
 
     return { updatedRefund, payout, payoutReceipt, newPaidAmount, newStatus };
   });
@@ -5783,6 +5809,20 @@ export async function cancelBill(
         cancellationReason: data.reason,
       },
     });
+
+    // A cancelled bill's tax used to survive the cancellation: the header kept
+    // its taxAmount and the lines kept theirs, so the hospital went on
+    // declaring output tax on a supply that had been called off. Only a bill
+    // that was actually ISSUED needs a credit note — a draft was never a
+    // document and has nothing to reverse.
+    if ((bill as any).invoiceNumber) {
+      await issueCreditNoteBestEffort(tx, tenantId, {
+        billId,
+        reason: 'cancellation',
+        reasonNote: data.reason,
+        issuedBy: userId,
+      });
+    }
 
     // Cancellation receipt — zero amount, just an audit row tied to the bill
     // via a sentinel payment so downstream receipt listings can show it.

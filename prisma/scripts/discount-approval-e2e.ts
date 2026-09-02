@@ -392,6 +392,8 @@ async function main() {
       await p.bill.findMany({ where: { billNumber: { startsWith: TAG } }, select: { id: true } })
     ).map((b) => b.id);
     await p.discount.deleteMany({ where: { billId: { in: billIds } } });
+    // A voided or cancelled bill now carries a credit note that references it.
+    await p.creditNote.deleteMany({ where: { billId: { in: billIds } } }).catch(() => {});
     await p.billItem.deleteMany({ where: { billId: { in: billIds } } });
     await p.bill.deleteMany({ where: { id: { in: billIds } } });
     ck(

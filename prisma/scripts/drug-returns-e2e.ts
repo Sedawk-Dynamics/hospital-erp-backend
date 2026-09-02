@@ -114,6 +114,8 @@ async function main() {
     await p.refund.deleteMany({ where: { billId: { in: bills } } });
     await p.dispensingRecord.deleteMany({ where: { drugBatchId: { in: b } } });
     await p.payment.deleteMany({ where: { billId: { in: bills } } });
+    // A voided or cancelled bill now carries a credit note that references it.
+    await p.creditNote.deleteMany({ where: { billId: { in: bills } } }).catch(() => {});
     await p.billItem.deleteMany({ where: { billId: { in: bills } } });
     await p.bill.deleteMany({ where: { id: { in: bills } } });
     await p.drugBatch.deleteMany({ where: { drugId: { in: ids } } });
@@ -539,6 +541,8 @@ async function main() {
   await p.refund.deleteMany({ where: { billId: { in: billIds } } });
   await p.dispensingRecord.deleteMany({ where: { drugBatchId: { in: batchIds } } });
   await p.payment.deleteMany({ where: { billId: { in: billIds } } });
+  // A voided or cancelled bill now carries a credit note that references it.
+  await p.creditNote.deleteMany({ where: { billId: { in: billIds } } }).catch(() => {});
   await p.billItem.deleteMany({ where: { billId: { in: billIds } } });
   await p.bill.deleteMany({ where: { id: { in: billIds } } });
   await p.externalPrescription.deleteMany({ where: { prescriberRegNo: `${TAG}-REG` } });

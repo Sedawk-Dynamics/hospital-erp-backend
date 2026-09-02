@@ -124,6 +124,8 @@ async function main() {
     }
     await p.dispensingRecord.deleteMany({ where: { drugBatchId: { in: b } } });
     await p.payment.deleteMany({ where: { billId: { in: bills } } });
+    // A voided or cancelled bill now carries a credit note that references it.
+    await p.creditNote.deleteMany({ where: { billId: { in: bills } } }).catch(() => {});
     await p.billItem.deleteMany({ where: { billId: { in: bills } } });
     await p.bill.deleteMany({ where: { id: { in: bills } } });
     await p.drugBatch.deleteMany({ where: { drugId: { in: ids } } });
@@ -502,6 +504,8 @@ async function main() {
   }
   await p.drugReturn.deleteMany({ where: { drugBatchId: { in: batchIds } } });
   await p.dispensingRecord.deleteMany({ where: { drugBatchId: { in: batchIds } } });
+  // A voided or cancelled bill now carries a credit note that references it.
+  await p.creditNote.deleteMany({ where: { billId: { in: billIds } } }).catch(() => {});
   await p.billItem.deleteMany({ where: { billId: { in: billIds } } });
   // Put a borrowed bill back exactly as it was, then delete only the ones this
   // run opened. Deleting a real running bill would take a stay's charges — and
