@@ -1352,6 +1352,7 @@ model Tenant {
   dicomInstances             DicomInstance[]
   drugNameMappings           DrugNameMapping[]
   gstDocumentSeries          GstDocumentSeries[]
+  creditNotes                CreditNote[]
 
   @@map("tenants")
 }
@@ -1643,6 +1644,7 @@ model User {
   stockTransfersReceived         StockTransfer[]              @relation("StockTransferReceiver")
   stockTransfersCustodied        StockTransfer[]              @relation("StockTransferCustodian")
   billsGenerated                 Bill[]                       @relation("BillGenerator")
+  creditNotesIssued              CreditNote[]
   billsApproved                  Bill[]                       @relation("BillApprover")
   billsCancelled                 Bill[]                       @relation("BillCanceller")
   paymentsProcessed              Payment[]
@@ -2097,6 +2099,7 @@ model Patient {
   drugReturns               DrugReturn[]
   pharmacyStockHolds        PharmacyStockHold[]
   bills                     Bill[]
+  creditNotes               CreditNote[]
   payments                  Payment[]
   refunds                   Refund[]
   insurancePolicies         InsurancePolicy[]
@@ -4319,6 +4322,92 @@ model GstDocumentSeries {
 }
 
 // ============================================================
+// Credit notes — the document a reversal is supposed to produce
+// ============================================================
+// Refunds, cancellations, returns and post-supply discounts all move money
+// back, and until now not one of them reversed the TAX that moved with it. The
+// output tax stayed declared on a supply that no longer happened, so the
+// hospital kept owing the department money on a sale it had undone.
+//
+// A credit note is not a recalculation. It MIRRORS the lines it reverses —
+// their codes, their rates, their split — scaled by how much came back and
+// negated. Recomputing from today's master would produce a credit that does not
+// equal its debit whenever a rate has moved since, and the residue would sit on
+// the books with nothing to explain it.
+model CreditNote {
+  id               String   @id @default(uuid())
+  tenantId         String   @map("tenant_id")
+  /// Its own continuous series, allotted the same way an invoice number is.
+  creditNoteNumber String   @unique @map("credit_note_number") @db.VarChar(50)
+  /// The document being reversed. A credit note without one is not a credit note.
+  billId           String   @map("bill_id")
+  patientId        String?  @map("patient_id")
+  issueDate        DateTime @map("issue_date")
+  financialYear    String?  @map("financial_year") @db.VarChar(7)
+  /// sales_return | cancellation | post_supply_discount | reversal | correction
+  reason           String   @db.VarChar(40)
+  reasonNote       String?  @map("reason_note")
+  /// The money movement this note documents, where there was one.
+  refundId         String?  @map("refund_id")
+  drugReturnId     String?  @map("drug_return_id")
+
+  taxableValue     Decimal  @default(0) @map("taxable_value") @db.Decimal(12, 2)
+  cgstAmount       Decimal  @default(0) @map("cgst_amount") @db.Decimal(12, 2)
+  sgstAmount       Decimal  @default(0) @map("sgst_amount") @db.Decimal(12, 2)
+  igstAmount       Decimal  @default(0) @map("igst_amount") @db.Decimal(12, 2)
+  cessAmount       Decimal  @default(0) @map("cess_amount") @db.Decimal(12, 2)
+  taxAmount        Decimal  @default(0) @map("tax_amount") @db.Decimal(12, 2)
+  totalAmount      Decimal  @default(0) @map("total_amount") @db.Decimal(12, 2)
+
+  /// Snapshots, like the invoice's — this note was issued under these details.
+  supplierGstin          String?  @map("supplier_gstin") @db.VarChar(15)
+  placeOfSupplyStateCode String?  @map("place_of_supply_state_code") @db.VarChar(2)
+  recipientGstin         String?  @map("recipient_gstin") @db.VarChar(15)
+  /// A note raised after 30 November following the year end cannot reduce tax
+  /// liability. The money still goes back; the tax simply cannot be recovered.
+  withinTimeLimit  Boolean  @default(true) @map("within_time_limit")
+  issuedBy         String?  @map("issued_by")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  tenant  Tenant           @relation(fields: [tenantId], references: [id])
+  bill    Bill             @relation(fields: [billId], references: [id])
+  patient Patient?         @relation(fields: [patientId], references: [id])
+  issuer  User?            @relation(fields: [issuedBy], references: [id])
+  items   CreditNoteItem[]
+
+  @@index([tenantId, issueDate])
+  @@index([billId])
+  @@map("credit_notes")
+}
+
+model CreditNoteItem {
+  id           String  @id @default(uuid())
+  creditNoteId String  @map("credit_note_id")
+  /// The line being reversed, so a partial credit can be traced to its debit.
+  billItemId   String? @map("bill_item_id")
+  description  String  @db.VarChar(500)
+  hsnSacCode   String? @map("hsn_sac_code") @db.VarChar(20)
+  gstTreatment String? @map("gst_treatment") @db.VarChar(20)
+  quantity     Decimal @default(0) @db.Decimal(12, 2)
+  unitPrice    Decimal @default(0) @map("unit_price") @db.Decimal(12, 2)
+  taxableValue Decimal @default(0) @map("taxable_value") @db.Decimal(12, 2)
+  taxPercent   Decimal @default(0) @map("tax_percent") @db.Decimal(5, 2)
+  taxAmount    Decimal @default(0) @map("tax_amount") @db.Decimal(12, 2)
+  cgstAmount   Decimal @default(0) @map("cgst_amount") @db.Decimal(12, 2)
+  sgstAmount   Decimal @default(0) @map("sgst_amount") @db.Decimal(12, 2)
+  igstAmount   Decimal @default(0) @map("igst_amount") @db.Decimal(12, 2)
+  cessAmount   Decimal @default(0) @map("cess_amount") @db.Decimal(12, 2)
+  totalAmount  Decimal @default(0) @map("total_amount") @db.Decimal(12, 2)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  creditNote CreditNote @relation(fields: [creditNoteId], references: [id], onDelete: Cascade)
+  billItem   BillItem?  @relation(fields: [billItemId], references: [id])
+
+  @@index([creditNoteId])
+  @@map("credit_note_items")
+}
+
+// ============================================================
 // Drug schedule reference (Drugs & Cosmetics Rules 1945 + NDPS Act)
 // ============================================================
 // Platform reference data — no tenantId, like HsnGstRate / ICD codes. Every row
@@ -5719,6 +5808,7 @@ model Bill {
   discounts       Discount[]
   insuranceClaims InsuranceClaim[]
   drugReturns     DrugReturn[]
+  creditNotes     CreditNote[]
 
   @@map("bills")
 }
@@ -5775,6 +5865,8 @@ model BillItem {
 
   bill          Bill           @relation(fields: [billId], references: [id])
   serviceTariff ServiceTariff? @relation(fields: [serviceTariffId], references: [id])
+
+  creditNoteItems CreditNoteItem[]
 
   // The HSN/SAC summary in GSTR-1 groups by code across a whole period.
   @@index([hsnSacCode])
