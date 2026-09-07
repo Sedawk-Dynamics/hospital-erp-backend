@@ -188,4 +188,106 @@ describe('streamAdmissionBillPdf', () => {
     // give ₹ a width of zero and every amount prints with a hole in it.
     expect(embeddedFontsAvailable()).toBe(true);
   });
+  // ── The GST layouts ──────────────────────────────────────────────────────
+  //
+  // The columns follow what KIND of document this is, so each shape has to be
+  // rendered at least once: a throw here is a bill nobody can print.
+
+  const taxedLine = {
+    hsnSac: '996311', gstTreatment: 'taxable', treatmentLabel: 'Taxable',
+    taxRatePercent: 5, taxableValue: 8000, taxAmount: 400,
+    cgstRate: 2.5, cgstAmount: 200, sgstRate: 2.5, sgstAmount: 200,
+    igstRate: 0, igstAmount: 0, cessAmount: 0,
+  };
+  const exemptLine = {
+    hsnSac: '30042090', gstTreatment: 'exempt', treatmentLabel: 'Exempt',
+    taxRatePercent: 0, taxableValue: 240, taxAmount: 0,
+    cgstRate: 0, cgstAmount: 0, sgstRate: 0, sgstAmount: 0,
+    igstRate: 0, igstAmount: 0, cessAmount: 0,
+  };
+
+  function gstDoc(over: Record<string, unknown> = {}): AdmissionBillDocument {
+    return makeDoc({
+      documentTitle: 'Invoice-cum-Bill of Supply',
+      groups: [
+        {
+          category: 'room', label: 'Room / Bed Charges', total: 8400,
+          lines: [{
+            // The longest description this database actually holds: the column
+            // has to wrap it, not lose half of it.
+            description:
+              'IndentAntibiotic-E2E-1783404892983 (Batch B-E2E-1783404892983-605912, exp 07/07/2027) — ward indent IND-20260707-0001, 2 pack(s)',
+            category: 'room', quantity: 1, unitPrice: 8000, totalAmount: 8400,
+            status: 'posted', at: '2026-08-06T00:00:00Z', ...taxedLine,
+          }],
+        },
+        {
+          category: 'pharmacy', label: 'Pharmacy & Medicines', total: 240,
+          lines: [{
+            description: 'Injection Ceftriaxone 1g', category: 'pharmacy', quantity: 2,
+            unitPrice: 120, totalAmount: 240, status: 'posted',
+            at: '2026-08-06T00:00:00Z', ...exemptLine,
+          }],
+        },
+      ],
+      gst: {
+        registered: true,
+        documentType: 'invoice_cum_bill_of_supply',
+        documentLabel: 'Invoice-cum-Bill of Supply',
+        invoiceNumbers: ['INV/2026-27/000003'],
+        financialYear: '2026-27',
+        supplierGstin: '27AAPFU0939F1ZV', supplierStateCode: '27', supplierStateName: 'Maharashtra',
+        recipientGstin: null, placeOfSupplyStateCode: '27', placeOfSupplyStateName: 'Maharashtra',
+        isInterState: false, hasTax: true, hasClassifiedLines: true,
+        taxSummary: [
+          { label: 'Taxable', treatment: 'taxable', ratePercent: 5, taxableValue: 8000, cgstAmount: 200, sgstAmount: 200, igstAmount: 0, cessAmount: 0, taxAmount: 400 },
+          { label: 'Exempt', treatment: 'exempt', ratePercent: 0, taxableValue: 240, cgstAmount: 0, sgstAmount: 0, igstAmount: 0, cessAmount: 0, taxAmount: 0 },
+        ],
+        notes: ['Tax is not payable on reverse charge basis.'],
+        totals: { taxableValue: 8240, cgstAmount: 200, sgstAmount: 200, igstAmount: 0, cessAmount: 0, taxAmount: 400 },
+      },
+      ...over,
+    } as Partial<AdmissionBillDocument>);
+  }
+
+  it('renders a mixed invoice-cum-bill-of-supply with the tax split per line', async () => {
+    expectWellFormedPdf(await render(gstDoc()));
+  });
+
+  it('renders an inter-state bill with IGST in place of CGST/SGST', async () => {
+    const doc = gstDoc();
+    doc.gst.isInterState = true;
+    doc.gst.placeOfSupplyStateCode = '29';
+    doc.gst.placeOfSupplyStateName = 'Karnataka';
+    doc.groups[0].lines[0] = {
+      ...doc.groups[0].lines[0],
+      cgstRate: 0, cgstAmount: 0, sgstRate: 0, sgstAmount: 0, igstRate: 5, igstAmount: 400,
+    };
+    doc.gst.taxSummary = [{
+      label: 'Taxable', treatment: 'taxable', ratePercent: 5, taxableValue: 8000,
+      cgstAmount: 0, sgstAmount: 0, igstAmount: 400, cessAmount: 0, taxAmount: 400,
+    }];
+    doc.gst.totals = { taxableValue: 8000, cgstAmount: 0, sgstAmount: 0, igstAmount: 400, cessAmount: 0, taxAmount: 400 };
+    expectWellFormedPdf(await render(doc));
+  });
+
+  // A bill of supply is the document for an EXEMPT supply, so it carries HSN
+  // but no tax columns and no tax summary.
+  it('renders an all-exempt bill of supply without tax columns', async () => {
+    const doc = gstDoc();
+    doc.gst.documentType = 'bill_of_supply';
+    doc.gst.documentLabel = 'Bill of Supply';
+    doc.gst.hasTax = false;
+    doc.gst.taxSummary = [];
+    doc.gst.notes = [];
+    expectWellFormedPdf(await render(doc));
+  });
+
+  // A bill raised before any of this existed carries no GST block at all, and
+  // still has to print — at the layout it has always had.
+  it('renders a document with no GST block at all', async () => {
+    const doc = makeDoc();
+    delete (doc as { gst?: unknown }).gst;
+    expectWellFormedPdf(await render(doc));
+  });
 });
