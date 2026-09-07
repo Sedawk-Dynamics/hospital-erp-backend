@@ -183,7 +183,14 @@ export async function updateAdmission(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const admission = await clinicalService.updateAdmission(tenantId, req.params.id as string, req.body);
+    const admission = await clinicalService.updateAdmission(
+      tenantId,
+      req.params.id as string,
+      req.body,
+      // Who acted comes from the token, never the body — a deposit receipt has
+      // to name the person who actually took the money.
+      req.user!.userId,
+    );
     sendResponse({
       res,
       message: 'Admission updated successfully',

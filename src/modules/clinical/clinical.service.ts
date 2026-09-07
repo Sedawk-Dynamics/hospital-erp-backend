@@ -593,6 +593,22 @@ export async function createAdmission(tenantId: string, userId: string, data: Cr
       },
     });
 
+    // A deposit taken at admission is money handed over by a patient, so it
+    // gets a Payment and a Receipt like any other money. It used to be written
+    // to depositAmount as a bare number — no date, no tender, nobody named, and
+    // nothing to hand the patient. In the same transaction as the admission, so
+    // the money and its receipt commit together.
+    const depositTaken = Number(data.depositAmount ?? 0);
+    if (depositTaken > 0) {
+      const billing = await import('../billing/billing.service');
+      await billing.recordAdmissionDepositReceipt(tx, tenantId, userId, {
+        patientId: data.patientId,
+        admissionId: created.id,
+        amount: depositTaken,
+        paymentMethod: (data as any).depositPaymentMethod,
+      });
+    }
+
     // Occupy the bed atomically (only when a bed was assigned at registration).
     if (data.bedId) {
       await tx.bed.update({
@@ -874,7 +890,12 @@ export async function getAdmissionById(tenantId: string, id: string) {
 /**
  * Update an admission.
  */
-export async function updateAdmission(tenantId: string, id: string, data: UpdateAdmissionInput) {
+export async function updateAdmission(
+  tenantId: string,
+  id: string,
+  data: UpdateAdmissionInput,
+  userId?: string,
+) {
   const admission = await prisma.admission.findFirst({
     where: { id, tenantId },
   });
@@ -899,7 +920,26 @@ export async function updateAdmission(tenantId: string, id: string, data: Update
     }
   }
 
-  const updated = await prisma.admission.update({
+  // Only an INCREASE is new money. Raising a deposit from 5,000 to 7,000 means
+  // the patient handed over 2,000 more, and that gets a receipt. Lowering it is
+  // a correction or a refund, and neither is money coming in — issuing a
+  // receipt for one would invent a payment that never happened.
+  const depositBefore = Number(admission.depositAmount ?? 0);
+  const depositAfter = data.depositAmount !== undefined ? Number(data.depositAmount) : depositBefore;
+  const depositIncrease = Math.round(Math.max(0, depositAfter - depositBefore) * 100) / 100;
+
+  const updated = await prisma.$transaction(async (tx) => {
+    if (depositIncrease > 0) {
+      const billing = await import('../billing/billing.service');
+      await billing.recordAdmissionDepositReceipt(tx, tenantId, userId ?? '', {
+        patientId: admission.patientId,
+        admissionId: id,
+        amount: depositIncrease,
+        paymentMethod: (data as any).depositPaymentMethod,
+        notes: 'Admission deposit topped up',
+      });
+    }
+    return tx.admission.update({
     where: { id },
     data: {
       ...(data.wardId && { wardId: data.wardId }),
@@ -925,9 +965,10 @@ export async function updateAdmission(tenantId: string, id: string, data: Update
       ward: { select: { id: true, name: true } },
       bed: { select: { id: true, bedNumber: true } },
     },
+    });
   });
 
-  logger.info({ tenantId, admissionId: id }, 'Admission updated');
+  logger.info({ tenantId, admissionId: id, depositIncrease }, 'Admission updated');
   return updated;
 }
 

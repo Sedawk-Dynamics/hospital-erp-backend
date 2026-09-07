@@ -81,6 +81,12 @@ export const createAdmissionSchema = z.object({
       .optional(),
     admissionReason: z.string().max(2000).optional(),
     depositAmount: z.number().min(0).optional(),
+    // How the deposit was tendered. MUST be named here: validate() replaces the
+    // body with the parsed object, so a field the schema does not list is
+    // silently dropped — the receipt would record every deposit as cash.
+    depositPaymentMethod: z
+      .enum(['cash', 'credit_card', 'debit_card', 'bank_transfer', 'upi', 'cheque', 'other'])
+      .optional(),
     // G12: how this IP patient settles charges.
     billingCategory: z.enum(['cash', 'package', 'insurance', 'corporate']).optional(),
     // Care type — all three run the same IP flow; this is a tag/filter.
@@ -138,6 +144,12 @@ export const updateAdmissionSchema = z.object({
       .optional(),
     admissionReason: z.string().max(2000).optional(),
     depositAmount: z.number().min(0).optional(),
+    // How the deposit was tendered. MUST be named here: validate() replaces the
+    // body with the parsed object, so a field the schema does not list is
+    // silently dropped — the receipt would record every deposit as cash.
+    depositPaymentMethod: z
+      .enum(['cash', 'credit_card', 'debit_card', 'bank_transfer', 'upi', 'cheque', 'other'])
+      .optional(),
     billingCategory: z.enum(['cash', 'package', 'insurance', 'corporate']).optional(),
   }),
 });
@@ -666,6 +678,12 @@ export const acceptAdmissionRequestSchema = z.object({
       .optional(),
     admissionReason: z.string().max(1000).optional(),
     depositAmount: z.number().min(0).optional(),
+    // How the deposit was tendered. MUST be named here: validate() replaces the
+    // body with the parsed object, so a field the schema does not list is
+    // silently dropped — the receipt would record every deposit as cash.
+    depositPaymentMethod: z
+      .enum(['cash', 'credit_card', 'debit_card', 'bank_transfer', 'upi', 'cheque', 'other'])
+      .optional(),
     advanceAmount: z.number().min(0).optional(),
     notes: z.string().max(2000).optional(),
   }),
@@ -689,6 +707,12 @@ export const admitFromReservationSchema = z.object({
       .optional(),
     admissionReason: z.string().max(1000).optional(),
     depositAmount: z.number().min(0).optional(),
+    // How the deposit was tendered. MUST be named here: validate() replaces the
+    // body with the parsed object, so a field the schema does not list is
+    // silently dropped — the receipt would record every deposit as cash.
+    depositPaymentMethod: z
+      .enum(['cash', 'credit_card', 'debit_card', 'bank_transfer', 'upi', 'cheque', 'other'])
+      .optional(),
   }),
 });
 

@@ -4,6 +4,7 @@ import {
   computeAdvanceTax,
   advancePaymentTaxFields,
 } from '../../../../src/modules/gst/advance-gst.service';
+import { recordAdmissionDepositReceipt } from '../../../../src/modules/billing/billing.service';
 import { DEFAULT_GST_PROFILE, mergeGstProfile } from '../../../../src/shared/gst-profile';
 
 const REGISTERED = mergeGstProfile(DEFAULT_GST_PROFILE, {
@@ -127,5 +128,79 @@ describe('advancePaymentTaxFields', () => {
     expect(f.voucherNumber).toBeNull();
     expect(f.gstTreatment).toBe('taxable');
     expect(f.taxAmount).toBe(476.19);
+  });
+});
+
+describe('recordAdmissionDepositReceipt', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const DEP = {
+    patientId: 'pat-1',
+    admissionId: 'adm-1',
+    amount: 20000,
+  };
+
+  function setup() {
+    (prisma.bill.findFirst as any).mockResolvedValue({ id: 'adv-bucket' });
+    (prisma.receipt.findFirst as any).mockResolvedValue(null);
+    (prisma.tenant.findFirst as any).mockResolvedValue({
+      themeConfig: { gst: { registered: true, gstin: '27AAPFU0939F1ZV' } },
+    });
+    (prisma.gstDocumentSeries.upsert as any).mockResolvedValue({ prefix: 'RV', lastNumber: 9 });
+    (prisma.payment.create as any).mockResolvedValue({ id: 'pay-1' });
+    (prisma.receipt.create as any).mockResolvedValue({ id: 'rcp-1' });
+  }
+
+  // The gap this closes: money was written to depositAmount as a bare number
+  // with no date, no tender, nobody named and nothing to hand the patient.
+  it('writes a payment and a receipt for the money taken', async () => {
+    setup();
+    const out = await recordAdmissionDepositReceipt(prisma, 'tenant-1', 'user-1', DEP);
+    expect(out).toMatchObject({ paymentId: 'pay-1' });
+    const pay = (prisma.payment.create as any).mock.calls[0][0].data;
+    expect(pay).toMatchObject({
+      amount: 20000,
+      paymentType: 'advance',
+      status: 'completed',
+      processedBy: 'user-1',
+      gstTreatment: 'exempt',
+    });
+    expect(prisma.receipt.create as any).toHaveBeenCalled();
+  });
+
+  // The marker is what lets this row exist without disturbing any existing
+  // figure — it must never be read as deposit money applied to a bill.
+  it('marks the row as a RECEIPT, not an application', async () => {
+    setup();
+    await recordAdmissionDepositReceipt(prisma, 'tenant-1', 'user-1', DEP);
+    const txn = (prisma.payment.create as any).mock.calls[0][0].data.transactionId;
+    expect(txn).toBe('IPDEPRCPT:adm-1');
+
+    // The two prefixes are one character apart and the consequence of a
+    // collision is not subtle: getAdmissionDepositState counts every row whose
+    // transactionId starts with 'IPDEP:' as deposit money ALREADY APPLIED to a
+    // bill. If a receipt row matched that, every deposit would be read as fully
+    // spent the instant it was taken and availableToApply would sit at zero.
+    //
+    // It does not match, because the sixth character is 'R' and not ':'. Pinned
+    // here so a later rename cannot quietly break it.
+    expect(txn.startsWith('IPDEP:')).toBe(false);
+  });
+
+  it('records the tender the desk actually took', async () => {
+    setup();
+    await recordAdmissionDepositReceipt(prisma, 'tenant-1', 'user-1', {
+      ...DEP,
+      paymentMethod: 'upi',
+    });
+    expect((prisma.payment.create as any).mock.calls[0][0].data.paymentMethod).toBe('upi');
+  });
+
+  it('writes nothing when no deposit was taken', async () => {
+    setup();
+    expect(
+      await recordAdmissionDepositReceipt(prisma, 'tenant-1', 'user-1', { ...DEP, amount: 0 }),
+    ).toBeNull();
+    expect(prisma.payment.create as any).not.toHaveBeenCalled();
   });
 });

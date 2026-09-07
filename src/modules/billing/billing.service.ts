@@ -4113,6 +4113,102 @@ export async function setBillItemReimbursable(tenantId: string, itemId: string, 
 const DEPOSIT_TXN_PREFIX = 'IPDEP:';
 
 /**
+ * Marks the RECEIPT of an admission deposit, as distinct from its APPLICATION.
+ *
+ * `IPDEP:` above means deposit money moving ONTO a bill. This one means deposit
+ * money arriving from the patient. Keeping them apart is what lets the receipt
+ * record exist without disturbing a single existing figure: the deposit pool is
+ * still `Admission.depositAmount`, and `availableToApply` is still that pool
+ * less the `IPDEP:` rows.
+ */
+const DEPOSIT_RECEIPT_TXN_PREFIX = 'IPDEPRCPT:';
+
+/**
+ * Record that a patient handed over an admission deposit.
+ *
+ * Money was being taken and written to `Admission.depositAmount` as a bare
+ * number. No Payment, no Receipt, nothing anywhere in the clinical module —
+ * so there was no date, no tender, no receipt number, nobody named, and
+ * nothing to hand the patient. It was the largest sum a hospital takes before
+ * treatment and the only one with no documentary trace at all.
+ *
+ * Deliberately additive. `Admission.depositAmount` stays the authoritative
+ * pool and every existing calculation reads exactly what it read before; this
+ * row is the RECEIPT, marked so that nothing counts it as money applied to a
+ * bill or as a desk advance. It does not lift the advance bucket's balance,
+ * because the deposit is already counted once on the admission.
+ *
+ * Runs inside the caller's transaction, so the deposit and its receipt commit
+ * together — money recorded with no receipt is the very gap this closes.
+ */
+export async function recordAdmissionDepositReceipt(
+  tx: any,
+  tenantId: string,
+  userId: string,
+  data: {
+    patientId: string;
+    admissionId: string;
+    amount: number;
+    paymentMethod?: string;
+    notes?: string;
+  },
+): Promise<{ paymentId: string; receiptNumber: string; voucherNumber: string | null } | null> {
+  const amount = r2(Math.max(0, data.amount));
+  if (amount <= 0) return null;
+
+  const bucket = await ensureAdvanceBucketBill(tx, tenantId, data.patientId);
+  const receiptNumber = await generateReceiptNumber(tenantId, tx);
+  const profile = await getGstProfile(tenantId);
+
+  // A deposit is money against treatment, and treatment is exempt — the same
+  // reasoning as a desk advance, and recorded rather than assumed for the same
+  // reason: it is what an advances report and GSTR-1 table 11 read.
+  const advanceTax = await advancePaymentTaxFields(tx, tenantId, profile, {
+    amount,
+    purpose: 'treatment',
+  });
+
+  const payment = await tx.payment.create({
+    data: {
+      tenantId,
+      billId: bucket.id,
+      patientId: data.patientId,
+      amount,
+      paymentMethod: mapPaymentMethod(data.paymentMethod ?? 'cash') as any,
+      paymentSource: 'frontdesk',
+      paymentType: 'advance',
+      // The marker that keeps this out of every existing sum.
+      transactionId: `${DEPOSIT_RECEIPT_TXN_PREFIX}${data.admissionId}`,
+      notes: data.notes ?? 'Admission deposit received',
+      status: 'completed',
+      paymentDate: new Date(),
+      processedBy: userId,
+      ...advanceTax,
+    },
+  });
+
+  await tx.receipt.create({
+    data: {
+      tenantId,
+      receiptNumber,
+      paymentId: payment.id,
+      receiptDate: new Date(),
+      amount,
+    },
+  });
+
+  logger.info(
+    { tenantId, admissionId: data.admissionId, amount, receiptNumber },
+    'Admission deposit receipt recorded',
+  );
+  return {
+    paymentId: payment.id,
+    receiptNumber,
+    voucherNumber: (advanceTax.voucherNumber as string | null) ?? null,
+  };
+}
+
+/**
  * The deposit "position" for an admission: how much was collected at admission
  * (on file), how much has been applied onto the bill, and how much of that was
  * refunded back to the patient. Derived entirely from Payment/Refund markers so
@@ -5799,6 +5895,11 @@ export async function getPatientAdvanceBalance(tenantId: string, patientId: stri
           billId: bucket.id,
           paymentType: 'advance' as any,
           status: 'completed',
+          // An admission deposit's RECEIPT also lives on this bucket, but it is
+          // counted on the admission, not here. Left in, a stay deposit would
+          // be reported as desk advance money as well — the same double count
+          // this query was just fixed for, arriving from the other direction.
+          NOT: { transactionId: { startsWith: DEPOSIT_RECEIPT_TXN_PREFIX } },
         },
       })
     : [];
