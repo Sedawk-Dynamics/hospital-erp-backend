@@ -39,6 +39,7 @@
     "db:check-controlled-register": "tsx prisma/scripts/controlled-register-e2e.ts",
     "db:check-stock-transfer": "tsx prisma/scripts/stock-transfer-e2e.ts",
     "db:check-ward-stock": "tsx prisma/scripts/ward-stock-e2e.ts",
+    "db:merge-split-ip-bills": "tsx prisma/scripts/merge-split-ip-bills.ts",
     "db:check-online-payment": "tsx prisma/scripts/online-payment-e2e.ts",
     "db:check-credit-settlement": "tsx prisma/scripts/credit-settlement-e2e.ts",
     "db:check-claim-lifecycle": "tsx prisma/scripts/claim-lifecycle-e2e.ts",
