@@ -55,6 +55,7 @@ import { disorderRoutes } from './disorders/disorders.routes';
 import { platformBrandingRoutes } from './platform-branding/platform-branding.routes';
 import { hospitalBrandingRoutes } from './hospital-branding/hospital-branding.routes';
 import { hospitalSettingsRoutes } from './hospital-settings/hospital-settings.routes';
+import { gstRoutes } from './gst/gst.routes';
 
 const apiRouter = Router();
 
@@ -73,6 +74,9 @@ apiRouter.use('/users', authenticate, userTierLimiter, userRouter);
 apiRouter.use('/roles', authenticate, userTierLimiter, roleRouter);
 apiRouter.use('/patients', authenticate, userTierLimiter, patientRoutes);
 apiRouter.use('/dashboard', authenticate, userTierLimiter, dashboardRoutes);
+// GST reports + the platform SAC master. Not feature-gated: a hospital that is
+// not GST registered simply sees empty reports, which is the honest answer.
+apiRouter.use('/gst', authenticate, userTierLimiter, gstRoutes);
 apiRouter.use('/infrastructure', authenticate, userTierLimiter, infrastructureRoutes);
 apiRouter.use('/communication', authenticate, userTierLimiter, communicationRoutes);
 // Platform-wide Indian drug catalog (reference data, like ICD codes). No
