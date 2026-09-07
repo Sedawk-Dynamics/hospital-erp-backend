@@ -52,6 +52,7 @@
     "db:check-gst-billing": "tsx prisma/scripts/gst-billing-e2e.ts",
     "db:check-admission-deposit": "tsx prisma/scripts/admission-deposit-e2e.ts",
     "db:check-gst-advances-report": "tsx prisma/scripts/gst-advances-report-e2e.ts",
+    "db:check-gst-invoice-layout": "tsx prisma/scripts/gst-invoice-layout-e2e.ts",
     "db:check-ward-transfer": "tsx prisma/scripts/ward-transfer-check.ts",
     "db:ndps-e2e": "tsx prisma/scripts/ndps-e2e.ts",
     "db:diff-salt-classifier": "tsx prisma/scripts/diff-salt-classifier.ts",
