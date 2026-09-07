@@ -210,6 +210,20 @@ export interface TableColumn {
   /** Share of the content width, 0..1. Shares are normalised. */
   width: number;
   align?: 'left' | 'right' | 'center';
+  /**
+   * Let this column's cells WRAP onto more lines instead of being ellipsized.
+   *
+   * Cells are drawn with `lineBreak: false`, so anything wider than its column
+   * is silently cut — a 90-character ward-indent description became
+   * "Indent Antibiotic-E2E-1783404892983 (Batch B-E2E-17834…". That is fine for
+   * a fixed-width register where clipping beats corrupting the layout, and
+   * wrong for the description column of an invoice, where the columns beside
+   * it are what the width went to.
+   *
+   * Row height is already measured as if every cell wrapped, so opting in costs
+   * no extra space — it only makes the drawing agree with the measurement.
+   */
+  wrap?: boolean;
 }
 
 /**
@@ -394,8 +408,8 @@ export function drawTable(
         .text(cells[i] ?? '', x + 4, textY, {
           width: widths[i] - 8,
           align: c.align ?? 'left',
-          lineBreak: false,
-          ellipsis: true,
+          lineBreak: c.wrap === true,
+          ellipsis: c.wrap !== true,
         });
       x += widths[i];
     });
