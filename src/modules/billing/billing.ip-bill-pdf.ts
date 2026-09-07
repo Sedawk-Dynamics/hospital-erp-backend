@@ -13,11 +13,16 @@ import {
   type TableRow,
 } from '../../services/pdf-doc';
 import type { PdfTemplate } from '../../services/pdf-template';
-import type {
-  AdmissionBillDocument,
-  BillDocumentGst,
-  BillDocumentLine,
-} from './billing.bill-document';
+import type { AdmissionBillDocument } from './billing.bill-document';
+import {
+  drawGstTaxSummary,
+  gstChargeCells,
+  gstChargeColumns,
+  gstGroupTotalCells,
+  gstIdentityFields,
+  NO_GST,
+  type BillDocumentGst,
+} from './billing.gst-layout';
 
 // ---------------------------------------------------------------------------
 // The IP / Emergency / Day Care bill, as a PDF.
@@ -59,36 +64,12 @@ const dash = (v: string | number | null | undefined) =>
   v === null || v === undefined || v === '' ? '—' : String(v);
 
 /**
- * The rate ABOVE the amount, which is what Rule 46 wants against each line:
- * "2.5%" then "238.10".
- *
- * Deliberately two lines. Side by side the pair is about 52pt of text in a 48pt
- * column, and a cell that does not fit is cut without a word — so it is stacked
- * on purpose rather than left to break wherever the column runs out.
- */
-const taxCell = (ratePercent: number, amount: number, treatmentLabel: string | null) => {
-  if (amount > 0 || ratePercent > 0) return `${ratePercent}%
-${money(amount)}`;
-  return treatmentLabel ?? '—';
-};
-
-/**
  * The document's GST block, or the answer for a document that has none.
  *
  * A bill built before this existed — a cached response, an older caller —
  * still has to print, and what it prints is the layout it always had. Reading
  * `doc.gst.registered` straight off would throw instead.
  */
-const NO_GST: BillDocumentGst = {
-  registered: false,
-  documentType: null, documentLabel: null, invoiceNumbers: [], financialYear: null,
-  supplierGstin: null, supplierStateCode: null, supplierStateName: null,
-  recipientGstin: null, placeOfSupplyStateCode: null, placeOfSupplyStateName: null,
-  isInterState: false, hasTax: false, hasClassifiedLines: false,
-  taxSummary: [], notes: [],
-  totals: { taxableValue: 0, cgstAmount: 0, sgstAmount: 0, igstAmount: 0, cessAmount: 0, taxAmount: 0 },
-};
-
 const gstOf = (doc: AdmissionBillDocument): BillDocumentGst => doc.gst ?? NO_GST;
 
 export function streamAdmissionBillPdf(
@@ -124,6 +105,7 @@ export function streamAdmissionBillPdf(
   const a = doc.admission;
   const p = doc.patient;
   const t = doc.totals;
+  const gst = gstOf(doc);
 
   // ── Interim warning ──────────────────────────────────────────────────────
   // An undischarged stay is still accruing; never let an interim bill read as
@@ -165,19 +147,7 @@ export function streamAdmissionBillPdf(
   // Only for a registered hospital: an unregistered one has no GSTIN, issues no
   // numbered document and has no place of supply to declare, and printing the
   // fields empty would suggest it was supposed to.
-  const gst = gstOf(doc);
-  if (gst.registered) {
-    if (gst.invoiceNumbers.length) {
-      info.push([`${gst.documentLabel ?? 'Invoice'} No.`, gst.invoiceNumbers.join(', ')]);
-    }
-    if (gst.supplierGstin) info.push(['GSTIN (Hospital)', gst.supplierGstin]);
-    // A patient with a GSTIN is being billed as a business — it is what lets
-    // them claim the credit, so it belongs on the paper.
-    if (gst.recipientGstin) info.push(['GSTIN (Patient)', gst.recipientGstin]);
-    if (gst.placeOfSupplyStateName) {
-      info.push(['Place of Supply', `${gst.placeOfSupplyStateName} (${gst.placeOfSupplyStateCode})`]);
-    }
-  }
+  info.push(...gstIdentityFields(gst));
   drawKeyValueCard(pdf, theme, info, 2);
 
   // ── Charges ──────────────────────────────────────────────────────────────
@@ -197,15 +167,15 @@ export function streamAdmissionBillPdf(
       rows.push({ cells: [g.label], kind: 'group' });
       g.lines.forEach((l, i) => {
         // Striped within the group, as on screen — not down the whole table.
-        rows.push({ cells: chargeCells(doc, l), zebra: i % 2 === 1 });
+        rows.push({ cells: gstChargeCells(gst, l), zebra: i % 2 === 1 });
       });
-      rows.push({ cells: groupTotalCells(doc, g), kind: 'total' });
+      rows.push({ cells: gstGroupTotalCells(gst, `${g.label} total`, g.lines, g.total), kind: 'total' });
     }
-    drawTable(pdf, theme, chargeColumns(doc), rows);
+    drawTable(pdf, theme, gstChargeColumns(gst), rows);
   }
 
   // ── Rate-wise tax summary ────────────────────────────────────────────────
-  drawTaxSummary(pdf, theme, doc);
+  drawGstTaxSummary(pdf, theme, gst);
 
   // ── Summary ──────────────────────────────────────────────────────────────
   drawSummary(pdf, theme, doc);
@@ -237,172 +207,6 @@ export function streamAdmissionBillPdf(
   }
 
   finalizeBrandedDocument({ pdf, branding, theme, generatedAt: new Date(doc.generatedAt) });
-}
-
-/**
- * The charge table's columns, which follow what KIND of document this is.
- *
- * Three layouts, and the difference is not cosmetic:
- *
- *  - Nothing classified — an unregistered hospital, or a bill raised before any
- *    of this existed — prints exactly what it always printed. No column moves.
- *  - Classified but untaxed is a BILL OF SUPPLY, and a bill of supply must not
- *    carry tax columns at all: it is the document for an exempt supply. It
- *    still carries HSN/SAC, which Rule 49 asks for.
- *  - Anything taxed carries the taxable value and the split per LINE, because
- *    Rule 46 wants the rate and the amount of each component against the line
- *    it belongs to, not only in a total at the bottom.
- *
- * CGST/SGST and IGST are mutually exclusive — a supply is either within the
- * state or across it — so the inter-State layout spends the freed column on the
- * description rather than printing a column of dashes.
- *
- * The description column WRAPS. Cells are ellipsized by default, and at these
- * widths a ward-indent line ("… (Batch B-…, exp 07/07/2027) — ward indent
- * IND-20260707-0001, 2 pack(s)", 128 characters) would lose its second half.
- */
-function chargeColumns(doc: AdmissionBillDocument): TableColumn[] {
-  const g = gstOf(doc);
-  if (!g.registered || !g.hasClassifiedLines) {
-    return [
-      { header: 'Particulars', width: 0.56, wrap: true },
-      { header: 'Qty', width: 0.1, align: 'right' },
-      { header: 'Rate', width: 0.16, align: 'right' },
-      { header: 'Amount', width: 0.18, align: 'right' },
-    ];
-  }
-  if (!g.hasTax) {
-    return [
-      { header: 'Particulars', width: 0.46, wrap: true },
-      { header: 'HSN / SAC', width: 0.12 },
-      { header: 'Qty', width: 0.08, align: 'right' },
-      { header: 'Rate', width: 0.16, align: 'right' },
-      { header: 'Amount', width: 0.18, align: 'right' },
-    ];
-  }
-  const base: TableColumn[] = [
-    { header: 'Particulars', width: g.isInterState ? 0.34 : 0.26, wrap: true },
-    { header: 'HSN / SAC', width: 0.09 },
-    { header: 'Qty', width: 0.05, align: 'right' },
-    { header: 'Rate', width: 0.11, align: 'right' },
-    { header: 'Taxable', width: 0.12, align: 'right' },
-  ];
-  const tax: TableColumn[] = g.isInterState
-    ? [{ header: 'IGST', width: 0.14, align: 'right', wrap: true }]
-    : [
-        { header: 'CGST', width: 0.11, align: 'right', wrap: true },
-        { header: 'SGST', width: 0.11, align: 'right', wrap: true },
-      ];
-  return [...base, ...tax, { header: 'Amount', width: 0.15, align: 'right' }];
-}
-
-/** One charge line, in whichever layout `chargeColumns` chose. */
-function chargeCells(doc: AdmissionBillDocument, l: BillDocumentLine): string[] {
-  const g = gstOf(doc);
-  // A charge that has accrued but is not yet posted onto a bill is marked, so
-  // an interim bill never looks like it is hiding anything.
-  const particulars = l.status === 'pending' ? `${l.description}  (unbilled)` : l.description;
-  if (!g.registered || !g.hasClassifiedLines) {
-    return [particulars, String(l.quantity), money(l.unitPrice), money(l.totalAmount)];
-  }
-  if (!g.hasTax) {
-    return [particulars, dash(l.hsnSac), String(l.quantity), money(l.unitPrice), money(l.totalAmount)];
-  }
-  const head = [
-    particulars,
-    dash(l.hsnSac),
-    String(l.quantity),
-    money(l.unitPrice),
-    money(l.taxableValue),
-  ];
-  const taxed = l.cgstAmount > 0 || l.igstAmount > 0 || l.taxRatePercent > 0;
-  const tax = g.isInterState
-    ? [taxCell(l.igstRate, l.igstAmount, l.treatmentLabel)]
-    : [
-        taxCell(l.cgstRate, l.cgstAmount, l.treatmentLabel),
-        // The exemption label belongs on ONE of the two cells. Repeated, it
-        // reads as two separate exemptions rather than one untaxed line.
-        taxed ? taxCell(l.sgstRate, l.sgstAmount, null) : '—',
-      ];
-  return [...head, ...tax, money(l.totalAmount)];
-}
-
-/** The subtotal under a head of charges, adding up every money column shown. */
-function groupTotalCells(
-  doc: AdmissionBillDocument,
-  group: AdmissionBillDocument['groups'][number],
-): string[] {
-  const g = gstOf(doc);
-  const label = `${group.label} total`;
-  if (!g.registered || !g.hasClassifiedLines) return [label, '', '', money(group.total)];
-  if (!g.hasTax) return [label, '', '', '', money(group.total)];
-  const sum = (pick: (l: BillDocumentLine) => number) =>
-    Math.round(group.lines.reduce((s, l) => s + pick(l), 0) * 100) / 100;
-  const tax = g.isInterState
-    ? [money(sum((l) => l.igstAmount))]
-    : [money(sum((l) => l.cgstAmount)), money(sum((l) => l.sgstAmount))];
-  return [label, '', '', '', money(sum((l) => l.taxableValue)), ...tax, money(group.total)];
-}
-
-/**
- * The rate-wise summary — one row per rate, which is how a return reads a bill.
- *
- * Printed only where there is tax to summarise. On a bill of supply it would be
- * a table of zeroes claiming the hospital charged tax it never did.
- */
-function drawTaxSummary(pdf: PDFKit.PDFDocument, theme: PdfTheme, doc: AdmissionBillDocument): void {
-  const g = gstOf(doc);
-  if (!g.hasTax || g.taxSummary.length === 0) return;
-
-  ensureSpace(pdf, theme, 90);
-  pdf.moveDown(0.6);
-  drawSectionHeading(pdf, theme, 'Tax Summary');
-
-  const columns: TableColumn[] = [
-    { header: 'Rate', width: 0.2 },
-    { header: 'Taxable Value', width: 0.2, align: 'right' },
-    ...(g.isInterState
-      ? [{ header: 'IGST', width: 0.2, align: 'right' as const }]
-      : [
-          { header: 'CGST', width: 0.2, align: 'right' as const },
-          { header: 'SGST', width: 0.2, align: 'right' as const },
-        ]),
-    { header: 'Total Tax', width: 0.2, align: 'right' },
-  ];
-
-  const rows: TableRow[] = g.taxSummary.map((r, i) => ({
-    cells: [
-      // An exempt row has no rate to state, so it states what it is instead.
-      r.treatment === 'taxable' ? `${r.ratePercent}%` : r.label,
-      money(r.taxableValue),
-      ...(g.isInterState ? [money(r.igstAmount)] : [money(r.cgstAmount), money(r.sgstAmount)]),
-      money(r.taxAmount),
-    ],
-    zebra: i % 2 === 1,
-  }));
-  rows.push({
-    cells: [
-      'Total',
-      money(g.totals.taxableValue),
-      ...(g.isInterState
-        ? [money(g.totals.igstAmount)]
-        : [money(g.totals.cgstAmount), money(g.totals.sgstAmount)]),
-      money(g.totals.taxAmount),
-    ],
-    kind: 'total',
-  });
-  drawTable(pdf, theme, columns, rows);
-
-  const notes = g.notes;
-  if (notes.length) {
-    pdf.moveDown(0.3);
-    pdf
-      .font(theme.font.regular)
-      .fontSize(theme.size.tiny)
-      .fillColor(theme.muted)
-      .text(notes.join('  '), theme.margin, pdf.y, { width: theme.contentWidth });
-    pdf.fillColor(theme.ink);
-  }
 }
 
 /**
