@@ -191,6 +191,36 @@ gstRoutes.get(
   report('GSTR-3B summary', (t, q) => returns.getGstr3bSummary(t, q as never)),
 );
 
+/**
+ * A-8 — the file the accountant uploads, rather than the screen they check.
+ *
+ * Served as a download with the return period in its name, and with the
+ * warnings alongside: a file is silently incomplete when a line has no
+ * classification, and the accountant has to see that BEFORE uploading it.
+ */
+gstRoutes.get(
+  '/reports/gstr1/json',
+  ...gstReportAccess,
+  validate(hsnQuerySchema),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as Record<string, unknown>;
+      const { buildGstr1Json, returnPeriod } = await import('./gst-reports.gstr1-json');
+      const out = await buildGstr1Json(req.user!.tenantId, {
+        ...(q as sales.SalesReportQuery),
+        sixDigit: q.sixDigit === 'true',
+      });
+      sendResponse({
+        res,
+        message: `GSTR-1 JSON for ${returnPeriod(q.from as string, q.to as string)}`,
+        data: out,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 // ── Group B — purchases and input tax credit ──────────────────────────────
 
 const purchaseQuerySchema = z.object({
