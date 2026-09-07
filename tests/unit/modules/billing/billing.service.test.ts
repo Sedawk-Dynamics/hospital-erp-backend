@@ -1678,6 +1678,14 @@ describe('BillingService', () => {
       const where = vi.mocked(prisma.payment.findMany).mock.calls.at(-1)![0]!.where as any;
       expect(where.billId).toBe('adv-bucket');
       expect(where.paymentType).toBe('advance');
+      // The deposit-receipt exclusion has to survive a NULL transactionId,
+      // which is what an ordinary cash advance has. `NOT (col LIKE ...)` is
+      // NULL rather than true for those rows, so the plain spelling dropped
+      // every desk advance and left `collected` at 0 with `adjusted` negative.
+      expect(where.OR).toEqual([
+        { transactionId: null },
+        { NOT: { transactionId: { startsWith: 'IPDEPRCPT:' } } },
+      ]);
       expect(out.totalAdvanceCollected).toBe(5000);
       expect(out.totalAdvanceAdjusted).toBe(2000);
       expect(out.balance).toBe(3000);

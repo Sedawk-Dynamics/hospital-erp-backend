@@ -7,6 +7,7 @@ import { isAdvanceBucket } from '../../shared/charge-bill';
 import { nextBillNumberInSeries } from '../../shared/bill-number';
 import { getPaginationParams } from '../../shared/pagination';
 import { fullName } from '../../shared/person-name';
+import { notStartingWith } from '../../shared/prisma-where';
 import {
   getISTDateStr,
   formatDateTimeIST,
@@ -5942,7 +5943,12 @@ export async function getPatientAdvanceBalance(tenantId: string, patientId: stri
           // counted on the admission, not here. Left in, a stay deposit would
           // be reported as desk advance money as well — the same double count
           // this query was just fixed for, arriving from the other direction.
-          NOT: { transactionId: { startsWith: DEPOSIT_RECEIPT_TXN_PREFIX } },
+          //
+          // Null-safe: a cash advance taken without a reference number has no
+          // transactionId at all, and `NOT (col LIKE ...)` is NULL rather than
+          // true for those rows — so the plain spelling dropped every ordinary
+          // desk advance, leaving `collected` at 0 and `adjusted` negative.
+          ...notStartingWith('transactionId', DEPOSIT_RECEIPT_TXN_PREFIX),
         },
       })
     : [];
