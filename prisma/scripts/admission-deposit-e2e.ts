@@ -107,6 +107,38 @@ async function main() {
   });
   ck('lowering the deposit invents no receipt', afterCut === 2, `${afterCut} receipts`);
 
+  // ── Returning it issues a refund voucher, not a credit note ──
+  // No supply ever happened, so there is no invoice to credit. Rule 51.
+  const ledgerActor = { userId: ACTOR, roles: ['super_admin'] };
+  await billing.refundDeposit(TENANT, ACTOR, adm.id, ledgerActor, {
+    amount: 5000,
+    reason: `${TAG} returned`,
+  }).catch((e: any) => console.log('    (refundDeposit: ' + e.message + ')'));
+
+  const voucher: any = await prisma.payment.findFirst({
+    where: { tenantId: TENANT, voucherType: 'refund_voucher', patientId: patient.id },
+    orderBy: { createdAt: 'desc' },
+    include: { sourceAdvance: { select: { voucherNumber: true, taxAmount: true } } },
+  });
+  ck('a refund voucher was issued', !!voucher, 'none written');
+  ck('numbered from its own series',
+     /^RFV\/\d{4}-\d{2}\/\d{6}$/.test(String(voucher?.voucherNumber ?? '')),
+     `${voucher?.voucherNumber}`);
+  // Rule 51 wants the receipt voucher's number on the refund voucher.
+  ck('it names the receipt voucher it reverses',
+     !!voucher?.sourceAdvance?.voucherNumber,
+     `${voucher?.sourceAdvance?.voucherNumber}`);
+  ck('the money out is recorded as a refund', voucher?.paymentType === 'refund',
+     `${voucher?.paymentType}`);
+  // The deposit was exempt, so there is no tax to reverse — but the taxable
+  // value comes back off, which is what an advances report nets.
+  ck('the exempt turnover is reversed', near(Number(voucher?.taxableValue), -5000),
+     `${voucher?.taxableValue}`);
+  ck('and no tax was invented on the way out', Number(voucher?.taxAmount) === 0,
+     `${voucher?.taxAmount}`);
+  ck('with no negative zero left in the columns',
+     !Object.is(Number(voucher?.taxAmount), -0), `${voucher?.taxAmount}`);
+
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail) process.exitCode = 1;
 }
@@ -118,6 +150,19 @@ main()
       where: { transactionId: { in: adms.map((a) => `IPDEPRCPT:${a.id}`) } },
       select: { id: true },
     });
+    // Refunds and vouchers hang off the same admission's payments.
+    const allPays = await prisma.payment.findMany({
+      where: { OR: [{ id: { in: pays.map((p) => p.id) } }, { notes: { contains: TAG } }] },
+      select: { id: true },
+    });
+    const payIds = allPays.map((p) => p.id);
+    await prisma.refund.deleteMany({ where: { paymentId: { in: payIds } } });
+    await prisma.payment.updateMany({
+      where: { sourceAdvancePaymentId: { in: payIds } },
+      data: { sourceAdvancePaymentId: null },
+    });
+    await prisma.receipt.deleteMany({ where: { paymentId: { in: payIds } } });
+    await prisma.payment.deleteMany({ where: { id: { in: payIds } } });
     await prisma.receipt.deleteMany({ where: { paymentId: { in: pays.map((p) => p.id) } } });
     await prisma.payment.deleteMany({ where: { id: { in: pays.map((p) => p.id) } } });
     await prisma.admission.deleteMany({ where: { id: { in: adms.map((a) => a.id) } } });

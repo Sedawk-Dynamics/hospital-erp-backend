@@ -21,7 +21,11 @@ import { supplyKindForCategory } from '../../shared/gst-determination';
 import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
 import { issueDocumentForBill } from '../gst/gst-document.service';
 import { issueCreditNoteBestEffort } from '../gst/credit-note.service';
-import { advancePaymentTaxFields, type AdvancePurpose } from '../gst/advance-gst.service';
+import {
+  advancePaymentTaxFields,
+  issueRefundVoucherBestEffort,
+  type AdvancePurpose,
+} from '../gst/advance-gst.service';
 import { getGstProfile } from '../hospital-settings/hospital-settings.service';
 import {
   DEFAULT_DISCOUNT_APPROVAL,
@@ -4726,6 +4730,17 @@ export async function refundDeposit(
             processedAt: new Date(),
           },
         });
+        // An advance taken and handed back without a supply ever happening is
+        // a REFUND VOUCHER, not a credit note — there is no invoice to credit.
+        // It mirrors the receipt voucher's own tax so the pair nets to zero.
+        await issueRefundVoucherBestEffort(tx, tenantId, {
+          sourceAdvancePaymentId: advPayment.id,
+          patientId: admission.patientId,
+          billId: bucket!.id,
+          amount: fromAdvance,
+          reason: opts.reason?.trim() || 'Advance returned to patient',
+          issuedBy: userId,
+        });
       }
     });
     logger.info({ tenantId, admissionId, fromAdvance }, 'Patient advance returned');
@@ -4793,6 +4808,34 @@ export async function refundDeposit(
   });
   // The refund changes what that bill counts as paid — settle its header.
   await recalculateBillTotals(refundBillId);
+
+  // The voucher is issued against the RECEIPT of the deposit, not against the
+  // row the refund is hung on. Rule 51 asks for the receipt voucher's number,
+  // and the row above is an APPLIED deposit (IPDEP:) — the money moving onto a
+  // bill — which is a different event from the patient handing it over.
+  const depositReceipt = await prisma.payment.findFirst({
+    where: {
+      tenantId,
+      patientId: admission.patientId,
+      transactionId: `${DEPOSIT_RECEIPT_TXN_PREFIX}${admissionId}`,
+      status: 'completed',
+    },
+    orderBy: { paymentDate: 'asc' },
+    select: { id: true, billId: true },
+  });
+  if (depositReceipt) {
+    await prisma.$transaction(async (tx) =>
+      issueRefundVoucherBestEffort(tx, tenantId, {
+        sourceAdvancePaymentId: depositReceipt.id,
+        patientId: admission.patientId,
+        billId: depositReceipt.billId,
+        amount: fromDeposit,
+        reason: opts.reason?.trim() || 'Deposit returned to patient',
+        issuedBy: userId,
+      }),
+    );
+  }
+
   logger.info({ tenantId, admissionId, billId: refundBillId, refundId: refund.id, fromDeposit, fromAdvance }, 'IP deposit returned to patient');
   const summary = await getAdmissionLedger(tenantId, admissionId, actor);
   return { refund, ledger: summary };

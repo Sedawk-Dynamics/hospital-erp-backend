@@ -183,3 +183,120 @@ export async function advancePaymentTaxFields(
     voucherNumber,
   };
 }
+
+// ── Returning an advance ───────────────────────────────────────────────────
+
+/**
+ * Issue a refund voucher for an advance returned without a supply (Rule 51).
+ *
+ * A refund voucher is NOT a credit note, and the difference is the whole point.
+ * A credit note reverses a supply that happened and was invoiced. A refund
+ * voucher covers the other case: an advance was taken, a receipt voucher was
+ * issued, no supply ever followed, and the money went back. There is no invoice
+ * to credit, so a credit note would be the wrong document.
+ *
+ * Like a credit note, it MIRRORS rather than recomputes. It takes the receipt
+ * voucher's own rate and split, scales them by how much is going back, and
+ * negates them — so the pair nets to zero however the masters have moved since.
+ * Recomputing would leave a residue with nothing to explain it.
+ *
+ * The tax figures are stored NEGATIVE for the same reason a credit note's are:
+ * summing the tax across a patient's advance rows then gives the net advance
+ * tax position directly, which is what GSTR-1 table 11 asks for. The payment
+ * `amount` keeps the existing convention — positive, with paymentType 'refund'
+ * carrying the direction.
+ *
+ * Rule 51 requires the voucher to carry the receipt voucher's number and date,
+ * which is what sourceAdvancePaymentId points at.
+ */
+export async function issueRefundVoucher(
+  tx: any,
+  tenantId: string,
+  input: {
+    /** The advance receipt being returned. Its tax is what gets mirrored. */
+    sourceAdvancePaymentId: string;
+    patientId: string;
+    billId: string;
+    amount: number;
+    reason?: string | null;
+    issuedBy?: string | null;
+    on?: Date;
+  },
+): Promise<{ paymentId: string; voucherNumber: string | null; taxReversed: number } | null> {
+  const amount = Math.round(Math.max(0, input.amount) * 100) / 100;
+  if (amount <= 0) return null;
+
+  const source = await tx.payment.findFirst({
+    where: { id: input.sourceAdvancePaymentId, tenantId },
+  });
+  if (!source) return null;
+
+  const sourceAmount = Number(source.amount ?? 0);
+  // More going back than came in would over-reverse the tax. Capped, because a
+  // refund is bounded by the receipt it draws on.
+  const share = sourceAmount > 0 ? Math.min(1, amount / sourceAmount) : 0;
+  // `|| 0` collapses negative zero. Without it an exempt deposit going back
+  // stores -0 for every tax column, which prints as "-0.00" on the voucher and
+  // in every report that shows it — a figure that reads as an error and is not.
+  const back = (v: unknown) => (Math.round(-Number(v ?? 0) * share * 100) / 100) || 0;
+
+  const on = input.on ?? new Date();
+  let voucherNumber: string | null = null;
+  try {
+    const alloted = await allotDocumentNumber(tx, tenantId, 'refund_voucher', on);
+    voucherNumber = alloted.invoiceNumber;
+  } catch (err) {
+    // Handing the patient their money back must not fail because a number
+    // could not be allotted. The reversal is still recorded.
+    logger.warn({ err, tenantId }, 'Could not allot a refund voucher number');
+  }
+
+  const payment = await tx.payment.create({
+    data: {
+      tenantId,
+      billId: input.billId,
+      patientId: input.patientId,
+      amount,
+      paymentMethod: source.paymentMethod,
+      paymentSource: 'frontdesk',
+      paymentType: 'refund',
+      status: 'completed',
+      paymentDate: on,
+      processedBy: input.issuedBy ?? null,
+      notes: input.reason ?? 'Advance returned to patient',
+      gstTreatment: source.gstTreatment,
+      taxRatePercent: Number(source.taxRatePercent ?? 0),
+      taxableValue: back(source.taxableValue),
+      taxAmount: back(source.taxAmount),
+      cgstAmount: back(source.cgstAmount),
+      sgstAmount: back(source.sgstAmount),
+      igstAmount: back(source.igstAmount),
+      voucherType: 'refund_voucher',
+      voucherNumber,
+      sourceAdvancePaymentId: source.id,
+    },
+  });
+
+  const taxReversed = Number(back(source.taxAmount));
+  logger.info(
+    { tenantId, voucherNumber, amount, taxReversed, against: source.voucherNumber },
+    'Refund voucher issued for an advance returned',
+  );
+  return { paymentId: payment.id, voucherNumber, taxReversed };
+}
+
+/** Never lets a document failure undo money that has already gone back. */
+export async function issueRefundVoucherBestEffort(
+  tx: any,
+  tenantId: string,
+  input: Parameters<typeof issueRefundVoucher>[2],
+): Promise<void> {
+  try {
+    await issueRefundVoucher(tx, tenantId, input);
+  } catch (err) {
+    logger.error(
+      { err, tenantId, sourceAdvancePaymentId: input.sourceAdvancePaymentId },
+      'Could not issue a refund voucher — the tax on the advance stays declared',
+    );
+  }
+}

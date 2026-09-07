@@ -3,6 +3,8 @@ import { prisma } from '../../../../src/config/database';
 import {
   computeAdvanceTax,
   advancePaymentTaxFields,
+  issueRefundVoucher,
+  issueRefundVoucherBestEffort,
 } from '../../../../src/modules/gst/advance-gst.service';
 import { recordAdmissionDepositReceipt } from '../../../../src/modules/billing/billing.service';
 import { DEFAULT_GST_PROFILE, mergeGstProfile } from '../../../../src/shared/gst-profile';
@@ -202,5 +204,133 @@ describe('recordAdmissionDepositReceipt', () => {
       await recordAdmissionDepositReceipt(prisma, 'tenant-1', 'user-1', { ...DEP, amount: 0 }),
     ).toBeNull();
     expect(prisma.payment.create as any).not.toHaveBeenCalled();
+  });
+});
+
+describe('issueRefundVoucher', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  /** A taxable advance: ₹10,000 against a deluxe room at 5%. */
+  const TAXABLE_ADVANCE = {
+    id: 'adv-1',
+    amount: 10000,
+    paymentMethod: 'cash',
+    gstTreatment: 'taxable',
+    taxRatePercent: 5,
+    taxableValue: 9523.81,
+    taxAmount: 476.19,
+    cgstAmount: 238.1,
+    sgstAmount: 238.09,
+    igstAmount: 0,
+    voucherNumber: 'RV/2026-27/000001',
+  };
+
+  function setup(source: any = TAXABLE_ADVANCE) {
+    (prisma.payment.findFirst as any).mockResolvedValue(source);
+    (prisma.gstDocumentSeries.upsert as any).mockResolvedValue({ prefix: 'RFV', lastNumber: 1 });
+    (prisma.payment.create as any).mockResolvedValue({ id: 'refund-1' });
+  }
+
+  it('numbers the voucher from its own series', async () => {
+    setup();
+    const out = await issueRefundVoucher(prisma, 'tenant-1', {
+      sourceAdvancePaymentId: 'adv-1',
+      patientId: 'pat-1',
+      billId: 'adv-bucket',
+      amount: 10000,
+    });
+    expect(out?.voucherNumber).toBe('RFV/2026-27/000001');
+    expect((prisma.gstDocumentSeries.upsert as any).mock.calls[0][0].where
+      .tenantId_documentType_financialYear.documentType).toBe('refund_voucher');
+  });
+
+  // Mirrors rather than recomputes, so the pair nets to zero however the
+  // masters have moved since the advance was taken.
+  it('reverses the receipt voucher tax exactly, and negatively', async () => {
+    setup();
+    await issueRefundVoucher(prisma, 'tenant-1', {
+      sourceAdvancePaymentId: 'adv-1',
+      patientId: 'pat-1',
+      billId: 'adv-bucket',
+      amount: 10000,
+    });
+    const d = (prisma.payment.create as any).mock.calls[0][0].data;
+    expect(d.taxableValue).toBe(-9523.81);
+    expect(d.taxAmount).toBe(-476.19);
+    expect(d.cgstAmount).toBe(-238.1);
+    expect(d.sgstAmount).toBe(-238.09);
+    // The money out keeps the existing convention: positive, with the type
+    // carrying the direction.
+    expect(d.amount).toBe(10000);
+    expect(d.paymentType).toBe('refund');
+    expect(d.voucherType).toBe('refund_voucher');
+    expect(d.sourceAdvancePaymentId).toBe('adv-1');
+  });
+
+  it('scales a part refund, tax included', async () => {
+    setup();
+    await issueRefundVoucher(prisma, 'tenant-1', {
+      sourceAdvancePaymentId: 'adv-1',
+      patientId: 'pat-1',
+      billId: 'adv-bucket',
+      amount: 4000,
+    });
+    const d = (prisma.payment.create as any).mock.calls[0][0].data;
+    expect(d.taxAmount).toBe(-190.48); // 40% of 476.19
+    expect(d.amount).toBe(4000);
+  });
+
+  // More going back than came in would over-reverse the tax.
+  it('never reverses more tax than the advance carried', async () => {
+    setup();
+    await issueRefundVoucher(prisma, 'tenant-1', {
+      sourceAdvancePaymentId: 'adv-1',
+      patientId: 'pat-1',
+      billId: 'adv-bucket',
+      amount: 999999,
+    });
+    expect((prisma.payment.create as any).mock.calls[0][0].data.taxAmount).toBe(-476.19);
+  });
+
+  // The ordinary hospital case: an exempt deposit going back reverses nothing,
+  // because nothing was charged. The voucher still exists as the document.
+  it('reverses no tax on an exempt deposit, but still issues the voucher', async () => {
+    setup({ ...TAXABLE_ADVANCE, gstTreatment: 'exempt', taxRatePercent: 0,
+            taxableValue: 10000, taxAmount: 0, cgstAmount: 0, sgstAmount: 0 });
+    const out = await issueRefundVoucher(prisma, 'tenant-1', {
+      sourceAdvancePaymentId: 'adv-1',
+      patientId: 'pat-1',
+      billId: 'adv-bucket',
+      amount: 10000,
+    });
+    expect(out?.taxReversed).toBe(0);
+    expect(out?.voucherNumber).toBe('RFV/2026-27/000001');
+    expect((prisma.payment.create as any).mock.calls[0][0].data.taxableValue).toBe(-10000);
+  });
+
+  it('writes nothing when there is no advance to refund against', async () => {
+    (prisma.payment.findFirst as any).mockResolvedValue(null);
+    expect(
+      await issueRefundVoucher(prisma, 'tenant-1', {
+        sourceAdvancePaymentId: 'gone',
+        patientId: 'pat-1',
+        billId: 'b',
+        amount: 100,
+      }),
+    ).toBeNull();
+    expect(prisma.payment.create as any).not.toHaveBeenCalled();
+  });
+
+  // Handing a patient their money back must not fail over a document.
+  it('never throws through the best-effort wrapper', async () => {
+    (prisma.payment.findFirst as any).mockRejectedValue(new Error('database is gone'));
+    await expect(
+      issueRefundVoucherBestEffort(prisma, 'tenant-1', {
+        sourceAdvancePaymentId: 'adv-1',
+        patientId: 'pat-1',
+        billId: 'b',
+        amount: 100,
+      }),
+    ).resolves.toBeUndefined();
   });
 });
