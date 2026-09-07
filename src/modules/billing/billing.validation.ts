@@ -311,6 +311,12 @@ export const advancePaymentSchema = z.object({
     ]),
     referenceNumber: z.string().max(200).optional(),
     notes: z.string().max(1000).optional(),
+    // What the money is against, which is what decides whether any tax is due
+    // at RECEIPT. Defaults to treatment — the ordinary hospital deposit, and
+    // exempt. MUST be listed here: validate() replaces the body with the parsed
+    // object, so a field the schema does not name is silently dropped.
+    purpose: z.enum(['treatment', 'accommodation', 'non_therapeutic', 'other']).optional(),
+    taxRatePercent: z.number().min(0).max(40).optional(),
   }),
 });
 
