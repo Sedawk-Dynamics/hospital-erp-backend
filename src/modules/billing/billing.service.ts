@@ -3554,9 +3554,36 @@ export async function consolidateAdmissionBill(
     await recalculateBillTotals(bill.id);
   }
 
+  // Money the patient has ALREADY handed over comes off the bill before anyone
+  // is asked for the rest. A deposit taken at admission used to sit untouched
+  // until somebody remembered to press "Apply to bill", so the counter was
+  // shown — and could collect — the full amount while the hospital was already
+  // holding part of it.
+  //
+  // This runs only when the bill is being prepared for payment (`finalize`),
+  // which is both "Generate / refresh bill" and the automatic step behind
+  // "Collect payment". It never applies more than the balance, so it cannot
+  // overpay, and it is idempotent. Best-effort: a stay must still be billable
+  // if the deposit cannot be set against it, and the manual button remains.
+  let depositApplied = 0;
+  if (opts.finalize) {
+    try {
+      const res = await applyHeldMoneyToBill(tenantId, userId, admissionId, admission.patientId, bill.id);
+      depositApplied = res.applied;
+      if (res.applied > 0) {
+        logger.info(
+          { tenantId, admissionId, billId: bill.id, fromDeposit: res.fromDeposit, fromAdvance: res.fromAdvance },
+          'Deposit/advance applied automatically while preparing the bill',
+        );
+      }
+    } catch (err) {
+      logger.warn({ tenantId, admissionId, billId: bill.id, err }, 'Could not auto-apply the deposit to the IP bill');
+    }
+  }
+
   const fresh = await prisma.bill.findFirst({ where: { id: bill.id, tenantId } });
   const itemCount = await prisma.billItem.count({ where: { billId: bill.id } });
-  return { bill: fresh!, itemCount, finalized: fresh!.status !== 'draft' };
+  return { bill: fresh!, itemCount, depositApplied, finalized: fresh!.status !== 'draft' };
 }
 
 /**
@@ -4601,6 +4628,67 @@ export async function getAdmissionLedger(tenantId: string, admissionId: string, 
  * the patient's balance due. Applied against the current outstanding balance; the
  * deposit stays on file until there's a charge to set it against.
  */
+/**
+ * Set the money a patient has already handed over against a bill.
+ *
+ * Two pools hold it — the stay deposit and the patient's front-desk advance —
+ * and the stay deposit is spent first because it belongs to this admission.
+ * Never applies more than the bill actually owes, so it cannot overpay a bill,
+ * and it is naturally idempotent: once applied, `availableToApply` is 0 and a
+ * second call does nothing.
+ *
+ * Shared by the counter's "Apply to bill" button and the automatic application
+ * that runs when a bill is prepared for payment.
+ */
+async function applyHeldMoneyToBill(
+  tenantId: string,
+  userId: string,
+  admissionId: string,
+  patientId: string,
+  billId: string,
+  cap?: number,
+): Promise<{ fromDeposit: number; fromAdvance: number; applied: number; available: number; balance: number }> {
+  const r2n = (n: number) => Math.round(n * 100) / 100;
+  const dep = await getAdmissionDepositState(tenantId, admissionId);
+  const advance = await getPatientAdvanceBalance(tenantId, patientId);
+  const available = r2n(dep.availableToApply + r2n(Number(advance.balance ?? 0)));
+
+  const fresh = await prisma.bill.findFirst({ where: { id: billId, tenantId }, select: { balanceDue: true } });
+  const balance = r2n(Number(fresh?.balanceDue ?? 0));
+
+  const requested = cap != null ? r2n(Math.max(0, cap)) : available;
+  const target = r2n(Math.min(requested, available, balance));
+  if (target <= 0) return { fromDeposit: 0, fromAdvance: 0, applied: 0, available, balance };
+
+  const fromDeposit = r2n(Math.min(target, dep.availableToApply));
+  const fromAdvance = r2n(target - fromDeposit);
+
+  // The advance half goes through the advance machinery so its bucket balance
+  // falls and the money is not counted twice.
+  if (fromAdvance > 0) {
+    await adjustAdvanceToBill(tenantId, userId, { patientId, billId, amount: fromAdvance });
+  }
+  if (fromDeposit > 0) {
+    await prisma.payment.create({
+      data: {
+        tenantId,
+        billId,
+        patientId,
+        paymentDate: new Date(),
+        amount: fromDeposit,
+        paymentMethod: 'advance',
+        paymentType: 'advance',
+        transactionId: `${DEPOSIT_TXN_PREFIX}${admissionId}`,
+        status: 'completed',
+        processedBy: userId,
+        notes: 'Admission deposit applied to IP bill',
+      },
+    });
+  }
+  await recalculateBillTotals(billId);
+  return { fromDeposit, fromAdvance, applied: target, available, balance };
+}
+
 export async function applyDepositToBill(
   tenantId: string,
   userId: string,
@@ -4618,64 +4706,25 @@ export async function applyDepositToBill(
   // nothing to work with and the button was disabled on a patient who had paid.
   // Spend the stay deposit first (it belongs to this admission), then the
   // general advance.
-  const dep = await getAdmissionDepositState(tenantId, admissionId);
-  const advance = await getPatientAdvanceBalance(tenantId, admission.patientId);
-  const advanceAvailable = r2(Number(advance.balance ?? 0));
-  const totalAvailable = r2(dep.availableToApply + advanceAvailable);
-  if (totalAvailable <= 0) {
+  const bill = await getOrCreateRunningIpBill(tenantId, admissionId, userId);
+  const res = await applyHeldMoneyToBill(
+    tenantId, userId, admissionId, admission.patientId, bill.id, opts.amount,
+  );
+
+  // The button is manual, so it explains itself when there is nothing to do.
+  // The automatic application on the way to the counter stays silent instead.
+  if (res.available <= 0) {
     throw AppError.badRequest(
       'Nothing left to apply — the deposit and advance have both been used against the bill.',
     );
   }
-
-  const bill = await getOrCreateRunningIpBill(tenantId, admissionId, userId);
-  const fresh = await prisma.bill.findFirst({ where: { id: bill.id, tenantId }, select: { balanceDue: true } });
-  const balance = r2(Number(fresh?.balanceDue ?? 0));
-  if (balance <= 0) throw AppError.badRequest('No outstanding balance to set the deposit against yet — charges are still building up.');
-
-  const requested = opts.amount != null ? r2(Math.max(0, opts.amount)) : totalAvailable;
-  const target = r2(Math.min(requested, totalAvailable, balance));
-  if (target <= 0) throw AppError.badRequest('Nothing to apply.');
-
-  // Split the draw across the two pools, deposit first.
-  const fromDeposit = r2(Math.min(target, dep.availableToApply));
-  const fromAdvance = r2(target - fromDeposit);
-  const toApply = fromDeposit;
-
-  // The advance half goes through the advance machinery so its bucket balance
-  // falls and the money is not counted twice.
-  if (fromAdvance > 0) {
-    await adjustAdvanceToBill(tenantId, userId, {
-      patientId: admission.patientId,
-      billId: bill.id,
-      amount: fromAdvance,
-    });
+  if (res.balance <= 0) {
+    throw AppError.badRequest('No outstanding balance to set the deposit against yet — charges are still building up.');
   }
-  if (toApply <= 0) {
-    // Nothing in the stay deposit — the whole draw came from the advance, which
-    // adjustAdvanceToBill has already settled onto the bill.
-    logger.info({ tenantId, admissionId, billId: bill.id, fromAdvance }, 'Advance applied to IP bill');
-    return getAdmissionLedger(tenantId, admissionId, actor);
-  }
+  if (res.applied <= 0) throw AppError.badRequest('Nothing to apply.');
 
-  await prisma.payment.create({
-    data: {
-      tenantId,
-      billId: bill.id,
-      patientId: admission.patientId,
-      paymentDate: new Date(),
-      amount: toApply,
-      paymentMethod: 'advance',
-      paymentType: 'advance',
-      transactionId: `${DEPOSIT_TXN_PREFIX}${admissionId}`,
-      status: 'completed',
-      processedBy: userId,
-      notes: 'Admission deposit applied to IP bill',
-    },
-  });
-  await recalculateBillTotals(bill.id);
   logger.info(
-    { tenantId, admissionId, billId: bill.id, fromDeposit: toApply, fromAdvance },
+    { tenantId, admissionId, billId: bill.id, fromDeposit: res.fromDeposit, fromAdvance: res.fromAdvance },
     'Deposit applied to IP bill',
   );
   return getAdmissionLedger(tenantId, admissionId, actor);
