@@ -5891,6 +5891,35 @@ model Payment {
   status           PaymentStatus   @default(completed)
   processedBy      String?         @map("processed_by")
   notes            String?
+
+  // ── GST on an ADVANCE ──
+  // Tax normally attaches to the invoice, not to the tender: cash, card and UPI
+  // all carry the same tax because the tax is on the supply. An advance is the
+  // one exception. For a service the time of supply is the EARLIER of invoice
+  // or payment, so money taken before the supply fixes the liability at receipt
+  // and Rule 50 requires a receipt voucher stating the rate and the tax.
+  //
+  // For a hospital the answer is usually exempt — a deposit is against
+  // treatment, and treatment is exempt — but "usually exempt" has to be
+  // RECORDED rather than assumed, because it is also the figure the advances
+  // report and GSTR-1 table 11 read.
+  //
+  // Only ever set on an advance receipt or a voucher. A payment settling an
+  // already-issued invoice leaves all of this null: the tax is on the invoice.
+  gstTreatment     String?         @map("gst_treatment") @db.VarChar(20)
+  taxRatePercent   Decimal?        @map("tax_rate_percent") @db.Decimal(5, 2)
+  taxableValue     Decimal?        @map("taxable_value") @db.Decimal(12, 2)
+  taxAmount        Decimal?        @map("tax_amount") @db.Decimal(12, 2)
+  cgstAmount       Decimal?        @map("cgst_amount") @db.Decimal(12, 2)
+  sgstAmount       Decimal?        @map("sgst_amount") @db.Decimal(12, 2)
+  igstAmount       Decimal?        @map("igst_amount") @db.Decimal(12, 2)
+  /// 'receipt_voucher' (Rule 50, advance in) | 'refund_voucher' (Rule 51, out).
+  voucherType      String?         @map("voucher_type") @db.VarChar(20)
+  voucherNumber    String?         @unique @map("voucher_number") @db.VarChar(50)
+  /// The advance receipt this row draws down, so an adjustment can be traced to
+  /// the money it came out of. GSTR-1 table 11B has no other source.
+  sourceAdvancePaymentId String?   @map("source_advance_payment_id")
+
   createdAt        DateTime        @default(now()) @map("created_at")
 
   tenant    Tenant            @relation(fields: [tenantId], references: [id])
@@ -5900,7 +5929,10 @@ model Payment {
   receipt   Receipt?
   refunds   Refund[]
   transfers PaymentTransfer[]
+  sourceAdvance    Payment?  @relation("AdvanceDrawdown", fields: [sourceAdvancePaymentId], references: [id])
+  drawdowns        Payment[] @relation("AdvanceDrawdown")
 
+  @@index([sourceAdvancePaymentId])
   @@map("payments")
 }
 

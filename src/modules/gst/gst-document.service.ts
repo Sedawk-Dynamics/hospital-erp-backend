@@ -34,6 +34,8 @@ const DEFAULT_PREFIX: Record<string, string> = {
   invoice_cum_bill_of_supply: 'INV',
   credit_note: 'CN',
   debit_note: 'DN',
+  receipt_voucher: 'RV',
+  refund_voucher: 'RFV',
 };
 
 /** Zero-padded so lexicographic order is numeric order, as elsewhere here. */

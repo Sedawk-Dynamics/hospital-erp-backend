@@ -21,6 +21,7 @@ import { supplyKindForCategory } from '../../shared/gst-determination';
 import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
 import { issueDocumentForBill } from '../gst/gst-document.service';
 import { issueCreditNoteBestEffort } from '../gst/credit-note.service';
+import { advancePaymentTaxFields, type AdvancePurpose } from '../gst/advance-gst.service';
 import { getGstProfile } from '../hospital-settings/hospital-settings.service';
 import {
   DEFAULT_DISCOUNT_APPROVAL,
@@ -5539,6 +5540,14 @@ export async function createAdvancePayment(
     paymentMethod: string;
     referenceNumber?: string;
     notes?: string;
+    /**
+     * What the money is against. Decides whether any tax is due AT RECEIPT —
+     * for a service the time of supply is the earlier of invoice or payment.
+     * Defaults to treatment, which is the ordinary hospital deposit and exempt.
+     */
+    purpose?: AdvancePurpose;
+    /** Only consulted when the purpose is a taxable one. */
+    taxRatePercent?: number;
   },
 ) {
   if (data.amount <= 0) throw AppError.badRequest('Amount must be > 0');
@@ -5548,9 +5557,19 @@ export async function createAdvancePayment(
   if (!patient) throw AppError.notFound('Patient not found');
 
   const receiptNumber = await generateReceiptNumber(tenantId);
+  const gstProfile = await getGstProfile(tenantId);
 
   const result = await prisma.$transaction(async (tx) => {
     const bucket = await ensureAdvanceBucketBill(tx as any, tenantId, data.patientId);
+    // An advance is the one place tax can be due before an invoice exists.
+    // Usually exempt for a hospital — a deposit is against treatment — but the
+    // position is RECORDED rather than assumed, because it is what the advances
+    // report and GSTR-1 table 11 read.
+    const advanceTax = await advancePaymentTaxFields(tx, tenantId, gstProfile, {
+      amount: data.amount,
+      purpose: data.purpose,
+      ratePercent: data.taxRatePercent ?? null,
+    });
     const payment = await tx.payment.create({
       data: {
         tenantId,
@@ -5565,6 +5584,7 @@ export async function createAdvancePayment(
         status: 'completed',
         paymentDate: new Date(),
         processedBy: userId,
+        ...advanceTax,
       },
     });
     const receipt = await tx.receipt.create({
@@ -5671,6 +5691,25 @@ export async function adjustAdvanceToBill(
     // contra-entry on the advance bucket as a refund row so the running
     // balance falls correctly.
     const receiptNumber = await generateReceiptNumber(tenantId);
+
+    // Which advance receipt this draws down. GSTR-1 table 11B reports the
+    // adjustment of advances against invoices, and until now the only thing
+    // connecting the two was the note "Adjusted from advance" — a string, which
+    // no report can follow back to the money it came out of.
+    //
+    // Oldest first, matching how the bucket is drawn down everywhere else.
+    const sourceAdvance = await tx.payment.findFirst({
+      where: {
+        tenantId,
+        billId: bucket!.id,
+        patientId: data.patientId,
+        paymentType: 'advance' as never,
+        status: 'completed',
+      },
+      orderBy: { paymentDate: 'asc' },
+      select: { id: true },
+    });
+
     const payment = await tx.payment.create({
       data: {
         tenantId,
@@ -5684,6 +5723,7 @@ export async function adjustAdvanceToBill(
         status: 'completed',
         paymentDate: new Date(),
         processedBy: userId,
+        sourceAdvancePaymentId: sourceAdvance?.id ?? null,
       },
     });
     await tx.receipt.create({

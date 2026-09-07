@@ -254,7 +254,11 @@ export type GstDocumentType =
   | 'bill_of_supply'
   | 'invoice_cum_bill_of_supply'
   | 'credit_note'
-  | 'debit_note';
+  | 'debit_note'
+  /** Rule 50 — issued when an advance is received. */
+  | 'receipt_voucher'
+  /** Rule 51 — issued when an advance is returned without a supply. */
+  | 'refund_voucher';
 
 export interface DocumentTypeInput {
   hasTaxable: boolean;
@@ -297,6 +301,8 @@ export const DOCUMENT_TYPE_LABELS: Record<GstDocumentType, string> = {
   invoice_cum_bill_of_supply: 'Invoice-cum-Bill of Supply',
   credit_note: 'Credit Note',
   debit_note: 'Debit Note',
+  receipt_voucher: 'Receipt Voucher',
+  refund_voucher: 'Refund Voucher',
 };
 
 // ── Identity: GSTIN and place of supply ────────────────────────────────────
