@@ -43,7 +43,30 @@ CREATE TABLE IF NOT EXISTS "gst_document_series" (
 
 -- One counter per hospital, per document type, per year — exactly the scope the
 -- law puts on a series.
-CREATE UNIQUE INDEX IF NOT EXISTS "gst_document_series_tenant_type_fy_key"
+--
+-- The name is Prisma's own convention for a compound unique, and it has to be:
+-- a database built by `db push` gets that name, and one upgraded by this file
+-- would otherwise get a different one for the same index. Postgres infers the
+-- conflict target of an upsert from the COLUMNS, so both work — but the two
+-- databases then differ, and the next schema diff wants to rename it.
+--
+-- The rename comes FIRST, before the create. The other way round, the create
+-- makes the correctly-named index, the rename then finds it already there and
+-- skips, and the database is left carrying BOTH — two unique indexes over the
+-- same three columns.
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'gst_document_series_tenant_type_fy_key')
+     AND NOT EXISTS (
+       SELECT 1 FROM pg_class
+        WHERE relname = 'gst_document_series_tenant_id_document_type_financial_year_key'
+     )
+  THEN
+    ALTER INDEX "gst_document_series_tenant_type_fy_key"
+      RENAME TO "gst_document_series_tenant_id_document_type_financial_year_key";
+  END IF;
+END $$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS "gst_document_series_tenant_id_document_type_financial_year_key"
   ON "gst_document_series" ("tenant_id", "document_type", "financial_year");
 
 DO $$ BEGIN
