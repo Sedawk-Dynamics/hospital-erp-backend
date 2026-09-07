@@ -85,3 +85,31 @@ describe('getOrCreateRunningIpBill — a finalized stay bill is still the stay b
     }
   });
 });
+
+/**
+ * A draft bill is not payable — createPayment answers "This bill is still open
+ * for charges." Consolidation reopens the stay's bill to pull new charges on,
+ * so it must never leave one open: a failed finalize, or a reopen that found
+ * nothing to pull, would otherwise strand the counter.
+ */
+describe('consolidateAdmissionBill — never leaves a bill stranded in draft', () => {
+  it('puts the bill back when finalizing fails', async () => {
+    const { consolidateAdmissionBill } = await import('../../../../src/modules/billing/billing.service');
+    vi.mocked(prisma.admission.findFirst).mockResolvedValue({ id: ADMISSION, patientId: PATIENT } as never);
+    // no draft; an open, finalized bill is found and reopened
+    vi.mocked(prisma.bill.findFirst)
+      .mockResolvedValueOnce(null as never)
+      .mockResolvedValueOnce({ id: 'bill-1', status: 'partially_paid' } as never);
+    vi.mocked(prisma.insuranceClaim.count).mockResolvedValue(0 as never);
+    vi.mocked(prisma.bill.update).mockResolvedValue({ id: 'bill-1', status: 'draft' } as never);
+    vi.mocked(prisma.billItem.count).mockResolvedValue(3 as never);
+
+    await expect(
+      consolidateAdmissionBill(TENANT, USER, ADMISSION, { finalize: true }),
+    ).rejects.toBeTruthy();
+
+    // the LAST write must restore the status it was reopened from
+    const updates = vi.mocked(prisma.bill.update).mock.calls;
+    expect((updates.at(-1)![0] as any).data.status).toBe('partially_paid');
+  });
+});

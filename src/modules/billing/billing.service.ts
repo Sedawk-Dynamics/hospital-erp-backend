@@ -251,7 +251,12 @@ async function recalculateBillTotals(billId: string) {
   // completed payments raw counted a REFUND payout as money coming in — a
   // ₹1,000 bill refunded ₹400 read as ₹1,400 paid the next time any charge was
   // posted to it — and counted advance-bucket rows that belong to no bill.
-  const totalPaid = await computeBillPaid(prisma, billId);
+  // Refunds net off what a bill has been paid, but they cannot drive it below
+  // zero. A returned deposit was attached to a bill holding no payment of its
+  // own, so this read -120, and `total - totalPaid` below then presented an
+  // EMPTY bill as 120 owed — a refund cannot create a debt. The clamp makes a
+  // stray refund harmless instead of billable.
+  const totalPaid = Math.max(0, await computeBillPaid(prisma, billId));
 
   // Determine status based on payment. draft / cancelled / refunded are states
   // a recalculation does not move a bill out of; the rest mirror
@@ -3481,13 +3486,20 @@ export async function consolidateAdmissionBill(
   //
   // A bill under a live insurance claim is left alone — the claim was raised
   // against these lines, so it is not ours to reopen behind the insurer.
-  if (bill.status === 'pending' || bill.status === 'partially_paid') {
+  //
+  // Only reopen when this call will also close it again (`finalize`). A draft
+  // bill is NOT payable — createPayment answers "This bill is still open for
+  // charges" — so leaving one reopened would strand the counter.
+  let reopenedFrom: string | null = null;
+  if (opts.finalize && (bill.status === 'pending' || bill.status === 'partially_paid')) {
     const claims = await prisma.insuranceClaim.count({ where: { billId: bill.id } });
     if (claims === 0) {
+      reopenedFrom = bill.status;
       bill = await prisma.bill.update({ where: { id: bill.id }, data: { status: 'draft' } });
     }
   }
 
+  try {
   // Only a draft can still accept charges / be finalized. A bill already
   // finalized (e.g. transferred to TPA earlier) is left as-is.
   if (bill.status === 'draft') {
@@ -3516,6 +3528,24 @@ export async function consolidateAdmissionBill(
     if (opts.finalize && draftItems > 0) {
       await finalizeBill(tenantId, userId, bill.id);
     }
+  }
+  } catch (err) {
+    // finalizeBill refuses a bill with an unclassified line or an undecided
+    // concession. Put a reopened bill back the way we found it rather than
+    // leaving it a draft nobody can pay.
+    if (reopenedFrom) {
+      await prisma.bill.update({ where: { id: bill.id }, data: { status: reopenedFrom as never } });
+    }
+    throw err;
+  }
+
+  // A reopen that pulled nothing on has nothing to finalize, so close it back
+  // by hand — otherwise the bill stays a draft and the counter cannot take
+  // money against it.
+  const stillDraft = await prisma.bill.findFirst({ where: { id: bill.id, tenantId }, select: { status: true } });
+  if (reopenedFrom && stillDraft?.status === 'draft') {
+    await prisma.bill.update({ where: { id: bill.id }, data: { status: reopenedFrom as never } });
+    await recalculateBillTotals(bill.id);
   }
 
   const fresh = await prisma.bill.findFirst({ where: { id: bill.id, tenantId } });
@@ -4087,6 +4117,30 @@ const DEPOSIT_TXN_PREFIX = 'IPDEP:';
  * refunded back to the patient. Derived entirely from Payment/Refund markers so
  * no schema change is needed.
  */
+/**
+ * Money the hospital is holding from the patient for a stay, net of anything
+ * already given back.
+ *
+ * `paid` — a bill's `amountPaid` — ALREADY nets refunds off, because
+ * computeBillPaid subtracts them. The old form here was
+ * `cashPaid + deposit - dep.refunded`, which subtracted a returned deposit a
+ * SECOND time: a stay owing 120 was shown as owing 240.
+ *
+ * Deleting that term alone would have broken the case it was there for — a
+ * deposit taken back in full must leave the charges owing — because
+ * `cashPaid = max(0, paid - applied)` clamps at zero and loses the refund
+ * again. So the rule is stated the other way round: everything actually
+ * received (net of returns) plus whatever deposit is still held and has not
+ * been posted to a bill.
+ *
+ * Three call sites had their own copy of this. They must not diverge — the
+ * discharge counter gates on the number the ledger shows.
+ */
+function moneyHeldFromPatient(paid: number, depositPool: number, applied: number) {
+  const r2n = (n: number) => Math.round(n * 100) / 100;
+  return r2n(paid + Math.max(0, r2n(depositPool - applied)));
+}
+
 async function getAdmissionDepositState(tenantId: string, admissionId: string) {
   const r2 = (n: number) => Math.round(n * 100) / 100;
   const admission = await prisma.admission.findFirst({
@@ -4153,23 +4207,38 @@ export async function getAdmissionOutstanding(tenantId: string, admissionId: str
       ],
     },
     select: {
+      // `id` and the line `description` are what let the dedupe below tell a
+      // cross-bill duplicate from two separate lines of one OT kit.
+      id: true,
       amountPaid: true,
       discountAmount: true,
       insuranceCoveredAmount: true,
-      billItems: { select: { totalAmount: true, referenceType: true, referenceId: true } },
+      billItems: { select: { totalAmount: true, referenceType: true, referenceId: true, description: true } },
     },
   });
 
   // Dedupe by charge reference so a charge sitting on both an IP bill and a
   // visit bill is only counted once.
-  const seenRef = new Set<string>();
+  // The key has to identify a LINE, not the event a line came from, and it must
+  // only collapse rows across DIFFERENT bills. One OT kit issue stamps the same
+  // referenceId on every medicine in the kit, so keying on the reference alone
+  // hid every line of that kit but the first — a real 120.00 A-Art Injection
+  // vanished from the ledger while staying on the bill. The stay then looked
+  // 120 overpaid, the desk returned that 120 as surplus deposit, and the bill
+  // was left owing 120 again.
+  const seenRef = new Map<string, string>();
   let totalPosted = 0;
   for (const b of bills) {
     for (const it of b.billItems) {
-      const refKey = it.referenceType && it.referenceId ? `${it.referenceType}:${it.referenceId}` : null;
+      const refKey = it.referenceType && it.referenceId
+        ? `${it.referenceType}:${it.referenceId}::${it.description}::${Number(it.totalAmount)}`
+        : null;
       if (refKey) {
-        if (seenRef.has(refKey)) continue;
-        seenRef.add(refKey);
+        const firstBill = seenRef.get(refKey);
+        // Already counted from ANOTHER bill — that is the duplicate this guard
+        // is for. A repeat within the same bill is a separate line.
+        if (firstBill && firstBill !== b.id) continue;
+        if (!firstBill) seenRef.set(refKey, b.id);
       }
       totalPosted = r2(totalPosted + Number(it.totalAmount));
     }
@@ -4189,9 +4258,10 @@ export async function getAdmissionOutstanding(tenantId: string, admissionId: str
   const grandTotal = r2(Math.max(0, totalPosted + totalPending - billDiscount));
 
   const dep = await getAdmissionDepositState(tenantId, admissionId);
+  // Reported for display; the balance is not derived from it.
   const cashPaid = r2(Math.max(0, paid - dep.applied));
   const netPatientObligation = r2(Math.max(0, grandTotal - insuranceCovered));
-  const moneyFromPatient = r2(cashPaid + dep.onFile - dep.refunded);
+  const moneyFromPatient = moneyHeldFromPatient(paid, dep.onFile, dep.applied);
   const balanceAfterDeposit = r2(Math.max(0, netPatientObligation - moneyFromPatient));
 
   return {
@@ -4249,7 +4319,14 @@ export async function getAdmissionLedger(tenantId: string, admissionId: string, 
 
   // Dedupe by charge reference so a charge that somehow sits on both an IP bill
   // and a visit bill is only counted once.
-  const seenRef = new Set<string>();
+  // The key has to identify a LINE, not the event a line came from, and it must
+  // only collapse rows across DIFFERENT bills. One OT kit issue stamps the same
+  // referenceId on every medicine in the kit, so keying on the reference alone
+  // hid every line of that kit but the first — a real 120.00 A-Art Injection
+  // vanished from the ledger while staying on the bill. The stay then looked
+  // 120 overpaid, the desk returned that 120 as surplus deposit, and the bill
+  // was left owing 120 again.
+  const seenRef = new Map<string, string>();
   const posted: Array<{
     id: string; billId: string; billNumber: string;
     description: string; category: string;
@@ -4259,10 +4336,15 @@ export async function getAdmissionLedger(tenantId: string, admissionId: string, 
   }> = [];
   for (const b of bills) {
     for (const it of b.billItems) {
-      const refKey = it.referenceType && it.referenceId ? `${it.referenceType}:${it.referenceId}` : null;
+      const refKey = it.referenceType && it.referenceId
+        ? `${it.referenceType}:${it.referenceId}::${it.description}::${Number(it.totalAmount)}`
+        : null;
       if (refKey) {
-        if (seenRef.has(refKey)) continue;
-        seenRef.add(refKey);
+        const firstBill = seenRef.get(refKey);
+        // Already counted from ANOTHER bill — that is the duplicate this guard
+        // is for. A repeat within the same bill is a separate line.
+        if (firstBill && firstBill !== b.id) continue;
+        if (!firstBill) seenRef.set(refKey, b.id);
       }
       posted.push({
         id: it.id, billId: b.id, billNumber: b.billNumber,
@@ -4338,13 +4420,12 @@ export async function getAdmissionLedger(tenantId: string, admissionId: string, 
   const depositOnFile = dep.onFile;
   // What the desk should see as "held for this patient", whichever counter took it.
   const deposit = r2(depositOnFile + advanceOnFile);
-  // Real cash the patient paid at the counter (excludes deposit moved onto the bill).
+  // Real cash the patient paid at the counter (excludes deposit moved onto the
+  // bill). Reported as `cashPaid`; not what the balance is derived from.
   const cashPaid = r2(Math.max(0, paid - dep.applied));
   // What the patient must ultimately pay = charges minus the insurer-covered part.
   const netPatientObligation = r2(Math.max(0, grandTotal - insuranceCovered));
-  // Money the hospital currently holds from the patient = both pools + cash
-  // paid, LESS any deposit already returned.
-  const moneyFromPatient = r2(cashPaid + deposit - dep.refunded);
+  const moneyFromPatient = moneyHeldFromPatient(paid, deposit, dep.applied);
   // Deposit-adjusted balance still owed by the patient.
   const balanceAfterDeposit = r2(Math.max(0, netPatientObligation - moneyFromPatient));
   // Surplus the patient overpaid (e.g. insurance covered the charges) —
@@ -4565,7 +4646,7 @@ export async function refundDeposit(
   const bill = await getOrCreateRunningIpBill(tenantId, admissionId, userId);
   const depositPayments = await prisma.payment.findMany({
     where: { tenantId, status: 'completed', transactionId: { startsWith: DEPOSIT_TXN_PREFIX }, bill: { admissionId } },
-    select: { id: true, amount: true, refunds: { where: { status: { in: ['requested', 'approved', 'processed'] } }, select: { amount: true } } },
+    select: { id: true, amount: true, billId: true, refunds: { where: { status: { in: ['requested', 'approved', 'processed'] } }, select: { amount: true } } },
   });
   let target = depositPayments.find((p) => {
     const already = p.refunds.reduce((s, r) => s + Number(r.amount), 0);
@@ -4588,13 +4669,21 @@ export async function refundDeposit(
       },
     });
     await recalculateBillTotals(bill.id);
-    target = { id: created.id, amount: created.amount as any, refunds: [] };
+    target = { id: created.id, amount: created.amount as any, billId: bill.id, refunds: [] };
   }
+
+  // Put the refund on the bill that holds the payment it is refunding, NOT on
+  // whatever bill is running today. Once the stay's bill is fully paid it is no
+  // longer reused, so this opened a brand-new bill, hung a 120 refund on it
+  // with no payment behind it, and the counter was shown 120 due on an empty
+  // draft — which it then refused to take, because a draft is not payable:
+  // "This bill is still open for charges."
+  const refundBillId = target.billId ?? bill.id;
 
   const refund = await prisma.refund.create({
     data: {
       tenantId,
-      billId: bill.id,
+      billId: refundBillId,
       paymentId: target.id,
       patientId: admission.patientId,
       amount: fromDeposit,
@@ -4605,7 +4694,9 @@ export async function refundDeposit(
       processedAt: new Date(),
     },
   });
-  logger.info({ tenantId, admissionId, billId: bill.id, refundId: refund.id, fromDeposit, fromAdvance }, 'IP deposit returned to patient');
+  // The refund changes what that bill counts as paid — settle its header.
+  await recalculateBillTotals(refundBillId);
+  logger.info({ tenantId, admissionId, billId: refundBillId, refundId: refund.id, fromDeposit, fromAdvance }, 'IP deposit returned to patient');
   const summary = await getAdmissionLedger(tenantId, admissionId, actor);
   return { refund, ledger: summary };
 }
@@ -4841,9 +4932,8 @@ export async function getIpAdmissionsForBilling(
     // desk collects into was not counted here either.
     const dep = await getAdmissionDepositState(tenantId, a.id);
     const deposit = r2(dep.onFile + (advanceByPatient.get(a.patientId) ?? 0));
-    const cashPaid = r2(Math.max(0, amountPaid - dep.applied));
     const netPatientObligation = r2(Math.max(0, totalAmount - insuranceCovered));
-    const moneyFromPatient = r2(cashPaid + deposit - dep.refunded);
+    const moneyFromPatient = moneyHeldFromPatient(amountPaid, deposit, dep.applied);
     const balanceAfterDeposit = r2(Math.max(0, netPatientObligation - moneyFromPatient));
     const refundable = r2(Math.min(Math.max(0, moneyFromPatient - netPatientObligation), Math.max(0, deposit - dep.refunded)));
 
