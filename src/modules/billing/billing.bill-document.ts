@@ -7,6 +7,13 @@ import {
 } from '../../shared/admission-type';
 import type { HospitalBranding } from '../../services/pdf-branding';
 import type { PdfTemplate } from '../../services/pdf-template';
+import {
+  DOCUMENT_TYPE_LABELS,
+  GST_TREATMENT_LABELS,
+  stateNameForCode,
+  type GstDocumentType,
+  type GstTreatment,
+} from '../../shared/gst';
 
 // ============================================================
 // Final IP bill document (IP / Emergency / Day Care)
@@ -30,6 +37,95 @@ export interface BillDocumentLine {
   /** 'posted' = on a bill; 'pending' = accrued but not yet billed. */
   status: string;
   at: string;
+  /**
+   * The line's frozen tax position — what Rule 46 wants printed per line.
+   *
+   * Null on a pending charge, which has not been priced onto a bill and so has
+   * no position yet. The renderers show that as blank rather than as exempt.
+   */
+  hsnSac: string | null;
+  gstTreatment: string | null;
+  /**
+   * 'Exempt' / 'Nil rated' / 'Taxable' — the word a document prints where a
+   * rate would go. Resolved here so both renderers read one map instead of the
+   * browser keeping its own copy of it.
+   */
+  treatmentLabel: string | null;
+  /** The line's total GST rate. CGST and SGST are each half of it. */
+  taxRatePercent: number;
+  taxableValue: number;
+  taxAmount: number;
+  cgstRate: number;
+  cgstAmount: number;
+  sgstRate: number;
+  sgstAmount: number;
+  igstRate: number;
+  igstAmount: number;
+  cessAmount: number;
+}
+
+/** One rate's worth of the bill, for the rate-wise summary Rule 46 asks for. */
+export interface BillTaxSummaryRow {
+  /** 'Taxable', 'Exempt', 'Nil rated' … — what prints in the rate column. */
+  label: string;
+  treatment: string;
+  ratePercent: number;
+  taxableValue: number;
+  cgstAmount: number;
+  sgstAmount: number;
+  igstAmount: number;
+  cessAmount: number;
+  taxAmount: number;
+}
+
+/**
+ * Everything the document needs to be a GST document rather than "a bill".
+ *
+ * Assembled here so BOTH renderers — the dialog and the PDF — read one answer.
+ * A layout decision made twice is a layout that drifts.
+ */
+export interface BillDocumentGst {
+  /** False for a hospital not registered under GST: no tax columns at all. */
+  registered: boolean;
+  /** Read off the bill at finalisation; null while the bill is still a draft. */
+  documentType: GstDocumentType | null;
+  /** 'Tax Invoice' / 'Bill of Supply' / 'Invoice-cum-Bill of Supply'. */
+  documentLabel: string | null;
+  /** The consecutive numbers allotted for the financial year. */
+  invoiceNumbers: string[];
+  financialYear: string | null;
+  supplierGstin: string | null;
+  supplierStateCode: string | null;
+  supplierStateName: string | null;
+  recipientGstin: string | null;
+  placeOfSupplyStateCode: string | null;
+  placeOfSupplyStateName: string | null;
+  isInterState: boolean;
+  /**
+   * Whether any tax was actually charged. Drives the layout: a document with
+   * no tax on it is a Bill of Supply and must NOT print tax columns.
+   */
+  hasTax: boolean;
+  /** True once any line carries a classification — legacy bills carry none. */
+  hasClassifiedLines: boolean;
+  taxSummary: BillTaxSummaryRow[];
+  /**
+   * The declarations that go under the tax summary — Rule 46(o)'s reverse
+   * charge statement and the exemption the untaxed lines rely on.
+   *
+   * Worded once here so the screen and the paper say the same thing. A
+   * declaration that differs between two renderings of one document is worse
+   * than one that is missing.
+   */
+  notes: string[];
+  totals: {
+    taxableValue: number;
+    cgstAmount: number;
+    sgstAmount: number;
+    igstAmount: number;
+    cessAmount: number;
+    taxAmount: number;
+  };
 }
 
 export interface AdmissionBillDocument {
@@ -81,7 +177,16 @@ export interface AdmissionBillDocument {
     billingCategory: string;
     reason: string | null;
   };
-  bills: Array<{ billNumber: string; status: string; totalAmount: number }>;
+  bills: Array<{
+    billNumber: string;
+    status: string;
+    totalAmount: number;
+    /** The GST document number, once the bill has been finalised and issued. */
+    invoiceNumber: string | null;
+    gstDocumentType: string | null;
+  }>;
+  /** The document's GST identity, per-rate summary and layout switches. */
+  gst: BillDocumentGst;
   /** Charge lines grouped by category, in the order they should print. */
   groups: Array<{ category: string; label: string; lines: BillDocumentLine[]; total: number }>;
   payments: Array<{
@@ -145,6 +250,42 @@ function ageFromDob(dob: Date | null): string | null {
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
 /**
+ * Collapse the lines into one row per rate — the rate-wise summary a GST
+ * document carries under its charges.
+ *
+ * Grouped by treatment AND rate, because "exempt" and "taxable at 0%" are
+ * different answers that happen to carry the same number, and a return reports
+ * them in different boxes. A pending line has no position at all and is left
+ * out: it has not been billed, so there is nothing to declare for it yet.
+ */
+export function buildTaxSummary(lines: BillDocumentLine[]): BillTaxSummaryRow[] {
+  const rows = new Map<string, BillTaxSummaryRow>();
+  for (const l of lines) {
+    if (!l.gstTreatment) continue;
+    const rate = r2(l.taxRatePercent);
+    const key = `${l.gstTreatment}:${rate}`;
+    const row = rows.get(key) ?? {
+      label: GST_TREATMENT_LABELS[l.gstTreatment as GstTreatment] ?? l.gstTreatment,
+      treatment: l.gstTreatment,
+      ratePercent: rate,
+      taxableValue: 0, cgstAmount: 0, sgstAmount: 0, igstAmount: 0,
+      cessAmount: 0, taxAmount: 0,
+    };
+    row.taxableValue = r2(row.taxableValue + l.taxableValue);
+    row.cgstAmount = r2(row.cgstAmount + l.cgstAmount);
+    row.sgstAmount = r2(row.sgstAmount + l.sgstAmount);
+    row.igstAmount = r2(row.igstAmount + l.igstAmount);
+    row.cessAmount = r2(row.cessAmount + l.cessAmount);
+    row.taxAmount = r2(row.taxAmount + l.taxAmount);
+    rows.set(key, row);
+  }
+  // Highest rate first, so the taxed rows lead and the exempt block closes.
+  return [...rows.values()].sort(
+    (a, b) => b.ratePercent - a.ratePercent || a.treatment.localeCompare(b.treatment),
+  );
+}
+
+/**
  * Build the printable bill for an admission. `getAdmissionLedger` already
  * enforces care-team / billing access and computes the money, so this reuses it
  * rather than recomputing totals a second way — a bill that disagreed with the
@@ -159,12 +300,16 @@ export async function buildAdmissionBillDocument(
   const { getHospitalBranding, resolvePdfTemplate } = await import(
     '../hospital-branding/hospital-branding.service'
   );
-  const [ledger, branding, template] = await Promise.all([
+  const { getGstProfile } = await import('../hospital-settings/hospital-settings.service');
+  const [ledger, branding, template, gstProfile] = await Promise.all([
     getAdmissionLedger(tenantId, admissionId, actor),
     getHospitalBranding(tenantId),
     // Same template the PDF route resolves, so the print view and the PDF are
     // two renderings of one definition rather than two sets of styling.
     resolvePdfTemplate(tenantId, 'ip_bill'),
+    // Decides whether this document shows tax at all. An unregistered hospital
+    // prints exactly what it printed before any of this existed.
+    getGstProfile(tenantId),
   ]);
 
   const admission = await prisma.admission.findFirst({
@@ -207,11 +352,19 @@ export async function buildAdmissionBillDocument(
       })
     : [];
 
-  // Discount / tax live on the bill headers, not on the ledger lines.
+  // Discount / tax live on the bill headers, not on the ledger lines. The GST
+  // identity does too — the document type and its number are allotted to the
+  // BILL at finalisation, never to a line.
   const billHeaders = billIds.length
     ? await prisma.bill.findMany({
         where: { id: { in: billIds } },
-        select: { discountAmount: true, taxAmount: true },
+        orderBy: { createdAt: 'asc' },
+        select: {
+          id: true, discountAmount: true, taxAmount: true,
+          gstDocumentType: true, invoiceNumber: true, financialYear: true,
+          supplierGstin: true, supplierStateCode: true, recipientGstin: true,
+          placeOfSupplyStateCode: true, isInterState: true,
+        },
       })
     : [];
   const discount = r2(billHeaders.reduce((s, b) => s + Number(b.discountAmount ?? 0), 0));
@@ -229,6 +382,20 @@ export async function buildAdmissionBillDocument(
       totalAmount: l.totalAmount,
       status: l.status,
       at: l.at,
+      hsnSac: l.hsnSac ?? null,
+      gstTreatment: l.gstTreatment ?? null,
+      treatmentLabel: l.gstTreatment
+        ? (GST_TREATMENT_LABELS[l.gstTreatment as GstTreatment] ?? l.gstTreatment)
+        : null,
+      taxRatePercent: l.taxRatePercent ?? 0,
+      // A pending charge has no taxable value of its own yet; its whole amount
+      // stands in for one so the columns still add up on an interim bill.
+      taxableValue: l.taxableValue ?? l.totalAmount,
+      taxAmount: l.taxAmount ?? 0,
+      cgstRate: l.cgstRate ?? 0, cgstAmount: l.cgstAmount ?? 0,
+      sgstRate: l.sgstRate ?? 0, sgstAmount: l.sgstAmount ?? 0,
+      igstRate: l.igstRate ?? 0, igstAmount: l.igstAmount ?? 0,
+      cessAmount: l.cessAmount ?? 0,
     });
     byCategory.set(l.category, arr);
   }
@@ -263,6 +430,64 @@ export async function buildAdmissionBillDocument(
   const t = ledger.totals;
   const isDischarged = admission.status === 'discharged';
 
+  // ── The document's GST identity ────────────────────────────────────────────
+  //
+  // A stay can span more than one bill, and each carries its own allotted
+  // number. The identity fields are taken from the first bill that has been
+  // issued — they agree across a stay because they all describe the same
+  // supplier and the same patient — while the numbers are listed in full, so
+  // the paper names every document it consolidates.
+  const issued = billHeaders.filter((b) => b.invoiceNumber);
+  const primary = issued[0] ?? billHeaders[0] ?? null;
+  const allLines = groups.flatMap((g) => g.lines);
+  const taxSummary = buildTaxSummary(allLines);
+  const gstTotals = allLines.reduce(
+    (acc, l) => ({
+      taxableValue: r2(acc.taxableValue + l.taxableValue),
+      cgstAmount: r2(acc.cgstAmount + l.cgstAmount),
+      sgstAmount: r2(acc.sgstAmount + l.sgstAmount),
+      igstAmount: r2(acc.igstAmount + l.igstAmount),
+      cessAmount: r2(acc.cessAmount + l.cessAmount),
+      taxAmount: r2(acc.taxAmount + l.taxAmount),
+    }),
+    { taxableValue: 0, cgstAmount: 0, sgstAmount: 0, igstAmount: 0, cessAmount: 0, taxAmount: 0 },
+  );
+  const documentType = (primary?.gstDocumentType as GstDocumentType | null) ?? null;
+  const hasTax = gstProfile.registered && gstTotals.taxAmount > 0;
+  const notes: string[] = [];
+  if (hasTax && (documentType === 'tax_invoice' || documentType === 'invoice_cum_bill_of_supply')) {
+    // Rule 46(o) — a tax invoice must say whether the tax is payable on reverse
+    // charge. Billing a patient it never is, and an auditor still looks for the
+    // sentence.
+    notes.push('Tax is not payable on reverse charge basis.');
+  }
+  if (gstProfile.registered && taxSummary.some((r) => r.treatment !== 'taxable')) {
+    notes.push(
+      'Exempt lines are healthcare services exempt under Notification 12/2017-Central Tax (Rate).',
+    );
+  }
+  const gst: BillDocumentGst = {
+    registered: gstProfile.registered,
+    documentType,
+    documentLabel: documentType ? (DOCUMENT_TYPE_LABELS[documentType] ?? null) : null,
+    invoiceNumbers: issued.map((b) => b.invoiceNumber!),
+    financialYear: primary?.financialYear ?? null,
+    supplierGstin: primary?.supplierGstin ?? gstProfile.gstin ?? null,
+    supplierStateCode: primary?.supplierStateCode ?? gstProfile.stateCode ?? null,
+    supplierStateName: stateNameForCode(primary?.supplierStateCode ?? gstProfile.stateCode),
+    recipientGstin: primary?.recipientGstin ?? null,
+    placeOfSupplyStateCode: primary?.placeOfSupplyStateCode ?? null,
+    placeOfSupplyStateName: stateNameForCode(primary?.placeOfSupplyStateCode),
+    isInterState: primary?.isInterState ?? false,
+    // The layout switch. No tax anywhere means this is a document for exempt
+    // supply, and a bill of supply must NOT carry tax columns.
+    hasTax,
+    hasClassifiedLines: allLines.some((l) => !!l.gstTreatment || !!l.hsnSac),
+    taxSummary,
+    notes,
+    totals: gstTotals,
+  };
+
   // `grandTotal` already has the bill-header concession deducted (see
   // getAdmissionLedger). Item-level tax is already inside each line's
   // totalAmount, so tax must NOT be added again here — it is reported below
@@ -283,9 +508,25 @@ export async function buildAdmissionBillDocument(
     admissionTypeLabel: ADMISSION_TYPE_LABELS[admissionType],
     isPaid,
     isDischarged,
-    // An undischarged stay is still accruing, so say so on the paper rather
-    // than handing the patient something that looks final and is not.
-    documentTitle: isDischarged ? 'Final Bill' : 'Interim Bill',
+    /**
+     * What the paper calls itself.
+     *
+     * Once a bill is finalised it has been ISSUED as a named GST document — a
+     * Tax Invoice, a Bill of Supply, or the mixture Rule 46A allows — and that
+     * name goes at the top, whether or not the patient has gone home. A
+     * numbered invoice declared in GSTR-1 cannot print titled "Interim Bill";
+     * the interim caveat is carried by the banner above the charges, which is
+     * about the STAY still accruing, not about what this document is.
+     *
+     * A hospital that is not registered issues no GST document, so its bill
+     * keeps the title it has always had.
+     */
+    documentTitle:
+      gst.registered && gst.documentLabel
+        ? gst.documentLabel
+        : isDischarged
+          ? 'Final Bill'
+          : 'Interim Bill',
     patient: {
       id: p.id,
       name: `${p.firstName} ${p.lastName ?? ''}`.trim(),
@@ -311,11 +552,17 @@ export async function buildAdmissionBillDocument(
       billingCategory: ledger.billingCategory,
       reason: admission.admissionReason ?? null,
     },
-    bills: ledger.bills.map((b) => ({
-      billNumber: b.billNumber,
-      status: b.status,
-      totalAmount: b.totalAmount,
-    })),
+    bills: ledger.bills.map((b) => {
+      const header = billHeaders.find((h) => h.id === b.id);
+      return {
+        billNumber: b.billNumber,
+        status: b.status,
+        totalAmount: b.totalAmount,
+        invoiceNumber: header?.invoiceNumber ?? null,
+        gstDocumentType: header?.gstDocumentType ?? null,
+      };
+    }),
+    gst,
     groups,
     payments: payments.map((pay) => ({
       date: pay.paymentDate.toISOString(),

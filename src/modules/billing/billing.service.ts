@@ -4435,6 +4435,15 @@ export async function getAdmissionLedger(tenantId: string, admissionId: string, 
     quantity: number; unitPrice: number; totalAmount: number;
     isReimbursable: boolean | null; isAutoPulled: boolean;
     addedByMe: boolean; status: 'posted'; at: string;
+    // The line's frozen tax position, carried so the printed bill can show
+    // what the law wants per line — HSN/SAC, taxable value, rate, and the
+    // split — without going back to the bill items a second way and risking a
+    // document that disagrees with the ledger it was built from.
+    hsnSac: string | null; gstTreatment: string | null; taxRatePercent: number;
+    taxableValue: number; taxAmount: number;
+    cgstRate: number; cgstAmount: number;
+    sgstRate: number; sgstAmount: number;
+    igstRate: number; igstAmount: number; cessAmount: number;
   }> = [];
   for (const b of bills) {
     for (const it of b.billItems) {
@@ -4457,6 +4466,15 @@ export async function getAdmissionLedger(tenantId: string, admissionId: string, 
         // remove button only for one's own charges (nurses can delete only theirs).
         addedByMe: it.referenceType === 'manual_clinical' && (it.referenceId ?? '').split(':')[0] === actor.userId,
         status: 'posted' as const, at: it.createdAt.toISOString(),
+        hsnSac: it.hsnSacCode ?? null,
+        gstTreatment: it.gstTreatment ?? null,
+        taxRatePercent: Number(it.taxPercent ?? 0),
+        taxableValue: Number(it.taxableValue ?? 0),
+        taxAmount: Number(it.taxAmount ?? 0),
+        cgstRate: Number(it.cgstRate ?? 0), cgstAmount: Number(it.cgstAmount ?? 0),
+        sgstRate: Number(it.sgstRate ?? 0), sgstAmount: Number(it.sgstAmount ?? 0),
+        igstRate: Number(it.igstRate ?? 0), igstAmount: Number(it.igstAmount ?? 0),
+        cessAmount: Number(it.cessAmount ?? 0),
       });
     }
   }
@@ -4471,6 +4489,13 @@ export async function getAdmissionLedger(tenantId: string, admissionId: string, 
       quantity: c.quantity, unitPrice: c.unitPrice, totalAmount: c.totalAmount,
       isReimbursable: null as any, isAutoPulled: true,
       addedByMe: false,
+      // A pending charge has not been priced onto a bill yet, so it has no tax
+      // position at all. Left null rather than defaulted to exempt: an interim
+      // bill must not claim a classification nothing has made.
+      hsnSac: null, gstTreatment: null, taxRatePercent: 0,
+      taxableValue: c.totalAmount, taxAmount: 0,
+      cgstRate: 0, cgstAmount: 0, sgstRate: 0, sgstAmount: 0,
+      igstRate: 0, igstAmount: 0, cessAmount: 0,
       // Sort on the raw ISO timestamp — c.occurredAt is a display string
       // (dd/MM/yyyy HH:mm) that Date can't parse, which scrambled the order.
       status: 'pending' as any, at: c.occurredAtISO,

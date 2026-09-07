@@ -52,6 +52,20 @@ export const GST_TREATMENTS: readonly GstTreatment[] = [
   'zero_rated',
 ] as const;
 
+/**
+ * What a treatment is CALLED on a document a patient reads.
+ *
+ * A bill prints these where a rate would otherwise go, so they have to be the
+ * words a patient and an auditor both recognise — not the enum.
+ */
+export const GST_TREATMENT_LABELS: Record<GstTreatment, string> = {
+  taxable: 'Taxable',
+  exempt: 'Exempt',
+  nil_rated: 'Nil rated',
+  non_gst: 'Non-GST',
+  zero_rated: 'Zero rated',
+};
+
 export function isGstTreatment(v: unknown): v is GstTreatment {
   return typeof v === 'string' && (GST_TREATMENTS as readonly string[]).includes(v);
 }
