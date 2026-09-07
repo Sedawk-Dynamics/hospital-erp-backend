@@ -21,8 +21,11 @@
  *    series (`PH-`, `RUN-CM-`, `ADV-`).
  *  - A source under an insurance claim is SKIPPED — the claim was raised
  *    against those lines.
- *  - A source that was issued a GST invoice number is SKIPPED — cancelling an
- *    issued document needs a credit note, not a script.
+ *  - A source that was issued a GST invoice number is SKIPPED, and so is one
+ *    that is already paid. Both refusals can be lifted with --include-issued /
+ *    --include-paid when the split itself is what minted those documents and
+ *    the stay has to be put back on one bill. The superseded number is kept in
+ *    the cancellation reason.
  *  - Bill items, payments, refunds and discounts follow the money to the
  *    target; the emptied source is cancelled with a reason, never deleted.
  */
@@ -31,6 +34,11 @@ import { recalculateBillTotalsPublic } from '../../src/modules/billing/billing.s
 
 const prisma = new PrismaClient();
 const APPLY = process.argv.includes('--apply');
+// Two refusals that are right by default but leave a stay unusable when the
+// split already happened: a source that was issued a GST document number, and
+// one that is already paid. Both are opt-in, never automatic.
+const INCLUDE_ISSUED = process.argv.includes('--include-issued');
+const INCLUDE_PAID = process.argv.includes('--include-paid');
 const money = (v: unknown) => Number(v ?? 0).toFixed(2);
 
 type Row = { id: string; billNumber: string; status: string; admissionId: string | null;
@@ -38,8 +46,11 @@ type Row = { id: string; billNumber: string; status: string; admissionId: string
 
 async function main() {
   const bills = (await prisma.bill.findMany({
-    where: { admissionId: { not: null }, status: { in: ['draft', 'pending', 'partially_paid'] },
-             billNumber: { startsWith: 'IPW-' } },
+    where: {
+      admissionId: { not: null },
+      status: { in: INCLUDE_PAID ? ['draft', 'pending', 'partially_paid', 'paid'] : ['draft', 'pending', 'partially_paid'] },
+      billNumber: { startsWith: 'IPW-' },
+    },
     orderBy: { createdAt: 'asc' },
     select: { id: true, billNumber: true, status: true, admissionId: true,
               totalAmount: true, amountPaid: true, balanceDue: true, invoiceNumber: true },
@@ -76,8 +87,12 @@ async function main() {
         console.log(`  SKIP  ${src.billNumber}  — under ${claims} insurance claim(s)`);
         skippedHere.push(src); skipped++; continue;
       }
-      if (src.invoiceNumber) {
-        console.log(`  SKIP  ${src.billNumber}  — GST invoice ${src.invoiceNumber} already issued`);
+      if (src.invoiceNumber && !INCLUDE_ISSUED) {
+        console.log(`  SKIP  ${src.billNumber}  — GST invoice ${src.invoiceNumber} already issued (--include-issued to fold it in)`);
+        skippedHere.push(src); skipped++; continue;
+      }
+      if (src.status === 'paid' && !INCLUDE_PAID) {
+        console.log(`  SKIP  ${src.billNumber}  — already paid (--include-paid to fold it in)`);
         skippedHere.push(src); skipped++; continue;
       }
 
@@ -92,7 +107,9 @@ async function main() {
           await tx.bill.update({
             where: { id: src.id },
             data: { status: 'cancelled',
-                    cancellationReason: `Merged into ${target.billNumber} — an IP stay is one bill` },
+                    cancellationReason:
+                      `Merged into ${target.billNumber} — an IP stay is one bill` +
+                      (src.invoiceNumber ? `; superseded document ${src.invoiceNumber}` : '') },
           });
         });
       }
