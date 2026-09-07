@@ -27,6 +27,7 @@ import {
   setBillDiscount,
   decideDiscount,
   recalculateBillTotalsPublic,
+  getPatientAdvanceBalance,
 } from '../../../../src/modules/billing/billing.service';
 
 // ─── Extend mocks that setup.ts does not provide ───
@@ -1653,6 +1654,41 @@ describe('BillingService', () => {
           rateSource: 'not_registered',
         }),
       });
+    });
+  });
+
+  // ═══════════════════════════════════════════
+  // Advance balance
+  // ═══════════════════════════════════════════
+  describe('getPatientAdvanceBalance', () => {
+    it('counts only the receipts that sit on the advance bucket', async () => {
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue({
+        id: 'adv-bucket',
+        amountPaid: 3000,
+      } as any);
+      vi.mocked(prisma.payment.findMany).mockResolvedValue([
+        { id: 'p1', amount: 5000, paymentMethod: 'cash', paymentDate: new Date(), notes: null },
+      ] as any);
+
+      const out = await getPatientAdvanceBalance(TENANT_ID, 'patient-1');
+
+      // Applying a stay deposit writes an advance-typed row onto the IP BILL,
+      // so the query has to be scoped to the bucket or those get counted as
+      // money the patient advanced at the desk.
+      const where = vi.mocked(prisma.payment.findMany).mock.calls.at(-1)![0]!.where as any;
+      expect(where.billId).toBe('adv-bucket');
+      expect(where.paymentType).toBe('advance');
+      expect(out.totalAdvanceCollected).toBe(5000);
+      expect(out.totalAdvanceAdjusted).toBe(2000);
+      expect(out.balance).toBe(3000);
+    });
+
+    it('reports nothing when the patient has no bucket at all', async () => {
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue(null as any);
+      const out = await getPatientAdvanceBalance(TENANT_ID, 'patient-1');
+      expect(out).toMatchObject({ totalAdvanceCollected: 0, totalAdvanceAdjusted: 0, balance: 0 });
+      // No bucket means there is nothing to query for.
+      expect(prisma.payment.findMany).not.toHaveBeenCalled();
     });
   });
 

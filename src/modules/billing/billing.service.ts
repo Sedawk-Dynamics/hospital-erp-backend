@@ -5737,20 +5737,33 @@ export async function adjustAdvanceToBill(
 }
 
 export async function getPatientAdvanceBalance(tenantId: string, patientId: string) {
-  const advances = await prisma.payment.findMany({
-    where: {
-      tenantId,
-      patientId,
-      paymentType: 'advance' as any,
-      status: 'completed',
-    },
-  });
-  const collected = advances.reduce((s, p) => s + toNumber(p.amount), 0);
-
-  // Money already adjusted from the advance bucket onto real bills
+  // The bucket first, because it is what scopes everything below.
   const bucket = await prisma.bill.findFirst({
     where: { tenantId, patientId, billNumber: { startsWith: 'ADV-' } },
   });
+
+  // Advance RECEIPTS only — the rows that sit on the ADV- bucket.
+  //
+  // `paymentType: 'advance'` is not enough on its own to identify one. Applying
+  // a stay deposit to an IP bill writes an advance-typed row onto THAT BILL,
+  // and so does reversing one, so a patient whose Rs 20,000 admission deposit
+  // had been applied read back as having advanced Rs 20,000 at the desk on top
+  // of whatever they actually handed over. The balance itself was always right
+  // — it is read from the bucket — but "collected" and "adjusted" were not, and
+  // those are the two figures an advances report prints.
+  const advances = bucket
+    ? await prisma.payment.findMany({
+        where: {
+          tenantId,
+          patientId,
+          billId: bucket.id,
+          paymentType: 'advance' as any,
+          status: 'completed',
+        },
+      })
+    : [];
+  const collected = advances.reduce((s, p) => s + toNumber(p.amount), 0);
+
   const remaining = bucket ? toNumber(bucket.amountPaid) : 0;
 
   return {
