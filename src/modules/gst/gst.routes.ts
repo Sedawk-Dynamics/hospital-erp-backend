@@ -331,13 +331,89 @@ gstRoutes.get(
 
 // --- Platform SAC master (super admin only, like the HSN master) ---
 
+/**
+ * The SAC master is PLATFORM data, like the HSN master beside it: a service
+ * accounting code means the same thing in every hospital, and letting each one
+ * keep its own copy is how two hospitals end up filing the same service under
+ * two different codes.
+ *
+ * Read is open to any signed-in user — a hospital admin classifying a service
+ * has to be able to look a code up — but only super admin writes.
+ */
 gstRoutes.get(
   '/sac-codes',
   authenticate,
-  requireRoles('super_admin'),
   async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       sendResponse({ res, message: 'SAC codes', data: await masters.listSacCodes() });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+const sacBodySchema = z.object({
+  body: z.object({
+    sacCode: z.string().min(2).max(20),
+    description: z.string().max(500).nullish(),
+    // A rate above zero only means anything on a taxable row; the service
+    // reconciles the two so a row cannot say two different things.
+    gstRate: z.number().min(0).max(100),
+    treatment: z.enum(['taxable', 'exempt', 'nil_rated', 'non_gst', 'zero_rated']).optional(),
+    category: z.string().max(100).nullish(),
+    isActive: z.boolean().optional(),
+  }),
+});
+
+gstRoutes.post(
+  '/sac-codes',
+  authenticate,
+  requireRoles('super_admin'),
+  validate(sacBodySchema),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const data = await masters.createSacCode(req.user!.roles, req.body);
+      sendResponse({ res, statusCode: 201, message: 'SAC code added', data });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+gstRoutes.patch(
+  '/sac-codes/:id',
+  authenticate,
+  requireRoles('super_admin'),
+  validate(
+    z.object({
+      params: z.object({ id: z.string().uuid() }),
+      body: sacBodySchema.shape.body.partial(),
+    }),
+  ),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const data = await masters.updateSacCode(req.user!.roles, String(req.params.id), req.body);
+      sendResponse({ res, message: 'SAC code updated', data });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/**
+ * Deactivated, never deleted. A bill line already carries the code it was
+ * classified under; removing the master row would leave that line pointing at
+ * nothing, and a filed return would lose the description behind its figure.
+ */
+gstRoutes.delete(
+  '/sac-codes/:id',
+  authenticate,
+  requireRoles('super_admin'),
+  validate(z.object({ params: z.object({ id: z.string().uuid() }) })),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const data = await masters.deactivateSacCode(req.user!.roles, String(req.params.id));
+      sendResponse({ res, message: 'SAC code deactivated', data });
     } catch (err) {
       next(err);
     }
