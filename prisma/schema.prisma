@@ -1355,6 +1355,7 @@ model Tenant {
   creditNotes                CreditNote[]
 
   @@map("tenants")
+  gstFiledPeriods         GstFiledPeriod[]
 }
 
 model SubscriptionPlan {
@@ -1713,6 +1714,7 @@ model User {
   formSubmissions                HospitalFormSubmission[]     @relation("FormSubmitter")
   labTestTemplatesCreated        LabTestTemplate[]            @relation("LabTestTemplateCreator")
   gstRateChanges                 GstRateChange[]
+  gstPeriodsFiled                GstFiledPeriod[]
 
   @@unique([tenantId, email])
   @@map("users")
@@ -4317,6 +4319,38 @@ model GstRateChange {
   @@index([changedAt])
   @@index([codeType, code])
   @@map("gst_rate_changes")
+}
+
+/// A frozen copy of what a hospital actually filed for a period.
+///
+/// The reports are live: they read today's bills, and a bill raised or amended
+/// after filing changes what they say. That is right for the current month and
+/// wrong for a closed one — an accountant asked "what did you file in
+/// September" needs the figures AS FILED, not as they look now.
+///
+/// So this stores the RETURN figures rather than the register behind them: the
+/// rate summary, the HSN summary, the GSTR-1 tables and the GSTR-3B boxes. They
+/// are small, they are what was filed, and they cannot drift.
+model GstFiledPeriod {
+  id            String   @id @default(uuid())
+  tenantId      String   @map("tenant_id")
+  financialYear String   @map("financial_year") @db.VarChar(7)
+  /// The return period as MMYYYY, matching what the portal calls it.
+  returnPeriod  String   @map("return_period") @db.VarChar(6)
+  periodFrom    DateTime @map("period_from") @db.Date
+  periodTo      DateTime @map("period_to") @db.Date
+  filedAt       DateTime @default(now()) @map("filed_at")
+  filedBy       String?  @map("filed_by")
+  note          String?
+  /// The figures as filed. Not the register — see the model comment.
+  snapshot      Json
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  filer  User?  @relation(fields: [filedBy], references: [id])
+
+  @@unique([tenantId, returnPeriod])
+  @@index([tenantId, filedAt])
+  @@map("gst_filed_periods")
 }
 
 // ============================================================

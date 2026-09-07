@@ -467,6 +467,7 @@ export async function getRateOverrides(tenantId: string, query: SalesReportQuery
       value: r2(overrides.reduce((t, l) => t + l.totalAmount, 0)),
     },
     notes: [
+      'Finalising a bill now REFUSES a line with no GST classification, so a new override cannot reach a finalised bill. What appears here is legacy — lines billed before that gate existed.',
       '"Raised by" is the person who raised the document, not provably the person who typed the rate — a bill line carries no author of its own.',
       'No reason is recorded against an override. Capturing one means asking for it at the counter, which changes what staff have to do.',
       'Fix an override at its source: give the item an HSN or SAC code, or have its rate approved on the service tariff. Both are in the Unmapped Items report.',

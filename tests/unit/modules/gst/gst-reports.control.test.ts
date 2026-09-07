@@ -312,6 +312,8 @@ describe('getRateOverrides (C-5)', () => {
     const r = await getRateOverrides(TENANT);
     expect(r.notes.join(' ')).toMatch(/not provably the person who typed the rate/);
     expect(r.notes.join(' ')).toMatch(/No reason is recorded/);
+    // The gate means a new one cannot get through, so everything here is old.
+    expect(r.notes.join(' ')).toMatch(/What appears here is legacy/);
   });
 
   it('attributes a line to nobody rather than guessing when the bill has no author', async () => {

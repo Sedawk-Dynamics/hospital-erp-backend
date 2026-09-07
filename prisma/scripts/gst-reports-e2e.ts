@@ -223,6 +223,127 @@ async function main() {
      `${reversal.data?.creditAvailable} − ${reversal.data?.reversal?.total} ≠ ${reversal.data?.netCreditAvailable}`);
   ck('supplier GSTIN exceptions is reachable', gstinIssues.status === 200, `status ${gstinIssues.status}`);
 
+  // ── C-6: the archive, and the drift it exists to catch ──
+  //
+  // Filed FIRST, then a charge is added to the same period. Every other report
+  // moves; the snapshot must not, and must say so.
+  const filed = await api('/gst/reports/filed-periods', {
+    method: 'POST',
+    body: { from: TODAY, to: TODAY, note: `${TAG} walk` },
+  }, token);
+  ck('the period was archived as filed', filed.status === 201,
+     `status ${filed.status} ${JSON.stringify(filed.json).slice(0, 200)}`);
+  const filedId = filed.data?.id;
+
+  const listed = await api('/gst/reports/filed-periods', {}, token);
+  const mineFiled = (listed.data?.periods ?? []).find((p: any) => p.id === filedId);
+  ck('it appears in the list with its headline figures',
+     !!mineFiled && Number(mineFiled.outwardTax) >= mineTax,
+     JSON.stringify(mineFiled));
+
+  const before = await api(`/gst/reports/filed-periods/${filedId}`, {}, token);
+  ck('reading it back shows no drift yet', before.data?.drift?.moved === false,
+     JSON.stringify(before.data?.drift));
+  ck('and it archives the figures, not the register',
+     !!before.data?.snapshot?.gstr3b && !before.data?.snapshot?.rows,
+     JSON.stringify(Object.keys(before.data?.snapshot ?? {})));
+
+  // Now move the month underneath it.
+  const bill2 = await billing.createBill(TENANT, actor.id, { patientId: patient.id } as any);
+  await api(`/billing/${bill2.id}/pull-charges`, {
+    method: 'POST',
+    body: {
+      charges: [{
+        referenceType: 'manual_clinical', referenceId: `${TAG}-late`,
+        description: `${TAG} Late cosmetic procedure`, quantity: 1, unitPrice: 2000,
+        category: 'procedure', taxRate: 18, sacCode: '999722',
+      }],
+    },
+  }, token);
+  await billing.finalizeBill(TENANT, actor.id, bill2.id);
+
+  const after = await api(`/gst/reports/filed-periods/${filedId}`, {}, token);
+  ck('a bill raised after filing shows up as drift', after.data?.drift?.moved === true,
+     JSON.stringify(after.data?.drift));
+  ck('the snapshot itself did NOT move',
+     near(after.data?.drift?.outwardTaxAsFiled, before.data?.drift?.outwardTaxAsFiled),
+     `${before.data?.drift?.outwardTaxAsFiled} → ${after.data?.drift?.outwardTaxAsFiled}`);
+  ck('and it says where the correction belongs',
+     (after.data?.notes ?? []).some((n: string) => /credit note/.test(n)),
+     JSON.stringify(after.data?.notes));
+
+  // ── C-5 ──
+  //
+  // A rate only counts as an override when the ITEM carries a treatment nobody
+  // approved and no code — a tariff somebody classified and nobody signed off.
+  const tariff = await prisma.serviceTariff.create({
+    data: {
+      tenantId: TENANT, serviceName: `${TAG} unapproved service`, category: 'procedure',
+      basePrice: 3000, gstRatePercent: 12, gstTreatment: 'taxable',
+      gstApproved: false, isActive: true,
+    } as any,
+  });
+
+  // The finalisation gate REFUSES a bill carrying such a line. That is the
+  // point of the gate — and it means no NEW override can reach a finalised
+  // bill, which is worth proving before reporting on them.
+  const blockedBill = await billing.createBill(TENANT, actor.id, { patientId: patient.id } as any);
+  await billing.addBillItem(TENANT, blockedBill.id, {
+    serviceTariffId: tariff.id, description: `${TAG} unapproved service`,
+    quantity: 1, unitPrice: 3000,
+  } as any);
+  const blocked = await billing.finalizeBill(TENANT, actor.id, blockedBill.id).then(
+    () => null,
+    (e: any) => e.message as string,
+  );
+  ck('the finalisation gate refuses a bill with an unclassified line',
+     /no GST classification/.test(blocked ?? ''), `${blocked}`);
+
+  // So what C-5 reports is LEGACY: a line finalised before that gate existed.
+  // Reproduced the only way it can now occur — put onto an already-finalised
+  // bill, exactly as an old row looks today.
+  const bill3 = await billing.createBill(TENANT, actor.id, { patientId: patient.id } as any);
+  await api(`/billing/${bill3.id}/pull-charges`, {
+    method: 'POST',
+    body: {
+      charges: [{
+        referenceType: 'manual_clinical', referenceId: `${TAG}-clean`,
+        description: `${TAG} Clean consultation`, quantity: 1, unitPrice: 100,
+        category: 'consultation', taxRate: 0,
+      }],
+    },
+  }, token);
+  await billing.finalizeBill(TENANT, actor.id, bill3.id);
+  await prisma.billItem.create({
+    data: {
+      billId: bill3.id, description: `${TAG} legacy unapproved service`, category: 'procedure',
+      quantity: 1, unitPrice: 3000, taxPercent: 12, taxAmount: 321.43,
+      taxableValue: 2678.57, totalAmount: 3000,
+      gstTreatment: 'taxable', rateSource: 'item_master', requiresTaxResolution: true,
+    } as any,
+  });
+
+  const overrides = await get('rate-overrides');
+  ck('the rate override log is reachable', overrides.status === 200, `status ${overrides.status}`);
+  const caught = (overrides.data?.rows ?? []).filter((r: any) => String(r.description).includes(TAG));
+  ck('it caught the legacy unapproved rate', caught.length === 1,
+     `${caught.length} of ${overrides.data?.totals?.overrides} override(s)`);
+  ck('at the rate that was actually charged', caught[0]?.ratePercent === 12,
+     `${caught[0]?.ratePercent}`);
+  // Everything else on these bills resolved through a master. A log that
+  // flagged those too would be unusable.
+  ck('and did NOT flag the lines that resolved through a master',
+     !caught.some((r: any) => /Cosmetic|room|Consultation|Clean/.test(r.description)),
+     JSON.stringify(caught.map((r: any) => r.description)));
+  ck('it names who raised the document', !!caught[0]?.raisedBy, `${caught[0]?.raisedBy}`);
+  ck('and says plainly that no reason was recorded',
+     (overrides.data?.notes ?? []).some((n: string) => /No reason is recorded/.test(n)),
+     'the caveat is missing');
+
+  // ── C-8 ──
+  const changes = await get('rate-changes');
+  ck('the rate change log is reachable', changes.status === 200, `status ${changes.status}`);
+
   // ── The gate ──
   const doc = await prisma.user.findFirst({
     where: { tenantId: TENANT, isActive: true, userRoles: { some: { role: { name: 'doctor' } } } },
@@ -257,11 +378,19 @@ main()
       });
       await prisma.receipt.deleteMany({ where: { paymentId: { in: ids } } });
       await prisma.payment.deleteMany({ where: { id: { in: ids } } });
+      await prisma.serviceTariff.deleteMany({ where: { serviceName: { contains: 'GSTRPT-' } } });
       const bills = await prisma.bill.findMany({ where: { patientId: pat.id }, select: { id: true } });
       const billIds = bills.map((b) => b.id);
       await prisma.billItem.deleteMany({ where: { billId: { in: billIds } } });
       await prisma.bill.deleteMany({ where: { id: { in: billIds } } });
       await prisma.patient.deleteMany({ where: { id: pat.id } });
+    }
+    // The archive row is this walk's own; a real filing is never deleted.
+    const filedRows = await prisma.gstFiledPeriod.findMany({
+      where: { note: { contains: 'GSTRPT-' } }, select: { id: true },
+    });
+    if (filedRows.length) {
+      await prisma.gstFiledPeriod.deleteMany({ where: { id: { in: filedRows.map((f) => f.id) } } });
     }
     // The document series counter is NOT rolled back: reissuing a number that
     // has already been on paper is the one thing a series must never do.

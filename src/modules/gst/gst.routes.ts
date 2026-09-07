@@ -10,6 +10,7 @@ import * as sales from './gst-reports.sales';
 import * as returns from './gst-reports.returns';
 import * as purchase from './gst-reports.purchase';
 import * as control from './gst-reports.control';
+import * as archive from './gst-reports.archive';
 import * as masters from './gst-master.service';
 
 export const gstRoutes = Router();
@@ -343,6 +344,63 @@ gstRoutes.get(
   ...gstReportAccess,
   validate(periodQuerySchema),
   report('Cancelled and amended invoices', (t, q) => control.getCancelledInvoices(t, q as never)),
+);
+
+// ── C-6 — the filed period archive ────────────────────────────────────────
+//
+// Filing is a WRITE, and it is the accountant's act rather than a report, so it
+// sits behind the same gate but on POST.
+
+/** Every period this hospital has filed, newest first. */
+gstRoutes.get(
+  '/reports/filed-periods',
+  ...gstReportAccess,
+  report('Filed periods', (t) => archive.listFiledPeriods(t)),
+);
+
+/** One filing read back, with today's figures beside it. */
+gstRoutes.get(
+  '/reports/filed-periods/:id',
+  ...gstReportAccess,
+  validate(z.object({ params: z.object({ id: z.string().uuid() }) })),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const data = await archive.getFiledPeriod(req.user!.tenantId, String(req.params.id));
+      sendResponse({ res, message: `Filed period ${data.returnPeriod}`, data });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/**
+ * Freeze a period as filed.
+ *
+ * Re-filing the same month replaces the copy rather than adding a second one:
+ * there is only ever one answer to "what did you file for September", and a
+ * revised return is still that one answer.
+ */
+gstRoutes.post(
+  '/reports/filed-periods',
+  ...gstReportAccess,
+  validate(
+    z.object({
+      body: z.object({
+        from: z.string().regex(DATE),
+        to: z.string().regex(DATE),
+        note: z.string().max(1000).nullish(),
+        sixDigit: z.boolean().optional(),
+      }),
+    }),
+  ),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const data = await archive.filePeriod(req.user!.tenantId, req.user!.userId, req.body);
+      sendResponse({ res, statusCode: 201, message: `Period ${data.returnPeriod} archived as filed`, data });
+    } catch (err) {
+      next(err);
+    }
+  },
 );
 
 // --- Platform SAC master (super admin only, like the HSN master) ---
