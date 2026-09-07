@@ -5,6 +5,7 @@ import {
   getItcSummary,
   getSupplierGstinExceptions,
   getItcReversalWorking,
+  getPurchaseReturns,
 } from '../../../../src/modules/gst/gst-reports.purchase';
 
 const TENANT = 'tenant-1';
@@ -215,5 +216,84 @@ describe('getItcReversalWorking (B-3)', () => {
     const r = await getItcReversalWorking(TENANT);
     expect(r.reversal.total).toBe(0);
     expect(r.netCreditAvailable).toBe(120);
+  });
+});
+
+describe('getPurchaseReturns (B-6)', () => {
+  const vendorReturn = (over: Record<string, unknown> = {}) => ({
+    id: 'r1',
+    createdAt: new Date('2026-09-12T00:00:00Z'),
+    quantity: 10,
+    reason: 'Damaged in transit',
+    status: 'approved',
+    creditNoteNumber: 'SUPCN/9',
+    creditAmount: 112,
+    batchNumber: 'B-1',
+    expiryDate: new Date('2027-07-07T00:00:00Z'),
+    drug: { drugName: 'Paracetamol 500mg', hsnCode: '30049099' },
+    supplier: { id: 's1', name: 'Acme Pharma', gstNumber: VALID_GSTIN },
+    drugBatch: {
+      purchasePrice: 10, purchaseDiscountPercent: 0, gstPercent: 12,
+      invoiceNumber: 'SUP/001', invoiceDate: new Date('2026-09-05T00:00:00Z'),
+    },
+    ...over,
+  });
+
+  function seedReturns(returns: unknown[], writeOffs: unknown[] = []) {
+    (prisma.drugReturn.findMany as any).mockResolvedValue(returns);
+    (prisma.stockTransaction.findMany as any).mockResolvedValue(writeOffs);
+  }
+
+  // Priced at what was PAID on the batch, so the reversal matches the credit
+  // that was taken — not at today's rate, and not at the selling rate.
+  it('reverses the tax at the rate paid on the batch it came from', async () => {
+    seedReturns([vendorReturn()]);
+    const r = await getPurchaseReturns(TENANT);
+    expect(r.returns[0]).toMatchObject({
+      taxableValue: 100, gstRatePercent: 12, taxToReverse: 12,
+      purchaseInvoiceNumber: 'SUP/001',
+      supplierCreditNoteNumber: 'SUPCN/9',
+    });
+    expect(r.totals.taxToReverse).toBe(12);
+  });
+
+  it('takes the batch discount into account, as the purchase did', async () => {
+    seedReturns([vendorReturn({ drugBatch: { purchasePrice: 10, purchaseDiscountPercent: 20, gstPercent: 12, invoiceNumber: null, invoiceDate: null } })]);
+    const r = await getPurchaseReturns(TENANT);
+    expect(r.returns[0].taxableValue).toBe(80);
+    expect(r.returns[0].taxToReverse).toBe(9.6);
+  });
+
+  // The supplier owes a credit note for stock they took back. One that never
+  // arrives is money the hospital has written off by accident.
+  it('counts stock sent back with no supplier credit note', async () => {
+    seedReturns([vendorReturn({ creditNoteNumber: null })]);
+    const r = await getPurchaseReturns(TENANT);
+    expect(r.totals.withoutSupplierCreditNote).toBe(1);
+  });
+
+  // Nothing goes back to anybody, but 17(5)(h) blocks the credit all the same.
+  // This is the one hospitals forget.
+  it('reports expiry write-offs beside the returns', async () => {
+    seedReturns([], [
+      {
+        id: 'w1', createdAt: new Date('2026-09-20T00:00:00Z'), quantity: 5,
+        batchNumber: 'X-1', expiryDate: new Date('2026-09-01T00:00:00Z'),
+        totalCost: 250, notes: 'Expired on the shelf',
+        inventoryItem: { itemName: 'Surgical gloves' },
+        supplier: { id: 's1', name: 'Acme Pharma' },
+      },
+    ]);
+    const r = await getPurchaseReturns(TENANT);
+    expect(r.expiryWriteOffs[0]).toMatchObject({ itemName: 'Surgical gloves', value: 250 });
+    expect(r.totals.expiredValue).toBe(250);
+    expect(r.notes.join(' ')).toMatch(/17\(5\)\(h\)/);
+  });
+
+  it('asks only for vendor returns, never a patient return', async () => {
+    seedReturns([]);
+    await getPurchaseReturns(TENANT);
+    const where = (prisma.drugReturn.findMany as any).mock.calls[0][0].where;
+    expect(where.returnType).toBe('vendor_return');
   });
 });

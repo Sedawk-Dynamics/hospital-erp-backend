@@ -267,6 +267,14 @@ gstRoutes.get(
   ),
 );
 
+/** B-6 — Purchase returns and expiry write-offs: credit that has to go back. */
+gstRoutes.get(
+  '/reports/purchase-returns',
+  ...gstReportAccess,
+  validate(purchaseQuerySchema),
+  report('Purchase returns and debit notes', (t, q) => purchase.getPurchaseReturns(t, q as never)),
+);
+
 // ── Group C — operational and control ─────────────────────────────────────
 
 /** C-1 — Daily GST Collection, by counter, cashier and mode. */

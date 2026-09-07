@@ -337,3 +337,135 @@ export async function getItcReversalWorking(tenantId: string, query: SalesReport
     ],
   };
 }
+
+/**
+ * B-6 — Purchase Returns and Debit Notes.
+ *
+ * Credit already taken has to go back when the goods do. Two ways that happens
+ * in this hospital, and they are kept apart because only one of them involves
+ * the supplier at all:
+ *
+ *   - a VENDOR RETURN — stock sent back, against which the supplier raises a
+ *     credit note. The input tax on what went back is reversed;
+ *   - an EXPIRY WRITE-OFF — nothing goes back to anybody, but section 17(5)(h)
+ *     blocks credit on goods written off, so the tax on them is reversed all
+ *     the same. This is the one hospitals forget, and it is the one an auditor
+ *     finds by comparing the expiry register to the reversal.
+ *
+ * The tax comes from the BATCH the goods were bought on, at the rate that was
+ * paid — not at today's rate, and not at the rate the same drug is sold at.
+ */
+export async function getPurchaseReturns(
+  tenantId: string,
+  query: SalesReportQuery & { supplierId?: string } = {},
+) {
+  const { from, to } = dateRange(query);
+  const window = from || to ? { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } : undefined;
+
+  const returns = await prisma.drugReturn.findMany({
+    where: {
+      tenantId,
+      returnType: 'vendor_return',
+      ...(query.supplierId ? { supplierId: query.supplierId } : {}),
+      ...(window ? { createdAt: window } : {}),
+    },
+    orderBy: { createdAt: 'asc' },
+    select: {
+      id: true, createdAt: true, quantity: true, reason: true, status: true,
+      creditNoteNumber: true, creditAmount: true, batchNumber: true, expiryDate: true,
+      drug: { select: { drugName: true, hsnCode: true } },
+      supplier: { select: { id: true, name: true, gstNumber: true } },
+      drugBatch: {
+        select: {
+          purchasePrice: true, purchaseDiscountPercent: true, gstPercent: true,
+          invoiceNumber: true, invoiceDate: true,
+        },
+      },
+    },
+  });
+
+  const rows = returns.map((r) => {
+    const b = r.drugBatch;
+    // Priced at what was PAID for these units, so the reversal matches the
+    // credit that was taken. A vendor credit note, where one exists, is what
+    // the supplier says — both are reported and any gap is visible.
+    const netRate = b?.purchasePrice != null
+      ? r2(Number(b.purchasePrice) * (1 - Number(b.purchaseDiscountPercent ?? 0) / 100))
+      : null;
+    const taxableValue = netRate != null ? r2(netRate * r.quantity) : 0;
+    const rate = b?.gstPercent == null ? null : Number(b.gstPercent);
+    const taxToReverse = rate != null ? r2(taxableValue * (rate / 100)) : 0;
+    return {
+      returnId: r.id,
+      date: r.createdAt,
+      status: String(r.status),
+      supplierId: r.supplier?.id ?? null,
+      supplierName: r.supplier?.name ?? null,
+      supplierGstin: r.supplier?.gstNumber ?? null,
+      drugName: r.drug?.drugName ?? '',
+      hsnCode: r.drug?.hsnCode ?? null,
+      batchNumber: r.batchNumber,
+      expiryDate: r.expiryDate,
+      quantity: r.quantity,
+      reason: r.reason,
+      /** The supplier's own credit note, where they have raised one. */
+      supplierCreditNoteNumber: r.creditNoteNumber,
+      supplierCreditAmount: r.creditAmount == null ? null : r2(Number(r.creditAmount)),
+      purchaseInvoiceNumber: b?.invoiceNumber ?? null,
+      purchaseInvoiceDate: b?.invoiceDate ?? null,
+      taxableValue,
+      gstRatePercent: rate,
+      taxToReverse,
+    };
+  });
+
+  // Expiry write-offs on general inventory. Nothing goes back to the supplier,
+  // but 17(5)(h) blocks the credit all the same.
+  const writeOffs = await prisma.stockTransaction.findMany({
+    where: {
+      tenantId,
+      transactionType: 'expired_removal',
+      ...(window ? { createdAt: window } : {}),
+    },
+    orderBy: { createdAt: 'asc' },
+    select: {
+      id: true, createdAt: true, quantity: true, batchNumber: true, expiryDate: true,
+      totalCost: true, notes: true,
+      inventoryItem: { select: { itemName: true } },
+      supplier: { select: { id: true, name: true } },
+    },
+  });
+
+  const expired = writeOffs.map((w) => ({
+    transactionId: w.id,
+    date: w.createdAt,
+    itemName: w.inventoryItem?.itemName ?? '',
+    supplierName: w.supplier?.name ?? null,
+    batchNumber: w.batchNumber,
+    expiryDate: w.expiryDate,
+    quantity: w.quantity,
+    value: w.totalCost == null ? 0 : r2(Number(w.totalCost)),
+    notes: w.notes,
+  }));
+
+  return {
+    period: { from: query.from ?? null, to: query.to ?? null },
+    returns: rows,
+    expiryWriteOffs: expired,
+    totals: {
+      returns: rows.length,
+      returnedValue: r2(rows.reduce((t, x) => t + x.taxableValue, 0)),
+      taxToReverse: r2(rows.reduce((t, x) => t + x.taxToReverse, 0)),
+      /** Sent back with no credit note from the supplier — chase these. */
+      withoutSupplierCreditNote: rows.filter((x) => !x.supplierCreditNoteNumber).length,
+      expiryWriteOffs: expired.length,
+      expiredValue: r2(expired.reduce((t, x) => t + x.value, 0)),
+    },
+    notes: [
+      'Tax on a return is reversed at the rate PAID on the batch it was bought on, not at today’s rate.',
+      'Expiry write-offs carry no tax figure: the general inventory stock record holds a cost but no GST rate. Section 17(5)(h) still blocks the credit, so the value is reported for the accountant to reverse against.',
+      COVERAGE_NOTE,
+    ],
+  };
+}
+
