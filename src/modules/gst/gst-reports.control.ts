@@ -1,0 +1,407 @@
+// ---------------------------------------------------------------------------
+// The operational and control reports (Group C).
+//
+// These exist so problems are caught DURING the month rather than on the day of
+// filing. Nothing here is a return; everything here is a question somebody in
+// the hospital has to be able to answer without waiting for the accountant.
+//
+// C-3 and C-4 are the two that earn their place. C-3 finds the items that were
+// billed without a code or a treatment, which is how an unclassified line
+// reaches a return. C-4 is what an auditor asks for on day one: prove your
+// invoice series has no holes.
+// ---------------------------------------------------------------------------
+
+import { prisma } from '../../config/database';
+import { r2 } from '../../shared/gst';
+import { fullName } from '../../shared/person-name';
+import { getSalesRegister, totalOf, type SalesReportQuery } from './gst-reports.sales';
+
+const n = (v: unknown) => r2(Number(v ?? 0));
+
+function dateRange(query: { from?: string; to?: string }) {
+  return {
+    from: query.from ? new Date(`${query.from}T00:00:00.000Z`) : undefined,
+    to: query.to ? new Date(`${query.to}T23:59:59.999Z`) : undefined,
+  };
+}
+
+/**
+ * C-1 — Daily GST Collection: what was collected, by counter, cashier and mode.
+ *
+ * Keyed on the PAYMENT, not the bill, because this is the cash-desk question —
+ * "what came in today and who took it" — and a bill raised in March can be paid
+ * in April. The tax is apportioned to the payment by its share of the bill: a
+ * part payment against a taxed bill carries a part of the tax, which is the
+ * only defensible split when the patient has not paid in full.
+ */
+export async function getDailyCollection(tenantId: string, query: { from?: string; to?: string } = {}) {
+  const { from, to } = dateRange(query);
+
+  const payments = await prisma.payment.findMany({
+    where: {
+      tenantId,
+      status: 'completed',
+      ...(from || to ? { paymentDate: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {}),
+    },
+    orderBy: { paymentDate: 'asc' },
+    select: {
+      id: true, paymentDate: true, amount: true, paymentMethod: true,
+      paymentType: true, paymentSource: true,
+      processor: { select: { firstName: true, lastName: true } },
+      bill: { select: { id: true, billNumber: true, totalAmount: true, taxAmount: true } },
+    },
+  });
+
+  const rows = payments.map((p) => {
+    const amount = n(p.amount);
+    const billTotal = n(p.bill?.totalAmount);
+    const billTax = n(p.bill?.taxAmount);
+    // The payment's share of the bill's tax. A refund carries its share back.
+    const share = billTotal > 0 ? Math.min(1, amount / billTotal) : 0;
+    const taxShare = r2(billTax * share) * (p.paymentType === 'refund' ? -1 : 1);
+    return {
+      paymentId: p.id,
+      date: p.paymentDate,
+      day: p.paymentDate.toISOString().slice(0, 10),
+      amount: p.paymentType === 'refund' ? -amount : amount,
+      method: String(p.paymentMethod),
+      type: String(p.paymentType),
+      counter: p.paymentSource ? String(p.paymentSource) : 'unknown',
+      cashier: p.processor ? fullName(p.processor) : null,
+      billNumber: p.bill?.billNumber ?? null,
+      taxCollected: taxShare,
+    };
+  });
+
+  const fold = (key: (r: (typeof rows)[number]) => string) => {
+    const m = new Map<string, { collected: number; taxCollected: number; count: number }>();
+    for (const r of rows) {
+      const k = key(r);
+      const cur = m.get(k) ?? { collected: 0, taxCollected: 0, count: 0 };
+      cur.collected = r2(cur.collected + r.amount);
+      cur.taxCollected = r2(cur.taxCollected + r.taxCollected);
+      cur.count += 1;
+      m.set(k, cur);
+    }
+    return m;
+  };
+
+  return {
+    period: { from: query.from ?? null, to: query.to ?? null },
+    rows,
+    byDay: [...fold((r) => r.day)].map(([day, v]) => ({ day, ...v })).sort((a, b) => a.day.localeCompare(b.day)),
+    byMethod: [...fold((r) => r.method)].map(([method, v]) => ({ method, ...v })),
+    byCounter: [...fold((r) => r.counter)].map(([counter, v]) => ({ counter, ...v })),
+    byCashier: [...fold((r) => r.cashier ?? 'unattributed')].map(([cashier, v]) => ({ cashier, ...v })),
+    totals: {
+      count: rows.length,
+      collected: r2(rows.reduce((t, r) => t + r.amount, 0)),
+      taxCollected: r2(rows.reduce((t, r) => t + r.taxCollected, 0)),
+    },
+    note:
+      'Tax is apportioned to each payment by its share of the bill it was made against — ' +
+      'a part payment carries a part of the tax.',
+  };
+}
+
+/**
+ * C-2 — Exempt vs Taxable Revenue Mix, by month.
+ *
+ * Management's view of the same ratio B-3 turns on. A hospital whose taxable
+ * share is drifting up is a hospital whose input credit position is changing,
+ * and it is better to see that as a trend than as a surprise in the reversal.
+ */
+export async function getRevenueMix(tenantId: string, query: SalesReportQuery = {}) {
+  const { period, rows } = await getSalesRegister(tenantId, query);
+
+  const months = new Map<string, { taxable: number; exempt: number; unclassified: number }>();
+  for (const l of rows) {
+    const key = l.billDate.toISOString().slice(0, 7);
+    const cur = months.get(key) ?? { taxable: 0, exempt: 0, unclassified: 0 };
+    if (!l.gstTreatment) cur.unclassified = r2(cur.unclassified + l.taxableValue);
+    else if (l.gstTreatment === 'taxable') cur.taxable = r2(cur.taxable + l.taxableValue);
+    else cur.exempt = r2(cur.exempt + l.taxableValue);
+    months.set(key, cur);
+  }
+
+  return {
+    period,
+    byMonth: [...months]
+      .map(([month, v]) => {
+        const total = r2(v.taxable + v.exempt + v.unclassified);
+        return {
+          month, ...v, total,
+          taxableSharePercent: total > 0 ? r2((v.taxable / total) * 100) : 0,
+        };
+      })
+      .sort((a, b) => a.month.localeCompare(b.month)),
+    totals: totalOf(rows),
+  };
+}
+
+/**
+ * C-3 — Unmapped Items Exception Report. The one that prevents surprises.
+ *
+ * Three different problems, kept apart because they are fixed in different
+ * places and only one of them is urgent:
+ *
+ *   - no treatment at all — the line has no tax position, and a return cannot
+ *     report it as anything;
+ *   - no HSN or SAC — the line is classified but Table 12 has nothing to key
+ *     on, and Rule 46 requires the code on the invoice;
+ *   - a typed rate — taxable, from an item nobody has signed off, with no code
+ *     behind it. Somebody at a counter decided the tax. That is the one to
+ *     look at first.
+ */
+export async function getUnmappedItems(tenantId: string, query: SalesReportQuery = {}) {
+  const { period, rows } = await getSalesRegister(tenantId, query);
+
+  const noTreatment = rows.filter((l) => !l.gstTreatment);
+  const noCode = rows.filter((l) => !!l.gstTreatment && !l.hsnSac);
+  const typedRate = rows.filter((l) => l.requiresTaxResolution);
+
+  const byItem = (list: typeof rows) => {
+    const m = new Map<string, { description: string; department: string; lines: number; value: number; rates: Set<number> }>();
+    for (const l of list) {
+      const key = `${l.department}:${l.description.toLowerCase()}`;
+      const cur = m.get(key) ?? {
+        description: l.description, department: l.department,
+        lines: 0, value: 0, rates: new Set<number>(),
+      };
+      cur.lines += 1;
+      cur.value = r2(cur.value + l.totalAmount);
+      cur.rates.add(l.taxRatePercent);
+      m.set(key, cur);
+    }
+    return [...m.values()]
+      .map((v) => ({ ...v, rates: [...v.rates].sort((a, b) => a - b) }))
+      .sort((a, b) => b.value - a.value);
+  };
+
+  return {
+    period,
+    /** No tax position at all. A return cannot report these as anything. */
+    withoutTreatment: { totals: totalOf(noTreatment), items: byItem(noTreatment) },
+    /** Classified, but with no code for Rule 46 or Table 12. */
+    withoutCode: { totals: totalOf(noCode), items: byItem(noCode) },
+    /** A rate somebody typed, on an item nobody approved, with no code. */
+    typedRate: { totals: totalOf(typedRate), items: byItem(typedRate), lines: typedRate.map((l) => ({
+      billNumber: l.billNumber, invoiceNumber: l.invoiceNumber, billDate: l.billDate,
+      description: l.description, department: l.department,
+      ratePercent: l.taxRatePercent, taxAmount: l.taxAmount, rateSource: l.rateSource,
+    })) },
+    totals: {
+      linesChecked: rows.length,
+      exceptions: new Set([...noTreatment, ...noCode, ...typedRate].map((l) => l.itemId)).size,
+    },
+  };
+}
+
+/**
+ * C-4 — Document Series Continuity. The one an auditor asks for on day one.
+ *
+ * For each series and financial year: the first and last number issued, how
+ * many, and every number that is MISSING or DUPLICATED. A hole is not proof of
+ * anything wrong, but it is always a question, and the hospital should be the
+ * one holding the answer.
+ *
+ * The counter is checked too: a series whose counter has run ahead of the last
+ * issued number has burned numbers somewhere — usually a transaction that
+ * allotted one and then rolled back.
+ */
+export async function getSeriesContinuity(tenantId: string, query: { financialYear?: string } = {}) {
+  const [series, bills, notes] = await Promise.all([
+    prisma.gstDocumentSeries.findMany({
+      where: { tenantId, ...(query.financialYear ? { financialYear: query.financialYear } : {}) },
+      orderBy: [{ financialYear: 'asc' }, { documentType: 'asc' }],
+    }),
+    prisma.bill.findMany({
+      where: {
+        tenantId,
+        invoiceNumber: { not: null },
+        ...(query.financialYear ? { financialYear: query.financialYear } : {}),
+      },
+      select: { invoiceNumber: true, gstDocumentType: true, financialYear: true, status: true, billDate: true, cancellationReason: true },
+    }),
+    prisma.creditNote.findMany({
+      where: { tenantId, ...(query.financialYear ? { financialYear: query.financialYear } : {}) },
+      select: { creditNoteNumber: true, financialYear: true, issueDate: true },
+    }),
+  ]);
+
+  /** "INV/2026-27/000004" → 4. The sequence is the last path segment. */
+  const seqOf = (docNumber: string): number | null => {
+    const tail = docNumber.split('/').pop() ?? '';
+    const num = Number(tail);
+    return Number.isFinite(num) ? num : null;
+  };
+
+  const issued = new Map<string, Array<{ number: string; seq: number; status: string; date: Date; note: string | null }>>();
+  const push = (documentType: string, financialYear: string | null, number: string, status: string, date: Date, note: string | null) => {
+    const seq = seqOf(number);
+    if (seq == null) return;
+    const key = `${documentType}:${financialYear ?? '-'}`;
+    const list = issued.get(key) ?? [];
+    list.push({ number, seq, status, date, note });
+    issued.set(key, list);
+  };
+  for (const b of bills) {
+    push(b.gstDocumentType ?? 'unknown', b.financialYear, b.invoiceNumber!, String(b.status), b.billDate, b.cancellationReason);
+  }
+  for (const c of notes) {
+    push('credit_note', c.financialYear, c.creditNoteNumber, 'issued', c.issueDate, null);
+  }
+
+  const rows = series.map((s) => {
+    const key = `${s.documentType}:${s.financialYear}`;
+    const list = (issued.get(key) ?? []).sort((a, b) => a.seq - b.seq);
+    const seen = new Map<number, number>();
+    for (const d of list) seen.set(d.seq, (seen.get(d.seq) ?? 0) + 1);
+
+    const first = list[0]?.seq ?? null;
+    const last = list[list.length - 1]?.seq ?? null;
+    const missing: number[] = [];
+    if (first != null && last != null) {
+      for (let i = first; i <= last; i += 1) if (!seen.has(i)) missing.push(i);
+    }
+    const duplicated = [...seen.entries()].filter(([, c]) => c > 1).map(([seq]) => seq);
+
+    return {
+      documentType: s.documentType,
+      financialYear: s.financialYear,
+      prefix: s.prefix,
+      /** Where the counter stands. Numbers are allotted from it, one at a time. */
+      counter: s.lastNumber,
+      firstIssued: first,
+      lastIssued: last,
+      issuedCount: list.length,
+      missing,
+      duplicated,
+      /**
+       * The counter has gone past the last number on a document. Each gap is a
+       * number that was allotted inside a transaction that then rolled back —
+       * explainable, but it has to be explained.
+       */
+      burned: last != null ? Math.max(0, s.lastNumber - last) : s.lastNumber,
+      cancelled: list
+        .filter((d) => d.status === 'cancelled')
+        .map((d) => ({ number: d.number, date: d.date, reason: d.note })),
+      continuous: missing.length === 0 && duplicated.length === 0,
+    };
+  });
+
+  return {
+    financialYear: query.financialYear ?? null,
+    series: rows,
+    totals: {
+      series: rows.length,
+      withGaps: rows.filter((r) => r.missing.length > 0).length,
+      withDuplicates: rows.filter((r) => r.duplicated.length > 0).length,
+      burned: rows.reduce((t, r) => t + r.burned, 0),
+    },
+  };
+}
+
+/**
+ * C-7 — Department-wise GST. Tax by pharmacy, lab, radiology, OT, room.
+ *
+ * The same fold A-2 does by department, given its own report because this is a
+ * management question rather than a filing one, and it is asked far more often.
+ */
+export async function getDepartmentGst(tenantId: string, query: SalesReportQuery = {}) {
+  const { period, rows } = await getSalesRegister(tenantId, query);
+
+  const m = new Map<string, typeof rows>();
+  for (const l of rows) {
+    const list = m.get(l.department) ?? [];
+    list.push(l);
+    m.set(l.department, list);
+  }
+
+  return {
+    period,
+    departments: [...m]
+      .map(([department, lines]) => {
+        const taxable = lines.filter((l) => l.gstTreatment === 'taxable');
+        return {
+          department,
+          ...totalOf(lines),
+          taxableTurnover: r2(taxable.reduce((t, l) => t + l.taxableValue, 0)),
+          exemptTurnover: r2(
+            lines
+              .filter((l) => l.gstTreatment && l.gstTreatment !== 'taxable')
+              .reduce((t, l) => t + l.taxableValue, 0),
+          ),
+        };
+      })
+      .sort((a, b) => b.taxAmount - a.taxAmount || b.totalAmount - a.totalAmount),
+    totals: totalOf(rows),
+  };
+}
+
+/**
+ * C-9 — Cancelled and Amended Invoices.
+ *
+ * A cancelled invoice keeps its number and is reversed by a credit note; that
+ * is what section 34 requires and what keeps the series continuous. So the
+ * question this answers is not "which numbers vanished" but "which issued
+ * documents were undone, by whom, and was the note actually raised".
+ *
+ * A cancelled bill with NO credit note against it is the exception worth
+ * finding: the money came off, the tax did not, and the return still declares
+ * it.
+ */
+export async function getCancelledInvoices(tenantId: string, query: SalesReportQuery = {}) {
+  const { from, to } = dateRange(query);
+
+  const bills = await prisma.bill.findMany({
+    where: {
+      tenantId,
+      status: 'cancelled',
+      ...(from || to ? { billDate: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {}),
+    },
+    orderBy: { billDate: 'asc' },
+    select: {
+      id: true, billNumber: true, invoiceNumber: true, gstDocumentType: true,
+      billDate: true, totalAmount: true, taxAmount: true, cancellationReason: true,
+      updatedAt: true,
+      canceller: { select: { firstName: true, lastName: true } },
+      patient: { select: { mrn: true, firstName: true, lastName: true } },
+      creditNotes: { select: { creditNoteNumber: true, taxAmount: true, totalAmount: true } },
+    },
+  });
+
+  const rows = bills.map((b) => ({
+    billId: b.id,
+    billNumber: b.billNumber,
+    invoiceNumber: b.invoiceNumber,
+    documentType: b.gstDocumentType,
+    billDate: b.billDate,
+    cancelledAt: b.updatedAt,
+    cancelledBy: b.canceller ? fullName(b.canceller) : null,
+    reason: b.cancellationReason,
+    patientName: b.patient ? fullName(b.patient) : null,
+    mrn: b.patient?.mrn ?? null,
+    totalAmount: n(b.totalAmount),
+    taxAmount: n(b.taxAmount),
+    creditNotes: b.creditNotes.map((c) => ({
+      creditNoteNumber: c.creditNoteNumber,
+      taxAmount: n(c.taxAmount),
+      totalAmount: n(c.totalAmount),
+    })),
+    /** Issued, cancelled, and never reversed. The tax is still declared. */
+    unreversed: !!b.invoiceNumber && b.creditNotes.length === 0,
+  }));
+
+  return {
+    period: { from: query.from ?? null, to: query.to ?? null },
+    rows,
+    totals: {
+      count: rows.length,
+      taxAmount: r2(rows.reduce((t, r) => t + r.taxAmount, 0)),
+      totalAmount: r2(rows.reduce((t, r) => t + r.totalAmount, 0)),
+      /** The exception: cancelled after issue, with no credit note behind it. */
+      unreversed: rows.filter((r) => r.unreversed).length,
+    },
+  };
+}
