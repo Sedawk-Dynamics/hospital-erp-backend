@@ -175,6 +175,48 @@ async function main() {
   ck('and the exemption the untaxed lines rely on is named',
      (g?.notes ?? []).some((n: string) => n.includes('12/2017')), JSON.stringify(g?.notes));
 
+  // ── The counter bill, which is a different document from the same rules ──
+  //
+  // A consultation is exempt and a cosmetic procedure is not, so this is the
+  // other mixed case: the front desk's own bill, printed from the shared
+  // layout. If the two documents ever disagree about what they are, it shows
+  // here first.
+  const opBill = await billing.createBill(TENANT, ACTOR, { patientId: patient.id } as any);
+  const opCharges = await api(`/billing/${opBill.id}/pull-charges`, {
+    method: 'POST',
+    body: {
+      charges: [
+        {
+          referenceType: 'manual_clinical', referenceId: `${TAG}-consult`,
+          description: `${TAG} Consultation`, quantity: 1, unitPrice: 500,
+          category: 'consultation', taxRate: 0,
+        },
+        {
+          referenceType: 'manual_clinical', referenceId: `${TAG}-cosmetic`,
+          description: `${TAG} Cosmetic procedure`, quantity: 1, unitPrice: 5000,
+          category: 'procedure', taxRate: 18, sacCode: '999722',
+        },
+      ],
+    },
+  }, token);
+  ck('the counter charges were pulled on', opCharges.status === 201,
+     `status ${opCharges.status} ${JSON.stringify(opCharges.json).slice(0, 200)}`);
+
+  await billing.finalizeBill(TENANT, ACTOR, opBill.id);
+  const opDoc = await api(`/billing/${opBill.id}/document`, {}, token);
+  ck('the counter bill is reachable', opDoc.status === 200, `status ${opDoc.status}`);
+  ck('and it was issued as a named, numbered document',
+     !!opDoc.json?.data?.gstDocumentType && !!opDoc.json?.data?.invoiceNumber,
+     `${opDoc.json?.data?.gstDocumentType} ${opDoc.json?.data?.invoiceNumber}`);
+
+  const opPdf = await fetch(`${BASE}/billing/${opBill.id}/document/pdf`, {
+    headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Id': TENANT },
+  });
+  ck('the counter bill PDF is served', opPdf.status === 200, `status ${opPdf.status}`);
+  const opBuf = Buffer.from(await opPdf.arrayBuffer());
+  fs.writeFileSync(OUT.replace(/\.pdf$/, '-counter.pdf'), opBuf);
+  ck('and it is a real PDF', opBuf.subarray(0, 5).toString() === '%PDF-', `${opBuf.length} bytes`);
+
   // ── The PDF ──
   const pdfRes = await fetch(`${BASE}/billing/admissions/${adm.id}/bill-document/pdf`, {
     headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Id': TENANT },
