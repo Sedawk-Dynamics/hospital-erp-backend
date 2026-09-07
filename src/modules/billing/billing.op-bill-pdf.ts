@@ -9,6 +9,16 @@ import {
   ensureSpace,
 } from '../../services/pdf-doc';
 import type { PdfTemplate } from '../../services/pdf-template';
+import { fullName } from '../../shared/person-name';
+import {
+  buildGstBlock,
+  drawGstTaxSummary,
+  gstChargeCells,
+  gstChargeColumns,
+  gstIdentityFields,
+  treatmentLabelFor,
+  type GstLine,
+} from './billing.gst-layout';
 
 // The itemised OP / counter bill.
 //
@@ -17,12 +27,16 @@ import type { PdfTemplate } from '../../services/pdf-template';
 // form at all, so a patient leaving with a pending or partly-paid bill could
 // not be handed a copy of what they owe.
 //
-// Deliberately NOT called a tax invoice. Healthcare services in India are
-// GST-exempt under Notification 12/2017-Central Tax (Rate), so for most
-// hospitals this is a bill of supply; the title comes from the `op_bill`
-// template so an admin can name it whatever their auditor expects. The tax
-// column and the tax row only appear when something on the bill is actually
-// taxed — printing "Tax ₹0" on every exempt line is noise.
+// It used to be deliberately NOT called a tax invoice, because healthcare is
+// exempt under Notification 12/2017-Central Tax (Rate) and for most hospitals
+// this is a bill of supply. That reasoning was right and the guess is no longer
+// needed: finalising a bill now decides what it is from the lines on it and
+// allots a number for it, so the paper states the answer rather than avoiding
+// the question. An unregistered hospital keeps the title it always had.
+//
+// The columns come from `billing.gst-layout`, the same module the IP bill
+// draws from, so the two documents cannot disagree about what kind of paper
+// they are. Change one, change the other.
 
 interface OpBillLike {
   id: string;
@@ -36,6 +50,14 @@ interface OpBillLike {
   amountPaid: number | string;
   balanceDue: number | string;
   cancellationReason?: string | null;
+  gstDocumentType?: string | null;
+  invoiceNumber?: string | null;
+  financialYear?: string | null;
+  supplierGstin?: string | null;
+  supplierStateCode?: string | null;
+  recipientGstin?: string | null;
+  placeOfSupplyStateCode?: string | null;
+  isInterState?: boolean | null;
   patient: {
     firstName: string;
     lastName?: string | null;
@@ -49,6 +71,17 @@ interface OpBillLike {
     discountAmount: number | string;
     taxPercent: number | string;
     totalAmount: number | string;
+    hsnSacCode?: string | null;
+    gstTreatment?: string | null;
+    taxableValue?: number | string | null;
+    taxAmount?: number | string | null;
+    cgstRate?: number | string | null;
+    cgstAmount?: number | string | null;
+    sgstRate?: number | string | null;
+    sgstAmount?: number | string | null;
+    igstRate?: number | string | null;
+    igstAmount?: number | string | null;
+    cessAmount?: number | string | null;
   }>;
   payments: Array<{
     amount: number | string;
@@ -60,8 +93,11 @@ interface OpBillLike {
   }>;
 }
 
+// Two decimals always. The charge table beside this summary prints them, and
+// "Subtotal ₹5,500" under a column of "₹5,000.00" reads as a different kind of
+// number rather than the same one.
 const fmt = (n: number | string | null | undefined) =>
-  `₹${Number(n ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+  `₹${Number(n ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 const num = (n: number | string | null | undefined) => Number(n ?? 0);
 
@@ -70,19 +106,48 @@ export function streamOpBillPdf(
   bill: OpBillLike,
   branding: HospitalBranding,
   template?: PdfTemplate,
+  /** Whether this hospital charges GST at all. Absent means it does not. */
+  profile: { registered: boolean; gstin?: string | null; stateCode?: string | null } = {
+    registered: false,
+  },
 ) {
   const isCancelled = bill.status === 'cancelled';
-  const anyTax = bill.billItems.some((i) => num(i.taxPercent) > 0) || num(bill.taxAmount) > 0;
+
+  const lines: GstLine[] = bill.billItems.map((i) => ({
+    description: i.description,
+    quantity: i.quantity,
+    unitPrice: num(i.unitPrice),
+    totalAmount: num(i.totalAmount),
+    hsnSac: i.hsnSacCode ?? null,
+    gstTreatment: i.gstTreatment ?? null,
+    treatmentLabel: treatmentLabelFor(i.gstTreatment),
+    taxRatePercent: num(i.taxPercent),
+    // A line raised before any of this existed has no taxable value stored;
+    // its own amount stands in, so the columns still add up.
+    taxableValue: i.taxableValue == null ? num(i.totalAmount) : num(i.taxableValue),
+    taxAmount: num(i.taxAmount),
+    cgstRate: num(i.cgstRate), cgstAmount: num(i.cgstAmount),
+    sgstRate: num(i.sgstRate), sgstAmount: num(i.sgstAmount),
+    igstRate: num(i.igstRate), igstAmount: num(i.igstAmount),
+    cessAmount: num(i.cessAmount),
+  }));
+  const gst = buildGstBlock(profile, [bill], lines);
+  const anyTax = gst.hasTax || num(bill.taxAmount) > 0;
 
   const { pdf, theme } = createBrandedDocument({
     res,
     branding,
     template,
-    // A cancelled bill says so on its face. Otherwise this is the default, and
-    // the `op_bill` template's own titleOverride replaces it — so an admin can
-    // call it "Bill of Supply", or whatever their auditor expects, without code.
-    title: isCancelled ? 'Cancelled Bill' : 'Bill',
-    subtitle: `Bill ${bill.billNumber}`,
+    // A cancelled bill says so on its face. Otherwise the issued document's own
+    // name — a numbered Tax Invoice cannot print titled "Bill". A hospital that
+    // is not registered issues no GST document and keeps the old default, and
+    // the `op_bill` template's titleOverride still beats both.
+    title: isCancelled ? 'Cancelled Bill' : (gst.documentLabel ?? 'Bill'),
+    // The allotted number identifies this paper; the bill number is the
+    // internal reference, and it stays on the card below.
+    subtitle: gst.invoiceNumbers.length
+      ? gst.invoiceNumbers.join(', ')
+      : `Bill ${bill.billNumber}`,
     meta: [
       { label: 'Bill', value: bill.billNumber },
       {
@@ -101,9 +166,11 @@ export function streamOpBillPdf(
     ['Bill No', bill.billNumber],
     ['Date', new Date(bill.billDate).toLocaleString('en-IN')],
     ['Status', bill.status.replace(/_/g, ' ').toUpperCase()],
-    ['Patient', `${bill.patient.firstName} ${bill.patient.lastName ?? ''}`.trim()],
+    // Never `first + ' ' + last`: a patient with no surname prints "null".
+    ['Patient', fullName(bill.patient)],
     ['MRN', bill.patient.mrn ?? '—'],
     ['Phone', bill.patient.phone ?? '—'],
+    ...gstIdentityFields(gst),
   ]);
 
   drawSectionHeading(pdf, theme, 'Charges');
@@ -115,35 +182,16 @@ export function streamOpBillPdf(
       .text('No charges on this bill.', theme.margin, pdf.y, { width: theme.contentWidth });
     pdf.moveDown(0.6);
   } else {
-    // The tax column earns its place only when something is taxed.
-    const columns = anyTax
-      ? [
-          { header: 'Description', width: 0.42 },
-          { header: 'Qty', width: 0.08, align: 'right' as const },
-          { header: 'Rate', width: 0.15, align: 'right' as const },
-          { header: 'GST', width: 0.14, align: 'right' as const },
-          { header: 'Amount', width: 0.21, align: 'right' as const },
-        ]
-      : [
-          { header: 'Description', width: 0.52 },
-          { header: 'Qty', width: 0.1, align: 'right' as const },
-          { header: 'Rate', width: 0.17, align: 'right' as const },
-          { header: 'Amount', width: 0.21, align: 'right' as const },
-        ];
-
     drawTable(
       pdf,
       theme,
-      columns,
-      bill.billItems.map((item) => {
-        const base = [item.description, String(item.quantity), fmt(item.unitPrice)];
-        const tax = num(item.taxPercent) > 0 ? `${num(item.taxPercent)}%` : '—';
-        return anyTax
-          ? [...base, tax, fmt(item.totalAmount)]
-          : [...base, fmt(item.totalAmount)];
-      }),
+      gstChargeColumns(gst, 'Description'),
+      lines.map((l) => gstChargeCells(gst, l)),
     );
   }
+
+  // The rate-wise summary, where there is tax to summarise.
+  drawGstTaxSummary(pdf, theme, gst);
 
   // Summary, right-aligned against the content edge.
   const sumX = theme.margin + theme.contentWidth * 0.5;
@@ -217,7 +265,8 @@ export function streamOpBillPdf(
   }
 
   // Exempt supplies must not masquerade as taxed ones. Saying so plainly is
-  // what a bill of supply is for.
+  // what a bill of supply is for. A taxed bill has already carried its notes
+  // under the tax summary, so this is only for the untaxed case.
   if (!anyTax) {
     pdf
       .font(theme.font.italic)

@@ -212,13 +212,16 @@ export async function getBillDocumentPdf(
   try {
     const tenantId = req.user!.tenantId;
     const { getHospitalBranding, resolvePdfTemplate } = await import('../hospital-branding/hospital-branding.service');
-    const [bill, branding, template] = await Promise.all([
+    const { getGstProfile } = await import('../hospital-settings/hospital-settings.service');
+    const [bill, branding, template, gstProfile] = await Promise.all([
       billingService.getBillDocument(tenantId, req.params.id as string),
       getHospitalBranding(tenantId),
       resolvePdfTemplate(tenantId, 'op_bill'),
+      // Decides whether this bill prints as a GST document at all.
+      getGstProfile(tenantId),
     ]);
     const { streamOpBillPdf } = await import('./billing.op-bill-pdf');
-    streamOpBillPdf(res, bill as any, branding, template);
+    streamOpBillPdf(res, bill as any, branding, template, gstProfile);
   } catch (err) {
     next(err);
   }
