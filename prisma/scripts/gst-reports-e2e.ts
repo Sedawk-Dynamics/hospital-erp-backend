@@ -344,6 +344,125 @@ async function main() {
   const changes = await get('rate-changes');
   ck('the rate change log is reachable', changes.status === 200, `status ${changes.status}`);
 
+  // ── B-5: our purchases against what the portal says suppliers filed ──
+  //
+  // Three purchases and a statement that names only two of them, so every
+  // bucket has something in it and none of them is empty by accident.
+  const supplier = await prisma.supplier.create({
+    data: { tenantId: TENANT, name: `${TAG} Acme Pharma`, gstNumber: '27AAAAA1111A1Z5' } as any,
+  });
+  const drug = await prisma.drugFormulary.findFirst({ where: { tenantId: TENANT }, select: { id: true } });
+  if (!drug) throw new Error('need a drug in the formulary');
+
+  const mkBatch = (invoiceNumber: string | null, rate: number, qty: number) =>
+    prisma.drugBatch.create({
+      data: {
+        tenantId: TENANT, drugId: drug.id, supplierId: supplier.id,
+        batchNumber: `${TAG}-${invoiceNumber ?? 'NOINV'}-${qty}`,
+        expiryDate: new Date('2028-01-01'),
+        quantityReceived: qty, quantityInStock: qty,
+        purchasePrice: rate, gstPercent: 12,
+        invoiceNumber, invoiceDate: new Date(`${TODAY}T00:00:00.000Z`),
+      } as any,
+    });
+
+  // SUP/001 — two batches on ONE invoice, and the portal agrees.
+  await mkBatch('SUP/001', 10, 60);
+  await mkBatch('SUP/001', 10, 40);
+  // SUP/002 — the portal has it at a different figure.
+  await mkBatch('SUP/002', 10, 50);
+  // SUP/003 — the supplier has not filed it at all.
+  await mkBatch('SUP/003', 10, 30);
+
+  const ddmmyyyy = `${TODAY.slice(8, 10)}-${TODAY.slice(5, 7)}-${TODAY.slice(0, 4)}`;
+  const mmyyyy = `${TODAY.slice(5, 7)}${TODAY.slice(0, 4)}`;
+  const statement = {
+    data: {
+      rtnprd: mmyyyy,
+      gstin: '27AAPFU0939F1ZV',
+      gendt: ddmmyyyy,
+      version: '1.0',
+      docdata: {
+        b2b: [{
+          ctin: '27AAAAA1111A1Z5', trdnm: 'Acme Pharma', supfileddt: ddmmyyyy,
+          inv: [
+            // Written with a dash where our books have a slash — the same
+            // invoice, and the match key is what makes them meet.
+            { inum: 'SUP-001', dt: ddmmyyyy, val: 1120, pos: '27', itcavl: 'Y',
+              items: [{ itm_det: { rt: 12, txval: 1000, cgst: 60, sgst: 60 } }] },
+            { inum: 'SUP/002', dt: ddmmyyyy, val: 448, pos: '27', itcavl: 'Y',
+              items: [{ itm_det: { rt: 12, txval: 400, cgst: 24, sgst: 24 } }] },
+            // Declared by the supplier, never entered in our books.
+            { inum: 'SUP/009', dt: ddmmyyyy, val: 224, pos: '27', itcavl: 'Y',
+              items: [{ itm_det: { rt: 12, txval: 200, cgst: 12, sgst: 12 } }] },
+          ],
+        }],
+        cdnr: [{
+          ctin: '27AAAAA1111A1Z5', trdnm: 'Acme Pharma', supfileddt: ddmmyyyy,
+          nt: [{ ntnum: `${TAG}-CN1`, typ: 'C', dt: ddmmyyyy, val: 56,
+                 items: [{ itm_det: { rt: 12, txval: 50, cgst: 3, sgst: 3 } }] }],
+        }],
+      },
+    },
+  };
+
+  const imported = await api('/gst/reports/gstr2b-imports', {
+    method: 'POST',
+    body: { file: statement, fileName: `2B_${mmyyyy}.json` },
+  }, token);
+  ck('the GSTR-2B statement was imported', imported.status === 201,
+     `status ${imported.status} ${JSON.stringify(imported.json).slice(0, 200)}`);
+  ck('it read every document in the file', imported.data?.documents === 4,
+     `${imported.data?.documents} document(s)`);
+
+  const wrongGstin = await api('/gst/reports/gstr2b-imports', {
+    method: 'POST',
+    body: { file: { data: { ...statement.data, gstin: '29ZZZZZ9999Z1Z9' } } },
+  }, token);
+  ck('a statement for another hospital is refused', wrongGstin.status === 400,
+     `status ${wrongGstin.status}`);
+
+  const rec = await get('gstr2b-reconciliation');
+  ck('the reconciliation is reachable', rec.status === 200, `status ${rec.status}`);
+  const mineIn = (list: any[]) => (list ?? []).filter((x) => /SUP.00/.test(x.invoiceNumber ?? ''));
+
+  const okMatched = mineIn(rec.data?.matched).find((x: any) => /001/.test(x.invoiceNumber));
+  ck('the two batches on one invoice matched as ONE invoice',
+     !!okMatched && okMatched.lines === 2,
+     `${okMatched?.lines} line(s)`);
+  ck('and matched across the slash/dash difference',
+     okMatched?.portalInvoiceNumber === 'SUP-001', `${okMatched?.portalInvoiceNumber}`);
+  ck('the figures agree on it', near(okMatched?.booksTaxAmount, okMatched?.portalTaxAmount),
+     `${okMatched?.booksTaxAmount} vs ${okMatched?.portalTaxAmount}`);
+
+  const mism = mineIn(rec.data?.mismatched).find((x: any) => /002/.test(x.invoiceNumber));
+  ck('the invoice the portal states differently is a mismatch', !!mism,
+     JSON.stringify(rec.data?.totals?.mismatched));
+  ck('with the difference stated', near(mism?.taxDifference, 12),
+     `${mism?.taxDifference}`);
+
+  ck('the invoice the supplier never filed is credit at risk',
+     mineIn(rec.data?.inBooksOnly).some((x: any) => /003/.test(x.invoiceNumber)),
+     JSON.stringify(rec.data?.totals?.inBooksOnly));
+  ck('the invoice only the portal has is reported too',
+     mineIn(rec.data?.inPortalOnly).some((x: any) => /009/.test(x.invoiceNumber)),
+     JSON.stringify(rec.data?.totals?.inPortalOnly));
+
+  const note = (rec.data?.supplierNotes ?? []).find((n: any) => String(n.documentNumber).includes(TAG));
+  ck('the supplier credit note takes credit AWAY', note?.taxAmount === -6,
+     `${note?.taxAmount}`);
+  ck('and a note is never forced into an invoice bucket',
+     !mineIn(rec.data?.inPortalOnly).some((x: any) => String(x.invoiceNumber).includes('CN1')),
+     'a credit note landed in the invoice buckets');
+  ck('it names the statement it reconciled against',
+     rec.data?.statement?.fileName === `2B_${mmyyyy}.json`,
+     `${rec.data?.statement?.fileName}`);
+
+  const listedImports = await api('/gst/reports/gstr2b-imports', {}, token);
+  ck('the imported statement is listed with its provenance',
+     (listedImports.data?.imports ?? []).some((i: any) => i.returnPeriod === mmyyyy && !!i.importedBy),
+     JSON.stringify((listedImports.data?.imports ?? []).map((i: any) => i.returnPeriod)));
+
   // ── The gate ──
   const doc = await prisma.user.findFirst({
     where: { tenantId: TENANT, isActive: true, userRoles: { some: { role: { name: 'doctor' } } } },
@@ -379,6 +498,10 @@ main()
       await prisma.receipt.deleteMany({ where: { paymentId: { in: ids } } });
       await prisma.payment.deleteMany({ where: { id: { in: ids } } });
       await prisma.serviceTariff.deleteMany({ where: { serviceName: { contains: 'GSTRPT-' } } });
+      await prisma.drugBatch.deleteMany({ where: { batchNumber: { contains: 'GSTRPT-' } } });
+      await prisma.supplier.deleteMany({ where: { name: { contains: 'GSTRPT-' } } });
+      // Deleting the import cascades to its documents.
+      await prisma.gstr2bImport.deleteMany({ where: { fileName: { startsWith: '2B_' } } });
       const bills = await prisma.bill.findMany({ where: { patientId: pat.id }, select: { id: true } });
       const billIds = bills.map((b) => b.id);
       await prisma.billItem.deleteMany({ where: { billId: { in: billIds } } });

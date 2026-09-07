@@ -11,6 +11,7 @@ import * as returns from './gst-reports.returns';
 import * as purchase from './gst-reports.purchase';
 import * as control from './gst-reports.control';
 import * as archive from './gst-reports.archive';
+import * as reconcile from './gst-reports.reconcile';
 import * as masters from './gst-master.service';
 
 export const gstRoutes = Router();
@@ -274,6 +275,58 @@ gstRoutes.get(
   ...gstReportAccess,
   validate(purchaseQuerySchema),
   report('Purchase returns and debit notes', (t, q) => purchase.getPurchaseReturns(t, q as never)),
+);
+
+/** B-5 — our purchase register against what the portal says suppliers filed. */
+gstRoutes.get(
+  '/reports/gstr2b-reconciliation',
+  ...gstReportAccess,
+  validate(periodQuerySchema),
+  report('GSTR-2B reconciliation', (t, q) => reconcile.reconcileGstr2b(t, q as never)),
+);
+
+/** Every GSTR-2B statement imported so far. */
+gstRoutes.get(
+  '/reports/gstr2b-imports',
+  ...gstReportAccess,
+  report('GSTR-2B statements imported', (t) => reconcile.listGstr2bImports(t)),
+);
+
+/**
+ * Import a downloaded GSTR-2B.
+ *
+ * The JSON is posted as-is rather than uploaded as a file: it is the accountant
+ * pasting in what the portal gave them, the parser wants the object anyway, and
+ * a multipart round trip would put a copy of the hospital's supplier list on
+ * disk for no gain. Express is configured for 10mb, which is far more than a
+ * month of 2B.
+ */
+gstRoutes.post(
+  '/reports/gstr2b-imports',
+  ...gstReportAccess,
+  validate(
+    z.object({
+      body: z.object({
+        // Not described further on purpose — the shape is the government's, it
+        // changes with their releases, and the parser is what validates it.
+        file: z.unknown(),
+        fileName: z.string().max(255).nullish(),
+      }),
+    }),
+  ),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const data = await reconcile.importGstr2b(req.user!.tenantId, req.user!.userId, req.body);
+      sendResponse({
+        res,
+        statusCode: 201,
+        message: `GSTR-2B for ${data.returnPeriod} imported — ${data.documents} document(s)`,
+        data,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
 );
 
 // ── Group C — operational and control ─────────────────────────────────────

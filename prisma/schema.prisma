@@ -1356,6 +1356,7 @@ model Tenant {
 
   @@map("tenants")
   gstFiledPeriods         GstFiledPeriod[]
+  gstr2bImports           Gstr2bImport[]
 }
 
 model SubscriptionPlan {
@@ -1715,6 +1716,7 @@ model User {
   labTestTemplatesCreated        LabTestTemplate[]            @relation("LabTestTemplateCreator")
   gstRateChanges                 GstRateChange[]
   gstPeriodsFiled                GstFiledPeriod[]
+  gstr2bImports                  Gstr2bImport[]
 
   @@unique([tenantId, email])
   @@map("users")
@@ -4351,6 +4353,72 @@ model GstFiledPeriod {
   @@unique([tenantId, returnPeriod])
   @@index([tenantId, filedAt])
   @@map("gst_filed_periods")
+}
+
+/// One GSTR-2B statement, as downloaded from the portal.
+///
+/// 2B is what the government says the hospital's SUPPLIERS have declared, and a
+/// hospital may only claim credit that appears in it. Nothing in this system
+/// can produce that — it has to be imported.
+model Gstr2bImport {
+  id           String    @id @default(uuid())
+  tenantId     String    @map("tenant_id")
+  /// MMYYYY, the period the statement covers — the file's own `rtnprd`.
+  returnPeriod String    @map("return_period") @db.VarChar(6)
+  /// The recipient GSTIN the file was generated for. Checked against ours.
+  gstin        String?   @db.VarChar(15)
+  generatedAt  DateTime? @map("generated_at")
+  version      String?   @db.VarChar(20)
+  fileName     String?   @map("file_name") @db.VarChar(255)
+  importedAt   DateTime  @default(now()) @map("imported_at")
+  importedBy   String?   @map("imported_by")
+  invoiceCount Int       @default(0) @map("invoice_count")
+  taxTotal     Decimal   @default(0) @map("tax_total") @db.Decimal(14, 2)
+
+  tenant   Tenant          @relation(fields: [tenantId], references: [id])
+  importer User?           @relation(fields: [importedBy], references: [id])
+  rows     Gstr2bDocument[]
+
+  /// One statement per period. Re-importing replaces it — the portal reissues
+  /// 2B for a period and the latest download is the only one that counts.
+  @@unique([tenantId, returnPeriod])
+  @@index([tenantId, importedAt])
+  @@map("gstr2b_imports")
+}
+
+/// One document out of a GSTR-2B statement — an invoice or a supplier's note.
+model Gstr2bDocument {
+  id            String    @id @default(uuid())
+  importId      String    @map("import_id")
+  tenantId      String    @map("tenant_id")
+  returnPeriod  String    @map("return_period") @db.VarChar(6)
+  supplierGstin String    @map("supplier_gstin") @db.VarChar(15)
+  supplierName  String?   @map("supplier_name") @db.VarChar(255)
+  /// 'invoice' | 'credit_note' | 'debit_note'.
+  documentType  String    @map("document_type") @db.VarChar(12)
+  documentNumber String   @map("document_number") @db.VarChar(60)
+  /// Uppercased with punctuation stripped, so "SUP/001" matches "sup-001".
+  matchKey      String    @map("match_key") @db.VarChar(60)
+  documentDate  DateTime? @map("document_date")
+  documentValue Decimal   @default(0) @map("document_value") @db.Decimal(14, 2)
+  taxableValue  Decimal   @default(0) @map("taxable_value") @db.Decimal(14, 2)
+  igstAmount    Decimal   @default(0) @map("igst_amount") @db.Decimal(14, 2)
+  cgstAmount    Decimal   @default(0) @map("cgst_amount") @db.Decimal(14, 2)
+  sgstAmount    Decimal   @default(0) @map("sgst_amount") @db.Decimal(14, 2)
+  cessAmount    Decimal   @default(0) @map("cess_amount") @db.Decimal(14, 2)
+  taxAmount     Decimal   @default(0) @map("tax_amount") @db.Decimal(14, 2)
+  placeOfSupply String?   @map("place_of_supply") @db.VarChar(2)
+  /// The portal's own verdict. 'N' means the credit is blocked whatever we did.
+  itcAvailable  Boolean   @default(true) @map("itc_available")
+  itcBlockedReason String? @map("itc_blocked_reason") @db.VarChar(255)
+  supplierFiledOn DateTime? @map("supplier_filed_on")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  import Gstr2bImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, returnPeriod])
+  @@index([tenantId, supplierGstin, matchKey])
+  @@map("gstr2b_documents")
 }
 
 // ============================================================
