@@ -1914,6 +1914,95 @@ export async function approveRefund(tenantId: string, refundId: string, approved
 
 // --- Discounts ---
 
+/**
+ * Raise the credit note a concession on an ISSUED bill owes.
+ *
+ * A discount on a DRAFT is pricing: no document exists yet, and the invoice is
+ * eventually issued for the net. A discount after the invoice has been issued
+ * is something else entirely — the supply was declared at one value and the
+ * patient is being charged another, and section 34 says the difference travels
+ * on a credit note. Without one the hospital declares tax on money it never
+ * collected, with nothing on paper to explain the gap.
+ *
+ * Two things this does NOT do, both deliberate:
+ *
+ *   - it does not touch the frozen line tax. The invoice said what it said, and
+ *     restating it would rewrite a document already with the patient. The
+ *     credit note carries the reversal instead, which is the instrument for it.
+ *   - it does not act on a PENDING concession. The figure below comes from
+ *     approved `Discount` rows only, so a concession awaiting a second pair of
+ *     eyes raises nothing until somebody decides on it — the same rule that
+ *     keeps it off the patient's total.
+ *
+ * Credited in INCREMENTS. A concession raised from 1,000 to 1,500 owes a note
+ * for 500, not a second one for 1,500, so the amount already credited is
+ * subtracted first. That also makes this safe to call from every writer after
+ * every recalculation: with nothing new to credit it does nothing.
+ */
+async function creditPostSupplyConcession(
+  tenantId: string,
+  billId: string,
+  opts: { issuedBy?: string | null; note?: string | null } = {},
+): Promise<void> {
+  const bill = await prisma.bill.findFirst({
+    where: { id: billId, tenantId },
+    select: {
+      id: true,
+      invoiceNumber: true,
+      billItems: { select: { id: true, totalAmount: true } },
+      creditNotes: { select: { reason: true, totalAmount: true } },
+    },
+  });
+  // Never issued, never a document. There is nothing to reverse.
+  if (!bill?.invoiceNumber) return;
+
+  const [approved, invoiced] = [
+    await prisma.discount.aggregate({
+      where: { billId, status: 'approved' },
+      _sum: { value: true },
+    }),
+    bill.billItems.reduce((t, it) => t + toNumber(it.totalAmount), 0),
+  ];
+  const concession = toNumber(approved._sum.value);
+  if (concession <= 0 || invoiced <= 0) return;
+
+  // Credit note totals are stored NEGATIVE, so that summing a patient's
+  // documents nets to their real position. Take the size of what has been
+  // credited, not its sign.
+  const alreadyCredited = bill.creditNotes
+    .filter((c) => c.reason === 'post_supply_discount')
+    .reduce((t, c) => t + Math.abs(toNumber(c.totalAmount)), 0);
+
+  const increment = r2(concession - alreadyCredited);
+  if (increment <= 0.005) {
+    if (increment < -0.005) {
+      // A concession that has been REDUCED after being credited. Putting the
+      // money back on an issued invoice is a debit note, not a credit note,
+      // and inventing one here would be the wrong document. Logged so the
+      // accountant raises it rather than the system guessing.
+      logger.warn(
+        { tenantId, billId, concession, alreadyCredited },
+        'A concession on an issued bill was reduced below what has been credited — that needs a debit note',
+      );
+    }
+    return;
+  }
+
+  // Apportioned across every line by value, so each line's own rate and split
+  // scale with it. A blended rate on a mixed bill — a taxable room beside an
+  // exempt surgery — would reverse tax the exempt half never carried.
+  const share = Math.min(1, increment / invoiced);
+  await prisma.$transaction(async (tx) => {
+    await issueCreditNoteBestEffort(tx, tenantId, {
+      billId,
+      reason: 'post_supply_discount',
+      reasonNote: opts.note ?? 'Concession granted after the invoice was issued',
+      issuedBy: opts.issuedBy ?? null,
+      lines: bill.billItems.map((it) => ({ billItemId: it.id, share })),
+    });
+  });
+}
+
 export async function applyDiscount(
   tenantId: string,
   billId: string,
@@ -1975,6 +2064,10 @@ export async function applyDiscount(
   // sums the line totals and folds in the bill-level Discount rows, so the
   // three places that used to hold this arithmetic can no longer drift apart.
   await recalculateBillTotals(billId);
+  // A concession on an already-issued invoice owes a credit note. Safe to call
+  // unconditionally: a concession still awaiting approval has moved no money,
+  // so there is nothing yet to credit.
+  await creditPostSupplyConcession(tenantId, billId, { issuedBy: userId, note: data.reason });
 
   logger.info(
     { tenantId, billId, discountValue, needsApproval },
@@ -5566,6 +5659,10 @@ export async function setBillDiscount(
   // line adds its tax on top, so discounting a bill that carried a
   // tax-INCLUSIVE medicine price re-added the GST already inside the MRP.
   await recalculateBillTotals(billId);
+  await creditPostSupplyConcession(tenantId, billId, {
+    issuedBy: data.approvedBy,
+    note: data.reason,
+  });
   const updated = await prisma.bill.findUniqueOrThrow({ where: { id: billId } });
   const totalAmount = toNumber(updated.totalAmount);
 
@@ -6721,8 +6818,12 @@ export async function decideDiscount(
   });
 
   // Only now does the money move — an approved concession starts counting, a
-  // rejected one never does.
+  // rejected one never does. And only now can it owe a credit note.
   await recalculateBillTotals(discount.billId);
+  await creditPostSupplyConcession(tenantId, discount.billId, {
+    issuedBy: userId,
+    note: discount.reason,
+  });
 
   logger.info(
     { tenantId, discountId, by: userId, approved: decision.approve },
