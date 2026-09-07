@@ -3447,10 +3447,10 @@ export async function pullChargesToBill(
  * one — that would break "IP = one bill"), else create the running draft.
  */
 async function getAdmissionBillForBilling(tenantId: string, admissionId: string, userId: string) {
-  const draft = await prisma.bill.findFirst({ where: { tenantId, admissionId, status: 'draft' }, orderBy: { createdAt: 'desc' } });
+  const draft = await prisma.bill.findFirst({ where: { tenantId, admissionId, status: 'draft', ...NOT_ADVANCE_BUCKET }, orderBy: { createdAt: 'desc' } });
   if (draft) return draft;
   const finalized = await prisma.bill.findFirst({
-    where: { tenantId, admissionId, status: { notIn: ['cancelled', 'refunded'] } },
+    where: { tenantId, admissionId, status: { notIn: ['cancelled', 'refunded'] }, ...NOT_ADVANCE_BUCKET },
     orderBy: { createdAt: 'desc' },
   });
   if (finalized) return finalized;
@@ -3469,7 +3469,24 @@ export async function consolidateAdmissionBill(
   });
   if (!admission) throw AppError.notFound('Admission not found');
 
-  const bill = await getAdmissionBillForBilling(tenantId, admissionId, userId);
+  let bill = await getAdmissionBillForBilling(tenantId, admissionId, userId);
+
+  // The running bill is now reused across finalizations rather than replaced,
+  // so "Generate / refresh bill" has to be able to pull the next batch of
+  // charges onto a bill it already finalized — otherwise the bed days accrued
+  // since the last refresh would have nowhere to go. Reopen it, let the pull
+  // below run, and finalizeBill closes it again. Payments survive: totals are
+  // recomputed from the Payment rows, and a document that already carries an
+  // invoice number is never renumbered.
+  //
+  // A bill under a live insurance claim is left alone — the claim was raised
+  // against these lines, so it is not ours to reopen behind the insurer.
+  if (bill.status === 'pending' || bill.status === 'partially_paid') {
+    const claims = await prisma.insuranceClaim.count({ where: { billId: bill.id } });
+    if (claims === 0) {
+      bill = await prisma.bill.update({ where: { id: bill.id }, data: { status: 'draft' } });
+    }
+  }
 
   // Only a draft can still accept charges / be finalized. A bill already
   // finalized (e.g. transferred to TPA earlier) is left as-is.
@@ -3784,9 +3801,34 @@ export async function getOrCreateRunningIpBill(tenantId: string, admissionId: st
   const admission = await prisma.admission.findFirst({ where: { id: admissionId, tenantId }, select: { id: true, patientId: true } });
   if (!admission) throw AppError.notFound('Admission not found');
 
-  let bill = await prisma.bill.findFirst({ where: { tenantId, admissionId, status: 'draft' }, orderBy: { createdAt: 'desc' } });
+  let bill = await prisma.bill.findFirst({ where: { tenantId, admissionId, status: 'draft', ...NOT_ADVANCE_BUCKET }, orderBy: { createdAt: 'desc' } });
+
+  // A stay's bill does not stop being the stay's bill the moment it is
+  // finalized. This used to look for a DRAFT and nothing else, so every
+  // "Generate / refresh bill" — which finalizes to `pending` — orphaned the
+  // running bill, and the next worklist load (this runs for every active
+  // admission) opened a brand-new empty one. Charges then landed on the new
+  // bill, and one stay ended up spread over four: 1958.50 here, 121.80 there,
+  // 280700.00 of bed days on a third. The worklist row adds them all up while
+  // naming only the first, so the counter was shown a total that the payment
+  // endpoint could only reject. An IP stay is ONE bill.
+  //
+  // A `paid` bill is deliberately NOT reused: it is a settled document, and
+  // charges arriving after an interim settlement belong on a fresh one.
   if (!bill) {
-    const patientDraft = await prisma.bill.findFirst({ where: { tenantId, patientId: admission.patientId, status: 'draft' }, orderBy: { createdAt: 'desc' } });
+    bill = await prisma.bill.findFirst({
+      where: {
+        tenantId,
+        admissionId,
+        status: { in: ['pending', 'partially_paid'] },
+        billNumber: { startsWith: 'IPW-' },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  if (!bill) {
+    const patientDraft = await prisma.bill.findFirst({ where: { tenantId, patientId: admission.patientId, status: 'draft', ...NOT_ADVANCE_BUCKET }, orderBy: { createdAt: 'desc' } });
     if (patientDraft) {
       bill = patientDraft.admissionId ? patientDraft : await prisma.bill.update({ where: { id: patientDraft.id }, data: { admissionId } });
     }
@@ -4775,7 +4817,17 @@ export async function getIpAdmissionsForBilling(
         },
       },
     });
-    const primary = bills.find((b) => ['draft', 'pending', 'partially_paid'].includes(b.status)) ?? bills[bills.length - 1] ?? null;
+    // The row stands for the STAY, so it must name the stay's own bill. Picking
+    // the first open bill of any kind handed one admission a `RUN-CM-` counter
+    // bill instead — the desk was then shown the stay's balance against a
+    // pharmacy-counter document. Prefer the IP bill; fall back only if there
+    // genuinely is not one.
+    const isOpen = (b: (typeof bills)[number]) => ['draft', 'pending', 'partially_paid'].includes(b.status);
+    const primary =
+      bills.find((b) => isOpen(b) && b.billNumber.startsWith('IPW-')) ??
+      bills.find(isOpen) ??
+      bills[bills.length - 1] ??
+      null;
     const claim = bills.map((b) => b.insuranceClaims?.[0]).find(Boolean) ?? null;
     const totalAmount = r2(bills.reduce((s, b) => s + Number(b.totalAmount), 0));
     const amountPaid = r2(bills.reduce((s, b) => s + Number(b.amountPaid), 0));
@@ -4803,6 +4855,16 @@ export async function getIpAdmissionsForBilling(
       totalAmount,
       amountPaid,
       balanceDue,
+      // What the counter can actually collect against the bill this row NAMES.
+      //
+      // The figures above are the whole stay, summed over every bill on the
+      // admission, while `id` is only the primary one — so handing `balanceDue`
+      // to the collect dialog asked the payment endpoint to take 282780.30
+      // against a bill holding 1958.50, and it refused. The stay is one IP bill
+      // again, but a pharmacy or counter bill can still sit on the same
+      // admission, so the payable figure is stated explicitly rather than left
+      // to coincide.
+      payableNow: r2(Number(primary?.balanceDue ?? 0)),
       insuranceCoveredAmount: insuranceCovered,
       patientPayableAmount: patientPayable,
       discountAmount,
