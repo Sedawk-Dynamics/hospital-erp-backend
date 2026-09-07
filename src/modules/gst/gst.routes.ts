@@ -313,6 +313,14 @@ gstRoutes.get(
   report('Document series continuity', (t, q) => control.getSeriesContinuity(t, q as never)),
 );
 
+/** C-5 — Rate Override Log: every line where somebody typed the tax. */
+gstRoutes.get(
+  '/reports/rate-overrides',
+  ...gstReportAccess,
+  validate(salesQuerySchema),
+  report('Rate override log', (t, q) => control.getRateOverrides(t, q as never)),
+);
+
 /** C-7 — Department-wise GST. */
 gstRoutes.get(
   '/reports/department-gst',

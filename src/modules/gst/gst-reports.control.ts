@@ -405,3 +405,72 @@ export async function getCancelledInvoices(tenantId: string, query: SalesReportQ
     },
   };
 }
+
+/**
+ * C-5 — Rate Override Log.
+ *
+ * Every line where a rate was TYPED rather than resolved: taxable, on an item
+ * nobody approved, with no HSN or SAC behind it. That is somebody at a counter
+ * deciding what tax the patient pays, and it is the first thing an auditor
+ * pulls on.
+ *
+ * Two honest limits, stated in the report rather than papered over:
+ *
+ *   - WHO is the person who raised the document, not provably the person who
+ *     typed the rate. A bill line carries no author of its own. On a counter
+ *     bill they are the same person; on a ward ledger the raiser is the one
+ *     accountable for the bill.
+ *   - WHY is not recorded at all. Capturing it means asking for a reason at the
+ *     counter, which changes what staff have to do, so it is not added here
+ *     without the hospital agreeing to it.
+ *
+ * What IS provable is the rest: which line, on which document, at what rate,
+ * for how much tax, and which rule the engine would otherwise have used.
+ */
+export async function getRateOverrides(tenantId: string, query: SalesReportQuery = {}) {
+  const { period, rows } = await getSalesRegister(tenantId, query);
+  const overrides = rows.filter((l) => l.requiresTaxResolution);
+
+  const byPerson = new Map<string, { lines: number; taxCharged: number; value: number }>();
+  for (const l of overrides) {
+    const key = l.raisedBy ?? 'unattributed';
+    const cur = byPerson.get(key) ?? { lines: 0, taxCharged: 0, value: 0 };
+    cur.lines += 1;
+    cur.taxCharged = r2(cur.taxCharged + l.taxAmount);
+    cur.value = r2(cur.value + l.totalAmount);
+    byPerson.set(key, cur);
+  }
+
+  return {
+    period,
+    rows: overrides.map((l) => ({
+      billDate: l.billDate,
+      document: l.invoiceNumber ?? l.billNumber,
+      billNumber: l.billNumber,
+      patientName: l.patientName,
+      department: l.department,
+      description: l.description,
+      ratePercent: l.taxRatePercent,
+      taxAmount: l.taxAmount,
+      totalAmount: l.totalAmount,
+      /** The rule the engine settled on — 'item_master' means a typed rate. */
+      rateSource: l.rateSource,
+      raisedBy: l.raisedBy,
+    })),
+    byPerson: [...byPerson.entries()]
+      .map(([person, v]) => ({ person, ...v }))
+      .sort((a, b) => b.taxCharged - a.taxCharged || b.lines - a.lines),
+    totals: {
+      linesChecked: rows.length,
+      overrides: overrides.length,
+      taxCharged: r2(overrides.reduce((t, l) => t + l.taxAmount, 0)),
+      value: r2(overrides.reduce((t, l) => t + l.totalAmount, 0)),
+    },
+    notes: [
+      '"Raised by" is the person who raised the document, not provably the person who typed the rate — a bill line carries no author of its own.',
+      'No reason is recorded against an override. Capturing one means asking for it at the counter, which changes what staff have to do.',
+      'Fix an override at its source: give the item an HSN or SAC code, or have its rate approved on the service tariff. Both are in the Unmapped Items report.',
+    ],
+  };
+}
+

@@ -62,6 +62,15 @@ export interface SalesLine {
   treatmentLabel: string | null;
   rateSource: string | null;
   requiresTaxResolution: boolean;
+  /**
+   * Who raised the document this line sits on.
+   *
+   * NOT strictly "who typed the rate" — a bill line carries no author of its
+   * own. On a counter bill they are the same person, and on a ward ledger they
+   * are the person accountable for the bill. C-5 says which it is rather than
+   * implying a precision the data does not have.
+   */
+  raisedBy: string | null;
   quantity: number;
   unitPrice: number;
   discountAmount: number;
@@ -117,6 +126,7 @@ export async function getSalesRegister(
       billDate: true, status: true, financialYear: true, admissionId: true,
       recipientGstin: true, placeOfSupplyStateCode: true, isInterState: true,
       patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+      generator: { select: { firstName: true, lastName: true } },
       billItems: {
         orderBy: { createdAt: 'asc' },
         where: {
@@ -154,6 +164,7 @@ export async function getSalesRegister(
         treatmentLabel: treatmentLabelFor(it.gstTreatment),
         rateSource: it.rateSource,
         requiresTaxResolution: it.requiresTaxResolution,
+        raisedBy: b.generator ? fullName(b.generator) : null,
         quantity: it.quantity,
         unitPrice: n(it.unitPrice),
         discountAmount: n(it.discountAmount),

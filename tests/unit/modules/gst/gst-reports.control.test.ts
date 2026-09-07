@@ -7,6 +7,7 @@ import {
   getSeriesContinuity,
   getDepartmentGst,
   getCancelledInvoices,
+  getRateOverrides,
 } from '../../../../src/modules/gst/gst-reports.control';
 
 const TENANT = 'tenant-1';
@@ -268,5 +269,61 @@ describe('getCancelledInvoices (C-9)', () => {
     (prisma.bill.findMany as any).mockResolvedValue([cancelled({ invoiceNumber: null, creditNotes: [] })]);
     const r = await getCancelledInvoices(TENANT);
     expect(r.rows[0].unreversed).toBe(false);
+  });
+});
+
+describe('getRateOverrides (C-5)', () => {
+  const typed = {
+    description: 'Cosmetic touch-up', category: 'procedure',
+    gstTreatment: 'taxable', taxPercent: 18, hsnSacCode: null,
+    requiresTaxResolution: true, rateSource: 'item_master',
+    taxableValue: 5000, taxAmount: 900, totalAmount: 5900,
+  };
+
+  it('lists only the lines where a rate was typed', async () => {
+    (prisma.bill.findMany as any).mockResolvedValue([
+      billWith([TAXED, typed], { generator: { firstName: 'Front', lastName: 'Desk' } }),
+    ]);
+    const r = await getRateOverrides(TENANT);
+    expect(r.totals.linesChecked).toBe(2);
+    expect(r.totals.overrides).toBe(1);
+    expect(r.rows[0]).toMatchObject({
+      description: 'Cosmetic touch-up',
+      ratePercent: 18,
+      taxAmount: 900,
+      rateSource: 'item_master',
+      raisedBy: 'Front Desk',
+    });
+  });
+
+  it('groups by who raised the document, and totals the tax they charged', async () => {
+    (prisma.bill.findMany as any).mockResolvedValue([
+      billWith([typed, typed], { generator: { firstName: 'Front', lastName: 'Desk' } }),
+    ]);
+    const r = await getRateOverrides(TENANT);
+    expect(r.byPerson).toEqual([{ person: 'Front Desk', lines: 2, taxCharged: 1800, value: 11800 }]);
+  });
+
+  // "Raised by" is the bill's author, not provably the person who typed the
+  // rate — the report has to say so rather than imply a precision it lacks.
+  it('says what "raised by" actually means, and that no reason is recorded', async () => {
+    (prisma.bill.findMany as any).mockResolvedValue([billWith([typed])]);
+    const r = await getRateOverrides(TENANT);
+    expect(r.notes.join(' ')).toMatch(/not provably the person who typed the rate/);
+    expect(r.notes.join(' ')).toMatch(/No reason is recorded/);
+  });
+
+  it('attributes a line to nobody rather than guessing when the bill has no author', async () => {
+    (prisma.bill.findMany as any).mockResolvedValue([billWith([typed], { generator: null })]);
+    const r = await getRateOverrides(TENANT);
+    expect(r.rows[0].raisedBy).toBeNull();
+    expect(r.byPerson[0].person).toBe('unattributed');
+  });
+
+  it('reports nothing when every rate came from a master', async () => {
+    (prisma.bill.findMany as any).mockResolvedValue([billWith([TAXED])]);
+    const r = await getRateOverrides(TENANT);
+    expect(r.totals.overrides).toBe(0);
+    expect(r.byPerson).toEqual([]);
   });
 });
