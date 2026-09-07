@@ -17,6 +17,7 @@ import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { isGstTreatment, normalizeHsnSac, type GstTreatment } from '../../shared/gst';
 import type { MasterMatch } from '../../shared/gst-determination';
+import { recordRateChange } from './gst-rate-log';
 
 /**
  * What a master row's treatment is, tolerating a row saved before the column
@@ -138,7 +139,7 @@ function reconcile(rate: number, treatment: GstTreatment | undefined): {
   return { gstRate: Math.max(0, rate), treatment: 'taxable' };
 }
 
-export async function createSacCode(roles: string[], data: SacCodeInput) {
+export async function createSacCode(roles: string[], data: SacCodeInput, changedBy?: string | null) {
   assertCanManage(roles);
   const sacCode = normalizeHsnSac(data.sacCode);
   if (!sacCode) throw AppError.badRequest('SAC code must contain digits');
@@ -158,10 +159,26 @@ export async function createSacCode(roles: string[], data: SacCodeInput) {
     },
   });
   logger.info({ sacCodeId: row.id, sacCode }, 'SAC → GST rate created');
+  await recordRateChange({
+    codeType: 'sac',
+    code: sacCode,
+    description: row.description,
+    previousRate: null,
+    newRate: gstRate,
+    previousTreatment: null,
+    newTreatment: treatment,
+    action: 'create',
+    changedBy,
+  });
   return { ...row, gstRate: Number(row.gstRate) };
 }
 
-export async function updateSacCode(roles: string[], id: string, data: Partial<SacCodeInput>) {
+export async function updateSacCode(
+  roles: string[],
+  id: string,
+  data: Partial<SacCodeInput>,
+  changedBy?: string | null,
+) {
   assertCanManage(roles);
   const existing = await prisma.sacCode.findUnique({ where: { id } });
   if (!existing) throw AppError.notFound('SAC entry not found');
@@ -185,6 +202,17 @@ export async function updateSacCode(roles: string[], id: string, data: Partial<S
     },
   });
   logger.info({ sacCodeId: id }, 'SAC → GST rate updated');
+  await recordRateChange({
+    codeType: 'sac',
+    code: row.sacCode,
+    description: row.description,
+    previousRate: Number(existing.gstRate),
+    newRate: Number(row.gstRate),
+    previousTreatment: readTreatment(existing.treatment, Number(existing.gstRate)),
+    newTreatment: treatment,
+    action: 'update',
+    changedBy,
+  });
   return { ...row, gstRate: Number(row.gstRate) };
 }
 
@@ -192,11 +220,24 @@ export async function updateSacCode(roles: string[], id: string, data: Partial<S
  * Deactivated, never deleted. A code that priced a bill last year has to stay
  * resolvable, or that bill can no longer be explained.
  */
-export async function deactivateSacCode(roles: string[], id: string) {
+export async function deactivateSacCode(roles: string[], id: string, changedBy?: string | null) {
   assertCanManage(roles);
   const existing = await prisma.sacCode.findUnique({ where: { id } });
   if (!existing) throw AppError.notFound('SAC entry not found');
   await prisma.sacCode.update({ where: { id }, data: { isActive: false } });
   logger.info({ sacCodeId: id }, 'SAC → GST rate deactivated');
+  // A deactivation changes what an item resolves to as surely as a re-rating
+  // does — the engine falls through to the next rule — so it is logged too.
+  await recordRateChange({
+    codeType: 'sac',
+    code: existing.sacCode,
+    description: existing.description,
+    previousRate: Number(existing.gstRate),
+    newRate: null,
+    previousTreatment: readTreatment(existing.treatment, Number(existing.gstRate)),
+    newTreatment: null,
+    action: 'deactivate',
+    changedBy,
+  });
   return { id };
 }

@@ -474,3 +474,129 @@ export async function getRateOverrides(tenantId: string, query: SalesReportQuery
   };
 }
 
+/**
+ * C-8 — Rate Change Impact.
+ *
+ * What changed on a tax master, when, by whom — and, for each change, the bill
+ * lines that carried that code either side of it. "Which items were affected"
+ * is answered with rows rather than an estimate: the lines are counted from the
+ * register, split at the moment of the change.
+ *
+ * Why the split matters. A line billed BEFORE the change keeps the rate that
+ * applied on the day — that is the whole point of freezing the tax onto the
+ * line — so it is not restated. A line billed AFTER carries the new one. If
+ * lines after a change still carry the old rate, the masters and the bills have
+ * fallen out of step, and that is the finding worth having.
+ *
+ * The log is platform-wide, because a change to HSN 3004 changes it for every
+ * hospital at once. The IMPACT is scoped to this hospital's own bills.
+ */
+export async function getRateChangeImpact(
+  tenantId: string,
+  query: { from?: string; to?: string } = {},
+) {
+  const { from, to } = dateRange(query);
+
+  const changes = await prisma.gstRateChange.findMany({
+    where: {
+      ...(from || to ? { changedAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {}),
+    },
+    orderBy: { changedAt: 'desc' },
+    include: { changer: { select: { firstName: true, lastName: true } } },
+  });
+
+  if (changes.length === 0) {
+    return {
+      period: { from: query.from ?? null, to: query.to ?? null },
+      changes: [],
+      totals: { changes: 0, linesAffected: 0, outOfStep: 0 },
+      notes: [
+        'Nothing on a tax master changed in this period.',
+        'This log starts from the day it was added — a rate that moved before then is not in it.',
+      ],
+    };
+  }
+
+  // One pass over the affected lines rather than a query per change.
+  const codes = [...new Set(changes.map((c) => c.code))];
+  const lines = await prisma.billItem.findMany({
+    where: {
+      hsnSacCode: { in: codes },
+      bill: { tenantId, status: { not: 'draft' } },
+    },
+    select: {
+      hsnSacCode: true, taxPercent: true, taxAmount: true, totalAmount: true,
+      description: true, createdAt: true,
+      bill: { select: { billNumber: true, invoiceNumber: true, billDate: true } },
+    },
+  });
+
+  const byCode = new Map<string, typeof lines>();
+  for (const l of lines) {
+    const key = l.hsnSacCode!;
+    const list = byCode.get(key) ?? [];
+    list.push(l);
+    byCode.set(key, list);
+  }
+
+  const rows = changes.map((c) => {
+    const affected = byCode.get(c.code) ?? [];
+    const before = affected.filter((l) => l.createdAt < c.changedAt);
+    const after = affected.filter((l) => l.createdAt >= c.changedAt);
+    const newRate = c.newRate == null ? null : Number(c.newRate);
+    // Billed after the change but still carrying the old rate. The masters and
+    // the bills have fallen out of step, and this is the finding.
+    const outOfStep =
+      newRate == null ? [] : after.filter((l) => Number(l.taxPercent) !== newRate);
+
+    const sum = (list: typeof affected, pick: (l: (typeof affected)[number]) => number) =>
+      r2(list.reduce((t, l) => t + pick(l), 0));
+
+    return {
+      id: c.id,
+      changedAt: c.changedAt,
+      changedBy: c.changer ? fullName(c.changer) : null,
+      codeType: c.codeType,
+      code: c.code,
+      description: c.description,
+      action: c.action,
+      previousRate: c.previousRate == null ? null : Number(c.previousRate),
+      newRate,
+      previousTreatment: c.previousTreatment,
+      newTreatment: c.newTreatment,
+      linesBefore: {
+        count: before.length,
+        taxCharged: sum(before, (l) => Number(l.taxAmount)),
+        value: sum(before, (l) => Number(l.totalAmount)),
+      },
+      linesAfter: {
+        count: after.length,
+        taxCharged: sum(after, (l) => Number(l.taxAmount)),
+        value: sum(after, (l) => Number(l.totalAmount)),
+      },
+      outOfStep: outOfStep.map((l) => ({
+        billNumber: l.bill?.invoiceNumber ?? l.bill?.billNumber ?? null,
+        billDate: l.bill?.billDate ?? null,
+        description: l.description,
+        ratePercent: Number(l.taxPercent),
+        taxAmount: Number(l.taxAmount),
+      })),
+    };
+  });
+
+  return {
+    period: { from: query.from ?? null, to: query.to ?? null },
+    changes: rows,
+    totals: {
+      changes: rows.length,
+      linesAffected: rows.reduce((t, r) => t + r.linesBefore.count + r.linesAfter.count, 0),
+      outOfStep: rows.reduce((t, r) => t + r.outOfStep.length, 0),
+    },
+    notes: [
+      'A line billed BEFORE a change keeps the rate that applied on the day — that is what freezing the tax onto the line is for, and it is not restated here.',
+      'A line billed AFTER a change that still carries the old rate is listed as out of step: the masters and the bills have parted company.',
+      'This log starts from the day it was added — a rate that moved before then is not in it.',
+    ],
+  };
+}
+

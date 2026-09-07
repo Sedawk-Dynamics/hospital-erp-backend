@@ -329,6 +329,14 @@ gstRoutes.get(
   report('Department-wise GST', (t, q) => control.getDepartmentGst(t, q as never)),
 );
 
+/** C-8 — Rate Change Impact: what moved on a master, and what it touched. */
+gstRoutes.get(
+  '/reports/rate-changes',
+  ...gstReportAccess,
+  validate(periodQuerySchema),
+  report('Rate change impact', (t, q) => control.getRateChangeImpact(t, q as never)),
+);
+
 /** C-9 — Cancelled and Amended Invoices. */
 gstRoutes.get(
   '/reports/cancelled-invoices',
@@ -380,7 +388,7 @@ gstRoutes.post(
   validate(sacBodySchema),
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
-      const data = await masters.createSacCode(req.user!.roles, req.body);
+      const data = await masters.createSacCode(req.user!.roles, req.body, req.user!.userId);
       sendResponse({ res, statusCode: 201, message: 'SAC code added', data });
     } catch (err) {
       next(err);
@@ -400,7 +408,12 @@ gstRoutes.patch(
   ),
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
-      const data = await masters.updateSacCode(req.user!.roles, String(req.params.id), req.body);
+      const data = await masters.updateSacCode(
+        req.user!.roles,
+        String(req.params.id),
+        req.body,
+        req.user!.userId,
+      );
       sendResponse({ res, message: 'SAC code updated', data });
     } catch (err) {
       next(err);
@@ -420,7 +433,11 @@ gstRoutes.delete(
   validate(z.object({ params: z.object({ id: z.string().uuid() }) })),
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
-      const data = await masters.deactivateSacCode(req.user!.roles, String(req.params.id));
+      const data = await masters.deactivateSacCode(
+        req.user!.roles,
+        String(req.params.id),
+        req.user!.userId,
+      );
       sendResponse({ res, message: 'SAC code deactivated', data });
     } catch (err) {
       next(err);

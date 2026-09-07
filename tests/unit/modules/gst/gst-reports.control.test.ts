@@ -8,6 +8,7 @@ import {
   getDepartmentGst,
   getCancelledInvoices,
   getRateOverrides,
+  getRateChangeImpact,
 } from '../../../../src/modules/gst/gst-reports.control';
 
 const TENANT = 'tenant-1';
@@ -325,5 +326,83 @@ describe('getRateOverrides (C-5)', () => {
     const r = await getRateOverrides(TENANT);
     expect(r.totals.overrides).toBe(0);
     expect(r.byPerson).toEqual([]);
+  });
+});
+
+describe('getRateChangeImpact (C-8)', () => {
+  const change = (over: Record<string, unknown> = {}) => ({
+    id: 'rc1',
+    changedAt: new Date('2026-09-10T00:00:00Z'),
+    codeType: 'hsn',
+    code: '3004',
+    description: 'Medicaments',
+    action: 'update',
+    previousRate: 12,
+    newRate: 5,
+    previousTreatment: 'taxable',
+    newTreatment: 'taxable',
+    changer: { firstName: 'Super', lastName: 'Admin' },
+    ...over,
+  });
+
+  const line = (createdAt: string, taxPercent: number) => ({
+    hsnSacCode: '3004',
+    taxPercent,
+    taxAmount: 100,
+    totalAmount: 1100,
+    description: 'Paracetamol',
+    createdAt: new Date(createdAt),
+    bill: { billNumber: 'BILL-1', invoiceNumber: 'INV/1', billDate: new Date(createdAt) },
+  });
+
+  function seed(changes: unknown[], lines: unknown[] = []) {
+    (prisma.gstRateChange.findMany as any).mockResolvedValue(changes);
+    (prisma.billItem.findMany as any).mockResolvedValue(lines);
+  }
+
+  it('splits the affected lines at the moment of the change', async () => {
+    seed([change()], [line('2026-09-05T00:00:00Z', 12), line('2026-09-15T00:00:00Z', 5)]);
+    const r = await getRateChangeImpact(TENANT);
+    expect(r.changes[0]).toMatchObject({
+      code: '3004', previousRate: 12, newRate: 5, changedBy: 'Super Admin',
+    });
+    expect(r.changes[0].linesBefore.count).toBe(1);
+    expect(r.changes[0].linesAfter.count).toBe(1);
+  });
+
+  // A line billed before the change keeps the rate that applied on the day —
+  // freezing the tax onto the line is the whole point — so it is NOT out of step.
+  it('does not call a line billed before the change out of step', async () => {
+    seed([change()], [line('2026-09-05T00:00:00Z', 12)]);
+    const r = await getRateChangeImpact(TENANT);
+    expect(r.changes[0].outOfStep).toEqual([]);
+    expect(r.totals.outOfStep).toBe(0);
+  });
+
+  // Billed AFTER the change and still carrying the old rate: the masters and
+  // the bills have parted company, and that is the finding.
+  it('flags a line billed after the change that still carries the old rate', async () => {
+    seed([change()], [line('2026-09-15T00:00:00Z', 12)]);
+    const r = await getRateChangeImpact(TENANT);
+    expect(r.changes[0].outOfStep).toHaveLength(1);
+    expect(r.changes[0].outOfStep[0]).toMatchObject({ ratePercent: 12, billNumber: 'INV/1' });
+    expect(r.totals.outOfStep).toBe(1);
+  });
+
+  it('says so plainly when nothing changed, rather than showing an empty table', async () => {
+    seed([]);
+    const r = await getRateChangeImpact(TENANT);
+    expect(r.changes).toEqual([]);
+    expect(r.notes[0]).toMatch(/Nothing on a tax master changed/);
+    // Never queries the bill lines when there is no change to attribute to them.
+    expect(prisma.billItem.findMany).not.toHaveBeenCalled();
+  });
+
+  it('records a deactivation as a change too', async () => {
+    seed([change({ action: 'deactivate', newRate: null, newTreatment: null })]);
+    const r = await getRateChangeImpact(TENANT);
+    expect(r.changes[0]).toMatchObject({ action: 'deactivate', newRate: null });
+    // No new rate means nothing to compare a later line against.
+    expect(r.changes[0].outOfStep).toEqual([]);
   });
 });

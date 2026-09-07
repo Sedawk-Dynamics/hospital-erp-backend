@@ -214,7 +214,7 @@ export async function createHsnGstRate(
   next: NextFunction,
 ) {
   try {
-    const row = await service.createHsnGstRate(req.user!.roles ?? [], req.body);
+    const row = await service.createHsnGstRate(req.user!.roles ?? [], req.body, req.user!.userId);
     sendResponse({ res, statusCode: 201, message: 'HSN → GST rate added', data: row });
   } catch (err) {
     next(err);
@@ -245,7 +245,12 @@ export async function updateHsnGstRate(
   next: NextFunction,
 ) {
   try {
-    const row = await service.updateHsnGstRate(req.user!.roles ?? [], req.params.id as string, req.body);
+    const row = await service.updateHsnGstRate(
+      req.user!.roles ?? [],
+      req.params.id as string,
+      req.body,
+      req.user!.userId,
+    );
     sendResponse({ res, message: 'HSN → GST rate updated', data: row });
   } catch (err) {
     next(err);

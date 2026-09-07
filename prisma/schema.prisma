@@ -1712,6 +1712,7 @@ model User {
   hospitalFormsArchived          HospitalForm[]               @relation("HospitalFormArchiver")
   formSubmissions                HospitalFormSubmission[]     @relation("FormSubmitter")
   labTestTemplatesCreated        LabTestTemplate[]            @relation("LabTestTemplateCreator")
+  gstRateChanges                 GstRateChange[]
 
   @@unique([tenantId, email])
   @@map("users")
@@ -4287,6 +4288,35 @@ model SacCode {
 
   @@index([isActive])
   @@map("sac_codes")
+}
+
+/// Every change to a tax master, kept because a rate that moved explains a bill
+/// that suddenly costs a different amount.
+///
+/// PLATFORM data, like the masters themselves — there is no tenant column,
+/// because a change to 3004 changes it for every hospital at once, and that is
+/// exactly what makes the impact worth reporting.
+model GstRateChange {
+  id                String   @id @default(uuid())
+  /// 'hsn' or 'sac'. The two masters are separate tables and one log.
+  codeType          String   @map("code_type") @db.VarChar(8)
+  code              String   @db.VarChar(20)
+  description       String?  @db.VarChar(255)
+  previousRate      Decimal? @map("previous_rate") @db.Decimal(5, 2)
+  newRate           Decimal? @map("new_rate") @db.Decimal(5, 2)
+  previousTreatment String?  @map("previous_treatment") @db.VarChar(20)
+  newTreatment      String?  @map("new_treatment") @db.VarChar(20)
+  /// 'create' | 'update' | 'deactivate' — a deactivation changes what an item
+  /// resolves to just as surely as a rate does.
+  action            String   @db.VarChar(12)
+  changedBy         String?  @map("changed_by")
+  changedAt         DateTime @default(now()) @map("changed_at")
+
+  changer User? @relation(fields: [changedBy], references: [id])
+
+  @@index([changedAt])
+  @@index([codeType, code])
+  @@map("gst_rate_changes")
 }
 
 // ============================================================

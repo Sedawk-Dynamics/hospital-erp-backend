@@ -5,6 +5,7 @@ import { writeStructuredSalts } from './salt-classification.service';
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
+import { recordRateChange } from '../gst/gst-rate-log';
 import { getPaginationParams } from '../../shared/pagination';
 import { makeMedicineRankComparator, mergePrefixFirst } from '../../shared/medicine-search-rank';
 import { fuzzyMatchIds } from '../../shared/medicine-fuzzy';
@@ -502,7 +503,11 @@ export async function listAllHsnGstRates() {
   return rows.map((r) => ({ ...r, gstRate: Number(r.gstRate) }));
 }
 
-export async function createHsnGstRate(roles: string[], data: CreateHsnGstRateInput) {
+export async function createHsnGstRate(
+  roles: string[],
+  data: CreateHsnGstRateInput,
+  changedBy?: string | null,
+) {
   assertCanManage(roles);
   const hsnCode = normalizeHsn(data.hsnCode);
   if (!hsnCode) throw AppError.badRequest('HSN code must contain digits');
@@ -517,6 +522,17 @@ export async function createHsnGstRate(roles: string[], data: CreateHsnGstRateIn
       },
     });
     logger.info({ hsnGstRateId: row.id, hsnCode }, 'HSN → GST rate created');
+    await recordRateChange({
+      codeType: 'hsn',
+      code: row.hsnCode,
+      description: row.description,
+      previousRate: null,
+      newRate: Number(row.gstRate),
+      previousTreatment: null,
+      newTreatment: row.treatment,
+      action: 'create',
+      changedBy,
+    });
     return { ...row, gstRate: Number(row.gstRate) };
   } catch (err) {
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
@@ -526,7 +542,12 @@ export async function createHsnGstRate(roles: string[], data: CreateHsnGstRateIn
   }
 }
 
-export async function updateHsnGstRate(roles: string[], id: string, data: UpdateHsnGstRateInput) {
+export async function updateHsnGstRate(
+  roles: string[],
+  id: string,
+  data: UpdateHsnGstRateInput,
+  changedBy?: string | null,
+) {
   assertCanManage(roles);
   const existing = await prisma.hsnGstRate.findUnique({ where: { id } });
   if (!existing) throw AppError.notFound('HSN → GST rate not found');
@@ -545,6 +566,19 @@ export async function updateHsnGstRate(roles: string[], id: string, data: Update
       },
     });
     logger.info({ hsnGstRateId: id }, 'HSN → GST rate updated');
+    await recordRateChange({
+      codeType: 'hsn',
+      code: row.hsnCode,
+      description: row.description,
+      previousRate: Number(existing.gstRate),
+      newRate: Number(row.gstRate),
+      previousTreatment: existing.treatment,
+      newTreatment: row.treatment,
+      // Deactivating a code changes what an item resolves to as surely as
+      // re-rating it does; the engine falls through to the next rule.
+      action: data.isActive === false && existing.isActive ? 'deactivate' : 'update',
+      changedBy,
+    });
     return { ...row, gstRate: Number(row.gstRate) };
   } catch (err) {
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
