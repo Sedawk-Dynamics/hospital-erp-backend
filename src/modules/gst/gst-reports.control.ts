@@ -362,10 +362,14 @@ export async function getSeriesContinuity(tenantId: string, query: { financialYe
     push('credit_note', c.financialYear, c.creditNoteNumber, 'issued', c.issueDate, null);
   }
   for (const v of vouchers) {
+    // Guarded rather than asserted. The query filters on `voucherNumber: { not:
+    // null }`, but a report must not fall over if a row without one reaches it —
+    // and a series continuity report crashing is worse than one row missing.
+    if (!v.voucherNumber) continue;
     // A voucher carries no financial-year column of its own; the year is in the
     // number it was allotted ("RV/2026-27/000004").
-    const fy = v.voucherNumber!.split('/')[1] ?? null;
-    push(String(v.voucherType ?? 'receipt_voucher'), fy, v.voucherNumber!, 'issued', v.paymentDate, null);
+    const fy = v.voucherNumber.split('/')[1] ?? null;
+    push(String(v.voucherType ?? 'receipt_voucher'), fy, v.voucherNumber, 'issued', v.paymentDate, null);
   }
 
   const rows = series.map((s) => {
