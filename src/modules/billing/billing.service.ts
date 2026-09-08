@@ -3925,7 +3925,10 @@ async function resolveTransferPolicy(tenantId: string, patientId: string, opts: 
   if (opts.policyId) {
     return prisma.insurancePolicy.findFirst({
       where: { id: opts.policyId, tenantId },
-      include: { insurer: { select: { id: true, name: true } }, tpa: { select: { id: true, name: true } } },
+      include: {
+        insurer: { select: { id: true, name: true, gstin: true, stateCode: true } },
+        tpa: { select: { id: true, name: true, gstin: true, stateCode: true } },
+      },
     });
   }
   if (opts.newPolicy?.insurerName?.trim()) {
@@ -3952,7 +3955,10 @@ async function resolveTransferPolicy(tenantId: string, patientId: string, opts: 
         validTo: new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000),
         status: 'active',
       },
-      include: { insurer: { select: { id: true, name: true } }, tpa: { select: { id: true, name: true } } },
+      include: {
+        insurer: { select: { id: true, name: true, gstin: true, stateCode: true } },
+        tpa: { select: { id: true, name: true, gstin: true, stateCode: true } },
+      },
     });
   }
   // Default (one-click handoff): use the patient's active policy if the insurance
@@ -3962,7 +3968,12 @@ async function resolveTransferPolicy(tenantId: string, patientId: string, opts: 
   const active = await insurance.findActivePolicyForPatient(tenantId, patientId);
   if (active) return active;
 
-  const policyInclude = { insurer: { select: { id: true, name: true } }, tpa: { select: { id: true, name: true } } };
+  // The payer's tax identity comes back with the policy: it decides whether
+  // this bill is a B2B invoice and which state the supply is made in.
+  const policyInclude = {
+    insurer: { select: { id: true, name: true, gstin: true, stateCode: true } },
+    tpa: { select: { id: true, name: true, gstin: true, stateCode: true } },
+  };
   const existingPending = await prisma.insurancePolicy.findFirst({
     where: { tenantId, patientId, status: 'active', policyNumber: { startsWith: 'PENDING-' } },
     include: policyInclude,
@@ -3986,6 +3997,44 @@ async function resolveTransferPolicy(tenantId: string, patientId: string, opts: 
   });
 }
 
+/**
+ * Put the payer's tax identity on the stay's bill, before it is finalised.
+ *
+ * The TPA pays, so the TPA is the recipient of the supply; where there is no
+ * TPA the insurer is. Their state is the PLACE OF SUPPLY, which is what decides
+ * CGST+SGST against IGST — a TPA registered in another state means IGST, which
+ * is acceptance scenario 21 and has never been reachable.
+ *
+ * Silent when neither party has a GSTIN on file. Most do not, and a hospital
+ * that has not filled it in should keep billing exactly as it does today.
+ */
+async function stampPayerOnAdmissionBill(
+  tenantId: string,
+  userId: string,
+  admissionId: string,
+  policy: {
+    insurer?: { gstin?: string | null; stateCode?: string | null } | null;
+    tpa?: { gstin?: string | null; stateCode?: string | null } | null;
+  },
+): Promise<void> {
+  const payer = policy.tpa?.gstin ? policy.tpa : policy.insurer?.gstin ? policy.insurer : null;
+  if (!payer?.gstin) return;
+  try {
+    const bill = await getOrCreateRunningIpBill(tenantId, admissionId, userId);
+    await prisma.bill.update({
+      where: { id: bill.id },
+      data: {
+        recipientGstin: payer.gstin,
+        placeOfSupplyStateCode: payer.stateCode ?? payer.gstin.slice(0, 2),
+      },
+    });
+  } catch (err) {
+    // A missing recipient makes the invoice B2C, which is what it was before.
+    // Failing the transfer over it would be worse.
+    logger.warn({ err, tenantId, admissionId }, 'Could not stamp the payer GSTIN on the IP bill');
+  }
+}
+
 export async function transferAdmissionToTpa(tenantId: string, userId: string, admissionId: string, opts: TransferToTpaOptions = {}) {
   const r2 = (n: number) => Math.round(n * 100) / 100;
   const admission = await prisma.admission.findFirst({
@@ -3994,13 +4043,29 @@ export async function transferAdmissionToTpa(tenantId: string, userId: string, a
   });
   if (!admission) throw AppError.notFound('Admission not found');
 
-  // 1. Consolidate all charges onto the SINGLE IP bill and finalize it.
+  // 1. Resolve the payer FIRST.
+  //
+  // The recipient's GSTIN is what turns this from a B2C hospital bill into a
+  // B2B tax invoice, and it decides CGST+SGST against IGST — but it has to be
+  // on the bill BEFORE it is finalised, because that is the moment the document
+  // is named and numbered. Resolving it afterwards, as this did, meant the
+  // GSTIN could never reach `issueDocumentForBill` and every TPA bill went out
+  // as an ordinary B2C document. Report A-4 was structurally empty for the same
+  // reason.
+  const insurance = await import('../insurance/insurance.service');
+  const policy = await resolveTransferPolicy(tenantId, admission.patientId, opts);
+  if (!policy) {
+    throw AppError.badRequest('No insurance policy for this patient. Enter the insurer / TPA + policy details when transferring, or add a policy in the Insurance module.');
+  }
+  await stampPayerOnAdmissionBill(tenantId, userId, admissionId, policy);
+
+  // 2. Consolidate all charges onto the SINGLE IP bill and finalize it.
   const { bill, itemCount } = await consolidateAdmissionBill(tenantId, userId, admissionId, { finalize: true });
   if (itemCount === 0) throw AppError.badRequest('No charges to bill yet — nothing to transfer to TPA.');
   const claimAmount = Number(bill.totalAmount);
   if (!(claimAmount > 0)) throw AppError.badRequest('Bill total is zero — nothing to claim.');
 
-  // 2. Block a duplicate transfer (a live claim already exists for this bill).
+  // 3. Block a duplicate transfer (a live claim already exists for this bill).
   const existing = await prisma.insuranceClaim.findFirst({
     where: { billId: bill.id, status: { notIn: ['cancelled', 'rejected'] } },
     select: { id: true, claimNumber: true, status: true },
@@ -4009,13 +4074,7 @@ export async function transferAdmissionToTpa(tenantId: string, userId: string, a
     throw AppError.badRequest(`This bill is already with the TPA (claim ${existing.claimNumber ?? existing.id}, ${existing.status}).`);
   }
 
-  // 3. Resolve the policy (explicit / inline-new / patient's active) + raise + split.
-  const insurance = await import('../insurance/insurance.service');
-  const policy = await resolveTransferPolicy(tenantId, admission.patientId, opts);
-  if (!policy) {
-    throw AppError.badRequest('No insurance policy for this patient. Enter the insurer / TPA + policy details when transferring, or add a policy in the Insurance module.');
-  }
-
+  // 4. Raise the claim and split the bill. The policy was resolved above.
   // Line-level split: only the INSURANCE-ELIGIBLE lines go to the TPA. A line is
   // claimed unless it's explicitly marked non-reimbursable (patient-only). The
   // patient always owes the non-reimbursable lines + whatever the insurer doesn't
