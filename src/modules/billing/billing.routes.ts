@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { Router } from 'express';
 import { authenticate } from '../../middleware/authenticate';
 import { requirePermission } from '../../middleware/authorize';
@@ -179,6 +180,26 @@ billingRoutes.put(
   requirePermission('billing', 'update'),
   validate(updateServiceTariffSchema),
   controller.updateServiceTariff,
+);
+
+/**
+ * The auditor's sign-off on a tariff's GST classification.
+ *
+ * Behind `billing:approve` rather than `billing:update`: the report is explicit
+ * that the item-to-code mapping is the hospital's CA or auditor's call, not the
+ * development team's and not a billing clerk's.
+ */
+billingRoutes.patch(
+  '/tariffs/:id/gst-approval',
+  authenticate,
+  requirePermission('billing', 'approve'),
+  validate(
+    z.object({
+      params: z.object({ id: z.string().uuid('Invalid tariff ID') }),
+      body: z.object({ approved: z.boolean() }),
+    }),
+  ),
+  controller.setServiceTariffGstApproval,
 );
 
 billingRoutes.delete(

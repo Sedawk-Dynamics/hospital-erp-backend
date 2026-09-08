@@ -940,6 +940,67 @@ export async function settleCredit(
 
 // --- Service Tariffs ---
 
+/**
+ * Approve a service tariff's GST classification — the auditor's sign-off.
+ *
+ * `gstApproved` is READ in two places and was WRITTEN nowhere, which made it
+ * permanently false on every tariff. That is not merely a missing feature: the
+ * IP charge path reads
+ *
+ *     itemRatePercent: tariff.gstApproved ? tariff.gstRatePercent : (data.taxRate ?? null)
+ *
+ * so because approval was impossible, the tariff's own configured rate was
+ * DISCARDED on every charge and a rate from the request stood in its place.
+ * The one control the report puts on classification — "the hospital's auditor
+ * signs off the mapping" — was inert, and the field it hangs on made things
+ * worse rather than doing nothing.
+ *
+ * Deliberately its own function rather than a field on update: approving a
+ * classification is a different act from editing a price, done by a different
+ * person, and it records who and when.
+ */
+export async function setServiceTariffGstApproval(
+  tenantId: string,
+  userId: string,
+  tariffId: string,
+  approved: boolean,
+) {
+  const tariff = await prisma.serviceTariff.findFirst({ where: { id: tariffId, tenantId } });
+  if (!tariff) throw AppError.notFound('Service tariff not found');
+
+  // Approving a classification that carries a rate the law does not recognise
+  // would be signing off an invoice the portal will reject.
+  if (approved && Number(tariff.gstRatePercent) > 0) {
+    const { checkSlabRate, describeSlabs } = await import('../../shared/gst-slabs');
+    const { legal, slabs } = await checkSlabRate(Number(tariff.gstRatePercent));
+    if (!legal) {
+      throw AppError.badRequest(
+        `${Number(tariff.gstRatePercent)}% is not a legal GST slab, so this classification ` +
+          `cannot be approved. Legal rates today are ${describeSlabs(slabs)}.`,
+      );
+    }
+  }
+  if (approved && !tariff.gstTreatment) {
+    throw AppError.badRequest(
+      'Set the tax treatment (taxable / exempt / nil-rated) before approving this classification.',
+    );
+  }
+
+  const updated = await prisma.serviceTariff.update({
+    where: { id: tariffId },
+    data: { gstApproved: approved },
+    select: {
+      id: true, serviceName: true, sacCode: true, gstTreatment: true,
+      gstRatePercent: true, isCosmetic: true, gstApproved: true,
+    },
+  });
+  logger.info(
+    { tenantId, tariffId, approved, by: userId },
+    approved ? 'Service tariff GST classification approved' : 'Service tariff GST approval withdrawn',
+  );
+  return updated;
+}
+
 export async function createServiceTariff(tenantId: string, data: CreateServiceTariffInput) {
   // Check for duplicate serviceCode within tenant
   if (data.code) {
@@ -960,6 +1021,14 @@ export async function createServiceTariff(tenantId: string, data: CreateServiceT
       category: mapToServiceTariffCategory(data.category) as any,
       basePrice: data.basePrice,
       gstRatePercent: data.taxRate ?? 0,
+      // The tariff's GST classification, which nothing could set. `sacCode`,
+      // `gstTreatment` and `isCosmetic` are columns the resolution chain reads —
+      // the SAC decides the rate for a service, and the cosmetic flag is the
+      // whole of how a hospital tells an exempt procedure from an 18% one — and
+      // neither create nor update ever wrote any of them.
+      sacCode: (data as any).sacCode ?? null,
+      gstTreatment: (data as any).gstTreatment ?? null,
+      isCosmetic: (data as any).isCosmetic ?? false,
       modality:
         (data as any).modality ??
         (mapToServiceTariffCategory(data.category) === 'radiology'
@@ -1030,6 +1099,17 @@ export async function updateServiceTariff(
   if (data.category !== undefined) updateData.category = mapToServiceTariffCategory(data.category);
   if (data.basePrice !== undefined) updateData.basePrice = data.basePrice;
   if (data.taxRate !== undefined) updateData.gstRatePercent = data.taxRate;
+  // The GST classification. Changing any of it WITHDRAWS the approval: an
+  // auditor signed off the classification that was there, not whatever it
+  // becomes afterwards.
+  const gstFields = ['sacCode', 'gstTreatment', 'isCosmetic'] as const;
+  let classificationChanged = data.taxRate !== undefined && data.taxRate !== Number(existing.gstRatePercent);
+  for (const f of gstFields) {
+    if ((data as any)[f] === undefined) continue;
+    updateData[f] = (data as any)[f];
+    if ((data as any)[f] !== (existing as any)[f]) classificationChanged = true;
+  }
+  if (classificationChanged && existing.gstApproved) updateData.gstApproved = false;
   if (data.isActive !== undefined) updateData.isActive = data.isActive;
   if ((data as any).modality !== undefined) {
     updateData.modality = (data as any).modality;

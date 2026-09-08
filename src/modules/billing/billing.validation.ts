@@ -19,6 +19,14 @@ export const createServiceTariffSchema = z.object({
     description: z.string().max(1000).optional(),
     basePrice: z.number().positive('Base price must be positive'),
     taxRate: z.number().min(0).max(100).default(0),
+    // The tariff's GST classification. `validate()` REPLACES req.body with the
+    // parsed object, so a field the schema does not name is silently dropped —
+    // these must be listed here or nothing reaches the writer. The SAC decides
+    // the rate for a service, and the cosmetic flag is the whole of how a
+    // hospital tells an exempt procedure from an 18% one.
+    sacCode: z.string().max(20).optional().nullable(),
+    gstTreatment: z.enum(['taxable', 'exempt', 'nil_rated', 'non_gst', 'zero_rated']).optional().nullable(),
+    isCosmetic: z.boolean().optional(),
     isActive: z.boolean().default(true),
     departmentId: z.string().uuid('Invalid department ID').optional(),
     // Imaging tariffs carry the modality so the doctor's order catalog can
@@ -50,6 +58,14 @@ export const updateServiceTariffSchema = z.object({
     description: z.string().max(1000).optional().nullable(),
     basePrice: z.number().positive().optional(),
     taxRate: z.number().min(0).max(100).optional(),
+    // The tariff's GST classification. `validate()` REPLACES req.body with the
+    // parsed object, so a field the schema does not name is silently dropped —
+    // these must be listed here or nothing reaches the writer. The SAC decides
+    // the rate for a service, and the cosmetic flag is the whole of how a
+    // hospital tells an exempt procedure from an 18% one.
+    sacCode: z.string().max(20).optional().nullable(),
+    gstTreatment: z.enum(['taxable', 'exempt', 'nil_rated', 'non_gst', 'zero_rated']).optional().nullable(),
+    isCosmetic: z.boolean().optional(),
     isActive: z.boolean().optional(),
     departmentId: z.string().uuid().optional().nullable(),
     modality: z

@@ -539,6 +539,39 @@ export async function getServiceTariffs(
   }
 }
 
+/**
+ * Approve (or withdraw approval of) a tariff's GST classification.
+ *
+ * Separate from updating the tariff because it is a different act by a
+ * different person: the report puts the item-to-code mapping in the hospital
+ * auditor's hands, not the billing clerk's, and this is the only thing that
+ * ever writes `gstApproved`.
+ */
+export async function setServiceTariffGstApproval(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.user!.tenantId;
+    const tariff = await billingService.setServiceTariffGstApproval(
+      tenantId,
+      req.user!.userId,
+      req.params.id as string,
+      Boolean((req.body as { approved: boolean }).approved),
+    );
+    sendResponse({
+      res,
+      message: tariff.gstApproved
+        ? 'GST classification approved'
+        : 'GST approval withdrawn',
+      data: tariff,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function updateServiceTariff(
   req: AuthenticatedRequest,
   res: Response,
