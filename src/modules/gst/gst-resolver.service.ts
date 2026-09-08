@@ -29,6 +29,9 @@ import {
   type TaxMasters,
 } from '../../shared/gst-determination';
 import { getGstProfile } from '../hospital-settings/hospital-settings.service';
+import {
+  loadGstSlabs, isLegalSlabRate, slabsOn, describeSlabs, type GstSlabWindow,
+} from '../../shared/gst-slabs';
 import { getHsnRows, getSacRows, matchLongestPrefix } from './gst-master.service';
 
 // ── Master cache ───────────────────────────────────────────────────────────
@@ -96,6 +99,18 @@ export interface TaxResolver {
     ctx: LineContext,
     money: { unitPrice: number; quantity: number; discountAmount?: number },
   ): PricedLine;
+  /**
+   * Whether a resolved rate is one the law recognises on this document's date.
+   *
+   * Deciding WHICH rate applies and deciding whether that rate EXISTS are
+   * different questions. Only the second catches a rate somebody typed onto a
+   * master years ago and never revisited — this database has pharmacy lines at
+   * 10% and 12%, neither of which is a slab.
+   */
+  isLegalRate(ratePercent: number, on?: Date): boolean;
+  /** The rates legal on this document's date, for the message on a refusal. */
+  legalRates(on?: Date): number[];
+  describeLegalRates(on?: Date): string;
 }
 
 /**
@@ -127,6 +142,17 @@ export async function taxResolverFor(tenantId: string, on: Date = new Date()): P
     masters = { hsn: [], sac: [], loadedAt: now };
   }
 
+  let slabs: GstSlabWindow[];
+  try {
+    slabs = await loadGstSlabs();
+  } catch (err) {
+    // An empty list means the check cannot be made, and `isLegalSlabRate`
+    // answers true in that case rather than refusing every bill in the
+    // hospital because a reference table would not read.
+    logger.warn({ err, tenantId }, 'GST slab master unreadable — the rate check is skipped');
+    slabs = [];
+  }
+
   const determine = (ctx: LineContext): TaxDetermination => {
     const full: SupplyContext = { ...ctx, on: ctx.on ?? on };
     const bundle: TaxMasters = {
@@ -142,6 +168,9 @@ export async function taxResolverFor(tenantId: string, on: Date = new Date()): P
   return {
     profile,
     determine,
+    isLegalRate: (ratePercent, when) => isLegalSlabRate(slabs, ratePercent, when ?? on),
+    legalRates: (when) => slabsOn(slabs, when ?? on),
+    describeLegalRates: (when) => describeSlabs(slabsOn(slabs, when ?? on)),
     price: (ctx, money) => {
       const determination = determine(ctx);
       return {
