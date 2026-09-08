@@ -11,6 +11,7 @@ import * as returns from './gst-reports.returns';
 import * as purchase from './gst-reports.purchase';
 import * as control from './gst-reports.control';
 import * as archive from './gst-reports.archive';
+import * as annual from './gst-reports.annual';
 import * as reconcile from './gst-reports.reconcile';
 import * as masters from './gst-master.service';
 
@@ -173,6 +174,40 @@ gstRoutes.get(
   ...gstReportAccess,
   validate(salesQuerySchema),
   report('Exempt, nil-rated and non-GST turnover', (t, q) => sales.getExemptTurnover(t, q as never)),
+);
+
+/**
+ * GSTR-9 — the annual return summary.
+ *
+ * Not a new set of figures: the monthly reports run once over a whole financial
+ * year, so the annual return cannot disagree with the twelve returns it
+ * summarises.
+ */
+gstRoutes.get(
+  '/reports/gstr9',
+  ...gstReportAccess,
+  validate(z.object({ query: z.object({ financialYear: z.string().regex(/^\d{4}-\d{2}$/).optional() }) })),
+  report('GSTR-9 annual return', (t, q) => annual.getGstr9Summary(t, q as never)),
+);
+
+/**
+ * GSTR-9C — the reconciliation working the accountant needs.
+ *
+ * The audited turnover comes from the financial statements, which are not held
+ * here; pass it in to complete the reconciliation.
+ */
+gstRoutes.get(
+  '/reports/gstr9c',
+  ...gstReportAccess,
+  validate(
+    z.object({
+      query: z.object({
+        financialYear: z.string().regex(/^\d{4}-\d{2}$/).optional(),
+        auditedTurnover: z.coerce.number().nonnegative().optional(),
+      }),
+    }),
+  ),
+  report('GSTR-9C reconciliation', (t, q) => annual.getGstr9cReconciliation(t, q as never)),
 );
 
 /** A-8 — GSTR-1, every table filled in and reconciled back to A-1. */
