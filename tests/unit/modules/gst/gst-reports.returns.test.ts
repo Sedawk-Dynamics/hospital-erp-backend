@@ -19,20 +19,29 @@ function note(over: Record<string, unknown> = {}) {
     patientId: 'p1',
     recipientGstin: null,
     placeOfSupplyStateCode: '27',
-    taxableValue: 1000,
-    cgstAmount: 25,
-    sgstAmount: 25,
+    // NEGATIVE, as production stores them: a note MIRRORS the bill's lines with
+    // the sign flipped, so summing a patient's documents nets to their real
+    // position. The fixture used to carry positive figures, which is what let a
+    // sign error in the set-off look correct.
+    taxableValue: -1000,
+    cgstAmount: -25,
+    sgstAmount: -25,
     igstAmount: 0,
     cessAmount: 0,
-    taxAmount: 50,
-    totalAmount: 1050,
+    taxAmount: -50,
+    totalAmount: -1050,
     withinTimeLimit: true,
-    items: [{ id: 'i1' }],
+    items: [{ id: 'i1', taxPercent: 5, taxableValue: -1000, cgstAmount: -25, sgstAmount: -25, igstAmount: 0, cessAmount: 0, taxAmount: -50, description: 'Reversed', hsnSacCode: '3004', quantity: 1 }],
     bill: {
       billNumber: 'BILL-1',
       invoiceNumber: 'INV/2026-27/000001',
       gstDocumentType: 'tax_invoice',
       billDate: new Date('2026-09-03T00:00:00Z'),
+      status: 'paid',
+      // The supply being reversed is still in the register, so the note is
+      // allowed to take it out. A voided bill's lines are deleted, and netting
+      // its note off as well would subtract the same supply twice.
+      _count: { billItems: 1 },
     },
     patient: { id: 'p1', mrn: 'MRN-1', firstName: 'Asha', lastName: 'Rao' },
     issuer: { firstName: 'Front', lastName: 'Desk' },
@@ -52,7 +61,9 @@ describe('getCreditNoteRegister (A-6)', () => {
       creditNoteNumber: 'CN/2026-27/000001',
       againstInvoiceNumber: 'INV/2026-27/000001',
       againstBillNumber: 'BILL-1',
-      taxAmount: 50,
+      // Negative, because that is how a note is stored — it mirrors the bill's
+      // lines with the sign flipped.
+      taxAmount: -50,
       reportable: true,
     });
     expect(r.rows[0].issuedBy).toBe('Front Desk');
@@ -75,8 +86,8 @@ describe('getCreditNoteRegister (A-6)', () => {
       note({ id: 'b' }),
     ]);
     const r = await getCreditNoteRegister(TENANT);
-    expect(r.summary.b2b).toMatchObject({ count: 1, taxAmount: 50 });
-    expect(r.summary.b2c).toMatchObject({ count: 1, taxAmount: 50 });
+    expect(r.summary.b2b).toMatchObject({ count: 1, taxAmount: -50 });
+    expect(r.summary.b2c).toMatchObject({ count: 1, taxAmount: -50 });
   });
 
   it('counts notes issued past the section 34 deadline', async () => {
@@ -178,7 +189,7 @@ describe('getGstr1Summary (A-8)', () => {
 
 describe('getGstr3bSummary (A-9)', () => {
   it('nets a credit note off the outward liability for the month', async () => {
-    seedAll([billWith([TAXED])], [note({ taxableValue: 1000, taxAmount: 50, cgstAmount: 25, sgstAmount: 25 })]);
+    seedAll([billWith([TAXED])], [note({ taxableValue: -1000, taxAmount: -50, cgstAmount: -25, sgstAmount: -25 })]);
     const r = await getGstr3bSummary(TENANT);
     expect(r.outwardTaxable).toMatchObject({ taxableValue: 7000, taxAmount: 350 });
   });

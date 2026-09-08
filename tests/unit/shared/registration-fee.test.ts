@@ -35,8 +35,12 @@ describe('mergeRegistrationFee', () => {
     expect(mergeRegistrationFee(DEFAULT_REGISTRATION_FEE, { amount: 199.999 }).amount).toBe(200);
   });
 
-  it('keeps GST inside a legal slab', () => {
-    expect(mergeRegistrationFee(DEFAULT_REGISTRATION_FEE, { gstRatePercent: 99 }).gstRatePercent).toBe(28);
+  it('bounds GST by the highest slab that has ever existed', () => {
+    // 40 rather than 28: 28% stopped being a slab on 22 September 2025 and was
+    // acting as this field's ceiling. Whether the value IS a slab today is
+    // checked where the setting is saved — clamping here would silently change
+    // a number the hospital typed.
+    expect(mergeRegistrationFee(DEFAULT_REGISTRATION_FEE, { gstRatePercent: 99 }).gstRatePercent).toBe(40);
     expect(mergeRegistrationFee(DEFAULT_REGISTRATION_FEE, { gstRatePercent: -5 }).gstRatePercent).toBe(0);
   });
 

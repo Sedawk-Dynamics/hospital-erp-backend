@@ -319,14 +319,44 @@ describe('Pharmacy — getters / CRUD / recalls coverage', () => {
 
   // ── GST + stock ledger ────────────────────────────────────
   describe('getGstReport', () => {
-    it('reverse-calculates taxable + GST from inclusive selling price', async () => {
-      (prisma.dispensingRecord.findMany as any).mockResolvedValue([
-        { quantityDispensed: 1, drugBatch: { sellingPrice: 112, drug: { id: 'd1', drugName: 'Amox', category: { id: 'c1', name: 'Antibiotic' } } } },
+    // This used to take a `gstRate` off the query, default it to 12, and apply
+    // that one rate to every dispense — ignoring the rate each line was
+    // actually billed at. It now folds the same bill lines the hospital files
+    // from, filtered to the pharmacy department, so a two-rate sale reports two
+    // rates instead of one average.
+    it('reports each line at the rate it was actually billed at', async () => {
+      (prisma.bill.findMany as any).mockResolvedValue([
+        {
+          id: 'b1', billNumber: 'PH-1', invoiceNumber: 'TI/2026-27/000001',
+          gstDocumentType: 'tax_invoice', billDate: new Date('2026-09-01T00:00:00Z'),
+          status: 'paid', financialYear: '2026-27', admissionId: null,
+          recipientGstin: null, placeOfSupplyStateCode: '27', isInterState: false,
+          patient: null, generator: null,
+          billItems: [
+            {
+              id: 'i1', description: 'Amox', category: 'pharmacy', quantity: 1,
+              unitPrice: 112, discountAmount: 0, hsnSacCode: '3004',
+              gstTreatment: 'taxable', taxPercent: 5, taxableValue: 106.67,
+              cgstAmount: 2.67, sgstAmount: 2.66, igstAmount: 0, cessAmount: 0,
+              taxAmount: 5.33, totalAmount: 112, rateSource: 'hsn_master',
+              requiresTaxResolution: false,
+            },
+            {
+              id: 'i2', description: 'Protein powder', category: 'pharmacy', quantity: 1,
+              unitPrice: 118, discountAmount: 0, hsnSacCode: '21069099',
+              gstTreatment: 'taxable', taxPercent: 18, taxableValue: 100,
+              cgstAmount: 9, sgstAmount: 9, igstAmount: 0, cessAmount: 0,
+              taxAmount: 18, totalAmount: 118, rateSource: 'hsn_master',
+              requiresTaxResolution: false,
+            },
+          ],
+        },
       ]);
-      const r = await getGstReport(TENANT_ID, { gstRate: 12 } as any);
-      // 112 inclusive @ 12% → taxable 100, GST 12
-      expect(r.summary.taxableValue).toBeCloseTo(100, 0);
-      expect(r.summary.totalGst).toBeCloseTo(12, 0);
+      const r = await getGstReport(TENANT_ID, {} as any);
+      expect(r.summary.totalSales).toBeCloseTo(230, 1);
+      expect(r.summary.totalGst).toBeCloseTo(23.33, 1);
+      // Two rates, kept apart — the old report would have flattened both to one.
+      expect(r.byRate.map((x) => x.ratePercent).sort((a, b) => a - b)).toEqual([5, 18]);
     });
   });
 
