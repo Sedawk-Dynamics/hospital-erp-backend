@@ -231,6 +231,21 @@ export async function reconcileGstr2b(
     books.set(key, cur);
   }
 
+  // Duplicates on the portal's side. Two rows for the same supplier and the
+  // same invoice number is a supplier who filed it twice, and claiming both is
+  // claiming credit that does not exist. The map above keeps only the last one,
+  // so without this pass the second simply vanished.
+  const portalSeen = new Map<string, number>();
+  const duplicates: Array<{
+    supplierGstin: string; supplierName: string | null; invoiceNumber: string;
+    times: number; taxAmount: number;
+  }> = [];
+  for (const d of statement?.rows ?? []) {
+    if (d.documentType !== 'invoice') continue;
+    const k = `${d.supplierGstin}:${d.matchKey}`;
+    portalSeen.set(k, (portalSeen.get(k) ?? 0) + 1);
+  }
+
   const portalRows = statement?.rows ?? [];
   const portal = new Map<string, (typeof portalRows)[number]>();
   for (const d of portalRows) {
@@ -238,11 +253,25 @@ export async function reconcileGstr2b(
     // reduces the credit but has no goods receipt behind it, so it is reported
     // on its own rather than forced into a bucket it does not belong in.
     if (d.documentType !== 'invoice') continue;
-    portal.set(`${d.supplierGstin}:${d.matchKey}`, d);
+    const k = `${d.supplierGstin}:${d.matchKey}`;
+    if (portal.has(k)) {
+      duplicates.push({
+        supplierGstin: d.supplierGstin,
+        supplierName: d.supplierName,
+        invoiceNumber: d.documentNumber,
+        times: portalSeen.get(k) ?? 2,
+        taxAmount: Number(d.taxAmount),
+      });
+      continue;
+    }
+    portal.set(k, d);
   }
 
   const matched: any[] = [];
+  /** Both sides have it and the TAX differs. */
   const mismatched: any[] = [];
+  /** Both sides agree on the money and disagree on the DATE. */
+  const dateMismatched: any[] = [];
   const inBooksOnly: any[] = [];
 
   for (const [key, b] of books) {
@@ -281,8 +310,26 @@ export async function reconcileGstr2b(
       itcBlockedReason: p.itcBlockedReason,
       supplierFiledOn: p.supplierFiledOn,
     };
-    if (Math.abs(taxDiff) <= MATCH_TOLERANCE && Math.abs(taxableDiff) <= MATCH_TOLERANCE) {
+    // A date difference is its own answer. The invoice matches, the money
+    // matches, and the supplier has dated it into a different period — which
+    // moves the credit, not the amount of it. Reported separately because the
+    // action is different: chase the date, do not re-check the figures.
+    const sameDay = (a: Date | null | undefined, b: Date | null | undefined) => {
+      if (!a || !b) return true;
+      return (
+        a.getUTCFullYear() === b.getUTCFullYear() &&
+        a.getUTCMonth() === b.getUTCMonth() &&
+        a.getUTCDate() === b.getUTCDate()
+      );
+    };
+    const datesAgree = sameDay(b.invoiceDate, p.documentDate);
+    const figuresAgree =
+      Math.abs(taxDiff) <= MATCH_TOLERANCE && Math.abs(taxableDiff) <= MATCH_TOLERANCE;
+
+    if (figuresAgree && datesAgree) {
       matched.push(row);
+    } else if (figuresAgree) {
+      dateMismatched.push(row);
     } else {
       mismatched.push(row);
     }
@@ -329,6 +376,71 @@ export async function reconcileGstr2b(
   );
   const noteAdjustment = r2(supplierNotes.reduce((t, n) => t + n.taxAmount, 0));
 
+  /**
+   * A second look at what fell into the two "only" buckets.
+   *
+   * The matcher keys on supplier GSTIN plus the punctuation-stripped invoice
+   * number, so a mistyped digit in either one puts the SAME invoice into both
+   * "in our books" and "on the portal" — two entries that look like two
+   * problems and are one. The review document asks for both cases by name.
+   *
+   * Paired on the tax amount, within the same tolerance the matcher uses,
+   * because that is the fact least likely to be mistyped on either side.
+   */
+  const numberMismatched: any[] = [];
+  const gstinMismatched: any[] = [];
+  {
+    const portalLeft = [...inPortalOnly];
+    for (const bk of [...inBooksOnly]) {
+      const byGstin = portalLeft.find(
+        (pr) =>
+          pr.supplierGstin === bk.supplierGstin &&
+          Math.abs(Number(pr.taxAmount) - Number(bk.taxAmount)) <= MATCH_TOLERANCE,
+      );
+      const byNumber = byGstin
+        ? null
+        : portalLeft.find(
+            (pr) =>
+              matchKeyFor(String(pr.invoiceNumber ?? '')) === matchKeyFor(String(bk.invoiceNumber ?? '')) &&
+              Math.abs(Number(pr.taxAmount) - Number(bk.taxAmount)) <= MATCH_TOLERANCE,
+          );
+      const hit = byGstin ?? byNumber;
+      if (!hit) continue;
+
+      const pairing = {
+        supplierName: bk.supplierName ?? hit.supplierName,
+        booksGstin: bk.supplierGstin,
+        portalGstin: hit.supplierGstin,
+        booksInvoiceNumber: bk.invoiceNumber,
+        portalInvoiceNumber: hit.invoiceNumber,
+        booksInvoiceDate: bk.invoiceDate,
+        portalInvoiceDate: hit.invoiceDate,
+        taxAmount: bk.taxAmount,
+      };
+      (byGstin ? numberMismatched : gstinMismatched).push(pairing);
+
+      // Taken out of both "only" lists: it is one problem, not two.
+      inBooksOnly.splice(inBooksOnly.indexOf(bk), 1);
+      inPortalOnly.splice(inPortalOnly.indexOf(hit), 1);
+      portalLeft.splice(portalLeft.indexOf(hit), 1);
+    }
+  }
+
+  /**
+   * A supplier's credit or debit note that we have not recorded against a
+   * purchase return of our own.
+   *
+   * The portal says the supplier has reduced (or increased) what they charged;
+   * B-6 says what we sent back. A note on the portal with nothing behind it is
+   * credit we may be about to claim and are not entitled to.
+   */
+  const noteMismatched = supplierNotes.filter((n) => {
+    const ours = purchases.filter(
+      (p) => (p.supplierGstin ?? '').toUpperCase() === n.supplierGstin,
+    );
+    return ours.length === 0;
+  });
+
   const { fullName } = await import('../../shared/person-name');
 
   return {
@@ -346,10 +458,21 @@ export async function reconcileGstr2b(
         }
       : null,
     matched,
+    /** Both sides have it; the TAX differs. */
     mismatched,
+    /** Both sides agree on the money; the supplier dated it differently. */
+    dateMismatched,
+    /** Same supplier, same money, different invoice number on the two sides. */
+    numberMismatched,
+    /** Same invoice number and money, different supplier GSTIN. */
+    gstinMismatched,
+    /** The portal has filed the same invoice more than once. */
+    duplicates,
     inPortalOnly,
     inBooksOnly,
     supplierNotes,
+    /** A supplier note with no purchase of ours behind it. */
+    noteMismatched,
     /** Purchases with no supplier GSTIN or no invoice number to match on. */
     unmatchable: unkeyed.map((p) => ({
       batchId: p.batchId,
@@ -363,6 +486,11 @@ export async function reconcileGstr2b(
     totals: {
       matched: { count: matched.length, taxAmount: sum(matched, 'booksTaxAmount') },
       mismatched: { count: mismatched.length, taxAmount: sum(mismatched, 'booksTaxAmount') },
+      dateMismatched: { count: dateMismatched.length, taxAmount: sum(dateMismatched, 'booksTaxAmount') },
+      numberMismatched: { count: numberMismatched.length, taxAmount: sum(numberMismatched, 'taxAmount') },
+      gstinMismatched: { count: gstinMismatched.length, taxAmount: sum(gstinMismatched, 'taxAmount') },
+      duplicates: { count: duplicates.length, taxAmount: sum(duplicates as never, 'taxAmount') },
+      noteMismatched: { count: noteMismatched.length, taxAmount: sum(noteMismatched as never, 'taxAmount') },
       inPortalOnly: { count: inPortalOnly.length, taxAmount: sum(inPortalOnly, 'taxAmount') },
       inBooksOnly: { count: inBooksOnly.length, taxAmount: sum(inBooksOnly, 'taxAmount') },
       unmatchable: { count: unkeyed.length, taxAmount: sum(unkeyed as never, 'taxAmount') },
@@ -382,6 +510,7 @@ export async function reconcileGstr2b(
       'Invoices are matched on supplier GSTIN plus the invoice number with punctuation stripped — "SUP/001" and "SUP-001" are the same invoice.',
       'The claimable figure uses the PORTAL’s tax, not ours, and only where the portal says the credit is available. Claiming our own figure where the two disagree is how a notice starts.',
       'This reconciles pharmacy and inventory purchases. Anything that does not arrive as a stock batch is not in the register and will appear as portal-only.',
+      'A mistyped digit in a GSTIN or an invoice number puts the SAME invoice into both "only" buckets. Those pairs are matched on the tax amount and reported once, as a number or GSTIN mismatch, rather than twice as two missing invoices.',
     ],
   };
 }
