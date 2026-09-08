@@ -85,11 +85,15 @@ export async function buildGstr1Json(
   query: SalesReportQuery & { sixDigit?: boolean } = {},
 ) {
   const { getGstProfile } = await import('../hospital-settings/hospital-settings.service');
-  const [profile, register, notes, hsn] = await Promise.all([
+  const { getAdvancesReport } = await import('./gst-reports.service');
+  const [profile, register, notes, hsn, advances] = await Promise.all([
     getGstProfile(tenantId),
     getSalesRegister(tenantId, query),
     getCreditNoteRegister(tenantId, query),
     getHsnSummary(tenantId, query),
+    // Table 11A. The summary has surfaced advances since it was written; the
+    // file had no `at` block at all.
+    getAdvancesReport(tenantId, query),
   ]);
 
   const taxable = register.rows.filter((l) => l.gstTreatment === 'taxable');
@@ -177,32 +181,107 @@ export async function buildGstr1Json(
     nilRow((l) => l.isInterState && !!l.recipientGstin, 'INTERB2B'),
   ].filter((r) => r.expt_amt > 0 || r.nil_amt > 0 || r.ngsup_amt > 0);
 
-  // ── 9B. Credit notes. Only ones against a numbered invoice can be filed. ──
+  // ── 9B. Credit and debit notes. Only ones against a numbered invoice can
+  //        be filed: Table 9B keys on the ORIGINAL document. ──
   const filable = notes.rows.filter((c) => c.reportable);
-  const cdnur = filable
-    .filter((c) => !c.recipientGstin)
-    .map((c) => ({
-      ntty: 'C',
-      nt_num: c.creditNoteNumber,
-      nt_dt: gstDate(c.issueDate),
-      inum: c.againstInvoiceNumber!,
-      idt: c.againstBillDate ? gstDate(c.againstBillDate) : undefined,
-      val: c.totalAmount,
-      pos: c.placeOfSupplyStateCode ?? profile.stateCode ?? '',
-      itms: [
-        {
-          num: 1,
-          itm_det: {
-            rt: 0,
-            txval: c.taxableValue,
-            iamt: c.igstAmount,
-            camt: c.cgstAmount,
-            samt: c.sgstAmount,
-            csamt: c.cessAmount,
+
+  /**
+   * A note's items grouped by rate, one `itm_det` per rate.
+   *
+   * The rate used to be the literal `0` on every note — a declared rate of 0%
+   * carrying Rs 12.97 of tax, which is a file the portal will not accept. The
+   * rate was available all along: `CreditNoteItem.taxPercent` is a column, and
+   * the register loaded the items and read only their count.
+   */
+  const noteItems = (c: (typeof notes.rows)[number]) => {
+    const byRate = new Map<
+      number,
+      { txval: number; iamt: number; camt: number; samt: number; csamt: number }
+    >();
+    for (const it of c.items ?? []) {
+      const rt = Number(it.taxPercent ?? 0);
+      const cur = byRate.get(rt) ?? { txval: 0, iamt: 0, camt: 0, samt: 0, csamt: 0 };
+      cur.txval = r2(cur.txval + Number(it.taxableValue ?? 0));
+      cur.iamt = r2(cur.iamt + Number(it.igstAmount ?? 0));
+      cur.camt = r2(cur.camt + Number(it.cgstAmount ?? 0));
+      cur.samt = r2(cur.samt + Number(it.sgstAmount ?? 0));
+      cur.csamt = r2(cur.csamt + Number(it.cessAmount ?? 0));
+      byRate.set(rt, cur);
+    }
+    // A legacy note with no line detail still has to appear, at its own header
+    // figures — leaving it out of the return would be worse than reporting it
+    // under a single rate.
+    if (byRate.size === 0) {
+      byRate.set(0, {
+        txval: c.taxableValue,
+        iamt: c.igstAmount,
+        camt: c.cgstAmount,
+        samt: c.sgstAmount,
+        csamt: c.cessAmount,
+      });
+    }
+    return [...byRate.entries()].map(([rt, v], i) => ({ num: i + 1, itm_det: { rt, ...v } }));
+  };
+
+  const noteHeader = (c: (typeof notes.rows)[number]) => ({
+    // 'C' for a credit note, 'D' for a debit note. It was hardcoded to 'C',
+    // which was true only because no debit note could be raised.
+    ntty: c.noteType === 'debit' ? 'D' : 'C',
+    nt_num: c.creditNoteNumber,
+    nt_dt: gstDate(c.issueDate),
+    inum: c.againstInvoiceNumber!,
+    idt: c.againstBillDate ? gstDate(c.againstBillDate) : undefined,
+    val: c.totalAmount,
+    pos: c.placeOfSupplyStateCode ?? profile.stateCode ?? '',
+    itms: noteItems(c),
+  });
+
+  const cdnur = filable.filter((c) => !c.recipientGstin).map(noteHeader);
+
+  /**
+   * Table 9B for REGISTERED recipients, keyed by their GSTIN.
+   *
+   * A note against a registered recipient used to be dropped on the floor: the
+   * builder mapped only the unregistered ones into `cdnur` and had no `cdnr`
+   * section at all, so a credit note to an insurer or a corporate simply
+   * vanished from the return.
+   */
+  const cdnrByGstin = new Map<string, Array<ReturnType<typeof noteHeader>>>();
+  for (const c of filable) {
+    if (!c.recipientGstin) continue;
+    const list = cdnrByGstin.get(c.recipientGstin) ?? [];
+    list.push(noteHeader(c));
+    cdnrByGstin.set(c.recipientGstin, list);
+  }
+  const cdnr = [...cdnrByGstin.entries()].map(([ctin, nt]) => ({ ctin, nt }));
+
+  // ── 11A. Advances received on which tax is due. ──
+  const posCode = profile.stateCode ?? '';
+  const due = advances.summary.taxDueOnAdvances;
+  const at =
+    due.taxableValue > 0
+      ? [
+          {
+            pos: posCode,
+            sply_ty: 'INTRA',
+            itms: [
+              {
+                rt: r2((due.taxAmount / due.taxableValue) * 100),
+                ad_amt: due.taxableValue,
+                iamt: due.igstAmount,
+                camt: due.cgstAmount,
+                samt: due.sgstAmount,
+                csamt: 0,
+              },
+            ],
           },
-        },
-      ],
-    }));
+        ]
+      : [];
+
+  // 11B (txpd) is deliberately NOT emitted. An advance adjusted against an
+  // invoice is recorded as an AMOUNT with no tax split of its own, and
+  // inventing one by apportioning the period's average rate would put a figure
+  // in a return that nothing here actually computed. The warning says so.
 
   // ── 12. HSN summary ──
   const hsnRows = hsn.byCode.map((c) => ({
@@ -231,6 +310,12 @@ export async function buildGstr1Json(
   if (b2cs.length) json.b2cs = b2cs;
   if (nilRows.length) json.nil = { inv: nilRows };
   if (cdnur.length) json.cdnur = cdnur;
+  if (cdnr.length) json.cdnr = cdnr;
+  // 11A — advances received on which tax is due. The summary has shown this on
+  // screen since it was written and the file left it out entirely, so the one
+  // figure the portal charges tax on before an invoice exists was declared
+  // nowhere.
+  if (at.length) json.at = at;
   if (hsnRows.length) json.hsn = { data: hsnRows };
 
   return {
@@ -246,6 +331,28 @@ export async function buildGstr1Json(
         : []),
       ...(register.rows.some((l) => !l.gstTreatment)
         ? ['Some lines have no tax treatment at all and are in no table. See the unmapped items report.']
+        : []),
+      // The one that gets a file REJECTED rather than merely queried. The
+      // portal validates the rate against the slabs in force, so a line at 2%,
+      // 10% or a post-2025 12% fails the upload — and the builder was emitting
+      // them without a word.
+      ...(() => {
+        const bad = register.rows.filter((l) => l.illegalRate);
+        if (bad.length === 0) return [];
+        const rates = [...new Set(bad.map((l) => l.taxRatePercent))].sort((a, b) => a - b);
+        return [
+          `${bad.length} line(s) carry a rate that was not a legal slab on the bill's own date ` +
+            `(${rates.map((r) => `${r}%`).join(', ')}, ` +
+            `\u20B9${r2(bad.reduce((t, l) => t + l.taxAmount, 0))} of tax). ` +
+            'The portal will reject the file. Correct them with a credit note and a fresh invoice ' +
+            'at the right rate.',
+        ];
+      })(),
+      ...(advances.summary.adjustedAgainstInvoices.amount > 0
+        ? [
+            `Table 11B (advances adjusted, \u20B9${advances.summary.adjustedAgainstInvoices.amount}) is not in the file: ` +
+              'an adjustment is recorded as an amount with no tax split of its own. Enter it on the portal by hand.',
+          ]
         : []),
     ],
   };

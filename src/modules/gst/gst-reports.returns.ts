@@ -97,6 +97,24 @@ export async function getCreditNoteRegister(tenantId: string, query: SalesReport
      */
     withinTimeLimit: c.withinTimeLimit,
     lineCount: c.items.length,
+    /**
+     * The line detail A-6's own column list asks for — "description, HSN/SAC,
+     * quantity, taxable value reversed" — and which the GSTR-1 builder needs to
+     * declare a real rate per line. The register loaded the items and read only
+     * their count, so the JSON had to hardcode 0% on every note.
+     */
+    items: c.items.map((i) => ({
+      description: i.description,
+      hsnSacCode: i.hsnSacCode,
+      quantity: i.quantity,
+      taxPercent: n(i.taxPercent),
+      taxableValue: n(i.taxableValue),
+      cgstAmount: n(i.cgstAmount),
+      sgstAmount: n(i.sgstAmount),
+      igstAmount: n(i.igstAmount),
+      cessAmount: n(i.cessAmount),
+      taxAmount: n(i.taxAmount),
+    })),
     /** No number on the original means Table 9B has nothing to key on. */
     reportable: !!c.bill?.invoiceNumber,
     /**
