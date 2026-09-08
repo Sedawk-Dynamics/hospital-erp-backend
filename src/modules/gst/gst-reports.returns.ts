@@ -60,6 +60,14 @@ export async function getCreditNoteRegister(tenantId: string, query: SalesReport
   const rows = notes.map((c) => ({
     id: c.id,
     creditNoteNumber: c.creditNoteNumber,
+    /**
+     * 'credit' or 'debit'. This register is called the Credit AND Debit Note
+     * Register and showed only one of them — and the reason it showed only one
+     * is that the system could not raise the other. GSTR-1 Table 9B reports
+     * them in the same block but distinguishes them, and an auditor reading a
+     * register that silently omits a document type will not know it is missing.
+     */
+    noteType: String(c.noteType ?? 'credit'),
     issueDate: c.issueDate,
     financialYear: c.financialYear,
     reason: c.reason,
@@ -110,6 +118,8 @@ export async function getCreditNoteRegister(tenantId: string, query: SalesReport
 
   const b2b = rows.filter((r) => !!r.recipientGstin);
   const b2c = rows.filter((r) => !r.recipientGstin);
+  const creditRows = rows.filter((r) => r.noteType !== 'debit');
+  const debitRows = rows.filter((r) => r.noteType === 'debit');
 
   return {
     period: { from: query.from ?? null, to: query.to ?? null },
@@ -131,6 +141,31 @@ export async function getCreditNoteRegister(tenantId: string, query: SalesReport
       notReportable: rows.filter((r) => !r.reportable).length,
       /** Against a voided invoice whose lines are gone — already out of A-1. */
       originalNotInRegister: rows.filter((r) => !r.originalInRegister).length,
+      /**
+       * The two document types, separately — which is what makes this a Credit
+       * AND Debit Note Register rather than a credit note register wearing the
+       * wrong title. A credit note's figures are negative and a debit note's
+       * positive, so summing them together would net two opposite corrections
+       * into one meaningless number.
+       */
+      credit: {
+        count: creditRows.length,
+        taxableValue: sum(creditRows, 'taxableValue'),
+        cgstAmount: sum(creditRows, 'cgstAmount'),
+        sgstAmount: sum(creditRows, 'sgstAmount'),
+        igstAmount: sum(creditRows, 'igstAmount'),
+        taxAmount: sum(creditRows, 'taxAmount'),
+        totalAmount: sum(creditRows, 'totalAmount'),
+      },
+      debit: {
+        count: debitRows.length,
+        taxableValue: sum(debitRows, 'taxableValue'),
+        cgstAmount: sum(debitRows, 'cgstAmount'),
+        sgstAmount: sum(debitRows, 'sgstAmount'),
+        igstAmount: sum(debitRows, 'igstAmount'),
+        taxAmount: sum(debitRows, 'taxAmount'),
+        totalAmount: sum(debitRows, 'totalAmount'),
+      },
     },
   };
 }
