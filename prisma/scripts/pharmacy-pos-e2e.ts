@@ -132,7 +132,7 @@ async function main() {
       composition: 'Paracetamol (500mg)',
       strength: '500mg', dosageForm: 'tablet', unitOfMeasurement: 'tablet',
       packSize: 10, looseUnitLabel: 'tablet',
-      price: 2, taxPercent: 12, hsnCode: '3004',
+      price: 2, taxPercent: 5, hsnCode: '3004',
       schedule: 'OTC',
     } as never,
   });
@@ -144,7 +144,7 @@ async function main() {
       purchasePrice: 1.2, sellingPrice: 2, mrp: 2,
     } as never,
   });
-  ck('a 10-tablet strip at MRP 2, 12% GST inside it', (await qty(batch.id)) === START);
+  ck('a 10-tablet strip at MRP 2, 5% GST inside it', (await qty(batch.id)) === START);
 
   const line = (n: number, over: Record<string, unknown> = {}) => ({
     drugBatchId: batch.id, quantity: n, saleUnit: 'pack', ...over,
@@ -160,7 +160,7 @@ async function main() {
   ck('billed at 30 x 2', near(money(bill1?.totalAmount), 60), `${bill1?.totalAmount}`);
   ck(
     'GST is derived out of the MRP, not added on top',
-    near(money(bill1?.taxAmount), 6.43),
+    near(money(bill1?.taxAmount), 2.86),
     `tax ${bill1?.taxAmount} on a total of ${bill1?.totalAmount}`,
   );
   ck('paid in full', bill1?.status === 'paid' && near(money(bill1?.balanceDue), 0), `${bill1?.status}`);
@@ -228,7 +228,7 @@ async function main() {
   ck('the discount is reported as the sum of both', near(money(billOf(disc)?.discountAmount), 15), `${billOf(disc)?.discountAmount}`);
   ck(
     'and the GST shrinks with the bill, rather than staying at the undiscounted figure',
-    near(money(billOf(disc)?.taxAmount), 9.11, 0.05),
+    near(money(billOf(disc)?.taxAmount), 4.05, 0.05),
     `tax ${billOf(disc)?.taxAmount} on ${billOf(disc)?.totalAmount}`,
   );
 
@@ -267,7 +267,7 @@ async function main() {
       tenantId: TENANT, drugName: `${TAG} Alprazolam 0.5`, genericName: 'Alprazolam',
       composition: 'Alprazolam (0.5mg)', strength: '0.5mg',
       dosageForm: 'tablet', unitOfMeasurement: 'tablet', packSize: 10,
-      price: 5, taxPercent: 12, hsnCode: '3004',
+      price: 5, taxPercent: 5, hsnCode: '3004',
       schedule: 'X', scheduleReason: 'Schedule X', controlledClass: 'psychotropic',
     } as never,
   });

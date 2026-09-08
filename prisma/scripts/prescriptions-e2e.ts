@@ -155,7 +155,7 @@ async function main() {
       composition: 'Amoxicillin (500mg)', strength: '500mg',
       dosageForm: 'capsule', unitOfMeasurement: 'capsule',
       packSize: 10, looseUnitLabel: 'capsule',
-      price: 5, taxPercent: 12, hsnCode: '3004', schedule: 'H', isActive: true,
+      price: 5, taxPercent: 5, hsnCode: '3004', schedule: 'H', isActive: true,
     } as never,
   });
   const batch: any = await p.drugBatch.create({

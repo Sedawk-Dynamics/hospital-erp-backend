@@ -126,7 +126,7 @@ async function main() {
       dosageForm: 'tablet',
       unitOfMeasurement: 'tablet',
       price: 10,
-      taxPercent: 12,
+      taxPercent: 5,
     } as never,
   });
   const batch: any = await p.drugBatch.create({

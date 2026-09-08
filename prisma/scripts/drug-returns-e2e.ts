@@ -119,6 +119,12 @@ async function main() {
     await p.billItem.deleteMany({ where: { billId: { in: bills } } });
     await p.bill.deleteMany({ where: { id: { in: bills } } });
     await p.drugBatch.deleteMany({ where: { drugId: { in: ids } } });
+    // The NDPS register holds a balance and a transaction row per controlled
+    // drug, both with RESTRICT on the formulary. A fixture that was ever
+    // treated as controlled blocks its own sweep for ever otherwise.
+    await p.ndpsTransaction.deleteMany({ where: { drugFormularyId: { in: ids } } }).catch(() => {});
+    await p.ndpsDailyBalance.deleteMany({ where: { drugFormularyId: { in: ids } } }).catch(() => {});
+    await p.ndpsStockBalance.deleteMany({ where: { drugFormularyId: { in: ids } } }).catch(() => {});
     await p.drugFormulary.deleteMany({ where: { id: { in: ids } } });
     console.log(`  (swept ${stale.length} leftover fixture drug(s) from an earlier run)`);
   }
@@ -132,7 +138,7 @@ async function main() {
       composition: 'Paracetamol (500mg)', strength: '500mg',
       dosageForm: 'tablet', unitOfMeasurement: 'tablet',
       packSize: 10, looseUnitLabel: 'tablet',
-      price: 2, taxPercent: 12, hsnCode: '3004', schedule: 'OTC',
+      price: 2, taxPercent: 5, hsnCode: '3004', schedule: 'OTC',
     } as never,
   });
   const batch: any = await p.drugBatch.create({
@@ -354,7 +360,7 @@ async function main() {
       tenantId: TENANT, drugName: `${TAG} Alprazolam 0.5`, genericName: 'Alprazolam',
       composition: 'Alprazolam (0.5mg)', strength: '0.5mg',
       dosageForm: 'tablet', unitOfMeasurement: 'tablet', packSize: 10,
-      price: 5, taxPercent: 12, hsnCode: '3004',
+      price: 5, taxPercent: 5, hsnCode: '3004',
       schedule: 'X', scheduleReason: 'Schedule X', controlledClass: 'psychotropic',
       isNarcotic: true, vaultControlled: true,
     } as never,
