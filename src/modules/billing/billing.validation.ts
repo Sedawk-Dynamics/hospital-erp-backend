@@ -523,6 +523,11 @@ export const pullChargesSchema = z.object({
           issuedForTreatment: z.boolean().optional(),
           isTakeHome: z.boolean().optional(),
           isCosmetic: z.boolean().optional(),
+          // The item's own classification, where its catalogue carries one.
+          gstTreatment: z
+            .enum(['taxable', 'exempt', 'nil_rated', 'non_gst', 'zero_rated'])
+            .nullish(),
+          gstApproved: z.boolean().optional(),
           dailyRate: z.number().nonnegative().optional(),
           bedType: z.string().max(50).nullish(),
           wardType: z.string().max(50).nullish(),

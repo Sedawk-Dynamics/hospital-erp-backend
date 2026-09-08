@@ -3602,7 +3602,22 @@ export async function billDiagnosticOrder(
       // Per line: the test's own code first, the diagnostics code second, and
       // the department fallback only where neither exists.
       sacCode: c.sacCode ?? DIAGNOSTIC_SAC,
-      taxRate: fallbackRate,
+      // The test's OWN classification, where the catalogue carries one. Both
+      // producers populate `gstTreatment` and it was read nowhere.
+      gstTreatment: c.gstTreatment ?? null,
+      // NOT the department average.
+      //
+      // `pullChargesToBill` feeds `taxRate` to the engine as `itemRatePercent`
+      // with a treatment derived from it, and step 5 (the item master) is
+      // resolved BEFORE step 6 (the SAC master). So stamping the category
+      // average here made it outrank every test's own SAC code — the exact
+      // inversion the resolution chain exists to prevent, and the report calls
+      // it out by name: "the rate comes from the individual test's own SAC
+      // code. The category default is only the fallback."
+      //
+      // The fallback now applies only where the line has no treatment of its
+      // own AND no code to resolve one from.
+      taxRate: c.gstTreatment || c.sacCode ? null : fallbackRate,
       category,
       patientAdmitted: payer.mode === 'ip',
       issuedForTreatment: payer.mode === 'ip',
@@ -3682,7 +3697,17 @@ export async function pullChargesToBill(
     description: string;
     quantity: number;
     unitPrice: number;
-    taxRate?: number;
+    taxRate?: number | null;
+    /**
+     * The item's OWN classification, where its catalogue carries one.
+     *
+     * Lab and imaging both populate this and nothing read it: the charge type
+     * had no such field, so a test classified as exempt in the catalogue
+     * arrived at the engine carrying only a category-average rate.
+     */
+    gstTreatment?: string | null;
+    /** Whether that classification has been signed off by the hospital. */
+    gstApproved?: boolean;
     taxInclusive?: boolean;
     category?: string;
     // ── What the tax rules need to know about this supply ──
@@ -3788,7 +3813,13 @@ export async function pullChargesToBill(
           hsnCode: c.hsnCode ?? null,
           sacCode: c.sacCode ?? null,
           itemRatePercent: c.taxRate ?? null,
-          itemTreatment: c.taxRate == null ? null : c.taxRate > 0 ? 'taxable' : null,
+          // The item's own treatment when its catalogue carries one, and only
+          // otherwise inferred from a rate. Inferring it from a rate the caller
+          // worked out is what let a department average outrank a test's SAC.
+          itemTreatment:
+            (c.gstTreatment as never) ??
+            (c.taxRate == null ? null : c.taxRate > 0 ? 'taxable' : null),
+          itemApproved: c.gstApproved ?? false,
           taxInclusive: c.taxInclusive ?? false,
           patientAdmitted: c.patientAdmitted,
           issuedForTreatment: c.issuedForTreatment,
