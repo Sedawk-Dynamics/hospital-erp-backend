@@ -47,6 +47,8 @@ interface OpBillLike {
   discountAmount: number | string;
   taxAmount: number | string;
   totalAmount: number | string;
+  /** Section 6.9's round-off. Printed as its own line so the page adds up. */
+  roundOff?: number | string | null;
   amountPaid: number | string;
   balanceDue: number | string;
   cancellationReason?: string | null;
@@ -215,6 +217,12 @@ export function streamOpBillPdf(
   sumRow('Subtotal', fmt(bill.subtotal));
   if (num(bill.discountAmount) > 0) sumRow('Discount', `− ${fmt(bill.discountAmount)}`);
   if (anyTax) sumRow('GST', fmt(bill.taxAmount));
+  // Section 6.9. Shown whenever it is not zero, because the grand total below
+  // will not otherwise agree with the lines above it. Never applied to the tax
+  // figures — those are what get reported.
+  if (num(bill.roundOff) !== 0) {
+    sumRow('Round off', `${num(bill.roundOff) > 0 ? '+ ' : '− '}${fmt(Math.abs(num(bill.roundOff)))}`);
+  }
   pdf
     .moveTo(sumX, pdf.y + 1)
     .lineTo(theme.margin + theme.contentWidth, pdf.y + 1)

@@ -231,6 +231,14 @@ function drawSummary(pdf: PDFKit.PDFDocument, theme: PdfTheme, doc: AdmissionBil
   if (t.insuranceCovered > 0) {
     lines.push({ label: 'Covered by insurer / TPA', value: `− ${money(t.insuranceCovered)}` });
   }
+  // Section 6.9 — shown whenever it is not zero, or the net below will not
+  // agree with the charges above it.
+  if (t.roundOff !== 0) {
+    lines.push({
+      label: 'Round off',
+      value: `${t.roundOff > 0 ? '+ ' : '− '}${money(Math.abs(t.roundOff))}`,
+    });
+  }
   lines.push({ label: 'Net payable', value: money(t.netPayable), bold: true, border: true });
   if (t.deposit > 0) lines.push({ label: 'Deposit received', value: `− ${money(t.deposit)}` });
   if (t.cashPaid > 0) lines.push({ label: 'Paid at counter', value: `− ${money(t.cashPaid)}` });

@@ -7,6 +7,7 @@ import {
 } from '../../shared/admission-type';
 import type { HospitalBranding } from '../../services/pdf-branding';
 import type { PdfTemplate } from '../../services/pdf-template';
+import { roundOffTotal } from '../../shared/gst';
 import {
   buildGstBlock,
   treatmentLabelFor,
@@ -131,6 +132,8 @@ export interface AdmissionBillDocument {
     depositRefunded: number;
     paid: number;
     cashPaid: number;
+    /** Section 6.9 — what the grand total was rounded by, 0 when it was not. */
+    roundOff: number;
     netPayable: number;
     balanceDue: number;
     refundable: number;
@@ -324,7 +327,23 @@ export async function buildAdmissionBillDocument(
   // getAdmissionLedger). Item-level tax is already inside each line's
   // totalAmount, so tax must NOT be added again here — it is reported below
   // purely as "of which tax".
-  const netPayable = r2(Math.max(0, t.grandTotal - t.insuranceCovered));
+  const exactPayable = r2(Math.max(0, t.grandTotal - t.insuranceCovered));
+
+  // Section 6.9: the grand total rounds to the nearest rupee and the difference
+  // shows as its own line, so the arithmetic on the page adds up.
+  //
+  // Computed here rather than read off a bill row, because this document is a
+  // whole STAY and a stay can span several bills — its grand total is not any
+  // one of their totals. Each document rounds its own bottom line, which is the
+  // only way each page can be internally consistent.
+  //
+  // Never applied to the tax figures. Those are what get reported.
+  const rounding =
+    gstProfile.registered && gstProfile.roundOffToRupee
+      ? roundOffTotal(exactPayable)
+      : { rounded: exactPayable, roundOff: 0 };
+  const netPayable = rounding.rounded;
+  const roundOff = rounding.roundOff;
   // Money the hospital is holding from this patient (mirrors the ledger).
   const moneyFromPatient = r2(t.cashPaid + t.deposit - t.depositRefunded);
   const balanceDue = r2(Math.max(0, netPayable - moneyFromPatient));
@@ -417,6 +436,8 @@ export async function buildAdmissionBillDocument(
       depositRefunded: t.depositRefunded,
       paid: t.paid,
       cashPaid: t.cashPaid,
+      /** Section 6.9 — the difference the grand total was rounded by. */
+      roundOff,
       netPayable,
       balanceDue,
       refundable,
