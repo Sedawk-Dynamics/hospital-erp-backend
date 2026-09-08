@@ -10,6 +10,7 @@ import {
 } from '../../services/pdf-doc';
 import type { PdfTemplate } from '../../services/pdf-template';
 import { fullName } from '../../shared/person-name';
+import { amountInWords } from '../../shared/amount-in-words';
 import {
   buildGstBlock,
   drawGstTaxSummary,
@@ -147,9 +148,15 @@ export function streamOpBillPdf(
     title: isCancelled ? 'Cancelled Bill' : (gst.documentLabel ?? 'Bill'),
     // The allotted number identifies this paper; the bill number is the
     // internal reference, and it stays on the card below.
-    subtitle: gst.invoiceNumbers.length
-      ? gst.invoiceNumbers.join(', ')
-      : `Bill ${bill.billNumber}`,
+    // Rule 46 wants a copy marking on the document — section 10.2's title band
+    // asks for it and nothing printed one. The copy handed to the patient is
+    // always the original; only the phrase changes with the document type.
+    subtitle: [
+      gst.invoiceNumbers.length ? gst.invoiceNumbers.join(', ') : `Bill ${bill.billNumber}`,
+      isCancelled ? null : gst.copyMarking,
+    ]
+      .filter(Boolean)
+      .join('  ·  '),
     meta: [
       { label: 'Bill', value: bill.billNumber },
       {
@@ -234,6 +241,21 @@ export function streamOpBillPdf(
   sumRow('Paid', fmt(bill.amountPaid));
   sumRow('Balance due', fmt(bill.balanceDue), true);
   pdf.moveDown(0.6);
+
+  // Section 10.1 item 8 and the "Amount in words" block in 10.2. What stops a
+  // printed invoice being altered after it is handed over.
+  const words: string[] = [`Amount: ${amountInWords(bill.totalAmount)}`];
+  if (gst.taxAmountInWords) words.push(`Tax: ${gst.taxAmountInWords}`);
+  for (const line of words) {
+    ensureSpace(pdf, theme, theme.size.small + 4);
+    pdf
+      .font(theme.font.regular)
+      .fontSize(theme.size.small)
+      .fillColor(theme.muted)
+      .text(line, theme.margin, pdf.y, { width: theme.contentWidth });
+    pdf.moveDown(0.15);
+  }
+  pdf.moveDown(0.4);
 
   // What has been collected against it so far — the reason this document is
   // useful before the bill is settled as well as after.

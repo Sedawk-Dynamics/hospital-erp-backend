@@ -1,5 +1,6 @@
 import { Response } from 'express';
 import { type HospitalBranding } from '../../services/pdf-branding';
+import { amountInWords } from '../../shared/amount-in-words';
 import {
   createBrandedDocument,
   finalizeBrandedDocument,
@@ -86,11 +87,18 @@ export function streamAdmissionBillPdf(
     // The allotted document number is what the law identifies this paper by, so
     // it leads. `billNumber` is the internal reference staff search on and stays
     // on the card below.
-    subtitle: gstOf(doc).invoiceNumbers.length
-      ? gstOf(doc).invoiceNumbers.join(', ')
-      : doc.bills.length
-        ? doc.bills.map((b) => b.billNumber).join(', ')
-        : undefined,
+    subtitle:
+      [
+        gstOf(doc).invoiceNumbers.length
+          ? gstOf(doc).invoiceNumbers.join(', ')
+          : doc.bills.length
+            ? doc.bills.map((b) => b.billNumber).join(', ')
+            : null,
+        // Section 10.2's title band. Rule 46 wants the copy marked.
+        gstOf(doc).copyMarking,
+      ]
+        .filter(Boolean)
+        .join('  ·  ') || undefined,
     meta: [
       { label: 'IP No', value: dash(doc.admission.ipNumber) },
       { label: 'Date', value: dateOnly(doc.generatedAt) },
@@ -179,6 +187,25 @@ export function streamAdmissionBillPdf(
 
   // ── Summary ──────────────────────────────────────────────────────────────
   drawSummary(pdf, theme, doc);
+
+  // ── Amount in words ──────────────────────────────────────────────────────
+  //
+  // Section 10.1 item 8 and the block in 10.2. What stops a printed invoice
+  // being altered after it is handed over, which is why an auditor looks for it.
+  {
+    const words: string[] = [`Amount: ${amountInWords(doc.totals.netPayable)}`];
+    if (gstOf(doc).taxAmountInWords) words.push(`Tax: ${gstOf(doc).taxAmountInWords}`);
+    pdf.moveDown(0.5);
+    for (const line of words) {
+      ensureSpace(pdf, theme, theme.size.small + 4);
+      pdf
+        .font(theme.font.regular)
+        .fontSize(theme.size.small)
+        .fillColor(theme.muted)
+        .text(line, theme.margin, pdf.y, { width: theme.contentWidth });
+      pdf.moveDown(0.15);
+    }
+  }
 
   // ── Payments ─────────────────────────────────────────────────────────────
   if (doc.payments.length > 0) {
