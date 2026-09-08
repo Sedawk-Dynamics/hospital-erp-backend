@@ -366,6 +366,20 @@ gstRoutes.post(
 
 // ── Group C — operational and control ─────────────────────────────────────
 
+/**
+ * C-1 — Daily GST Billing / Tax Liability. What the hospital CHARGED.
+ *
+ * The review document is explicit that this and the collection report below are
+ * different accounting concepts and must not be one report: an invoice raised
+ * today and paid next month is liability today.
+ */
+gstRoutes.get(
+  '/reports/daily-liability',
+  ...gstReportAccess,
+  validate(salesQuerySchema),
+  report('Daily GST billing / tax liability', (t, q) => control.getDailyGstLiability(t, q as never)),
+);
+
 /** C-1 — Daily GST Collection, by counter, cashier and mode. */
 gstRoutes.get(
   '/reports/daily-collection',

@@ -26,13 +26,21 @@ function dateRange(query: { from?: string; to?: string }) {
 }
 
 /**
- * C-1 — Daily GST Collection: what was collected, by counter, cashier and mode.
+ * GST Collected Through Payments — what came in, by counter, cashier and mode.
  *
- * Keyed on the PAYMENT, not the bill, because this is the cash-desk question —
- * "what came in today and who took it" — and a bill raised in March can be paid
- * in April. The tax is apportioned to the payment by its share of the bill: a
- * part payment against a taxed bill carries a part of the tax, which is the
- * only defensible split when the patient has not paid in full.
+ * This was called "C-1 Daily GST Collection" and stood alone, which mixed two
+ * accounting concepts the review document is explicit about keeping apart: GST
+ * LIABILITY and cash COLLECTED are not the same number. An invoice raised today
+ * and paid next month is liability today and cash next month; an advance, a
+ * credit sale, a refund and a credit note all pull them further apart.
+ *
+ * So this is now the cash half only, and {@link getDailyGstLiability} is the
+ * other half — C-1 proper, keyed on the bill.
+ *
+ * Keyed on the PAYMENT, because this is the cash-desk question — "what came in
+ * today and who took it". The tax is apportioned to the payment by its share of
+ * the bill: a part payment against a taxed bill carries a part of the tax,
+ * which is the only defensible split when the patient has not paid in full.
  */
 export async function getDailyCollection(tenantId: string, query: { from?: string; to?: string } = {}) {
   const { from, to } = dateRange(query);
@@ -100,7 +108,76 @@ export async function getDailyCollection(tenantId: string, query: { from?: strin
     },
     note:
       'Tax is apportioned to each payment by its share of the bill it was made against — ' +
-      'a part payment carries a part of the tax.',
+      'a part payment carries a part of the tax. This is CASH COLLECTED, not the ' +
+      'month\u2019s liability: see Daily GST Billing / Tax Liability for what was charged.',
+  };
+}
+
+/**
+ * C-1 — Daily GST Billing / Tax Liability. What the hospital CHARGED.
+ *
+ * Keyed on the BILL, which is where a liability arises. This is the number the
+ * billing manager checks daily and the number that eventually becomes GSTR-3B
+ * box 3.1(a) — and it is emphatically not the cash figure beside it: an invoice
+ * raised today and paid next month is liability today.
+ *
+ * Cut the three ways the daily check needs: by day, by department, and by the
+ * person who raised the document.
+ */
+export async function getDailyGstLiability(tenantId: string, query: SalesReportQuery = {}) {
+  const { period, rows } = await getSalesRegister(tenantId, query);
+
+  const fold = (key: (l: (typeof rows)[number]) => string) => {
+    const m = new Map<
+      string,
+      { taxableValue: number; taxAmount: number; cgstAmount: number; sgstAmount: number; igstAmount: number; exemptValue: number; lines: number; bills: Set<string> }
+    >();
+    for (const l of rows) {
+      const k = key(l);
+      const cur = m.get(k) ?? {
+        taxableValue: 0, taxAmount: 0, cgstAmount: 0, sgstAmount: 0, igstAmount: 0,
+        exemptValue: 0, lines: 0, bills: new Set<string>(),
+      };
+      if (l.gstTreatment === 'taxable') {
+        cur.taxableValue = r2(cur.taxableValue + l.taxableValue);
+      } else {
+        cur.exemptValue = r2(cur.exemptValue + l.taxableValue);
+      }
+      cur.taxAmount = r2(cur.taxAmount + l.taxAmount);
+      cur.cgstAmount = r2(cur.cgstAmount + l.cgstAmount);
+      cur.sgstAmount = r2(cur.sgstAmount + l.sgstAmount);
+      cur.igstAmount = r2(cur.igstAmount + l.igstAmount);
+      cur.lines += 1;
+      cur.bills.add(l.billId);
+      m.set(k, cur);
+    }
+    return [...m.entries()].map(([k, v]) => ({ key: k, ...v, bills: v.bills.size }));
+  };
+
+  const taxable = rows.filter((l) => l.gstTreatment === 'taxable');
+  const exempt = rows.filter((l) => l.gstTreatment && l.gstTreatment !== 'taxable');
+
+  return {
+    period,
+    byDay: fold((l) => l.billDate.toISOString().slice(0, 10))
+      .map((r) => ({ day: r.key, ...r }))
+      .sort((a, b) => a.day.localeCompare(b.day)),
+    byDepartment: fold((l) => l.department).map((r) => ({ department: r.key, ...r })),
+    byRaisedBy: fold((l) => l.raisedBy ?? 'unattributed').map((r) => ({ raisedBy: r.key, ...r })),
+    totals: {
+      bills: new Set(rows.map((l) => l.billId)).size,
+      lines: rows.length,
+      taxableValue: r2(taxable.reduce((t, l) => t + l.taxableValue, 0)),
+      exemptValue: r2(exempt.reduce((t, l) => t + l.taxableValue, 0)),
+      cgstAmount: r2(rows.reduce((t, l) => t + l.cgstAmount, 0)),
+      sgstAmount: r2(rows.reduce((t, l) => t + l.sgstAmount, 0)),
+      igstAmount: r2(rows.reduce((t, l) => t + l.igstAmount, 0)),
+      taxAmount: r2(rows.reduce((t, l) => t + l.taxAmount, 0)),
+    },
+    note:
+      'This is what was BILLED — the liability that arose in the period. It is not ' +
+      'the cash figure: an invoice raised today and paid next month is liability today. ' +
+      'For what actually came in, see GST Collected Through Payments.',
   };
 }
 
