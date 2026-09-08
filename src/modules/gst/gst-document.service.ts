@@ -27,7 +27,28 @@ import {
   DOCUMENT_TYPE_LABELS,
 } from '../../shared/gst';
 
-/** Default prefixes. A hospital can override them on its own series row. */
+/**
+ * Default prefixes, QUALIFIED BY THE HOSPITAL.
+ *
+ * `Bill.invoiceNumber` and `CreditNote.creditNoteNumber` are `@unique` —
+ * GLOBALLY, not per tenant — while the counter that feeds them is scoped
+ * `@@unique([tenantId, documentType, financialYear])`. Every hospital therefore
+ * allotted `TI/2026-27/000001` for its first tax invoice, and the second
+ * hospital to issue one hit the unique index. A P2002 inside a transaction
+ * aborts the whole transaction, so the bill it belonged to rolls back and the
+ * counter takes the desk down.
+ *
+ * The fix is NOT to make the counter global — each hospital's series has to be
+ * continuous in its own right, which is the whole point of Rule 46(b). It is to
+ * put the hospital in the number, which is what the GST report's own example
+ * does: `GC/TI/26-27/000123`. Different hospitals, different strings, each
+ * series unbroken.
+ *
+ * Existing series rows keep the prefix they were created with — their numbers
+ * are already issued and a series does not get rewritten underneath a filed
+ * return. Only a NEW series row is qualified, and since a series restarts every
+ * financial year the changeover lands on the one boundary where it is clean.
+ */
 const DEFAULT_PREFIX: Record<string, string> = {
   tax_invoice: 'TI',
   bill_of_supply: 'BOS',
@@ -107,6 +128,39 @@ export function decideDocument(
  * belongs to commit together. A number handed out to a bill that then rolls
  * back is a permanent gap.
  */
+/**
+ * The prefix a NEW series row for this hospital should carry.
+ *
+ * `<HOSPITAL CODE>/<TYPE>` where the hospital has a code, else the bare type —
+ * which is what every existing row already holds, so nothing already issued
+ * moves. Uppercased and stripped of anything that would make the number awkward
+ * to read back off a printed invoice.
+ */
+async function seriesPrefixFor(
+  tx: any,
+  tenantId: string,
+  documentType: GstDocumentType,
+): Promise<string> {
+  const base = DEFAULT_PREFIX[documentType] ?? 'DOC';
+  try {
+    const tenant = await tx.tenant.findUnique({
+      where: { id: tenantId },
+      select: { hospitalCode: true },
+    });
+    const code = String(tenant?.hospitalCode ?? '')
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '')
+      .slice(0, 6);
+    return code ? `${code}/${base}` : base;
+  } catch (err) {
+    // A number must still be issued. An unqualified prefix is the behaviour
+    // that has always been in place, and it is only a collision risk on a
+    // platform with more than one registered hospital.
+    logger.warn({ err, tenantId }, 'Could not read the hospital code for an invoice series prefix');
+    return base;
+  }
+}
+
 export async function allotDocumentNumber(
   tx: any,
   tenantId: string,
@@ -114,7 +168,7 @@ export async function allotDocumentNumber(
   on: Date,
 ): Promise<{ invoiceNumber: string; financialYear: string }> {
   const financialYear = financialYearFor(on);
-  const prefix = DEFAULT_PREFIX[documentType] ?? 'DOC';
+  const prefix = await seriesPrefixFor(tx, tenantId, documentType);
 
   const series = await tx.gstDocumentSeries.upsert({
     where: {
