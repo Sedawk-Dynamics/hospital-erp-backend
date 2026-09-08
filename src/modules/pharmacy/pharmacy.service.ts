@@ -3373,7 +3373,13 @@ export async function previewPharmacySale(
   },
 ) {
   const resolver = await taxResolverFor(tenantId);
-  const lines = [] as Array<Record<string, unknown>>;
+  const lines = [] as Array<
+    Record<string, unknown> & {
+      drugName: string;
+      taxRatePercent: number;
+      requiresTaxResolution: boolean;
+    }
+  >;
 
   for (const item of data.items ?? []) {
     const batch = await prisma.drugBatch.findFirst({
@@ -3420,12 +3426,47 @@ export async function previewPharmacySale(
       totalAmount: priced.money.totalAmount,
       // Plain words for why, so a cashier asked "why no GST on this?" has one.
       taxReason: priced.determination.reason,
+      requiresTaxResolution: priced.determination.requiresResolution,
     });
   }
 
   const sum = (k: string) => round2(lines.reduce((t, l) => t + Number(l[k] ?? 0), 0));
+
+  // The same two refusals the sale itself applies, reported rather than thrown.
+  //
+  // A preview that threw would empty the cart the cashier is still building.
+  // But finding out at "Generate Bill" that a medicine cannot be billed, with
+  // the patient standing at the counter, is worse — so the reason travels with
+  // the preview and the screen can say so while there is still time to fix it.
+  const blockers: string[] = [];
+  const unclassified = lines.filter((l) => l.requiresTaxResolution);
+  if (unclassified.length > 0) {
+    blockers.push(
+      `${unclassified.length} item(s) have no GST classification: ` +
+        `${unclassified.slice(0, 3).map((l) => l.drugName).join(', ')}` +
+        `${unclassified.length > 3 ? '…' : ''}. This sale cannot be billed until they are classified.`,
+    );
+  }
+  const illegal = new Map<number, string[]>();
+  for (const l of lines) {
+    if (l.taxRatePercent <= 0) continue;
+    if (resolver.isLegalRate(l.taxRatePercent)) continue;
+    const names = illegal.get(l.taxRatePercent) ?? [];
+    if (names.length < 3) names.push(l.drugName);
+    illegal.set(l.taxRatePercent, names);
+  }
+  if (illegal.size > 0) {
+    blockers.push(
+      'Not a legal GST slab: ' +
+        [...illegal.entries()].map(([rate, names]) => `${rate}% (${names.join(', ')})`).join('; ') +
+        `. Legal rates today are ${resolver.describeLegalRates()}.`,
+    );
+  }
+
   return {
     lines,
+    /** Reasons this cart cannot be billed as it stands. Empty is the normal case. */
+    blockers,
     totals: {
       taxableValue: sum('taxableValue'),
       cgstAmount: sum('cgstAmount'),
@@ -3570,6 +3611,8 @@ export async function createPharmacySale(
       taxPct: number;
       scannedCode: string | null;
       taxAmt: number;
+      /** Nothing established a tax position for this line — the gate refuses it. */
+      requiresTaxResolution: boolean;
       /** Every GST column for this line, resolved once and written verbatim. */
       taxFields: ReturnType<typeof billItemTaxFields>;
       nonReturnable: boolean;
@@ -3687,12 +3730,56 @@ export async function createPharmacySale(
         net,
         taxPct,
         taxAmt,
+        /** Nothing established a tax position for this line — see the gate below. */
+        requiresTaxResolution: salePriced.determination.requiresResolution,
         taxFields: billItemTaxFields(salePriced),
         nonReturnable: item.nonReturnable ?? false,
         expiry: batch.expiryDate ?? null,
         witnessedById: lineControl.witnessedById,
         witnessedAt: lineControl.witnessedAt,
       });
+    }
+
+    // The two gates finalizeBill applies, applied here too.
+    //
+    // A counter sale writes a paid bill directly and mints a real, numbered Tax
+    // Invoice — but it never calls `finalizeBill`, so neither of that function's
+    // refusals ever ran on it. The counter is the ONE place this hospital
+    // charges tax at all, which made it the only issuing path with no gate:
+    //
+    //   * a line nothing had classified went out on a numbered document, and
+    //   * a rate that is not a legal slab went with it. Five sellable drugs in
+    //     this formulary still price at 10% or 12%; neither is a slab today.
+    //
+    // Checked here, before any payment row is written, so the whole transaction
+    // rolls back and no money is taken against a document that cannot be filed.
+    {
+      const unclassified = lines.filter((l) => l.requiresTaxResolution);
+      if (unclassified.length > 0) {
+        const names = unclassified.slice(0, 3).map((l) => l.drugName).join(', ');
+        throw AppError.badRequest(
+          `${unclassified.length} item(s) on this sale have no GST classification: ${names}` +
+            `${unclassified.length > 3 ? '…' : ''}. Set an HSN code on the medicine, or have its ` +
+            'rate approved, before billing.',
+        );
+      }
+      const illegal = new Map<number, string[]>();
+      for (const l of lines) {
+        if (l.taxPct <= 0) continue;
+        if (saleTaxResolver.isLegalRate(l.taxPct)) continue;
+        const names = illegal.get(l.taxPct) ?? [];
+        if (names.length < 3) names.push(l.drugName);
+        illegal.set(l.taxPct, names);
+      }
+      if (illegal.size > 0) {
+        const listed = [...illegal.entries()]
+          .map(([rate, names]) => `${rate}% (${names.join(', ')})`)
+          .join('; ');
+        throw AppError.badRequest(
+          `This sale carries a GST rate that is not a legal slab: ${listed}. Legal rates today are ` +
+            `${saleTaxResolver.describeLegalRates()}. Correct the medicine's classification before billing.`,
+        );
+      }
     }
 
     // 2. Roll up the invoice totals.
