@@ -337,11 +337,20 @@ export function determineTax(ctx: SupplyContext, masters: TaxMasters): TaxDeterm
   //    whose principal supply is the treatment, and the treatment is exempt.
   //    A discharge medicine is excluded: the patient carries it out, so it
   //    looks like a counter sale — unless the hospital's auditor says not.
+  //
+  //    A COSMETIC procedure is excluded too, and this rule sits above the
+  //    cosmetic one so it had to be said here. A composite supply takes its
+  //    principal supply's treatment, and the principal supply of a cosmetic
+  //    procedure is not exempt healthcare — section 4.6 is explicit that OT kit
+  //    consumables used in a cosmetic procedure follow it at 18%. Without this
+  //    a correctly-flagged cosmetic kit came back exempt, which is the one case
+  //    the flag exists to catch.
   if (
     COMPOSITE_KINDS.has(ctx.kind) &&
     masters.profile.inpatientCompositeExempt &&
     ctx.patientAdmitted &&
     ctx.issuedForTreatment &&
+    !ctx.isCosmetic &&
     !(ctx.isTakeHome && masters.profile.dischargeMedicinesTaxable)
   ) {
     return exempt(
