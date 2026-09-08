@@ -1715,7 +1715,8 @@ model User {
   formSubmissions                HospitalFormSubmission[]     @relation("FormSubmitter")
   labTestTemplatesCreated        LabTestTemplate[]            @relation("LabTestTemplateCreator")
   gstRateChanges                 GstRateChange[]
-  gstPeriodsFiled                GstFiledPeriod[]
+  gstPeriodsFiled                GstFiledPeriod[] @relation("GstPeriodFiler")
+  gstPeriodsLocked               GstFiledPeriod[] @relation("GstPeriodLocker")
   gstr2bImports                  Gstr2bImport[]
 
   @@unique([tenantId, email])
@@ -4406,12 +4407,22 @@ model GstFiledPeriod {
   note          String?
   /// The figures as filed. Not the register — see the model comment.
   snapshot      Json
+  /// When the period was LOCKED, which is a separate act from filing.
+  ///
+  /// Archiving the figures is a record; locking is a decision. A hospital wants
+  /// the snapshot the moment it files and may not want the doors shut until it
+  /// has checked. Null means open, and every period archived before this
+  /// existed stays exactly as editable as it was.
+  lockedAt      DateTime? @map("locked_at")
+  lockedBy      String?   @map("locked_by")
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
-  filer  User?  @relation(fields: [filedBy], references: [id])
+  filer  User?  @relation("GstPeriodFiler", fields: [filedBy], references: [id])
+  locker User?  @relation("GstPeriodLocker", fields: [lockedBy], references: [id])
 
   @@unique([tenantId, returnPeriod])
   @@index([tenantId, filedAt])
+  @@index([tenantId, lockedAt])
   @@map("gst_filed_periods")
 }
 
