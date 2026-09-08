@@ -2188,6 +2188,23 @@ interface ChargeRow {
   pullable?: boolean;
   /** Shown against a row that cannot be selected, so "why not" is answerable. */
   notPullableReason?: string;
+  /**
+   * What the room rule needs to decide, carried on the row.
+   *
+   * `pullChargesToBill` has always read `c.dailyRate`, `c.bedType` and
+   * `c.wardType` — and nothing ever set them. So every room line reached
+   * `determineTax` with a daily rate of ZERO, fell under the Rs 5,000
+   * threshold, and came out exempt. A deluxe room at Rs 6,000 a day, which the
+   * GST report's own worked example bills at 5% for Rs 900 of tax on a
+   * three-day stay, was billed at nil.
+   *
+   * `unitPrice` IS the per-day rate on a room row (quantity is days), so
+   * `dailyRate` mirrors it; the two are kept separate because only a room row
+   * has a meaningful per-day figure.
+   */
+  dailyRate?: number;
+  bedType?: string | null;
+  wardType?: string | null;
 }
 
 /**
@@ -2719,7 +2736,7 @@ async function getRoomCharges(
   const rateFor = (
     bedId: string | null,
     wardId: string | null,
-  ): { price: number; taxRate: number } => {
+  ): { price: number; taxRate: number; bedType: string | null; wardType: string | null } => {
     const bedType = bedId ? bedById.get(bedId)?.bedType ?? null : null;
     const wardType = wardId ? wardById.get(wardId)?.wardType ?? null : null;
     const wardRate = toNumber((wardId ? wardById.get(wardId)?.dailyCharge : null) ?? 0);
@@ -2727,6 +2744,8 @@ async function getRoomCharges(
       return {
         price: wardRate,
         taxRate: roomTaxRate(wardRate, { bedType, wardType }),
+        bedType,
+        wardType,
       };
     }
     const tariff =
@@ -2740,6 +2759,8 @@ async function getRoomCharges(
         wardType,
         configuredRate: tariff ? toNumber(tariff.gstRatePercent) : null,
       }),
+      bedType,
+      wardType,
     };
   };
 
@@ -2775,7 +2796,7 @@ async function getRoomCharges(
       const days = nextStart !== null ? nextStart - seg.startDay : endDay - seg.startDay + 1;
       if (days <= 0 || !seg.bedId) return;
 
-      const { price: unit, taxRate } = rateFor(seg.bedId, seg.wardId);
+      const { price: unit, taxRate, bedType, wardType } = rateFor(seg.bedId, seg.wardId);
       const wardName = (seg.wardId ? wardById.get(seg.wardId)?.name : null) ?? 'Ward';
       const bedNumber = (seg.bedId ? bedById.get(seg.bedId)?.bedNumber : null) ?? '-';
       const billed = billedIndex.get(`admission:${seg.refId}`);
@@ -2788,6 +2809,13 @@ async function getRoomCharges(
         unitPrice: unit,
         totalAmount: unit * days,
         taxRate,
+        // The room rule decides from the DAILY rate, the bed and the ward — not
+        // from the line total, and not from a rate somebody worked out here.
+        // Without these three the engine saw a daily rate of zero and made every
+        // room exempt.
+        dailyRate: unit,
+        bedType,
+        wardType,
         category: 'room',
         occurredAt: formatDateTimeIST(seg.startAt),
         occurredAtISO: new Date(seg.startAt).toISOString(),
