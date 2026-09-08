@@ -944,7 +944,8 @@ export const getGstReportQuerySchema = z.object({
   query: z.object({
     fromDate: z.string().optional(),
     toDate: z.string().optional(),
-    gstRate: z.coerce.number().min(0).max(100).optional(),
+    // `gstRate` used to live here. There is nothing for a caller to choose:
+    // every line carries the rate it was actually billed at.
   }),
 });
 

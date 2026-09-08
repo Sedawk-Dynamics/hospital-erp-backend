@@ -7515,99 +7515,100 @@ export async function getRecalledItems(tenantId: string, _query: GetRecalledItem
 // caller doesn't pass one). Categorises by drug category so the
 // finance/pharmacy team can file by HSN once that field is added.
 
+/**
+ * The pharmacy's GST position for a period — A-2, cut to this department.
+ *
+ * What this used to be: it took a `gstRate` off the query string, defaulted it
+ * to 12, applied that ONE rate to every dispense in the period by dividing the
+ * batch's selling price out of it, and split the answer fifty-fifty into CGST
+ * and SGST. Every line already carried its own rate, its own taxable value and
+ * its own split, decided by the determination engine at the moment of billing;
+ * none of it was read. The figure it produced could not be filed, and a 12%
+ * default is a slab that stopped existing on 22 September 2025.
+ *
+ * It now folds the same bill lines A-1 folds, filtered to the pharmacy
+ * department, so this screen and the hospital's return cannot disagree. The
+ * rate picker has nothing to pick: the rate is a property of the medicine.
+ */
 export async function getGstReport(tenantId: string, query: GetGstReportQuery) {
-  const gstRate = query.gstRate ?? 12;
-
-  // A voided invoice collected no GST.
-  const where: any = { tenantId, cancelledAt: null };
-  if (query.fromDate) where.dispensedAt = { ...where.dispensedAt, gte: new Date(query.fromDate) };
-  if (query.toDate) where.dispensedAt = { ...where.dispensedAt, lte: new Date(query.toDate) };
-
-  const records = await prisma.dispensingRecord.findMany({
-    where,
-    include: {
-      drugBatch: {
-        select: {
-          sellingPrice: true,
-          drug: {
-            select: {
-              id: true,
-              drugName: true,
-            },
-          },
-        },
-      },
-    },
+  const { getSalesRegister } = await import('../gst/gst-reports.sales');
+  const { period, rows } = await getSalesRegister(tenantId, {
+    from: query.fromDate,
+    to: query.toDate,
+    department: 'pharmacy',
   });
 
-  // Total taxable & gst per drug
-  const drugs = new Map<string, {
-    drugId: string;
-    drugName: string;
-    taxableValue: number;
-    gstAmount: number;
-    totalAmount: number;
-    transactions: number;
-  }>();
-
-  let totalTaxable = 0;
-  let totalGst = 0;
-  let totalSales = 0;
-
-  for (const r of records) {
-    const sellingPrice = Number(r.drugBatch?.sellingPrice ?? 0);
-    const lineTotal = sellingPrice * r.quantityDispensed;
-    // Treat sellingPrice as GST-inclusive (most retail pharmacy pricing).
-    // Reverse-calc taxable: total / (1 + rate/100).
-    const taxable = lineTotal / (1 + gstRate / 100);
-    const gst = lineTotal - taxable;
-
-    totalSales += lineTotal;
-    totalTaxable += taxable;
-    totalGst += gst;
-
-    const drug = r.drugBatch?.drug;
-    const dId = drug?.id ?? '__unknown__';
-    const dName = drug?.drugName ?? 'Unknown';
-    const existing = drugs.get(dId);
-    if (existing) {
-      existing.taxableValue += taxable;
-      existing.gstAmount += gst;
-      existing.totalAmount += lineTotal;
-      existing.transactions += 1;
-    } else {
-      drugs.set(dId, {
-        drugId: dId,
-        drugName: dName,
-        taxableValue: taxable,
-        gstAmount: gst,
-        totalAmount: lineTotal,
-        transactions: 1,
-      });
+  const r2v = (n: number) => Math.round(n * 100) / 100;
+  const fold = <K extends string>(key: (l: (typeof rows)[number]) => K) => {
+    const m = new Map<K, { lines: typeof rows; taxableValue: number; taxAmount: number; cgstAmount: number; sgstAmount: number; igstAmount: number; totalAmount: number }>();
+    for (const l of rows) {
+      const k = key(l);
+      const cur = m.get(k) ?? { lines: [] as typeof rows, taxableValue: 0, taxAmount: 0, cgstAmount: 0, sgstAmount: 0, igstAmount: 0, totalAmount: 0 };
+      cur.lines.push(l);
+      cur.taxableValue = r2v(cur.taxableValue + l.taxableValue);
+      cur.taxAmount = r2v(cur.taxAmount + l.taxAmount);
+      cur.cgstAmount = r2v(cur.cgstAmount + l.cgstAmount);
+      cur.sgstAmount = r2v(cur.sgstAmount + l.sgstAmount);
+      cur.igstAmount = r2v(cur.igstAmount + l.igstAmount);
+      cur.totalAmount = r2v(cur.totalAmount + l.totalAmount);
+      m.set(k, cur);
     }
-  }
+    return m;
+  };
 
-  // CGST + SGST is a 50/50 split of the total GST for intra-state sales.
-  const cgst = totalGst / 2;
-  const sgst = totalGst / 2;
+  const total = (k: 'taxableValue' | 'taxAmount' | 'cgstAmount' | 'sgstAmount' | 'igstAmount') =>
+    r2v(rows.reduce((t, l) => t + l[k], 0));
 
   return {
-    gstRate,
+    period,
     summary: {
-      totalSales: Number(totalSales.toFixed(2)),
-      taxableValue: Number(totalTaxable.toFixed(2)),
-      totalGst: Number(totalGst.toFixed(2)),
-      cgst: Number(cgst.toFixed(2)),
-      sgst: Number(sgst.toFixed(2)),
-      igst: 0,
-      transactions: records.length,
+      totalSales: r2v(rows.reduce((t, l) => t + l.totalAmount, 0)),
+      taxableValue: total('taxableValue'),
+      totalGst: total('taxAmount'),
+      cgst: total('cgstAmount'),
+      sgst: total('sgstAmount'),
+      igst: total('igstAmount'),
+      transactions: new Set(rows.map((l) => l.billId)).size,
+      lines: rows.length,
     },
-    byDrug: Array.from(drugs.values())
-      .map((c) => ({
-        ...c,
-        taxableValue: Number(c.taxableValue.toFixed(2)),
-        gstAmount: Number(c.gstAmount.toFixed(2)),
-        totalAmount: Number(c.totalAmount.toFixed(2)),
+    /** One row per treatment-and-rate. Exempt and taxable-at-0% stay apart. */
+    byRate: [...fold((l) => `${l.gstTreatment ?? 'unclassified'}:${l.taxRatePercent}` as string)]
+      .map(([, v]) => ({
+        treatment: v.lines[0].gstTreatment ?? 'unclassified',
+        label: v.lines[0].treatmentLabel ?? 'Unclassified',
+        ratePercent: v.lines[0].taxRatePercent,
+        taxableValue: v.taxableValue,
+        cgstAmount: v.cgstAmount,
+        sgstAmount: v.sgstAmount,
+        igstAmount: v.igstAmount,
+        taxAmount: v.taxAmount,
+        totalAmount: v.totalAmount,
+        lines: v.lines.length,
+      }))
+      .sort((a, b) => b.ratePercent - a.ratePercent || a.treatment.localeCompare(b.treatment)),
+    /** The same lines by HSN, which is what Table 12 groups by. */
+    byHsn: [...fold((l) => (l.hsnSac ?? '—') as string)]
+      .map(([hsnSacCode, v]) => ({
+        hsnSacCode: hsnSacCode === '—' ? null : hsnSacCode,
+        ratePercent: v.lines[0].taxRatePercent,
+        taxableValue: v.taxableValue,
+        taxAmount: v.taxAmount,
+        totalAmount: v.totalAmount,
+        lines: v.lines.length,
+      }))
+      .sort((a, b) => b.totalAmount - a.totalAmount),
+    /** Kept for the screen that lists what was sold. */
+    byDrug: [...fold((l) => l.description as string)]
+      .map(([drugName, v]) => ({
+        drugId: drugName,
+        drugName,
+        hsnSacCode: v.lines[0].hsnSac,
+        ratePercent: v.lines[0].taxRatePercent,
+        treatment: v.lines[0].gstTreatment ?? 'unclassified',
+        taxableValue: v.taxableValue,
+        gstAmount: v.taxAmount,
+        totalAmount: v.totalAmount,
+        transactions: v.lines.length,
       }))
       .sort((a, b) => b.totalAmount - a.totalAmount),
   };
