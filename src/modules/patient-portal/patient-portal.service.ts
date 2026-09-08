@@ -1734,7 +1734,18 @@ export async function getPatientBills(
     take: query.limit || 30,
     include: {
       patient: { select: { id: true, mrn: true, firstName: true, lastName: true, tenant: { select: { id: true, name: true } } } },
-      billItems: { select: { id: true, description: true, totalAmount: true } },
+      // The tax the patient was actually charged, per line. A bill that shows a
+      // total and no GST leaves them unable to check what they paid — and for a
+      // hospital most lines are EXEMPT, which is worth them seeing rather than
+      // assuming tax is hidden somewhere in the figure.
+      billItems: {
+        select: {
+          id: true, description: true, totalAmount: true,
+          hsnSacCode: true, gstTreatment: true, taxPercent: true,
+          taxableValue: true, taxAmount: true,
+          cgstAmount: true, sgstAmount: true, igstAmount: true,
+        },
+      },
       payments: { select: { id: true, amount: true, paymentMethod: true, status: true, paymentDate: true } },
     },
     orderBy: { createdAt: 'desc' },

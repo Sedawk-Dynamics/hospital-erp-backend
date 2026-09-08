@@ -11,6 +11,8 @@ import { createBillInSeries } from '../../shared/bill-number';
 import { resolvePackSize, inferLooseUnitLabel } from '../drug-master/drug-master.dataset';
 import { resolveHsnGst, getHsnGstRows, matchHsnGst } from '../drug-master/drug-master.service';
 import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
+import { issueDocumentForBill } from '../gst/gst-document.service';
+import { getGstProfile } from '../hospital-settings/hospital-settings.service';
 import { issueCreditNoteBestEffort } from '../gst/credit-note.service';
 import {
   classifyFormularyItem,
@@ -3312,6 +3314,128 @@ async function getOrCreateWalkInPatient(tenantId: string): Promise<string> {
 }
 
 
+/**
+ * How a medicine line is classified, in ONE place.
+ *
+ * The counter sale and the cart preview both go through here, so what the
+ * cashier is shown before they take the money and what the receipt says
+ * afterwards cannot drift apart. Two call sites resolving the same line their
+ * own way is how a screen ends up disagreeing with the bill it produced.
+ *
+ * Prices are MRP — tax-inclusive — so the GST is dug OUT of the price rather
+ * than added to it. A patient handing over the printed price has handed over
+ * the printed price.
+ */
+export function priceMedicineLine(
+  resolver: Awaited<ReturnType<typeof taxResolverFor>>,
+  drug: { hsnCode?: string | null; taxPercent?: unknown } | null | undefined,
+  money: { unitPrice: number; quantity: number; discountAmount?: number },
+) {
+  return resolver.price(
+    {
+      kind: 'medicine',
+      hsnCode: drug?.hsnCode ?? null,
+      itemRatePercent: drug?.taxPercent != null ? Number(drug.taxPercent) : null,
+      // A rate on the drug only means "taxable" when it is above zero; a bare
+      // 0 is the absence of an answer, not a nil rating.
+      itemTreatment: drug?.taxPercent != null && Number(drug.taxPercent) > 0 ? 'taxable' : null,
+      taxInclusive: true,
+    },
+    money,
+  );
+}
+
+/**
+ * Price a cart WITHOUT selling it.
+ *
+ * The POS used to work its own tax out in the browser, falling back to a bare
+ * 12% for any drug with no rate — which is not a rate any medicine carries
+ * after GST 2.0, and was the common case rather than the rare one. The cashier
+ * was quoting one figure and the receipt printing another.
+ *
+ * This runs the SAME resolver the sale runs, so the quote is the bill. It reads
+ * stock and prices; it writes nothing, and it deliberately does not enforce the
+ * controlled-drug or stock gates — refusing to quote a line is the sale's job,
+ * and a preview that threw would leave the cashier with a blank screen instead
+ * of a cart.
+ */
+export async function previewPharmacySale(
+  tenantId: string,
+  data: {
+    items: Array<{
+      drugBatchId: string;
+      quantity: number;
+      saleUnit?: 'pack' | 'loose';
+      unitPrice?: number;
+      discountPercent?: number;
+    }>;
+  },
+) {
+  const resolver = await taxResolverFor(tenantId);
+  const lines = [] as Array<Record<string, unknown>>;
+
+  for (const item of data.items ?? []) {
+    const batch = await prisma.drugBatch.findFirst({
+      where: { id: item.drugBatchId, tenantId },
+      include: {
+        drug: {
+          select: { drugName: true, price: true, packSize: true, taxPercent: true, hsnCode: true },
+        },
+      },
+    });
+    // A line the cart knows about and the database does not is the cashier's
+    // problem at checkout, not the preview's. Skipped rather than thrown.
+    if (!batch) continue;
+
+    const packSize = batch.drug?.packSize && batch.drug.packSize > 0 ? batch.drug.packSize : 1;
+    const saleUnit = item.saleUnit ?? 'pack';
+    const baseQty =
+      saleUnit === 'loose' ? Math.round(item.quantity) : Math.round(item.quantity) * packSize;
+    if (baseQty <= 0) continue;
+
+    const unitPrice = item.unitPrice != null ? item.unitPrice : pickDispenseUnitPrice(batch as any);
+    const gross = round2(unitPrice * baseQty);
+    const discAmt = round2(gross * ((item.discountPercent ?? 0) / 100));
+    const priced = priceMedicineLine(resolver, batch.drug, {
+      unitPrice,
+      quantity: baseQty,
+      discountAmount: discAmt,
+    });
+
+    lines.push({
+      drugBatchId: batch.id,
+      drugName: batch.drug?.drugName ?? 'Medication',
+      quantity: baseQty,
+      unitPrice,
+      discountAmount: discAmt,
+      hsnSacCode: priced.determination.hsnSacCode ?? null,
+      gstTreatment: priced.determination.treatment,
+      taxRatePercent: priced.determination.ratePercent,
+      taxableValue: priced.money.taxableValue,
+      taxAmount: priced.money.taxAmount,
+      cgstAmount: priced.money.cgst,
+      sgstAmount: priced.money.sgst,
+      igstAmount: priced.money.igst,
+      totalAmount: priced.money.totalAmount,
+      // Plain words for why, so a cashier asked "why no GST on this?" has one.
+      taxReason: priced.determination.reason,
+    });
+  }
+
+  const sum = (k: string) => round2(lines.reduce((t, l) => t + Number(l[k] ?? 0), 0));
+  return {
+    lines,
+    totals: {
+      taxableValue: sum('taxableValue'),
+      cgstAmount: sum('cgstAmount'),
+      sgstAmount: sum('sgstAmount'),
+      igstAmount: sum('igstAmount'),
+      taxAmount: sum('taxAmount'),
+      totalAmount: sum('totalAmount'),
+    },
+  };
+}
+
 export async function createPharmacySale(
   tenantId: string,
   userId: string,
@@ -3422,6 +3546,10 @@ export async function createPharmacySale(
   // retried wholesale on a bill-number clash, and the masters must not be
   // re-read on every attempt.
   const saleTaxResolver = await taxResolverFor(tenantId);
+  // Whether this hospital issues numbered GST documents at all. Read here for
+  // the same reason as the resolver: the sale is retried wholesale on a
+  // bill-number clash, and neither must be re-read on every attempt.
+  const saleGstProfile = await getGstProfile(tenantId);
 
   const runSaleTx = (attempt: number) => prisma.$transaction(async (tx) => {
     // 1. Validate every line and pre-compute its economics.
@@ -3531,17 +3659,11 @@ export async function createPharmacySale(
       // patient's bill, and 394 of the 430 drugs in this formulary have no rate
       // set, so it was the common case rather than the rare one. The rules
       // resolve it now: the drug's own rate, else its HSN code, else exempt.
-      const salePriced = saleTaxResolver.price(
-        {
-          kind: 'medicine',
-          hsnCode: batch.drug?.hsnCode ?? null,
-          itemRatePercent: batch.drug?.taxPercent != null ? Number(batch.drug.taxPercent) : null,
-          itemTreatment:
-            batch.drug?.taxPercent != null && Number(batch.drug.taxPercent) > 0 ? 'taxable' : null,
-          taxInclusive: true,
-        },
-        { unitPrice, quantity: baseQty, discountAmount: discAmt },
-      );
+      const salePriced = priceMedicineLine(saleTaxResolver, batch.drug, {
+        unitPrice,
+        quantity: baseQty,
+        discountAmount: discAmt,
+      });
       const taxPct = salePriced.determination.ratePercent;
       const taxAmt = salePriced.money.taxAmount;
 
@@ -3762,6 +3884,36 @@ export async function createPharmacySale(
     // 5. Keep the prescription queue coherent for Rx-linked sales.
     if (data.prescriptionId) {
       await recomputePrescriptionStatus(tx as any, data.prescriptionId);
+    }
+
+    // 6. Name and number the document.
+    //
+    // A counter sale is a supply, and the paper handed across with the medicine
+    // is a Tax Invoice or a Bill of Supply — which one follows from the lines.
+    // It was neither: the sale created a paid bill directly, never went through
+    // `finalizeBill`, and so was the only issuing path in the system that
+    // produced no document type and no consecutive number. Eighty-six of this
+    // hospital's bills were sitting unnamed and unnumbered.
+    //
+    // Best effort, and only for a registered hospital: taking the patient's
+    // money must never fail because a series could not be read.
+    try {
+      const issueLines = lines.map((l) => ({
+        taxAmount: l.taxFields.taxAmount ?? 0,
+        gstTreatment: (l.taxFields.gstTreatment as string | undefined) ?? null,
+      }));
+      await issueDocumentForBill(
+        tx,
+        tenantId,
+        { id: bill.id, billDate: bill.billDate, invoiceNumber: bill.invoiceNumber },
+        issueLines,
+        { registered: saleGstProfile.registered },
+      );
+    } catch (err) {
+      logger.error(
+        { err, tenantId, billId: bill.id },
+        'Could not issue a GST document for a counter sale — the sale stands',
+      );
     }
 
     return bill.id;

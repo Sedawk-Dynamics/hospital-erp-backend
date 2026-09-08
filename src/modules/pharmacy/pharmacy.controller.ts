@@ -1049,6 +1049,24 @@ export async function createDispense(
 }
 
 // Counter billing — bill a whole cart as one invoice (partial / loose / walk-in).
+/**
+ * Price the cart the cashier is holding, without selling it.
+ *
+ * The same resolver the sale runs, so the quote on the screen IS the receipt.
+ */
+export async function previewPharmacySale(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await pharmacyService.previewPharmacySale(req.user!.tenantId, req.body);
+    sendResponse({ res, message: 'Cart priced', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function createPharmacySale(
   req: AuthenticatedRequest,
   res: Response,

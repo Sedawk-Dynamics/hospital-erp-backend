@@ -618,6 +618,30 @@ export const createDispenseSchema = z.object({
 // Counter billing / POS sale — bills a whole cart in one invoice. Supports
 // partial-of-prescription, loose (sub-unit) sales, walk-in/OTC (no prescription)
 // and free-typed quantities. prescriptionId is optional (walk-in => omitted).
+/**
+ * A cart to price, not to sell.
+ *
+ * Only what changes the tax is named: the batch, how much, and any discount.
+ * Everything else the sale needs — the patient, the tender, the co-sign — is
+ * irrelevant to what a line is taxed at, and asking for it would make the
+ * preview impossible to call while the cashier is still building the cart.
+ */
+export const previewPharmacySaleSchema = z.object({
+  body: z.object({
+    items: z
+      .array(
+        z.object({
+          drugBatchId: z.string().uuid(),
+          quantity: z.number().positive(),
+          saleUnit: z.enum(['pack', 'loose']).optional(),
+          unitPrice: z.number().nonnegative().optional(),
+          discountPercent: z.number().min(0).max(100).optional(),
+        }),
+      )
+      .max(200),
+  }),
+});
+
 export const createPharmacySaleSchema = z.object({
   body: z.object({
     // Optional — omit for a walk-in / OTC counter sale (no patient selected).

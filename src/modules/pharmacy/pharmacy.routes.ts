@@ -43,6 +43,7 @@ import {
   createDispenseSchema,
   setPharmacyStatusSchema,
   createPharmacySaleSchema,
+  previewPharmacySaleSchema,
   getPharmacySalesQuerySchema,
   cancelSaleSchema,
   saleIdParamSchema,
@@ -196,6 +197,9 @@ pharmacyRoutes.get('/scan', authenticate, requirePermission('pharmacy', 'read'),
 pharmacyRoutes.post('/sales/compliance-check', authenticate, requirePermission('pharmacy', 'read'), validate(complianceCheckSchema), controller.checkSaleCompliance);
 
 // --- Counter billing (POS sale: partial / loose / walk-in, one invoice) ---
+// Literal subpath BEFORE '/sales' variants so it is never shadowed. Reads
+// stock and prices; writes nothing, so it takes the read permission.
+pharmacyRoutes.post('/sales/preview', authenticate, requirePermission('pharmacy', 'read'), validate(previewPharmacySaleSchema), controller.previewPharmacySale);
 pharmacyRoutes.post('/sales', authenticate, requirePermission('pharmacy', 'create'), validate(createPharmacySaleSchema), controller.createPharmacySale);
 // List counter-sale invoices (+ period summary) for the Transactions page.
 pharmacyRoutes.get('/sales', authenticate, requirePermission('pharmacy', 'read'), validate(getPharmacySalesQuerySchema), controller.getPharmacySales);
