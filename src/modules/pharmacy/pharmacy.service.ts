@@ -3713,6 +3713,36 @@ export async function createPharmacySale(
     const ratio = itemTotal > 0 ? totalAmount / itemTotal : 1;
     const taxAmount = round2(lines.reduce((s, l) => s + l.taxAmt, 0) * ratio);
 
+    // The same tax, broken out the way every return asks for it.
+    //
+    // This sale writes its bill row directly instead of going through
+    // `recalculateBillTotals`, and so was the one issuing path that left the
+    // header's split columns at zero while `tax_amount` carried a figure. The
+    // lines had it right all along, so the returns (which fold lines) were
+    // never wrong — but a receipt, a screen or a report reading the header saw
+    // ₹0.00 CGST on every counter sale the hospital has ever made.
+    //
+    // Scaled by the same `ratio` as `taxAmount`, so a bill-level discount moves
+    // the whole header together and `taxableValue + cgst + sgst + igst` still
+    // comes to `totalAmount` on a tax-inclusive sale.
+    const splitRaw = lines.reduce(
+      (a, l) => ({
+        taxableValue: a.taxableValue + Number(l.taxFields.taxableValue ?? 0),
+        cgst: a.cgst + Number(l.taxFields.cgstAmount ?? 0),
+        sgst: a.sgst + Number(l.taxFields.sgstAmount ?? 0),
+        igst: a.igst + Number(l.taxFields.igstAmount ?? 0),
+        cess: a.cess + Number(l.taxFields.cessAmount ?? 0),
+      }),
+      { taxableValue: 0, cgst: 0, sgst: 0, igst: 0, cess: 0 },
+    );
+    const gstSplit = {
+      taxableValue: round2(splitRaw.taxableValue * ratio),
+      cgstAmount: round2(splitRaw.cgst * ratio),
+      sgstAmount: round2(splitRaw.sgst * ratio),
+      igstAmount: round2(splitRaw.igst * ratio),
+      cessAmount: round2(splitRaw.cess * ratio),
+    };
+
     // Resolve the tender(s). G7 split payment: when `payments[]` is given each
     // entry becomes its own Payment row (cash + UPI + card…). Otherwise fall
     // back to the single-mode path — pay-in-full unless an explicit amount.
@@ -3782,6 +3812,7 @@ export async function createPharmacySale(
         subtotal,
         discountAmount,
         taxAmount,
+        ...gstSplit,
         totalAmount,
         patientPayableAmount: totalAmount,
         amountPaid: applied,
