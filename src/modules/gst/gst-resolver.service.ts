@@ -19,6 +19,7 @@
 // billing under a registration the hospital has just changed.
 // ---------------------------------------------------------------------------
 
+import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { computeLineTax, isInterState, type LineTax } from '../../shared/gst';
 import { DEFAULT_GST_PROFILE, type GstProfile } from '../../shared/gst-profile';
@@ -43,9 +44,23 @@ interface MasterRow {
   description: string | null;
 }
 
+interface CategoryDefaultRow {
+  supplyKind: string;
+  ratePercent: number;
+  treatment: string;
+}
+
 interface CachedMasters {
   hsn: MasterRow[];
   sac: MasterRow[];
+  /**
+   * The super-admin fallback per supply kind. `determineTax` has read
+   * `masters.categoryDefault` since it was written; this resolver passed a
+   * literal null for it on every call, so step 7 of the chain was unreachable
+   * from every live billing path — no bill line in this database has ever
+   * carried `rate_source = 'category_default'`.
+   */
+  categoryDefaults: Map<string, CategoryDefaultRow>;
   loadedAt: number;
 }
 
@@ -64,8 +79,22 @@ export function clearGstMasterCache(): void {
 
 async function loadMasters(now: number): Promise<CachedMasters> {
   if (masterCache && now - masterCache.loadedAt < MASTER_TTL_MS) return masterCache;
-  const [hsn, sac] = await Promise.all([getHsnRows(), getSacRows()]);
-  masterCache = { hsn, sac, loadedAt: now };
+  const [hsn, sac, defaults] = await Promise.all([
+    getHsnRows(),
+    getSacRows(),
+    prisma.gstCategoryDefault.findMany({ where: { isActive: true } }),
+  ]);
+  masterCache = {
+    hsn,
+    sac,
+    categoryDefaults: new Map(
+      defaults.map((d) => [
+        d.supplyKind,
+        { supplyKind: d.supplyKind, ratePercent: Number(d.ratePercent), treatment: d.treatment },
+      ]),
+    ),
+    loadedAt: now,
+  };
   return masterCache;
 }
 
@@ -139,7 +168,7 @@ export async function taxResolverFor(tenantId: string, on: Date = new Date()): P
     // Same reasoning. With no masters every line falls through to the rules
     // that do not need them, which for healthcare means exempt.
     logger.warn({ err, tenantId }, 'GST masters unreadable — resolving without them');
-    masters = { hsn: [], sac: [], loadedAt: now };
+    masters = { hsn: [], sac: [], categoryDefaults: new Map(), loadedAt: now };
   }
 
   let slabs: GstSlabWindow[];
@@ -155,12 +184,18 @@ export async function taxResolverFor(tenantId: string, on: Date = new Date()): P
 
   const determine = (ctx: LineContext): TaxDetermination => {
     const full: SupplyContext = { ...ctx, on: ctx.on ?? on };
+    const fallback = masters.categoryDefaults.get(full.kind);
     const bundle: TaxMasters = {
       profile,
       hsnMatch: full.hsnCode ? matchLongestPrefix(full.hsnCode, masters.hsn) : null,
       sacMatch: full.sacCode ? matchLongestPrefix(full.sacCode, masters.sac) : null,
-      categoryDefault: null,
-      roomRule: null,
+      // The super-admin fallback for this kind of supply. Both of these used to
+      // be the literal `null`, which made two whole branches of the chain
+      // unreachable — the category default, and the hospital's own room rule.
+      categoryDefault: fallback
+        ? { ratePercent: fallback.ratePercent, treatment: fallback.treatment as never }
+        : null,
+      roomRule: profile.roomRule ?? null,
     };
     return determineTax(full, bundle);
   };
