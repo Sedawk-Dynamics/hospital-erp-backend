@@ -139,7 +139,34 @@ function reconcile(rate: number, treatment: GstTreatment | undefined): {
   return { gstRate: Math.max(0, rate), treatment: 'taxable' };
 }
 
+/**
+ * Refuse a rate that is not a legal GST slab today.
+ *
+ * The finalisation gate catches a bad rate on its way ONTO a bill. This catches
+ * it on the way into a master, which is where it comes from — a rate typed onto
+ * an HSN row or a drug years ago reaches every invoice that resolves through it
+ * until somebody notices.
+ *
+ * Judged as at TODAY, because a master is what applies from now on. Historic
+ * bills keep the rate they were snapshotted with; that is what the snapshot is
+ * for.
+ *
+ * Silent when the slab master is empty — a check that cannot be made must not
+ * start refusing every edit in the platform.
+ */
+async function assertLegalSlab(ratePercent: unknown, what: string): Promise<void> {
+  const rate = Number(ratePercent ?? 0);
+  if (!Number.isFinite(rate) || rate <= 0) return;
+  const { checkSlabRate, describeSlabs } = await import('../../shared/gst-slabs');
+  const { legal, slabs } = await checkSlabRate(rate);
+  if (legal) return;
+  throw AppError.badRequest(
+    `${rate}% is not a legal GST slab. ${what} must use one of ${describeSlabs(slabs)}.`,
+  );
+}
+
 export async function createSacCode(roles: string[], data: SacCodeInput, changedBy?: string | null) {
+  await assertLegalSlab((data as { gstRate?: unknown }).gstRate, 'A SAC rate');
   assertCanManage(roles);
   const sacCode = normalizeHsnSac(data.sacCode);
   if (!sacCode) throw AppError.badRequest('SAC code must contain digits');
@@ -179,6 +206,7 @@ export async function updateSacCode(
   data: Partial<SacCodeInput>,
   changedBy?: string | null,
 ) {
+  await assertLegalSlab((data as { gstRate?: unknown }).gstRate, 'A SAC rate');
   assertCanManage(roles);
   const existing = await prisma.sacCode.findUnique({ where: { id } });
   if (!existing) throw AppError.notFound('SAC entry not found');

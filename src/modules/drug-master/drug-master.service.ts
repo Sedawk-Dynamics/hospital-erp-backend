@@ -503,11 +503,38 @@ export async function listAllHsnGstRates() {
   return rows.map((r) => ({ ...r, gstRate: Number(r.gstRate) }));
 }
 
+/**
+ * Refuse a rate that is not a legal GST slab today.
+ *
+ * The finalisation gate catches a bad rate on its way ONTO a bill. This catches
+ * it on the way into a master, which is where it comes from — a rate typed onto
+ * an HSN row or a drug years ago reaches every invoice that resolves through it
+ * until somebody notices.
+ *
+ * Judged as at TODAY, because a master is what applies from now on. Historic
+ * bills keep the rate they were snapshotted with; that is what the snapshot is
+ * for.
+ *
+ * Silent when the slab master is empty — a check that cannot be made must not
+ * start refusing every edit in the platform.
+ */
+async function assertLegalSlab(ratePercent: unknown, what: string): Promise<void> {
+  const rate = Number(ratePercent ?? 0);
+  if (!Number.isFinite(rate) || rate <= 0) return;
+  const { checkSlabRate, describeSlabs } = await import('../../shared/gst-slabs');
+  const { legal, slabs } = await checkSlabRate(rate);
+  if (legal) return;
+  throw AppError.badRequest(
+    `${rate}% is not a legal GST slab. ${what} must use one of ${describeSlabs(slabs)}.`,
+  );
+}
+
 export async function createHsnGstRate(
   roles: string[],
   data: CreateHsnGstRateInput,
   changedBy?: string | null,
 ) {
+  await assertLegalSlab((data as { gstRate?: unknown }).gstRate, 'An HSN rate');
   assertCanManage(roles);
   const hsnCode = normalizeHsn(data.hsnCode);
   if (!hsnCode) throw AppError.badRequest('HSN code must contain digits');
@@ -548,6 +575,7 @@ export async function updateHsnGstRate(
   data: UpdateHsnGstRateInput,
   changedBy?: string | null,
 ) {
+  await assertLegalSlab((data as { gstRate?: unknown }).gstRate, 'An HSN rate');
   assertCanManage(roles);
   const existing = await prisma.hsnGstRate.findUnique({ where: { id } });
   if (!existing) throw AppError.notFound('HSN → GST rate not found');
@@ -597,6 +625,11 @@ export async function bulkUpsertHsnGstRates(
   roles: string[],
   rows: CreateHsnGstRateInput[],
 ) {
+  // Every row, before anything is written. A bulk paste is exactly how a
+  // retired slab gets back into the master at scale.
+  for (const r of rows) {
+    await assertLegalSlab(r.gstRate, 'An HSN rate');
+  }
   assertCanManage(roles);
   let created = 0;
   let updated = 0;

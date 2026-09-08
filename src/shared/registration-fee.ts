@@ -63,7 +63,12 @@ export function mergeRegistrationFee(
     // Capped well above any real registration fee, but not unbounded — a
     // mis-typed amount should not be able to become a six-figure charge.
     amount: num(p.amount, base.amount, 0, 100000),
-    gstRatePercent: num(p.gstRatePercent, base.gstRatePercent, 0, 28),
+    // Bounded by the highest slab that has ever existed rather than by 28,
+    // which stopped being a slab on 22 September 2025 and was acting as this
+    // field's ceiling. Whether the value IS a slab is checked where the
+    // settings are saved — clamping here would silently change a number the
+    // hospital typed.
+    gstRatePercent: num(p.gstRatePercent, base.gstRatePercent, 0, 40),
     label,
     oncePerPatient: typeof p.oncePerPatient === 'boolean' ? p.oncePerPatient : base.oncePerPatient,
   };
