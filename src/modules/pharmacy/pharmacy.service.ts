@@ -11,6 +11,7 @@ import { createBillInSeries } from '../../shared/bill-number';
 import { resolvePackSize, inferLooseUnitLabel } from '../drug-master/drug-master.dataset';
 import { resolveHsnGst, getHsnGstRows, matchHsnGst } from '../drug-master/drug-master.service';
 import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
+import { roundOffTotal } from '../../shared/gst';
 import { issueDocumentForBill } from '../gst/gst-document.service';
 import { getGstProfile } from '../hospital-settings/hospital-settings.service';
 import { issueCreditNoteBestEffort } from '../gst/credit-note.service';
@@ -3796,9 +3797,22 @@ export async function createPharmacySale(
     const billDiscount = round2(
       Math.min(itemTotal, round2(itemTotal * (billDiscPct / 100)) + billDiscFlat),
     );
-    const totalAmount = round2(itemTotal - billDiscount);
+    const exactTotal = round2(itemTotal - billDiscount);
+    // Section 6.9: the grand total rounds to the nearest rupee and the
+    // difference is stored as a visible round-off line. The counter screen has
+    // shown a rounded figure for some time while the bill charged the exact
+    // one; this is the side that was wrong.
+    //
+    // The round-off never touches the tax figures — those are what get
+    // reported — so `ratio` below is still taken on the exact total.
+    const rounding =
+      saleGstProfile.registered && saleGstProfile.roundOffToRupee
+        ? roundOffTotal(exactTotal)
+        : { rounded: exactTotal, roundOff: 0 };
+    const totalAmount = rounding.rounded;
+    const roundOff = rounding.roundOff;
     const discountAmount = round2(itemDiscount + billDiscount);
-    const ratio = itemTotal > 0 ? totalAmount / itemTotal : 1;
+    const ratio = itemTotal > 0 ? exactTotal / itemTotal : 1;
     const taxAmount = round2(lines.reduce((s, l) => s + l.taxAmt, 0) * ratio);
 
     // The same tax, broken out the way every return asks for it.
@@ -3901,6 +3915,7 @@ export async function createPharmacySale(
         discountAmount,
         taxAmount,
         ...gstSplit,
+        roundOff,
         totalAmount,
         patientPayableAmount: totalAmount,
         amountPaid: applied,
