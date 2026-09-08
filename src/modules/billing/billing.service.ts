@@ -1346,6 +1346,57 @@ export async function removeBillItem(tenantId: string, billId: string, itemId: s
   logger.info({ tenantId, billId, itemId }, 'Bill item removed');
 }
 
+/**
+ * Refuse a bill whose taxable lines carry a rate the law does not recognise.
+ *
+ * Shared by the two paths that issue a document: `finalizeBill` for everything
+ * the front desk and the ward raise, and the pharmacy counter sale, which
+ * writes a paid bill directly and never passes through here.
+ *
+ * Silent when the slab master is empty — a check that cannot be made must not
+ * start refusing every bill in the hospital.
+ */
+export async function assertRatesAreLegalSlabs(billId: string, billDate: Date): Promise<void> {
+  const { loadGstSlabs, isLegalSlabRate, slabsOn, describeSlabs } = await import(
+    '../../shared/gst-slabs'
+  );
+  let slabs;
+  try {
+    slabs = await loadGstSlabs();
+  } catch (err) {
+    logger.warn({ err, billId }, 'GST slab master unreadable — the rate check is skipped');
+    return;
+  }
+  const legal = slabsOn(slabs, billDate);
+  if (legal.length === 0) return;
+
+  const taxed = await prisma.billItem.findMany({
+    where: { billId, gstTreatment: 'taxable' },
+    select: { description: true, taxPercent: true },
+  });
+
+  const offending = new Map<number, string[]>();
+  for (const it of taxed) {
+    const rate = Number(it.taxPercent ?? 0);
+    if (rate <= 0) continue;
+    if (isLegalSlabRate(slabs, rate, billDate)) continue;
+    const names = offending.get(rate) ?? [];
+    if (names.length < 3) names.push(it.description);
+    offending.set(rate, names);
+  }
+  if (offending.size === 0) return;
+
+  const listed = [...offending.entries()]
+    .map(([rate, names]) => `${rate}% (${names.join(', ')})`)
+    .join('; ');
+  throw AppError.badRequest(
+    `This bill carries a GST rate that is not a legal slab on ${billDate
+      .toISOString()
+      .slice(0, 10)}: ${listed}. Legal rates on that date are ${describeSlabs(legal)}. ` +
+      "Correct the item's classification before finalizing.",
+  );
+}
+
 export async function finalizeBill(tenantId: string, userId: string, billId: string) {
   const bill = await prisma.bill.findFirst({
     where: { id: billId, tenantId },
@@ -1398,6 +1449,21 @@ export async function finalizeBill(tenantId: string, userId: string, billId: str
       }. Set an HSN or SAC code on the item, or have the rate approved, before finalizing.`,
     );
   }
+
+  // A rate that is not a slab is an invoice the portal will reject.
+  //
+  // Deciding WHICH rate applies and deciding whether that rate EXISTS are
+  // different questions, and only the second catches a rate typed onto a
+  // master years ago and never revisited. This database carries pharmacy lines
+  // at 10% and 12%; 12% was retired on 22 September 2025 and 10% has never been
+  // a GST slab at all. Nothing refused them, because nothing knew what the
+  // slabs were.
+  //
+  // Checked AS AT the bill's own date, so a bill corrected from before the
+  // cut-over is still judged by the rates that applied when it was raised. A
+  // line carrying no tax is not checked: zero is the absence of a rate, not a
+  // rate charged, and exempt lines sit there legitimately in every period.
+  await assertRatesAreLegalSlabs(billId, bill.billDate);
 
   // Recalculate final totals
   await recalculateBillTotals(billId);
