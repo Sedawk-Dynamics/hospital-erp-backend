@@ -210,7 +210,7 @@ export async function getUnmappedItems(tenantId: string, query: SalesReportQuery
  * allotted one and then rolled back.
  */
 export async function getSeriesContinuity(tenantId: string, query: { financialYear?: string } = {}) {
-  const [series, bills, notes] = await Promise.all([
+  const [series, bills, notes, vouchers] = await Promise.all([
     prisma.gstDocumentSeries.findMany({
       where: { tenantId, ...(query.financialYear ? { financialYear: query.financialYear } : {}) },
       orderBy: [{ financialYear: 'asc' }, { documentType: 'asc' }],
@@ -226,6 +226,16 @@ export async function getSeriesContinuity(tenantId: string, query: { financialYe
     prisma.creditNote.findMany({
       where: { tenantId, ...(query.financialYear ? { financialYear: query.financialYear } : {}) },
       select: { creditNoteNumber: true, financialYear: true, issueDate: true },
+    }),
+    // Rule 50 receipt vouchers and Rule 51 refund vouchers. These are numbered
+    // out of the same series table as invoices, but they live on the PAYMENT,
+    // not on a bill — so a report reading only bills and credit notes found no
+    // document at all against those two series and declared every number in
+    // them burned. An auditor opening this would have been told the hospital
+    // had lost its entire advance-voucher run.
+    prisma.payment.findMany({
+      where: { tenantId, voucherNumber: { not: null } },
+      select: { voucherNumber: true, voucherType: true, paymentDate: true },
     }),
   ]);
 
@@ -250,6 +260,12 @@ export async function getSeriesContinuity(tenantId: string, query: { financialYe
   }
   for (const c of notes) {
     push('credit_note', c.financialYear, c.creditNoteNumber, 'issued', c.issueDate, null);
+  }
+  for (const v of vouchers) {
+    // A voucher carries no financial-year column of its own; the year is in the
+    // number it was allotted ("RV/2026-27/000004").
+    const fy = v.voucherNumber!.split('/')[1] ?? null;
+    push(String(v.voucherType ?? 'receipt_voucher'), fy, v.voucherNumber!, 'issued', v.paymentDate, null);
   }
 
   const rows = series.map((s) => {
