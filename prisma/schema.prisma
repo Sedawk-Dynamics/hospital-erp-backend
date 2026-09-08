@@ -5227,6 +5227,22 @@ model DrugBatch {
   mrp                     Decimal?  @map("mrp") @db.Decimal(10, 2)
   purchaseDiscountPercent Decimal?  @map("purchase_discount_percent") @db.Decimal(5, 2)
   gstPercent              Decimal?  @map("gst_percent") @db.Decimal(5, 2)
+  /// Whether the input credit on this purchase can be claimed:
+  /// 'eligible' | 'ineligible' | 'partly'.
+  ///
+  /// Section 17(5) blocks credit outright on some supplies, and a hospital's
+  /// commonest case is the room-rent notification: 5% on non-ICU rent above
+  /// Rs 5,000 comes explicitly WITHOUT input tax credit. Without this column
+  /// report B-2 could only ever show GROSS credit, which is the rung of the
+  /// ladder that flatters the hospital.
+  itcEligibility          String    @default("eligible") @map("itc_eligibility") @db.VarChar(12)
+  itcBlockedReason        String?   @map("itc_blocked_reason") @db.VarChar(255)
+  /// The head-wise split actually paid on the supplier's invoice. Derivable
+  /// from the rate under the assumption the purchase was intra-state — which
+  /// stops being true the moment a hospital buys from another state.
+  inputCgst               Decimal?  @map("input_cgst") @db.Decimal(12, 2)
+  inputSgst               Decimal?  @map("input_sgst") @db.Decimal(12, 2)
+  inputIgst               Decimal?  @map("input_igst") @db.Decimal(12, 2)
   // Free units received on top of the paid quantity (e.g. buy 100 get 10). They
   // count toward stock but not toward purchase value.
   freeQuantity            Int       @default(0) @map("free_quantity")
