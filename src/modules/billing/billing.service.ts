@@ -20,6 +20,7 @@ import { normalizeAdmissionType, type AdmissionType } from '../../shared/admissi
 import { writeAudit } from '../../shared/audit';
 import { supplyKindForCategory } from '../../shared/gst-determination';
 import { roundOffTotal } from '../../shared/gst';
+import { assertPeriodOpen } from '../../shared/gst-period-lock';
 import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
 import { issueDocumentForBill } from '../gst/gst-document.service';
 import { issueCreditNoteBestEffort } from '../gst/credit-note.service';
@@ -1222,7 +1223,24 @@ export async function getBillById(tenantId: string, id: string) {
   return bill;
 }
 
+/**
+ * The date the return period is judged on: the bill's own date, not today.
+ *
+ * A bill raised in September belongs to September however long afterwards
+ * somebody tries to edit it — which is the whole point of locking a period.
+ */
+async function billDateOf(tenantId: string, billId: string): Promise<Date | null> {
+  const bill = await prisma.bill.findFirst({
+    where: { id: billId, tenantId },
+    select: { billDate: true },
+  });
+  return bill?.billDate ?? null;
+}
+
 export async function addBillItem(tenantId: string, billId: string, data: AddBillItemInput) {
+  // Section 6.10 — a bill inside a filed-and-locked return period cannot be
+  // changed. The correction is a credit note in the current period.
+  await assertPeriodOpen(tenantId, (await billDateOf(tenantId, billId)), 'a charge on this bill');
   const bill = await prisma.bill.findFirst({
     where: { id: billId, tenantId },
   });
@@ -1301,6 +1319,9 @@ export async function updateBillItem(
   itemId: string,
   data: UpdateBillItemInput,
 ) {
+  // Section 6.10 — a bill inside a filed-and-locked return period cannot be
+  // changed. The correction is a credit note in the current period.
+  await assertPeriodOpen(tenantId, (await billDateOf(tenantId, billId)), 'a charge on this bill');
   const bill = await prisma.bill.findFirst({ where: { id: billId, tenantId } });
   if (!bill) throw AppError.notFound('Bill not found');
   if (bill.status !== 'draft') throw AppError.badRequest('Can only edit items on draft bills');
@@ -1348,6 +1369,9 @@ export async function updateBillItem(
 }
 
 export async function removeBillItem(tenantId: string, billId: string, itemId: string) {
+  // Section 6.10 — a bill inside a filed-and-locked return period cannot be
+  // changed. The correction is a credit note in the current period.
+  await assertPeriodOpen(tenantId, (await billDateOf(tenantId, billId)), 'a charge on this bill');
   const bill = await prisma.bill.findFirst({
     where: { id: billId, tenantId },
   });
@@ -1489,6 +1513,9 @@ export async function issueDocumentForExistingBill(
 }
 
 export async function finalizeBill(tenantId: string, userId: string, billId: string) {
+  // Section 6.10 — a bill inside a filed-and-locked return period cannot be
+  // changed. The correction is a credit note in the current period.
+  await assertPeriodOpen(tenantId, (await billDateOf(tenantId, billId)), 'this bill');
   const bill = await prisma.bill.findFirst({
     where: { id: billId, tenantId },
     include: { billItems: true },
@@ -1639,6 +1666,9 @@ export async function finalizeBill(tenantId: string, userId: string, billId: str
  * be adjusted/cancelled through the normal routes instead.
  */
 export async function reopenBill(tenantId: string, billId: string) {
+  // Section 6.10 — a bill inside a filed-and-locked return period cannot be
+  // changed. The correction is a credit note in the current period.
+  await assertPeriodOpen(tenantId, (await billDateOf(tenantId, billId)), 'this bill');
   const bill = await prisma.bill.findFirst({
     where: { id: billId, tenantId },
     include: {
@@ -6489,6 +6519,9 @@ export async function cancelBill(
   billId: string,
   data: { reason: string },
 ) {
+  // Section 6.10 — a bill inside a filed-and-locked return period cannot be
+  // changed. The correction is a credit note in the current period.
+  await assertPeriodOpen(tenantId, (await billDateOf(tenantId, billId)), 'this bill');
   const bill = await prisma.bill.findFirst({
     where: { id: billId, tenantId },
     include: { payments: { where: { status: 'completed' } } },
