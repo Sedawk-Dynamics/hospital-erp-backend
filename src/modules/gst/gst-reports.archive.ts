@@ -111,6 +111,45 @@ export async function filePeriod(tenantId: string, userId: string | null, input:
   return { id: row.id, returnPeriod: period, filedAt: row.filedAt };
 }
 
+/**
+ * Lock a filed period, or open it again.
+ *
+ * A separate act from filing, deliberately. Archiving the figures is a record;
+ * locking shuts the doors on every bill dated inside the period, and a hospital
+ * wants the snapshot the moment it files while it may not want the month closed
+ * until it has checked. So nothing is locked unless somebody locks it.
+ *
+ * Re-opening is allowed and recorded rather than forbidden. A period gets
+ * locked by mistake, and the alternative to an audited unlock is somebody
+ * editing the row in the database.
+ */
+export async function setFiledPeriodLock(
+  tenantId: string,
+  userId: string,
+  id: string,
+  locked: boolean,
+) {
+  const row = await prisma.gstFiledPeriod.findFirst({ where: { id, tenantId } });
+  if (!row) throw AppError.notFound('Filed period not found');
+
+  const updated = await prisma.gstFiledPeriod.update({
+    where: { id },
+    data: locked
+      ? { lockedAt: new Date(), lockedBy: userId }
+      : { lockedAt: null, lockedBy: null },
+    select: { id: true, returnPeriod: true, lockedAt: true },
+  });
+
+  const { clearPeriodLockCache } = await import('../../shared/gst-period-lock');
+  clearPeriodLockCache(tenantId);
+
+  logger.info(
+    { tenantId, returnPeriod: updated.returnPeriod, locked, by: userId },
+    locked ? 'GST return period locked' : 'GST return period unlocked',
+  );
+  return updated;
+}
+
 /** Every period this hospital has filed, newest first. */
 export async function listFiledPeriods(tenantId: string) {
   const rows = await prisma.gstFiledPeriod.findMany({
@@ -119,7 +158,9 @@ export async function listFiledPeriods(tenantId: string) {
     select: {
       id: true, returnPeriod: true, financialYear: true, periodFrom: true,
       periodTo: true, filedAt: true, note: true,
+      lockedAt: true,
       filer: { select: { firstName: true, lastName: true } },
+      locker: { select: { firstName: true, lastName: true } },
       snapshot: true,
     },
   });

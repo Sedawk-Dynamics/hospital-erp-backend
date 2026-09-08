@@ -427,6 +427,41 @@ gstRoutes.get(
 );
 
 /**
+ * Lock a filed period, or open it again.
+ *
+ * Locking is what makes section 6.10 real: every bill dated inside a locked
+ * period becomes read-only, and a correction has to go through a credit note in
+ * the current period. Filing on its own only archives the figures.
+ */
+gstRoutes.patch(
+  '/reports/filed-periods/:id/lock',
+  ...gstReportAccess,
+  validate(
+    z.object({
+      params: z.object({ id: z.string().uuid() }),
+      body: z.object({ locked: z.boolean() }),
+    }),
+  ),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const data = await archive.setFiledPeriodLock(
+        req.user!.tenantId,
+        req.user!.userId,
+        String(req.params.id),
+        Boolean((req.body as { locked: boolean }).locked),
+      );
+      sendResponse({
+        res,
+        message: data.lockedAt ? `Period ${data.returnPeriod} locked` : `Period ${data.returnPeriod} reopened`,
+        data,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/**
  * Freeze a period as filed.
  *
  * Re-filing the same month replaces the copy rather than adding a second one:
