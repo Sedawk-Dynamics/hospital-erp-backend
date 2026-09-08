@@ -14,6 +14,7 @@ import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
 import { issueDocumentForBill } from '../gst/gst-document.service';
 import { getGstProfile } from '../hospital-settings/hospital-settings.service';
 import { issueCreditNoteBestEffort } from '../gst/credit-note.service';
+import { buildGstBlock, treatmentLabelFor, type GstLine } from '../billing/billing.gst-layout';
 import {
   classifyFormularyItem,
   inheritedScheduleFields,
@@ -4022,7 +4023,37 @@ export async function getPharmacySale(tenantId: string, billId: string) {
     },
   });
 
-  return { bill, hospital: tenant };
+  // What this paper IS, assembled by the same function the IP and OP bills use.
+  //
+  // The receipt was deriving its own tax: it halved the bill's `taxAmount` into
+  // CGST and SGST and printed the words "PHARMACY TAX INVOICE" whatever the
+  // sale contained. Three ways wrong — it disagreed with the stored split by a
+  // paisa wherever an odd amount was rounded, it would have printed CGST/SGST
+  // on an inter-State supply that carries IGST, and an all-exempt sale (which
+  // is issued as a Bill of Supply) was going out calling itself a tax invoice.
+  // A document that names itself wrongly is not a formatting problem.
+  const profile = await getGstProfile(tenantId);
+  const gstLines: GstLine[] = bill.billItems.map((i) => ({
+    description: i.description,
+    quantity: i.quantity,
+    unitPrice: Number(i.unitPrice ?? 0),
+    totalAmount: Number(i.totalAmount ?? 0),
+    hsnSac: i.hsnSacCode ?? null,
+    gstTreatment: i.gstTreatment ?? null,
+    treatmentLabel: treatmentLabelFor(i.gstTreatment),
+    taxRatePercent: Number(i.taxPercent ?? 0),
+    // A sale made before any of this existed stored no taxable value; its own
+    // amount stands in so the columns still add up.
+    taxableValue: i.taxableValue == null ? Number(i.totalAmount ?? 0) : Number(i.taxableValue),
+    taxAmount: Number(i.taxAmount ?? 0),
+    cgstRate: Number(i.cgstRate ?? 0), cgstAmount: Number(i.cgstAmount ?? 0),
+    sgstRate: Number(i.sgstRate ?? 0), sgstAmount: Number(i.sgstAmount ?? 0),
+    igstRate: Number(i.igstRate ?? 0), igstAmount: Number(i.igstAmount ?? 0),
+    cessAmount: Number(i.cessAmount ?? 0),
+  }));
+  const gst = buildGstBlock(profile, [bill as any], gstLines);
+
+  return { bill, hospital: tenant, gst };
 }
 
 // Paginated list of pharmacy counter-sale bills (PH- invoices) for the
