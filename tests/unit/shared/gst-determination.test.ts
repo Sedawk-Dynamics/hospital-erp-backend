@@ -4,6 +4,7 @@ import {
   roomTaxRate,
   isCriticalCareAccommodation,
   ROOM_GST_THRESHOLD_PER_DAY,
+  ROOM_ACCOMMODATION_SAC,
   type SupplyContext,
   type TaxMasters,
 } from '../../../src/shared/gst-determination';
@@ -345,5 +346,67 @@ describe('determineTax — nothing decided', () => {
   it('carries the inclusive flag through untouched', () => {
     expect(determineTax(ctx({ taxInclusive: true }), masters()).taxInclusive).toBe(true);
     expect(determineTax(ctx({ kind: 'room', dailyRate: 6000 }), masters()).taxInclusive).toBe(false);
+  });
+});
+
+describe('the room rule names the supply as well as rating it', () => {
+  // Rule 46 wants the code on the invoice and Table 12 groups by it. A room
+  // that went out with a rate and no code was a filed line the return could
+  // not place.
+  it('stamps the accommodation SAC on a taxable room', () => {
+    const d = determineTax(
+      { kind: 'room', dailyRate: 8000 },
+      masters(),
+    );
+    expect(d).toMatchObject({
+      treatment: 'taxable',
+      ratePercent: 5,
+      hsnSacCode: ROOM_ACCOMMODATION_SAC,
+      source: 'room_rule',
+    });
+  });
+
+  // An exempt room is still accommodation. Leaving the code off the cheap
+  // rooms would put most of a hospital's room revenue outside Table 12.
+  it('stamps it on an exempt room too', () => {
+    expect(
+      determineTax({ kind: 'room', dailyRate: 1500 }, { profile: REGISTERED }),
+    ).toMatchObject({ treatment: 'exempt', hsnSacCode: ROOM_ACCOMMODATION_SAC });
+  });
+
+  it('and on critical care, which is exempt at any rate', () => {
+    expect(
+      determineTax(
+        { kind: 'room', dailyRate: 12000, bedType: 'icu' },
+        masters(),
+      ),
+    ).toMatchObject({ treatment: 'exempt', hsnSacCode: ROOM_ACCOMMODATION_SAC });
+  });
+
+  // A hospital that has mapped its room tariff to something else means it.
+  it('never overrides a code that came with the charge', () => {
+    expect(
+      determineTax(
+        { kind: 'room', dailyRate: 8000, sacCode: '996312' },
+        masters(),
+      ).hsnSacCode,
+    ).toBe('996312');
+  });
+
+  it('lets the hospital configure a different default', () => {
+    expect(
+      determineTax(
+        { kind: 'room', dailyRate: 8000 },
+        masters({ roomRule: { thresholdPerDay: 5000, ratePercent: 5, sacCode: '9963' } }),
+      ).hsnSacCode,
+    ).toBe('9963');
+  });
+
+  // Naming the supply must not move its rate — the rule decides that.
+  it('changes no rate by naming the supply', () => {
+    const below = determineTax({ kind: 'room', dailyRate: 4999 }, { profile: REGISTERED });
+    const above = determineTax({ kind: 'room', dailyRate: 5001 }, { profile: REGISTERED });
+    expect(below.ratePercent).toBe(0);
+    expect(above.ratePercent).toBe(5);
   });
 });

@@ -205,7 +205,12 @@ export interface TaxMasters {
   sacMatch?: MasterMatch | null;
   /** The super-admin default for this kind. A fallback, never an override. */
   categoryDefault?: { ratePercent: number; treatment: GstTreatment } | null;
-  roomRule?: { thresholdPerDay: number; ratePercent: number } | null;
+  roomRule?: {
+    thresholdPerDay: number;
+    ratePercent: number;
+    /** Overrides {@link ROOM_ACCOMMODATION_SAC} for a hospital that maps it. */
+    sacCode?: string | null;
+  } | null;
 }
 
 export interface TaxDetermination {
@@ -241,14 +246,35 @@ const HEALTHCARE_KINDS: ReadonlySet<SupplyKind> = new Set([
  * Never throws: a line that cannot be classified comes back exempt and flagged,
  * because refusing to bill is worse than billing without tax and saying so.
  */
+/**
+ * The SAC a hospital room is supplied under.
+ *
+ * 996311 — "Room or unit accommodation services". The room RULE decides the
+ * rate (5% above the threshold, exempt below it and in critical care); this is
+ * only what the supply is called. Rule 46 wants the code on the invoice and
+ * GSTR-1 Table 12 groups by it, so a room that went out with a rate and no code
+ * was a filed line the return could not place.
+ *
+ * A code on the charge itself always wins — a hospital that has mapped its room
+ * tariff to something else means it.
+ */
+export const ROOM_ACCOMMODATION_SAC = '996311';
+
 export function determineTax(ctx: SupplyContext, masters: TaxMasters): TaxDetermination {
   const taxInclusive = ctx.taxInclusive ?? false;
   const code = ctx.hsnCode ?? ctx.sacCode ?? null;
 
-  const exempt = (source: TaxSource, reason: string, flag = false): TaxDetermination => ({
+  const exempt = (
+    source: TaxSource,
+    reason: string,
+    flag = false,
+    // A rule that knows what the supply IS can name it even when it carries no
+    // tax — an exempt room is still accommodation, and Table 12 still wants it.
+    codeOverride: string | null = null,
+  ): TaxDetermination => ({
     treatment: 'exempt',
     ratePercent: 0,
-    hsnSacCode: code,
+    hsnSacCode: code ?? codeOverride,
     taxInclusive,
     source,
     reason,
@@ -271,6 +297,9 @@ export function determineTax(ctx: SupplyContext, masters: TaxMasters): TaxDeterm
   //    taxable even for an inpatient. It is the exception the exemption does
   //    not swallow.
   if (ctx.kind === 'room') {
+    // What the supply is called, whoever decides its rate. A code on the charge
+    // wins; otherwise the hospital's own mapping; otherwise the statutory one.
+    const roomCode = code ?? masters.roomRule?.sacCode ?? ROOM_ACCOMMODATION_SAC;
     const rate = roomTaxRate(ctx.dailyRate ?? 0, {
       bedType: ctx.bedType,
       wardType: ctx.wardType,
@@ -286,12 +315,14 @@ export function determineTax(ctx: SupplyContext, masters: TaxMasters): TaxDeterm
           : `Exempt: room rent at or below the ₹${
               masters.roomRule?.thresholdPerDay ?? ROOM_GST_THRESHOLD_PER_DAY
             }/day threshold`,
+        false,
+        roomCode,
       );
     }
     return {
       treatment: 'taxable',
       ratePercent: rate,
-      hsnSacCode: code,
+      hsnSacCode: roomCode,
       taxInclusive,
       source: 'room_rule',
       reason: `Room rent above the ₹${
