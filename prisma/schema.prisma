@@ -4308,6 +4308,34 @@ model GstSlab {
   @@map("gst_slabs")
 }
 
+/// The category fallback the rate chain has a branch for and had no data for.
+///
+/// `determineTax` step 7 reads `masters.categoryDefault`; the resolver passed a
+/// literal null for it on every call, so the branch was unreachable — no
+/// bill_item in this database has ever carried `rate_source = 'category_default'`.
+///
+/// It is a FALLBACK, never an override: it sits below the item master and the
+/// HSN/SAC masters in the chain, and anything it makes taxable is flagged
+/// `requiresResolution` so the finalisation gate refuses it. That is exactly the
+/// safety rule the Changes document asks for.
+///
+/// PLATFORM data, like the masters beside it — "consultation is exempt" is not a
+/// hospital's opinion.
+model GstCategoryDefault {
+  id          String   @id @default(uuid())
+  /// One of the engine's SupplyKind values.
+  supplyKind  String   @unique @map("supply_kind") @db.VarChar(20)
+  ratePercent Decimal  @default(0) @map("rate_percent") @db.Decimal(5, 2)
+  /// 'taxable' | 'exempt' | 'nil_rated' | 'non_gst' | 'zero_rated'.
+  treatment   String   @default("exempt") @db.VarChar(20)
+  description String?  @db.VarChar(255)
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("gst_category_defaults")
+}
+
 model SacCode {
   id          String   @id @default(uuid())
   // Digits only (spaces/dots stripped on write), like hsn_code.
