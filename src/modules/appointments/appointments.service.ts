@@ -2025,6 +2025,14 @@ async function ensureAppointmentBill(
       },
   });
 
+  // Name and number it. This bill is created already-payable rather than as a
+  // draft, so it never passes through `finalizeBill` and used to carry no
+  // document type and no invoice number — a consultation the hospital could not
+  // put in a return. Best effort: taking the patient's money must not fail
+  // because a series could not be read.
+  const { issueDocumentForExistingBill } = await import('../billing/billing.service');
+  const issued = await issueDocumentForExistingBill(tenantId, bill.id);
+
   logger.info(
     {
       tenantId,
@@ -2033,6 +2041,8 @@ async function ensureAppointmentBill(
       amount,
       registrationTotal,
       freeFollowUp: feeResolution.isFreeFollowUp,
+      documentType: issued?.documentType ?? null,
+      invoiceNumber: issued?.invoiceNumber ?? null,
       by: userId,
     },
     'Consultation bill created for appointment',

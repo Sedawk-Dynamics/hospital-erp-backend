@@ -1397,6 +1397,67 @@ export async function assertRatesAreLegalSlabs(billId: string, billDate: Date): 
   );
 }
 
+/**
+ * Name and number a bill that was created already-payable.
+ *
+ * `finalizeBill` is the front door: draft in, numbered document out. Three
+ * high-volume paths never use it — the front-desk consultation bill, and the
+ * patient portal's two — because they create the bill at `status: 'pending'`
+ * with its lines already on it and nothing left to finalise. So they issued no
+ * document type and no invoice number at all: forty-eight `BILL-` rows in this
+ * database are non-draft and unnumbered, which is forty-eight supplies the
+ * hospital cannot put in a return.
+ *
+ * BEST EFFORT, deliberately, and this is the one place that judgement differs
+ * from `finalizeBill`. There the refusals come BEFORE money is demanded, so
+ * refusing is the safe answer. Here the bill already exists and the patient may
+ * already be paying; failing the consultation because a registration fee is
+ * configured at a retired slab would take the busiest desk in the hospital down
+ * over a settings row. So a bill that cannot be issued cleanly is left
+ * unnumbered and logged — and an unnumbered non-draft bill is exactly what C-3
+ * and C-4 exist to surface.
+ */
+export async function issueDocumentForExistingBill(
+  tenantId: string,
+  billId: string,
+): Promise<{ documentType: string; invoiceNumber: string | null } | null> {
+  try {
+    const bill = await prisma.bill.findFirst({
+      where: { id: billId, tenantId },
+      select: {
+        id: true, billDate: true, invoiceNumber: true, status: true,
+        recipientGstin: true,
+        billItems: { select: { taxAmount: true, gstTreatment: true, taxPercent: true, description: true } },
+      },
+    });
+    // Already numbered, gone, or still a draft that finalizeBill will handle.
+    if (!bill || bill.invoiceNumber || bill.status === 'draft' || bill.status === 'cancelled') return null;
+
+    const profile = await getGstProfile(tenantId);
+    if (!profile.registered) return null;
+
+    await assertRatesAreLegalSlabs(billId, bill.billDate);
+
+    return await prisma.$transaction((tx) =>
+      issueDocumentForBill(
+        tx,
+        tenantId,
+        {
+          id: bill.id,
+          billDate: bill.billDate,
+          recipientGstin: bill.recipientGstin,
+          invoiceNumber: bill.invoiceNumber,
+        },
+        bill.billItems,
+        { registered: profile.registered },
+      ),
+    );
+  } catch (err) {
+    logger.warn({ err, tenantId, billId }, 'Could not issue a GST document for this bill');
+    return null;
+  }
+}
+
 export async function finalizeBill(tenantId: string, userId: string, billId: string) {
   const bill = await prisma.bill.findFirst({
     where: { id: billId, tenantId },

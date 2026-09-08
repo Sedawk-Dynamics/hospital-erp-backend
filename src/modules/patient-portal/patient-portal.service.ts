@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { prisma } from '../../config/database';
 import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
+import { issueDocumentForExistingBill } from '../billing/billing.service';
 
 /** Medical and dental services — an OPD consultation, exempt. */
 const PORTAL_CONSULTATION_SAC = '999312';
@@ -2374,6 +2375,10 @@ export async function createPatientPaymentOrder(
       },
     });
     billId = bill.id;
+    // Name and number it. A portal bill is created already-payable, so it never
+    // passes through `finalizeBill` and carried no document type and no invoice
+    // number. Best effort — the booking must not fail over a series read.
+    await issueDocumentForExistingBill(tenantId, bill.id);
   }
 
   // Commission calculation
@@ -2662,6 +2667,10 @@ export async function confirmFrontdeskPayment(
       },
     },
   });
+
+  // Same as the portal path above: created already-payable, so nothing else
+  // would ever have named or numbered it.
+  await issueDocumentForExistingBill(tenantId, bill.id);
 
   logger.info({ appointmentId: data.appointmentId, billId: bill.id }, 'Frontdesk payment bill created');
 
