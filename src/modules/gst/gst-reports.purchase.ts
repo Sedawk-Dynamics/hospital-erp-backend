@@ -618,6 +618,67 @@ export async function getPurchaseReturns(
     };
   });
 
+  // ── Expired PHARMACY batches ─────────────────────────────────────────────
+  //
+  // The write-off list below reads `stock_transactions`, which is the GENERAL
+  // INVENTORY ledger. B-1 and B-2 — and therefore every figure of credit that
+  // could be reversed — read `drug_batches`. The two sets do not intersect, so
+  // the report that exists to catch a forgotten 17(5)(h) reversal was looking
+  // at a table where the credit had never been claimed in the first place.
+  //
+  // This database proves it: zero `expired_removal` transactions of all time,
+  // against expired drug batches sitting in stock.
+  //
+  // Dated by the batch's own expiry, because that is when the goods stopped
+  // being usable and it is the only date the row carries. A batch that expired
+  // before the period and is still in stock has already been reported in the
+  // period it expired in.
+  const expiredBatches = await prisma.drugBatch.findMany({
+    where: {
+      tenantId,
+      quantityInStock: { gt: 0 },
+      ...(query.supplierId ? { supplierId: query.supplierId } : {}),
+      ...(window ? { expiryDate: window } : { expiryDate: { lt: new Date() } }),
+    },
+    orderBy: { expiryDate: 'asc' },
+    select: {
+      id: true, batchNumber: true, expiryDate: true, quantityInStock: true,
+      purchasePrice: true, purchaseDiscountPercent: true, gstPercent: true,
+      invoiceNumber: true, invoiceDate: true,
+      drug: { select: { drugName: true, hsnCode: true } },
+      supplier: { select: { id: true, name: true, gstNumber: true } },
+    },
+  });
+
+  const expiredPharmacy = expiredBatches.map((b) => {
+    // Priced at what was PAID for the units still on the shelf, at the rate
+    // that was paid — which is what makes this a reversal of the credit
+    // actually taken rather than a valuation.
+    const netRate =
+      b.purchasePrice == null
+        ? null
+        : r2(Number(b.purchasePrice) * (1 - Number(b.purchaseDiscountPercent ?? 0) / 100));
+    const taxableValue = netRate == null ? 0 : r2(netRate * b.quantityInStock);
+    const rate = b.gstPercent == null ? null : Number(b.gstPercent);
+    return {
+      batchId: b.id,
+      date: b.expiryDate,
+      drugName: b.drug?.drugName ?? '',
+      hsnCode: b.drug?.hsnCode ?? null,
+      supplierName: b.supplier?.name ?? null,
+      supplierGstin: b.supplier?.gstNumber ?? null,
+      batchNumber: b.batchNumber,
+      expiryDate: b.expiryDate,
+      quantity: b.quantityInStock,
+      purchaseInvoiceNumber: b.invoiceNumber,
+      purchaseInvoiceDate: b.invoiceDate,
+      taxableValue,
+      gstRatePercent: rate,
+      /** Section 17(5)(h): credit taken on goods written off has to go back. */
+      taxToReverse: rate == null ? 0 : r2(taxableValue * (rate / 100)),
+    };
+  });
+
   // Expiry write-offs on general inventory. Nothing goes back to the supplier,
   // but 17(5)(h) blocks the credit all the same.
   const writeOffs = await prisma.stockTransaction.findMany({
@@ -650,6 +711,11 @@ export async function getPurchaseReturns(
   return {
     period: { from: query.from ?? null, to: query.to ?? null },
     returns: rows,
+    /**
+     * Expired PHARMACY batches — the ones B-1 actually claimed credit on, and
+     * the ones the previous version of this report could never see.
+     */
+    expiredPharmacyBatches: expiredPharmacy,
     expiryWriteOffs: expired,
     totals: {
       returns: rows.length,
@@ -659,10 +725,16 @@ export async function getPurchaseReturns(
       withoutSupplierCreditNote: rows.filter((x) => !x.supplierCreditNoteNumber).length,
       expiryWriteOffs: expired.length,
       expiredValue: r2(expired.reduce((t, x) => t + x.value, 0)),
+      expiredPharmacyBatches: expiredPharmacy.length,
+      expiredPharmacyValue: r2(expiredPharmacy.reduce((t, x) => t + x.taxableValue, 0)),
+      /** 17(5)(h) on pharmacy stock — the figure this report exists to find. */
+      expiredPharmacyTaxToReverse: r2(expiredPharmacy.reduce((t, x) => t + x.taxToReverse, 0)),
     },
     notes: [
       'Tax on a return is reversed at the rate PAID on the batch it was bought on, not at today’s rate.',
-      'Expiry write-offs carry no tax figure: the general inventory stock record holds a cost but no GST rate. Section 17(5)(h) still blocks the credit, so the value is reported for the accountant to reverse against.',
+      'Expired PHARMACY batches carry a real tax figure: the batch knows the rate that was paid on it, which is the credit that has to go back under section 17(5)(h).',
+      'The general-inventory write-offs below carry no tax figure — that stock record holds a cost but no GST rate. Section 17(5)(h) still blocks the credit, so the value is reported for the accountant to reverse against.',
+      'An expired batch is dated by its EXPIRY, because that is when the goods stopped being usable and it is the only date the row carries.',
       COVERAGE_NOTE,
     ],
   };
