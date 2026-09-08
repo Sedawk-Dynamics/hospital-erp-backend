@@ -44,6 +44,7 @@ import { seedDrugMaster } from '../seeds/drug-master';
 import { seedPackSizes } from '../seeds/pack-sizes';
 import { seedPackPrices } from '../seeds/pack-prices';
 import { seedImagingModalities } from '../seeds/imaging-modalities';
+import { seedGstSlabs, seedGstCategoryDefaults } from '../seeds/gst-slabs';
 import { seedHsnGstRates } from '../seeds/hsn-gst-rates';
 import { seedSacCodes } from '../seeds/sac-codes';
 import { seedDrugScheduleRules } from '../seeds/drug-schedule-rules';
@@ -158,6 +159,13 @@ export async function runSeeds(db: PrismaClient): Promise<void> {
   // HSN → GST tax reference — small + idempotent, run every boot so a release
   // that ships new/updated rates picks them up. Also tags a few common catalog
   // medicines with their HSN + GST.
+  // The rates the law RECOGNISES, and the category fallback every unmapped
+  // supply resolves to. Both tables are created empty by `db push`, and an
+  // empty slab master makes the whole rate gate silently inert —
+  // `isLegalSlabRate` answers true on an empty list by design, so nothing would
+  // be refused and everybody would assume the gate was working.
+  await step('gst-slabs', () => seedGstSlabs(db));
+  await step('gst-category-defaults', () => seedGstCategoryDefaults(db));
   await step('hsn-gst-rates', () => seedHsnGstRates(db));
   // The services half of the same reference. Cheap, and every service line
   // needs it to resolve a rate at all.
