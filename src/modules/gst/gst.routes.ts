@@ -453,6 +453,20 @@ gstRoutes.get(
 // Filing is a WRITE, and it is the accountant's act rather than a report, so it
 // sits behind the same gate but on POST.
 
+/**
+ * The one-off list section 6.11 asks for: IP bills that charged tax on ward
+ * medicines before the composite-supply rule went in.
+ *
+ * A list, not a fix — the owner's answer to question 3 was to apply the treatment
+ * to NEW bills and not alter old ones automatically.
+ */
+gstRoutes.get(
+  '/reports/historic-ip-medicine-tax',
+  ...gstReportAccess,
+  validate(salesQuerySchema),
+  report('Historic IP medicine tax', (t, q) => control.getHistoricIpMedicineTax(t, q as never)),
+);
+
 /** Every period this hospital has filed, newest first. */
 gstRoutes.get(
   '/reports/filed-periods',

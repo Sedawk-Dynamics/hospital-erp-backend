@@ -298,6 +298,130 @@ export async function getUnmappedItems(tenantId: string, query: SalesReportQuery
 }
 
 /**
+ * The one-off list section 6.11 asks for: IP bills that charged tax on ward
+ * medicines before the composite-supply rule went in.
+ *
+ * "Historic IP bills that charged 5% on ward medicines — identified and listed
+ * by a one-off report, so the hospital and its auditor can decide whether to
+ * correct them."
+ *
+ * Medicines and consumables used ON an admitted patient are part of an exempt
+ * composite supply whose principal supply is the treatment. Charging tax on
+ * them means the hospital remitted tax it did not owe AND understated its
+ * exempt turnover, which then under-reverses input credit under Rule 42. Both
+ * errors run in the hospital's disfavour, which is why it is worth finding
+ * them rather than leaving them.
+ *
+ * DELIBERATELY A LIST, NOT A FIX. The owner's own answer to question 3 was
+ * "apply the approved IP treatment to NEW bills; don't alter old bills
+ * automatically" — a paid bill in a filed period cannot be quietly recomputed,
+ * and the correction is a credit note the hospital chooses to raise.
+ */
+export async function getHistoricIpMedicineTax(tenantId: string, query: SalesReportQuery = {}) {
+  const { from, to } = dateRange(query);
+
+  const rows = await prisma.billItem.findMany({
+    where: {
+      bill: {
+        tenantId,
+        status: { not: 'draft' },
+        // An IP bill: one raised against an admission.
+        admissionId: { not: null },
+        ...(from || to
+          ? { billDate: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } }
+          : {}),
+      },
+      category: { in: ['pharmacy', 'consumable'] as never },
+      taxAmount: { gt: 0 },
+    },
+    select: {
+      id: true, description: true, category: true, quantity: true,
+      taxPercent: true, taxableValue: true, taxAmount: true, totalAmount: true,
+      gstTreatment: true, rateSource: true,
+      bill: {
+        select: {
+          id: true, billNumber: true, invoiceNumber: true, billDate: true,
+          status: true, admissionId: true,
+          patient: { select: { mrn: true, firstName: true, lastName: true } },
+        },
+      },
+    },
+    orderBy: { bill: { billDate: 'asc' } },
+  });
+
+  const byBill = new Map<
+    string,
+    {
+      billId: string; billNumber: string; invoiceNumber: string | null;
+      billDate: Date; billStatus: string; admissionId: string | null;
+      patientName: string | null; mrn: string | null;
+      lines: number; taxCharged: number; taxableValue: number;
+    }
+  >();
+  for (const r of rows) {
+    const b = r.bill!;
+    const cur = byBill.get(b.id) ?? {
+      billId: b.id,
+      billNumber: b.billNumber,
+      invoiceNumber: b.invoiceNumber,
+      billDate: b.billDate,
+      billStatus: String(b.status),
+      admissionId: b.admissionId,
+      patientName: b.patient ? fullName(b.patient) : null,
+      mrn: b.patient?.mrn ?? null,
+      lines: 0,
+      taxCharged: 0,
+      taxableValue: 0,
+    };
+    cur.lines += 1;
+    cur.taxCharged = n(cur.taxCharged + n(r.taxAmount));
+    cur.taxableValue = n(cur.taxableValue + n(r.taxableValue));
+    byBill.set(b.id, cur);
+  }
+
+  const bills = [...byBill.values()].sort((a, b) => b.taxCharged - a.taxCharged);
+  const taxCharged = n(rows.reduce((t, r) => t + n(r.taxAmount), 0));
+
+  return {
+    period: { from: query.from ?? null, to: query.to ?? null },
+    bills,
+    lines: rows.map((r) => ({
+      itemId: r.id,
+      billNumber: r.bill?.billNumber ?? null,
+      invoiceNumber: r.bill?.invoiceNumber ?? null,
+      billDate: r.bill?.billDate ?? null,
+      description: r.description,
+      category: String(r.category),
+      quantity: r.quantity,
+      ratePercent: n(r.taxPercent),
+      taxableValue: n(r.taxableValue),
+      taxCharged: n(r.taxAmount),
+      total: n(r.totalAmount),
+      treatment: r.gstTreatment,
+      rateSource: r.rateSource,
+    })),
+    totals: {
+      bills: bills.length,
+      lines: rows.length,
+      taxCharged,
+      /**
+       * The exempt turnover these lines should have carried. It was reported as
+       * taxable, so the Rule 42 exempt ratio is understated by this much and
+       * the hospital has been keeping input credit it was not entitled to.
+       */
+      understatedExemptTurnover: n(rows.reduce((t, r) => t + n(r.taxableValue), 0)),
+      /** Already issued as a document, so a correction has to be a credit note. */
+      issued: bills.filter((b) => !!b.invoiceNumber).length,
+    },
+    notes: [
+      'Medicines and consumables used ON an admitted patient are an exempt composite supply — the medicine follows the treatment. Tax charged on them was remitted but never owed.',
+      'The second cost is quieter: the same value was reported as TAXABLE turnover, so the Rule 42 exempt ratio is understated and input credit has been over-retained. Both errors run against the hospital.',
+      'This is a list, not a fix. A paid bill is not quietly recomputed — the correction is a credit note, and whether to raise one is the hospital and its auditor’s decision.',
+    ],
+  };
+}
+
+/**
  * C-4 — Document Series Continuity. The one an auditor asks for on day one.
  *
  * For each series and financial year: the first and last number issued, how
