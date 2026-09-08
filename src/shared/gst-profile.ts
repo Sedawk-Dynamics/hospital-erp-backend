@@ -94,6 +94,23 @@ export interface GstProfile {
    */
   roundOffToRupee: boolean;
   roomUpgradeTreatment: RoomUpgradeTreatment;
+  /**
+   * The room-rent rule, as DATA rather than as constants in the engine.
+   *
+   * Section 7.1 lists it under Standard Rules: the Rs 5,000-per-day threshold
+   * and its 5% rate. Both were compiled in, so a Council change meant a code
+   * change. The defaults are the statutory ones, so a hospital that never
+   * touches this behaves exactly as it does today.
+   *
+   * ICU is deliberately NOT configurable here — critical-care accommodation is
+   * exempt at any rate under the notification itself, not by anyone's choice.
+   */
+  roomRule: {
+    thresholdPerDay: number;
+    ratePercent: number;
+    /** What the room is supplied under. Defaults to SAC 996311. */
+    sacCode: string | null;
+  };
 }
 
 export const DEFAULT_GST_PROFILE: GstProfile = {
@@ -112,6 +129,7 @@ export const DEFAULT_GST_PROFILE: GstProfile = {
   inpatientCompositeExempt: true,
   roundOffToRupee: true,
   roomUpgradeTreatment: 'accommodation',
+  roomRule: { thresholdPerDay: 5000, ratePercent: 5, sacCode: null },
 };
 
 function bool(v: unknown, fallback: boolean): boolean {
@@ -213,6 +231,29 @@ export function mergeGstProfile(base: GstProfile, patch: unknown): GstProfile {
     inpatientCompositeExempt: bool(p.inpatientCompositeExempt, base.inpatientCompositeExempt),
     roundOffToRupee: bool(p.roundOffToRupee, base.roundOffToRupee),
     roomUpgradeTreatment,
+    roomRule: mergeRoomRule(base.roomRule, p.roomRule),
+  };
+}
+
+/**
+ * The room rule, clamped rather than refused.
+ *
+ * A threshold or a rate is a number a hospital sets, not an identity like the
+ * GSTIN — a nonsensical one is tidied up rather than rejected at the door. A
+ * threshold of zero would make every room taxable, so it is floored at zero and
+ * the rate is bounded by the highest slab that has ever existed.
+ */
+function mergeRoomRule(base: GstProfile['roomRule'], patch: unknown): GstProfile['roomRule'] {
+  const p = (patch ?? {}) as Record<string, unknown>;
+  const numOr = (v: unknown, fallback: number, min: number, max: number) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.min(max, Math.max(min, n));
+  };
+  return {
+    thresholdPerDay: numOr(p.thresholdPerDay, base.thresholdPerDay, 0, 10_000_000),
+    ratePercent: numOr(p.ratePercent, base.ratePercent, 0, 40),
+    sacCode: text(p.sacCode, base.sacCode, 20),
   };
 }
 
