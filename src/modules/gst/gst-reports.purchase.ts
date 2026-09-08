@@ -481,6 +481,14 @@ export async function getItcReversalWorking(tenantId: string, query: SalesReport
 
   // Rule 42's own names, kept so the working can be read beside the rule.
   const T = r2(register.rows.reduce((t, l) => t + l.taxAmount, 0));
+  // The same total, head by head. A reversal is applied proportionately across
+  // the heads it came from, because the electronic credit ledger holds three
+  // separate balances and IGST credit cannot be conjured out of CGST.
+  const heads = {
+    cgst: r2(register.rows.reduce((t, l) => t + l.cgstAmount, 0)),
+    sgst: r2(register.rows.reduce((t, l) => t + l.sgstAmount, 0)),
+    igst: r2(register.rows.reduce((t, l) => t + l.igstAmount, 0)),
+  };
   const T1 = 0;
   const T2 = 0;
   const T3 = 0;
@@ -527,9 +535,26 @@ export async function getItcReversalWorking(tenantId: string, query: SalesReport
     ],
     exemptRatioPercent: turnover.exemptRatio,
     creditAvailable: T,
+    /** The credit available, head by head. */
+    creditAvailableByHead: heads,
     reversal: { total: r2(D1 + D2), d1: D1, d2: D2 },
     /** C3 — what the hospital actually keeps. */
     netCreditAvailable: C3,
+    /**
+     * C3 head by head, apportioned in the same ratio the credit arrived in.
+     *
+     * Rule 42 reverses a share of the COMMON credit, not a particular head, so
+     * the reversal is spread across the three in the proportion they were
+     * claimed. Doing it any other way would leave a head negative.
+     */
+    netCreditByHead:
+      T > 0
+        ? {
+            cgst: r2((heads.cgst / T) * C3),
+            sgst: r2((heads.sgst / T) * C3),
+            igst: r2((heads.igst / T) * C3),
+          }
+        : { cgst: 0, sgst: 0, igst: 0 },
     notes: [
       'Rule 42 requires input tax to be split by the use it is put to (T1–T4). This system does not record that split, so the whole of the month’s input tax is treated as common credit — the conservative reading. Adjust by hand where exclusive use can be identified.',
       COVERAGE_NOTE,

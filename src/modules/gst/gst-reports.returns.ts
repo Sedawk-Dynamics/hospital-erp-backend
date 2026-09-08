@@ -325,6 +325,37 @@ export async function getGstr3bSummary(tenantId: string, query: SalesReportQuery
   };
 
   const netItc = itc.netCreditAvailable;
+
+  // ── The set-off, head by head ────────────────────────────────────────────
+  //
+  // GSTR-3B is not one subtraction. The electronic credit ledger holds three
+  // separate balances and the law fixes the order they may be used in: IGST
+  // credit first against IGST, then against CGST, then against SGST; CGST
+  // credit only against CGST; SGST credit only against SGST. Netting the three
+  // together, as this did, can show nothing payable while the hospital in fact
+  // owes SGST it has no SGST credit for.
+  const ledger = { ...itc.netCreditByHead };
+  const due = {
+    igst: outward.igstAmount,
+    cgst: outward.cgstAmount,
+    sgst: outward.sgstAmount,
+  };
+  const use = (from: 'igst' | 'cgst' | 'sgst', against: 'igst' | 'cgst' | 'sgst') => {
+    const amount = r2(Math.min(ledger[from], due[against]));
+    if (amount <= 0) return 0;
+    ledger[from] = r2(ledger[from] - amount);
+    due[against] = r2(due[against] - amount);
+    return amount;
+  };
+  const setOff = {
+    igstFromIgst: use('igst', 'igst'),
+    cgstFromIgst: use('igst', 'cgst'),
+    sgstFromIgst: use('igst', 'sgst'),
+    cgstFromCgst: use('cgst', 'cgst'),
+    sgstFromSgst: use('sgst', 'sgst'),
+  };
+  const payableByHead = { igst: due.igst, cgst: due.cgst, sgst: due.sgst };
+  const cashPayable = r2(payableByHead.igst + payableByHead.cgst + payableByHead.sgst);
   return {
     period: { from: query.from ?? null, to: query.to ?? null },
     /** 3.1(a) — outward taxable supplies, net of credit notes. */
@@ -339,9 +370,18 @@ export async function getGstr3bSummary(tenantId: string, query: SalesReportQuery
       reversed: itc.reversal.total,
       net: netItc,
     },
-    /** What is actually payable in cash once credit is set off. */
-    netTaxPayable: r2(Math.max(0, outward.taxAmount - netItc)),
-    creditCarriedForward: r2(Math.max(0, netItc - outward.taxAmount)),
+    /**
+     * What is actually payable in cash once credit is set off — head by head,
+     * in the statutory order.
+     *
+     * This used to be one subtraction of one total from another, which can show
+     * nothing payable while the hospital owes SGST it has no SGST credit for.
+     */
+    setOff,
+    payableByHead,
+    creditCarriedForwardByHead: ledger,
+    netTaxPayable: cashPayable,
+    creditCarriedForward: r2(ledger.igst + ledger.cgst + ledger.sgst),
     /** Notes that did NOT reduce the liability, and why. */
     creditNotesExcluded: notes.rows.length - reversible.length,
     creditNotesOutsideTimeLimit: notes.rows.filter((r) => !r.withinTimeLimit).length,
