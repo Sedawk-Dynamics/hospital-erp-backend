@@ -20,6 +20,7 @@
 // ---------------------------------------------------------------------------
 
 import { prisma } from '../../config/database';
+import { loadGstSlabs, isLegalSlabRate } from '../../shared/gst-slabs';
 import { r2, hsnForReturn } from '../../shared/gst';
 import { fullName } from '../../shared/person-name';
 import { treatmentLabelFor } from '../billing/billing.gst-layout';
@@ -82,6 +83,17 @@ export interface SalesLine {
   cessAmount: number;
   taxAmount: number;
   totalAmount: number;
+  /**
+   * The rate on this line is not one the law recognised on the day it was
+   * billed.
+   *
+   * Twenty-two of the twenty-three taxable lines in this hospital's register
+   * are in that state: rates of 2%, 10% and 12% that reached invoices before
+   * anything knew what a slab was. The finalisation gate stops new ones; this
+   * is how the ones already issued become visible, because a return filed from
+   * a register carrying them will be rejected and nothing was saying so.
+   */
+  illegalRate: boolean;
 }
 
 const n = (v: unknown) => r2(Number(v ?? 0));
@@ -137,6 +149,17 @@ export async function getSalesRegister(
     },
   });
 
+  // The slab windows, loaded once for the whole register rather than per line.
+  // An unreadable or empty master means the check cannot be made, and
+  // `isLegalSlabRate` answers true in that case by design — a report must not
+  // start accusing every line because a reference table would not read.
+  let slabs: Awaited<ReturnType<typeof loadGstSlabs>> = [];
+  try {
+    slabs = await loadGstSlabs();
+  } catch {
+    /* no slabs → nothing is flagged */
+  }
+
   const rows: SalesLine[] = [];
   for (const b of bills) {
     for (const it of b.billItems) {
@@ -176,6 +199,12 @@ export async function getSalesRegister(
         cessAmount: n(it.cessAmount),
         taxAmount: n(it.taxAmount),
         totalAmount: n(it.totalAmount),
+        // Judged as at the BILL's date: a 12% line from June 2025 was correct
+        // then and is not an error now.
+        illegalRate:
+          n(it.taxAmount) > 0 &&
+          n(it.taxPercent) > 0 &&
+          !isLegalSlabRate(slabs, n(it.taxPercent), b.billDate),
       });
     }
   }
@@ -269,7 +298,25 @@ export async function getRateWiseSummary(tenantId: string, query: SalesReportQue
     }))
     .sort((a, b) => b.totalAmount - a.totalAmount);
 
-  return { period, byRate, byDepartment, totals: totalOf(rows) };
+  const illegal = rows.filter((l) => l.illegalRate);
+  return {
+    period,
+    byRate,
+    byDepartment,
+    totals: totalOf(rows),
+    /**
+     * Rates in this period that the law did not recognise on the day they were
+     * billed. Filing from a register that carries them gets the return
+     * rejected, so it is stated on the summary rather than left to be found.
+     */
+    illegalRates: {
+      lines: illegal.length,
+      taxableValue: r2(illegal.reduce((t, l) => t + l.taxableValue, 0)),
+      taxAmount: r2(illegal.reduce((t, l) => t + l.taxAmount, 0)),
+      rates: [...new Set(illegal.map((l) => l.taxRatePercent))].sort((a, b) => a - b),
+      bills: [...new Set(illegal.map((l) => l.invoiceNumber ?? l.billNumber))].slice(0, 20),
+    },
+  };
 }
 
 /**

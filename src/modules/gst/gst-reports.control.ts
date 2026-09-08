@@ -159,6 +159,11 @@ export async function getUnmappedItems(tenantId: string, query: SalesReportQuery
   const noTreatment = rows.filter((l) => !l.gstTreatment);
   const noCode = rows.filter((l) => !!l.gstTreatment && !l.hsnSac);
   const typedRate = rows.filter((l) => l.requiresTaxResolution);
+  // The fourth bucket, and the one that will get a return rejected rather than
+  // merely queried: a line billed at a rate the law did not recognise on the
+  // day it went out. The finalisation gate stops new ones; these are already
+  // issued, and nothing was surfacing them.
+  const illegalRate = rows.filter((l) => l.illegalRate);
 
   const byItem = (list: typeof rows) => {
     const m = new Map<string, { description: string; department: string; lines: number; value: number; rates: Set<number> }>();
@@ -190,9 +195,27 @@ export async function getUnmappedItems(tenantId: string, query: SalesReportQuery
       description: l.description, department: l.department,
       ratePercent: l.taxRatePercent, taxAmount: l.taxAmount, rateSource: l.rateSource,
     })) },
+    /**
+     * Billed at a rate that was not a legal slab on the bill's own date.
+     *
+     * Judged as at the BILL's date, so a 12% line from June 2025 was correct
+     * then and is not listed. Each one has to be corrected with a credit note
+     * and a fresh invoice at the right rate — section 4.9 of the report.
+     */
+    illegalRate: {
+      totals: totalOf(illegalRate),
+      items: byItem(illegalRate),
+      lines: illegalRate.map((l) => ({
+        billNumber: l.billNumber, invoiceNumber: l.invoiceNumber, billDate: l.billDate,
+        description: l.description, department: l.department,
+        ratePercent: l.taxRatePercent, taxAmount: l.taxAmount, rateSource: l.rateSource,
+      })),
+    },
     totals: {
       linesChecked: rows.length,
-      exceptions: new Set([...noTreatment, ...noCode, ...typedRate].map((l) => l.itemId)).size,
+      exceptions: new Set(
+        [...noTreatment, ...noCode, ...typedRate, ...illegalRate].map((l) => l.itemId),
+      ).size,
     },
   };
 }
