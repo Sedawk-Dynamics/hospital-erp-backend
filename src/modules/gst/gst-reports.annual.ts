@@ -278,11 +278,25 @@ export async function getGstr9Summary(tenantId: string, query: { financialYear?:
     reconciliation: {
       registerTaxableValue: registerTotals.taxableValue,
       registerTaxAmount: registerTotals.taxAmount,
+      /**
+       * The annual view against the register it is folded from.
+       *
+       * Summed by TREATMENT, which partitions the register exactly once —
+       * taxable, exempt, nil-rated, non-GST, zero-rated and unclassified are
+       * mutually exclusive. The B2B/B2C cut does not partition it: both cover
+       * only the taxable slice, so adding them to the exempt total left every
+       * unclassified line out and the check never agreed.
+       */
+      partsTaxableValue: r2(
+        exempt.taxable.taxableValue +
+          table5.total +
+          exempt.zeroRated.taxableValue +
+          exempt.unclassified.taxableValue,
+      ),
       agrees:
         Math.abs(
           r2(
-            b2b.totals.taxableValue +
-              b2c.totals.taxableValue +
+            exempt.taxable.taxableValue +
               table5.total +
               exempt.zeroRated.taxableValue +
               exempt.unclassified.taxableValue,

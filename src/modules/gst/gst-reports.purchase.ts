@@ -312,8 +312,10 @@ export async function getItcSummary(
   try {
     const working = await getItcReversalWorking(tenantId, query);
     reversals = working.reversal.total;
+    // `exemptRatioPercent` is already a percentage. It was being multiplied by
+    // a hundred again, which printed "exempt turnover 9817% of total".
     reversalNote = `Rule 42 D1 + D2 for the period (exempt turnover ${
-      Math.round((working.exemptRatioPercent ?? 0) * 1000) / 10
+      Math.round((working.exemptRatioPercent ?? 0) * 100) / 100
     }% of total)`;
   } catch {
     /* leave at zero and say so */
@@ -465,13 +467,20 @@ export async function getSupplierGstinExceptions(
  * cannot support.
  */
 export async function getItcReversalWorking(tenantId: string, query: SalesReportQuery = {}) {
-  const [itc, turnover] = await Promise.all([
-    getItcSummary(tenantId, query),
+  // Straight from the purchase register, NOT from B-2.
+  //
+  // B-2's ladder reads this working for its reversal rung, so taking B-2's
+  // total here would be a cycle — and it was: `getItcSummary` awaited this
+  // function while this function awaited `getItcSummary`, which hung and then
+  // exhausted the heap. Both want the same figure and B-1 is where it comes
+  // from, so both read B-1.
+  const [register, turnover] = await Promise.all([
+    getPurchaseRegister(tenantId, query),
     getExemptTurnover(tenantId, query),
   ]);
 
   // Rule 42's own names, kept so the working can be read beside the rule.
-  const T = itc.totals.taxAmount;
+  const T = r2(register.rows.reduce((t, l) => t + l.taxAmount, 0));
   const T1 = 0;
   const T2 = 0;
   const T3 = 0;
@@ -490,11 +499,11 @@ export async function getItcReversalWorking(tenantId: string, query: SalesReport
   const C3 = r2(C2 - (D1 + D2));
 
   return {
-    period: itc.period,
+    period: register.period,
     /** Every step, with the label the rule uses for it. */
     working: [
       { step: 'T', label: 'Total input tax in the period', amount: T,
-        source: 'B-2 Input Tax Credit Summary' },
+        source: 'B-1 GST Purchase Register' },
       { step: 'T1', label: 'Used exclusively for non-business purposes', amount: T1,
         source: 'Not recorded — see the note' },
       { step: 'T2', label: 'Used exclusively for exempt supplies', amount: T2,
