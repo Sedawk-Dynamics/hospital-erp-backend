@@ -4542,6 +4542,12 @@ model CreditNote {
   tenantId         String   @map("tenant_id")
   /// Its own continuous series, allotted the same way an invoice number is.
   creditNoteNumber String   @unique @map("credit_note_number") @db.VarChar(50)
+  /// 'credit' or 'debit'. The same document with the sign the other way up:
+  /// same series shape, same link to the original invoice, same line-level
+  /// reversal, same section 34 time limit. A debit note is what a concession
+  /// REDUCED after an invoice was issued needs — money going back ON to an
+  /// issued invoice — and until now the system could not raise one.
+  noteType         String   @default("credit") @map("note_type") @db.VarChar(8)
   /// The document being reversed. A credit note without one is not a credit note.
   billId           String   @map("bill_id")
   patientId        String?  @map("patient_id")
