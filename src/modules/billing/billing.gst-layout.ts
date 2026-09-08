@@ -37,6 +37,8 @@ import {
   type TableRow,
 } from '../../services/pdf-doc';
 
+import { amountInWords } from '../../shared/amount-in-words';
+
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
 /** The part of a charge line this module needs. Both bill shapes satisfy it. */
@@ -105,6 +107,26 @@ export interface BillDocumentGst {
     cessAmount: number;
     taxAmount: number;
   };
+  /**
+   * The total tax written out — section 10.1 item 8, which nothing could
+   * produce. An amount in words is what stops a printed invoice being altered
+   * after it is handed over, which is why every Indian invoice carries one.
+   *
+   * The grand total's words are NOT here: this block describes the tax, and a
+   * document's grand total is its own (an IP stay's is not any one bill's). Each
+   * renderer writes its own with the same helper.
+   */
+  taxAmountInWords: string;
+  /**
+   * Rule 46 requires a tax invoice for GOODS to be marked ORIGINAL FOR
+   * RECIPIENT / DUPLICATE FOR TRANSPORTER / TRIPLICATE FOR SUPPLIER, and for
+   * services ORIGINAL / DUPLICATE. Section 10.2's title band asks for it and no
+   * document printed one.
+   *
+   * The copy actually handed to the patient is always the original; the phrase
+   * is what changes with the document type.
+   */
+  copyMarking: string | null;
 }
 
 /** A document with nothing to declare — and what a legacy one falls back to. */
@@ -122,6 +144,8 @@ export const NO_GST: BillDocumentGst = {
   placeOfSupplyStateName: null,
   isInterState: false,
   hasTax: false,
+  taxAmountInWords: '',
+  copyMarking: null,
   hasClassifiedLines: false,
   taxSummary: [],
   notes: [],
@@ -245,6 +269,15 @@ export function buildGstBlock(
     taxSummary,
     notes,
     totals,
+    taxAmountInWords: totals.taxAmount > 0 ? amountInWords(totals.taxAmount) : '',
+    // A bill of supply carries no tax and is a services document, so it is
+    // marked ORIGINAL rather than ORIGINAL FOR RECIPIENT. Nothing at all where
+    // no document has been issued: an unissued draft is not a copy of anything.
+    copyMarking: documentType
+      ? documentType === 'bill_of_supply'
+        ? 'ORIGINAL'
+        : 'ORIGINAL FOR RECIPIENT'
+      : null,
   };
 }
 
