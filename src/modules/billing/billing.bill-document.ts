@@ -70,7 +70,13 @@ export interface AdmissionBillDocument {
   isPaid: boolean;
   /** True once the stay is over — a final bill rather than an interim one. */
   isDischarged: boolean;
-  /** "Final Bill" vs "Interim Bill" — printed as the document title. */
+  /**
+   * What the paper calls itself: the GST document's own name once the bill has
+   * been issued ("Tax Invoice", "Bill of Supply", "Invoice-cum-Bill of
+   * Supply"), and otherwise "Final Bill" or "Interim Bill" from the stay's
+   * status. See where it is built for why an issued document keeps its legal
+   * name even while the patient is still admitted.
+   */
   documentTitle: string;
   patient: {
     id: string;
