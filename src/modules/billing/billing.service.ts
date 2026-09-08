@@ -19,6 +19,7 @@ import {
 import { normalizeAdmissionType, type AdmissionType } from '../../shared/admission-type';
 import { writeAudit } from '../../shared/audit';
 import { supplyKindForCategory } from '../../shared/gst-determination';
+import { roundOffTotal } from '../../shared/gst';
 import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
 import { issueDocumentForBill } from '../gst/gst-document.service';
 import { issueCreditNoteBestEffort } from '../gst/credit-note.service';
@@ -251,7 +252,35 @@ async function recalculateBillTotals(billId: string) {
   // For an all-exclusive bill this is arithmetically identical to the old
   // `subtotal − discount + tax`, because each line total IS its net plus its
   // tax. It only diverges where a line carries its tax inside the price.
-  const total = Math.max(0, r2(lineTotals - billLevelDiscount));
+  const exact = Math.max(0, r2(lineTotals - billLevelDiscount));
+
+  // Section 6.9: round the grand total to the nearest rupee and store the
+  // difference as a visible round-off line. `roundOffTotal` has existed in
+  // shared/gst.ts since this work started and nothing called it — `round_off`
+  // was 0 on all 180 bills in this database while ten of them carried a
+  // non-whole-rupee total.
+  //
+  // The round-off never touches the tax figures: those are what get reported,
+  // and moving them to make a total look tidy is how a return stops tying back
+  // to the register.
+  let roundOff = 0;
+  let total = exact;
+  try {
+    // The bill knows its own tenant — this function is called from a dozen
+    // places and several of them do not have one in hand.
+    const owner = await prisma.bill.findUnique({
+      where: { id: billId },
+      select: { tenantId: true },
+    });
+    const profile = await getGstProfile(owner!.tenantId);
+    if (profile.registered && profile.roundOffToRupee) {
+      const r = roundOffTotal(exact);
+      total = r.rounded;
+      roundOff = r.roundOff;
+    }
+  } catch {
+    // No profile, no rounding. The exact figure is always a safe answer.
+  }
 
   // Through the same ledger definition every other path settles by. Summing
   // completed payments raw counted a REFUND payout as money coming in — a
@@ -290,6 +319,7 @@ async function recalculateBillTotals(billId: string) {
     sgstAmount: r2(sgstAmount),
     igstAmount: r2(igstAmount),
     cessAmount: r2(cessAmount),
+    roundOff,
   };
 
   if (status) {

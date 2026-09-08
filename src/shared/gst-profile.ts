@@ -81,6 +81,18 @@ export interface GstProfile {
    * off-switch exists so a hospital whose auditor disagrees is not stuck.
    */
   inpatientCompositeExempt: boolean;
+  /**
+   * Round the grand total to the nearest rupee and show the difference as a
+   * round-off line, per section 6.9 of the GST report.
+   *
+   * On by default because that is what the report specifies and what every
+   * Indian invoice does. The off-switch exists because it changes what the
+   * patient actually pays — by up to fifty paise — and that is a decision a
+   * hospital is entitled to make for itself.
+   *
+   * The round-off NEVER touches the tax figures. Those are what get reported.
+   */
+  roundOffToRupee: boolean;
   roomUpgradeTreatment: RoomUpgradeTreatment;
 }
 
@@ -98,6 +110,7 @@ export const DEFAULT_GST_PROFILE: GstProfile = {
   eWayBillApplicable: false,
   dischargeMedicinesTaxable: true,
   inpatientCompositeExempt: true,
+  roundOffToRupee: true,
   roomUpgradeTreatment: 'accommodation',
 };
 
@@ -198,6 +211,7 @@ export function mergeGstProfile(base: GstProfile, patch: unknown): GstProfile {
     eWayBillApplicable: bool(p.eWayBillApplicable, base.eWayBillApplicable),
     dischargeMedicinesTaxable: bool(p.dischargeMedicinesTaxable, base.dischargeMedicinesTaxable),
     inpatientCompositeExempt: bool(p.inpatientCompositeExempt, base.inpatientCompositeExempt),
+    roundOffToRupee: bool(p.roundOffToRupee, base.roundOffToRupee),
     roomUpgradeTreatment,
   };
 }
