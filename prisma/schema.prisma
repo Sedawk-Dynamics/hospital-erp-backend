@@ -6019,6 +6019,14 @@ model Bill {
   approvedBy             String?    @map("approved_by")
   cancelledBy            String?    @map("cancelled_by")
   cancellationReason     String?    @map("cancellation_reason")
+  /// When it was cancelled, as its own fact.
+  ///
+  /// C-9 reported `updated_at` as the cancellation date and FILTERED on
+  /// `bill_date`, so an invoice raised in July and cancelled in September
+  /// appeared in July — where the cancellation had not happened yet — and was
+  /// missing from September, which is the month the reversal belongs to.
+  /// `updated_at` cannot stand in for this: any later touch of the row moves it.
+  cancelledAt            DateTime?  @map("cancelled_at")
   pdfUrl                 String?    @map("pdf_url")
   createdAt              DateTime   @default(now()) @map("created_at")
   updatedAt              DateTime   @default(now()) @updatedAt @map("updated_at")

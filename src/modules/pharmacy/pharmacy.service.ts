@@ -4297,6 +4297,9 @@ export async function cancelPharmacySale(
         status: 'cancelled',
         cancelledBy: userId,
         cancellationReason: data.reason,
+        // Its own fact. C-9 reports on when a bill was CANCELLED, and
+        // `updated_at` moves on any later touch of the row.
+        cancelledAt: new Date(),
         amountPaid: 0,
         balanceDue: 0,
         // The lines are gone, so every figure summarising them goes to zero

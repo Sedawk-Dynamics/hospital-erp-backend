@@ -474,12 +474,33 @@ export async function getCancelledInvoices(tenantId: string, query: SalesReportQ
     where: {
       tenantId,
       status: 'cancelled',
-      ...(from || to ? { billDate: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {}),
+      // Filtered on when it was CANCELLED, not when it was raised.
+      //
+      // This asked for `billDate`, which is a different month more often than
+      // not: three invoices in this database were raised in July and cancelled
+      // in September. They appeared in July's report — where the cancellation
+      // had not happened yet — and were missing from September's, which is the
+      // month the reversal belongs to. An auditor asking "what did you cancel
+      // in September" got the wrong answer both ways.
+      //
+      // A bill cancelled before `cancelled_at` existed falls back to the date
+      // it was raised, which is the only date it has.
+      ...(from || to
+        ? {
+            OR: [
+              { cancelledAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } },
+              {
+                cancelledAt: null,
+                billDate: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) },
+              },
+            ],
+          }
+        : {}),
     },
     orderBy: { billDate: 'asc' },
     select: {
       id: true, billNumber: true, invoiceNumber: true, gstDocumentType: true,
-      billDate: true, totalAmount: true, taxAmount: true, cancellationReason: true,
+      billDate: true, cancelledAt: true, totalAmount: true, taxAmount: true, cancellationReason: true,
       updatedAt: true,
       canceller: { select: { firstName: true, lastName: true } },
       patient: { select: { mrn: true, firstName: true, lastName: true } },
@@ -493,7 +514,9 @@ export async function getCancelledInvoices(tenantId: string, query: SalesReportQ
     invoiceNumber: b.invoiceNumber,
     documentType: b.gstDocumentType,
     billDate: b.billDate,
-    cancelledAt: b.updatedAt,
+    // The real date where we have it; the row's last touch only as a
+    // fallback for a bill cancelled before the column existed.
+    cancelledAt: b.cancelledAt ?? b.updatedAt,
     cancelledBy: b.canceller ? fullName(b.canceller) : null,
     reason: b.cancellationReason,
     patientName: b.patient ? fullName(b.patient) : null,

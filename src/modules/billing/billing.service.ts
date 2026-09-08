@@ -6721,6 +6721,9 @@ export async function cancelBill(
         status: 'cancelled',
         cancelledBy: userId,
         cancellationReason: data.reason,
+        // Its own fact. C-9 reports on when a bill was CANCELLED, and
+        // `updated_at` moves on any later touch of the row.
+        cancelledAt: new Date(),
       },
     });
 
