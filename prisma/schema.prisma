@@ -5620,6 +5620,9 @@ model Supplier {
   email           String?     @db.VarChar(255)
   address         String?
   gstNumber       String?     @map("gst_number") @db.VarChar(50)
+  /// Derived from `gstNumber`'s first two digits. Decides whether a purchase
+  /// was intra-state (CGST+SGST) or inter-state (IGST).
+  stateCode       String?     @map("state_code") @db.VarChar(2)
   licenseNumber   String?     @map("license_number") @db.VarChar(100)
   supplyType      SupplyType? @map("supply_type")
   // Credit period agreed with the vendor: how many days we have to pay them
@@ -6314,6 +6317,12 @@ model Insurer {
   phone         String?  @db.VarChar(20)
   email         String?  @db.VarChar(255)
   address       String?
+  /// The payer's own GST registration. Without it no B2B invoice can be raised
+  /// against this party, and the whole IGST path is unreachable.
+  gstin         String?  @db.VarChar(15)
+  /// Always the first two digits of the GSTIN — derived, never typed, so the
+  /// two cannot drift apart. Decides CGST+SGST against IGST.
+  stateCode     String?  @map("state_code") @db.VarChar(2)
   isActive      Boolean  @default(true) @map("is_active")
   createdAt     DateTime @default(now()) @map("created_at")
 
@@ -6331,6 +6340,12 @@ model TpaProvider {
   phone         String?  @db.VarChar(20)
   email         String?  @db.VarChar(255)
   address       String?
+  /// The payer's own GST registration. Without it no B2B invoice can be raised
+  /// against this party, and the whole IGST path is unreachable.
+  gstin         String?  @db.VarChar(15)
+  /// Always the first two digits of the GSTIN — derived, never typed, so the
+  /// two cannot drift apart. Decides CGST+SGST against IGST.
+  stateCode     String?  @map("state_code") @db.VarChar(2)
   isActive      Boolean  @default(true) @map("is_active")
   createdAt     DateTime @default(now()) @map("created_at")
 

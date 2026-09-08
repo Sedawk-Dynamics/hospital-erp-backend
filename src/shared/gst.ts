@@ -115,6 +115,30 @@ export function roundOffTotal(total: number): { rounded: number; roundOff: numbe
   return { rounded, roundOff: r2(rounded - total) };
 }
 
+/**
+ * A counterparty's GSTIN and the state it implies, ready to store.
+ *
+ * Used for an insurer, a TPA and a supplier — every party the hospital bills or
+ * buys from. The state is never taken separately: the first two digits of a
+ * GSTIN ARE the state code, so storing a typed one alongside it is storing two
+ * facts that can disagree.
+ *
+ * A blank clears both. An invalid GSTIN is refused rather than tidied up — a
+ * wrong GSTIN is not a value to clean, it is an invoice the portal will reject.
+ */
+export function normalizeCounterpartyGstin(
+  raw: string | null | undefined,
+): { gstin: string | null; stateCode: string | null } {
+  if (raw == null) return { gstin: null, stateCode: null };
+  const t = String(raw).trim().toUpperCase();
+  if (!t) return { gstin: null, stateCode: null };
+  const check = checkGstin(t);
+  if (!check.valid) {
+    throw new Error(`GSTIN is not valid — ${check.reason}`);
+  }
+  return { gstin: check.normalized!, stateCode: check.normalized!.slice(0, 2) };
+}
+
 // ── The split ──────────────────────────────────────────────────────────────
 
 export interface TaxSplit {
