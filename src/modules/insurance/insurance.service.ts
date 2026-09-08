@@ -1,6 +1,7 @@
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
+import { normalizeCounterpartyGstin } from '../../shared/gst';
 import { getPaginationParams } from '../../shared/pagination';
 import { getISTDateStr } from '../../shared/date.utils';
 import { Prisma } from '@prisma/client';
@@ -112,7 +113,29 @@ async function generatePreAuthRequestNumber(tenantId: string): Promise<string> {
 // Insurers
 // ============================================================
 
+/**
+ * A payer's GSTIN, checked and turned into a state code.
+ *
+ * Refused rather than clamped: a wrong GSTIN on an insurer means every invoice
+ * raised against them is defective, and finding that out at filing time is far
+ * more expensive than a rejected form field.
+ */
+function gstinOf(raw: string | null | undefined): { gstin: string | null; stateCode: string | null } {
+  try {
+    return normalizeCounterpartyGstin(raw);
+  } catch (err) {
+    throw AppError.badRequest((err as Error).message);
+  }
+}
+
 export async function createInsurer(tenantId: string, data: CreateInsurerInput) {
+  // A payer with a GSTIN is a REGISTERED recipient, which is what turns a
+  // hospital bill into a B2B invoice — GSTR-1 Table 4 rather than the B2C
+  // summary, and IGST rather than CGST+SGST when they are in another state.
+  // Without this field none of that could ever happen: A-4 was structurally
+  // empty and `recipientGstin` on a bill had twenty readers and no writer.
+  const gst = gstinOf(data.gstin);
+
   const insurer = await prisma.insurer.create({
     data: {
       tenantId,
@@ -121,6 +144,8 @@ export async function createInsurer(tenantId: string, data: CreateInsurerInput) 
       phone: data.phone,
       email: data.email,
       address: data.address,
+      gstin: gst.gstin,
+      stateCode: gst.stateCode,
       isActive: data.isActive ?? true,
     },
   });
@@ -192,6 +217,9 @@ export async function updateInsurer(tenantId: string, id: string, data: UpdateIn
       ...(data.phone !== undefined && { phone: data.phone }),
       ...(data.email !== undefined && { email: data.email }),
       ...(data.address !== undefined && { address: data.address }),
+      // The state always comes out of the GSTIN, so they move together or not
+      // at all.
+      ...(data.gstin !== undefined && gstinOf(data.gstin)),
       ...(data.isActive !== undefined && { isActive: data.isActive }),
     },
   });
@@ -224,6 +252,9 @@ export async function deleteInsurer(tenantId: string, id: string) {
 // ============================================================
 
 export async function createTPA(tenantId: string, data: CreateTPAInput) {
+  // Same reasoning as an insurer: a TPA with a GSTIN is a registered recipient,
+  // and one registered in another state is the case that makes IGST real.
+  const gst = gstinOf(data.gstin);
   const tpa = await prisma.tpaProvider.create({
     data: {
       tenantId,
@@ -232,6 +263,8 @@ export async function createTPA(tenantId: string, data: CreateTPAInput) {
       phone: data.phone,
       email: data.email,
       address: data.address,
+      gstin: gst.gstin,
+      stateCode: gst.stateCode,
       isActive: data.isActive ?? true,
     },
   });
@@ -303,6 +336,7 @@ export async function updateTPA(tenantId: string, id: string, data: UpdateTPAInp
       ...(data.phone !== undefined && { phone: data.phone }),
       ...(data.email !== undefined && { email: data.email }),
       ...(data.address !== undefined && { address: data.address }),
+      ...(data.gstin !== undefined && gstinOf(data.gstin)),
       ...(data.isActive !== undefined && { isActive: data.isActive }),
     },
   });
@@ -1822,8 +1856,10 @@ export async function findActivePolicyForPatient(tenantId: string, patientId: st
   const policies = await prisma.insurancePolicy.findMany({
     where: { tenantId, patientId, status: 'active', validFrom: { lte: now }, validTo: { gte: now } },
     include: {
-      insurer: { select: { id: true, name: true } },
-      tpa: { select: { id: true, name: true } },
+      // The payer's tax identity travels with the policy: it decides whether a
+      // bill against it is a B2B invoice, and which state the supply is in.
+      insurer: { select: { id: true, name: true, gstin: true, stateCode: true } },
+      tpa: { select: { id: true, name: true, gstin: true, stateCode: true } },
     },
     orderBy: { validTo: 'desc' },
   });

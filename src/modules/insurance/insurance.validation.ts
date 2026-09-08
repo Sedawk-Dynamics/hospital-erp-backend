@@ -22,6 +22,11 @@ export const createInsurerSchema = z.object({
     phone: z.string().max(20).optional(),
     email: z.string().email('Invalid email').max(255).optional(),
     address: z.string().optional(),
+    // The payer's own registration. `validate()` REPLACES req.body with the
+    // parsed object, so a field the schema does not name is silently dropped —
+    // this must be listed here or nothing reaches the writer. The state is
+    // never accepted separately: it is derived from the GSTIN.
+    gstin: z.string().max(15).optional().nullable(),
     isActive: z.boolean().default(true),
   }),
 });
@@ -33,6 +38,11 @@ export const updateInsurerSchema = z.object({
     phone: z.string().max(20).optional().nullable(),
     email: z.string().email('Invalid email').max(255).optional().nullable(),
     address: z.string().optional().nullable(),
+    // The payer's own registration. `validate()` REPLACES req.body with the
+    // parsed object, so a field the schema does not name is silently dropped —
+    // this must be listed here or nothing reaches the writer. The state is
+    // never accepted separately: it is derived from the GSTIN.
+    gstin: z.string().max(15).optional().nullable(),
     isActive: z.boolean().optional(),
   }),
   params: z.object({
@@ -60,6 +70,11 @@ export const createTPASchema = z.object({
     phone: z.string().max(20).optional(),
     email: z.string().email('Invalid email').max(255).optional(),
     address: z.string().optional(),
+    // The payer's own registration. `validate()` REPLACES req.body with the
+    // parsed object, so a field the schema does not name is silently dropped —
+    // this must be listed here or nothing reaches the writer. The state is
+    // never accepted separately: it is derived from the GSTIN.
+    gstin: z.string().max(15).optional().nullable(),
     isActive: z.boolean().default(true),
   }),
 });
@@ -71,6 +86,11 @@ export const updateTPASchema = z.object({
     phone: z.string().max(20).optional().nullable(),
     email: z.string().email('Invalid email').max(255).optional().nullable(),
     address: z.string().optional().nullable(),
+    // The payer's own registration. `validate()` REPLACES req.body with the
+    // parsed object, so a field the schema does not name is silently dropped —
+    // this must be listed here or nothing reaches the writer. The state is
+    // never accepted separately: it is derived from the GSTIN.
+    gstin: z.string().max(15).optional().nullable(),
     isActive: z.boolean().optional(),
   }),
   params: z.object({
