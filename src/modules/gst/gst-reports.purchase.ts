@@ -49,6 +49,20 @@ export interface PurchaseLine {
   taxableValue: number;
   gstRatePercent: number | null;
   taxAmount: number;
+  /**
+   * The head-wise split. Read off the batch where the inward captured it, and
+   * otherwise derived: the supplier's state against the hospital's decides
+   * whether the credit sits in IGST or splits between CGST and SGST. B-1's own
+   * column list asks for all four and the register reported one lump `taxAmount`.
+   */
+  cgstAmount: number;
+  sgstAmount: number;
+  igstAmount: number;
+  supplierStateCode: string | null;
+  isInterState: boolean;
+  /** 'eligible' | 'ineligible' | 'partly' — section 17(5) and the room rule. */
+  itcEligibility: string;
+  itcBlockedReason: string | null;
   landingTotal: number;
 }
 
@@ -56,6 +70,70 @@ function dateRange(query: SalesReportQuery) {
   return {
     from: query.from ? new Date(`${query.from}T00:00:00.000Z`) : undefined,
     to: query.to ? new Date(`${query.to}T23:59:59.999Z`) : undefined,
+  };
+}
+
+/**
+ * The head-wise split of the tax paid on one purchase.
+ *
+ * Read off the batch where the inward captured it. Where it did not — every
+ * batch received before those columns existed — it is derived: the supplier's
+ * state against the hospital's decides whether the whole amount is IGST or
+ * splits between CGST and SGST, and the odd paisa goes to CGST, exactly as it
+ * does on the outward side.
+ *
+ * A supplier with no state on file is treated as local, which is what the
+ * register assumed for every purchase until now.
+ */
+function splitInput(
+  taxAmount: number,
+  batch: {
+    inputCgst?: unknown; inputSgst?: unknown; inputIgst?: unknown;
+    supplier?: { stateCode?: string | null; gstNumber?: string | null } | null;
+  },
+  homeState: string | null,
+): {
+  cgstAmount: number;
+  sgstAmount: number;
+  igstAmount: number;
+  supplierStateCode: string | null;
+  isInterState: boolean;
+} {
+  const supplierState =
+    batch.supplier?.stateCode ??
+    (batch.supplier?.gstNumber && /^\d{2}/.test(batch.supplier.gstNumber)
+      ? batch.supplier.gstNumber.slice(0, 2)
+      : null);
+  const interState = Boolean(homeState && supplierState && homeState !== supplierState);
+
+  const stored =
+    batch.inputCgst != null || batch.inputSgst != null || batch.inputIgst != null
+      ? {
+          cgstAmount: r2(Number(batch.inputCgst ?? 0)),
+          sgstAmount: r2(Number(batch.inputSgst ?? 0)),
+          igstAmount: r2(Number(batch.inputIgst ?? 0)),
+        }
+      : null;
+  if (stored) return { ...stored, supplierStateCode: supplierState, isInterState: interState };
+
+  if (interState) {
+    return {
+      cgstAmount: 0,
+      sgstAmount: 0,
+      igstAmount: r2(taxAmount),
+      supplierStateCode: supplierState,
+      isInterState: true,
+    };
+  }
+  const half = r2(taxAmount / 2);
+  return {
+    // The odd paisa goes to CGST, consistently — the same rule the outward side
+    // follows, so the two sides of the ledger round the same way.
+    cgstAmount: r2(taxAmount - half),
+    sgstAmount: half,
+    igstAmount: 0,
+    supplierStateCode: supplierState,
+    isInterState: false,
   };
 }
 
@@ -93,10 +171,22 @@ export async function getPurchaseRegister(
       id: true, batchNumber: true, invoiceNumber: true, invoiceDate: true, createdAt: true,
       quantityReceived: true, freeQuantity: true, purchasePrice: true,
       purchaseDiscountPercent: true, gstPercent: true,
+      itcEligibility: true, itcBlockedReason: true,
+      inputCgst: true, inputSgst: true, inputIgst: true,
       drug: { select: { drugName: true, hsnCode: true } },
-      supplier: { select: { id: true, name: true, gstNumber: true } },
+      supplier: { select: { id: true, name: true, gstNumber: true, stateCode: true } },
     },
   });
+
+  // The hospital's own state, so an inter-state purchase can be told from an
+  // intra-state one. Without it every purchase was assumed local.
+  let homeState: string | null = null;
+  try {
+    const { getGstProfile } = await import('../hospital-settings/hospital-settings.service');
+    homeState = (await getGstProfile(tenantId)).stateCode;
+  } catch {
+    /* unreadable profile → treat every purchase as intra-state, as before */
+  }
 
   const rows = batches.map((b) => {
     const money = batchPurchaseEconomics(b);
@@ -122,6 +212,9 @@ export async function getPurchaseRegister(
       taxableValue: money.netPurchaseValue ?? 0,
       gstRatePercent: b.gstPercent == null ? null : Number(b.gstPercent),
       taxAmount: money.taxAmount ?? 0,
+      ...splitInput(money.taxAmount ?? 0, b, homeState),
+      itcEligibility: String(b.itcEligibility ?? 'eligible'),
+      itcBlockedReason: b.itcBlockedReason ?? null,
       landingTotal,
     };
   });
@@ -181,16 +274,113 @@ export async function getItcSummary(
     count: rows.length,
     taxableValue: r2(rows.reduce((t, l) => t + l.taxableValue, 0)),
     taxAmount: r2(rows.reduce((t, l) => t + l.taxAmount, 0)),
+    cgstAmount: r2(rows.reduce((t, l) => t + l.cgstAmount, 0)),
+    sgstAmount: r2(rows.reduce((t, l) => t + l.sgstAmount, 0)),
+    igstAmount: r2(rows.reduce((t, l) => t + l.igstAmount, 0)),
     landingTotal: r2(rows.reduce((t, l) => t + l.landingTotal, 0)),
   };
+
+  // ── The ladder ───────────────────────────────────────────────────────────
+  //
+  // This report used to stop at gross credit by rate and by supplier, which is
+  // the rung that flatters the hospital: for a clinical establishment most of
+  // that number is reversed again under Rule 42, and the accountant had to
+  // assemble the real answer from B-2 and B-3 in their head.
+  //
+  //   Gross ITC → Ineligible → Reversals → Eligible → Claimed → Remaining
+  //
+  // Every rung names its source, because a figure an auditor cannot trace is a
+  // figure they will re-derive from scratch.
+  const gross = totals.taxAmount;
+
+  const ineligibleRows = rows.filter((l) => l.itcEligibility === 'ineligible');
+  const partlyRows = rows.filter((l) => l.itcEligibility === 'partly');
+  // A "partly" line is half in and half out until somebody apportions it, and
+  // guessing the share would be inventing a number. It is reported separately
+  // and counted as ineligible in the running total, which is the conservative
+  // direction: under-claiming costs money, over-claiming costs money AND
+  // interest.
+  const ineligible = r2(
+    ineligibleRows.reduce((t, l) => t + l.taxAmount, 0) +
+      partlyRows.reduce((t, l) => t + l.taxAmount, 0),
+  );
+
+  // Rule 42/43, from B-3 — the reversal that follows from the hospital's exempt
+  // turnover. Read rather than recomputed so B-2 and B-3 can never disagree.
+  let reversals = 0;
+  let reversalNote = 'Rule 42/43 working could not be read';
+  try {
+    const working = await getItcReversalWorking(tenantId, query);
+    reversals = working.reversal.total;
+    reversalNote = `Rule 42 D1 + D2 for the period (exempt turnover ${
+      Math.round((working.exemptRatioPercent ?? 0) * 1000) / 10
+    }% of total)`;
+  } catch {
+    /* leave at zero and say so */
+  }
+
+  const eligible = r2(Math.max(0, gross - ineligible - reversals));
 
   return {
     period,
     byRate,
     bySupplier,
     totals,
+    /**
+     * What the hospital actually keeps, rung by rung, each with its source.
+     *
+     * `claimed` has no source in this system: nothing records what was actually
+     * claimed in GSTR-3B, because that number is entered on the portal. It is
+     * reported as null rather than as zero — a zero would read as "nothing was
+     * claimed", which is a different and much more alarming statement.
+     */
+    ladder: [
+      {
+        key: 'gross',
+        label: 'Gross ITC',
+        amount: gross,
+        source: 'B-1 purchase register — total tax on every purchase in the period',
+      },
+      {
+        key: 'ineligible',
+        label: 'Ineligible ITC',
+        amount: ineligible,
+        source:
+          ineligibleRows.length + partlyRows.length === 0
+            ? 'Nothing marked blocked under section 17(5) — no purchase in this period carries an eligibility flag'
+            : `${ineligibleRows.length} blocked and ${partlyRows.length} partly-eligible purchase(s) under section 17(5)`,
+      },
+      {
+        key: 'reversals',
+        label: 'Rule 42 / 43 reversal',
+        amount: reversals,
+        source: reversalNote,
+      },
+      {
+        key: 'eligible',
+        label: 'Eligible ITC',
+        amount: eligible,
+        source: 'Gross less ineligible less the reversal',
+      },
+      {
+        key: 'claimed',
+        label: 'ITC claimed',
+        amount: null as number | null,
+        source:
+          'Not recorded here — the figure is entered on the portal in GSTR-3B. ' +
+          'Enter it against the filed period to complete the ladder.',
+      },
+      {
+        key: 'remaining',
+        label: 'Remaining',
+        amount: null as number | null,
+        source: 'Eligible less claimed, once the claimed figure is known',
+      },
+    ],
     /** Purchases with no rate recorded — their credit cannot be claimed as it stands. */
     withoutRate: rows.filter((l) => l.gstRatePercent == null).length,
+    ineligibleCount: ineligibleRows.length,
+    partlyEligibleCount: partlyRows.length,
     coverage: COVERAGE_NOTE,
   };
 }
