@@ -540,6 +540,79 @@ gstRoutes.post(
   },
 );
 
+// --- Platform GST slab master (super admin only) ---
+
+/**
+ * The rates the law recognises, with the window each was legal in.
+ *
+ * Read is open to any signed-in user: a hospital admin classifying an item has
+ * to be able to see what the legal rates are, and every refusal message names
+ * them anyway. Only super admin writes — a slab is not a hospital's opinion.
+ */
+gstRoutes.get(
+  '/slabs',
+  authenticate,
+  async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const data = await masters.listGstSlabs();
+      sendResponse({ res, message: 'GST slabs', data });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+const slabBody = z.object({
+  ratePercent: z.number().min(0).max(100),
+  label: z.string().min(1).max(40),
+  effectiveFrom: z.string().regex(DATE),
+  effectiveTo: z.string().regex(DATE).nullish(),
+  note: z.string().max(255).nullish(),
+  isActive: z.boolean().optional(),
+});
+
+gstRoutes.post(
+  '/slabs',
+  authenticate,
+  validate(z.object({ body: slabBody })),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const data = await masters.createGstSlab(req.user!.roles ?? [], req.body as never);
+      sendResponse({ res, statusCode: 201, message: 'GST slab added', data });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/**
+ * A slab is CLOSED with an end date rather than deleted, which is why there is
+ * no delete route: a bill raised while a rate was legal has to stay
+ * explainable.
+ */
+gstRoutes.patch(
+  '/slabs/:id',
+  authenticate,
+  validate(
+    z.object({
+      params: z.object({ id: z.string().uuid() }),
+      body: slabBody.partial().omit({ ratePercent: true, effectiveFrom: true }),
+    }),
+  ),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const data = await masters.updateGstSlab(
+        req.user!.roles ?? [],
+        String(req.params.id),
+        req.body as never,
+      );
+      sendResponse({ res, message: 'GST slab updated', data });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 // --- Platform SAC master (super admin only, like the HSN master) ---
 
 /**

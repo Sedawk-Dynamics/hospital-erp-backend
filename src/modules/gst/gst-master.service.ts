@@ -165,6 +165,90 @@ async function assertLegalSlab(ratePercent: unknown, what: string): Promise<void
   );
 }
 
+// ── The slab master ────────────────────────────────────────────────────────
+//
+// The rates the law recognises, and the dates each was legal. PLATFORM data:
+// a slab is not a hospital's opinion, it is what Parliament enacted, and the
+// same list has to bind every hospital on the platform.
+//
+// Date-ranged rather than a flat list, because the answer changed on 22
+// September 2025. A window is CLOSED rather than deleted when a slab is
+// retired, so a bill raised while it was legal stays explainable.
+
+export interface GstSlabInput {
+  ratePercent: number;
+  label: string;
+  effectiveFrom: string;
+  effectiveTo?: string | null;
+  note?: string | null;
+  isActive?: boolean;
+}
+
+const day = (d: string) => new Date(`${d}T00:00:00.000Z`);
+
+export async function listGstSlabs() {
+  const rows = await prisma.gstSlab.findMany({
+    orderBy: [{ effectiveFrom: 'desc' }, { ratePercent: 'asc' }],
+  });
+  const today = new Date();
+  return {
+    slabs: rows.map((r) => ({
+      id: r.id,
+      ratePercent: Number(r.ratePercent),
+      label: r.label,
+      effectiveFrom: r.effectiveFrom,
+      effectiveTo: r.effectiveTo,
+      note: r.note,
+      isActive: r.isActive,
+      /** In force today — what a bill raised now may be charged at. */
+      current:
+        r.isActive && r.effectiveFrom <= today && (r.effectiveTo == null || r.effectiveTo >= today),
+    })),
+    note:
+      'A retired slab is CLOSED with an end date, never deleted: a bill raised while it was ' +
+      'legal has to stay explainable, and every rate check is made as at the document’s own date.',
+  };
+}
+
+export async function createGstSlab(roles: string[], data: GstSlabInput) {
+  assertCanManage(roles);
+  const row = await prisma.gstSlab.create({
+    data: {
+      ratePercent: data.ratePercent,
+      label: data.label,
+      effectiveFrom: day(data.effectiveFrom),
+      effectiveTo: data.effectiveTo ? day(data.effectiveTo) : null,
+      note: data.note ?? null,
+      isActive: data.isActive ?? true,
+    },
+  });
+  const { clearGstSlabCache } = await import('../../shared/gst-slabs');
+  clearGstSlabCache();
+  logger.info({ rate: data.ratePercent, from: data.effectiveFrom }, 'GST slab added');
+  return row;
+}
+
+export async function updateGstSlab(roles: string[], id: string, data: Partial<GstSlabInput>) {
+  assertCanManage(roles);
+  const existing = await prisma.gstSlab.findUnique({ where: { id } });
+  if (!existing) throw AppError.notFound('Slab not found');
+  const row = await prisma.gstSlab.update({
+    where: { id },
+    data: {
+      ...(data.label !== undefined ? { label: data.label } : {}),
+      ...(data.effectiveTo !== undefined
+        ? { effectiveTo: data.effectiveTo ? day(data.effectiveTo) : null }
+        : {}),
+      ...(data.note !== undefined ? { note: data.note } : {}),
+      ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
+    },
+  });
+  const { clearGstSlabCache } = await import('../../shared/gst-slabs');
+  clearGstSlabCache();
+  logger.info({ id, by: 'super admin' }, 'GST slab updated');
+  return row;
+}
+
 export async function createSacCode(roles: string[], data: SacCodeInput, changedBy?: string | null) {
   await assertLegalSlab((data as { gstRate?: unknown }).gstRate, 'A SAC rate');
   assertCanManage(roles);
