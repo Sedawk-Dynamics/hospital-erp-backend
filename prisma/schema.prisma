@@ -4276,6 +4276,38 @@ model HsnGstRate {
 // SAC is EXEMPT rather than nil-rated or zero-percent-taxable, and the return
 // reports exempt turnover on its own line — which is also the numerator of the
 // input-credit reversal a hospital has to compute every month.
+/// The list of GST rates the law recognises, with the dates each was legal.
+///
+/// PLATFORM data. A slab is not a hospital's opinion — it is the set of rates
+/// Parliament has enacted, identical for every hospital on the platform, and a
+/// rate outside it on an invoice is an invoice that will be rejected.
+///
+/// Date-ranged rather than a flat list, because the answer changed on 22
+/// September 2025: GST 2.0 retired 12% and 28% and introduced 40%. A bill
+/// raised in June 2025 at 12% was correct and must stay correct; the same rate
+/// on a bill raised today is not. A single boolean cannot say both, so each
+/// slab carries the window it was legal in and the check is made AS AT the
+/// bill's own date.
+///
+/// `effectiveTo` null means "still in force".
+model GstSlab {
+  id            String    @id @default(uuid())
+  ratePercent   Decimal   @map("rate_percent") @db.Decimal(5, 2)
+  /// What to call it on a screen — "5%", "Nil", "40% (sin goods)".
+  label         String    @db.VarChar(40)
+  effectiveFrom DateTime  @map("effective_from") @db.Date
+  effectiveTo   DateTime? @map("effective_to") @db.Date
+  /// Why this window exists — the notification or Council meeting behind it.
+  note          String?   @db.VarChar(255)
+  isActive      Boolean   @default(true) @map("is_active")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([ratePercent, effectiveFrom])
+  @@index([effectiveFrom, effectiveTo])
+  @@map("gst_slabs")
+}
+
 model SacCode {
   id          String   @id @default(uuid())
   // Digits only (spaces/dots stripped on write), like hsn_code.
