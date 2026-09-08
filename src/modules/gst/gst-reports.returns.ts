@@ -45,6 +45,11 @@ export async function getCreditNoteRegister(tenantId: string, query: SalesReport
       bill: {
         select: {
           billNumber: true, invoiceNumber: true, gstDocumentType: true, billDate: true,
+          status: true,
+          // Whether the invoice this note reverses still has lines. Cancelling
+          // a counter sale removes them, and a supply that is no longer in the
+          // register cannot be taken out of it a second time.
+          _count: { select: { billItems: true } },
         },
       },
       patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
@@ -86,6 +91,18 @@ export async function getCreditNoteRegister(tenantId: string, query: SalesReport
     lineCount: c.items.length,
     /** No number on the original means Table 9B has nothing to key on. */
     reportable: !!c.bill?.invoiceNumber,
+    /**
+     * Whether the supply being reversed is still in the outward register.
+     *
+     * Voiding a counter sale deletes the invoice's bill items and zeroes its
+     * totals, so the sale drops out of A-1 and A-7 on its own. Its credit note
+     * still exists — correctly, because a cancelled invoice is credited, never
+     * erased — but netting that note off the outward figure as well would
+     * subtract the same supply twice.
+     */
+    originalInRegister: !(
+      c.bill && String(c.bill.status) === 'cancelled' && c.bill._count.billItems === 0
+    ),
   }));
 
   const sum = (list: typeof rows, k: keyof (typeof rows)[number]) =>
@@ -112,6 +129,8 @@ export async function getCreditNoteRegister(tenantId: string, query: SalesReport
       outsideTimeLimit: rows.filter((r) => !r.withinTimeLimit).length,
       /** Against a bill that was never issued a number — cannot be filed. */
       notReportable: rows.filter((r) => !r.reportable).length,
+      /** Against a voided invoice whose lines are gone — already out of A-1. */
+      originalNotInRegister: rows.filter((r) => !r.originalInRegister).length,
     },
   };
 }
@@ -222,19 +241,34 @@ export async function getGstr3bSummary(tenantId: string, query: SalesReportQuery
     (await import('./gst-reports.purchase')).getItcReversalWorking(tenantId, query),
   ]);
 
-  // A credit note reduces the month's outward liability — but only one issued
-  // within the section 34 deadline. Past it the money goes back and the tax
-  // does not, so netting it off here would understate what is payable.
-  const reversible = notes.rows.filter((r) => r.withinTimeLimit);
-  const noteTax = r2(reversible.reduce((t, r) => t + r.taxAmount, 0));
-  const noteTaxable = r2(reversible.reduce((t, r) => t + r.taxableValue, 0));
+  // A credit note reduces the month's outward liability. Two filters decide
+  // which ones actually do:
+  //
+  //   withinTimeLimit    — section 34 gives until 30 November following the end
+  //                        of the financial year. Past it the money goes back
+  //                        and the tax does not.
+  //   originalInRegister — the note may only take a supply OUT of the outward
+  //                        figures if that supply is IN them. Cancelling a
+  //                        counter sale deletes the invoice's lines, so the
+  //                        supply has already left A-1; netting the note off as
+  //                        well would remove it twice.
+  const reversible = notes.rows.filter((r) => r.withinTimeLimit && r.originalInRegister);
+
+  // A note's figures are stored NEGATIVE — it mirrors the bill's lines with the
+  // sign flipped, which is what Table 9B and the ledger both want. So the
+  // reversal is ADDED to the outward figure. Subtracting it, as this did, moved
+  // the liability the wrong way by twice the value of every note: this
+  // hospital's year read ₹10,790.60 taxable where ₹9,860.90 was the honest
+  // figure, and the error grows with every credit note raised.
+  const add = (k: 'taxableValue' | 'cgstAmount' | 'sgstAmount' | 'igstAmount' | 'taxAmount') =>
+    r2(exempt.taxable[k] + r2(reversible.reduce((t, r) => t + r[k], 0)));
 
   const outward = {
-    taxableValue: r2(exempt.taxable.taxableValue - noteTaxable),
-    cgstAmount: r2(exempt.taxable.cgstAmount - r2(reversible.reduce((t, r) => t + r.cgstAmount, 0))),
-    sgstAmount: r2(exempt.taxable.sgstAmount - r2(reversible.reduce((t, r) => t + r.sgstAmount, 0))),
-    igstAmount: r2(exempt.taxable.igstAmount - r2(reversible.reduce((t, r) => t + r.igstAmount, 0))),
-    taxAmount: r2(exempt.taxable.taxAmount - noteTax),
+    taxableValue: add('taxableValue'),
+    cgstAmount: add('cgstAmount'),
+    sgstAmount: add('sgstAmount'),
+    igstAmount: add('igstAmount'),
+    taxAmount: add('taxAmount'),
   };
 
   const netItc = itc.netCreditAvailable;
@@ -255,6 +289,9 @@ export async function getGstr3bSummary(tenantId: string, query: SalesReportQuery
     /** What is actually payable in cash once credit is set off. */
     netTaxPayable: r2(Math.max(0, outward.taxAmount - netItc)),
     creditCarriedForward: r2(Math.max(0, netItc - outward.taxAmount)),
+    /** Notes that did NOT reduce the liability, and why. */
     creditNotesExcluded: notes.rows.length - reversible.length,
+    creditNotesOutsideTimeLimit: notes.rows.filter((r) => !r.withinTimeLimit).length,
+    creditNotesOriginalNotInRegister: notes.rows.filter((r) => !r.originalInRegister).length,
   };
 }
