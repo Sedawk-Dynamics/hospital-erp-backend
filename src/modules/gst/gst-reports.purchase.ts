@@ -27,6 +27,7 @@ import { prisma } from '../../config/database';
 import { r2 } from '../../shared/gst';
 import { batchPurchaseEconomics } from '../pharmacy/pharmacy.service';
 import { getExemptTurnover, type SalesReportQuery } from './gst-reports.sales';
+import { financialYearFor } from './gst-document.service';
 
 /** Under Rule 42, credit is also reversed for non-business use at this rate. */
 const NON_BUSINESS_PERCENT = 5;
@@ -466,7 +467,25 @@ export async function getSupplierGstinExceptions(
  * adjusted by hand, and the report says so rather than presenting a number it
  * cannot support.
  */
+/**
+ * How many of Rule 43's sixty months a capital good still has to run.
+ *
+ * The credit on a capital good is spread across sixty months from the month it
+ * was received; anything older than that has been fully absorbed and reverses
+ * nothing more.
+ */
+function monthsLeftOf(receivedAt: Date, asAt: Date): number {
+  const months =
+    (asAt.getUTCFullYear() - receivedAt.getUTCFullYear()) * 12 +
+    (asAt.getUTCMonth() - receivedAt.getUTCMonth());
+  return Math.max(0, 60 - months);
+}
+
 export async function getItcReversalWorking(tenantId: string, query: SalesReportQuery = {}) {
+  // The period, for the Rule 43 schedule and the annual true-up below.
+  const { from, to } = dateRange(query);
+  const window = from || to ? { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } : undefined;
+
   // Straight from the purchase register, NOT from B-2.
   //
   // B-2's ladder reads this working for its reversal rung, so taking B-2's
@@ -506,6 +525,115 @@ export async function getItcReversalWorking(tenantId: string, query: SalesReport
   const D2 = 0;
   const C3 = r2(C2 - (D1 + D2));
 
+  // ── Step 11. Rule 43 — capital goods, spread over sixty months ──────────
+  //
+  // Rule 43 works like Rule 42 but over time: credit on a capital good is not
+  // reversed at once, it is spread across sixty months and the exempt share of
+  // each month's slice is reversed. Section 11.3 asks for it "as a separate
+  // schedule", and there was none.
+  //
+  // WHAT THIS CAN AND CANNOT SEE. Capital goods reach this system as general
+  // inventory — `inventory_items.category = 'equipment'` — and that stock record
+  // holds a COST but no GST rate and no tax amount. So the schedule reports the
+  // value received and the months remaining, and says plainly that the tax on
+  // it is not recorded here. Inventing a rate to fill the column would put a
+  // reversal in a return that nothing computed.
+  const capitalGoods = await (async () => {
+    try {
+      const rows = await prisma.stockTransaction.findMany({
+        where: {
+          tenantId,
+          transactionType: 'stock_in',
+          inventoryItem: { category: 'equipment' },
+          ...(window ? { createdAt: window } : {}),
+        },
+        orderBy: { createdAt: 'asc' },
+        select: {
+          id: true, createdAt: true, quantity: true, totalCost: true,
+          inventoryItem: { select: { itemName: true } },
+          supplier: { select: { name: true, gstNumber: true } },
+        },
+      });
+      const items = rows.map((w) => {
+        const value = r2(Number(w.totalCost ?? 0));
+        return {
+          transactionId: w.id,
+          receivedAt: w.createdAt,
+          itemName: w.inventoryItem?.itemName ?? '',
+          supplierName: w.supplier?.name ?? null,
+          quantity: w.quantity,
+          value,
+          /** Rule 43's Tm — the sixtieth of the credit that belongs to a month. */
+          monthsRemaining: monthsLeftOf(w.createdAt, to ?? new Date()),
+          taxPaid: null as number | null,
+        };
+      });
+      return {
+        items,
+        totalValue: r2(items.reduce((t, x) => t + x.value, 0)),
+        /** Null, not zero — see the note. Zero would read as "no tax was paid". */
+        totalTaxPaid: null as number | null,
+        note:
+          items.length === 0
+            ? 'No capital goods were received in this period. Rule 43 has nothing to spread.'
+            : 'Capital goods arrive as general inventory, which records a cost but no GST rate — ' +
+              'so the tax to spread over sixty months is not held here. The values are listed for ' +
+              'the accountant to apply Rule 43 against.',
+      };
+    } catch (err) {
+      // A schedule that cannot be read must not fail the whole working.
+      void err;
+      return { items: [], totalValue: 0, totalTaxPaid: null as number | null, note: 'Capital goods could not be read.' };
+    }
+  })();
+
+  // ── Step 12. The annual true-up ─────────────────────────────────────────
+  //
+  // Rule 42(2): the reversal is recomputed on the WHOLE year's figures before
+  // the September return of the following year, because a month-by-month ratio
+  // and a full-year ratio are not the same number. A hospital whose taxable
+  // pharmacy income arrives unevenly reverses too much in some months and too
+  // little in others, and the difference is payable with interest or claimable
+  // back — which is why the report asks for it and why an accountant should not
+  // have to assemble it by hand.
+  //
+  // Only computed when the period asked for is NOT already the full year: when
+  // it is, this working IS the annual one and comparing it to itself says
+  // nothing.
+  const trueUp = await (async () => {
+    if (!from || !to) return null;
+    const fy = financialYearFor(from);
+    const startYear = Number(fy.slice(0, 4));
+    const yearFrom = `${startYear}-04-01`;
+    const yearTo = `${startYear + 1}-03-31`;
+    const askedForWholeYear =
+      from.toISOString().slice(0, 10) <= yearFrom && to.toISOString().slice(0, 10) >= yearTo;
+    if (askedForWholeYear) return null;
+
+    try {
+      const annual = await getExemptTurnover(tenantId, { ...query, from: yearFrom, to: yearTo });
+      const annualRegister = await getPurchaseRegister(tenantId, { ...query, from: yearFrom, to: yearTo });
+      const annualT = r2(annualRegister.rows.reduce((t, l) => t + l.taxAmount, 0));
+      const annualRatio = annual.totalTurnover > 0 ? annual.exemptTurnover / annual.totalTurnover : 0;
+      const annualD1 = r2(annualT * annualRatio);
+      return {
+        financialYear: fy,
+        period: { from: yearFrom, to: yearTo },
+        annualCommonCredit: annualT,
+        annualExemptRatioPercent: r2(annualRatio * 100),
+        /** What the year's reversal SHOULD come to, on the full-year ratio. */
+        annualReversalDue: annualD1,
+        note:
+          'Rule 42(2): recompute the reversal on the whole year before the September return of ' +
+          'the following year. Compare this against the sum of the months actually reversed — ' +
+          'short is payable with interest, over is claimable back.',
+      };
+    } catch (err) {
+      void err;
+      return null;
+    }
+  })();
+
   return {
     period: register.period,
     /** Every step, with the label the rule uses for it. */
@@ -534,6 +662,9 @@ export async function getItcReversalWorking(tenantId: string, query: SalesReport
       { step: 'C3', label: 'Credit the hospital keeps', amount: C3, source: 'C2 − (D1 + D2)' },
     ],
     exemptRatioPercent: turnover.exemptRatio,
+    /** Steps 11 and 12 of the section 11.3 working. */
+    rule43: capitalGoods,
+    annualTrueUp: trueUp,
     creditAvailable: T,
     /** The credit available, head by head. */
     creditAvailableByHead: heads,
