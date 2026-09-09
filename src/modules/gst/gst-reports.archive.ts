@@ -24,7 +24,7 @@ import { AppError } from '../../shared/appError';
 import { logger } from '../../config/logger';
 import { fullName } from '../../shared/person-name';
 import { financialYearFor } from './gst-document.service';
-import { returnPeriod } from './gst-reports.gstr1-json';
+import { buildGstr1Json, returnPeriod } from './gst-reports.gstr1-json';
 import { getRateWiseSummary, getHsnSummary, getExemptTurnover } from './gst-reports.sales';
 import { getGstr1Summary, getGstr3bSummary } from './gst-reports.returns';
 import { getItcReversalWorking } from './gst-reports.purchase';
@@ -52,13 +52,27 @@ export async function filePeriod(tenantId: string, userId: string | null, input:
   if (to < from) throw AppError.badRequest('The period ends before it starts');
 
   const query = { from: input.from, to: input.to, sixDigit: input.sixDigit };
-  const [rateSummary, hsn, exempt, gstr1, gstr3b, itc] = await Promise.all([
+  const [rateSummary, hsn, exempt, gstr1, gstr3b, itc, gstr1Json] = await Promise.all([
     getRateWiseSummary(tenantId, query),
     getHsnSummary(tenantId, query),
     getExemptTurnover(tenantId, query),
     getGstr1Summary(tenantId, query),
     getGstr3bSummary(tenantId, query),
     getItcReversalWorking(tenantId, query),
+    // The DOCUMENT-level record of what went in.
+    //
+    // Everything above is a total, and a total cannot answer "which invoice
+    // changed". Amendments — tables 9A, 9C and 10 — are declared against the
+    // original document number and its original period, so without the
+    // documents themselves there is no way to find one and no way to report it.
+    //
+    // Stored in the file's own shape rather than a shape of our own: it is what
+    // the portal received, so a diff against it is a diff against the truth
+    // rather than against a second rendering of it.
+    buildGstr1Json(tenantId, query).catch((err) => {
+      logger.warn({ err, tenantId }, 'Could not capture the document detail for the filed snapshot');
+      return null;
+    }),
   ]);
 
   const snapshot = {
@@ -74,6 +88,20 @@ export async function filePeriod(tenantId: string, userId: string | null, input:
       exemptRatio: exempt.exemptRatio,
     },
     gstr1: { tables: gstr1.tables, reconciliation: gstr1.reconciliation },
+    /**
+     * The sections of the file that can later be amended, exactly as filed.
+     *
+     * Only those three: table 12's HSN summary and the nil block are not
+     * amendable at document level, and keeping the whole file would grow the
+     * row without giving the amendment report anything more to work with.
+     */
+    gstr1Json: gstr1Json
+      ? {
+          b2b: (gstr1Json.json as Record<string, unknown>).b2b ?? [],
+          b2cs: (gstr1Json.json as Record<string, unknown>).b2cs ?? [],
+          cdnr: (gstr1Json.json as Record<string, unknown>).cdnr ?? [],
+        }
+      : null,
     gstr3b,
     itcReversal: { working: itc.working, reversal: itc.reversal, netCreditAvailable: itc.netCreditAvailable },
   };
