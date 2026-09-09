@@ -14,6 +14,7 @@ import * as archive from './gst-reports.archive';
 import * as annual from './gst-reports.annual';
 import * as reconcile from './gst-reports.reconcile';
 import * as einvoice from './gst-reports.einvoice';
+import * as amendments from './gst-reports.amendments';
 import * as masters from './gst-master.service';
 
 export const gstRoutes = Router();
@@ -456,6 +457,29 @@ gstRoutes.get(
   ...gstReportAccess,
   validate(periodQuerySchema),
   report('Cancelled and amended invoices', (t, q) => control.getCancelledInvoices(t, q as never)),
+);
+
+/**
+ * A-13 — GSTR-1 amendments: tables 9A, 9C and 10.
+ *
+ * Not keyed on the period picker like every other Group A report. An amendment
+ * belongs to the return being prepared NOW and corrects an earlier one, so the
+ * question is "what has moved since I filed", not "what happened in March" —
+ * and the optional filter names the period being CORRECTED, not the one being
+ * filed.
+ */
+gstRoutes.get(
+  '/reports/gstr1-amendments',
+  ...gstReportAccess,
+  validate(
+    z.object({
+      query: z.object({
+        /** MMYYYY, the way the portal writes a return period. */
+        returnPeriod: z.string().regex(/^\d{6}$/).optional(),
+      }),
+    }),
+  ),
+  report('GSTR-1 amendments', (t, q) => amendments.getGstr1Amendments(t, q as never)),
 );
 
 // ── Group D — e-invoice and e-way bill ────────────────────────────────────
