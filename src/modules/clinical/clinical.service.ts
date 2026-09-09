@@ -2318,6 +2318,11 @@ export async function createOtRequest(tenantId: string, data: CreateOtRequestInp
       doctorId: data.doctorId,
       procedureName: data.procedureName,
       procedureDetails: data.procedureDetails,
+      // The surgery tariff this is, for tax. Section 4.6: therapeutic is
+      // exempt, cosmetic is 18%, and the tariff is where that answer lives.
+      // Without it the charge resolves through the category and comes out
+      // exempt whatever the surgery was.
+      serviceTariffId: (data as { serviceTariffId?: string | null }).serviceTariffId ?? null,
       urgency: data.urgency ?? 'elective',
       preferredDate: data.preferredDate ? new Date(data.preferredDate) : undefined,
       preferredTime: data.preferredTime ? new Date(`1970-01-01T${data.preferredTime}`) : undefined,

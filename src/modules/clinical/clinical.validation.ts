@@ -402,6 +402,11 @@ export const createOtRequestSchema = z.object({
     visitId: z.string().uuid('Invalid visit ID'),
     doctorId: z.string().uuid('Invalid doctor ID'),
     procedureName: z.string().min(1, 'Procedure name is required').max(255),
+    // The surgery tariff this procedure is, which carries its SAC, its
+    // treatment and the therapeutic-or-cosmetic flag. `validate()` replaces
+    // req.body with the parsed object, so it has to be named here or it never
+    // reaches the writer.
+    serviceTariffId: z.string().uuid('Invalid tariff ID').nullish(),
     procedureDetails: z.string().max(5000).optional(),
     urgency: z.enum(['elective', 'urgent', 'emergency']).default('elective'),
     preferredDate: z

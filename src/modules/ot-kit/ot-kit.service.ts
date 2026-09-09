@@ -411,6 +411,32 @@ export async function reconcileKit(
   // Read before the transaction, which holds stock locks.
   const resolver = await taxResolverFor(tenantId);
 
+  // Whether the PROCEDURE this kit was issued against is cosmetic.
+  //
+  // Section 4.6: "OT kit consumables used in a cosmetic procedure — 18% —
+  // follows the principal supply, which is taxable", and acceptance scenario 14
+  // tests exactly that. A composite supply takes its principal supply's
+  // treatment, and the principal supply of a cosmetic procedure is not exempt
+  // healthcare — so a kit consumed in one cannot be exempted along with the
+  // rest of the ward.
+  //
+  // False where the kit names no request, or the request names no tariff: a
+  // therapeutic procedure is the overwhelming majority and the correct default.
+  let procedureIsCosmetic = false;
+  if (issue.otRequestId) {
+    try {
+      const req = await prisma.otRequest.findUnique({
+        where: { id: issue.otRequestId },
+        select: { serviceTariff: { select: { isCosmetic: true } } },
+      });
+      procedureIsCosmetic = Boolean(req?.serviceTariff?.isCosmetic);
+    } catch (err) {
+      // A classification that cannot be read must not fail the reconcile. The
+      // kit falls back to exempt, which is what it did before this existed.
+      logger.warn({ err, tenantId, issueId: issue.id }, 'Could not read the OT procedure classification');
+    }
+  }
+
   const result = await prisma.$transaction(async (tx) => {
     let consumedTotal = 0;
     let consumedTax = 0;
@@ -532,6 +558,9 @@ export async function reconcileKit(
             taxInclusive: true,
             patientAdmitted: true,
             issuedForTreatment: true,
+            // The consumable follows the procedure. Without this the composite
+            // rule exempted a cosmetic kit along with the rest of the ward.
+            isCosmetic: procedureIsCosmetic,
           },
           { unitPrice: line.unitPrice, quantity: line.consumedQty },
         );
