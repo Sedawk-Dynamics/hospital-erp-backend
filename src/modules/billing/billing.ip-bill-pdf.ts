@@ -16,6 +16,7 @@ import {
 import type { PdfTemplate } from '../../services/pdf-template';
 import type { AdmissionBillDocument } from './billing.bill-document';
 import {
+  drawEInvoiceQr,
   drawGstTaxSummary,
   gstChargeCells,
   gstChargeColumns,
@@ -231,6 +232,27 @@ export function streamAdmissionBillPdf(
         zebra: i % 2 === 1,
       })),
     );
+  }
+
+  // ── The signed QR ────────────────────────────────────────────────────────
+  //
+  // Section 10 puts the IRN and the signed QR on the face of the document once
+  // e-invoicing applies. The IRN is already in the identity card above; this is
+  // the code an officer or a recipient actually scans, and it draws nothing at
+  // all until a portal has returned a payload.
+  if (gst.irnQrPayload) {
+    ensureSpace(pdf, theme, 110);
+    const top = pdf.y;
+    drawEInvoiceQr(pdf, theme, gst, { size: 92, y: top });
+    pdf
+      .font(theme.font.regular)
+      .fontSize(theme.size.small)
+      .fillColor(theme.muted)
+      .text('Signed QR code — e-invoice', theme.margin, top + 4, {
+        width: theme.contentWidth - 110,
+      });
+    pdf.y = top + 100;
+    pdf.fillColor(theme.ink);
   }
 
   finalizeBrandedDocument({ pdf, branding, theme, generatedAt: new Date(doc.generatedAt) });
