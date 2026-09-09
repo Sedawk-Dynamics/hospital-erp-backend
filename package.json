@@ -69,6 +69,7 @@
     "db:studio": "prisma studio",
     "lint": "eslint src --ext .ts",
     "typecheck": "tsc --noEmit",
+    "check:routes": "tsx scripts/check-routes.ts",
     "clean": "rimraf dist",
     "test": "vitest run",
     "test:watch": "vitest",
