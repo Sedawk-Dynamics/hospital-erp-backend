@@ -2364,7 +2364,13 @@ interface ChargeRow {
   quantity: number;
   unitPrice: number;
   totalAmount: number;
-  taxRate: number;
+  /**
+   * A rate the caller worked out, offered to the engine as the item's own
+   * classification. Null where the caller has none — a surgery whose tariff
+   * the auditor has not approved, say — and the chain resolves it from the
+   * code instead, which is the order the report asks for.
+   */
+  taxRate: number | null;
   /**
    * True when `unitPrice` ALREADY contains the tax — pharmacy prices are MRP,
    * which is tax-inclusive by law. Such a line shows the embedded GST as a
@@ -2551,6 +2557,61 @@ async function indexBilledReferences(tenantId: string, patientId: string) {
  * set. Mirrors the other charge sources so a surgery can be pulled onto the
  * patient's bill (idempotent via referenceType 'ot_request').
  */
+/** The part of a surgery tariff the tax rules need. */
+type OtTariff = {
+  id: string;
+  sacCode: string | null;
+  gstTreatment: string | null;
+  gstRatePercent: Prisma.Decimal | number | null;
+  isCosmetic: boolean;
+  gstApproved: boolean;
+} | null | undefined;
+
+/**
+ * What an OT charge tells the tax engine about itself.
+ *
+ * Section 4.6 is the whole reason this exists: "the same theatre, the same
+ * surgeon and the same consumables can be exempt or taxable depending on WHY
+ * the procedure was done." The tariff is where that answer lives — it carries
+ * the SAC, the treatment, the rate and the auditor's sign-off — and an OT
+ * charge had no way to reach it, so `supplyKindForCategory('surgery')` sent
+ * every one of them down the healthcare branch and out as exempt.
+ *
+ * A request with no tariff keeps resolving exactly as it did: through the
+ * category average, and failing that to exempt, which is the correct default
+ * for a therapeutic procedure.
+ */
+function otTaxFacts(
+  tariff: OtTariff,
+  taxRates: Record<string, number>,
+): {
+  taxRate: number | null;
+  sacCode: string | null;
+  gstTreatment: string | null;
+  gstApproved: boolean;
+  isCosmetic: boolean;
+} {
+  if (!tariff) {
+    return {
+      taxRate: taxRates.ot ?? CHARGE_TAX_RATES.ot,
+      sacCode: null,
+      gstTreatment: null,
+      gstApproved: false,
+      isCosmetic: false,
+    };
+  }
+  return {
+    // The tariff's own rate where an auditor has approved it; otherwise leave
+    // it to the chain, which will resolve through the SAC and flag anything it
+    // has to guess at.
+    taxRate: tariff.gstApproved ? toNumber(tariff.gstRatePercent) : null,
+    sacCode: tariff.sacCode,
+    gstTreatment: tariff.gstTreatment,
+    gstApproved: tariff.gstApproved,
+    isCosmetic: tariff.isCosmetic,
+  };
+}
+
 async function getOtCharges(
   tenantId: string,
   patientId: string,
@@ -2567,6 +2628,14 @@ async function getOtCharges(
     include: {
       surgeon: { include: { user: { select: { firstName: true, lastName: true } } } },
       doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
+      // The surgery's own classification. Section 4.6 turns on it: therapeutic
+      // is exempt, cosmetic is 18%, "the same theatre, the same surgeon and the
+      // same consumables". Without it every OT charge resolved through the
+      // category — 'surgery' maps to the healthcare kind 'procedure' — and came
+      // out exempt whatever the surgery was.
+      serviceTariff: {
+        select: { id: true, sacCode: true, gstTreatment: true, gstRatePercent: true, isCosmetic: true, gstApproved: true },
+      },
     },
     orderBy: { createdAt: 'desc' },
     take: 50,
@@ -2585,7 +2654,7 @@ async function getOtCharges(
       quantity: 1,
       unitPrice: amount,
       totalAmount: amount,
-      taxRate: taxRates.ot ?? CHARGE_TAX_RATES.ot,
+      ...otTaxFacts(r.serviceTariff, taxRates),
       category: 'surgery',
       occurredAt: formatDateTimeIST(r.scheduledDate ?? r.createdAt),
       occurredAtISO: new Date(r.scheduledDate ?? r.createdAt).toISOString(),
@@ -3300,6 +3369,14 @@ export async function billOtRequest(
     include: {
       surgeon: { include: { user: { select: { firstName: true, lastName: true } } } },
       doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
+      // The surgery's own classification. Section 4.6 turns on it: therapeutic
+      // is exempt, cosmetic is 18%, "the same theatre, the same surgeon and the
+      // same consumables". Without it every OT charge resolved through the
+      // category — 'surgery' maps to the healthcare kind 'procedure' — and came
+      // out exempt whatever the surgery was.
+      serviceTariff: {
+        select: { id: true, sacCode: true, gstTreatment: true, gstRatePercent: true, isCosmetic: true, gstApproved: true },
+      },
     },
   });
   if (!req) throw AppError.notFound('OT request not found');
@@ -3337,7 +3414,7 @@ export async function billOtRequest(
     description: `Surgery — ${req.procedureName}${surgeon ? ` (${surgeon})` : ''}`,
     quantity: 1,
     unitPrice: amount,
-    taxRate: otTaxRates.ot ?? CHARGE_TAX_RATES.ot,
+    ...otTaxFacts((req as { serviceTariff?: OtTariff }).serviceTariff, otTaxRates),
     category: 'surgery',
   };
 
