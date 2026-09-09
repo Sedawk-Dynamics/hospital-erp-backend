@@ -2798,7 +2798,16 @@ async function getPharmacyCharges(
   const records = await prisma.dispensingRecord.findMany({
     // A voided sale is not a charge.
     where: { tenantId, patientId, cancelledAt: null },
-    include: {
+    select: {
+      id: true,
+      quantityDispensed: true,
+      dispensedAt: true,
+      // Discharge medication — the patient carries it out. The engine has read
+      // `isTakeHome` since it was written and NOTHING ever set it, so the
+      // hospital's answer to decision 2 ("taxable unless the auditor confirms
+      // otherwise") could not take effect: a TTO pack pulled onto an IP bill
+      // came out exempt with the rest of the ward's medicine.
+      isTto: true,
       drugBatch: {
         select: {
           batchNumber: true,
@@ -2848,6 +2857,10 @@ async function getPharmacyCharges(
       // bill used to add the rate ON TOP of the same MRP, so a ₹100 strip cost
       // ₹100 at the counter and ₹112 on an IP bill for the identical item.
       taxInclusive: true,
+      // What the patient carries out is a supply to them, not part of the
+      // treatment — so it does not join the composite. The engine still lets
+      // the hospital's `dischargeMedicinesTaxable` setting have the last word.
+      isTakeHome: r.isTto === true,
       category: 'pharmacy',
       occurredAt: formatDateTimeIST(r.dispensedAt),
       occurredAtISO: new Date(r.dispensedAt).toISOString(),

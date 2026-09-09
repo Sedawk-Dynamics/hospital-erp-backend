@@ -3044,6 +3044,11 @@ export async function autoLinkDispenseToBill(
         taxInclusive: true,
         patientAdmitted: !!adm,
         issuedForTreatment: !!adm,
+        // TTO — the patient carries it out, so it is a supply TO them rather
+        // than part of the treatment and does not join the composite. The
+        // engine still lets `dischargeMedicinesTaxable` have the last word,
+        // which is the hospital's answer to decision 2.
+        isTakeHome: record.isTto === true,
       },
       { unitPrice: unit, quantity: record.quantityDispensed },
     );
