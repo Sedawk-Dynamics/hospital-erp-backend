@@ -63,6 +63,11 @@ interface OpBillLike {
   recipientGstin?: string | null;
   placeOfSupplyStateCode?: string | null;
   isInterState?: boolean | null;
+  /** Section 10's IRN and signed QR, once e-invoicing applies. */
+  irn?: string | null;
+  irnAckNo?: string | null;
+  irnAckDate?: Date | null;
+  irnQrPayload?: string | null;
   patient: {
     firstName: string;
     lastName?: string | null;
@@ -314,6 +319,7 @@ export function streamOpBillPdf(
         { width: theme.contentWidth },
       );
   }
+
 
   finalizeBrandedDocument({ pdf, branding, theme });
 }

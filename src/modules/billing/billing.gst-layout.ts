@@ -135,6 +135,24 @@ export interface BillDocumentGst {
    * is what changes with the document type.
    */
   copyMarking: string | null;
+
+  /**
+   * What the government portal gave back — section 10's "once e-invoicing
+   * applies: the IRN and the signed QR code".
+   *
+   * All null until an Invoice Registration Portal has actually answered. The
+   * document simply does not carry the block then, which is correct: an
+   * invoice printed with an empty IRN field claims to be an e-invoice and is
+   * not one.
+   */
+  irn: string | null;
+  irnAckNo: string | null;
+  irnAckDate: Date | null;
+  /**
+   * The signed QR string, printed as the portal returned it and never
+   * re-encoded — the signature is over these exact bytes.
+   */
+  irnQrPayload: string | null;
 }
 
 /** A document with nothing to declare — and what a legacy one falls back to. */
@@ -155,6 +173,10 @@ export const NO_GST: BillDocumentGst = {
   hasTax: false,
   taxAmountInWords: '',
   copyMarking: null,
+  irn: null,
+  irnAckNo: null,
+  irnAckDate: null,
+  irnQrPayload: null,
   hasClassifiedLines: false,
   taxSummary: [],
   notes: [],
@@ -215,6 +237,10 @@ export interface GstBillHeader {
   recipientGstin?: string | null;
   placeOfSupplyStateCode?: string | null;
   isInterState?: boolean | null;
+  irn?: string | null;
+  irnAckNo?: string | null;
+  irnAckDate?: Date | null;
+  irnQrPayload?: string | null;
 }
 
 /**
@@ -298,6 +324,22 @@ export function buildGstBlock(
         ? 'ORIGINAL'
         : 'ORIGINAL FOR RECIPIENT'
       : null,
+    // From the first bill that actually carries one rather than from `primary`.
+    // A stay spanning several bills registers each separately, and the one the
+    // identity fields came from is not necessarily the one that came back with
+    // an IRN first.
+    ...irnOf(headers),
+  };
+}
+
+/** The registered document's IRN, from whichever of a stay's bills has one. */
+function irnOf(headers: GstBillHeader[]) {
+  const withIrn = headers.find((h) => h.irn);
+  return {
+    irn: withIrn?.irn ?? null,
+    irnAckNo: withIrn?.irnAckNo ?? null,
+    irnAckDate: withIrn?.irnAckDate ?? null,
+    irnQrPayload: withIrn?.irnQrPayload ?? null,
   };
 }
 
@@ -440,6 +482,18 @@ export function gstIdentityFields(gst: BillDocumentGst): Array<[string, string]>
   if (gst.recipientGstin) out.push(['GSTIN (Patient)', gst.recipientGstin]);
   if (gst.placeOfSupplyStateName) {
     out.push(['Place of Supply', `${gst.placeOfSupplyStateName} (${gst.placeOfSupplyStateCode})`]);
+  }
+  // Section 10: once e-invoicing applies, the IRN and the acknowledgement go on
+  // the face of the document. Printed only when the portal has actually
+  // answered — an empty IRN field on an invoice claims it is an e-invoice.
+  if (gst.irn) out.push(['IRN', gst.irn]);
+  if (gst.irnAckNo) {
+    out.push([
+      'Ack No. / Date',
+      gst.irnAckDate
+        ? `${gst.irnAckNo} / ${gst.irnAckDate.toLocaleDateString('en-IN')}`
+        : gst.irnAckNo,
+    ]);
   }
   return out;
 }

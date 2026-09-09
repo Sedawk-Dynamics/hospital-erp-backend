@@ -253,6 +253,10 @@ export async function buildAdmissionBillDocument(
           gstDocumentType: true, invoiceNumber: true, billOfSupplyNumber: true, financialYear: true,
           supplierGstin: true, supplierStateCode: true, recipientGstin: true,
           placeOfSupplyStateCode: true, isInterState: true,
+          // Section 10: the IRN and the signed QR belong on the face of the
+          // document once e-invoicing applies. Selected here or the layout
+          // would have the fields and never the values.
+          irn: true, irnAckNo: true, irnAckDate: true, irnQrPayload: true,
         },
       })
     : [];
