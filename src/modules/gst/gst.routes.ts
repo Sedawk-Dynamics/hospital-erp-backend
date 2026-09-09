@@ -13,6 +13,7 @@ import * as control from './gst-reports.control';
 import * as archive from './gst-reports.archive';
 import * as annual from './gst-reports.annual';
 import * as reconcile from './gst-reports.reconcile';
+import * as einvoice from './gst-reports.einvoice';
 import * as masters from './gst-master.service';
 
 export const gstRoutes = Router();
@@ -100,6 +101,15 @@ const periodQuerySchema = z.object({
   query: z.object({
     from: z.string().regex(DATE).optional(),
     to: z.string().regex(DATE).optional(),
+  }),
+});
+
+/** D-1's status filter. Named here or validate() would silently drop it. */
+const eInvoiceQuerySchema = z.object({
+  query: z.object({
+    from: z.string().regex(DATE).optional(),
+    to: z.string().regex(DATE).optional(),
+    status: z.enum(['registered', 'pending', 'failed', 'not_sent', 'cancelled']).optional(),
   }),
 });
 
@@ -446,6 +456,38 @@ gstRoutes.get(
   ...gstReportAccess,
   validate(periodQuerySchema),
   report('Cancelled and amended invoices', (t, q) => control.getCancelledInvoices(t, q as never)),
+);
+
+// ── Group D — e-invoice and e-way bill ────────────────────────────────────
+//
+// Behind the same gate as every other report. Whether they apply at all is the
+// hospital's own configuration, per correction 14 — never a turnover threshold
+// written into the code — and each report says so in its own answer rather
+// than being hidden from the menu, because "not applicable" is itself the
+// thing an auditor asks the hospital to demonstrate.
+
+/** D-1 — E-invoice (IRN) Register. */
+gstRoutes.get(
+  '/reports/einvoice-register',
+  ...gstReportAccess,
+  validate(eInvoiceQuerySchema),
+  report('E-invoice (IRN) register', (t, q) => einvoice.getEInvoiceRegister(t, q as never)),
+);
+
+/** D-2 — Failed IRN Report. */
+gstRoutes.get(
+  '/reports/failed-irn',
+  ...gstReportAccess,
+  validate(periodQuerySchema),
+  report('Failed IRN report', (t, q) => einvoice.getFailedIrnReport(t, q as never)),
+);
+
+/** D-3 — E-way Bill Register. */
+gstRoutes.get(
+  '/reports/eway-bills',
+  ...gstReportAccess,
+  validate(periodQuerySchema),
+  report('E-way bill register', (t, q) => einvoice.getEwayBillRegister(t, q as never)),
 );
 
 // ── C-6 — the filed period archive ────────────────────────────────────────
