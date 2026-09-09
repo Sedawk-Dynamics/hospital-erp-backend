@@ -21,6 +21,7 @@
 // ---------------------------------------------------------------------------
 
 import { r2 } from '../../shared/gst';
+import { logger } from '../../config/logger';
 import { getSalesRegister, getHsnSummary, type SalesReportQuery, type SalesLine } from './gst-reports.sales';
 import { getCreditNoteRegister } from './gst-reports.returns';
 
@@ -82,7 +83,18 @@ function itemsOf(lines: SalesLine[]) {
  */
 export async function buildGstr1Json(
   tenantId: string,
-  query: SalesReportQuery & { sixDigit?: boolean } = {},
+  query: SalesReportQuery & {
+    sixDigit?: boolean;
+    /**
+     * Leave out tables 9A, 9C and 10.
+     *
+     * Set when the amendment report rebuilds a PAST period to compare it: what
+     * that month looks like today is the question, and folding amendments into
+     * it would both answer a different one and make the two modules call each
+     * other forever.
+     */
+    skipAmendments?: boolean;
+  } = {},
 ) {
   const { getGstProfile } = await import('../hospital-settings/hospital-settings.service');
   const { getAdvancesReport } = await import('./gst-reports.service');
@@ -321,10 +333,52 @@ export async function buildGstr1Json(
   if (at.length) json.at = at;
   if (hsnRows.length) json.hsn = { data: hsnRows };
 
+  // ── 9A, 9C and 10 — amendments to returns already filed ─────────────────
+  //
+  // An amendment is declared in the CURRENT return, not by editing the
+  // original, so it belongs in this file no matter which month it corrects.
+  // Found by diffing every filed period against what that period looks like
+  // today — see gst-reports.amendments.
+  //
+  // A document that was filed and has since disappeared is deliberately NOT
+  // emitted: there is nothing to amend it to, and a fabricated zero-value
+  // invoice with empty rate blocks is a row the portal rejects. It is named in
+  // the warnings so the accountant handles it deliberately.
+  const amendmentWarnings: string[] = [];
+  if (!query.skipAmendments) {
+    try {
+      const { getGstr1Amendments } = await import('./gst-reports.amendments');
+      // The month being filed is excluded at the source: a return cannot amend
+      // itself, and its own supplies are already in the ordinary tables above.
+      const a = await getGstr1Amendments(tenantId, {
+        excludePeriod: returnPeriod(query.from, query.to),
+      });
+      if (a.sections.b2ba.length) json.b2ba = a.sections.b2ba;
+      if (a.sections.cdnra.length) json.cdnra = a.sections.cdnra;
+      if (a.sections.b2csa.length) json.b2csa = a.sections.b2csa;
+      if (a.sections.vanished.length) {
+        amendmentWarnings.push(
+          `${a.sections.vanished.length} document(s) were filed in an earlier return and are no ` +
+            'longer in it: ' +
+            a.sections.vanished.slice(0, 5).join(', ') +
+            (a.sections.vanished.length > 5 ? ' and others' : '') +
+            '. They are not in this file — a cancelled invoice is amended to nil or reversed by a ' +
+            'credit note, and which one is the accountant’s call. See the amendments report.',
+        );
+      }
+    } catch (err) {
+      // The file is still valid without them; failing the download over an
+      // amendment nobody may have would be the wrong trade.
+      logger.warn({ err, tenantId }, 'Could not fold amendments into the GSTR-1 file');
+      amendmentWarnings.push('Amendments to earlier returns could not be checked — see the amendments report.');
+    }
+  }
+
   return {
     json,
     /** What the file does not contain, and why. Shown before it is downloaded. */
     warnings: [
+      ...amendmentWarnings,
       ...(profile.registered ? [] : ['This hospital is not registered under GST — the file has no GSTIN and cannot be uploaded.']),
       ...(notes.rows.length > filable.length
         ? [`${notes.rows.length - filable.length} credit note(s) are against a bill that was never issued a number and cannot be reported.`]
