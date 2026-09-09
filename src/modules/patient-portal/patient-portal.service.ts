@@ -1556,7 +1556,19 @@ export async function getPatientAdmissionDetail(userId: string, email: string, a
         orderBy: { createdAt: 'asc' },
         select: {
           id: true, billNumber: true, status: true, totalAmount: true, amountPaid: true, balanceDue: true,
-          billItems: { select: { description: true, quantity: true, totalAmount: true } },
+          gstDocumentType: true, invoiceNumber: true,
+          taxAmount: true, cgstAmount: true, sgstAmount: true, igstAmount: true,
+          // The stay is where the room rule bites — a deluxe bed over the
+          // 5,000/day threshold makes the WHOLE day's rent taxable while every
+          // other line on the same bill stays exempt. That is the bill a
+          // patient most wants explained, and it was the one showing the least.
+          billItems: {
+            select: {
+              description: true, quantity: true, totalAmount: true,
+              hsnSacCode: true, gstTreatment: true, taxPercent: true,
+              taxAmount: true, taxReason: true,
+            },
+          },
         },
       },
     },
@@ -1570,7 +1582,22 @@ export async function getPatientAdmissionDetail(userId: string, email: string, a
     total: Number(b.totalAmount),
     paid: Number(b.amountPaid),
     balance: Number(b.balanceDue),
-    items: b.billItems.map((it) => ({ description: it.description, quantity: it.quantity, amount: Number(it.totalAmount) })),
+    documentType: b.gstDocumentType ?? null,
+    invoiceNumber: b.invoiceNumber ?? null,
+    tax: Number(b.taxAmount ?? 0),
+    cgst: Number(b.cgstAmount ?? 0),
+    sgst: Number(b.sgstAmount ?? 0),
+    igst: Number(b.igstAmount ?? 0),
+    items: b.billItems.map((it) => ({
+      description: it.description,
+      quantity: it.quantity,
+      amount: Number(it.totalAmount),
+      hsnSacCode: it.hsnSacCode ?? null,
+      gstTreatment: it.gstTreatment ?? null,
+      taxPercent: Number(it.taxPercent ?? 0),
+      taxAmount: Number(it.taxAmount ?? 0),
+      taxReason: it.taxReason ?? null,
+    })),
   }));
 
   return {
