@@ -67,6 +67,21 @@ export interface GstProfile {
   sixDigitHsn: boolean;
   eInvoiceApplicable: boolean;
   eWayBillApplicable: boolean;
+  /**
+   * How many days after the document date an invoice may still be registered
+   * with the portal. Report D-2 measures its deadline against this.
+   *
+   * A number here rather than in the report for the same reason as everything
+   * else in this block: the window has already moved once — thirty days for
+   * larger filers, none before that — and a report that hard-codes it starts
+   * lying the day the rule changes rather than the day the hospital does.
+   */
+  eInvoiceUploadDays: number;
+  /**
+   * The consignment value above which goods moving on a public road need an
+   * e-way bill. Report D-3 lists the movements that cross it.
+   */
+  eWayBillThreshold: number;
 
   // ── The auditor's calls ──
   /**
@@ -125,6 +140,8 @@ export const DEFAULT_GST_PROFILE: GstProfile = {
   sixDigitHsn: false,
   eInvoiceApplicable: false,
   eWayBillApplicable: false,
+  eInvoiceUploadDays: 30,
+  eWayBillThreshold: 50000,
   dischargeMedicinesTaxable: true,
   inpatientCompositeExempt: true,
   roundOffToRupee: true,
@@ -152,6 +169,13 @@ function isoDate(v: unknown, fallback: string | null): string | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) return fallback;
   const d = new Date(`${t}T00:00:00.000Z`);
   return Number.isNaN(d.getTime()) ? fallback : t;
+}
+
+/** A number a hospital sets, kept inside sane bounds rather than rejected. */
+function clamp(v: unknown, fallback: number, min: number, max: number): number {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
 }
 
 export class GstProfileError extends Error {}
@@ -227,6 +251,11 @@ export function mergeGstProfile(base: GstProfile, patch: unknown): GstProfile {
     sixDigitHsn: bool(p.sixDigitHsn, base.sixDigitHsn),
     eInvoiceApplicable: bool(p.eInvoiceApplicable, base.eInvoiceApplicable),
     eWayBillApplicable: bool(p.eWayBillApplicable, base.eWayBillApplicable),
+    // Clamped, not refused — both are numbers a hospital sets from its own
+    // circumstances, not identities like the GSTIN. Zero upload days is a
+    // legitimate setting: it means the invoice must be registered the same day.
+    eInvoiceUploadDays: clamp(p.eInvoiceUploadDays, base.eInvoiceUploadDays, 0, 365),
+    eWayBillThreshold: clamp(p.eWayBillThreshold, base.eWayBillThreshold, 0, 10_000_000),
     dischargeMedicinesTaxable: bool(p.dischargeMedicinesTaxable, base.dischargeMedicinesTaxable),
     inpatientCompositeExempt: bool(p.inpatientCompositeExempt, base.inpatientCompositeExempt),
     roundOffToRupee: bool(p.roundOffToRupee, base.roundOffToRupee),
