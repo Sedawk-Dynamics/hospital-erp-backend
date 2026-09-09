@@ -1,0 +1,45 @@
+{
+  "//": "Frontend calls with no matching route that are ACCEPTED for now, because each needs a product decision rather than a path fix. A ratchet, like the ESLint block: never add an entry to make a build pass, and delete one the moment it is fixed. `npm run check:routes` fails on anything new AND on an entry left here after it is fixed. Recorded 2026-09-09.",
+  "known": [
+    {
+      "method": "POST",
+      "path": "/auth/2fa/disable",
+      "reason": "Patient portal offers a Disable 2FA button; the server has only /2fa/setup and /2fa/verify, so it toasts a failure. Build the endpoint or remove the button - not a path fix."
+    },
+    {
+      "method": "GET",
+      "path": "/nursing-forms/${id}",
+      "reason": "Left behind by the nursing form system that was replaced. usePatientForm has no live caller."
+    },
+    {
+      "method": "GET",
+      "path": "/nursing-forms/summary/${id}",
+      "reason": "Same replaced system; usePatientFormsSummary has no live caller."
+    },
+    {
+      "method": "POST",
+      "path": "/nursing-forms/admission-assessments",
+      "reason": "Same replaced system; useCreateAdmissionAssessment has no live caller."
+    },
+    {
+      "method": "POST",
+      "path": "/nursing-forms/pain-assessments",
+      "reason": "Same replaced system; useCreatePainAssessment has no live caller."
+    },
+    {
+      "method": "POST",
+      "path": "/nursing-forms/fall-risks",
+      "reason": "Same replaced system; useCreateFallRisk has no live caller."
+    },
+    {
+      "method": "POST",
+      "path": "/nursing-forms/wound-care",
+      "reason": "LIVE - the wound care panel saves through this and 404s. Repoint at the current charting endpoint, or remove the panel."
+    },
+    {
+      "method": "POST",
+      "path": "/nursing-forms/nursing-notes",
+      "reason": "LIVE - nurse charting saves a note through this and 404s. Repoint at the current charting endpoint, or remove the action."
+    }
+  ]
+}
