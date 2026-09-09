@@ -18,7 +18,8 @@ const FUTURE = new Date('2030-12-31');
 
 function model() {
   return {
-    create: vi.fn(), update: vi.fn(), updateMany: vi.fn(), delete: vi.fn(), deleteMany: vi.fn(),
+    create: vi.fn(), createMany: vi.fn(), update: vi.fn(), updateMany: vi.fn(),
+    upsert: vi.fn(), delete: vi.fn(), deleteMany: vi.fn(),
     findFirst: vi.fn(), findUnique: vi.fn(), findMany: vi.fn(), aggregate: vi.fn(), count: vi.fn(),
   };
 }
@@ -28,6 +29,12 @@ function txWith(overrides: Record<string, any> = {}) {
     wardStock: model(), wardStockLedger: model(), bill: model(), billItem: model(),
     payment: model(), refund: model(), admission: model(), patient: model(),
     dispensingRecord: model(), prescription: model(),
+    // A reversal now issues a credit note inside the same transaction, and the
+    // numbering reads the tenant's own series. Without these the note fails
+    // silently — `issueCreditNoteBestEffort` swallows its errors by design, so
+    // a missing model here would look like "no note was raised".
+    creditNote: model(), creditNoteItem: model(),
+    gstDocumentSeries: model(), tenant: model(),
     ...overrides,
   };
   (prisma.$transaction as any).mockImplementation((fn: any) => fn(tx));
@@ -354,6 +361,86 @@ describe('Pharmacy — flow coverage (sale / returns / merge / reports)', () => 
       await processReturn(TENANT_ID, 'r1', USER_ID, { status: 'processed' });
       expect(tx.refund.create).toHaveBeenCalled();
       expect(tx.admission.update).not.toHaveBeenCalled(); // cash path never touches the advance
+    });
+
+    // Section 4.9 row 1 and acceptance scenario 16: a return reverses the
+    // money AND the tax, "at the rate on the original invoice". Only a full
+    // void ever raised a credit note, so the everyday counter return left the
+    // tax declared on medicine the hospital had taken back.
+    it('raises a credit note for the returned SHARE of the line', async () => {
+      (prisma.drugReturn.findFirst as any).mockResolvedValue({
+        id: 'r1', tenantId: TENANT_ID, status: 'pending', returnType: 'patient_return',
+        drugBatchId: 'b1', quantity: 3, billId: 'bill-1', patientId: 'p1',
+        refundAmount: 30, dispensingRecordId: 'disp-1', reason: 'wrong strength',
+      });
+      const tx = txWith();
+      tx.drugReturn.update.mockResolvedValue({});
+      tx.drugBatch.update.mockResolvedValue({});
+      tx.payment.findFirst.mockResolvedValue({ id: 'pay1', bill: { id: 'bill-1', amountPaid: 100, totalAmount: 100, status: 'paid' } });
+      tx.admission.findFirst.mockResolvedValue(null);
+      tx.refund.create.mockResolvedValue({ id: 'rf1' });
+      tx.bill.update.mockResolvedValue({});
+      // The line the dispense was billed on: ten dispensed, three coming back.
+      tx.billItem.findFirst.mockResolvedValue({ id: 'item-1', quantity: 10 });
+      // What the note builder itself reads: the bill it credits, and the series
+      // it takes its number from.
+      tx.bill.findFirst.mockResolvedValue({
+        id: 'bill-1', patientId: 'p1', billDate: new Date('2026-09-01T00:00:00Z'),
+        supplierGstin: '27AAPFU0939F1ZV', recipientGstin: null, placeOfSupplyStateCode: '27',
+      });
+      tx.tenant.findUnique.mockResolvedValue({ hospitalCode: 'GC' });
+      tx.gstDocumentSeries.upsert.mockResolvedValue({ prefix: 'GC/CN', lastNumber: 1 });
+      tx.creditNote.create.mockResolvedValue({ id: 'cn1', creditNoteNumber: 'GC/CN/2026-27/000001', totalAmount: -30 });
+      tx.billItem.findMany.mockResolvedValue([
+        {
+          id: 'item-1', description: 'Amox 500', hsnSacCode: '3004', quantity: 10,
+          taxPercent: 5, taxableValue: 95.24, cgstAmount: 2.38, sgstAmount: 2.38,
+          igstAmount: 0, cessAmount: 0, taxAmount: 4.76, totalAmount: 100,
+          gstTreatment: 'taxable', unitPrice: 10, discountAmount: 0,
+        },
+      ]);
+      tx.drugReturn.findUnique.mockResolvedValue({ id: 'r1', status: 'processed', patient: null });
+
+      await processReturn(TENANT_ID, 'r1', USER_ID, { status: 'processed' });
+
+      // Keyed to the ONE line the dispense was billed on, not the whole bill.
+      expect(tx.billItem.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            billId: 'bill-1',
+            referenceType: 'dispensing_record',
+            referenceId: 'disp-1',
+          }),
+        }),
+      );
+      // And it went on to build the note from that line.
+      expect(tx.creditNote.create).toHaveBeenCalled();
+    });
+
+    it('does not credit a return that has no bill line behind it', async () => {
+      (prisma.drugReturn.findFirst as any).mockResolvedValue({
+        id: 'r1', tenantId: TENANT_ID, status: 'pending', returnType: 'patient_return',
+        drugBatchId: 'b1', quantity: 3, billId: 'bill-1', patientId: 'p1',
+        refundAmount: 30, dispensingRecordId: 'disp-1', reason: null,
+      });
+      const tx = txWith();
+      tx.drugReturn.update.mockResolvedValue({});
+      tx.drugBatch.update.mockResolvedValue({});
+      tx.payment.findFirst.mockResolvedValue({ id: 'pay1', bill: { id: 'bill-1', amountPaid: 100, totalAmount: 100, status: 'paid' } });
+      tx.admission.findFirst.mockResolvedValue(null);
+      tx.refund.create.mockResolvedValue({ id: 'rf1' });
+      tx.bill.update.mockResolvedValue({});
+      // No line to key on — an IP pull, or a dispense billed before the
+      // reference was recorded.
+      tx.billItem.findFirst.mockResolvedValue(null);
+      tx.drugReturn.findUnique.mockResolvedValue({ id: 'r1', status: 'processed', patient: null });
+
+      await processReturn(TENANT_ID, 'r1', USER_ID, { status: 'processed' });
+
+      // The money still went back; crediting the WHOLE bill instead would
+      // reverse tax on lines the patient kept.
+      expect(tx.refund.create).toHaveBeenCalled();
+      expect(tx.creditNote.create).not.toHaveBeenCalled();
     });
 
     it('credits advance for a package patient return (G14)', async () => {
