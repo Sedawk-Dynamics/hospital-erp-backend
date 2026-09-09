@@ -5402,6 +5402,14 @@ model DrugReturn {
   // raised before this (or any patient/counter return) simply has no group.
   returnGroupId      String?          @map("return_group_id") @db.Uuid
   returnNumber       String?          @map("return_number") @db.VarChar(40)
+  // ── E-way bill (report D-3) ──
+  // A vendor return is the one movement in this hospital where goods actually
+  // travel on a public road; a ward transfer and a pharmacy issue never leave
+  // the building. Whether a bill is needed at all is the hospital's own
+  // `eWayBillApplicable` setting and the threshold on it, never a number
+  // compiled in here.
+  ewayBillNumber     String?          @map("eway_bill_number") @db.VarChar(20)
+  ewayBillDate       DateTime?        @map("eway_bill_date")
   createdAt          DateTime         @default(now()) @map("created_at")
 
   tenant           Tenant            @relation(fields: [tenantId], references: [id])
@@ -6024,6 +6032,31 @@ model Bill {
   financialYear          String?    @map("financial_year") @db.VarChar(7)
   /// Set when the document was issued. Tax figures are read-only after it.
   gstFrozenAt            DateTime?  @map("gst_frozen_at")
+
+  // ── E-invoice: what the government portal gave back ──
+  //
+  // Section 8 names irn, ack_no and qr_payload; section 10 prints the IRN and
+  // the signed QR "once e-invoicing applies"; section 11.5's D-1 and D-2 read
+  // nothing else. Whether any of it applies is the hospital's own
+  // configuration — `eInvoiceApplicable` on the GST profile — and never a
+  // rupee threshold compiled in here.
+  //
+  /// The portal's 64-character hash of the invoice. Unique: the same IRN on
+  /// two bills means one invoice was registered twice.
+  irn                    String?    @unique @db.VarChar(64)
+  irnAckNo               String?    @map("irn_ack_no") @db.VarChar(30)
+  irnAckDate             DateTime?  @map("irn_ack_date")
+  /// The signed QR string, printed as-is. Never re-encoded — the signature is
+  /// over these exact bytes.
+  irnQrPayload           String?    @map("irn_qr_payload")
+  /// 'pending' | 'registered' | 'failed' | 'cancelled'. Null means never sent,
+  /// which is a different fact from "sent and rejected" — D-2 exists to keep
+  /// the two apart, and a null IRN alone cannot.
+  irnStatus              String?    @map("irn_status") @db.VarChar(20)
+  /// The portal's own words for the refusal. D-2 reports them verbatim.
+  irnError               String?    @map("irn_error")
+  irnAttemptedAt         DateTime?  @map("irn_attempted_at")
+  irnCancelledAt         DateTime?  @map("irn_cancelled_at")
   amountPaid             Decimal    @default(0) @map("amount_paid") @db.Decimal(12, 2)
   balanceDue             Decimal    @default(0) @map("balance_due") @db.Decimal(12, 2)
   status                 BillStatus @default(draft)
@@ -6058,6 +6091,7 @@ model Bill {
   drugReturns     DrugReturn[]
   creditNotes     CreditNote[]
 
+  @@index([tenantId, irnStatus, billDate])
   @@map("bills")
 }
 
