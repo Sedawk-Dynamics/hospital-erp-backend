@@ -4575,6 +4575,20 @@ model CreditNote {
   /// A note raised after 30 November following the year end cannot reduce tax
   /// liability. The money still goes back; the tax simply cannot be recovered.
   withinTimeLimit  Boolean  @default(true) @map("within_time_limit")
+
+  // ── E-invoice ──
+  // A note raised against a REGISTERED recipient is an e-invoice document in
+  // its own right. Reported by D-1 and D-2 alongside the invoices, because a
+  // register showing every B2B invoice registered while the notes reversing
+  // them had never been sent would be complete-looking and wrong.
+  irn              String?  @unique @db.VarChar(64)
+  irnAckNo         String?  @map("irn_ack_no") @db.VarChar(30)
+  irnAckDate       DateTime? @map("irn_ack_date")
+  irnQrPayload     String?  @map("irn_qr_payload")
+  irnStatus        String?  @map("irn_status") @db.VarChar(20)
+  irnError         String?  @map("irn_error")
+  irnAttemptedAt   DateTime? @map("irn_attempted_at")
+
   issuedBy         String?  @map("issued_by")
   createdAt        DateTime @default(now()) @map("created_at")
 
@@ -4586,6 +4600,7 @@ model CreditNote {
 
   @@index([tenantId, issueDate])
   @@index([billId])
+  @@index([tenantId, irnStatus, issueDate])
   @@map("credit_notes")
 }
 
