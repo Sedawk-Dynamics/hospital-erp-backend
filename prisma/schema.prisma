@@ -5963,6 +5963,7 @@ model ServiceTariff {
 
   tenant    Tenant     @relation(fields: [tenantId], references: [id])
   billItems BillItem[]
+  otRequests OtRequest[]
 
   @@map("service_tariffs")
 }
@@ -7131,6 +7132,17 @@ model OtRequest {
   preOpDiagnosis     String?          @map("pre_op_diagnosis")
   postOpDiagnosis    String?          @map("post_op_diagnosis")
   notes              String?
+  /// The surgery tariff this procedure is, for tax.
+  ///
+  /// Section 4.6 turns on one distinction: therapeutic is exempt, cosmetic is
+  /// 18%, "the same theatre, the same surgeon and the same consumables". The
+  /// tariff carries the SAC, the treatment, the rate and the auditor's
+  /// approval, so the request points at it rather than keeping a second copy
+  /// of "is this cosmetic" to hold in step with the first.
+  ///
+  /// Nullable: a request with no tariff resolves through the category, to
+  /// exempt, exactly as every one of them did before this existed.
+  serviceTariffId    String?          @map("service_tariff_id")
   billingAmount      Decimal?         @map("billing_amount") @db.Decimal(12, 2)
   billingStatus      String?          @map("billing_status") @db.VarChar(20)
   cancellationReason String?          @map("cancellation_reason")
@@ -7165,6 +7177,7 @@ model OtRequest {
   doctor       DoctorProfile     @relation(fields: [doctorId], references: [id])
   surgeon      DoctorProfile?    @relation("OtSurgeon", fields: [surgeonId], references: [id])
   anaesthetist DoctorProfile?    @relation("OtAnaesthetist", fields: [anaesthetistId], references: [id])
+  serviceTariff ServiceTariff?  @relation(fields: [serviceTariffId], references: [id])
   ot           OperatingTheater? @relation(fields: [otId], references: [id])
 
   @@index([surgeonId])
