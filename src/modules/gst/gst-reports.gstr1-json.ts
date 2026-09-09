@@ -287,7 +287,10 @@ export async function buildGstr1Json(
   const hsnRows = hsn.byCode.map((c) => ({
     hsn_sc: c.hsnSac,
     desc: c.description.slice(0, 30),
-    uqc: 'OTH',
+    // The line's real unit, not a blanket 'OTH'. The portal validates the
+    // quantity against it, and a file that says 400 OTH where the register
+    // says 400 tablets is a file an officer will query.
+    uqc: c.uqc ?? 'OTH',
     qty: c.quantity,
     rt: c.ratePercent,
     txval: c.taxableValue,

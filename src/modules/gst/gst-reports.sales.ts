@@ -21,6 +21,7 @@
 
 import { prisma } from '../../config/database';
 import { loadGstSlabs, isLegalSlabRate } from '../../shared/gst-slabs';
+import { uqcForLine, UQC_CODES } from '../../shared/gst-uqc';
 import { r2, hsnForReturn } from '../../shared/gst';
 import { fullName } from '../../shared/person-name';
 import { treatmentLabelFor } from '../billing/billing.gst-layout';
@@ -338,11 +339,24 @@ export async function getHsnSummary(
   const coded = rows.filter((l) => !!hsnForReturn(l.hsnSac, sixDigit));
   const uncoded = rows.filter((l) => !hsnForReturn(l.hsnSac, sixDigit));
 
-  const byCode = [...groupBy(coded, (l) => `${hsnForReturn(l.hsnSac, sixDigit)}:${l.taxRatePercent}`)]
+  // Grouped by code, rate AND unit. Table 12 reports a quantity against a UQC,
+  // so a code sold in tablets and in bottles is two rows — summing them would
+  // report a quantity in no unit at all, which is the state this report was in.
+  const byCode = [...groupBy(
+    coded,
+    (l) => `${hsnForReturn(l.hsnSac, sixDigit)}:${l.taxRatePercent}:${uqcForLine(l)}`,
+  )]
     .map(([, v]) => ({
       hsnSac: hsnForReturn(v.lines[0].hsnSac, sixDigit)!,
       description: v.lines[0].description,
       ratePercent: v.lines[0].taxRatePercent,
+      /**
+       * The government's own unit code — section 11.2's A-3 column list asks
+       * for it by name, and the portal will not accept a Table 12 row without
+       * one. A service has no physical unit and takes NOS, one of each.
+       */
+      uqc: uqcForLine(v.lines[0]),
+      uqcLabel: UQC_CODES[uqcForLine(v.lines[0])] ?? 'Others',
       // Table 12 asks for quantity as well as value.
       quantity: v.lines.reduce((t, l) => t + l.quantity, 0),
       ...v.totals,
