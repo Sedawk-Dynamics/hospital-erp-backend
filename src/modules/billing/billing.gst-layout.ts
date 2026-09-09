@@ -39,6 +39,8 @@ import {
 
 import { amountInWords } from '../../shared/amount-in-words';
 
+import QRCode from 'qrcode';
+
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
 /** The part of a charge line this module needs. Both bill shapes satisfy it. */
@@ -496,6 +498,64 @@ export function gstIdentityFields(gst: BillDocumentGst): Array<[string, string]>
     ]);
   }
   return out;
+}
+
+/**
+ * The signed QR code, drawn as vectors.
+ *
+ * Section 10 puts "the IRN and the signed QR code" on the face of the document
+ * once e-invoicing applies. The QR is not decoration: a GST officer at the
+ * roadside or a recipient checking an invoice scans it, and what it must
+ * encode is the portal's signed payload EXACTLY as returned — the signature is
+ * over those bytes, so a re-encoded or reformatted string verifies as false.
+ *
+ * Drawn module by module rather than as a PNG for two reasons: it stays crisp
+ * at any print size because it is vector, and `QRCode.create` is synchronous,
+ * so it fits a PDF that is streamed rather than awaited.
+ *
+ * Nothing is drawn when there is no payload. A blank square where the QR
+ * belongs is worse than no square: it looks like a code that failed to scan.
+ */
+export function drawEInvoiceQr(
+  pdf: PDFKit.PDFDocument,
+  theme: PdfTheme,
+  gst: BillDocumentGst,
+  opts: { size?: number; x?: number; y?: number } = {},
+): void {
+  if (!gst.irnQrPayload) return;
+
+  const size = opts.size ?? 96;
+  let matrix: { size: number; data: Uint8Array };
+  try {
+    // Error correction M is what the e-invoice schema specifies; the payload is
+    // long, and a higher level would push the module count past legibility at
+    // this print size.
+    matrix = QRCode.create(gst.irnQrPayload, { errorCorrectionLevel: 'M' }).modules;
+  } catch {
+    // A payload the encoder cannot represent is a data problem, not a reason to
+    // fail the whole document — the IRN is still printed as text above.
+    return;
+  }
+
+  const x = opts.x ?? theme.margin + theme.contentWidth - size;
+  const y = opts.y ?? pdf.y;
+  const cell = size / matrix.size;
+
+  pdf.save();
+  // White behind it: a QR on a tinted band does not scan reliably.
+  pdf.rect(x - 2, y - 2, size + 4, size + 4).fill('#FFFFFF');
+  pdf.fillColor('#000000');
+  for (let r = 0; r < matrix.size; r += 1) {
+    for (let c = 0; c < matrix.size; c += 1) {
+      if (matrix.data[r * matrix.size + c]) {
+        // +0.2 on the span closes the hairline seams PDF viewers render
+        // between abutting rects, which break a scan at small sizes.
+        pdf.rect(x + c * cell, y + r * cell, cell + 0.2, cell + 0.2).fill();
+      }
+    }
+  }
+  pdf.restore();
+  pdf.fillColor(theme.ink);
 }
 
 /**
