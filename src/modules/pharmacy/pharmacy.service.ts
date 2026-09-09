@@ -6789,6 +6789,69 @@ export async function getReturnableDispenses(
   return { items, total: items.length, patient: billPatient };
 }
 
+/**
+ * Reverse the tax on the line a patient handed back.
+ *
+ * Finds the bill line the dispense was billed on and credits the returned
+ * SHARE of it — three of ten tablets reverses three tenths of that line's own
+ * taxable value and its own tax, at the rate on the original invoice.
+ *
+ * Best effort, like every other credit note in this system: the medicine is
+ * already back on the shelf and the money already back in the patient's hand by
+ * the time this runs, so failing the return over a document would leave the
+ * counter in a worse state than an unissued note. It logs loudly instead, and
+ * A-6 shows what was raised.
+ */
+async function creditReturnedLine(
+  tx: any,
+  tenantId: string,
+  input: {
+    billId: string;
+    dispensingRecordId: string | null;
+    returnedQty: number;
+    drugReturnId: string;
+    refundId: string | null;
+    reasonNote: string | null;
+    issuedBy: string;
+  },
+): Promise<void> {
+  if (!input.dispensingRecordId || input.returnedQty <= 0) return;
+
+  // The bill line this dispense was billed on. The counter sale writes one
+  // BillItem per DispensingRecord and keys it by reference, so this is exact
+  // rather than a description match.
+  const item = await tx.billItem.findFirst({
+    where: {
+      billId: input.billId,
+      referenceType: 'dispensing_record',
+      referenceId: input.dispensingRecordId,
+    },
+    select: { id: true, quantity: true },
+  });
+  if (!item) {
+    // A dispense billed before the reference was recorded, or an IP pull. The
+    // money still went back; the note cannot be keyed to a line, and saying so
+    // is better than crediting the whole bill by mistake.
+    logger.warn(
+      { tenantId, billId: input.billId, dispensingRecordId: input.dispensingRecordId },
+      'Returned medicine has no bill line to credit — the tax on it stays declared',
+    );
+    return;
+  }
+
+  const share = item.quantity > 0 ? Math.min(1, input.returnedQty / item.quantity) : 1;
+
+  await issueCreditNoteBestEffort(tx, tenantId, {
+    billId: input.billId,
+    reason: 'sales_return',
+    reasonNote: input.reasonNote,
+    lines: [{ billItemId: item.id, share }],
+    drugReturnId: input.drugReturnId,
+    refundId: input.refundId,
+    issuedBy: input.issuedBy,
+  });
+}
+
 export async function processReturn(
   tenantId: string,
   id: string,
@@ -7021,6 +7084,33 @@ export async function processReturn(
           }
 
           await tx.drugReturn.update({ where: { id }, data: { refundId: refund.id } });
+
+          // ── The tax goes back too ──────────────────────────────────────
+          //
+          // The money was refunded and the bill's collected figure reduced,
+          // and the TAX on that line stayed declared. Section 4.9's first row
+          // and acceptance scenario 16 both say what should happen: "a credit
+          // note reversing that line's taxable value and its own tax, AT THE
+          // RATE ON THE ORIGINAL INVOICE."
+          //
+          // Only `cancelPharmacySale` ever raised one, so a full void was
+          // handled and an ordinary return — the everyday counter task — was
+          // not. The hospital kept remitting tax on medicine it had taken back.
+          //
+          // Credited per LINE and pro-rata, never as a lump: a return of 3 of
+          // 10 tablets reverses three tenths of that line's own tax at that
+          // line's own rate. `issueCreditNote` mirrors the stored figures
+          // rather than recomputing them, so the reversal matches what was
+          // charged however the masters have moved since.
+          await creditReturnedLine(tx, tenantId, {
+            billId: drugReturn.billId!,
+            dispensingRecordId: drugReturn.dispensingRecordId,
+            returnedQty: drugReturn.quantity,
+            drugReturnId: drugReturn.id,
+            refundId: refund.id,
+            reasonNote: drugReturn.reason,
+            issuedBy: userId,
+          });
         }
       }
 
