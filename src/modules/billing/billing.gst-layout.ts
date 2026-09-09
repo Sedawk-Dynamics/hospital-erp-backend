@@ -604,7 +604,18 @@ export function drawGstTaxSummary(
 
   const columns: TableColumn[] = [
     { header: 'Rate', width: 0.2 },
-{ header: 'Taxable Value', width: 0.2, align: 'right' },
+    // "Value", not "Taxable Value".
+    //
+    // This table has a row per TREATMENT as well as per rate, so an exempt row
+    // sits under the same column as a taxed one — and an exempt supply has a
+    // value but no taxable value. Under the old heading the exempt row claimed
+    // 4,879.40 of taxable supply bearing no tax, and the Total added that to
+    // the genuinely taxable 5,000.00 and called the mixture "taxable value".
+    //
+    // Named this way the column is true of every row, and the Total becomes a
+    // figure worth printing: value plus total tax equals the gross charges
+    // stated below it, which is a reader's cross-check on the whole document.
+    { header: 'Value', width: 0.2, align: 'right' },
     ...(gst.isInterState
       ? [{ header: 'IGST', width: 0.2, align: 'right' as const }]
       : [
