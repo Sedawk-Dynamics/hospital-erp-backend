@@ -116,6 +116,17 @@ function monthOf(period: string): string {
   return period;
 }
 
+/** Group an amended document under its recipient, the way the file nests them. */
+function pushAmended(
+  byGstin: Map<string, Array<Record<string, unknown>>>,
+  ctin: string,
+  entry: Record<string, unknown>,
+): void {
+  const list = byGstin.get(ctin) ?? [];
+  list.push(entry);
+  byGstin.set(ctin, list);
+}
+
 export interface AmendmentRow {
   table: '9A' | '9C' | '10';
   /** 'amended' | 'added' | 'removed'. */
@@ -143,12 +154,23 @@ export interface AmendmentRow {
  */
 export async function getGstr1Amendments(
   tenantId: string,
-  query: { returnPeriod?: string } = {},
+  query: {
+    returnPeriod?: string;
+    /**
+     * The period being FILED, left out of the comparison.
+     *
+     * A return cannot amend itself: the month being prepared is reported in
+     * the ordinary tables, and an amendment row for it would declare the same
+     * supply twice.
+     */
+    excludePeriod?: string;
+  } = {},
 ) {
   const filed = await prisma.gstFiledPeriod.findMany({
     where: {
       tenantId,
       ...(query.returnPeriod ? { returnPeriod: query.returnPeriod } : {}),
+      ...(query.excludePeriod ? { returnPeriod: { not: query.excludePeriod } } : {}),
     },
     orderBy: { periodFrom: 'asc' },
     select: {
@@ -158,6 +180,19 @@ export async function getGstr1Amendments(
   });
 
   const rows: AmendmentRow[] = [];
+  // The same findings in the portal's own shape, so the current month's file
+  // can carry them. Built here rather than in the JSON builder because the
+  // diff is what produces them, and two places computing the same amendment
+  // would eventually disagree about one.
+  const sections: {
+    b2ba: Array<{ ctin: string; inv: Array<Record<string, unknown>> }>;
+    b2csa: Array<Record<string, unknown>>;
+    cdnra: Array<{ ctin: string; nt: Array<Record<string, unknown>> }>;
+    /** Documents that were filed and are gone. They cannot be auto-amended. */
+    vanished: string[];
+  } = { b2ba: [], b2csa: [], cdnra: [], vanished: [] };
+  const b2baByGstin = new Map<string, Array<Record<string, unknown>>>();
+  const cdnraByGstin = new Map<string, Array<Record<string, unknown>>>();
   const periods: Array<{
     returnPeriod: string;
     filedAt: Date;
@@ -189,6 +224,11 @@ export async function getGstr1Amendments(
       const built = await buildGstr1Json(tenantId, {
         from: p.periodFrom.toISOString().slice(0, 10),
         to: p.periodTo.toISOString().slice(0, 10),
+        // Without this the two call each other forever: the file builder folds
+        // in amendments, and finding an amendment means rebuilding a filed
+        // period's file. Rebuilding a PAST period never wants amendments in it
+        // anyway — the point is what that month looks like today.
+        skipAmendments: true,
       });
       const j = built.json as Record<string, unknown>;
       now = {
@@ -240,11 +280,21 @@ export async function getGstr1Amendments(
             'Filed in this period and no longer in it — cancelled, or its number was withdrawn. ' +
             'Table 9A carries it as an amendment to nil.',
         });
+        // NOT emitted into the file. There is no current invoice to amend it
+        // to, and a fabricated zero-value entry with empty rate blocks is a
+        // row the portal rejects. Named in the warnings instead, so the
+        // accountant handles it deliberately — by credit note, or on the
+        // portal itself.
+        sections.vanished.push(`${inum} (${p.returnPeriod})`);
         continue;
       }
       const dv = r2(n(b.inv.val) - n(a.inv.val));
       const dt = r2(taxOfInvoice(b.inv) - taxOfInvoice(a.inv));
       if (dv !== 0 || dt !== 0 || (b.ctin !== a.ctin) || ((b.inv.pos ?? '') !== (a.inv.pos ?? ''))) {
+        // Table 9A carries the invoice AS IT IS NOW, tagged with the number and
+        // date it was originally filed under. That pair is what the portal
+        // matches on; the rest of the entry is an ordinary invoice.
+        pushAmended(b2baByGstin, b.ctin, { ...b.inv, oinum: a.inv.inum, oidt: a.inv.idt });
         rows.push({
           table: '9A',
           change: 'amended',
@@ -286,6 +336,11 @@ export async function getGstr1Amendments(
           'Dated inside a period already filed but not in the return that went in. It is a ' +
           'missing invoice rather than an amendment: report it in the current return.',
       });
+      // A document that was never filed is reported as itself, not as an
+      // amendment — there is no original row to replace. It goes into the
+      // current return's ordinary b2b section, which the file builder already
+      // produces from today's register, so nothing is emitted here.
+    
     }
 
     // ── Table 9C — credit and debit notes ──────────────────────────────────
@@ -317,6 +372,11 @@ export async function getGstr1Amendments(
             ? 'The note’s value has changed since the return went in.'
             : 'Filed in this period and no longer in it.',
         });
+        if (b && a.ctin) {
+          pushAmended(cdnraByGstin, a.ctin, { ...b.nt, ont_num: a.nt.nt_num, ont_dt: a.nt.nt_dt });
+        } else if (!b) {
+          sections.vanished.push(`${num} (${p.returnPeriod})`);
+        }
       }
     }
     for (const [num, b] of nowN) {
@@ -371,6 +431,15 @@ export async function getGstr1Amendments(
           'The B2C total for this state and rate no longer matches what was filed. Table 10 ' +
           'carries the corrected total for the month, not the individual bills.',
       });
+      // Table 10 replaces the whole row for the month, so the CURRENT total is
+      // what goes in — tagged with the month it corrects. A row that has gone
+      // to nothing is still declared, at zero: unlike an invoice, an aggregate
+      // of zero is a legitimate figure and is how the portal is told the
+      // supplies were removed.
+      sections.b2csa.push({
+        ...(b ?? { ...a!, txval: 0, iamt: 0, camt: 0, samt: 0, csamt: 0 }),
+        omon: p.returnPeriod,
+      });
     }
 
     const found = rows.length - before;
@@ -399,8 +468,12 @@ export async function getGstr1Amendments(
     netValueChange: r2(rows.reduce((t, r) => t + r.difference, 0)),
   };
 
+  sections.b2ba = [...b2baByGstin.entries()].map(([ctin, inv]) => ({ ctin, inv }));
+  sections.cdnra = [...cdnraByGstin.entries()].map(([ctin, nt]) => ({ ctin, nt }));
+
   return {
     summary,
+    sections,
     periods,
     rows: rows.sort((a, b) => a.originalPeriod.localeCompare(b.originalPeriod)),
     note:
