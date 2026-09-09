@@ -201,7 +201,12 @@ export async function issueDocumentForBill(
   },
   lines: Array<{ taxAmount: unknown; gstTreatment?: string | null }>,
   opts: { registered: boolean },
-): Promise<{ documentType: GstDocumentType; invoiceNumber: string | null } | null> {
+): Promise<{
+  documentType: GstDocumentType;
+  invoiceNumber: string | null;
+  /** The second document, where a registered recipient is owed one. */
+  billOfSupplyNumber?: string | null;
+} | null> {
   // Already issued. Re-finalising must never mint a second number for the same
   // document — that is how a series grows a duplicate.
   if (bill.invoiceNumber) return null;
@@ -215,7 +220,7 @@ export async function issueDocumentForBill(
       where: { id: bill.id },
       data: { gstDocumentType: decision.documentType, gstFrozenAt: new Date() },
     });
-    return { documentType: decision.documentType, invoiceNumber: null };
+    return { documentType: decision.documentType, invoiceNumber: null, billOfSupplyNumber: null };
   }
 
   const { invoiceNumber, financialYear } = await allotDocumentNumber(
@@ -235,16 +240,42 @@ export async function issueDocumentForBill(
     },
   });
 
+  let billOfSupplyNumber: string | null = null;
   if (decision.requiresSeparateBillOfSupply) {
-    // Rule 46A allows one combined document only for an UNREGISTERED recipient.
-    // A registered one with both kinds of line is strictly owed two documents.
-    // Logged rather than blocked: refusing to bill a corporate patient over a
-    // paperwork split would be worse than issuing one document and saying so.
-    logger.warn(
-      { tenantId, billId: bill.id, invoiceNumber },
-      'Mixed bill for a GST-registered recipient — a separate bill of supply is strictly required',
-    );
+    // Rule 46A allows one COMBINED document only for an unregistered recipient.
+    // A registered one with both kinds of line is owed two: the taxable lines
+    // on the tax invoice above, the exempt ones on a bill of supply.
+    //
+    // This used to log a warning and issue one document anyway, so a mixed bill
+    // to a corporate or an insurer went out as a Tax Invoice covering exempt
+    // lines it is not allowed to cover.
+    //
+    // One bill, two numbers. The bill is one commercial event with one balance
+    // to settle; splitting it into two bills would double every payment, every
+    // credit note and every report row that keys on a bill.
+    //
+    // Best effort on the second number only: the invoice is already allotted
+    // and the bill already finalised, so failing here would leave a numbered
+    // document half-issued. An unpaired invoice is visible in C-4.
+    try {
+      const bos = await allotDocumentNumber(
+        tx,
+        tenantId,
+        'bill_of_supply',
+        bill.billDate ?? new Date(),
+      );
+      billOfSupplyNumber = bos.invoiceNumber;
+      await tx.bill.update({
+        where: { id: bill.id },
+        data: { billOfSupplyNumber },
+      });
+    } catch (err) {
+      logger.error(
+        { err, tenantId, billId: bill.id, invoiceNumber },
+        'Could not allot the separate bill of supply a registered recipient is owed',
+      );
+    }
   }
 
-  return { documentType: decision.documentType, invoiceNumber };
+  return { documentType: decision.documentType, invoiceNumber, billOfSupplyNumber };
 }

@@ -55,6 +55,8 @@ interface OpBillLike {
   cancellationReason?: string | null;
   gstDocumentType?: string | null;
   invoiceNumber?: string | null;
+  /** Rule 46A's second document, for a registered recipient with mixed lines. */
+  billOfSupplyNumber?: string | null;
   financialYear?: string | null;
   supplierGstin?: string | null;
   supplierStateCode?: string | null;
@@ -153,6 +155,9 @@ export function streamOpBillPdf(
     // always the original; only the phrase changes with the document type.
     subtitle: [
       gst.invoiceNumbers.length ? gst.invoiceNumbers.join(', ') : `Bill ${bill.billNumber}`,
+      // Rule 46A's second document. A registered recipient with both taxable
+      // and exempt lines is owed two, and both numbers belong on the paper.
+      gst.billOfSupplyNumbers.length ? `BoS ${gst.billOfSupplyNumbers.join(', ')}` : null,
       isCancelled ? null : gst.copyMarking,
     ]
       .filter(Boolean)

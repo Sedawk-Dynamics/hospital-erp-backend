@@ -86,6 +86,14 @@ export interface BillDocumentGst {
   documentLabel: string | null;
   /** The consecutive numbers allotted for the financial year. */
   invoiceNumbers: string[];
+  /**
+   * Rule 46A's SECOND document.
+   *
+   * The combined Invoice-cum-Bill of Supply is allowed only for an
+   * unregistered recipient. A registered one with both taxable and exempt lines
+   * is owed two documents, and both numbers belong on the paper.
+   */
+  billOfSupplyNumbers: string[];
   financialYear: string | null;
   supplierGstin: string | null;
   supplierStateCode: string | null;
@@ -135,6 +143,7 @@ export const NO_GST: BillDocumentGst = {
   documentType: null,
   documentLabel: null,
   invoiceNumbers: [],
+  billOfSupplyNumbers: [],
   financialYear: null,
   supplierGstin: null,
   supplierStateCode: null,
@@ -198,6 +207,8 @@ export function buildTaxSummary(lines: GstLine[]): BillTaxSummaryRow[] {
 export interface GstBillHeader {
   gstDocumentType?: string | null;
   invoiceNumber?: string | null;
+  /** Rule 46A's second document, where a registered recipient was owed one. */
+  billOfSupplyNumber?: string | null;
   financialYear?: string | null;
   supplierGstin?: string | null;
   supplierStateCode?: string | null;
@@ -221,6 +232,13 @@ export function buildGstBlock(
   lines: GstLine[],
 ): BillDocumentGst {
   const issued = headers.filter((b) => b.invoiceNumber);
+  // The second document, where a registered recipient was owed one. Both
+  // numbers belong on the paper: the taxable lines are reported under the
+  // invoice and the exempt ones under the bill of supply, and a reader has to
+  // be able to see which is which.
+  const billsOfSupply = headers
+    .map((b) => (b as { billOfSupplyNumber?: string | null }).billOfSupplyNumber)
+    .filter((n): n is string => !!n);
   const primary = issued[0] ?? headers[0] ?? null;
   const taxSummary = buildTaxSummary(lines);
   const totals = lines.reduce(
@@ -256,6 +274,8 @@ export function buildGstBlock(
     documentType,
     documentLabel: documentType ? (DOCUMENT_TYPE_LABELS[documentType] ?? null) : null,
     invoiceNumbers: issued.map((b) => b.invoiceNumber!),
+    /** Rule 46A's second document, for a registered recipient with mixed lines. */
+    billOfSupplyNumbers: billsOfSupply,
     financialYear: primary?.financialYear ?? null,
     supplierGstin: primary?.supplierGstin ?? profile.gstin ?? null,
     supplierStateCode: primary?.supplierStateCode ?? profile.stateCode ?? null,

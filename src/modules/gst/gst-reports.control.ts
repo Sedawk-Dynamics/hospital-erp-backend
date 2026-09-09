@@ -445,7 +445,7 @@ export async function getSeriesContinuity(tenantId: string, query: { financialYe
         invoiceNumber: { not: null },
         ...(query.financialYear ? { financialYear: query.financialYear } : {}),
       },
-      select: { invoiceNumber: true, gstDocumentType: true, financialYear: true, status: true, billDate: true, cancellationReason: true },
+      select: { invoiceNumber: true, billOfSupplyNumber: true, gstDocumentType: true, financialYear: true, status: true, billDate: true, cancellationReason: true },
     }),
     prisma.creditNote.findMany({
       where: { tenantId, ...(query.financialYear ? { financialYear: query.financialYear } : {}) },
@@ -481,6 +481,12 @@ export async function getSeriesContinuity(tenantId: string, query: { financialYe
   };
   for (const b of bills) {
     push(b.gstDocumentType ?? 'unknown', b.financialYear, b.invoiceNumber!, String(b.status), b.billDate, b.cancellationReason);
+    // Rule 46A's second document draws from the bill_of_supply series. Without
+    // this every one of them would read as a burned number there, which is the
+    // same mistake the advance vouchers used to produce.
+    if (b.billOfSupplyNumber) {
+      push('bill_of_supply', b.financialYear, b.billOfSupplyNumber, String(b.status), b.billDate, b.cancellationReason);
+    }
   }
   for (const c of notes) {
     push('credit_note', c.financialYear, c.creditNoteNumber, 'issued', c.issueDate, null);

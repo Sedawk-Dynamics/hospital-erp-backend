@@ -250,7 +250,7 @@ export async function buildAdmissionBillDocument(
         orderBy: { createdAt: 'asc' },
         select: {
           id: true, discountAmount: true, taxAmount: true,
-          gstDocumentType: true, invoiceNumber: true, financialYear: true,
+          gstDocumentType: true, invoiceNumber: true, billOfSupplyNumber: true, financialYear: true,
           supplierGstin: true, supplierStateCode: true, recipientGstin: true,
           placeOfSupplyStateCode: true, isInterState: true,
         },
