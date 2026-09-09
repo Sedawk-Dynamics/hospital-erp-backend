@@ -69,13 +69,27 @@ describe('filePeriod', () => {
     await filePeriod(TENANT, USER, PERIOD);
     const snap = (prisma.gstFiledPeriod.upsert as any).mock.calls[0][0].create.snapshot;
     expect(Object.keys(snap).sort()).toEqual([
-      'capturedAt', 'exemptTurnover', 'gstr1', 'gstr3b', 'hsnSummary', 'itcReversal',
-      'rateSummary', 'reportingDigits',
+      'capturedAt', 'exemptTurnover', 'gstr1', 'gstr1Json', 'gstr3b', 'hsnSummary',
+      'itcReversal', 'rateSummary', 'reportingDigits',
     ]);
     // A month's register is thousands of lines; the figures filed are not.
     expect(snap).not.toHaveProperty('rows');
     expect(snap.gstr3b.outwardTaxable.taxAmount).toBe(400);
     expect(snap.exemptTurnover.exemptTurnover).toBe(100);
+  });
+
+  // Everything else in the snapshot is a total, and a total cannot answer
+  // "which invoice changed" — which is the only question an amendment can be
+  // built from. Only the three amendable sections are kept.
+  it('keeps the document-level sections the amendment tables are built from', async () => {
+    await filePeriod(TENANT, USER, PERIOD);
+    const snap = (prisma.gstFiledPeriod.upsert as any).mock.calls[0][0].create.snapshot;
+    // Null only where the capture itself failed — it is best-effort, because
+    // the totals were the point of the archive before this and remain so.
+    expect(snap).toHaveProperty('gstr1Json');
+    if (snap.gstr1Json) {
+      expect(Object.keys(snap.gstr1Json).sort()).toEqual(['b2b', 'b2cs', 'cdnr']);
+    }
   });
 
   it('refuses a period that ends before it starts', async () => {
