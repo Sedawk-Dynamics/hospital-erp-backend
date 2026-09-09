@@ -6009,6 +6009,17 @@ model Bill {
   /// 'tax_invoice' | 'bill_of_supply' | 'invoice_cum_bill_of_supply'.
   gstDocumentType        String?    @map("gst_document_type") @db.VarChar(30)
   invoiceNumber          String?    @unique @map("invoice_number") @db.VarChar(50)
+  /// The SECOND document a GST-registered recipient is owed.
+  ///
+  /// Rule 46A allows the combined Invoice-cum-Bill of Supply only for an
+  /// UNREGISTERED recipient. A registered one with both taxable and exempt
+  /// lines is strictly owed two documents: the taxable lines on the tax
+  /// invoice above, the exempt ones here.
+  ///
+  /// One bill, two numbers, rather than two bills — the bill is one commercial
+  /// event with one balance to settle, and splitting it would double every
+  /// payment, credit note and report row that keys on a bill.
+  billOfSupplyNumber     String?    @unique @map("bill_of_supply_number") @db.VarChar(50)
   /// "2026-27" — the year the series belongs to.
   financialYear          String?    @map("financial_year") @db.VarChar(7)
   /// Set when the document was issued. Tax figures are read-only after it.
