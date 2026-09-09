@@ -1741,10 +1741,16 @@ export async function getPatientBills(
       // assuming tax is hidden somewhere in the figure.
       billItems: {
         select: {
-          id: true, description: true, totalAmount: true,
+          id: true, description: true, quantity: true, unitPrice: true, totalAmount: true,
           hsnSacCode: true, gstTreatment: true, taxPercent: true,
           taxableValue: true, taxAmount: true,
           cgstAmount: true, sgstAmount: true, igstAmount: true,
+          // The engine's own words for why this line was taxed as it was.
+          // Section 15's control for "a patient questions the GST on their
+          // bill": every line carries the reason, so the counter can answer
+          // without calling accounts — and so can the patient, on their own
+          // screen, without calling the counter.
+          taxReason: true,
         },
       },
       payments: { select: { id: true, amount: true, paymentMethod: true, status: true, paymentDate: true } },
