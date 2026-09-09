@@ -67,6 +67,28 @@ export interface GstLine {
   cessAmount: number;
 }
 
+/**
+ * The taxable value of a line — which an exempt line does not have.
+ *
+ * Rule 46 asks a tax invoice to state "the taxable value of the supply". An
+ * exempt supply has none: it has a VALUE, and that value belongs in the exempt
+ * block of the rate-wise summary and in table 8 of the return, not in the
+ * column the tax was worked out from.
+ *
+ * The store keeps `taxableValue` on every line, exempt ones included, and that
+ * is deliberate — it is the value of the supply, and the reports partition it
+ * by treatment to fill the taxable tables and the exempt table from the one
+ * figure. What must not happen is printing it under a heading that says
+ * "Taxable" beside a cell that says "Exempt": the document then contradicts
+ * itself, and the column no longer sums to the tax below it.
+ *
+ * Null, not zero, so a caller renders a dash rather than a figure that reads as
+ * "this supply was worth nothing".
+ */
+export function taxableValueOf(l: GstLine): number | null {
+  return l.gstTreatment === 'taxable' ? l.taxableValue : null;
+}
+
 /** One rate's worth of the bill, for the rate-wise summary Rule 46 asks for. */
 export interface BillTaxSummaryRow {
   label: string;
@@ -433,12 +455,15 @@ export function gstChargeCells(gst: BillDocumentGst, l: GstLine): string[] {
       gstMoney(l.unitPrice), gstMoney(l.totalAmount),
     ];
   }
+  const taxableValue = taxableValueOf(l);
   const head = [
     particulars,
     dash(l.hsnSac),
     String(l.quantity),
     gstMoney(l.unitPrice),
-    gstMoney(l.taxableValue),
+    // A dash where there is no taxable value. The line's money is still on the
+    // row, in Amount; what is withheld is the claim that it was taxed.
+    taxableValue == null ? DASH : gstMoney(taxableValue),
   ];
   const taxed = l.cgstAmount > 0 || l.igstAmount > 0 || l.taxRatePercent > 0;
   const tax = gst.isInterState
@@ -465,7 +490,9 @@ export function gstGroupTotalCells(
   const tax = gst.isInterState
     ? [gstMoney(sum((l) => l.igstAmount))]
     : [gstMoney(sum((l) => l.cgstAmount)), gstMoney(sum((l) => l.sgstAmount))];
-  return [label, '', '', '', gstMoney(sum((l) => l.taxableValue)), ...tax, gstMoney(total)];
+  // Sums the SAME thing the column above it shows, or the group total would
+  // not foot — the whole point of putting a total under a column.
+  return [label, '', '', '', gstMoney(sum((l) => taxableValueOf(l) ?? 0)), ...tax, gstMoney(total)];
 }
 
 /** The identity fields that go on the face of the document, Rule 46. */
@@ -577,7 +604,7 @@ export function drawGstTaxSummary(
 
   const columns: TableColumn[] = [
     { header: 'Rate', width: 0.2 },
-    { header: 'Taxable Value', width: 0.2, align: 'right' },
+{ header: 'Taxable Value', width: 0.2, align: 'right' },
     ...(gst.isInterState
       ? [{ header: 'IGST', width: 0.2, align: 'right' as const }]
       : [
