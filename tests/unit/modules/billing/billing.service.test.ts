@@ -19,6 +19,7 @@ import {
   adjustAdvanceToBill,
   settleGatewayPayment,
   pullChargesToBill,
+  refreshDraftBillTax,
   getPatientCharges,
   getDrawerStatus,
   closeDrawer,
@@ -1312,6 +1313,64 @@ describe('BillingService', () => {
           data: expect.objectContaining({ totalAmount: 600 }),
         }),
       );
+    });
+  });
+
+  // ═══════════════════════════════════════════
+  // refreshDraftBillTax — a draft says what the rules say TODAY
+  // ═══════════════════════════════════════════
+  describe('refreshDraftBillTax', () => {
+    const roomLine = {
+      id: 'item-room', description: 'Room (primium / Bed P01) — 1 day',
+      category: 'room', quantity: 1, unitPrice: 10000, discountAmount: 0,
+      referenceType: 'admission', referenceId: 'adm-1',
+      hsnSacCode: '996311', gstTreatment: 'exempt', taxPercent: 0, rateSource: 'room_rule',
+    };
+
+    beforeEach(() => {
+      vi.mocked(prisma.billItem.update).mockResolvedValue({ id: 'item-room' } as any);
+      mockRecalculate([]);
+    });
+
+    // A draft was issued to nobody. It should not keep showing an answer that
+    // was corrected since — the reported room read "at or below the ₹5,000/day
+    // threshold" on a ₹10,000/day room long after the fix.
+    it('re-decides a stale room line from the unit price, which IS the daily rate', async () => {
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue({
+        ...mockBillDraft, admissionId: 'adm-1', billItems: [roomLine],
+      } as any);
+
+      const out = await refreshDraftBillTax(TENANT_ID, 'bill-1');
+      expect(out.refreshed).toBe(1);
+      const data = vi.mocked(prisma.billItem.update).mock.calls[0][0].data as Record<string, unknown>;
+      expect(Number(data.taxPercent)).toBe(5);
+      expect(Number(data.taxAmount)).toBe(500);
+      expect(data.gstTreatment).toBe('taxable');
+    });
+
+    // Its figures are what was declared. A correction goes through a credit
+    // note, never by editing the document underneath it.
+    it('refuses to touch a bill that is past draft', async () => {
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue({
+        ...mockBillDraft, status: 'pending', admissionId: 'adm-1', billItems: [roomLine],
+      } as any);
+
+      const out = await refreshDraftBillTax(TENANT_ID, 'bill-1');
+      expect(out).toMatchObject({ refreshed: 0, skipped: 1, status: 'pending' });
+      expect(prisma.billItem.update).not.toHaveBeenCalled();
+    });
+
+    // A typed rate is somebody's decision, recorded in the override log.
+    it('leaves a line somebody typed a rate onto alone', async () => {
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue({
+        ...mockBillDraft,
+        admissionId: 'adm-1',
+        billItems: [{ ...roomLine, rateSource: 'manual' }],
+      } as any);
+
+      const out = await refreshDraftBillTax(TENANT_ID, 'bill-1');
+      expect(out).toMatchObject({ refreshed: 0, skipped: 1 });
+      expect(prisma.billItem.update).not.toHaveBeenCalled();
     });
   });
 
