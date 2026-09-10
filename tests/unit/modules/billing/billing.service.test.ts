@@ -1388,6 +1388,53 @@ describe('BillingService', () => {
       expect(result.skipped).toEqual([]);
     });
 
+    // A room above the threshold is the one place the exemption does not
+    // reach, and the rule is judged on the DAILY rate — not the line total,
+    // and not a rate anybody worked out. The browser rebuilt each charge from
+    // seven fields on the way back, so `dailyRate` never arrived: the engine
+    // saw zero, put the room under the ₹5,000 threshold and billed a
+    // ₹10,000/day room EXEMPT.
+    it('taxes a room above the threshold when the daily rate reaches it', async () => {
+      await pullChargesToBill(TENANT_ID, 'bill-1', [
+        {
+          referenceType: 'admission',
+          referenceId: 'adm-1',
+          description: 'Room (primium / Bed P01) — 1 day',
+          quantity: 1,
+          unitPrice: 10000,
+          category: 'room',
+          dailyRate: 10000,
+          bedType: 'electric',
+          wardType: 'general',
+        },
+      ]);
+
+      const line = vi.mocked(prisma.billItem.create).mock.calls[0][0].data as Record<string, unknown>;
+      expect(Number(line.taxPercent)).toBe(5);
+      expect(Number(line.taxAmount)).toBe(500);
+      expect(line.gstTreatment).toBe('taxable');
+    });
+
+    it('leaves the same room exempt when the daily rate is under the threshold', async () => {
+      await pullChargesToBill(TENANT_ID, 'bill-1', [
+        {
+          referenceType: 'admission',
+          referenceId: 'adm-2',
+          description: 'Room (General B / Bed G01) — 1 day',
+          quantity: 1,
+          unitPrice: 1000,
+          category: 'room',
+          dailyRate: 1000,
+          bedType: 'standard',
+          wardType: 'semi_private',
+        },
+      ]);
+
+      const line = vi.mocked(prisma.billItem.create).mock.calls[0][0].data as Record<string, unknown>;
+      expect(Number(line.taxAmount)).toBe(0);
+      expect(line.gstTreatment).toBe('exempt');
+    });
+
     it('refuses a charge already billed on a DIFFERENT bill', async () => {
       // The per-bill check cannot see this, so the same real-world charge could
       // be billed twice: the lab bills a test at its own counter, then the stay
