@@ -2377,6 +2377,27 @@ interface ChargeRow {
    * breakup; it must never have tax added on top of it.
    */
   taxInclusive?: boolean;
+  /**
+   * The rest of what the tax rules need, carried on the row.
+   *
+   * Several of these were already being SET by the charge builders — the
+   * pharmacy rows have set `isTakeHome` since TTO was wired up — but the type
+   * never declared them, so nothing downstream could read one without a cast
+   * and nobody noticed they were being dropped in transit.
+   */
+  hsnCode?: string | null;
+  sacCode?: string | null;
+  /** Widened to `string` because the OT builder reads it straight off a tariff. */
+  gstTreatment?: string | null;
+  gstApproved?: boolean;
+  /** The patient has an active admission — IP, emergency or day care. */
+  patientAdmitted?: boolean;
+  /** Used ON the patient as part of the treatment, rather than sold to them. */
+  issuedForTreatment?: boolean;
+  /** Discharge medicine. The patient carries it out, so it looks like a sale. */
+  isTakeHome?: boolean;
+  /** A non-therapeutic procedure — taxable whatever the surgery list says. */
+  isCosmetic?: boolean;
   category: string;
   occurredAt: string;
   /** Raw ISO timestamp for chronological sorting (occurredAt is display-only). */
@@ -2815,7 +2836,12 @@ async function getPharmacyCharges(
           purchasePrice: true,
           // The batch's own GST, derived from the drug's HSN code at inward.
           gstPercent: true,
-          drug: { select: { drugName: true, price: true, taxPercent: true } },
+          // The drug's HSN travels with the charge. Without it a pulled
+          // medicine reaches the engine with no code, so it resolves through
+          // the category default and the line carries no HSN at all — which is
+          // what keeps it out of GSTR-1's table 12. It does NOT make a ward
+          // medicine taxable: the composite rule is resolved before the master.
+          drug: { select: { drugName: true, price: true, taxPercent: true, hsnCode: true } },
         },
       },
     },
@@ -2852,6 +2878,7 @@ async function getPharmacyCharges(
       unitPrice: unit,
       totalAmount: total,
       taxRate,
+      hsnCode: (r.drugBatch as any)?.drug?.hsnCode ?? null,
       // Medicine prices are MRP. The pharmacy counter already treats them as
       // tax-inclusive and shows the embedded GST as a breakup; the hospital
       // bill used to add the rate ON TOP of the same MRP, so a ₹100 strip cost
@@ -3778,6 +3805,143 @@ export async function billDiagnosticOrder(
  * referenceType/referenceId set so future pulls won't duplicate). Used by
  * the "Auto-Pull Selected" button on the Billing tab.
  */
+/**
+ * Re-decide the tax on every line of a DRAFT bill.
+ *
+ * A draft has been issued to nobody: no number allotted, no document type, no
+ * tax declared to anyone. So it should say what the rules say TODAY. A
+ * finalised bill is the opposite — its figures are frozen, and a correction to
+ * one goes through a credit note (section 6.10).
+ *
+ * Without this a draft keeps whatever it was stamped with when the line was
+ * added, and every correction made afterwards is invisible on it. Both of the
+ * things that were reported are that:
+ *
+ *   - a ₹10,000/day room pulled while the browser was dropping `dailyRate`
+ *     still read "Exempt: room rent at or below the ₹5,000/day threshold",
+ *     long after the browser started sending it;
+ *   - medicines pulled before their HSN codes were filled in still carried no
+ *     code, so they stayed out of the HSN summary.
+ *
+ * WHERE THE FACTS COME FROM. Not from the stored line — it does not keep the
+ * daily rate, the bed or the ward, and re-resolving a room from the line alone
+ * would see a daily rate of zero all over again. They come from
+ * {@link getPatientCharges}, which is the one place that knows how to build
+ * them, matched back to the line by its reference. A manual line has no
+ * reference and is re-resolved from what it carries.
+ *
+ * A line somebody TYPED a rate onto is left exactly as it is. That is a
+ * deliberate act by a person with the authority to do it, recorded in the rate
+ * override log, and quietly overwriting it would be the one change here nobody
+ * asked for.
+ */
+export async function refreshDraftBillTax(
+  tenantId: string,
+  billId: string,
+): Promise<{ refreshed: number; skipped: number; status: string }> {
+  const bill = await prisma.bill.findFirst({
+    where: { id: billId, tenantId },
+    select: {
+      id: true, status: true, patientId: true, admissionId: true, billDate: true,
+      billItems: {
+        select: {
+          id: true, description: true, category: true, quantity: true,
+          unitPrice: true, discountAmount: true, referenceType: true,
+          referenceId: true, hsnSacCode: true, gstTreatment: true,
+          taxPercent: true, rateSource: true,
+        },
+      },
+    },
+  });
+  if (!bill) throw AppError.notFound('Bill not found');
+  // Anything past draft is a document. Its figures are what was declared.
+  if (bill.status !== 'draft') {
+    return { refreshed: 0, skipped: bill.billItems.length, status: bill.status };
+  }
+  if (bill.billItems.length === 0) return { refreshed: 0, skipped: 0, status: bill.status };
+
+  let charges: ChargeRow[] = [];
+  try {
+    const live = await getPatientCharges(tenantId, {
+      patientId: bill.patientId,
+      includeBilled: true,
+    });
+    charges = live.charges;
+  } catch (err) {
+    // Carry on with none. A line whose answer cannot be decided without its
+    // charge row is skipped below; leaving a KNOWN-WRONG figure in place
+    // because a list would not rebuild helps nobody.
+    logger.warn({ err, tenantId, billId }, 'Could not rebuild charges to refresh a draft');
+  }
+  const byRef = new Map(charges.map((c) => [`${c.referenceType}:${c.referenceId}`, c]));
+
+  const resolver = await taxResolverFor(tenantId, bill.billDate ?? new Date());
+  const isAdmissionBill = !!bill.admissionId;
+  let refreshed = 0;
+  let skipped = 0;
+
+  for (const item of bill.billItems) {
+    // A typed rate is somebody's decision, not the engine's. Leave it.
+    if (item.rateSource === 'manual') {
+      skipped += 1;
+      continue;
+    }
+    const c = item.referenceId ? byRef.get(`${item.referenceType}:${item.referenceId}`) : undefined;
+    // A medicine with no charge row to read cannot be re-priced safely: only
+    // the row knows whether the price is an MRP with the tax already inside
+    // it, and getting that wrong taxes the patient twice on the same rupee.
+    if (!c && item.category === 'pharmacy') {
+      skipped += 1;
+      continue;
+    }
+    const kind = supplyKindForCategory(String(item.category));
+    // Goods resolve through HSN, services through SAC — the engine picks the
+    // master by which of the two it was given. The bill item keeps ONE column
+    // for the code, so putting it in the wrong slot sends a service's SAC to
+    // the HSN master, where it matches nothing and drops to the category
+    // default. Same answer for an exempt consultation, and silently the wrong
+    // one for a taxable SAC like 999319.
+    const isGoods = kind === 'medicine' || kind === 'consumable';
+    const storedCode = item.hsnSacCode ?? null;
+    const priced = resolver.price(
+      {
+        kind,
+        hsnCode: c?.hsnCode ?? (isGoods ? storedCode : null),
+        sacCode: c?.sacCode ?? (isGoods ? null : storedCode),
+        itemRatePercent: c?.taxRate ?? toNumber(item.taxPercent) ?? null,
+        itemTreatment: (c?.gstTreatment as never) ?? null,
+        itemApproved: c?.gstApproved ?? false,
+        taxInclusive: c?.taxInclusive ?? false,
+        // The bill's own nature, exactly as `pullChargesToBill` reads it.
+        patientAdmitted: isAdmissionBill || c?.patientAdmitted,
+        issuedForTreatment: isAdmissionBill || c?.issuedForTreatment,
+        isTakeHome: c?.isTakeHome,
+        isCosmetic: c?.isCosmetic,
+        // On a room line the unit price IS the per-day rate — quantity is
+        // days. The charge row is preferred where there is one, because only
+        // it knows the bed and the ward, and those decide the ICU exemption.
+        dailyRate: c?.dailyRate ?? (item.category === 'room' ? toNumber(item.unitPrice) : undefined),
+        bedType: c?.bedType,
+        wardType: c?.wardType,
+      },
+      {
+        unitPrice: toNumber(item.unitPrice),
+        quantity: item.quantity,
+        discountAmount: toNumber(item.discountAmount),
+      },
+    );
+    await prisma.billItem.update({
+      where: { id: item.id },
+      data: billItemTaxFields(priced),
+    });
+    refreshed += 1;
+  }
+
+  await recalculateBillTotals(bill.id);
+  logger.info({ tenantId, billId, refreshed, skipped }, 'Draft bill tax refreshed');
+  return { refreshed, skipped, status: bill.status };
+}
+
 export async function pullChargesToBill(
   tenantId: string,
   billId: string,
