@@ -190,6 +190,29 @@ export async function getReceiptPdf(
  * The printable OP / counter bill. Read-only, and unlike the receipt it does
  * not need a payment to exist first.
  */
+/**
+ * Re-decide the tax on a DRAFT bill's lines.
+ *
+ * Called when the Generate Bill screen opens one, so a draft assembled before
+ * a classification was corrected does not keep showing the old answer. A bill
+ * past draft is left alone and says so.
+ */
+export async function refreshDraftTax(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await billingService.refreshDraftBillTax(
+      req.user!.tenantId,
+      req.params.id as string,
+    );
+    sendResponse({ res, message: 'Draft tax refreshed', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getBillDocument(
   req: AuthenticatedRequest,
   res: Response,

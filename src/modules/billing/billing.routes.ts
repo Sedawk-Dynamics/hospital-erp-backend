@@ -471,6 +471,16 @@ billingRoutes.delete(
   controller.removeBillItem,
 );
 
+// Re-decide a draft's tax. A write, so it is gated like one — and it can only
+// ever touch a draft, which has been issued to nobody.
+billingRoutes.post(
+  '/:id/refresh-tax',
+  authenticate,
+  requirePermission('billing', 'update'),
+  validate(billIdParamSchema),
+  controller.refreshDraftTax,
+);
+
 billingRoutes.patch(
   '/:id/finalize',
   authenticate,
