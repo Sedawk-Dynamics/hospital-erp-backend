@@ -3825,6 +3825,8 @@ export async function pullChargesToBill(
   if (bill.status !== 'draft') {
     throw AppError.badRequest('Can only auto-pull into draft bills');
   }
+  /** A stay's bill. Everything pulled onto it was supplied during the stay. */
+  const isAdmissionBill = !!bill.admissionId;
 
   // Lab and radiology charges belong to those departments alone.
   //
@@ -3911,8 +3913,17 @@ export async function pullChargesToBill(
             (c.taxRate == null ? null : c.taxRate > 0 ? 'taxable' : null),
           itemApproved: c.gstApproved ?? false,
           taxInclusive: c.taxInclusive ?? false,
-          patientAdmitted: c.patientAdmitted,
-          issuedForTreatment: c.issuedForTreatment,
+          // The BILL's own nature decides whether the patient is admitted, not
+          // the client. A bill raised against an admission is by definition a
+          // supply to an admitted patient in the course of their treatment —
+          // the same reasoning `consolidateAdmissionBill` already applies —
+          // and letting a browser assert otherwise would put 5% on a ward
+          // medicine that the composite supply rule makes exempt.
+          //
+          // A take-home pack still leaves the composite: the rule excludes it
+          // whenever the hospital's `dischargeMedicinesTaxable` setting says so.
+          patientAdmitted: isAdmissionBill || c.patientAdmitted,
+          issuedForTreatment: isAdmissionBill || c.issuedForTreatment,
           isTakeHome: c.isTakeHome,
           isCosmetic: c.isCosmetic,
           dailyRate: c.dailyRate,
