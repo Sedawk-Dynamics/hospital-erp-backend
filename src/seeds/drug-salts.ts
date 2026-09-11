@@ -8,7 +8,7 @@
  * destroyed by a lossy round-trip through a text column.
  *
  * Idempotent. A drug that already has its salts is skipped, so a re-run costs
- * one count per chunk. `force` re-syncs a drug whose composition has changed by
+ * one query. `force` re-syncs a drug whose composition has changed by
  * replacing its rows.
  */
 
@@ -49,6 +49,19 @@ function resolve(norm: string, index: Map<string, string>): string | null {
   return null;
 }
 
+/**
+ * The drugs a sync can change: composition text, and no salt rows yet. One
+ * anti-join over the catalogue; on a settled database it returns nothing.
+ */
+async function unlinkedDrugIds(prisma: PrismaClient): Promise<string[]> {
+  const rows = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT m.id FROM drug_master m
+    WHERE (coalesce(m.salt_composition, '') <> '' OR coalesce(m.generic_name, '') <> '')
+      AND NOT EXISTS (SELECT 1 FROM drug_salts s WHERE s.drug_master_id = m.id)
+    ORDER BY m.id`;
+  return rows.map((r) => r.id);
+}
+
 export async function runDrugSaltSync(
   prisma: PrismaClient,
   opts: { force?: boolean; onProgress?: (done: number) => void } = {},
@@ -64,29 +77,43 @@ export async function runDrugSaltSync(
   }
 
   const unresolved = new Map<string, number>();
+
+  // Normally only the drugs that can gain salts are read. Walking the whole
+  // table to find them cost 23s a boot once the vendor release tripled it, and
+  // 345k of its rows are OTC products with no composition, which never link.
+  // Their ids are read ONCE, up front, rather than paginating "drugs with no
+  // salts": that set shrinks as we write, and paginating a set you are
+  // consuming is what silently skipped 126 rows in the classification backfill
+  // — the cursor row leaves the set and can no longer anchor the next page.
+  // `force` re-syncs every drug, so it walks the whole table by cursor; that
+  // set never shrinks.
+  const pending = opts.force ? null : await unlinkedDrugIds(prisma);
+  let offset = 0;
   let cursor: string | null = null;
 
   for (;;) {
-    // Walk the WHOLE table by cursor and filter in memory, rather than querying
-    // "drugs with no salts" and paginating that. The full table does not shrink
-    // as we write; that filtered set does, and paginating a set you are
-    // consuming is what silently skipped 126 rows in the classification
-    // backfill — the cursor row leaves the set and can no longer anchor the
-    // next page.
-    const drugs: {
-      id: string;
-      saltComposition: string | null;
-      genericName: string | null;
-    }[] = await prisma.drugMaster.findMany({
-      select: { id: true, saltComposition: true, genericName: true },
-      orderBy: { id: 'asc' },
-      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
-      take: CHUNK,
-    });
-    if (!drugs.length) break;
-    cursor = drugs[drugs.length - 1].id;
+    let drugs: { id: string; saltComposition: string | null; genericName: string | null }[];
+    if (pending) {
+      const ids = pending.slice(offset, offset + CHUNK);
+      if (!ids.length) break;
+      offset += ids.length;
+      drugs = await prisma.drugMaster.findMany({
+        where: { id: { in: ids } },
+        select: { id: true, saltComposition: true, genericName: true },
+      });
+    } else {
+      drugs = await prisma.drugMaster.findMany({
+        select: { id: true, saltComposition: true, genericName: true },
+        orderBy: { id: 'asc' },
+        ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+        take: CHUNK,
+      });
+      if (!drugs.length) break;
+      cursor = drugs[drugs.length - 1].id;
+    }
 
-    // Skip drugs already linked, unless we are deliberately re-syncing.
+    // Skip drugs already linked, unless we are deliberately re-syncing. The
+    // pending ids had none when read; this covers another writer since.
     let todo = drugs;
     if (!opts.force) {
       const already = await prisma.drugSalt.findMany({
@@ -155,7 +182,9 @@ export async function runDrugSaltSync(
     }
 
     opts.onProgress?.(totals.scanned);
-    if (drugs.length < CHUNK) break;
+    // A short page ends the cursor walk. The pending list ends when it runs
+    // out instead: a page there is short whenever a drug went away meanwhile.
+    if (!pending && drugs.length < CHUNK) break;
   }
 
   totals.unresolvedNames = [...unresolved.entries()]
