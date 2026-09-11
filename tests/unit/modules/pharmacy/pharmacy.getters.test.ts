@@ -188,6 +188,24 @@ describe('Pharmacy — getters / CRUD / recalls coverage', () => {
       (prisma.drugMaster.findUnique as any).mockResolvedValue({ id: 'm1', isPublished: false });
       await expect(importFormularyItem(TENANT_ID, ADMIN_ROLES, { drugMasterId: 'm1' } as any)).rejects.toThrow('not published');
     });
+
+    // A new catalogue release arrives unclassified and the deploy's pass takes
+    // a while; a drug imported in that window must not reach the formulary
+    // without the schedule the dispensing gate reads.
+    it('labels an unclassified catalogue drug before copying it, so the copy inherits a schedule', async () => {
+      const bare = { id: 'm1', isPublished: true, name: 'Tramazac 50 Capsule', genericName: 'Tramadol (50mg)', dosageForm: 'capsule', packSize: 10, packSizeLabel: 'strip of 10 capsules', mrp: 50, scheduleResolved: null };
+      const labelled = { ...bare, scheduleResolved: 'H1', scheduleReason: 'matched Tramadol', controlledClass: 'psychotropic', vaultControlled: false, requiresQrScan: false };
+      (prisma.drugMaster.findUnique as any).mockResolvedValueOnce(bare).mockResolvedValue(labelled);
+      (prisma.drugFormulary.findFirst as any).mockResolvedValue(null);
+      (prisma.drugFormulary.create as any).mockImplementation(async ({ data }: any) => ({ id: 'd1', ...data }));
+
+      const r = await importFormularyItem(TENANT_ID, ADMIN_ROLES, { drugMasterId: 'm1' } as any);
+
+      // Without the labelling step the insert inherits nothing from a bare row.
+      const data = (prisma.drugFormulary.create as any).mock.calls[0][0].data;
+      expect(data).toMatchObject({ schedule: 'H1', scheduleSource: 'inherited', controlledClass: 'psychotropic' });
+      expect(r.item).toMatchObject({ schedule: 'H1' });
+    });
   });
 
   describe('importFormularyItemsBulk', () => {
@@ -203,6 +221,20 @@ describe('Pharmacy — getters / CRUD / recalls coverage', () => {
       expect(r.requested).toBe(2);
       expect(r.created).toBe(1);
       expect(r.skipped).toBe(1);
+    });
+
+    it('labels unclassified catalogue drugs first, so every copy carries a schedule', async () => {
+      const bare = { id: 'm2', name: 'B', dosageForm: 'tablet', packSize: 10, packSizeLabel: '10', mrp: 20, scheduleResolved: null };
+      (prisma.drugMaster.findMany as any)
+        .mockResolvedValueOnce([bare]) // the pick
+        .mockResolvedValueOnce([{ ...bare, scheduleResolved: 'H', scheduleReason: 'matched' }]); // after labelling
+      (prisma.drugFormulary.findMany as any).mockResolvedValue([]);
+      (prisma.drugFormulary.createMany as any).mockResolvedValue({ count: 1 });
+
+      await importFormularyItemsBulk(TENANT_ID, ADMIN_ROLES, { drugMasterIds: ['m2'] });
+
+      const rows = (prisma.drugFormulary.createMany as any).mock.calls[0][0].data;
+      expect(rows[0]).toMatchObject({ drugMasterId: 'm2', schedule: 'H', scheduleSource: 'inherited' });
     });
   });
 

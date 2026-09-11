@@ -18,6 +18,8 @@ import { issueCreditNoteBestEffort } from '../gst/credit-note.service';
 import { buildGstBlock, treatmentLabelFor, type GstLine } from '../billing/billing.gst-layout';
 import {
   classifyFormularyItem,
+  classifyFormularyItems,
+  classifyDrugMasterItem,
   inheritedScheduleFields,
   affectsClassification,
 } from '../drug-master/drug-schedule.service';
@@ -1348,7 +1350,7 @@ export async function importFormularyItem(
   data: ImportFormularyInput,
 ) {
   assertPharmacyAdmin(roles, 'import drugs into the formulary');
-  const master = await prisma.drugMaster.findUnique({ where: { id: data.drugMasterId } });
+  let master = await prisma.drugMaster.findUnique({ where: { id: data.drugMasterId } });
   if (!master) throw AppError.notFound('Drug not found in catalog');
   if (!master.isPublished) throw AppError.badRequest('Drug is not published in the catalog');
 
@@ -1357,6 +1359,15 @@ export async function importFormularyItem(
     where: { tenantId, drugMasterId: master.id },
   });
   if (existing) return { item: existing, status: 'already_imported' as const };
+
+  // A catalogue row nobody has classified yet — every product of a new release
+  // is, until the deploy's classification pass reaches it — is labelled now, so
+  // the drug never enters a formulary without the schedule the counter's gate
+  // reads. classifyDrugMasterItem never throws.
+  if (!master.scheduleResolved) {
+    await classifyDrugMasterItem(master.id);
+    master = (await prisma.drugMaster.findUnique({ where: { id: master.id } })) ?? master;
+  }
 
   // Prefer the catalog's stored numeric pack size; fall back to resolving it
   // from the free-text label (with a sensible strip default for solids) so the
@@ -1408,11 +1419,19 @@ export async function importFormularyItem(
     },
   });
 
+  // The classifier could not label the catalogue row either: the hospital's
+  // copy is labelled from its own composition, exactly as a hand-added drug is.
+  let saved = item;
+  if (!item.schedule) {
+    const patch = await classifyFormularyItem(item.id);
+    if (patch) saved = { ...item, ...patch } as typeof item;
+  }
+
   logger.info(
     { tenantId, formularyId: item.id, drugMasterId: master.id },
     'Formulary item imported from catalog',
   );
-  return { item, status: 'created' as const };
+  return { item: saved, status: 'created' as const };
 }
 
 /**
@@ -1437,7 +1456,22 @@ export async function importFormularyItemsBulk(
   ]);
 
   const importedSet = new Set(already.map((a) => a.drugMasterId));
-  const toCreate = masters.filter((m) => !importedSet.has(m.id));
+  let toCreate = masters.filter((m) => !importedSet.has(m.id));
+
+  // Label any catalogue row not classified yet before copying it, so the copy
+  // inherits a schedule in its first insert — see importFormularyItem. One at a
+  // time; a bulk pick is tens of rows, not thousands.
+  const unlabelled = toCreate.filter((m) => !m.scheduleResolved).map((m) => m.id);
+  if (unlabelled.length) {
+    for (const id of unlabelled) {
+      // eslint-disable-next-line no-await-in-loop
+      await classifyDrugMasterItem(id);
+    }
+    const relabelled = new Map(
+      (await prisma.drugMaster.findMany({ where: { id: { in: unlabelled } } })).map((m) => [m.id, m]),
+    );
+    toCreate = toCreate.map((m) => relabelled.get(m.id) ?? m);
+  }
 
   if (toCreate.length) {
     await prisma.drugFormulary.createMany({
@@ -1470,6 +1504,17 @@ export async function importFormularyItemsBulk(
         };
       }),
     });
+
+    // A copy whose catalogue drug the classifier still could not label is
+    // labelled from its own composition, as a hand-added drug is.
+    const stillBare = toCreate.filter((m) => !m.scheduleResolved).map((m) => m.id);
+    if (stillBare.length) {
+      const rows = await prisma.drugFormulary.findMany({
+        where: { tenantId, drugMasterId: { in: stillBare }, schedule: null },
+        select: { id: true },
+      });
+      await classifyFormularyItems(rows.map((r) => r.id));
+    }
   }
 
   logger.info(
