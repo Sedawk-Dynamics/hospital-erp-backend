@@ -294,6 +294,24 @@ export async function classifyDrugMasterItem(
           : {}),
       },
     });
+    // Hospitals sell from their formulary row, not this one, so the decision is
+    // passed on to every row that inherits it; a pharmacist's manual schedule
+    // stays. Without this a super admin's edit, or a molecule decided in the
+    // salt review, changed the catalogue and no counter ever saw it: the boot
+    // backfill skips rows already at the current classifier version.
+    await prisma.drugFormulary.updateMany({
+      where: { drugMasterId: id, OR: [{ scheduleSource: null }, { scheduleSource: { not: 'manual' } }] },
+      data: {
+        ...inheritedScheduleFields({
+          scheduleResolved: result.schedule,
+          scheduleReason: result.reason,
+          controlledClass: result.controlledClass,
+          vaultControlled: result.vaultControlled,
+          requiresQrScan: result.requiresQrScan,
+        }),
+        saltsJson: result.salts as unknown as object,
+      },
+    });
   } catch (err) {
     logger.warn({ err, drugMasterId: id }, 'Catalog schedule classification failed; drug left unclassified');
   }

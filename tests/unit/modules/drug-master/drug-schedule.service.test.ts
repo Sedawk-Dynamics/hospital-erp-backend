@@ -216,6 +216,22 @@ describe('classifyDrugMasterItem', () => {
     expect((prisma.drugMaster.update as any).mock.calls[0][0].data).not.toHaveProperty('schedule');
   });
 
+  it('passes the decision on to the hospitals that inherit it, never a manual one', async () => {
+    // The counter reads the formulary row. A decision that stopped at the
+    // catalogue — a super admin's edit, a molecule decided in the salt review —
+    // reached no hospital until the next classifier version.
+    (prisma.drugMaster.findUnique as any).mockResolvedValue({
+      id: 'm1', name: 'Dolo-T', genericName: 'Tramadol (37.5mg)',
+      saltComposition: null, dosageForm: 'tablet',
+    });
+    await classifyDrugMasterItem('m1');
+
+    const arg = (prisma.drugFormulary.updateMany as any).mock.calls[0][0];
+    expect(arg.where.drugMasterId).toBe('m1');
+    expect(JSON.stringify(arg.where)).toContain('manual');
+    expect(arg.data).toMatchObject({ schedule: 'H1', scheduleSource: 'inherited' });
+  });
+
   it('leaves the drug saved when classification fails', async () => {
     (prisma.drugMaster.findUnique as any).mockRejectedValue(new Error('db exploded'));
     await expect(classifyDrugMasterItem('m1')).resolves.toBeUndefined();
