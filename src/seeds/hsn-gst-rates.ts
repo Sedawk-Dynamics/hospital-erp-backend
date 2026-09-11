@@ -133,10 +133,13 @@ async function main() {
     select: { id: true },
   });
   let tagged = 0;
+  let kept = 0;
   let created = 0;
   let absent = 0;
   for (const d of DRUG_TAGS) {
-    // Prefer an existing catalog brand for this generic that isn't tagged yet.
+    // The catalogue brand this medicine resolves to: its exact name, else the
+    // first brand of the generic. Deterministic, so every boot lands on the
+    // same row.
     const existing = await prisma.drugMaster.findFirst({
       where: {
         OR: [
@@ -145,10 +148,14 @@ async function main() {
         ],
       },
       orderBy: { name: 'asc' },
-      select: { id: true, name: true },
+      select: { id: true, name: true, hsnCode: true },
     });
 
-    if (existing) {
+    if (existing?.hsnCode) {
+      // Filled only while blank. This used to overwrite the code on every
+      // boot, so one a platform admin had corrected came back the next start.
+      kept += 1;
+    } else if (existing) {
       await prisma.drugMaster.update({
         where: { id: existing.id },
         data: { hsnCode: normHsn(d.hsn), gstRate: d.gst },
