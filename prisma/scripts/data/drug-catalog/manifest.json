@@ -1,0 +1,115 @@
+{
+  "format": 1,
+  "release": "2026-06",
+  "builtAt": "2026-09-11T06:17:10+00:00",
+  "sources": [
+    "June 2026 DRUGS DATA PART 1 of 2.xlsx",
+    "June 2026 DRUGS DATA PART 2 of 2.xlsx",
+    "June 2026 OTC DATA PART 1 of 1.xlsx"
+  ],
+  "placeholder": "{{name}}",
+  "texts": {
+    "files": [
+      {
+        "file": "texts-001.ndjson.gz",
+        "count": 404861,
+        "sha256": "b77b6e56d3aecbe47c57312d19d96da8cdb085061ccfbc1882fbcd7b472e9503",
+        "bytes": 31944619
+      },
+      {
+        "file": "texts-002.ndjson.gz",
+        "count": 423462,
+        "sha256": "7eb4319c650e5997379c131ee4f8725b298a5b744c457aa55683a3e7cfbebac3",
+        "bytes": 33284613
+      },
+      {
+        "file": "texts-003.ndjson.gz",
+        "count": 6044,
+        "sha256": "61656ecb8add679a9e124ae7085905d586adbdd05e7d8f227052ba30fccf9279",
+        "bytes": 609317
+      }
+    ],
+    "count": 834367
+  },
+  "drugs": {
+    "columns": [
+      "Product ID",
+      "Product Name",
+      "Marketer",
+      "Composition",
+      "medicine_type",
+      "Packaging Detail",
+      "Package",
+      "Qty",
+      "Product Form",
+      "MRP",
+      "prescription_required",
+      "Fact_Box",
+      "primary_use",
+      "storage",
+      "side_effect",
+      "alcoholInteraction",
+      "pregnancyInteraction",
+      "lactationInteraction",
+      "drivingInteraction",
+      "kidneyInteraction",
+      "liverInteraction",
+      "country_of_origin",
+      "@intro",
+      "@benefits",
+      "@howToUse",
+      "@safetyAdvice",
+      "@missedDose",
+      "@faq",
+      "@howItWorks",
+      "@interactions",
+      "@marketer"
+    ],
+    "files": [
+      {
+        "file": "drugs-001.ndjson.gz",
+        "count": 273468,
+        "sha256": "37ef8e37c7216ef71410bc00676cc68c6f6b4085877a425f646e60f50f896651",
+        "bytes": 17842769
+      },
+      {
+        "file": "drugs-002.ndjson.gz",
+        "count": 125622,
+        "sha256": "a5939c5432d3fc09a35995876401e04d593d841d10f5d1fef1121513cb58d5f8",
+        "bytes": 9185013
+      }
+    ],
+    "count": 399090
+  },
+  "otc": {
+    "columns": [
+      "Product ID",
+      "name",
+      "Category",
+      "Marketing Company",
+      "type",
+      "Packaging",
+      "Package",
+      "Qty",
+      "Product Form",
+      "MRP",
+      "country_of_origin",
+      "@highlights",
+      "@information",
+      "@ingredients",
+      "@benefits",
+      "@directions",
+      "@safetyInfo",
+      "@marketer"
+    ],
+    "files": [
+      {
+        "file": "otc-001.ndjson.gz",
+        "count": 344873,
+        "sha256": "ddc35051279bbe0b8172494c56047a5d6247cc3488b87b01a003fc229e795f2a",
+        "bytes": 11413560
+      }
+    ],
+    "count": 344873
+  }
+}

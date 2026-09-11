@@ -9,3 +9,7 @@ coverage/
 .nyc_output/
 uploads
 platform-config.tmp-*
+
+# Vendor drug catalogue workbooks (660 MB). build-drug-catalog.py turns them
+# into prisma/scripts/data/drug-catalog, which is what ships.
+/data/

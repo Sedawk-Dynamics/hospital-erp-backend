@@ -1,0 +1,4 @@
+# The drug catalogue bundle is gzip. The importer refuses any file whose sha256
+# differs from prisma/scripts/data/drug-catalog/manifest.json, so git must never
+# rewrite these bytes (core.autocrlf is on for this repo on Windows).
+prisma/scripts/data/drug-catalog/*.gz binary
