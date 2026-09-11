@@ -127,16 +127,23 @@ export async function decideSalt(
   const salt = await prisma.salt.findUnique({ where: { id: saltId }, select: { id: true, name: true } });
   if (!salt) return null;
 
+  // No schedule means "back to the review queue", not a decision, so it is not
+  // marked manual. The boot seed skips manual molecules for good: one saved
+  // blank used to stay undecided forever, whatever a published list later
+  // said about it.
+  const decided = data.scheduleCode !== null;
   const updated = await prisma.salt.update({
     where: { id: saltId },
     data: {
       scheduleCode: data.scheduleCode,
       ...(data.controlledClass !== undefined ? { controlledClass: data.controlledClass } : {}),
       ...(data.vaultControlled !== undefined ? { vaultControlled: data.vaultControlled } : {}),
-      source: 'manual',
+      source: decided ? 'manual' : null,
       scheduleNote:
         data.note?.trim() ||
-        `Set to ${data.scheduleCode ?? 'undecided'} by a platform administrator.`,
+        (decided
+          ? `Set to ${data.scheduleCode} by a platform administrator.`
+          : 'Returned to the review queue by a platform administrator.'),
       reviewedById: userId,
       reviewedAt: new Date(),
     },
