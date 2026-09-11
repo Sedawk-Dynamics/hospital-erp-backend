@@ -55,8 +55,9 @@ schema separately, use `npm run start:no-provision` instead.
 ### Docker
 The provided `Dockerfile` already does the right thing — its `CMD` runs
 `prisma db push --skip-generate` then the server. Mount a volume for `/app/uploads`
-(uploaded files/DICOM) if you need persistence. The drug-master CSV ships in the
-image under `prisma/scripts/data`, so seeding works with **no internet access**.
+(uploaded files/DICOM) if you need persistence. The vendor drug catalogue ships in
+the image under `prisma/scripts/data/drug-catalog` (~104 MB of gzipped NDJSON plus a
+checksummed manifest), so seeding works with **no internet access**.
 
 ### What gets auto-seeded on boot
 Runs after the server is listening (health checks pass immediately). All steps
@@ -67,8 +68,20 @@ are idempotent; heavy catalogs are skipped once populated.
 - **Catalogs** — lab units, lab test templates, patient form templates, physical
   observation catalog. *Idempotent upserts every boot.*
 - **ICD-10 codes** — seeded once, then skipped.
-- **Drug master** — ~253k rows from the bundled CSV; seeded once (~80s first
-  boot), then skipped. Pack-size/price backfills run right after a fresh import.
+- **Drug catalogue** — the vendor release bundled with the build (June 2026:
+  399,090 drugs + 344,873 OTC products, with their monographs). Imported once per
+  release, then a single query per boot. On a database that still holds the old
+  open dataset, the first boot re-points every hospital formulary row imported
+  from it at the same product in the new catalogue, carries hand-added GTINs/HSNs
+  across, and deletes the old rows; hospital prices and stock are never touched.
+  The salt-master, classification and search-index steps then pick the new
+  products up by themselves. Check the result with `npm run db:check-drug-catalog`.
+  *Measured on a dev machine:* import ~13 min on an empty database (texts ~1.5 min,
+  products ~11 min); on a database holding the old dataset add ~3 min to retire it.
+  Salt linking ~4 min, then classification of all 744K products — 30+ min, in the
+  background, after the server is already answering. Every later boot: one query
+  (5 ms). The server is usable throughout; a catalogue drug imported into a
+  formulary before classification reaches it is classified on the spot.
 - **Imaging modalities** + **role-permission resync** — per-tenant, self-healing
   for tenants created between deploys.
 
