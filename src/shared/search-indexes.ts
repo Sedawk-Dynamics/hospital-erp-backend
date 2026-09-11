@@ -44,7 +44,9 @@ import { logger } from '../config/logger';
  * table → columns searched with `contains`.
  *
  * Costs measured on a real catalogue, one-off per database:
- *   drug_master        3.3s + 7.6s, 36 MB   — the one that matters
+ *   drug_master        26s + 25s + 62s, 71 + 36 + 119 MB — the one that matters.
+ *                      (744K vendor products, built CONCURRENTLY under write
+ *                      load; a rare-term search went 1.1s → 3.6ms)
  *   icd_codes          ~1.3s, 3.9 MB        — 12k rows; 11→4ms, 20→7ms
  *   drug_formulary     ~35ms, 208 kB        — per tenant, grows
  *   inventory_items    ~5ms, 16 kB          — per tenant, grows
@@ -54,7 +56,11 @@ import { logger } from '../config/logger';
  *   disorders          small                 — the existing-disorder picker
  */
 const SEARCH_COLUMNS: Record<string, string[]> = {
-  drug_master: ['name', 'generic_name'],
+  // search_tokens is what the catalogue's multi-word search ANDs over ("para
+  // 500" → every term must appear). Unindexed it was a sequential scan on every
+  // search — tolerable at a quarter of a million rows, ~1.1s at the vendor
+  // catalogue's 744K, and the search waits for its slowest query.
+  drug_master: ['name', 'generic_name', 'search_tokens'],
   drug_formulary: ['drug_name', 'generic_name'],
   inventory_items: ['item_name'],
   patients: ['first_name', 'last_name'],

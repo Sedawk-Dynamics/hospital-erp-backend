@@ -139,6 +139,19 @@ export async function runSeeds(db: PrismaClient): Promise<void> {
   //    doctor happens to mistype first. Idempotent, so restarts are free.
   await step('icd-trgm', () => ensureIcdTrgmReady());
 
+  //    The plain-column trigram indexes every `contains` search rides on —
+  //    patients at the front desk, ICD, formularies, the drug catalogue. Built
+  //    HERE as well as last, because `prisma db push` runs before this server
+  //    on every container start and drops them: they are plain-column GIN
+  //    indexes the schema does not declare, so the push reads them as drift.
+  //    (The lower() expression indexes are invisible to Prisma and survive.)
+  //    Left to the final step, every search sequential-scans until the whole
+  //    pipeline ends — normally a minute, but the boot that imports a catalogue
+  //    release spends 30+ minutes classifying first. Building them before the
+  //    catalogue step means that import and that classification maintain them,
+  //    which is slower background work in exchange for search staying fast.
+  await step('search-indexes (early)', () => ensureSearchIndexes());
+
   // 4. Drug catalogue — the vendor release bundled with this build
   //    (prisma/scripts/data/drug-catalog). One query when the database already
   //    holds it. Otherwise it imports the release (~745k drugs and OTC
@@ -234,8 +247,9 @@ export async function runSeeds(db: PrismaClient): Promise<void> {
   //    because Prisma's `contains` emits `col ILIKE`, which a `lower(col)`
   //    index cannot serve — the everyday drug search was scanning all 254k rows
   //    while three trigram indexes sat there unused. See search-indexes.ts.
-  //    Last, alongside the others, for the same reason: it builds over
-  //    drug_master.
+  //    Already built by the early step above; this pass is the safety net for
+  //    a table the pipeline itself created, or an early build that failed.
+  //    Every statement is IF NOT EXISTS, so it costs a lookup per index.
   await step('search-indexes', () => ensureSearchIndexes());
 }
 
