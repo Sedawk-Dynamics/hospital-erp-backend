@@ -126,6 +126,22 @@ drugMasterRoutes.get(
   requireRoles('super_admin'),
   controller.refreshStatus,
 );
+// Which vendor release this build carries, and which one the database holds.
+drugMasterRoutes.get(
+  '/release',
+  authenticate,
+  requireRoles('super_admin'),
+  controller.getCatalogRelease,
+);
+
+// --- Product monograph (any authenticated user, like search) ---
+// Two path segments, so it can never be captured by the super-admin '/:id'.
+drugMasterRoutes.get(
+  '/:id/monograph',
+  authenticate,
+  validate(drugMasterIdParamSchema),
+  controller.getDrugMonograph,
+);
 
 // --- Super-admin management ---
 drugMasterRoutes.get(

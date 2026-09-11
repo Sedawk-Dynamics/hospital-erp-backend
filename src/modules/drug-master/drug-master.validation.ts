@@ -50,6 +50,8 @@ export const listDrugMasterSchema = z.object({
       .string()
       .transform((v) => v === 'true')
       .optional(),
+    // The vendor catalogue's two halves: prescription drugs and OTC products.
+    type: z.enum(['drug', 'otc']).optional(),
   }),
 });
 

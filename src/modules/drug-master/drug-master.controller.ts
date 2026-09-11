@@ -5,7 +5,7 @@ import { AppError } from '../../shared/appError';
 import * as service from './drug-master.service';
 import * as saltReview from './salt-review.service';
 import * as refresh from './drug-master.refresh';
-import { listProviders } from './drug-master.providers';
+import { DEFAULT_PROVIDER, listProviders } from './drug-master.providers';
 
 export async function searchDrugMaster(
   req: AuthenticatedRequest,
@@ -41,6 +41,31 @@ export async function getDrugMasterById(
   try {
     const drug = await service.getDrugMasterById(req.params.id as string);
     sendResponse({ res, message: 'Drug retrieved', data: drug });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getDrugMonograph(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await service.getDrugMonograph(req.params.id as string);
+    sendResponse({ res, message: 'Drug monograph', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getCatalogRelease(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    sendResponse({ res, message: 'Drug catalogue release', data: await service.getCatalogReleaseStatus() });
   } catch (err) {
     next(err);
   }
@@ -142,7 +167,7 @@ export async function refreshCatalog(
     const provider = typeof req.body?.provider === 'string' ? req.body.provider : undefined;
     const sourceLabel = csvText
       ? `upload:${file?.originalname}`
-      : url ?? provider ?? 'open-dataset';
+      : url ?? provider ?? DEFAULT_PROVIDER;
     const st = refresh.startRefresh({ csvText, url, provider, sourceLabel });
     sendResponse({ res, statusCode: 202, message: 'Catalog refresh started', data: st });
   } catch (err) {

@@ -11,6 +11,14 @@ import { makeMedicineRankComparator, mergePrefixFirst } from '../../shared/medic
 import { fuzzyMatchIds } from '../../shared/medicine-fuzzy';
 import { isGstTreatment, type GstTreatment } from '../../shared/gst';
 import { buildDrugSearchTokens } from './drug-master.dataset';
+import {
+  MONOGRAPH_SECTIONS,
+  renderTemplate,
+  structureSection,
+  type CatalogKind,
+  type SectionBlock,
+} from './drug-catalog.normalize';
+import { getReleaseStatus } from './drug-catalog.release';
 import { gtinVariants, normalizeGtin } from '../pharmacy/pharmacy.barcode';
 import type {
   SearchDrugMasterQuery,
@@ -72,6 +80,9 @@ export async function searchDrugMaster(query: SearchDrugMasterQuery) {
     mrp: true,
     type: true,
     schedule: true,
+    // What the vendor's label says, so a picker can mark OTC and Rx-only.
+    rxRequired: true,
+    productForm: true,
   } as const;
 
   // Wider window so JS relevance ranking can see all near matches; sliced back
@@ -160,6 +171,7 @@ export async function listDrugMaster(query: ListDrugMasterQuery) {
     where.controlledClass = query.controlled ? { not: null } : null;
   }
   if (query.qrTracked !== undefined) where.requiresQrScan = query.qrTracked;
+  if (query.type) where.type = query.type;
 
   const [items, total] = await Promise.all([
     prisma.drugMaster.findMany({ where, skip, take, orderBy: { name: 'asc' } }),
@@ -173,6 +185,54 @@ export async function getDrugMasterById(id: string) {
   const drug = await prisma.drugMaster.findUnique({ where: { id } });
   if (!drug) throw AppError.notFound('Drug not found in catalog');
   return drug;
+}
+
+/**
+ * A catalogue product's label facts and its monograph — the vendor's long
+ * texts with the product's own name put back, as structured blocks so no
+ * screen renders vendor markup. Open to any authenticated user, like search:
+ * it is reference data about a medicine, not about a patient.
+ */
+export async function getDrugMonograph(id: string) {
+  const drug = await prisma.drugMaster.findUnique({
+    where: { id },
+    select: {
+      id: true, name: true, type: true, sourceId: true, sourceRelease: true, monograph: true,
+      genericName: true, saltComposition: true, manufacturer: true, productForm: true,
+      packageType: true, packQuantity: true, packSizeLabel: true, mrp: true, rxRequired: true,
+      habitForming: true, therapeuticClass: true, chemicalClass: true, actionClass: true,
+      productCategory: true, categoryPath: true, storage: true, countryOfOrigin: true,
+      description: true, sideEffects: true, safetyAdvice: true, scheduleResolved: true,
+      isDiscontinued: true,
+    },
+  });
+  if (!drug) throw AppError.notFound('Drug not found in catalog');
+
+  const refs = (drug.monograph && typeof drug.monograph === 'object' ? drug.monograph : {}) as Record<
+    string,
+    unknown
+  >;
+  const ids = Object.values(refs).filter((v): v is number => Number.isInteger(v));
+  const texts = ids.length
+    ? await prisma.drugText.findMany({ where: { id: { in: ids } }, select: { id: true, body: true } })
+    : [];
+  const bodies = new Map(texts.map((t) => [t.id, t.body]));
+  const kind: CatalogKind = drug.type === 'otc' ? 'otc' : 'drug';
+
+  const sections: Array<{ key: string; title: string; block: SectionBlock }> = [];
+  for (const s of MONOGRAPH_SECTIONS[kind]) {
+    const ref = refs[s.key];
+    const body = typeof ref === 'number' ? bodies.get(ref) : undefined;
+    if (body) {
+      sections.push({ key: s.key, title: s.title, block: structureSection(s.key, renderTemplate(body, drug.name)) });
+    }
+  }
+  return { ...drug, monograph: undefined, kind, sections };
+}
+
+/** Which vendor release is bundled with this build, and which the database holds. */
+export function getCatalogReleaseStatus() {
+  return getReleaseStatus(prisma);
 }
 
 /**
