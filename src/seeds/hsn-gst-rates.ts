@@ -67,8 +67,8 @@ const HSN_RATES: HsnSeed[] = [
 
 // Common medicines to tag in the platform DrugMaster catalog with a real HSN +
 // GST, so a catalog pick at inward carries both. Matched to an existing brand by
-// generic name where possible; a canonical row is created if none exists so the
-// data is present even on a catalog-less dev DB.
+// generic name where possible; a canonical row is created only on a database
+// with no vendor catalogue (see main).
 // Only the DosageForm enum values the schema allows (no 'powder' — ORS maps to 'other').
 type DosageFormValue = 'tablet' | 'capsule' | 'syrup' | 'injection' | 'cream' | 'drops' | 'inhaler' | 'other';
 
@@ -120,8 +120,21 @@ async function main() {
   console.log(`  HSN reference: ${refUpserts} rate(s) upserted`);
 
   // 2) Tag common medicines in the DrugMaster catalog with HSN + GST.
+  //
+  // A canonical row is invented only where there is no vendor catalogue. Where
+  // there is one, a row with no Product ID and no author is exactly how the
+  // release recognises the old open dataset: an invented row would be retired
+  // by the next release and re-created by the next boot, unlinking any
+  // formulary row that had picked it in between. Two of the six never match —
+  // the vendor spells it "Amoxycillin", and lists ORS only as branded OTC
+  // products with no generic name.
+  const vendorCatalogue = await prisma.drugMaster.findFirst({
+    where: { sourceId: { not: null } },
+    select: { id: true },
+  });
   let tagged = 0;
   let created = 0;
+  let absent = 0;
   for (const d of DRUG_TAGS) {
     // Prefer an existing catalog brand for this generic that isn't tagged yet.
     const existing = await prisma.drugMaster.findFirst({
@@ -142,9 +155,12 @@ async function main() {
       });
       tagged += 1;
       console.log(`  tagged catalog drug: ${existing.name} → HSN ${d.hsn}, ${d.gst}% GST`);
+    } else if (vendorCatalogue) {
+      absent += 1;
+      console.log(`  not in the catalogue, left untagged: ${d.name}`);
     } else {
-      // Catalog empty (or generic absent) — create a canonical row so the data
-      // exists and the feature is demoable on any DB.
+      // No catalogue at all — create a canonical row so the data exists and the
+      // feature is demoable on any DB.
       await prisma.drugMaster.create({
         data: {
           name: d.name,
@@ -161,7 +177,7 @@ async function main() {
       console.log(`  created catalog drug: ${d.name} → HSN ${d.hsn}, ${d.gst}% GST`);
     }
   }
-  console.log(`  Medicines: ${tagged} tagged, ${created} created`);
+  console.log(`  Medicines: ${tagged} tagged, ${created} created, ${absent} not in the catalogue`);
   console.log('=== done ===');
 }
 
