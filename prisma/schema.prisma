@@ -4218,6 +4218,49 @@ model DrugMaster {
   createdAt         DateTime    @default(now()) @map("created_at")
   updatedAt         DateTime    @default(now()) @updatedAt @map("updated_at")
 
+  // ── Vendor catalogue (see drug-catalog.release.ts) ──
+  // The vendor's own product ID: "DRS003256" for a drug, "DR001826" for an OTC
+  // product. Stable from one monthly drop to the next, so a refresh matches on
+  // it instead of guessing from name + manufacturer + pack. Null on a row a
+  // super admin or a pharmacist added by hand.
+  sourceId          String?     @unique @map("source_id") @db.VarChar(40)
+  // The release that last wrote the row ("2026-06"). A product missing from a
+  // later release is marked discontinued, never deleted — a hospital's
+  // formulary may still point at it.
+  sourceRelease     String?     @map("source_release") @db.VarChar(20)
+  // Fingerprint of everything the vendor supplied for this row, so a refresh
+  // rewrites only the products that actually changed.
+  sourceHash        String?     @map("source_hash") @db.VarChar(32)
+  // The pack as data: "Strip" + "10", "Bottle" + "100 ml". packSizeLabel keeps
+  // the sentence ("strip of 10 tablets") that the pack-size parser reads.
+  packageType       String?     @map("package_type") @db.VarChar(40)
+  packQuantity      String?     @map("pack_quantity") @db.VarChar(40)
+  // The vendor's dosage form, finer than the DosageForm it maps to: "Tablet SR",
+  // "Oral Suspension", "Powder for Injection".
+  productForm       String?     @map("product_form") @db.VarChar(60)
+  // What the vendor's label says. NOT a schedule — the schedule is decided by
+  // the salt master and the classifier, and nothing reads this to gate a sale.
+  rxRequired        Boolean?    @map("rx_required")
+  habitForming      Boolean?    @map("habit_forming")
+  therapeuticClass  String?     @map("therapeutic_class") @db.VarChar(120)
+  chemicalClass     String?     @map("chemical_class") @db.VarChar(255)
+  actionClass       String?     @map("action_class") @db.VarChar(255)
+  // OTC products: the vendor's category ("Vitamins & Nutrition") and where it
+  // sits ("Nutritional Needs > Vitamins & Nutrition").
+  productCategory   String?     @map("product_category") @db.VarChar(120)
+  categoryPath      String?     @map("category_path") @db.VarChar(400)
+  storage           String?     @db.VarChar(120)
+  countryOfOrigin   String?     @map("country_of_origin") @db.VarChar(80)
+  // The vendor's six verdicts: { alcohol, pregnancy, lactation, driving,
+  // kidney, liver } → 'safe' | 'safe_if_prescribed' | 'caution' | 'unsafe' |
+  // 'consult_doctor' | 'not_relevant'. The advice behind them is in `monograph`.
+  safetyAdvice      Json?       @map("safety_advice")
+  // Section → DrugText.id. A drug has { intro, benefits, howToUse, howItWorks,
+  // safetyAdvice, missedDose, interactions, faq, marketer }, an OTC product
+  // { highlights, information, ingredients, benefits, directions, safetyInfo,
+  // marketer }. The prose lives in DrugText because it is shared — see there.
+  monograph         Json?
+
   formularyItems DrugFormulary[]
   /// Structured composition. Replaces parsing `saltComposition` at classify time.
   salts          DrugSalt[]
@@ -4225,6 +4268,61 @@ model DrugMaster {
   @@index([name])
   @@index([scheduleResolved])
   @@map("drug_master")
+}
+
+/// Catalogue prose, stored once and shared by every product that uses it.
+///
+/// The vendor writes one text per molecule or formulation and pastes each
+/// brand's name into it, so 399,090 drugs carry 1.5 GB of prose but only about
+/// 37 MB once the name is taken back out. A text is stored with the product's
+/// name replaced by {{name}}; `renderTemplate` puts it back when the text is
+/// shown, which returns the vendor's words exactly. DrugMaster.monograph points
+/// at these by id.
+///
+/// An integer id on purpose: three-quarters of a million products each hold
+/// several references, and a UUID in every one would cost a couple of hundred
+/// megabytes of JSON for nothing.
+model DrugText {
+  id        Int      @id @default(autoincrement())
+  /// sha256 of the body, first 32 hex characters — how an import recognises a
+  /// text it already has, so the same words are never stored twice.
+  hash      String   @unique @db.VarChar(32)
+  body      String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("drug_texts")
+}
+
+/// One vendor catalogue release applied to drug_master.
+///
+/// Auto-seed compares the release bundled in the image with the last COMPLETE
+/// row here, so a deploy that ships a new release imports it once and every
+/// later boot costs a single query. A row left 'importing' by a crash is simply
+/// picked up again — every phase of the import is idempotent.
+model DrugCatalogRelease {
+  id            String    @id @default(uuid())
+  release       String    @unique @db.VarChar(20)
+  // 'importing' | 'complete' | 'failed'
+  status        String    @db.VarChar(20)
+  sources       String[]  @default([])
+  products      Int       @default(0)
+  inserted      Int       @default(0)
+  updated       Int       @default(0)
+  discontinued  Int       @default(0)
+  texts         Int       @default(0)
+  // Rows of the previous open dataset removed, and what happened to the
+  // hospital formulary rows that had been imported from them.
+  legacyRemoved Int       @default(0) @map("legacy_removed")
+  relinked      Int       @default(0)
+  unlinked      Int       @default(0)
+  // Which hospital drugs lost their catalogue link, and which identity fields
+  // (GTIN, HSN) were carried across — the audit trail for the swap.
+  report        Json?
+  error         String?
+  startedAt     DateTime  @default(now()) @map("started_at")
+  finishedAt    DateTime? @map("finished_at")
+
+  @@map("drug_catalog_releases")
 }
 
 // ============================================================
@@ -5206,6 +5304,11 @@ model DrugFormulary {
   // Drive the catalog schedule filter and the controlled-drug reports.
   @@index([tenantId, schedule])
   @@index([tenantId, controlledClass])
+  // Deleting a catalogue row has to find the formulary rows that point at it
+  // (the FK sets them null). Without this every one of those lookups is a
+  // sequential scan, and a catalogue release retires a quarter of a million
+  // rows at once.
+  @@index([drugMasterId])
   @@map("drug_formulary")
 }
 
