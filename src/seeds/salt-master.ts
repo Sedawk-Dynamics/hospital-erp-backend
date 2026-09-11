@@ -174,7 +174,10 @@ export async function seedSaltMaster(prisma: PrismaClient): Promise<SaltSeedTota
   }
 
   // ── 4. Write the salts ────────────────────────────────────────────────────
-  const existing = await prisma.salt.findMany({ select: { norm: true, source: true, id: true } });
+  // With the facts the classifier reads, so a change can be spotted at the end.
+  const existing = await prisma.salt.findMany({
+    select: { norm: true, source: true, id: true, ...SALT_FACTS },
+  });
   const bySavedNorm = new Map(existing.map((s) => [s.norm, s]));
 
   const classPatterns = classRules
@@ -273,8 +276,71 @@ export async function seedSaltMaster(prisma: PrismaClient): Promise<SaltSeedTota
     }
   }
 
+  // A molecule whose facts just changed — a rule shipped in a release, or one
+  // an administrator returned to the review queue that a published list names
+  // — leaves every drug containing it classified on the old facts, and the
+  // backfill skips rows already at the current classifier version. Marked
+  // stale, they are redone by the classification step that runs next.
+  const changed = await saltsWithChangedFacts(prisma, existing);
+  if (changed.length) {
+    const drugs = await markSaltProductsStale(prisma, changed);
+    logger.info({ salts: changed.length, drugs }, 'Salt facts changed; their drugs will be re-classified');
+  }
+
   logger.info(totals, 'Salt master seeded');
   return totals;
+}
+
+/** The salt columns the classifier reads. A change to any of them re-classifies. */
+const SALT_FACTS = {
+  scheduleCode: true, controlledClass: true, narcoticClass: true, vaultControlled: true,
+  exemptIfCombination: true, maxPerUnitMg: true, maxConcentrationPercent: true,
+  fallbackSchedule: true, topicalExempt: true,
+} as const;
+
+type SaltFacts = Record<keyof typeof SALT_FACTS, unknown>;
+
+/** Decimals compare by value, so both sides go through String(). */
+export function saltFactsChanged(before: SaltFacts, after: SaltFacts): boolean {
+  return (Object.keys(SALT_FACTS) as (keyof typeof SALT_FACTS)[]).some(
+    (k) => String(before[k] ?? null) !== String(after[k] ?? null),
+  );
+}
+
+/** The salts whose facts differ from what was read before the seed wrote. */
+async function saltsWithChangedFacts(
+  prisma: PrismaClient,
+  before: ({ id: string } & SaltFacts)[],
+): Promise<string[]> {
+  const now = await prisma.salt.findMany({ select: { id: true, ...SALT_FACTS } });
+  const byId = new Map(now.map((s) => [s.id, s]));
+  return before
+    .filter((b) => {
+      const after = byId.get(b.id);
+      return after !== undefined && saltFactsChanged(b, after);
+    })
+    .map((b) => b.id);
+}
+
+/**
+ * Mark every drug containing one of these salts for re-classification, and the
+ * hospital formulary rows that inherit from those drugs. A pharmacist's manual
+ * schedule stays.
+ */
+export async function markSaltProductsStale(prisma: PrismaClient, saltIds: string[]): Promise<number> {
+  const containing = { salts: { some: { saltId: { in: saltIds } } } };
+  const drugs = await prisma.drugMaster.updateMany({
+    where: containing,
+    data: { classifierVersion: null },
+  });
+  await prisma.drugFormulary.updateMany({
+    where: {
+      drugMaster: containing,
+      OR: [{ scheduleSource: null }, { scheduleSource: { not: 'manual' } }],
+    },
+    data: { classifierVersion: null },
+  });
+  return drugs.count;
 }
 
 /** Auto-seed entry point. */
