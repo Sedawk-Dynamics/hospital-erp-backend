@@ -126,6 +126,38 @@ describe('cascade — first match wins', () => {
   });
 });
 
+describe('the label, when no molecule is scheduled', () => {
+  // Brivaracetam is named by no schedule: an antiepileptic sold on prescription.
+  it('makes a prescription-only product Schedule H', () => {
+    const r = classify({ genericName: 'Brivaracetam (50mg)', prescriptionOnly: true }, index);
+    expect(r.schedule).toBe('H');
+    expect(r.reason).toMatch(/prescription only/i);
+  });
+
+  it('never outranks a molecule the schedules name', () => {
+    expect(classify({ genericName: 'Metformin (500mg)', prescriptionOnly: true }, index).schedule).toBe('G');
+    expect(classify({ genericName: 'Cefixime (200mg)', prescriptionOnly: true }, index).schedule).toBe('H1');
+  });
+
+  it('leaves the topical exemption Schedule G writes for itself standing', () => {
+    const r = classify(
+      { genericName: 'Chlorpheniramine (4mg)', dosageForm: 'cream', prescriptionOnly: true },
+      index,
+    );
+    expect(r.schedule).toBe('OTC');
+  });
+
+  it('changes nothing without the label', () => {
+    expect(run('Brivaracetam (50mg)').schedule).toBe('OTC');
+  });
+
+  it('treats a prescription-only product with no composition as Schedule H', () => {
+    const r = classify({ brandName: 'Mystery Tablet', genericName: null, prescriptionOnly: true }, index);
+    expect(r.schedule).toBe('H');
+    expect(r.reason).toMatch(/no composition/i);
+  });
+});
+
 describe('multi-salt schedule entries still match the plain molecule', () => {
   it('matches Diclofenac against "Diclofenac Sodium/Potassium/Acid"', () => {
     const r = run('Diclofenac (25mg)');

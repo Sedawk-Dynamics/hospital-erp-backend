@@ -253,7 +253,8 @@ export interface UpsertTotals {
  * composition changes, the drug's salt links and schedule are made stale — and
  * so are the hospital formulary rows that inherit that schedule — so the salt
  * and classification passes that follow redo them instead of keeping an answer
- * worked out from the old ingredients.
+ * worked out from the old ingredients. A change to the prescription flag alone
+ * makes the schedule stale the same way, since the classifier reads the label.
  */
 export async function upsertProducts(
   db: PrismaClient,
@@ -268,7 +269,7 @@ export async function upsertProducts(
     where: { sourceId: { in: withId.map((d) => d.product.sourceId!) } },
     select: {
       id: true, sourceId: true, sourceHash: true, sourceRelease: true, isDiscontinued: true,
-      saltComposition: true, aliases: true, tags: true,
+      saltComposition: true, rxRequired: true, aliases: true, tags: true,
     },
   });
   const bySource = new Map(existing.map((e) => [e.sourceId!, e]));
@@ -295,6 +296,10 @@ export async function upsertProducts(
       continue;
     }
     const compositionChanged = (e.saltComposition ?? null) !== (d.product.saltComposition ?? null);
+    // The label feeds the classifier too, so a flip of the prescription flag
+    // alone is re-classified as well. Only a new composition needs new salts.
+    const reclassify =
+      compositionChanged || (e.rxRequired ?? null) !== (d.product.rxRequired ?? null);
     await db.drugMaster.update({
       where: { id: e.id },
       data: {
@@ -310,11 +315,13 @@ export async function upsertProducts(
         safetyAdvice: jsonOrNull(d.product.safetyAdvice),
         drugInteractions: jsonOrNull(d.drugInteractions),
         monograph: jsonOrNull(d.monograph),
-        ...(compositionChanged ? { classifierVersion: null } : {}),
+        ...(reclassify ? { classifierVersion: null } : {}),
       },
     });
     if (compositionChanged) {
       await db.drugSalt.deleteMany({ where: { drugMasterId: e.id } });
+    }
+    if (reclassify) {
       await db.drugFormulary.updateMany({
         where: {
           drugMasterId: e.id,

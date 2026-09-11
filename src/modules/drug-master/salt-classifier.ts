@@ -70,6 +70,11 @@ export interface SaltClassificationInput {
   dosageForm?: string | null;
   route?: string | null;
   salts: SaltRow[];
+  /**
+   * The product label says prescription only (the vendor catalogue's flag).
+   * Consulted only where the molecules leave the answer open — see below.
+   */
+  prescriptionOnly?: boolean | null;
 }
 
 function isTopical(input: SaltClassificationInput): boolean {
@@ -203,6 +208,24 @@ export function classifyFromSalts(
   if (controlledClass && schedule === 'OTC') {
     schedule = 'H';
     reason = `${matchedRule ?? 'This drug'} is listed in the NDPS Act, 1985, which Schedule H covers as an entry in its own right — so it is a prescription drug.`;
+  }
+
+  // ── The label, where the molecules leave the answer open ──
+  // A molecule nobody has scheduled yet contributes nothing to the cascade, so
+  // a product made of them came out over the counter even when its own label
+  // says prescription only — antiepileptics, statins, antidepressants. Until
+  // someone decides the molecule, the label is the better evidence: Schedule H.
+  // A decided molecule is never overruled; if every molecule has a decision
+  // and none is scheduled, over the counter stands.
+  if (schedule === 'OTC' && input.prescriptionOnly === true) {
+    const undecided = salts.filter((s) => !s.scheduleCode).map((s) => s.name);
+    if (!salts.length) {
+      schedule = 'H';
+      reason = 'Prescription only on the label, and no composition is recorded to check it against — treated as Schedule H.';
+    } else if (undecided.length) {
+      schedule = 'H';
+      reason = `Prescription only on the label, and no schedule has been decided yet for ${undecided.join(', ')} — treated as Schedule H until one is.`;
+    }
   }
 
   const parsed: ParsedSalt[] = salts.map((s) => ({

@@ -232,6 +232,19 @@ describe('classifyDrugMasterItem', () => {
     expect(arg.data).toMatchObject({ schedule: 'H1', scheduleSource: 'inherited' });
   });
 
+  it('reads the product label, so an undecided prescription-only drug is Schedule H', async () => {
+    (prisma.drugMaster.findUnique as any).mockResolvedValue({
+      id: 'm2', name: 'Brivastar 50mg Tablet', genericName: 'Brivaracetam (50mg)',
+      saltComposition: null, dosageForm: 'tablet', rxRequired: true,
+    });
+    (prisma.drugSalt.findMany as any).mockResolvedValue([]);
+    await classifyDrugMasterItem('m2');
+
+    const data = (prisma.drugMaster.update as any).mock.calls[0][0].data;
+    expect(data.scheduleResolved).toBe('H');
+    expect(data.scheduleReason).toMatch(/prescription only/i);
+  });
+
   it('leaves the drug saved when classification fails', async () => {
     (prisma.drugMaster.findUnique as any).mockRejectedValue(new Error('db exploded'));
     await expect(classifyDrugMasterItem('m1')).resolves.toBeUndefined();

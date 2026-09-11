@@ -81,7 +81,10 @@ export async function classifyDrug(
     // formulation, not of any molecule, so it cannot live on a salt row.
     const brandRule = index?.byBrand.get(normaliseBrand(input.brandName));
     return classifyFromSalts(
-      { brandName: input.brandName, dosageForm: input.dosageForm, route: input.route, salts: saltRows },
+      {
+        brandName: input.brandName, dosageForm: input.dosageForm, route: input.route, salts: saltRows,
+        prescriptionOnly: input.prescriptionOnly,
+      },
       { requiresQrScan: Boolean(brandRule), qrFormulation: brandRule?.matchValue ?? null },
     );
   }
@@ -247,7 +250,10 @@ export async function classifyDrugMasterItem(
   try {
     const row = await prisma.drugMaster.findUnique({
       where: { id },
-      select: { id: true, name: true, genericName: true, saltComposition: true, dosageForm: true },
+      select: {
+        id: true, name: true, genericName: true, saltComposition: true, dosageForm: true,
+        rxRequired: true,
+      },
     });
     if (!row) return;
     // The classifier prefers `composition` over `genericName`, and it fills
@@ -267,6 +273,8 @@ export async function classifyDrugMasterItem(
         genericName: row.genericName,
         composition: opts.refreshComposition ? null : row.saltComposition,
         dosageForm: row.dosageForm,
+        // The vendor's label. It decides only where no molecule is scheduled.
+        prescriptionOnly: row.rxRequired,
       },
       { drugMasterId: id },
     );

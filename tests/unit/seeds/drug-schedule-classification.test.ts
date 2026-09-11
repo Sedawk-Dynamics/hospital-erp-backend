@@ -154,6 +154,25 @@ describe('the backfill finishes', () => {
   }, 10_000);
 });
 
+describe('the prescription label', () => {
+  it('is read by the backfill, so an undecided prescription-only drug is not OTC', async () => {
+    const row = {
+      id: 'b1', name: 'Brivastar 50mg Tablet', genericName: 'Brivaracetam (50mg)',
+      saltComposition: null, dosageForm: 'tablet', scheduleResolved: 'OTC',
+      controlledClass: null, vaultControlled: false, requiresQrScan: false,
+      classifierVersion: null, rxRequired: true, salts: [],
+    };
+    (prisma.drugMaster.findMany as any).mockResolvedValue([row]);
+    (prisma.drugMaster.update as any).mockResolvedValue(row);
+
+    await runClassification(prisma, { only: 'master' });
+
+    const data = (prisma.drugMaster.update as any).mock.calls[0][0].data;
+    expect(data.scheduleResolved).toBe('H');
+    expect(data.scheduleReason).toMatch(/prescription only/i);
+  });
+});
+
 describe('composition repair', () => {
   /**
    * An earlier version wrote the composition column without the strengths, and

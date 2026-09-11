@@ -292,7 +292,7 @@ export async function runClassification(
     const select = {
       id: true, name: true, genericName: true, saltComposition: true, dosageForm: true,
       scheduleResolved: true, controlledClass: true, vaultControlled: true,
-      requiresQrScan: true, classifierVersion: true,
+      requiresQrScan: true, classifierVersion: true, rxRequired: true,
       // The structured molecules, so the backfill classifies by join like
       // every other path. Loading them here keeps it to one query per page
       // instead of one per drug.
@@ -327,13 +327,17 @@ export async function runClassification(
         const brandRule = index.byBrand.get(normaliseBrand(row.name));
         const r = saltRows
           ? classifyFromSalts(
-              { brandName: row.name, dosageForm: row.dosageForm, salts: saltRows },
+              {
+                brandName: row.name, dosageForm: row.dosageForm, salts: saltRows,
+                prescriptionOnly: row.rxRequired,
+              },
               { requiresQrScan: Boolean(brandRule), qrFormulation: brandRule?.matchValue ?? null },
             )
           : classify(
               {
                 brandName: row.name, genericName: row.genericName,
                 composition: row.saltComposition, dosageForm: row.dosageForm,
+                prescriptionOnly: row.rxRequired,
               },
               index,
             );

@@ -56,8 +56,11 @@
  * 6 — classification now reads the salt master by join instead of matching the
  *     composition text by name. Same answers everywhere except three
  *     sulphacetamide eye drops, which were under-restrictive before.
+ * 7 — a drug whose label says prescription only is Schedule H, not OTC, while a
+ *     molecule in it has no schedule decided (or it has no composition). A
+ *     decided molecule is never overruled by the label.
  */
-export const CLASSIFIER_VERSION = 6;
+export const CLASSIFIER_VERSION = 7;
 
 export type ScheduleCode = 'X' | 'H1' | 'H' | 'G' | 'H2' | 'OTC';
 export type ControlledClass = 'narcotic' | 'psychotropic';
@@ -137,6 +140,11 @@ export interface ClassificationInput {
   composition?: string | null;
   dosageForm?: string | null;
   route?: string | null;
+  /**
+   * The product label says prescription only (the vendor catalogue's flag).
+   * Used only when no molecule is scheduled — see classify().
+   */
+  prescriptionOnly?: boolean | null;
 }
 
 export interface ClassificationResult {
@@ -506,6 +514,18 @@ export function classify(
     // itself in one sentence, on exactly the drugs where the explanation is
     // read most carefully.
     reason = `${matchedRule ?? 'This drug'} is listed in the NDPS Act, 1985, which Schedule H covers as an entry in its own right — so it is a prescription drug.`;
+  }
+
+  // The label, where the text leaves the answer open. This path runs only when
+  // the molecules are not linked to the salt master, so "nothing matched" says
+  // nothing about whether anyone decided them — a label that says prescription
+  // only wins, as it does for an undecided molecule on the salt path. A rule
+  // that matched and still left it OTC (Schedule G's topical exemption) stands.
+  if (schedule === 'OTC' && input.prescriptionOnly === true && matchedRule === null) {
+    schedule = 'H';
+    reason = salts.length
+      ? 'Prescription only on the label, and no molecule in it is on a schedule — treated as Schedule H until one is decided.'
+      : 'Prescription only on the label, and no composition is recorded to check it against — treated as Schedule H.';
   }
 
   return {

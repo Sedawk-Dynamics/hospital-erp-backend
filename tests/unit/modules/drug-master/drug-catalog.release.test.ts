@@ -8,6 +8,7 @@ import {
   productFingerprint,
   readManifest,
   textHash,
+  upsertProducts,
   type LegacyTarget,
   type ProductDraft,
 } from '../../../../src/modules/drug-master/drug-catalog.release';
@@ -132,6 +133,67 @@ describe('fingerprints', () => {
     expect(textHash('abc')).toMatch(/^[0-9a-f]{32}$/);
     expect(textHash('abc')).toBe(textHash('abc'));
     expect(textHash('abc')).not.toBe(textHash('abd'));
+  });
+});
+
+describe('upsertProducts', () => {
+  const base = normalizeVendorRow('drug', {
+    'Product ID': 'DRS003256',
+    'Product Name': 'Acenac Tablet',
+    Marketer: 'Medley Pharmaceuticals',
+    Composition: 'Aceclofenac (100mg)',
+    'Packaging Detail': 'strip of 10 tablets',
+    MRP: '55.78',
+  })!;
+
+  /** A catalogue holding the product as the last release left it. */
+  function fakeDb(existing: Record<string, unknown>) {
+    const calls: Record<string, any[]> = {};
+    const rec = (name: string, result: unknown) => async (arg: unknown) => {
+      (calls[name] ??= []).push(arg);
+      return result;
+    };
+    const db = {
+      drugMaster: {
+        findMany: rec('drugMaster.findMany', [existing]),
+        update: rec('drugMaster.update', {}),
+        createMany: rec('drugMaster.createMany', { count: 0 }),
+        updateMany: rec('drugMaster.updateMany', { count: 0 }),
+      },
+      drugSalt: { deleteMany: rec('drugSalt.deleteMany', { count: 0 }) },
+      drugFormulary: { updateMany: rec('drugFormulary.updateMany', { count: 0 }) },
+    };
+    return { db: db as never, calls };
+  }
+  const was = (over: Record<string, unknown> = {}) => ({
+    id: 'm1', sourceId: 'DRS003256', sourceHash: 'the old fingerprint',
+    sourceRelease: '2026-06', isDiscontinued: false,
+    saltComposition: base.saltComposition, rxRequired: base.rxRequired ?? null,
+    aliases: [], tags: [],
+    ...over,
+  });
+  const draft = (over: Partial<typeof base> = {}): ProductDraft => ({
+    product: { ...base, ...over },
+    monograph: { intro: 1 },
+    drugInteractions: null,
+  });
+
+  it('re-classifies a drug whose prescription flag flipped, keeping its salts', async () => {
+    const { db, calls } = fakeDb(was({ rxRequired: false }));
+    await upsertProducts(db, [draft({ rxRequired: true })], '2026-07');
+
+    expect(calls['drugMaster.update'][0].data.classifierVersion).toBeNull();
+    expect(calls['drugFormulary.updateMany'][0].data).toEqual({ classifierVersion: null });
+    // Same composition, so the stored molecules are still right.
+    expect(calls['drugSalt.deleteMany']).toBeUndefined();
+  });
+
+  it('keeps the schedule when nothing the classifier reads has changed', async () => {
+    const { db, calls } = fakeDb(was());
+    await upsertProducts(db, [draft({ mrp: 60 })], '2026-07');
+
+    expect(calls['drugMaster.update'][0].data).not.toHaveProperty('classifierVersion');
+    expect(calls['drugFormulary.updateMany']).toBeUndefined();
   });
 });
 

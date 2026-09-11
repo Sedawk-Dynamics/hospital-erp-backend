@@ -65,6 +65,43 @@ describe('the cascade', () => {
   });
 });
 
+describe('the label, where the molecules leave the answer open', () => {
+  // Undecided: nobody has scheduled it yet (scheduleCode NULL).
+  const BRIVARACETAM = salt({ name: 'Brivaracetam', strengthValue: 50, strengthUnit: 'mg' });
+
+  it('makes a prescription-only product Schedule H while a molecule is undecided', () => {
+    const r = classifyFromSalts({ salts: [BRIVARACETAM], prescriptionOnly: true });
+    expect(r.schedule).toBe('H');
+    expect(r.reason).toMatch(/prescription only/i);
+    expect(r.reason).toMatch(/Brivaracetam/);
+  });
+
+  it('never overrules a decided molecule', () => {
+    // Decided over-the-counter, and a Schedule G molecule exempt as topical.
+    const decided = salt({ name: 'Paracetamol', scheduleCode: 'OTC' });
+    expect(classifyFromSalts({ salts: [decided], prescriptionOnly: true }).schedule).toBe('OTC');
+    const cream = classifyFromSalts({ salts: [CHLORPHENIRAMINE], dosageForm: 'cream', prescriptionOnly: true });
+    expect(cream.schedule).toBe('OTC');
+  });
+
+  it('changes nothing without the label', () => {
+    expect(classifyFromSalts({ salts: [BRIVARACETAM] }).schedule).toBe('OTC');
+    expect(classifyFromSalts({ salts: [BRIVARACETAM], prescriptionOnly: false }).schedule).toBe('OTC');
+  });
+
+  it('leaves a scheduled product on its own schedule', () => {
+    const r = classifyFromSalts({ salts: [BRIVARACETAM, TRAMADOL], prescriptionOnly: true });
+    expect(r.schedule).toBe('H1');
+    expect(r.matchedRule).toBe('Tramadol');
+  });
+
+  it('treats a prescription-only product with no composition as Schedule H', () => {
+    const r = classifyFromSalts({ salts: [], prescriptionOnly: true });
+    expect(r.schedule).toBe('H');
+    expect(r.reason).toMatch(/no composition/i);
+  });
+});
+
 describe('Schedule G topical exemption', () => {
   it('exempts a topical preparation', () => {
     const r = classifyFromSalts({ salts: [CHLORPHENIRAMINE], dosageForm: 'cream' });
