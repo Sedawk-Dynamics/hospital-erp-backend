@@ -222,11 +222,18 @@ describe('Pharmacy — feature coverage (G1–G17 + credit gate + GRN gaps)', ()
         { id: 'dr1', quantityDispensed: 2, dispensedAt: new Date(), billId: 'b1',
           patient: { id: 'p1', mrn: 'M1', firstName: 'A', lastName: 'B' },
           dispenser: { id: 'u1', firstName: 'Ph', lastName: 'One' },
-          drugBatch: { batchNumber: 'BN1', drug: { drugName: 'Morphine', drugMaster: { schedule: 'X' } } } },
+          drugBatch: { batchNumber: 'BN1', drug: { drugName: 'Morphine', schedule: 'X' } } },
       ]);
       const r = await getNarcoticRegister(TENANT_ID, {});
       expect(r.total).toBe(1);
       expect(r.items[0]).toMatchObject({ drugName: 'Morphine', schedule: 'X', quantity: 2, patientMrn: 'M1', dispensedBy: 'Ph One' });
+    });
+
+    it("filters on the hospital's own schedule, not the catalogue's empty legacy column", async () => {
+      (prisma.dispensingRecord.findMany as any).mockResolvedValue([]);
+      await getNarcoticRegister(TENANT_ID, { schedule: 'H1' });
+      const { where } = (prisma.dispensingRecord.findMany as any).mock.calls.at(-1)[0];
+      expect(where.drugBatch.drug).toEqual({ schedule: { equals: 'H1' } });
     });
   });
 

@@ -6178,6 +6178,11 @@ const CONTROLLED_SCHEDULES = ['X', 'H1', 'H'];
  * G17: Narcotic / controlled-drug register for a Drug Inspector audit —
  * dispenses of scheduled drugs (Schedule X / H1 / H), filterable by the
  * dispensing user and date range.
+ *
+ * The schedule is the hospital's own formulary row — the classifier's decision
+ * inherited from the catalogue, or a pharmacy admin's override. It used to be
+ * the catalogue's legacy `schedule` column, which nothing fills, so the
+ * register came back empty however many scheduled drugs were sold.
  */
 export async function getNarcoticRegister(
   tenantId: string,
@@ -6187,9 +6192,7 @@ export async function getNarcoticRegister(
     tenantId,
     drugBatch: {
       drug: {
-        drugMaster: {
-          schedule: query.schedule ? { equals: query.schedule } : { in: CONTROLLED_SCHEDULES },
-        },
+        schedule: query.schedule ? { equals: query.schedule } : { in: CONTROLLED_SCHEDULES },
       },
     },
   };
@@ -6213,9 +6216,7 @@ export async function getNarcoticRegister(
       drugBatch: {
         select: {
           batchNumber: true,
-          drug: {
-            select: { drugName: true, drugMaster: { select: { schedule: true } } },
-          },
+          drug: { select: { drugName: true, schedule: true } },
         },
       },
     },
@@ -6227,7 +6228,7 @@ export async function getNarcoticRegister(
     id: r.id,
     date: r.dispensedAt,
     drugName: r.drugBatch?.drug?.drugName ?? '-',
-    schedule: r.drugBatch?.drug?.drugMaster?.schedule ?? null,
+    schedule: r.drugBatch?.drug?.schedule ?? null,
     batchNumber: r.drugBatch?.batchNumber ?? null,
     quantity: r.quantityDispensed,
     patient: r.patient ? `${r.patient.firstName} ${r.patient.lastName ?? ''}`.trim() : null,
