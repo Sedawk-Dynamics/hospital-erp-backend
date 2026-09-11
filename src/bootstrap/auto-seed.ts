@@ -41,8 +41,6 @@ import { ensureIcdTrgmReady } from '../modules/icd/icd-fuzzy';
 import { ensureTrgmReady as ensureMedicineTrgmReady } from '../shared/medicine-fuzzy';
 import { ensureSearchIndexes } from '../shared/search-indexes';
 import { seedDrugMaster } from '../seeds/drug-master';
-import { seedPackSizes } from '../seeds/pack-sizes';
-import { seedPackPrices } from '../seeds/pack-prices';
 import { seedImagingModalities } from '../seeds/imaging-modalities';
 import { seedGstSlabs, seedGstCategoryDefaults } from '../seeds/gst-slabs';
 import { seedHsnGstRates } from '../seeds/hsn-gst-rates';
@@ -141,20 +139,23 @@ export async function runSeeds(db: PrismaClient): Promise<void> {
   //    doctor happens to mistype first. Idempotent, so restarts are free.
   await step('icd-trgm', () => ensureIcdTrgmReady());
 
-  // 4. Drug master — the heavy one (~hundreds of thousands of rows from the
-  //    bundled CSV). Seed only when empty. Pack size/price backfills only make
-  //    sense right after a fresh import, so gate them on that.
-  let drugSeeded = false;
-  const drugCount = await db.drugMaster.count();
-  if (drugCount === 0) {
-    drugSeeded = await step('drug-master', () => seedDrugMaster(db));
-  } else {
-    logger.info(`[auto-seed] ↷ drug-master skipped (${drugCount} present)`);
-  }
-  if (drugSeeded) {
-    await step('pack-sizes', () => seedPackSizes(db));
-    await step('pack-prices', () => seedPackPrices(db));
-  }
+  // 4. Drug catalogue — the vendor release bundled with this build
+  //    (prisma/scripts/data/drug-catalog). One query when the database already
+  //    holds it. Otherwise it imports the release (~745k drugs and OTC
+  //    products), re-points every hospital formulary row that came from the old
+  //    open dataset at the same product, and removes the old rows. The salt,
+  //    schedule and search-index steps below then pick the new products up by
+  //    themselves. See drug-catalog.release.ts.
+  //
+  //    The pack-size and pack-price backfills that used to follow a fresh import
+  //    are gone on purpose. Pack sizes are worked out at import now. The price
+  //    backfill divides a hospital's own price by the pack size whenever it sits
+  //    nearer the catalogue MRP than the per-unit MRP — run after a release it
+  //    would judge hospital prices against the NEW MRPs and could rewrite one a
+  //    hospital set deliberately. Both remain as CLI scripts.
+  await step('drug-catalog', async () => {
+    await seedDrugMaster(db);
+  });
 
   // HSN → GST tax reference — small + idempotent, run every boot so a release
   // that ships new/updated rates picks them up. Also tags a few common catalog
@@ -216,7 +217,7 @@ export async function runSeeds(db: PrismaClient): Promise<void> {
 
   // 6. Trigram indexes for the typo-tolerant medicine / inventory search.
   //    LAST on purpose. Two of the five are GIN indexes over drug_master, which
-  //    is a quarter of a million rows — building them before the import would
+  //    is three-quarters of a million rows — building them before the import would
   //    make the importer maintain an index per row, and building them before
   //    the classification pass would do the same for its updates. Measured on
   //    the real catalog: 5.5s and 8.7s, ~14s for all five, once per database.

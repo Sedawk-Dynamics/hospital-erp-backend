@@ -1,119 +1,63 @@
 import 'dotenv/config';
-import { PrismaClient, Prisma } from '@prisma/client';
-import * as fs from 'fs';
-import * as path from 'path';
-import { parseDrugCsv } from '../modules/drug-master/drug-master.dataset';
-import { refreshDrugMasterFromRows } from '../modules/drug-master/drug-master.refresh';
-import { OPEN_DATASET_RICH_URL } from '../modules/drug-master/drug-master.providers';
+import { PrismaClient } from '@prisma/client';
+import { ensureBundledRelease } from '../modules/drug-master/drug-catalog.release';
+import { seedSalts } from './salt-master';
+import { seedDrugSalts } from './drug-salts';
+import { seedDrugScheduleClassification } from './drug-schedule-classification';
 
 /**
- * Seeds / enriches the platform-wide DrugMaster catalog from the richer Indian
- * medicine dataset (adds salt_composition, description/uses, side_effects,
- * drug_interactions on top of brand/composition/manufacturer/MRP).
+ * The platform drug catalogue: bring the database up to the vendor release
+ * bundled with this build (prisma/scripts/data/drug-catalog).
  *
- *   npm run db:seed:drug-master            # bulk-insert if empty; else ENRICH
- *   npm run db:seed:drug-master -- --force # wipe + reseed
+ *   npm run db:seed:drug-master             # apply the bundled release, if not yet
+ *   npm run db:seed:drug-master -- --force  # re-apply it (only changed rows move)
  *
- * Empty DB → fast bulk insert. Populated DB → link-preserving upsert (enrich)
- * via the refresh engine, so existing ids + hospital drugMasterId links stay.
+ * Costs one query when the release is already in. Otherwise it imports it,
+ * re-points hospital formulary rows imported from the old open dataset at the
+ * same products, and removes the old rows — see drug-catalog.release.ts.
+ *
+ * Run from the CLI, it then does what the auto-seed's later steps would: new
+ * molecules into the salt master, compositions into salt links, schedules.
  */
 
-let prisma!: PrismaClient;
-
-// The dataset CSV lives under prisma/scripts/data (shipped in the Docker image
-// via `COPY prisma ./prisma`). Resolve from the process CWD so it works both in
-// dev (cwd = backend/) and in prod (cwd = /app) regardless of where this
-// compiled module ends up.
-const DATA_DIR = path.resolve(process.cwd(), 'prisma', 'scripts', 'data');
-const CSV_PATH = path.join(DATA_DIR, 'updated_indian_medicine_data.csv');
-const BATCH_SIZE = 5000;
-const FORCE = process.argv.includes('--force');
-
-async function loadCsv(): Promise<string> {
-  if (fs.existsSync(CSV_PATH)) {
-    console.log(`Reading cached CSV: ${CSV_PATH}`);
-    return fs.readFileSync(CSV_PATH, 'utf-8');
-  }
-  console.log(`Downloading richer dataset from ${OPEN_DATASET_RICH_URL} ...`);
-  const res = await fetch(OPEN_DATASET_RICH_URL);
-  if (!res.ok) throw new Error(`Download failed: ${res.status} ${res.statusText}`);
-  const text = await res.text();
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.writeFileSync(CSV_PATH, text, 'utf-8');
-  console.log(`Cached CSV → ${CSV_PATH} (${(text.length / 1e6).toFixed(1)} MB)`);
-  return text;
-}
-
-async function main() {
-  const existing = await prisma.drugMaster.count();
-
-  if (FORCE && existing > 0) {
-    console.log(`--force: clearing import links + ${existing} DrugMaster rows ...`);
-    await prisma.drugFormulary.updateMany({
-      where: { drugMasterId: { not: null } },
-      data: { drugMasterId: null },
-    });
-    await prisma.drugMaster.deleteMany({});
-  }
-
-  const text = await loadCsv();
-  const parsed = parseDrugCsv(text);
-  console.log(`Parsed ${parsed.length} rows from the richer dataset.`);
-
-  const count = await prisma.drugMaster.count();
-  if (count > 0) {
-    // Populated → enrich in place (preserves ids + hospital links).
-    console.log(`Catalog has ${count} rows — enriching with rich detail (preserves links) ...`);
-    const summary = await refreshDrugMasterFromRows(parsed);
-    console.log(`Done. ${JSON.stringify(summary)}`);
-    return;
-  }
-
-  // Empty → fast bulk insert.
-  let inserted = 0;
-  for (let i = 0; i < parsed.length; i += BATCH_SIZE) {
-    const chunk = parsed.slice(i, i + BATCH_SIZE);
-    await prisma.drugMaster.createMany({
-      data: chunk.map((d) => ({
-        name: d.name,
-        genericName: d.genericName,
-        manufacturer: d.manufacturer,
-        type: d.type,
-        dosageForm: d.dosageForm as any,
-        packSizeLabel: d.packSizeLabel,
-        packSize: d.packSize ?? undefined,
-        mrp: d.mrp != null ? new Prisma.Decimal(d.mrp) : null,
-        isDiscontinued: d.isDiscontinued,
-        saltComposition: d.saltComposition,
-        description: d.description,
-        sideEffects: d.sideEffects,
-        drugInteractions: (d.drugInteractions ?? undefined) as any,
-        searchTokens: d.searchTokens,
-        isPublished: true,
-      })),
-    });
-    inserted += chunk.length;
-    process.stdout.write(`\rInserted ${inserted} ...`);
-  }
-  process.stdout.write('\n');
-  console.log(`Done. DrugMaster total: ${await prisma.drugMaster.count()}`);
-}
-
-export async function seedDrugMaster(client?: PrismaClient): Promise<void> {
+/** Returns true when a release was applied. */
+export async function seedDrugMaster(
+  client?: PrismaClient,
+  opts: { force?: boolean; log?: (m: string) => void } = {},
+): Promise<boolean> {
   const owns = !client;
-  prisma = client ?? new PrismaClient();
+  const prisma = client ?? new PrismaClient();
   try {
-    await main();
+    return (await ensureBundledRelease(prisma, opts)) !== null;
   } finally {
     if (owns) await prisma.$disconnect();
   }
 }
 
+/**
+ * What has to follow any write to the catalogue. The auto-seed runs these as
+ * steps of their own; a refresh from the super-admin screen and the CLI call
+ * this. Each is idempotent and cheap once there is nothing left to do.
+ */
+export async function runCatalogFollowUps(db: PrismaClient): Promise<void> {
+  await seedSalts(db);
+  await seedDrugSalts(db);
+  await seedDrugScheduleClassification(db);
+}
+
 if (require.main === module) {
-  seedDrugMaster()
-    .then(() => process.exit(0))
-    .catch((e) => {
-      console.error(e);
+  const prisma = new PrismaClient();
+  const log = (m: string) => console.log(m); // eslint-disable-line no-console
+  seedDrugMaster(prisma, { force: process.argv.includes('--force'), log })
+    .then(async (applied) => {
+      log(applied ? 'Release applied — updating salts and schedules…' : 'Catalogue already at the bundled release.');
+      if (applied || process.argv.includes('--follow-ups')) await runCatalogFollowUps(prisma);
+      await prisma.$disconnect();
+      process.exit(0);
+    })
+    .catch(async (e) => {
+      console.error(e); // eslint-disable-line no-console
+      await prisma.$disconnect();
       process.exit(1);
     });
 }

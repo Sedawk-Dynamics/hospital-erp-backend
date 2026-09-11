@@ -1,7 +1,7 @@
-// Pure helpers for parsing + normalising the Indian medicine dataset
-// (CSV columns: id,name,price(₹),Is_discontinued,manufacturer_name,type,
-// pack_size_label,short_composition1,short_composition2). Shared by the
-// catalog refresh service. NO prisma/io imports so it stays trivially testable.
+// Pure helpers shared by the catalogue import (drug-catalog.normalize.ts), the
+// super-admin create/update path and the formulary import: search tokens, the
+// dosage-form guess from a name, and loose-unit pack sizes. NO prisma/io
+// imports so it stays trivially testable.
 
 export type DosageForm =
   | 'tablet'
@@ -16,7 +16,7 @@ export type DosageForm =
 /**
  * Denormalised lowercase token blob powering catalog search (brand + generic
  * + manufacturer + aliases/tags). Single source of truth for both the
- * create/update service path and the refresh path.
+ * create/update service path and the catalogue import.
  */
 export function buildDrugSearchTokens(input: {
   name?: string | null;
@@ -39,25 +39,10 @@ export function buildDrugSearchTokens(input: {
 }
 
 /**
- * Stable identity for a drug across dataset snapshots. The dataset's numeric
- * `id` is just a row number and isn't stable between versions, so we key on
- * the normalised brand + manufacturer + pack instead. Computed identically for
- * existing DB rows (from their live fields) and incoming CSV rows, so a refresh
- * matches and UPDATES rather than duplicating.
+ * Dosage form guessed from a product's name and pack label. The vendor
+ * catalogue states its form outright (see mapVendorForm); this is the fallback
+ * for a row that does not.
  */
-export function computeSourceKey(
-  name?: string | null,
-  manufacturer?: string | null,
-  packSizeLabel?: string | null,
-): string {
-  const norm = (s?: string | null) =>
-    String(s ?? '')
-      .toLowerCase()
-      .replace(/\s+/g, ' ')
-      .trim();
-  return [norm(name), norm(manufacturer), norm(packSizeLabel)].join('|');
-}
-
 export function inferDosageForm(name: string, pack: string): DosageForm | null {
   const hay = `${name} ${pack}`.toLowerCase();
   if (/\btablet|\btab\b|\bdt\b/.test(hay)) return 'tablet';
@@ -149,14 +134,6 @@ export function inferLooseUnitLabel(
   return null;
 }
 
-export function cleanComposition(a: string, b: string): string | null {
-  const join = [a, b]
-    .map((s) => s.replace(/\s+/g, ' ').trim())
-    .filter(Boolean)
-    .join(' + ');
-  return join || null;
-}
-
 /** Minimal RFC-4180 CSV parser (quoted fields + embedded commas/quotes). */
 export function parseCsv(text: string): string[][] {
   const rows: string[][] = [];
@@ -197,136 +174,4 @@ export function parseCsv(text: string): string[][] {
     rows.push(row);
   }
   return rows;
-}
-
-export interface ParsedDrug {
-  name: string;
-  genericName: string | null;
-  manufacturer: string | null;
-  type: string | null;
-  dosageForm: DosageForm | null;
-  packSizeLabel: string | null;
-  // Numeric base units per pack/strip (e.g. 10), resolved from the label with a
-  // sensible fallback for countable solids. Null = indivisible container.
-  packSize: number | null;
-  mrp: number | null;
-  isDiscontinued: boolean;
-  // Rich clinical detail (present in the richer dataset / provider feeds).
-  saltComposition: string | null;
-  description: string | null;
-  sideEffects: string | null;
-  drugInteractions: unknown | null;
-  searchTokens: string;
-  sourceKey: string;
-}
-
-/**
- * Build a normalised ParsedDrug from arbitrary field inputs — used by non-CSV
- * providers (e.g. a commercial API adapter) so every source produces the same
- * shape (with computed searchTokens + identity sourceKey).
- */
-export function buildParsedDrug(input: {
-  name: string;
-  genericName?: string | null;
-  manufacturer?: string | null;
-  type?: string | null;
-  dosageForm?: DosageForm | null;
-  packSizeLabel?: string | null;
-  mrp?: number | null;
-  isDiscontinued?: boolean;
-  saltComposition?: string | null;
-  description?: string | null;
-  sideEffects?: string | null;
-  drugInteractions?: unknown | null;
-}): ParsedDrug {
-  const name = input.name.trim();
-  const genericName = input.genericName ?? null;
-  const manufacturer = input.manufacturer ?? null;
-  const pack = input.packSizeLabel ?? null;
-  const dosageForm = input.dosageForm ?? inferDosageForm(name, pack ?? '');
-  return {
-    name,
-    genericName,
-    manufacturer,
-    type: input.type ?? null,
-    dosageForm,
-    packSizeLabel: pack,
-    packSize: resolvePackSize(dosageForm, pack),
-    mrp: input.mrp ?? null,
-    isDiscontinued: input.isDiscontinued ?? false,
-    saltComposition: input.saltComposition ?? genericName,
-    description: input.description ?? null,
-    sideEffects: input.sideEffects ?? null,
-    drugInteractions: input.drugInteractions ?? null,
-    searchTokens: buildDrugSearchTokens({ name, genericName, manufacturer }),
-    sourceKey: computeSourceKey(name, manufacturer, pack),
-  };
-}
-
-/** Parse the full dataset CSV into normalised drug rows (header-mapped). */
-export function parseDrugCsv(text: string): ParsedDrug[] {
-  const rows = parseCsv(text);
-  const header = rows.shift() ?? [];
-  const idx = (...names: string[]) =>
-    header.findIndex((h) => names.includes(h.trim().toLowerCase()));
-  const cName = idx('name');
-  const cPriceMatch = idx('price(₹)', 'price', 'mrp');
-  const cPrice = cPriceMatch >= 0 ? cPriceMatch : 2;
-  const cDisc = idx('is_discontinued');
-  const cMfr = idx('manufacturer_name', 'manufacturer');
-  const cType = idx('type');
-  const cPack = idx('pack_size_label');
-  const cComp1 = idx('short_composition1');
-  const cComp2 = idx('short_composition2');
-  // Richer columns (optional — absent in the basic CSV).
-  const cSalt = idx('salt_composition', 'salt');
-  const cDesc = idx('medicine_desc', 'description', 'about');
-  const cSide = idx('side_effects', 'sideeffects');
-  const cInter = idx('drug_interactions', 'interactions');
-
-  const val = (r: string[], i: number) => (i >= 0 ? (r[i] ?? '').trim() : '');
-
-  const out: ParsedDrug[] = [];
-  for (const r of rows) {
-    const name = (r[cName] ?? '').trim();
-    if (!name) continue;
-    const manufacturer = val(r, cMfr) || null;
-    const genericName = cleanComposition(r[cComp1] ?? '', r[cComp2] ?? '');
-    const pack = (r[cPack] ?? '').trim() || null;
-    const priceRaw = (r[cPrice] ?? '').trim();
-    const mrp = priceRaw && !Number.isNaN(Number(priceRaw)) ? Number(priceRaw) : null;
-    const isDiscontinued = (r[cDisc] ?? '').trim().toUpperCase() === 'TRUE';
-    const type = val(r, cType) || null;
-
-    // drug_interactions is a JSON string in the dataset — parse defensively.
-    let drugInteractions: unknown | null = null;
-    const interRaw = val(r, cInter);
-    if (interRaw) {
-      try {
-        drugInteractions = JSON.parse(interRaw);
-      } catch {
-        drugInteractions = null;
-      }
-    }
-
-    const dosageForm = inferDosageForm(name, pack ?? '');
-    out.push({
-      name,
-      genericName,
-      manufacturer,
-      type,
-      dosageForm,
-      packSizeLabel: pack,
-      packSize: resolvePackSize(dosageForm, pack),
-      mrp,
-      isDiscontinued,
-      saltComposition: val(r, cSalt) || genericName,
-      description: val(r, cDesc) || null,
-      sideEffects: val(r, cSide) || null,
-      drugInteractions,
-      searchTokens: buildDrugSearchTokens({ name, genericName, manufacturer }),
-      sourceKey: computeSourceKey(name, manufacturer, pack),
-    });
-  }
-  return out;
 }

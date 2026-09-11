@@ -1,22 +1,17 @@
 import { logger } from '../../config/logger';
-import { parseDrugCsv, buildParsedDrug, type ParsedDrug } from './drug-master.dataset';
+import { normalizeVendorRow, type VendorCsvRow } from './drug-catalog.normalize';
+import { readManifest } from './drug-catalog.release';
 
 // ============================================================
-// Pluggable drug-data providers.
+// Where a catalogue refresh can come from.
 //
-// Each provider knows how to FETCH drug rows from a source and NORMALISE them to
-// ParsedDrug. The catalog refresh upserts whatever a provider yields into our
-// own DrugMaster table — so we always STORE the data and never depend on a live
-// API at request time. Add a new source by implementing DrugProvider and
-// registering it below; the rest of the pipeline (upsert, search, UI) is
-// unchanged.
+// The catalogue is the vendor's, shipped with each build as a release (see
+// drug-catalog.release.ts) and applied on boot. A super admin can also refresh
+// it by hand: re-apply the bundled release, upload a CSV exported from the
+// vendor's workbook, or pull from a licensed API. Every source ends as vendor
+// rows keyed on a Product ID, so a refresh never duplicates a product and
+// never breaks a hospital's link to one.
 // ============================================================
-
-// Richer free dataset (adds salt_composition, description, side_effects,
-// drug_interactions). Prices are ~2022 — replace with a paid provider for
-// current MRP.
-export const OPEN_DATASET_RICH_URL =
-  'https://raw.githubusercontent.com/junioralive/Indian-Medicine-Dataset/main/DATA/updated_indian_medicine_data.csv';
 
 export interface DrugProvider {
   name: string;
@@ -24,44 +19,56 @@ export interface DrugProvider {
   description: string;
   /** Whether this provider can run in the current environment. */
   configured(): boolean;
-  /** Fetch + normalise the full drug list to upsert. */
-  fetchRows(): Promise<ParsedDrug[]>;
+  /**
+   * 'release' re-applies the bundled release as a whole (it may discontinue
+   * products it no longer lists); 'rows' upserts what it returns and nothing
+   * else.
+   */
+  mode: 'release' | 'rows';
+  fetchRows?(): Promise<VendorCsvRow[]>;
 }
 
-async function downloadCsv(url: string): Promise<string> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Download failed: ${res.status} ${res.statusText}`);
-  return res.text();
+function bundledRelease(): string | null {
+  try {
+    return readManifest()?.release ?? null;
+  } catch {
+    return null;
+  }
 }
 
-// ── Provider: open dataset (free, rich) ───────────────────────
-const openDataset: DrugProvider = {
-  name: 'open-dataset',
-  label: 'Open Indian dataset (free · rich)',
+// ── Provider: the release bundled with this build ─────────────
+const bundled: DrugProvider = {
+  name: 'bundled',
+  get label() {
+    const r = bundledRelease();
+    return r ? `Vendor release ${r} (bundled)` : 'Vendor release (bundled)';
+  },
   description:
-    '~254K brands incl. composition, uses, side effects and interactions. Free; prices ~2022.',
-  configured: () => true,
-  fetchRows: async () => parseDrugCsv(await downloadCsv(OPEN_DATASET_RICH_URL)),
+    'The vendor catalogue shipped with this build — drugs and OTC products with composition, pack, MRP, ' +
+    'label and monographs. Re-applying updates changed products, adds new ones and marks the ones it no ' +
+    'longer lists discontinued. Hospital formularies and prices are never touched.',
+  configured: () => bundledRelease() !== null,
+  mode: 'release',
 };
 
 // ── Provider: commercial API (paid, latest) ───────────────────
-// Generic adapter for a licensed Indian drug feed (DataRequisite / PharmaTrac /
-// 1mg-style). Configure via env:
-//   DRUG_API_URL   – base endpoint returning a JSON array (or {data:[...]})
+// Generic adapter for a licensed feed. Configure via env:
+//   DRUG_API_URL   – endpoint returning a JSON array (or {data:[...]})
 //   DRUG_API_KEY   – bearer token / api key
-// Map your provider's field names in `mapRow` below. Not active until both env
-// vars are set, so the system is never *dependent* on it.
+// Map the provider's field names in `mapRow`. A row without a product id is
+// skipped: the id is what lets a later refresh update it instead of adding a
+// second copy.
 const commercialApi: DrugProvider = {
   name: 'commercial-api',
   label: 'Commercial drug API (paid · latest)',
   description:
     'Licensed feed with current MRP + details. Set DRUG_API_URL and DRUG_API_KEY to enable.',
   configured: () => !!process.env.DRUG_API_URL && !!process.env.DRUG_API_KEY,
+  mode: 'rows',
   fetchRows: async () => fetchCommercialApi(),
 };
 
-function mapRow(row: Record<string, unknown>): ParsedDrug | null {
-  // Tolerant field mapping — adjust the alternative names to your provider.
+function mapRow(row: Record<string, unknown>): VendorCsvRow | null {
   const pick = (...keys: string[]): string | null => {
     for (const k of keys) {
       const v = row[k];
@@ -69,33 +76,30 @@ function mapRow(row: Record<string, unknown>): ParsedDrug | null {
     }
     return null;
   };
-  const name = pick('name', 'medicine_name', 'brand', 'product_name');
-  if (!name) return null;
-  const priceRaw = pick('mrp', 'price', 'price(₹)');
-  const mrp = priceRaw && !Number.isNaN(Number(priceRaw.replace(/[^0-9.]/g, '')))
-    ? Number(priceRaw.replace(/[^0-9.]/g, ''))
-    : null;
-  return buildParsedDrug({
-    name,
-    genericName: pick('composition', 'generic', 'salt', 'salt_composition'),
-    manufacturer: pick('manufacturer', 'manufacturer_name', 'company'),
-    type: pick('type', 'category'),
-    packSizeLabel: pick('pack', 'pack_size_label', 'packaging'),
-    mrp,
-    isDiscontinued: String(pick('is_discontinued', 'discontinued') ?? '').toUpperCase() === 'TRUE',
-    saltComposition: pick('salt_composition', 'salt', 'composition'),
-    description: pick('description', 'uses', 'about', 'medicine_desc'),
-    sideEffects: pick('side_effects', 'sideeffects'),
+  const product = normalizeVendorRow('drug', {
+    'Product ID': pick('product_id', 'id', 'sku'),
+    'Product Name': pick('name', 'product_name', 'medicine_name', 'brand'),
+    Marketer: pick('manufacturer', 'marketer', 'manufacturer_name', 'company'),
+    Composition: pick('composition', 'salt_composition', 'generic', 'salt'),
+    'Packaging Detail': pick('pack', 'pack_size_label', 'packaging'),
+    'Product Form': pick('form', 'dosage_form'),
+    MRP: pick('mrp', 'price'),
+    prescription_required: pick('prescription_required', 'rx'),
+    side_effect: pick('side_effects', 'sideeffects'),
+    primary_use: pick('uses', 'primary_use'),
   });
+  if (!product?.sourceId) return null;
+  const about = pick('description', 'about');
+  return { product, texts: about ? { intro: about } : {} };
 }
 
-async function fetchCommercialApi(): Promise<ParsedDrug[]> {
+async function fetchCommercialApi(): Promise<VendorCsvRow[]> {
   const base = process.env.DRUG_API_URL;
   const key = process.env.DRUG_API_KEY;
   if (!base || !key) {
     throw new Error('commercial-api provider is not configured (set DRUG_API_URL + DRUG_API_KEY)');
   }
-  const out: ParsedDrug[] = [];
+  const out: VendorCsvRow[] = [];
   // Page until an empty page; cap to avoid runaway loops.
   for (let page = 1; page <= 5000; page++) {
     const url = `${base}${base.includes('?') ? '&' : '?'}page=${page}`;
@@ -116,9 +120,11 @@ async function fetchCommercialApi(): Promise<ParsedDrug[]> {
 }
 
 export const DRUG_PROVIDERS: Record<string, DrugProvider> = {
-  [openDataset.name]: openDataset,
+  [bundled.name]: bundled,
   [commercialApi.name]: commercialApi,
 };
+
+export const DEFAULT_PROVIDER = bundled.name;
 
 export function getProvider(name: string): DrugProvider | undefined {
   return DRUG_PROVIDERS[name];
