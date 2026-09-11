@@ -78,10 +78,14 @@ are idempotent; heavy catalogs are skipped once populated.
   products up by themselves. Check the result with `npm run db:check-drug-catalog`.
   *Measured on a dev machine:* import ~13 min on an empty database (texts ~1.5 min,
   products ~11 min); on a database holding the old dataset add ~3 min to retire it.
-  Salt linking ~4 min, then classification of all 744K products — 30+ min, in the
-  background, after the server is already answering. Every later boot: one query
-  (5 ms). The server is usable throughout; a catalogue drug imported into a
-  formulary before classification reaches it is classified on the spot.
+  Salt linking ~4 min, then classification of all 744K products, in the
+  background after the server is already answering. That pass keeps the search
+  indexes current as it goes, which is what keeps search fast meanwhile, and it
+  makes the pass slow: ~70 rows/s on the dev machine with the indexes present
+  (~270 rows/s without), so **about 3 hours** for the whole catalogue. Every later
+  boot: 13 s for the whole auto-seed, the catalogue step itself one query (5 ms).
+  The server is usable throughout; a catalogue drug imported into a formulary
+  before classification reaches it is classified on the spot.
 - **Imaging modalities** + **role-permission resync** — per-tenant, self-healing
   for tenants created between deploys.
 
