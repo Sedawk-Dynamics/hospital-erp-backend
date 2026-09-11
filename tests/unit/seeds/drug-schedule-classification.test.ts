@@ -15,12 +15,21 @@ import { CLASSIFIER_VERSION } from '../../../src/modules/drug-master/drug-schedu
  * row is classified before the next page is fetched, so it no longer matches
  * the filter and cannot anchor the next window. On the real catalog that left
  * 126 of 253,987 rows unclassified on every run, scattered across the whole id
- * range. These tests pin the walk, not the classifier (which has its own suite).
+ * range. Taking the first page of the set every time fixed that but re-read
+ * every finished row for each new page — quadratic, 35s a query on the 744K
+ * vendor catalogue. Now the pending ids are read once. These tests pin the
+ * walk, not the classifier (which has its own suite).
  */
 
 const RULES = [
   { scheduleCode: 'H1', matchType: 'salt', matchValue: 'Tramadol', matchNorm: 'tramadol', aliases: [] },
 ];
+
+/** The ids a query is restricted to, if it names any. */
+function idsIn(where: any): Set<string> | null {
+  const hit = [where, ...(where?.AND ?? [])].find((c) => c?.id?.in);
+  return hit ? new Set(hit.id.in) : null;
+}
 
 /** A fake table whose rows leave the filtered set as they are classified. */
 function fakeCatalog(size: number) {
@@ -40,6 +49,8 @@ function fakeCatalog(size: number) {
 
   const findMany = vi.fn(async (args: any) => {
     let pool = rows.filter((r) => r.classifierVersion !== CLASSIFIER_VERSION);
+    const only = idsIn(args?.where);
+    if (only) pool = pool.filter((r) => only.has(r.id));
     if (args?.cursor?.id) {
       // Prisma anchors on the cursor row WITHIN the filtered set. Once that row
       // has been classified it is not in the pool, and the page silently starts
@@ -82,18 +93,38 @@ describe('the backfill finishes', () => {
     expect(cat.classified()).toBe(cat.rows.length);
   });
 
-  it('does not use a cursor while the filter is being consumed', async () => {
+  it('reads the pending set once, then fetches it by id — never by cursor', async () => {
     const cat = fakeCatalog(4000);
     (prisma.drugMaster.findMany as any).mockImplementation(cat.findMany);
     (prisma.drugMaster.update as any).mockImplementation(cat.update);
 
     await runClassification(prisma, { only: 'master' });
 
-    // Every page must be the FIRST page of the shrinking set. A cursor here is
-    // what skipped rows before.
-    for (const call of cat.findMany.mock.calls) {
-      expect(call[0].cursor, 'a write pass must not paginate by cursor').toBeUndefined();
+    const calls = cat.findMany.mock.calls.map((c) => c[0]);
+    // A cursor anchored in a set that is shrinking is what skipped rows before.
+    for (const call of calls) {
+      expect(call.cursor, 'a write pass must not paginate by cursor').toBeUndefined();
     }
+    // Re-reading the shrinking set for every page is what made it quadratic:
+    // one read of the set, then one fetch per 2,000 ids.
+    expect(calls.filter((c) => !idsIn(c.where))).toHaveLength(1);
+    expect(calls.filter((c) => idsIn(c.where))).toHaveLength(2);
+  });
+
+  it('finds a handful of pending rows without re-reading the table', async () => {
+    // A settled catalogue with four rows left, as a monthly release leaves it.
+    const cat = fakeCatalog(10_000);
+    cat.rows.forEach((r, i) => {
+      if (i % 3000 !== 7) r.classifierVersion = CLASSIFIER_VERSION;
+    });
+    (prisma.drugMaster.findMany as any).mockImplementation(cat.findMany);
+    (prisma.drugMaster.update as any).mockImplementation(cat.update);
+
+    const t = await runClassification(prisma, { only: 'master' });
+
+    expect(t.masterScanned).toBe(4);
+    expect(cat.classified()).toBe(10_000);
+    expect(cat.findMany).toHaveBeenCalledTimes(2);
   });
 
   it('DOES use a cursor for a dry run, where nothing leaves the set', async () => {
@@ -109,8 +140,9 @@ describe('the backfill finishes', () => {
     expect(cat.findMany.mock.calls.some((c) => c[0].cursor)).toBe(true);
   });
 
-  it('stops instead of spinning when a page refuses to progress', async () => {
-    // A row that never leaves the set would loop forever without the guard.
+  it('finishes even when a row refuses to leave the set', async () => {
+    // Such a row spun the old first-page walk forever — it needed a guard.
+    // Read once, it is handled once.
     const stuck = [{ id: 'stuck-1', name: 'X', genericName: 'Tramadol (50mg)', saltComposition: null,
       dosageForm: 'tablet', scheduleResolved: null, controlledClass: null, vaultControlled: false,
       requiresQrScan: false, classifierVersion: null }];

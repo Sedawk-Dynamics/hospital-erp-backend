@@ -104,45 +104,51 @@ function unchanged(
 /**
  * Walk a set of rows that SHRINKS as we write to it.
  *
- * The obvious approach — cursor pagination over `classifierVersion != current`
- * — is wrong here, and silently so: each page's cursor row is classified before
- * the next page is fetched, so it no longer matches the filter and cannot
- * anchor the next window. Rows get skipped, scattered across the whole id
- * range. On this database that quietly left 126 of 253,987 catalog rows behind
- * on every run.
+ * Paginating the filtered set itself goes wrong both ways it can be done. By
+ * cursor, silently: each page's cursor row is classified before the next page
+ * is fetched, so it no longer matches the filter and cannot anchor the next
+ * window — that quietly left 126 of 253,987 catalog rows behind on every run.
+ * By always taking the FIRST page, slowly: every row already done still sits in
+ * front of the next page in id order, so each query walks past all of them
+ * again, and the pass turns quadratic. Measured on the 744K vendor catalogue,
+ * one page query with nothing left to find walked every row — 35s — and a
+ * page near the end of a pass walks nearly as far.
  *
- * When the filter is being consumed, take the FIRST chunk each time instead:
- * processed rows drop out of the set, so the window advances by itself. The
- * guard catches the one way that can fail — a chunk that changes nothing,
- * which would otherwise spin forever.
+ * So the ids are read ONCE, up front, and handled a chunk at a time by primary
+ * key. Each chunk re-applies the filter, so a row another writer settled in the
+ * meantime is skipped; one that became pending meanwhile waits for the next run.
  *
- * With `force` the filter is empty and nothing leaves the set, so a cursor is
- * the correct tool there and is used instead.
+ * With `force` or a dry run nothing leaves the set, so a cursor is the correct
+ * tool there — the only one a dry run has, since it writes nothing.
  */
-async function forEachPending<T extends { id: string }>(
-  fetch: (cursor?: string) => Promise<T[]>,
-  handle: (row: T) => Promise<void>,
-  useCursor: boolean,
-  // Runs after each page, BEFORE the next fetch — the page's writes have to
-  // land first, or its rows would still match the filter and come back.
-  afterPage?: () => Promise<void>,
-): Promise<void> {
-  let cursor: string | undefined;
-  let lastFirstId: string | undefined;
-  for (;;) {
-    const rows = await fetch(useCursor ? cursor : undefined);
-    if (!rows.length) return;
-
-    if (!useCursor && rows[0].id === lastFirstId) {
-      // The same page came back untouched — every row in it failed to leave the
-      // set. Stop rather than spin; the next run will retry them.
-      // eslint-disable-next-line no-console
-      console.warn(`  stopped early: ${rows.length} row(s) did not progress (first ${rows[0].id})`);
-      return;
+async function forEachPending<T extends { id: string }>(walk: {
+  /** Every pending id, read once. */
+  readIds: () => Promise<string[]>;
+  /** The rows for a chunk of those ids, filter re-applied. */
+  fetchIds: (ids: string[]) => Promise<T[]>;
+  /** The page after `cursor`, for a set that does not shrink. */
+  fetchAfter: (cursor?: string) => Promise<T[]>;
+  useCursor: boolean;
+  handle: (row: T) => Promise<void>;
+  // Runs after each page, before the next fetch: the page's writes are
+  // committed together (see writeQueue).
+  afterPage?: () => Promise<void>;
+}): Promise<void> {
+  const { handle, afterPage } = walk;
+  if (walk.useCursor) {
+    let cursor: string | undefined;
+    for (;;) {
+      const rows = await walk.fetchAfter(cursor);
+      if (!rows.length) return;
+      cursor = rows[rows.length - 1].id;
+      for (const row of rows) await handle(row);
+      if (afterPage) await afterPage();
     }
-    lastFirstId = rows[0].id;
-    cursor = rows[rows.length - 1].id;
+  }
 
+  const ids = await walk.readIds();
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const rows = await walk.fetchIds(ids.slice(i, i + CHUNK));
     for (const row of rows) await handle(row);
     if (afterPage) await afterPage();
   }
@@ -283,26 +289,37 @@ export async function runClassification(
   // ── platform catalog ─────────────────────────────────────────────────────
   if (opts.only !== 'formulary') {
     const writes = writeQueue(prisma);
-    await forEachPending(
-      (cursor) => prisma.drugMaster.findMany({
+    const select = {
+      id: true, name: true, genericName: true, saltComposition: true, dosageForm: true,
+      scheduleResolved: true, controlledClass: true, vaultControlled: true,
+      requiresQrScan: true, classifierVersion: true,
+      // The structured molecules, so the backfill classifies by join like
+      // every other path. Loading them here keeps it to one query per page
+      // instead of one per drug.
+      salts: {
+        select: { saltId: true, strengthValue: true, strengthUnit: true, perVolumeValue: true },
+        orderBy: { position: 'asc' },
+      },
+    } satisfies Prisma.DrugMasterSelect;
+    await forEachPending({
+      readIds: async () =>
+        (await prisma.drugMaster.findMany({ where: staleOnly as never, select: { id: true } })).map((r) => r.id),
+      fetchIds: (ids: string[]) => prisma.drugMaster.findMany({
+        where: { AND: [staleOnly, { id: { in: ids } }] } as never,
+        select,
+        orderBy: { id: 'asc' },
+      }),
+      fetchAfter: (cursor?: string) => prisma.drugMaster.findMany({
         where: staleOnly as never,
-        select: {
-          id: true, name: true, genericName: true, saltComposition: true, dosageForm: true,
-          scheduleResolved: true, controlledClass: true, vaultControlled: true,
-          requiresQrScan: true, classifierVersion: true,
-          // The structured molecules, so the backfill classifies by join like
-          // every other path. Loading them here keeps it to one query per page
-          // instead of one per drug.
-          salts: {
-            select: { saltId: true, strengthValue: true, strengthUnit: true, perVolumeValue: true },
-            orderBy: { position: 'asc' },
-          },
-        },
+        select,
         orderBy: { id: 'asc' },
         ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
         take: CHUNK,
       }),
-      async (row) => {
+      // A dry run writes nothing, so the filter never shrinks — the cursor is
+      // the only thing that can advance it.
+      useCursor: Boolean(opts.force || opts.dryRun),
+      handle: async (row) => {
         // Prefer the salt join; fall back to parsing the text only when this
         // drug has no structured molecules yet (a fresh import, or a molecule
         // the salt master does not cover).
@@ -347,41 +364,48 @@ export async function runClassification(
           },
         }));
       },
-      // A dry run writes nothing, so the filter never shrinks — the cursor is
-      // the only thing that can advance it.
-      Boolean(opts.force || opts.dryRun),
-      writes.flush,
-    );
+      afterPage: writes.flush,
+    });
   }
 
   // ── hospital formularies ─────────────────────────────────────────────────
   if (opts.only !== 'master') {
     const writes = writeQueue(prisma);
-    await forEachPending(
-      (cursor) => prisma.drugFormulary.findMany({
-        where: {
-          ...(opts.tenantId ? { tenantId: opts.tenantId } : {}),
-          AND: [
-            { OR: [{ scheduleSource: null }, { scheduleSource: { not: 'manual' } }] },
-            ...(opts.force ? [] : [staleOnly]),
-          ],
-        } as never,
+    const where = {
+      ...(opts.tenantId ? { tenantId: opts.tenantId } : {}),
+      AND: [
+        { OR: [{ scheduleSource: null }, { scheduleSource: { not: 'manual' } }] },
+        ...(opts.force ? [] : [staleOnly]),
+      ],
+    };
+    const select = {
+      id: true, drugName: true, genericName: true, composition: true, dosageForm: true,
+      drugMasterId: true, schedule: true, controlledClass: true, vaultControlled: true,
+      requiresQrScan: true, classifierVersion: true,
+      drugMaster: {
         select: {
-          id: true, drugName: true, genericName: true, composition: true, dosageForm: true,
-          drugMasterId: true, schedule: true, controlledClass: true, vaultControlled: true,
-          requiresQrScan: true, classifierVersion: true,
-          drugMaster: {
-            select: {
-              scheduleResolved: true, scheduleReason: true, controlledClass: true,
-              vaultControlled: true, requiresQrScan: true, saltsJson: true,
-            },
-          },
+          scheduleResolved: true, scheduleReason: true, controlledClass: true,
+          vaultControlled: true, requiresQrScan: true, saltsJson: true,
         },
+      },
+    } satisfies Prisma.DrugFormularySelect;
+    await forEachPending({
+      readIds: async () =>
+        (await prisma.drugFormulary.findMany({ where: where as never, select: { id: true } })).map((r) => r.id),
+      fetchIds: (ids: string[]) => prisma.drugFormulary.findMany({
+        where: { AND: [where, { id: { in: ids } }] } as never,
+        select,
+        orderBy: { id: 'asc' },
+      }),
+      fetchAfter: (cursor?: string) => prisma.drugFormulary.findMany({
+        where: where as never,
+        select,
         orderBy: { id: 'asc' },
         ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
         take: CHUNK,
       }),
-      async (row) => {
+      useCursor: Boolean(opts.force || opts.dryRun),
+      handle: async (row) => {
         // A catalog-linked drug inherits the platform decision, so the same
         // product never carries two different schedules in two hospitals.
         const inherited = row.drugMasterId && row.drugMaster?.scheduleResolved;
@@ -433,9 +457,8 @@ export async function runClassification(
           },
         }));
       },
-      Boolean(opts.force || opts.dryRun),
-      writes.flush,
-    );
+      afterPage: writes.flush,
+    });
   }
 
   return totals;
