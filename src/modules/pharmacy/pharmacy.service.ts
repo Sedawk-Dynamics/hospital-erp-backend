@@ -83,7 +83,7 @@ import { fullName } from '../../shared/person-name';
 // owns inventory management across drugs + consumables.
 const PHARMACY_ADMIN_ROLES = new Set(['super_admin', 'admin', 'pharmacy_admin', 'inventory_manager']);
 
-function assertPharmacyAdmin(roles: string[], action = 'manage pharmacy master data'): void {
+export function assertPharmacyAdmin(roles: string[], action = 'manage pharmacy master data'): void {
   if (!roles.some((r) => PHARMACY_ADMIN_ROLES.has(r))) {
     throw AppError.forbidden(`Only a pharmacy admin can ${action}.`);
   }

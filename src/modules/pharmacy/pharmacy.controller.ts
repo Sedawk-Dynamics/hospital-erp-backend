@@ -822,12 +822,15 @@ export async function updateFormularyItem(
 
 // Correct the schedule the classifier resolved for one drug. The override is
 // permanent: it marks the row 'manual', which the backfill skips forever.
+// Pharmacy admins only. A pharmacist holds pharmacy:update so it can dispense,
+// and that alone let it take a drug off Schedule H at its own counter.
 export async function overrideFormularySchedule(
   req: AuthenticatedRequest,
   res: Response,
   next: NextFunction,
 ) {
   try {
+    pharmacyService.assertPharmacyAdmin(req.user!.roles ?? [], "change a drug's schedule");
     const item = await overrideSchedule(
       req.user!.tenantId,
       req.params.id as string,
