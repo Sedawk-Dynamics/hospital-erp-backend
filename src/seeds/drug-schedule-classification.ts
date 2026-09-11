@@ -25,7 +25,7 @@
  * implementation rather than two that can drift.
  */
 
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
 import {
   buildRuleIndex,
   classify,
@@ -123,6 +123,9 @@ async function forEachPending<T extends { id: string }>(
   fetch: (cursor?: string) => Promise<T[]>,
   handle: (row: T) => Promise<void>,
   useCursor: boolean,
+  // Runs after each page, BEFORE the next fetch — the page's writes have to
+  // land first, or its rows would still match the filter and come back.
+  afterPage?: () => Promise<void>,
 ): Promise<void> {
   let cursor: string | undefined;
   let lastFirstId: string | undefined;
@@ -141,7 +144,30 @@ async function forEachPending<T extends { id: string }>(
     cursor = rows[rows.length - 1].id;
 
     for (const row of rows) await handle(row);
+    if (afterPage) await afterPage();
   }
+}
+
+/**
+ * One commit per page instead of one per row. The statements are exactly the
+ * ones the per-row version ran; only the commits are batched, and every commit
+ * waits for the WAL to be flushed — cheap on a local disk, not on the network
+ * storage of a managed database, where a vendor release means classifying
+ * three-quarters of a million rows in one pass. Prisma queries are lazy until
+ * awaited, so the handlers queue them here and the page's `afterPage` sends
+ * them together, before the next page is fetched.
+ */
+function writeQueue(prisma: PrismaClient) {
+  const queue: Prisma.PrismaPromise<unknown>[] = [];
+  return {
+    push: (q: Prisma.PrismaPromise<unknown>) => {
+      queue.push(q);
+    },
+    flush: async () => {
+      if (!queue.length) return;
+      await prisma.$transaction(queue.splice(0));
+    },
+  };
 }
 
 /** How much work is outstanding — one cheap query, so a settled boot is free. */
@@ -256,6 +282,7 @@ export async function runClassification(
 
   // ── platform catalog ─────────────────────────────────────────────────────
   if (opts.only !== 'formulary') {
+    const writes = writeQueue(prisma);
     await forEachPending(
       (cursor) => prisma.drugMaster.findMany({
         where: staleOnly as never,
@@ -303,7 +330,7 @@ export async function runClassification(
         if (unchanged(row as never, r, 'scheduleResolved') && !repairComposition) return;
         totals.masterChanged += 1;
         if (opts.dryRun) return;
-        await prisma.drugMaster.update({
+        writes.push(prisma.drugMaster.update({
           where: { id: row.id },
           data: {
             scheduleResolved: r.schedule,
@@ -318,16 +345,18 @@ export async function runClassification(
             // without the strengths. Never overwritten otherwise.
             ...(repairComposition ? { saltComposition: r.composition } : {}),
           },
-        });
+        }));
       },
       // A dry run writes nothing, so the filter never shrinks — the cursor is
       // the only thing that can advance it.
       Boolean(opts.force || opts.dryRun),
+      writes.flush,
     );
   }
 
   // ── hospital formularies ─────────────────────────────────────────────────
   if (opts.only !== 'master') {
+    const writes = writeQueue(prisma);
     await forEachPending(
       (cursor) => prisma.drugFormulary.findMany({
         where: {
@@ -388,7 +417,7 @@ export async function runClassification(
         totals.formularyChanged += 1;
         if (opts.dryRun) return;
 
-        await prisma.drugFormulary.update({
+        writes.push(prisma.drugFormulary.update({
           where: { id: row.id },
           data: {
             schedule: r.schedule,
@@ -402,9 +431,10 @@ export async function runClassification(
             classifierVersion: CLASSIFIER_VERSION,
             ...(derived ? { composition: derived } : {}),
           },
-        });
+        }));
       },
       Boolean(opts.force || opts.dryRun),
+      writes.flush,
     );
   }
 
