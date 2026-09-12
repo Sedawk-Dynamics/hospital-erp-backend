@@ -381,6 +381,9 @@ async function main() {
   const ctrlBefore = await qty(ctrlBatch.id);
   const settingsBefore = await api('pharm', 'GET', '/hospital-settings/controlled-drugs');
   const modeWas = settingsBefore.data?.mode ?? 'legacy_block';
+  // The hospital may already run `inline`; this section is about the default,
+  // so pin it rather than assuming. `modeWas` is restored at the end.
+  await api('admin', 'PUT', '/hospital-settings/controlled-drugs', { mode: 'legacy_block' });
 
   const defaultRet = await ret({
     returnType: 'counter_return', drugId: ctrl.id, drugBatchId: ctrlBatch.id,

@@ -504,10 +504,24 @@ async function main() {
     const before = await register();
     const beforeRows = mine(before.data?.rows ?? [], H1NAME).length;
 
+    // What a ward dose may do depends on the hospital's controlled-drug mode.
+    // Under `inline` an H1 drug needs a prescription attached and this route has
+    // no field to carry one, so the dose is refused — and the register
+    // assertions below are skipped rather than asserted on a movement that
+    // never happened.
+    const mode = (await api('GET', '/hospital-settings/controlled-drugs')).data?.mode ?? 'legacy_block';
     const dose = await api('POST', '/pharmacy/ward-stock/dispense', {
       wardId: ward.id, drugBatchId: h1Batch.id, patientId: patient!.id, quantity: 2, override: true,
     });
-    ck('a Schedule H1 drug can be given from a ward shelf', dose.status < 400, `status ${dose.status} ${dose.message.slice(0, 60)}`);
+    if (mode === 'inline') {
+      ck(
+        'with inline enforcement on, an H1 dose from a ward shelf is refused for want of a prescription',
+        dose.status === 400 && /Schedule H1|controlled/i.test(dose.message),
+        `status ${dose.status} ${dose.message.slice(0, 60)}`,
+      );
+    } else {
+      ck('a Schedule H1 drug can be given from a ward shelf', dose.status < 400, `status ${dose.status} ${dose.message.slice(0, 60)}`);
+    }
 
     if (dose.status < 400) {
       const after = await register();
