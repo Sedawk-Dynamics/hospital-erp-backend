@@ -8,6 +8,7 @@ import { buildPatientContext } from './ai.context';
 import { backfillResultsFromAttachments } from '../lab/lab.service';
 import { Prisma } from '@prisma/client';
 import type { PatientChatInput, BloodReportAnalysisInput } from './ai.validation';
+import { buildMedicineContext } from './ai.drug-context';
 
 // Best-effort audit of AI usage. Never blocks the response.
 async function auditAi(
@@ -45,12 +46,30 @@ const PATIENT_CHAT_SYSTEM = [
   '- Keep answers focused; use short paragraphs or bullets. This is decision support, not a final order.',
 ].join('\n');
 
-export async function patientChat(tenantId: string, userId: string, input: PatientChatInput) {
+export async function patientChat(
+  tenantId: string,
+  userId: string,
+  roles: string[],
+  input: PatientChatInput,
+) {
   await assertFeatureEnabled('patientChat', tenantId);
 
   const context = await buildPatientContext(tenantId, input.patientId);
 
-  const system = `${PATIENT_CHAT_SYSTEM}\n\n=== PATIENT CONTEXT ===\n${context.text}`;
+  // A question that names a medicine gets the catalogue's own facts for it —
+  // composition, interactions, the safety verdicts — so the answer comes from
+  // the label this hospital dispenses rather than the model's recollection of
+  // one. The patient's own medicines are already in the context above, which
+  // is what makes "can she take this with what she is on?" answerable.
+  const medicine = await buildMedicineContext(input.message, roles);
+
+  const system = [
+    PATIENT_CHAT_SYSTEM,
+    '',
+    '=== PATIENT CONTEXT ===',
+    context.text,
+    ...(medicine ? ['', medicine.text] : []),
+  ].join('\n');
 
   const history: AiMessage[] = (input.history ?? []).map((h) => ({
     role: h.role,
@@ -66,7 +85,12 @@ export async function patientChat(tenantId: string, userId: string, input: Patie
     reply: text,
     model,
     provider,
-    context: { patient: context.patient, counts: context.counts },
+    context: {
+      patient: context.patient,
+      counts: context.counts,
+      // What the answer was allowed to draw on, so the screen can show it.
+      medicines: medicine?.products ?? [],
+    },
   };
 }
 

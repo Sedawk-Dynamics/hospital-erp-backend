@@ -73,6 +73,7 @@ export async function patientChat(req: AuthenticatedRequest, res: Response, next
     const result = await chatService.patientChat(
       req.user!.tenantId,
       req.user!.userId,
+      req.user!.roles ?? [],
       req.body,
     );
     sendResponse({ res, message: 'AI patient analysis', data: result });
