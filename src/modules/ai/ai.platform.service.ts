@@ -310,6 +310,9 @@ export async function platformChat(
       ...(medicine?.products.map((p) => `${p.name} (drug catalogue)`) ?? []),
       ...docs.map((d) => d.title),
     ],
+    // Named separately from `sources` so a screen can show what the answer was
+    // drawn from without having to parse titles.
+    medicines: medicine?.products ?? [],
     model,
     provider,
   };
