@@ -7,6 +7,12 @@ import type { AiProvider } from './ai.types';
 //
 // The model `id` is passed straight through to the provider API, so adding a
 // newly released model here is enough to make it selectable.
+//
+// Two rules learned the hard way (2026-09-12, checked against the live API):
+// a model whose free-tier quota has NOT been verified is marked `free: false`
+// — telling a hospital something is free when it is not is the costlier
+// mistake — and a model the provider has withdrawn is marked `retired`, never
+// deleted, so a config that still names it keeps validating.
 
 export interface AiModelInfo {
   id: string;
@@ -19,6 +25,13 @@ export interface AiModelInfo {
   notes?: string;
   /** Sensible default for its provider. */
   recommended?: boolean;
+  /**
+   * Set when the provider has withdrawn the model. Kept in the catalog rather
+   * than deleted: a hospital may already have it saved, and dropping the id
+   * would make its config fail validation on the next save. The panel stops
+   * offering it and the fallback resolver skips it.
+   */
+  retired?: string;
 }
 
 export const AI_MODELS: AiModelInfo[] = [
@@ -38,7 +51,8 @@ export const AI_MODELS: AiModelInfo[] = [
     provider: 'gemini',
     free: true,
     limits: 'Free: ~15 RPM · 250K TPM · 1,000 req/day',
-    notes: 'Fastest, most budget-friendly 2.5 model — good fallback target.',
+    notes: 'Fastest, most budget-friendly 2.5 model.',
+    retired: 'Withdrawn by Google — use Gemini 3.5 Flash-Lite instead.',
   },
   {
     id: 'gemini-2.5-pro',
@@ -47,6 +61,7 @@ export const AI_MODELS: AiModelInfo[] = [
     free: false,
     limits: 'Paid only (removed from free tier Apr 2026)',
     notes: 'Deepest reasoning; use for hard cases when quality matters.',
+    retired: 'Withdrawn by Google — use Gemini 3.1 Pro instead.',
   },
   {
     id: 'gemini-2.0-flash',
@@ -54,7 +69,8 @@ export const AI_MODELS: AiModelInfo[] = [
     provider: 'gemini',
     free: true,
     limits: 'Free: ~15 RPM · 1M TPM · 1,500 req/day',
-    notes: 'Stable, widely available; reliable fallback.',
+    notes: 'Stable, widely available.',
+    retired: 'Withdrawn by Google — use Gemini 3.6 Flash instead.',
   },
   {
     id: 'gemini-2.0-flash-lite',
@@ -63,6 +79,7 @@ export const AI_MODELS: AiModelInfo[] = [
     free: true,
     limits: 'Free: ~30 RPM · 1M TPM · 1,500 req/day',
     notes: 'Cheapest/fastest 2.0 model.',
+    retired: 'Withdrawn by Google — use Gemini 3.5 Flash-Lite instead.',
   },
   {
     id: 'gemini-3-flash-preview',
@@ -87,6 +104,30 @@ export const AI_MODELS: AiModelInfo[] = [
     free: true,
     limits: 'Free: ~15 RPM · 250K TPM · up to 500 req/day',
     notes: 'Best free-tier daily quota (500 RPD) — recommended primary for free keys. Supports system instructions + JSON.',
+  },
+  {
+    id: 'gemini-3.5-flash-lite',
+    label: 'Gemini 3.5 Flash-Lite',
+    provider: 'gemini',
+    free: false,
+    limits: 'Quota varies by key — check AI Studio',
+    notes: "Google's named replacement for 2.5 / 2.0 Flash-Lite.",
+  },
+  {
+    id: 'gemini-3.6-flash',
+    label: 'Gemini 3.6 Flash',
+    provider: 'gemini',
+    free: false,
+    limits: 'Quota varies by key — check AI Studio',
+    notes: "Google's named replacement for 2.0 Flash.",
+  },
+  {
+    id: 'gemini-3.1-pro-preview',
+    label: 'Gemini 3.1 Pro',
+    provider: 'gemini',
+    free: false,
+    limits: 'Paid — check AI Studio',
+    notes: "Google's named replacement for 2.5 Pro. Deepest reasoning, highest cost.",
   },
 
   // ── OpenAI (no free tier — pay per token) ───────────────────────────────
@@ -158,13 +199,19 @@ export const DEFAULT_MODEL: Record<'gemini' | 'openai', string> = {
 // Chosen so each fallback is a DIFFERENT model with its own free-tier quota
 // bucket, which is what actually rescues a rate-limited primary.
 export const DEFAULT_FALLBACKS: Record<string, string[]> = {
-  'gemini-2.5-flash': ['gemini-2.5-flash-lite', 'gemini-2.0-flash'],
-  'gemini-2.5-flash-lite': ['gemini-2.0-flash-lite', 'gemini-2.0-flash'],
-  'gemini-2.5-pro': ['gemini-2.5-flash', 'gemini-2.0-flash'],
-  'gemini-2.0-flash': ['gemini-2.0-flash-lite', 'gemini-2.5-flash'],
-  'gemini-3-flash-preview': ['gemini-2.5-flash', 'gemini-2.5-flash-lite'],
-  'gemini-3.5-flash': ['gemini-2.5-flash', 'gemini-2.0-flash'],
-  'gemini-3.1-flash-lite': ['gemini-2.5-flash-lite', 'gemini-2.0-flash'],
+  'gemini-2.5-flash': ['gemini-3.1-flash-lite', 'gemini-3.5-flash'],
+  // Retired primaries still get a live chain — a hospital that never re-picked
+  // its model should degrade to a working one, not to a row of 404s.
+  'gemini-2.5-flash-lite': ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'],
+  'gemini-2.5-pro': ['gemini-3.5-flash', 'gemini-3.1-flash-lite'],
+  'gemini-2.0-flash': ['gemini-3.6-flash', 'gemini-3.1-flash-lite'],
+  'gemini-2.0-flash-lite': ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'],
+  'gemini-3-flash-preview': ['gemini-3.1-flash-lite', 'gemini-3.5-flash'],
+  'gemini-3.5-flash': ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'],
+  'gemini-3.5-flash-lite': ['gemini-3.1-flash-lite', 'gemini-3.5-flash'],
+  'gemini-3.6-flash': ['gemini-3.5-flash', 'gemini-3.1-flash-lite'],
+  'gemini-3.1-pro-preview': ['gemini-3.5-flash', 'gemini-3.1-flash-lite'],
+  'gemini-3.1-flash-lite': ['gemini-3.5-flash-lite', 'gemini-3.5-flash'],
   'gpt-4o-mini': ['gpt-4.1-mini'],
   'gpt-4o': ['gpt-4o-mini'],
   'gpt-4.1-mini': ['gpt-4o-mini'],
@@ -173,9 +220,22 @@ export const DEFAULT_FALLBACKS: Record<string, string[]> = {
   'gpt-5.5': ['gpt-4.1', 'gpt-4o-mini'],
 };
 
-/** Resolve the fallback chain for a model: explicit list wins, else defaults. */
+export function isRetiredModel(id: string): boolean {
+  return AI_MODELS.some((m) => m.id === id && m.retired);
+}
+
+/**
+ * Resolve the fallback chain for a model: explicit list wins, else defaults.
+ *
+ * Retired models are dropped from the chain — they can only answer 404, and
+ * each one costs a round-trip before the real answer arrives. The PRIMARY is
+ * left exactly as chosen: quietly answering on a model nobody picked would be
+ * worse than a clear failure. If dropping empties an explicit chain, the
+ * defaults for that primary take over.
+ */
 export function resolveFallbacks(primary: string, explicit?: string[]): string[] {
-  const chain = explicit && explicit.length > 0 ? explicit : (DEFAULT_FALLBACKS[primary] ?? []);
-  // De-dupe and never include the primary itself.
-  return [...new Set(chain)].filter((m) => m && m !== primary);
+  const live = (list: string[]) => list.filter((m) => m && m !== primary && !isRetiredModel(m));
+  const chosen = explicit && explicit.length > 0 ? live(explicit) : [];
+  const chain = chosen.length > 0 ? chosen : live(DEFAULT_FALLBACKS[primary] ?? []);
+  return [...new Set(chain)];
 }

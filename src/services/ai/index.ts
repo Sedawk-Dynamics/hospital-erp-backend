@@ -12,6 +12,7 @@ export {
   AI_MODELS,
   modelsForProvider,
   isKnownModel,
+  isRetiredModel,
   DEFAULT_MODEL,
   DEFAULT_FALLBACKS,
   resolveFallbacks,
