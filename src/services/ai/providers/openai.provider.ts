@@ -1,6 +1,6 @@
 import { env } from '../../../config/env';
 import { logger } from '../../../config/logger';
-import { AiProviderError, isRetriableStatus } from '../ai.errors';
+import { AiProviderError, isRetriableStatus, providerErrorReason } from '../ai.errors';
 import type { AiGenerateOptions, AiProviderClient } from '../ai.types';
 
 // Reasoning-family models (o-series, gpt-5.x) use `max_completion_tokens` and
@@ -52,9 +52,10 @@ export const openaiProvider: AiProviderClient = {
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
       logger.error({ status: res.status, model, body: errText.slice(0, 500) }, 'OpenAI API error');
+      const reason = providerErrorReason(errText);
       throw new AiProviderError(
         'openai',
-        `OpenAI API error (${res.status})`,
+        `OpenAI API error (${res.status})${reason ? `: ${reason}` : ''}`,
         res.status,
         isRetriableStatus(res.status),
       );

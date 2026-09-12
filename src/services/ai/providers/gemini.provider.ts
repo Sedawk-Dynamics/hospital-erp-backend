@@ -1,5 +1,5 @@
 import { logger } from '../../../config/logger';
-import { AiProviderError, isRetriableStatus } from '../ai.errors';
+import { AiProviderError, isRetriableStatus, providerErrorReason } from '../ai.errors';
 import type { AiGenerateOptions, AiProviderClient } from '../ai.types';
 
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
@@ -53,9 +53,10 @@ export const geminiProvider: AiProviderClient = {
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
       logger.error({ status: res.status, model, body: errText.slice(0, 500) }, 'Gemini API error');
+      const reason = providerErrorReason(errText);
       throw new AiProviderError(
         'gemini',
-        `Gemini API error (${res.status})`,
+        `Gemini API error (${res.status})${reason ? `: ${reason}` : ''}`,
         res.status,
         isRetriableStatus(res.status),
       );
