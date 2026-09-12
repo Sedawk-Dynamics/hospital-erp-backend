@@ -22,6 +22,33 @@ export interface AiCallContext {
 }
 
 /**
+ * Which of a run's failures is worth reporting?
+ *
+ * The loop used to surface the LAST one, which is the least useful answer it
+ * could give: a depleted key or a dead network fails EVERY model, so the
+ * sentence the caller saw came from whichever model happened to sit at the end
+ * of the fallback chain. A real run here read "Gemini API error (404)" — model
+ * no longer available — while the true cause was the FIRST attempt: no credits.
+ * That sends people to fix the model list when the account needs topping up.
+ *
+ * So: a fatal failure is definitive (bad key, blocked prompt) and wins. Then a
+ * 429, which is about the account and therefore about every model in the chain.
+ * Otherwise the first failure, from the model the hospital actually chose.
+ */
+function mostInformative<T extends { err: unknown }>(failures: T[]): T | undefined {
+  const rank = (err: unknown): number => {
+    if (!(err instanceof AiProviderError)) return 0;
+    if (!err.retriable) return 2;
+    return err.status === 429 ? 1 : 0;
+  };
+  let best = failures[0];
+  for (const f of failures) {
+    if (best === undefined || rank(f.err) > rank(best.err)) best = f;
+  }
+  return best;
+}
+
+/**
  * Low-level text generation. Resolves the active provider/model/key for the
  * hospital and dispatches, trying the primary model then each fallback model on
  * retriable failures (rate limits, overload, model unavailable). Throws a clear
@@ -48,7 +75,7 @@ export async function generateText(
     maxOutputTokens: opts.maxOutputTokens ?? cfg.maxOutputTokens,
   };
 
-  let lastErr: unknown;
+  const failures: Array<{ model: string; err: unknown }> = [];
   for (let i = 0; i < attempts.length; i++) {
     const model = attempts[i];
     try {
@@ -58,7 +85,7 @@ export async function generateText(
       }
       return { text: text.trim(), provider: cfg.provider, model };
     } catch (err) {
-      lastErr = err;
+      failures.push({ model, err });
       const retriable = err instanceof AiProviderError ? err.retriable : false;
       const isLast = i === attempts.length - 1;
       if (!retriable || isLast) break;
@@ -69,9 +96,23 @@ export async function generateText(
     }
   }
 
-  // Exhausted all attempts.
-  if (lastErr instanceof AiProviderError) {
-    throw AppError.internal(`AI request failed: ${lastErr.message}`);
+  // Exhausted all attempts. Log the whole chain — one line showing every model
+  // and why it refused — then report the one failure that explains the run.
+  const reported = mostInformative(failures);
+  logger.error(
+    {
+      provider: cfg.provider,
+      reported: reported?.model,
+      attempts: failures.map((f) => ({
+        model: f.model,
+        status: f.err instanceof AiProviderError ? f.err.status : undefined,
+        message: f.err instanceof Error ? f.err.message : String(f.err),
+      })),
+    },
+    'AI request failed on every configured model',
+  );
+  if (reported?.err instanceof AiProviderError) {
+    throw AppError.internal(`AI request failed: ${reported.err.message}`);
   }
   throw AppError.internal('AI request failed');
 }
