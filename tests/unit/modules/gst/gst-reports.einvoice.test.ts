@@ -175,6 +175,44 @@ describe('D-2 — the failed IRN report', () => {
     expect(wholeYear.rows[0].overdue).toBe(true);
   });
 
+  // The window is a count of calendar days ending at the close of the last one,
+  // not a stopwatch started at the minute the invoice was cut. An invoice
+  // raised at 09:00 used to turn red at 09:00 on its last day, while the
+  // hospital still had the whole working day to file it.
+  it('leaves the last day alone until IST midnight, however late in the day it is', async () => {
+    // Raised 09:00 IST on 16 August. With the 30-day window the last day is
+    // 15 September, and it lasts until midnight.
+    (prisma.bill.findMany as any).mockResolvedValue([
+      bill({ billDate: new Date('2026-08-16T09:00:00+05:30') }),
+    ]);
+
+    vi.setSystemTime(new Date('2026-09-15T23:50:00+05:30'));
+    const lastDay = await getFailedIrnReport(TENANT);
+    expect(lastDay.rows[0].daysToDeadline).toBe(0);
+    expect(lastDay.rows[0].overdue).toBe(false);
+
+    // Twenty minutes later, and a day late.
+    vi.setSystemTime(new Date('2026-09-16T00:10:00+05:30'));
+    const nextDay = await getFailedIrnReport(TENANT);
+    expect(nextDay.rows[0].daysToDeadline).toBe(-1);
+    expect(nextDay.rows[0].overdue).toBe(true);
+  });
+
+  // A bill raised between midnight and 05:30 IST is stored on the PREVIOUS UTC
+  // date, so counting the window in UTC put every early-morning bill a day out
+  // and reported it overdue while it still had a day to run.
+  it("counts from the bill's IST date, not the UTC date it is stored on", async () => {
+    // 02:00 IST on 1 September is 20:30Z on 31 August. The hospital's date is
+    // the 1st, so the last day is 1 October.
+    (prisma.bill.findMany as any).mockResolvedValue([
+      bill({ billDate: new Date('2026-09-01T02:00:00+05:30') }),
+    ]);
+    vi.setSystemTime(new Date('2026-10-01T12:00:00+05:30'));
+    const out = await getFailedIrnReport(TENANT);
+    expect(out.rows[0].daysToDeadline).toBe(0);
+    expect(out.rows[0].overdue).toBe(false);
+  });
+
   it('takes the window from the hospital settings rather than compiling it in', async () => {
     PROFILE.eInvoiceUploadDays = 90;
     (prisma.bill.findMany as any).mockResolvedValue([bill({ billDate: daysAgo(40) })]);

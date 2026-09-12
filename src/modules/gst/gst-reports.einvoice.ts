@@ -42,6 +42,7 @@ import { r2 } from '../../shared/gst';
 import { gstAppliesOn, type GstProfile } from '../../shared/gst-profile';
 import { logger } from '../../config/logger';
 import { fullName } from '../../shared/person-name';
+import { istDayNumber } from '../../shared/date.utils';
 
 const n = (v: unknown) => r2(Number(v ?? 0));
 
@@ -82,11 +83,30 @@ function applicabilityOf(profile: GstProfile, kind: 'e-invoice' | 'e-way bill') 
   };
 }
 
-/** How many days are left to register a document, against the hospital's own window. */
-function daysLeft(documentDate: Date, uploadDays: number, asAt: Date): number {
-  const deadline = new Date(documentDate);
-  deadline.setUTCDate(deadline.getUTCDate() + uploadDays);
-  return Math.floor((deadline.getTime() - asAt.getTime()) / 86_400_000);
+/**
+ * How many days are left to register a document, against the hospital's own
+ * window. 0 means it is due today with the rest of today still there to do it
+ * in; -1 means one day late.
+ *
+ * CALENDAR DAYS IN IST, ending at the close of the day. The window is a count
+ * of days from the document's date, not a stopwatch started at the minute the
+ * invoice was raised: an invoice dated the 1st with a 30-day window is due by
+ * the END of the 31st, whatever o'clock it was cut at. Measuring exact 24-hour
+ * spans instead made a document read as overdue from its own time of day — an
+ * invoice raised at 09:00 turned red at 09:00 on its last day, while the
+ * hospital still had the working day to file it.
+ *
+ * The day is the hospital's day, so it is counted in IST. Document dates are
+ * stored as UTC instants and a bill raised between midnight and 05:30 IST sits
+ * on the PREVIOUS UTC date, so doing this arithmetic in UTC put every early
+ * morning bill a day out.
+ *
+ * Comparing day numbers is the same thing as comparing against 23:59:59.999
+ * IST on the deadline's day, and unlike subtracting two instants it cannot
+ * drift by a millisecond.
+ */
+function daysLeft(documentDate: Date, uploadDays: number, todayIST: number): number {
+  return istDayNumber(documentDate) + uploadDays - todayIST;
 }
 
 /**
@@ -140,7 +160,12 @@ async function loadIrnRows(
   // read as 230 days overdue simply because the accountant had asked for the
   // whole financial year, and made a document dated next week look comfortable
   // for a year. The deadline does not move because of how the report was run.
-  const asAt = new Date();
+  //
+  // Read once, for the whole report: every row is then measured against the
+  // same today — rows that disagreed about what day it is would be a strange
+  // thing to hand an accountant — and the IST day is worked out once rather
+  // than per row.
+  const todayIST = istDayNumber(new Date());
   const uploadDays = profile.eInvoiceUploadDays;
 
   const [bills, notes] = await Promise.all([
@@ -206,7 +231,7 @@ async function loadIrnRows(
         error: b.irnError,
         attemptedAt: b.irnAttemptedAt,
         cancelledAt: b.cancelledAt,
-        daysToDeadline: b.irn ? null : daysLeft(b.billDate, uploadDays, asAt),
+        daysToDeadline: b.irn ? null : daysLeft(b.billDate, uploadDays, todayIST),
       })),
     ...notes
       .filter((c) => gstAppliesOn(profile, c.issueDate))
@@ -227,7 +252,7 @@ async function loadIrnRows(
         error: c.irnError,
         attemptedAt: c.irnAttemptedAt,
         cancelledAt: null,
-        daysToDeadline: c.irn ? null : daysLeft(c.issueDate, uploadDays, asAt),
+        daysToDeadline: c.irn ? null : daysLeft(c.issueDate, uploadDays, todayIST),
       })),
   ].sort((a, b) => a.documentDate.getTime() - b.documentDate.getTime());
 
