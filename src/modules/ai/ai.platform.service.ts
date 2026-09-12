@@ -12,6 +12,7 @@ import {
   roleLanding,
 } from './ai.roles';
 import type { PlatformChatInput } from './ai.validation';
+import { buildMedicineContext } from './ai.drug-context';
 
 // ============================================================================
 // Use Case 3 (Level 1): Platform-wide AI support chatbot — READ-ONLY + ROLE-AWARE.
@@ -240,12 +241,18 @@ export async function platformChat(
   const docs = retrieveDocs(input.message, roles, 4);
   const topDoc = docs[0];
 
+  // A medicine question is answered from the catalogue whatever the asker's
+  // role: what a medicine is and does is reference data, not one role's job.
+  // Looked up BEFORE the guard below, or "what is Dolo 650 for?" is refused to
+  // a doctor merely because the nearest how-to happens to be a pharmacy one.
+  const medicine = await buildMedicineContext(input.message, roles);
+
   // Out-of-scope guard (deterministic): if the best-matching how-to is written
   // ONLY for other roles, don't hand this role invented steps — tell them
   // plainly that it isn't part of their job and name the role that does it.
   const topIsForMe =
     !topDoc || topDoc.roles.includes('*') || topDoc.roles.some((r) => norm.includes(r));
-  if (topDoc && !topIsForMe) {
+  if (!medicine && topDoc && !topIsForMe) {
     const who = labelsProse(topDoc.roles.filter((r) => r !== '*').map((r) => getRoleProfile(r).label));
     return {
       reply: `**${profile.label} · ${profile.portal}**\n\nThat isn't part of the ${profile.label} role — “${topDoc.title}” is handled by ${who}. Ask them to help with this. I can walk you through anything in your own area instead (you work in ${profile.modules.slice(0, 3).join(', ')}).`,
@@ -274,9 +281,15 @@ export async function platformChat(
         '- If the task is outside this role\'s permissions, say so plainly and name the role that performs it (do not invent steps for them).',
         '- Be concise. If the snippets do not cover it, say you are not sure and suggest contacting your administrator or support.',
         '- You are READ-ONLY: you explain how to do things, you never perform actions or change data.',
+        ...(medicine
+          ? [
+              '- This question names a medicine. Answer it from the MEDICINE FACTS below rather than from the documentation, in the detail this role needs, and name the product you describe.',
+            ]
+          : []),
         '',
         '=== DOCUMENTATION ===',
         docContext,
+        ...(medicine ? ['', medicine.text] : []),
       ].join('\n'),
       messages: [
         ...(input.history ?? []).map((h) => ({ role: h.role, content: h.content })),
@@ -289,11 +302,14 @@ export async function platformChat(
   // Deterministic role lead so the answer is visibly tailored to this role even
   // when the underlying workflow is identical across roles.
   return {
-    reply: `**${profile.label} · ${profile.portal}** — here's how:\n\n${text}`,
+    reply: `**${profile.label} · ${profile.portal}** — ${medicine ? 'from the drug catalogue' : "here's how"}:\n\n${text}`,
     mode: 'help' as const,
     role: roleLabel,
     scope: 'in' as const,
-    sources: docs.map((d) => d.title),
+    sources: [
+      ...(medicine?.products.map((p) => `${p.name} (drug catalogue)`) ?? []),
+      ...docs.map((d) => d.title),
+    ],
     model,
     provider,
   };
