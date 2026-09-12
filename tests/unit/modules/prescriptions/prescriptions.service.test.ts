@@ -9,6 +9,7 @@ import {
   recordAdministration,
   getPrescriptions,
   getPrescriptionById,
+  checkInteractions,
 } from '../../../../src/modules/prescriptions/prescriptions.service';
 
 const TENANT_ID = 'tenant-1';
@@ -238,5 +239,97 @@ describe('Prescriptions Service', () => {
         } as any),
       ).rejects.toThrow('Cannot administer medication for a cancelled prescription');
     });
+  });
+});
+
+// ============================================================
+// Interactions: the curated list and the catalogue together
+// ============================================================
+
+/**
+ * Two sources answer the same question. The curated list is 41 clinician-written
+ * pairs and is the only one allowed to block a prescription; the catalogue is
+ * the vendor's per-product data on 175,216 products, which warns. Where both
+ * fire on the same pair only one alert may reach the prescriber.
+ */
+describe('checkInteractions — merging the two sources', () => {
+  beforeEach(() => {
+    (prisma.drugFormulary.findMany as any).mockResolvedValue([]);
+    (prisma.drugMaster.findMany as any).mockResolvedValue([]);
+    (prisma.drugText.findMany as any).mockResolvedValue([]);
+  });
+
+  it('keeps the curated pair and marks its source', async () => {
+    const res = await checkInteractions(TENANT_ID, { drugs: ['Warfarin', 'Aspirin'] });
+    expect(res.pairs).toHaveLength(1);
+    expect(res.pairs[0].source).toBe('curated');
+    expect(res.pairs[0].severity).toBe('major');
+    expect(res.highestSeverity).toBe('major');
+  });
+
+  it('adds a catalogue pair the curated list does not know', async () => {
+    (prisma.drugMaster.findMany as any).mockImplementation(({ where }: any) => {
+      if (where?.id?.in) {
+        return Promise.resolve([
+          {
+            id: 'm1',
+            name: 'Ecosprin 75 Tablet',
+            saltsJson: [{ norm: 'aspirin' }],
+            drugInteractions: { drug: ['Warfarin'], effect: ['Severe'] },
+            monograph: null,
+          },
+        ]);
+      }
+      return Promise.resolve([{ id: 'm1', name: 'Ecosprin 75 Tablet', drugInteractions: { drug: ['Warfarin'] } }]);
+    });
+
+    const res = await checkInteractions(TENANT_ID, { drugs: ['Ecosprin 75 Tablet', 'Warfarin'] });
+    expect(res.pairs).toHaveLength(1);
+    expect(res.pairs[0].source).toBe('catalogue');
+    expect(res.pairs[0].severity).toBe('major');
+  });
+
+  it('does not report the same pair twice when both sources fire', async () => {
+    (prisma.drugMaster.findMany as any).mockImplementation(({ where }: any) => {
+      if (where?.id?.in) {
+        return Promise.resolve([
+          {
+            id: 'm1',
+            name: 'Warfarin',
+            saltsJson: [{ norm: 'warfarin' }],
+            drugInteractions: { drug: ['Aspirin'], effect: ['Moderate'] },
+            monograph: null,
+          },
+          { id: 'm2', name: 'Aspirin', saltsJson: [{ norm: 'aspirin' }], drugInteractions: null, monograph: null },
+        ]);
+      }
+      return Promise.resolve([
+        { id: 'm1', name: 'Warfarin', drugInteractions: { drug: ['Aspirin'] } },
+        { id: 'm2', name: 'Aspirin', drugInteractions: null },
+      ]);
+    });
+
+    const res = await checkInteractions(TENANT_ID, { drugs: ['Warfarin', 'Aspirin'] });
+    expect(res.pairs).toHaveLength(1);
+    // The curated pair is 'major' and the catalogue's only 'moderate' — the
+    // reviewed advice stays, and the weaker duplicate is dropped.
+    expect(res.pairs[0].source).toBe('curated');
+    expect(res.pairs[0].severity).toBe('major');
+  });
+
+  it('still answers with the curated pairs when the catalogue read fails', async () => {
+    (prisma.drugMaster.findMany as any).mockRejectedValue(new Error('catalogue down'));
+    const res = await checkInteractions(TENANT_ID, { drugs: ['Warfarin', 'Aspirin'] });
+    expect(res.pairs).toHaveLength(1);
+    expect(res.pairs[0].source).toBe('curated');
+  });
+
+  it('orders the worst pair first', async () => {
+    const res = await checkInteractions(TENANT_ID, {
+      // warfarin+aspirin is major; ssri+nsaid (fluoxetine + ibuprofen) is lower.
+      drugs: ['Fluoxetine', 'Ibuprofen', 'Warfarin', 'Aspirin'],
+    });
+    const ranks = res.pairs.map((p) => ['contraindicated', 'major', 'moderate', 'minor'].indexOf(p.severity));
+    expect(ranks).toEqual([...ranks].sort((a, b) => a - b));
   });
 });

@@ -30,6 +30,11 @@ import {
   normalizeDrug,
   type InteractionSeverity,
 } from './drug-interactions.data';
+import {
+  catalogueInteractionPairs,
+  severityRank,
+  type CatalogueHint,
+} from './catalogue-interactions';
 import { calcDispenseQuantity } from './dosage-calc';
 
 /**
@@ -1315,6 +1320,17 @@ export interface InteractionPair {
   drugs: [string, string];
   severity: InteractionSeverity;
   description: string;
+  /**
+   * Which body of knowledge raised it. 'curated' is the reviewed in-repo list
+   * and is the only source that can reach 'contraindicated'; 'catalogue' is the
+   * vendor's own per-product data, which warns but never blocks.
+   */
+  source: 'curated' | 'catalogue';
+}
+
+/** Order-independent identity of a drug pair, for merging the two sources. */
+function pairKey(drugs: [string, string]): string {
+  return [normalizeDrug(drugs[0]), normalizeDrug(drugs[1])].sort().join(' + ');
 }
 
 export interface DrugContraindicationEntry {
@@ -1345,7 +1361,7 @@ export async function checkInteractions(
     });
 
   // ── Cross-check all pairs against the curated database ──
-  const pairs: InteractionPair[] = [];
+  let pairs: InteractionPair[] = [];
   for (let i = 0; i < drugs.length; i++) {
     for (let j = i + 1; j < drugs.length; j++) {
       const left = drugs[i];
@@ -1360,6 +1376,7 @@ export async function checkInteractions(
             drugs: [left, right],
             severity: def.severity,
             description: def.description,
+            source: 'curated',
           });
           break; // Only report the first (most relevant) matching pair per drug-pair
         }
@@ -1376,20 +1393,32 @@ export async function checkInteractions(
       drugName: true,
       genericName: true,
       contraindications: true,
+      // The hospital's own mapping to the catalogue — used to read the vendor's
+      // interaction list for this exact product without looking it up again.
+      drugMasterId: true,
+      saltsJson: true,
     },
   });
 
-  const perDrug: DrugContraindicationEntry[] = drugs.map((name) => {
+  const formularyHits = new Map<string, (typeof formularyRows)[number] | undefined>();
+  for (const name of drugs) {
     const normName = normalizeDrug(name);
-    const hit = formularyRows.find((f) => {
-      const dn = normalizeDrug(f.drugName);
-      const gn = f.genericName ? normalizeDrug(f.genericName) : '';
-      return (
-        normName.includes(dn) ||
-        dn.includes(normName) ||
-        (gn && (normName.includes(gn) || gn.includes(normName)))
-      );
-    });
+    formularyHits.set(
+      name,
+      formularyRows.find((f) => {
+        const dn = normalizeDrug(f.drugName);
+        const gn = f.genericName ? normalizeDrug(f.genericName) : '';
+        return (
+          normName.includes(dn) ||
+          dn.includes(normName) ||
+          (gn && (normName.includes(gn) || gn.includes(normName)))
+        );
+      }),
+    );
+  }
+
+  const perDrug: DrugContraindicationEntry[] = drugs.map((name) => {
+    const hit = formularyHits.get(name);
     if (!hit) {
       return { drugName: name };
     }
@@ -1400,6 +1429,43 @@ export async function checkInteractions(
       contraindications: hit.contraindications,
     };
   });
+
+  // ── Cross-check the same drugs against the catalogue ────
+  //
+  // 175,216 catalogue products carry the vendor's own interaction list. A
+  // failure here must never cost the caller the curated pairs it already has,
+  // so it degrades to those rather than throwing.
+  try {
+    const hints = new Map<string, CatalogueHint>();
+    for (const name of drugs) {
+      const hit = formularyHits.get(name);
+      if (hit) {
+        hints.set(name.toLowerCase(), {
+          drugMasterId: hit.drugMasterId,
+          drugName: hit.drugName,
+          saltsJson: hit.saltsJson,
+        });
+      }
+    }
+
+    const byPair = new Map<string, InteractionPair>();
+    for (const p of pairs) byPair.set(pairKey(p.drugs), p);
+    for (const cat of await catalogueInteractionPairs(drugs, hints)) {
+      const key = pairKey(cat.drugs);
+      const existing = byPair.get(key);
+      // The curated entry wins a tie: a clinician wrote its advice. The
+      // catalogue only replaces it by being strictly more severe.
+      if (existing && severityRank(existing.severity) <= severityRank(cat.severity)) continue;
+      byPair.set(key, { ...cat, source: 'catalogue' });
+    }
+    pairs = [...byPair.values()];
+  } catch (err) {
+    logger.warn({ err }, 'Catalogue interaction check failed; curated pairs only');
+  }
+
+  // Worst first: with two sources a prescriber can be handed a dozen pairs,
+  // and the one that matters must not be the last one read.
+  pairs.sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
 
   return {
     pairs,
