@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { prisma } from '../../../../src/config/database';
 import {
   getEInvoiceRegister,
@@ -10,9 +10,17 @@ const TENANT = 'tenant-1';
 const GSTIN = '27AAPFU0939F1ZV';
 const RECIPIENT = '24AAACC1206D1ZM';
 
-// Relative to today, so the deadline assertions do not rot. The 30-day window
-// is the profile's default; 60 days ago is comfortably past it and 5 days ago
-// is comfortably inside.
+// The clock is frozen for every test in this file — see beforeEach — and these
+// dates are offsets from the frozen instant, so the deadline assertions still
+// do not rot. The 30-day window is the profile's default; 60 days ago is
+// comfortably past it and 5 days ago is comfortably inside.
+//
+// The freeze is what makes them deterministic. daysAgo builds a document date
+// to the millisecond and the report reads its own `new Date()` a fraction of a
+// millisecond later, so a document 40 days old against a 30-day window is
+// -10 days minus an epsilon. Math.floor turns that into -11 whenever the two
+// reads straddle a millisecond tick, which measured at about 1 run in 100.
+const NOW = new Date('2026-09-15T09:30:00.000Z');
 const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000);
 
 const PROFILE = {
@@ -43,6 +51,11 @@ function bill(o: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
+  // Date only. The flake is two clock reads, not a timer: nothing in these
+  // reports schedules work, so faking setTimeout as well would buy nothing and
+  // would leave a way for a later test to hang on a clock nobody advances.
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(NOW);
   vi.clearAllMocks();
   Object.assign(PROFILE, {
     registered: true, gstin: GSTIN, effectiveFrom: null,
@@ -52,6 +65,10 @@ beforeEach(() => {
   (prisma.bill.findMany as any).mockResolvedValue([]);
   (prisma.creditNote.findMany as any).mockResolvedValue([]);
   (prisma.drugReturn.findMany as any).mockResolvedValue([]);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe('D-1 — the e-invoice register', () => {
