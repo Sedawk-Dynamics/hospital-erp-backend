@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { inventoryCategorySchema } from '../../shared/inventory-category';
 import { paginationSchema } from '../../shared/pagination';
 
 export const stockBalanceReportSchema = z.object({
@@ -7,7 +8,7 @@ export const stockBalanceReportSchema = z.object({
     toDate: z.string().optional(),
     groupBy: z.enum(['day', 'month']).optional(),
     inventoryItemId: z.string().uuid().optional(),
-    category: z.enum(['drug', 'consumable', 'surgical_supply', 'equipment', 'other']).optional(),
+    category: inventoryCategorySchema.optional(),
   }),
 });
 

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { inventoryCategorySchema } from '../../shared/inventory-category';
 import { paginationSchema } from '../../shared/pagination';
 
 // ============================================================
@@ -71,7 +72,7 @@ export const createItemSchema = z.object({
   body: z.object({
     itemName: z.string().min(1, 'Item name is required').max(255),
     itemCode: z.string().max(50).optional(),
-    category: z.enum(['drug', 'consumable', 'surgical_supply', 'equipment', 'other']),
+    category: inventoryCategorySchema,
     description: z.string().max(2000).optional(),
     unitOfMeasurement: z.string().max(20).optional(),
     // Omitted → falls back to the tenant's configured default threshold.
@@ -87,7 +88,7 @@ export const updateItemSchema = z.object({
   body: z.object({
     itemName: z.string().min(1).max(255).optional(),
     itemCode: z.string().max(50).optional().nullable(),
-    category: z.enum(['drug', 'consumable', 'surgical_supply', 'equipment', 'other']).optional(),
+    category: inventoryCategorySchema.optional(),
     description: z.string().max(2000).optional().nullable(),
     unitOfMeasurement: z.string().max(20).optional().nullable(),
     minimumStockThreshold: z.number().int().min(0).optional(),
@@ -102,7 +103,7 @@ export const updateItemSchema = z.object({
 
 export const getItemsQuerySchema = z.object({
   query: paginationSchema.extend({
-    category: z.enum(['drug', 'consumable', 'surgical_supply', 'equipment', 'other']).optional(),
+    category: inventoryCategorySchema.optional(),
     isActive: z
       .string()
       .transform((val) => val === 'true')
@@ -121,7 +122,7 @@ export const getUnifiedStockQuerySchema = z.object({
   query: paginationSchema.extend({
     search: z.string().max(255).optional(),
     type: z.enum(['all', 'item', 'drug']).optional(),
-    category: z.enum(['drug', 'consumable', 'surgical_supply', 'equipment', 'other']).optional(),
+    category: inventoryCategorySchema.optional(),
     stockStatus: z.enum(['all', 'low', 'out', 'expiring', 'in', 'recalled']).optional(),
   }),
 });
@@ -136,7 +137,7 @@ export const createUnifiedStockSchema = z.object({
         .object({
           itemName: z.string().min(1).max(255),
           itemCode: z.string().max(50).optional(),
-          category: z.enum(['drug', 'consumable', 'surgical_supply', 'equipment', 'other']),
+          category: inventoryCategorySchema,
           description: z.string().max(2000).optional(),
           unitOfMeasurement: z.string().max(20).optional(),
           minimumStockThreshold: z.number().int().min(0).optional(),
@@ -151,9 +152,8 @@ export const createUnifiedStockSchema = z.object({
           // Type of stock. Every type is stocked as a formulary row with
           // batches, so a consumable takes this same path — it just carries a
           // different category. Defaults to medicine.
-          category: z
-            .enum(['drug', 'consumable', 'surgical_supply', 'equipment', 'other'])
-            .optional(),
+          category: inventoryCategorySchema.optional(),
+          productCategory: z.string().max(120).optional(),
           // Opening stock, carried over as a single no-expiry OPENING batch so
           // the quantity is actually sellable (formulary stock lives in batches).
           openingStock: z.number().int().min(0).optional(),
@@ -180,6 +180,33 @@ export const createUnifiedStockSchema = z.object({
     })
     .refine((b) => (b.kind === 'item' ? !!b.item : !!b.drug), {
       message: 'Provide an `item` payload for kind=item or a `drug` payload for kind=drug',
+    })
+    .superRefine((body, ctx) => {
+      const product = body.kind === 'drug' && body.drug?.category === 'product'
+        ? body.drug
+        : null;
+      if (!product) return;
+      if (!product.productCategory?.trim()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['drug', 'productCategory'],
+          message: 'Product category is required',
+        });
+      }
+      if (!product.hsnCode?.trim()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['drug', 'hsnCode'],
+          message: 'HSN code is required for a retail product',
+        });
+      }
+      if (product.taxPercent === undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['drug', 'taxPercent'],
+          message: 'GST rate is required for a retail product',
+        });
+      }
     }),
 });
 

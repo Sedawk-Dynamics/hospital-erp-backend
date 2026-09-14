@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { paginationSchema } from '../../shared/pagination';
+import { inventoryCategorySchema } from '../../shared/inventory-category';
 
 // ============================================================
 // Audit trail (read)
@@ -29,7 +30,9 @@ export const createFormularySchema = z.object({
     composition: z.string().max(500).optional(),
     manufacturer: z.string().max(255).optional(),
     // Stock type — every kind lives in the formulary and shares one flow.
-    category: z.enum(['drug', 'consumable', 'surgical_supply', 'equipment', 'other']).optional(),
+    category: inventoryCategorySchema.optional(),
+    // Retail shelf grouping for non-drug products (for example "Baby Care").
+    productCategory: z.string().max(120).optional(),
     dosageForm: z
       .enum(['tablet', 'capsule', 'syrup', 'injection', 'cream', 'drops', 'inhaler', 'other'])
       .optional(),
@@ -67,6 +70,7 @@ export const findFormularyMatchesSchema = z.object({
     manufacturer: z.string().max(255).optional(),
     strength: z.string().max(100).optional(),
     dosageForm: z.string().max(40).optional(),
+    category: inventoryCategorySchema.optional(),
     excludeId: z.string().uuid().optional(),
   }),
 });
@@ -87,7 +91,8 @@ export const updateFormularySchema = z.object({
     // What KIND of stock this is. Correctable after the fact: everything created
     // before the formulary held non-medicines defaulted to 'drug', so a
     // consumable or a piece of equipment must be re-typeable.
-    category: z.enum(['drug', 'consumable', 'surgical_supply', 'equipment', 'other']).optional(),
+    category: inventoryCategorySchema.optional(),
+    productCategory: z.string().max(120).optional().nullable(),
     genericName: z.string().max(500).optional().nullable(),
     composition: z.string().max(500).optional().nullable(),
     manufacturer: z.string().max(255).optional().nullable(),
@@ -483,7 +488,7 @@ const inwardMatchLineSchema = z.object({
   // other stock item (matched against inventory_items). `category` is the item
   // category when kind=item.
   kind: z.enum(['drug', 'item']).optional(),
-  category: z.enum(['drug', 'consumable', 'surgical_supply', 'equipment', 'other']).optional().nullable(),
+  category: inventoryCategorySchema.optional().nullable(),
 });
 
 // Step 1: score every incoming line against the formulary (no writes). An

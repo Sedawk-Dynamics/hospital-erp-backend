@@ -769,6 +769,11 @@ enum InventoryCategory {
   surgical_supply @map("surgical_supply")
   equipment       @map("equipment")
   other           @map("other")
+  /// Something the pharmacy SELLS that is not a medicine — skin care, baby
+  /// care, nutrition, devices. Stocked and sold exactly like a medicine (a
+  /// formulary row with batches), but it has no composition, no schedule and no
+  /// dosage form, and it is added through its own form.
+  product         @map("product")
 }
 
 enum StockTransactionType {
@@ -5205,8 +5210,14 @@ model DrugFormulary {
   manufacturer           String?           @db.VarChar(255)
   // What KIND of stock this is. Every type (medicine, consumable, surgical,
   // equipment, other) lives here so they all share one flow: batches, expiry,
-  // search, prescribing and counter billing. Defaults to `drug` (medicine).
+  // search and counter billing. Only category = `drug` is prescribable or enters
+  // clinical classification; defaults to `drug` (medicine).
   category               InventoryCategory @default(drug)
+  // The shelf a retail product sits on ("Baby Care", "Vitamins & Supplements").
+  // Only meaningful when category = product; medicines are grouped by their
+  // composition and schedule instead. Free text, prefilled from the catalogue's
+  // own product category when the product was picked from it.
+  productCategory        String?           @map("product_category") @db.VarChar(120)
   dosageForm             DosageForm?       @map("dosage_form")
   strength               String?           @db.VarChar(100)
   unitOfMeasurement      String?           @map("unit_of_measurement") @db.VarChar(20)
