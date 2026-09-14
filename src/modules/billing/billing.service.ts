@@ -18,7 +18,11 @@ import {
 } from '../../shared/date.utils';
 import { normalizeAdmissionType, type AdmissionType } from '../../shared/admission-type';
 import { writeAudit } from '../../shared/audit';
-import { supplyKindForCategory } from '../../shared/gst-determination';
+import {
+  supplyKindForCategory,
+  supplyKindForInventoryCategory,
+  type SupplyKind,
+} from '../../shared/gst-determination';
 import { roundOffTotal } from '../../shared/gst';
 import { assertPeriodOpen } from '../../shared/gst-period-lock';
 import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
@@ -2390,6 +2394,8 @@ interface ChargeRow {
   /** Widened to `string` because the OT builder reads it straight off a tariff. */
   gstTreatment?: string | null;
   gstApproved?: boolean;
+  /** Inventory subtype for pharmacy goods (medicine, consumable, retail product). */
+  supplyKind?: SupplyKind;
   /** The patient has an active admission — IP, emergency or day care. */
   patientAdmitted?: boolean;
   /** Used ON the patient as part of the treatment, rather than sold to them. */
@@ -2841,7 +2847,12 @@ async function getPharmacyCharges(
           // the category default and the line carries no HSN at all — which is
           // what keeps it out of GSTR-1's table 12. It does NOT make a ward
           // medicine taxable: the composite rule is resolved before the master.
-          drug: { select: { drugName: true, price: true, taxPercent: true, hsnCode: true } },
+          drug: {
+            select: {
+              drugName: true, price: true, taxPercent: true, hsnCode: true,
+              gstTreatment: true, category: true,
+            },
+          },
         },
       },
     },
@@ -2863,12 +2874,13 @@ async function getPharmacyCharges(
     // the formulary's is the drug-level default.
     const batchGst = (r.drugBatch as any)?.gstPercent;
     const drugGst = (r.drugBatch as any)?.drug?.taxPercent;
-    const taxRate =
+    const fallbackTaxRate =
       batchGst != null
         ? toNumber(batchGst)
         : drugGst != null
           ? toNumber(drugGst)
           : (taxRates.pharmacy ?? CHARGE_TAX_RATES.pharmacy);
+    const drug = (r.drugBatch as any)?.drug;
     return {
       source: 'pharmacy' as const,
       referenceType: 'dispensing_record',
@@ -2877,8 +2889,13 @@ async function getPharmacyCharges(
       quantity: r.quantityDispensed,
       unitPrice: unit,
       totalAmount: total,
-      taxRate,
-      hsnCode: (r.drugBatch as any)?.drug?.hsnCode ?? null,
+      // A code or an explicit treatment is authoritative. The old batch rate
+      // is used only for uncoded legacy stock, never allowed to freeze a rate
+      // after the HSN master changes.
+      taxRate: drug?.hsnCode || drug?.gstTreatment ? null : fallbackTaxRate,
+      hsnCode: drug?.hsnCode ?? null,
+      gstTreatment: drug?.gstTreatment ?? null,
+      supplyKind: supplyKindForInventoryCategory(drug?.category),
       // Medicine prices are MRP. The pharmacy counter already treats them as
       // tax-inclusive and shows the embedded GST as a breakup; the hospital
       // bill used to add the rate ON TOP of the same MRP, so a ₹100 strip cost
@@ -3894,7 +3911,7 @@ export async function refreshDraftBillTax(
       skipped += 1;
       continue;
     }
-    const kind = supplyKindForCategory(String(item.category));
+    const kind = c?.supplyKind ?? supplyKindForCategory(String(item.category));
     // Goods resolve through HSN, services through SAC — the engine picks the
     // master by which of the two it was given. The bill item keeps ONE column
     // for the code, so putting it in the wrong slot sends a service's SAC to
@@ -3962,6 +3979,7 @@ export async function pullChargesToBill(
     gstTreatment?: string | null;
     /** Whether that classification has been signed off by the hospital. */
     gstApproved?: boolean;
+    supplyKind?: SupplyKind;
     taxInclusive?: boolean;
     category?: string;
     // ── What the tax rules need to know about this supply ──
@@ -4065,7 +4083,7 @@ export async function pullChargesToBill(
       // it — an inpatient's medicine being the case that does.
       const priced = resolver.price(
         {
-          kind: supplyKindForCategory(c.category),
+          kind: c.supplyKind ?? supplyKindForCategory(c.category),
           hsnCode: c.hsnCode ?? null,
           sacCode: c.sacCode ?? null,
           itemRatePercent: c.taxRate ?? null,
@@ -4074,7 +4092,9 @@ export async function pullChargesToBill(
           // worked out is what let a department average outrank a test's SAC.
           itemTreatment:
             (c.gstTreatment as never) ??
-            (c.taxRate == null ? null : c.taxRate > 0 ? 'taxable' : null),
+            (c.hsnCode || c.sacCode || c.taxRate == null
+              ? null
+              : c.taxRate > 0 ? 'taxable' : null),
           itemApproved: c.gstApproved ?? false,
           taxInclusive: c.taxInclusive ?? false,
           // The BILL's own nature decides whether the patient is admitted, not

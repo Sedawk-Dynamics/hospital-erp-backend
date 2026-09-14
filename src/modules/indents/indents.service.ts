@@ -1,5 +1,6 @@
 import { prisma } from '../../config/database';
 import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
+import { supplyKindForInventoryCategory } from '../../shared/gst-determination';
 import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
 import { findOpenChargeBill } from '../../shared/charge-bill';
 import { createBillInSeries } from '../../shared/bill-number';
@@ -418,7 +419,8 @@ export async function dispenseIndent(
       const drug = await tx.drugFormulary.findFirst({
         where: { id: it.drugFormularyId, tenantId },
         select: {
-          id: true, drugName: true, packSize: true, price: true, taxPercent: true, hsnCode: true,
+          id: true, drugName: true, category: true, packSize: true, price: true,
+          taxPercent: true, hsnCode: true, gstTreatment: true,
           looseUnitLabel: true, isNarcotic: true, isReimbursable: true,
           // Read by the controlled-drug gate.
           schedule: true, controlledClass: true, vaultControlled: true,
@@ -504,10 +506,10 @@ export async function dispenseIndent(
       // an ordinary sale. The rules decide; this call only supplies the facts.
       const priced = resolver.price(
         {
-          kind: 'medicine',
+          kind: supplyKindForInventoryCategory(drug.category),
           hsnCode: drug.hsnCode ?? null,
           itemRatePercent: taxPct,
-          itemTreatment: taxPct > 0 ? 'taxable' : null,
+          itemTreatment: (drug.gstTreatment as any) ?? (!drug.hsnCode && taxPct > 0 ? 'taxable' : null),
           taxInclusive: true,
           patientAdmitted: true,
           issuedForTreatment: true,
@@ -649,7 +651,8 @@ export async function dispenseIpPrescription(
       const drug = await tx.drugFormulary.findFirst({
         where: { id: it.drugId as string, tenantId },
         select: {
-          id: true, drugName: true, price: true, taxPercent: true, hsnCode: true, looseUnitLabel: true,
+          id: true, drugName: true, category: true, price: true, taxPercent: true,
+          hsnCode: true, gstTreatment: true, looseUnitLabel: true,
           isNarcotic: true, isReimbursable: true,
           // Read by the controlled-drug gate.
           schedule: true, controlledClass: true, vaultControlled: true,
@@ -718,10 +721,10 @@ export async function dispenseIpPrescription(
       // applies as for an indent. Never a TTO — this is the daily queue.
       const priced = resolver.price(
         {
-          kind: 'medicine',
+          kind: supplyKindForInventoryCategory(drug.category),
           hsnCode: drug.hsnCode ?? null,
           itemRatePercent: taxPct,
-          itemTreatment: taxPct > 0 ? 'taxable' : null,
+          itemTreatment: (drug.gstTreatment as any) ?? (!drug.hsnCode && taxPct > 0 ? 'taxable' : null),
           taxInclusive: true,
           patientAdmitted: true,
           issuedForTreatment: true,

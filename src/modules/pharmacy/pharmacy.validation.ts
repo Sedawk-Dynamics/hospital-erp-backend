@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { paginationSchema } from '../../shared/pagination';
 import { inventoryCategorySchema } from '../../shared/inventory-category';
+const gstTreatmentSchema = z.enum(['taxable', 'exempt', 'nil_rated', 'non_gst', 'zero_rated']);
 
 // ============================================================
 // Audit trail (read)
@@ -42,6 +43,7 @@ export const createFormularySchema = z.object({
     packSize: z.number().int().positive().optional(),
     looseUnitLabel: z.string().max(40).optional(),
     taxPercent: z.number().min(0).max(100).optional(),
+    gstTreatment: gstTreatmentSchema.optional().nullable(),
     minStock: z.number().int().nonnegative().optional(),
     // Product Resolution Engine / compliance identity.
     gtin: z.string().max(20).optional(),
@@ -106,6 +108,7 @@ export const updateFormularySchema = z.object({
     packSize: z.number().int().positive().optional().nullable(),
     looseUnitLabel: z.string().max(40).optional().nullable(),
     taxPercent: z.number().min(0).max(100).optional().nullable(),
+    gstTreatment: gstTreatmentSchema.optional().nullable(),
     minStock: z.number().int().nonnegative().optional().nullable(),
     gtin: z.string().max(20).optional().nullable(),
     casePackGtin: z.string().max(20).optional().nullable(),

@@ -44,6 +44,7 @@ import { gstAppliesOn } from './gst-profile';
 export type SupplyKind =
   | 'medicine'
   | 'consumable'
+  | 'product'
   | 'room'
   | 'procedure'
   | 'consultation'
@@ -76,12 +77,24 @@ const CATEGORY_TO_KIND: Record<string, SupplyKind> = {
   imaging: 'imaging',
   pharmacy: 'medicine',
   consumable: 'consumable',
+  product: 'product',
+  equipment: 'product',
+  surgical_supply: 'consumable',
   nursing: 'nursing',
   other: 'other',
 };
 
 export function supplyKindForCategory(category: string | null | undefined): SupplyKind {
   return CATEGORY_TO_KIND[String(category ?? '').toLowerCase()] ?? 'other';
+}
+
+/** Translate pharmacy inventory categories without pretending retail goods are medicines. */
+export function supplyKindForInventoryCategory(category: string | null | undefined): SupplyKind {
+  const value = String(category ?? '').toLowerCase();
+  if (value === 'drug') return 'medicine';
+  if (value === 'consumable' || value === 'surgical_supply') return 'consumable';
+  if (value === 'product' || value === 'equipment') return 'product';
+  return 'other';
 }
 
 /** Which rule actually decided the answer. Recorded on the line, and reported. */

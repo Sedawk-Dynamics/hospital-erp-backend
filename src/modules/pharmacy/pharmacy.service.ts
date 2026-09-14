@@ -13,6 +13,7 @@ import { resolvePackSize, inferLooseUnitLabel } from '../drug-master/drug-master
 import { resolveHsnGst, getHsnGstRows, matchHsnGst } from '../drug-master/drug-master.service';
 import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
 import { roundOffTotal } from '../../shared/gst';
+import { supplyKindForInventoryCategory } from '../../shared/gst-determination';
 import { issueDocumentForBill } from '../gst/gst-document.service';
 import { getGstProfile } from '../hospital-settings/hospital-settings.service';
 import { issueCreditNoteBestEffort } from '../gst/credit-note.service';
@@ -41,7 +42,7 @@ import {
   MATCH_BLOCK_THRESHOLD,
 } from './pharmacy.matching';
 import { parseGs1, makeInternalBarcode, isInternalBarcode, internalKeyFromScan, buildLabelPayload, gtinVariants, normalizeGtin } from './pharmacy.barcode';
-import { Prisma } from '@prisma/client';
+import { Prisma, type DrugMaster as CatalogDrug } from '@prisma/client';
 import { makeMedicineRankComparator, mergePrefixFirst } from '../../shared/medicine-search-rank';
 import { fuzzyMatchIds } from '../../shared/medicine-fuzzy';
 import { lookupNameMapping, saveNameMapping } from './pharmacy.name-mapping';
@@ -71,6 +72,7 @@ import type {
   StockTakeReconcileInput,
 } from './pharmacy.validation';
 import { fullName } from '../../shared/person-name';
+import { DRUG_GST_CLASSIFIER_VERSION, inferCatalogDrugGst } from '../drug-master/drug-gst.classifier';
 
 // ============================================================
 // Role guard — master/stock management is pharmacy_admin only
@@ -469,7 +471,9 @@ export async function createFormularyItem(
       price: data.price,
       packSize: data.packSize,
       looseUnitLabel: data.looseUnitLabel,
-      taxPercent: data.taxPercent,
+      taxPercent: data.gstTreatment && data.gstTreatment !== 'taxable' ? 0 : data.taxPercent,
+      gstTreatment: data.gstTreatment ?? null,
+      gstTreatmentSource: data.gstTreatment != null ? 'manual' : null,
       minStock: (data as any).minStock,
       // Product Resolution Engine identity (carried from the catalog or typed).
       // Normalised to digits-or-null so a blank never stores "" (which would
@@ -525,9 +529,28 @@ export async function createFormularyItem(
     ? await classifyFormularyItem(formularyItem.id)
     : null;
 
+  let gstPatch: Record<string, unknown> | null = null;
+  if (formularyItem.category === 'drug') {
+    const inferred = inferCatalogDrugGst({
+      type: 'drug', name: formularyItem.drugName,
+      genericName: formularyItem.genericName, saltComposition: composition,
+    });
+    if (inferred) {
+      gstPatch = {
+        ...(!formularyItem.hsnCode ? { hsnCode: inferred.hsnCode } : {}),
+        ...(formularyItem.taxPercent == null ? { taxPercent: inferred.gstRate } : {}),
+        ...(!formularyItem.gstTreatment && inferred.gstTreatment
+          ? { gstTreatment: inferred.gstTreatment, gstTreatmentSource: 'notification' }
+          : {}),
+        gstClassifierVersion: DRUG_GST_CLASSIFIER_VERSION,
+      };
+      await prisma.drugFormulary.update({ where: { id: formularyItem.id }, data: gstPatch });
+    }
+  }
+
   return {
     status: 'created' as const,
-    item: { ...formularyItem, composition, ...(schedulePatch ?? {}) },
+    item: { ...formularyItem, composition, ...(schedulePatch ?? {}), ...(gstPatch ?? {}) },
   };
 }
 
@@ -1128,7 +1151,7 @@ export async function commitInward(
       // In India GST is decided by the HSN code, so a line that carries an HSN
       // but no explicit GST auto-fills its rate from the HSN → GST tax master.
       // Feeds both the drug-level tax (formulary) and the batch's GST.
-      const lineGst = line.gstPercent ?? matchHsnGst(line.hsnCode, hsnRows)?.gstRate;
+      let lineGst = line.gstPercent ?? matchHsnGst(line.hsnCode, hsnRows)?.gstRate;
 
       if (line.action === 'map') {
         // Reuse an existing formulary row — this is what keeps the 200 tablets
@@ -1140,11 +1163,12 @@ export async function commitInward(
         }
         const existing = await prisma.drugFormulary.findFirst({
           where: { id: mapTargetId, tenantId },
-          select: { id: true, drugName: true },
+          select: { id: true, drugName: true, gstTreatment: true },
         });
         if (!existing) throw AppError.notFound('Mapped drug not found in formulary');
         drugId = existing.id;
         drugName = existing.drugName;
+        if (existing.gstTreatment && existing.gstTreatment !== 'taxable') lineGst = 0;
         mappedDrugs++;
         // Persist any GTIN / HSN / manufacturer code this receiving line carries
         // onto the existing drug (fills only empty fields), so a barcode entered
@@ -1209,9 +1233,12 @@ export async function commitInward(
           isActive: true,
           force: true,
         } as CreateFormularyInput & { force: boolean });
-        const item = (created as { item: { id: string; drugName: string } }).item;
+        const item = (created as {
+          item: { id: string; drugName: string; gstTreatment?: string | null };
+        }).item;
         drugId = item.id;
         drugName = item.drugName;
+        if (item.gstTreatment && item.gstTreatment !== 'taxable') lineGst = 0;
         createdDrugs++;
       }
 
@@ -1348,6 +1375,26 @@ function perBaseUnitPrice(
   return Math.round((m / ps + Number.EPSILON) * 100) / 100;
 }
 
+async function ensureCatalogDrugGst(master: CatalogDrug): Promise<CatalogDrug> {
+  if (master.gstClassifierVersion === DRUG_GST_CLASSIFIER_VERSION) return master;
+  const inferred = inferCatalogDrugGst(master);
+  const patch = {
+    ...(!master.hsnCode && inferred ? { hsnCode: inferred.hsnCode } : {}),
+    ...(master.gstRate == null && inferred ? { gstRate: inferred.gstRate } : {}),
+    ...(!master.gstTreatment && inferred?.gstTreatment
+      ? { gstTreatment: inferred.gstTreatment, gstTreatmentSource: 'notification' }
+      : {}),
+    gstClassifierVersion: DRUG_GST_CLASSIFIER_VERSION,
+  } as const;
+  const updated = await prisma.drugMaster.update({
+    where: { id: master.id },
+    data: patch,
+  });
+  // Unit-test mocks predating this classifier do not return the updated row;
+  // the merged value is also exactly what a real update returns for these fields.
+  return updated ?? ({ ...master, ...patch } as CatalogDrug);
+}
+
 /**
  * Import a drug from the platform-wide DrugMaster catalog into this tenant's
  * formulary (the "clone" step — mirrors lab template -> catalog cloning). If
@@ -1378,6 +1425,11 @@ export async function importFormularyItem(
     await classifyDrugMasterItem(master.id);
     master = (await prisma.drugMaster.findUnique({ where: { id: master.id } })) ?? master;
   }
+
+  // Catalogue refreshes do not contain GST columns. Classify the selected row
+  // synchronously as well as in the deploy backfill so an early import can
+  // never race ahead of its HSN/tax classification.
+  master = await ensureCatalogDrugGst(master);
 
   // Prefer the catalog's stored numeric pack size; fall back to resolving it
   // from the free-text label (with a sensible strip default for solids) so the
@@ -1422,6 +1474,9 @@ export async function importFormularyItem(
       hsnCode: master.hsnCode ?? undefined,
       manufacturerCode: master.manufacturerCode ?? undefined,
       taxPercent: master.gstRate ?? undefined,
+      gstTreatment: master.gstTreatment ?? undefined,
+      gstTreatmentSource: master.gstTreatmentSource ?? undefined,
+      gstClassifierVersion: master.gstClassifierVersion ?? undefined,
       // Default selling price from the catalog MRP, converted to PER BASE UNIT
       // (MRP ÷ packSize) so a strip-of-10 @ ₹30 stores ₹3/tablet. An explicit
       // import price is taken as-is (already per unit). Hospital can edit later.
@@ -1490,6 +1545,13 @@ export async function importFormularyItemsBulk(
     toCreate = toCreate.map((m) => relabelled.get(m.id) ?? m);
   }
 
+  // The background pass normally classified these rows at startup, but an
+  // import can race a large new release. Finish the selected subset now.
+  for (let i = 0; i < toCreate.length; i += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    toCreate[i] = await ensureCatalogDrugGst(toCreate[i]!);
+  }
+
   if (toCreate.length) {
     // Bulk import must carry the same identity/tax fields as one-click import.
     // Claim GTIN variants in memory first so one colliding catalogue row cannot
@@ -1544,6 +1606,9 @@ export async function importFormularyItemsBulk(
           hsnCode: m.hsnCode ?? undefined,
           manufacturerCode: m.manufacturerCode ?? undefined,
           taxPercent: m.gstRate ?? undefined,
+          gstTreatment: m.gstTreatment ?? undefined,
+          gstTreatmentSource: m.gstTreatmentSource ?? undefined,
+          gstClassifierVersion: m.gstClassifierVersion ?? undefined,
           // Per BASE UNIT (MRP ÷ packSize) — see importFormularyItem.
           price: perBaseUnitPrice(m.mrp, packSize),
           isActive: true,
@@ -1631,6 +1696,12 @@ export async function getTenantCatalog(tenantId: string, query: any) {
     packSize: true,
     mrp: true,
     schedule: true,
+    type: true,
+    rxRequired: true,
+    productCategory: true,
+    hsnCode: true,
+    gstRate: true,
+    gstTreatment: true,
   } as const;
   const q = isSearch ? String(query.search).trim() : '';
   // On search, also fetch name and generic PREFIX windows (same filters, kept
@@ -1995,6 +2066,11 @@ export async function updateFormularyItem(
   if (data.packSize !== undefined) updateData.packSize = data.packSize;
   if (data.looseUnitLabel !== undefined) updateData.looseUnitLabel = data.looseUnitLabel;
   if (data.taxPercent !== undefined) updateData.taxPercent = data.taxPercent;
+  if (data.gstTreatment !== undefined) {
+    updateData.gstTreatment = data.gstTreatment;
+    updateData.gstTreatmentSource = data.gstTreatment ? 'manual' : null;
+    if (data.gstTreatment && data.gstTreatment !== 'taxable') updateData.taxPercent = 0;
+  }
   if ((data as any).minStock !== undefined) updateData.minStock = (data as any).minStock;
   if ((data as any).gtin !== undefined) updateData.gtin = normalizeGtin((data as any).gtin);
   if ((data as any).casePackGtin !== undefined) updateData.casePackGtin = normalizeGtin((data as any).casePackGtin);
@@ -2019,6 +2095,10 @@ export async function updateFormularyItem(
   if ((data as any).isNarcotic !== undefined) updateData.isNarcotic = (data as any).isNarcotic;
   if ((data as any).isReimbursable !== undefined) updateData.isReimbursable = (data as any).isReimbursable;
   if (data.isActive !== undefined) updateData.isActive = data.isActive;
+  if (
+    data.drugName !== undefined || data.genericName !== undefined ||
+    data.composition !== undefined || data.category !== undefined
+  ) updateData.gstClassifierVersion = null;
 
   const item = await prisma.drugFormulary.update({
     where: { id },
@@ -2056,7 +2136,25 @@ export async function updateFormularyItem(
   if (resultingCategory === 'drug' && affectsClassification({ ...(data as Record<string, unknown>) })) {
     schedulePatch = await classifyFormularyItem(id);
   }
-  return { ...item, composition, ...(schedulePatch ?? {}) };
+  let gstPatch: Record<string, unknown> | null = null;
+  if (resultingCategory === 'drug' && updateData.gstClassifierVersion === null) {
+    const inferred = inferCatalogDrugGst({
+      type: 'drug', name: item.drugName,
+      genericName: item.genericName, saltComposition: composition,
+    });
+    if (inferred) {
+      gstPatch = {
+        ...(!item.hsnCode ? { hsnCode: inferred.hsnCode } : {}),
+        ...(item.taxPercent == null ? { taxPercent: inferred.gstRate } : {}),
+        ...(!item.gstTreatment && inferred.gstTreatment
+          ? { gstTreatment: inferred.gstTreatment, gstTreatmentSource: 'notification' }
+          : {}),
+        gstClassifierVersion: DRUG_GST_CLASSIFIER_VERSION,
+      };
+      await prisma.drugFormulary.update({ where: { id }, data: gstPatch });
+    }
+  }
+  return { ...item, composition, ...(schedulePatch ?? {}), ...(gstPatch ?? {}) };
 }
 
 export async function deleteFormularyItem(tenantId: string, id: string) {
@@ -2214,7 +2312,9 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
   // In India the rate is decided by the HSN, so a blank GST at stock-in resolves
   // from the HSN → GST tax master (longest-prefix match).
   let gstPercent = data.gstPercent;
-  if (gstPercent == null && drug.hsnCode) {
+  if (drug.gstTreatment && drug.gstTreatment !== 'taxable') {
+    gstPercent = 0;
+  } else if (gstPercent == null && drug.hsnCode) {
     const hit = await resolveHsnGst(drug.hsnCode);
     if (hit) gstPercent = hit.gstRate;
   }
@@ -3075,7 +3175,7 @@ export async function autoLinkDispenseToBill(
             drug: {
               select: {
                 drugName: true, category: true, price: true, isReimbursable: true,
-                taxPercent: true, hsnCode: true,
+                taxPercent: true, hsnCode: true, gstTreatment: true,
               },
             },
             sellingPrice: true,
@@ -3136,11 +3236,14 @@ export async function autoLinkDispenseToBill(
     const drugForTax = (record.drugBatch as any)?.drug ?? {};
     const linkPriced = linkTaxResolver.price(
       {
-        kind: 'medicine',
+        kind: supplyKindForInventoryCategory(drugForTax.category),
         hsnCode: drugForTax.hsnCode ?? null,
         itemRatePercent: drugForTax.taxPercent != null ? Number(drugForTax.taxPercent) : null,
         itemTreatment:
-          drugForTax.taxPercent != null && Number(drugForTax.taxPercent) > 0 ? 'taxable' : null,
+          drugForTax.gstTreatment ??
+          (!drugForTax.hsnCode && drugForTax.taxPercent != null && Number(drugForTax.taxPercent) > 0
+            ? 'taxable'
+            : null),
         taxInclusive: true,
         patientAdmitted: !!adm,
         issuedForTreatment: !!adm,
@@ -3435,17 +3538,24 @@ async function getOrCreateWalkInPatient(tenantId: string): Promise<string> {
  */
 export function priceMedicineLine(
   resolver: Awaited<ReturnType<typeof taxResolverFor>>,
-  drug: { hsnCode?: string | null; taxPercent?: unknown } | null | undefined,
+  drug: {
+    hsnCode?: string | null;
+    taxPercent?: unknown;
+    gstTreatment?: string | null;
+    category?: string | null;
+  } | null | undefined,
   money: { unitPrice: number; quantity: number; discountAmount?: number },
 ) {
   return resolver.price(
     {
-      kind: 'medicine',
+      kind: supplyKindForInventoryCategory(drug?.category ?? 'drug'),
       hsnCode: drug?.hsnCode ?? null,
       itemRatePercent: drug?.taxPercent != null ? Number(drug.taxPercent) : null,
       // A rate on the drug only means "taxable" when it is above zero; a bare
       // 0 is the absence of an answer, not a nil rating.
-      itemTreatment: drug?.taxPercent != null && Number(drug.taxPercent) > 0 ? 'taxable' : null,
+      itemTreatment:
+        (drug?.gstTreatment as any) ??
+        (!drug?.hsnCode && drug?.taxPercent != null && Number(drug.taxPercent) > 0 ? 'taxable' : null),
       taxInclusive: true,
     },
     money,
@@ -3492,7 +3602,10 @@ export async function previewPharmacySale(
       where: { id: item.drugBatchId, tenantId },
       include: {
         drug: {
-          select: { drugName: true, price: true, packSize: true, taxPercent: true, hsnCode: true },
+          select: {
+            drugName: true, price: true, packSize: true, taxPercent: true, hsnCode: true,
+            gstTreatment: true, category: true,
+          },
         },
       },
     });
@@ -3741,6 +3854,8 @@ export async function createPharmacySale(
               dosageForm: true,
               taxPercent: true,
               hsnCode: true,
+              gstTreatment: true,
+              category: true,
               isNarcotic: true,
               // Read by the controlled-drug gate.
               schedule: true,
@@ -5364,6 +5479,7 @@ export async function dispenseFromWard(
         drug: {
           select: {
             drugName: true, category: true, price: true, taxPercent: true, hsnCode: true,
+            gstTreatment: true,
             isLifeSaving: true, isNarcotic: true, isReimbursable: true,
             // Read by the controlled-drug gate.
             schedule: true, controlledClass: true, vaultControlled: true,
@@ -5456,10 +5572,11 @@ export async function dispenseFromWard(
     // so it is exempt. The rules decide; this supplies the facts.
     const priced = wardTaxResolver.price(
       {
-        kind: 'medicine',
+        kind: supplyKindForInventoryCategory(batch.drug?.category),
         hsnCode: batch.drug?.hsnCode ?? null,
         itemRatePercent: taxPct,
-        itemTreatment: taxPct > 0 ? 'taxable' : null,
+        itemTreatment:
+          (batch.drug?.gstTreatment as any) ?? (!batch.drug?.hsnCode && taxPct > 0 ? 'taxable' : null),
         taxInclusive: true,
         patientAdmitted: true,
         issuedForTreatment: true,
