@@ -5,8 +5,9 @@
  * Not an HTTP e2e — it calls the resolver directly, because what is being
  * checked is the rule set, not a route. The value is that it shows the whole
  * decision table on one screen, so a wrong answer is obvious: the same strip
- * must be taxable at the counter and exempt in the ward, ORS must be nil rather
- * than exempt, a general bed must be exempt while a deluxe one is not, and an
+ * must be taxable at the counter and exempt in the ward, ORS must follow its
+ * specific tariff item, a general bed must be exempt while a deluxe one is
+ * not, and an
  * unmapped taxable item must be flagged rather than quietly billed.
  *
  * Run with `npm run db:check-gst-determination`. Read-only — it writes nothing.

@@ -183,7 +183,10 @@ describe('upsertProducts', () => {
     await upsertProducts(db, [draft({ rxRequired: true })], '2026-07');
 
     expect(calls['drugMaster.update'][0].data.classifierVersion).toBeNull();
-    expect(calls['drugFormulary.updateMany'][0].data).toEqual({ classifierVersion: null });
+    expect(calls['drugFormulary.updateMany'][0].data).toEqual({
+      classifierVersion: null,
+      gstClassifierVersion: null,
+    });
     // Same composition, so the stored molecules are still right.
     expect(calls['drugSalt.deleteMany']).toBeUndefined();
   });

@@ -11,6 +11,7 @@ const dosageFormEnum = z.enum([
   'inhaler',
   'other',
 ]);
+const gstTreatmentEnum = z.enum(['taxable', 'exempt', 'nil_rated', 'non_gst', 'zero_rated']);
 
 // Public search used by doctors / pharmacy to look up the platform catalog.
 export const searchDrugMasterSchema = z.object({
@@ -98,6 +99,7 @@ export const createDrugMasterSchema = z.object({
     manufacturerCode: z.string().max(100).optional().nullable(),
     hsnCode: z.string().max(20).optional().nullable(),
     gstRate: z.number().min(0).max(100).optional().nullable(),
+    gstTreatment: gstTreatmentEnum.optional().nullable(),
     aliases: z.array(z.string()).optional(),
     tags: z.array(z.string()).optional(),
     isPublished: z.boolean().optional(),
@@ -138,6 +140,7 @@ export const createHsnGstRateSchema = z.object({
       .regex(/^[0-9]+$/, 'HSN code must be digits only'),
     description: z.string().max(255).optional().nullable(),
     gstRate: z.number({ message: 'GST rate is required' }).min(0).max(100),
+    treatment: gstTreatmentEnum.optional(),
     category: hsnCategoryEnum.optional().nullable(),
     isActive: z.boolean().optional(),
   }),

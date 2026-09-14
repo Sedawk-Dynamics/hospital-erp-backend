@@ -20,8 +20,7 @@
  * statement of what the thing is:
  *
  *   - a finished medicament in measured doses  → 3004, at 5%
- *   - oral rehydration salts                   → 30049010, which the master
- *     carries at 0% because ORS is nil-rated
+ *   - oral rehydration salts                   → 30049010 at the current 5%
  *   - anything that is not a medicine at all   → left alone and REPORTED
  *
  * That last rule is the important one. Section 13 makes the classification the
@@ -40,8 +39,8 @@ const APPLY = process.argv.includes('--apply');
 const ALL_TENANTS = process.argv.includes('--all-tenants');
 
 /** Medicaments in measured doses. The master carries 3004 at 5%. */
-const MEDICAMENT = '30049099';
-/** Oral rehydration salts, which the master carries at 0% — ORS is nil-rated. */
+const MEDICAMENT = '3004';
+/** Oral rehydration salts — a specific tariff item at the current 5%. */
 const ORS = '30049010';
 
 /**
@@ -68,7 +67,7 @@ const UNAMBIGUOUS_IN_NAME = [
   'tablet', 'capsule', 'syrup', 'suspension', 'injection', 'infusion',
 ];
 
-/** ORS by name — the only nil-rated case common enough to be worth naming. */
+/** ORS by name — specific enough to use its tariff item. */
 function isOrs(name: string, generic: string | null): boolean {
   const t = `${name} ${generic ?? ''}`.toLowerCase();
   return /\bors\b|oral rehydration|electral|rehydration salt/.test(t);
@@ -80,7 +79,7 @@ function codeFor(d: {
   dosageForm: string | null;
 }): { code: string; why: string } | null {
   if (isOrs(d.drugName, d.genericName)) {
-    return { code: ORS, why: 'oral rehydration salts — nil-rated' };
+    return { code: ORS, why: 'oral rehydration salts — specific tariff item' };
   }
   const form = String(d.dosageForm ?? '').toLowerCase();
   if (MEDICAMENT_FORMS.has(form)) {

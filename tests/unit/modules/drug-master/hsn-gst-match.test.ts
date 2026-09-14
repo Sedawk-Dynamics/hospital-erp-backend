@@ -3,7 +3,7 @@ import { matchHsnGst, normalizeHsn } from '../../../../src/modules/drug-master/d
 
 const rows = [
   { hsnCode: '3004', gstRate: 5, treatment: 'taxable', description: 'Medicaments' },
-  { hsnCode: '30049010', gstRate: 0, treatment: 'nil_rated', description: 'ORS' },
+  { hsnCode: '30049010', gstRate: 5, treatment: 'taxable', description: 'ORS' },
   { hsnCode: '2106', gstRate: 18, treatment: 'taxable', description: 'Supplements' },
   // A row written before the treatment column existed.
   { hsnCode: '9018', gstRate: 5, treatment: null, description: 'Instruments' },
@@ -24,11 +24,11 @@ describe('matchHsnGst', () => {
     expect(m).toMatchObject({ matchedCode: '3004', gstRate: 5, treatment: 'taxable' });
   });
 
-  // The whole reason longest-prefix matching exists: ORS must stay nil even
-  // though its chapter heading is 5%.
+  // A specific tariff item must still beat its heading, even when the current
+  // rate happens to be the same; future amendments can change either row.
   it('lets a specific tariff item beat its heading', () => {
     const m = matchHsnGst('30049010', rows)!;
-    expect(m).toMatchObject({ matchedCode: '30049010', gstRate: 0, treatment: 'nil_rated' });
+    expect(m).toMatchObject({ matchedCode: '30049010', gstRate: 5, treatment: 'taxable' });
   });
 
   it('returns nothing when no row is a prefix', () => {

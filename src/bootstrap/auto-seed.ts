@@ -44,6 +44,7 @@ import { seedDrugMaster } from '../seeds/drug-master';
 import { seedImagingModalities } from '../seeds/imaging-modalities';
 import { seedGstSlabs, seedGstCategoryDefaults } from '../seeds/gst-slabs';
 import { seedHsnGstRates } from '../seeds/hsn-gst-rates';
+import { seedDrugGstClassification } from '../seeds/drug-gst-classification';
 import { seedSacCodes } from '../seeds/sac-codes';
 import { seedDrugScheduleRules } from '../seeds/drug-schedule-rules';
 import { seedDrugScheduleClassification } from '../seeds/drug-schedule-classification';
@@ -181,6 +182,10 @@ export async function runSeeds(db: PrismaClient): Promise<void> {
   await step('gst-slabs', () => seedGstSlabs(db));
   await step('gst-category-defaults', () => seedGstCategoryDefaults(db));
   await step('hsn-gst-rates', () => seedHsnGstRates(db));
+  // The vendor release has no HSN/GST columns. Classify new/changed medicine
+  // rows after both the catalogue and HSN master exist; OTC products stay
+  // unclassified until their actual HSN is entered.
+  await step('drug-gst-classification', () => seedDrugGstClassification(db));
   // The services half of the same reference. Cheap, and every service line
   // needs it to resolve a rate at all.
   await step('sac-codes', () => seedSacCodes(db));

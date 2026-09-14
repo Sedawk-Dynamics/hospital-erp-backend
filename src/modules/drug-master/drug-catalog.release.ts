@@ -315,7 +315,7 @@ export async function upsertProducts(
         safetyAdvice: jsonOrNull(d.product.safetyAdvice),
         drugInteractions: jsonOrNull(d.drugInteractions),
         monograph: jsonOrNull(d.monograph),
-        ...(reclassify ? { classifierVersion: null } : {}),
+        ...(reclassify ? { classifierVersion: null, gstClassifierVersion: null } : {}),
       },
     });
     if (compositionChanged) {
@@ -327,7 +327,7 @@ export async function upsertProducts(
           drugMasterId: e.id,
           OR: [{ scheduleSource: null }, { scheduleSource: { not: 'manual' } }],
         },
-        data: { classifierVersion: null },
+        data: { classifierVersion: null, gstClassifierVersion: null },
       });
     }
     totals.updated += 1;

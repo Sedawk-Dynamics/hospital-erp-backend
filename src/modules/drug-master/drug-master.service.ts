@@ -76,6 +76,8 @@ export async function searchDrugMaster(query: SearchDrugMasterQuery) {
     // Identity fields so a catalog pick can fill the stock-entry boxes fully.
     packSize: true,
     hsnCode: true,
+    gstRate: true,
+    gstTreatment: true,
     gtin: true,
     mrp: true,
     type: true,
@@ -305,7 +307,9 @@ export async function createDrugMaster(
       unitsPerCase: data.unitsPerCase ?? null,
       manufacturerCode: data.manufacturerCode ?? null,
       hsnCode: data.hsnCode ?? null,
-      gstRate: data.gstRate ?? null,
+      gstRate: data.gstTreatment && data.gstTreatment !== 'taxable' ? 0 : (data.gstRate ?? null),
+      gstTreatment: data.gstTreatment ?? null,
+      gstTreatmentSource: data.gstTreatment != null ? 'manual' : null,
       aliases,
       tags,
       searchTokens: buildDrugSearchTokens({
@@ -424,7 +428,11 @@ export async function updateDrugMaster(
       unitsPerCase: data.unitsPerCase !== undefined ? data.unitsPerCase : undefined,
       manufacturerCode: data.manufacturerCode !== undefined ? data.manufacturerCode : undefined,
       hsnCode: data.hsnCode !== undefined ? data.hsnCode : undefined,
-      gstRate: data.gstRate !== undefined ? data.gstRate : undefined,
+      gstRate: data.gstTreatment && data.gstTreatment !== 'taxable'
+        ? 0
+        : data.gstRate !== undefined ? data.gstRate : undefined,
+      gstTreatment: data.gstTreatment !== undefined ? data.gstTreatment : undefined,
+      gstTreatmentSource: data.gstTreatment !== undefined ? (data.gstTreatment ? 'manual' : null) : undefined,
       aliases: data.aliases ?? undefined,
       tags: data.tags ?? undefined,
       isPublished: data.isPublished ?? undefined,
@@ -515,7 +523,7 @@ function rowTreatment(raw: string | null | undefined, rate: number): GstTreatmen
 }
 
 /**
- * Longest-prefix match: an 8-digit tariff item (e.g. ORS 30049010 → nil) wins
+ * Longest-prefix match: an 8-digit tariff item (e.g. ORS 30049010) wins
  * over its 4-digit chapter heading (3004 → 5%). Pure, so the inward loop can
  * match many lines against one preloaded row set. Returns null when no seeded
  * row is a prefix of the input.
@@ -550,9 +558,12 @@ export async function listHsnGstRates() {
   const rows = await prisma.hsnGstRate.findMany({
     where: { isActive: true },
     orderBy: { hsnCode: 'asc' },
-    select: { id: true, hsnCode: true, description: true, gstRate: true, category: true },
+    select: { id: true, hsnCode: true, description: true, gstRate: true, treatment: true, category: true },
   });
-  return rows.map((r) => ({ ...r, gstRate: Number(r.gstRate) }));
+  return rows.map((r) => {
+    const gstRate = Number(r.gstRate);
+    return { ...r, gstRate, treatment: rowTreatment(r.treatment, gstRate) };
+  });
 }
 
 // ── Super-admin management of the HSN → GST reference ──
@@ -562,7 +573,10 @@ export async function listAllHsnGstRates() {
   const rows = await prisma.hsnGstRate.findMany({
     orderBy: { hsnCode: 'asc' },
   });
-  return rows.map((r) => ({ ...r, gstRate: Number(r.gstRate) }));
+  return rows.map((r) => {
+    const gstRate = Number(r.gstRate);
+    return { ...r, gstRate, treatment: rowTreatment(r.treatment, gstRate) };
+  });
 }
 
 /**
@@ -591,6 +605,17 @@ async function assertLegalSlab(ratePercent: unknown, what: string): Promise<void
   );
 }
 
+function reconcileHsnTreatment(rate: number, treatment?: GstTreatment): {
+  gstRate: number;
+  treatment: GstTreatment;
+} {
+  const resolved = treatment ?? (rate > 0 ? 'taxable' : 'nil_rated');
+  if (resolved === 'taxable' && rate <= 0) return { gstRate: 0, treatment: 'nil_rated' };
+  return resolved === 'taxable'
+    ? { gstRate: Math.max(0, rate), treatment: resolved }
+    : { gstRate: 0, treatment: resolved };
+}
+
 export async function createHsnGstRate(
   roles: string[],
   data: CreateHsnGstRateInput,
@@ -600,12 +625,14 @@ export async function createHsnGstRate(
   assertCanManage(roles);
   const hsnCode = normalizeHsn(data.hsnCode);
   if (!hsnCode) throw AppError.badRequest('HSN code must contain digits');
+  const classification = reconcileHsnTreatment(data.gstRate, data.treatment);
   try {
     const row = await prisma.hsnGstRate.create({
       data: {
         hsnCode,
         description: data.description ?? null,
-        gstRate: data.gstRate,
+        gstRate: classification.gstRate,
+        treatment: classification.treatment,
         category: data.category ?? null,
         isActive: data.isActive ?? true,
       },
@@ -644,13 +671,22 @@ export async function updateHsnGstRate(
 
   const hsnCode = data.hsnCode !== undefined ? normalizeHsn(data.hsnCode) : undefined;
   if (hsnCode !== undefined && !hsnCode) throw AppError.badRequest('HSN code must contain digits');
+  const classification = reconcileHsnTreatment(
+    data.gstRate ?? Number(existing.gstRate),
+    data.treatment !== undefined
+      ? data.treatment
+      : data.gstRate !== undefined
+        ? undefined
+        : rowTreatment(existing.treatment, Number(existing.gstRate)),
+  );
   try {
     const row = await prisma.hsnGstRate.update({
       where: { id },
       data: {
         hsnCode,
         description: data.description !== undefined ? data.description : undefined,
-        gstRate: data.gstRate !== undefined ? data.gstRate : undefined,
+        gstRate: classification.gstRate,
+        treatment: classification.treatment,
         category: data.category !== undefined ? data.category : undefined,
         isActive: data.isActive !== undefined ? data.isActive : undefined,
       },
@@ -712,11 +748,16 @@ export async function bulkUpsertHsnGstRates(
   for (const [hsnCode, r] of byCode) {
     try {
       const existing = await prisma.hsnGstRate.findUnique({ where: { hsnCode } });
+      const classification = reconcileHsnTreatment(
+        r.gstRate,
+        r.treatment,
+      );
       if (existing) {
         await prisma.hsnGstRate.update({
           where: { hsnCode },
           data: {
-            gstRate: r.gstRate,
+            gstRate: classification.gstRate,
+            treatment: classification.treatment,
             description: r.description ?? existing.description,
             category: r.category ?? existing.category,
             isActive: r.isActive ?? existing.isActive,
@@ -728,7 +769,8 @@ export async function bulkUpsertHsnGstRates(
           data: {
             hsnCode,
             description: r.description ?? null,
-            gstRate: r.gstRate,
+            gstRate: classification.gstRate,
+            treatment: classification.treatment,
             category: r.category ?? null,
             isActive: r.isActive ?? true,
           },

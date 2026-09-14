@@ -69,7 +69,7 @@ const DRUGS: DemoDrug[] = [
   { name: 'Cetzine 10 Tablet', generic: 'Cetirizine', manufacturer: "Dr Reddy's", strength: '10mg', form: 'tablet', packLabel: 'Strip of 10 tablets', packSize: 10, hsn: '30049099', gst: 5 },
   { name: 'Allegra 120 Tablet', generic: 'Fexofenadine', manufacturer: 'Sanofi', strength: '120mg', form: 'tablet', packLabel: 'Strip of 10 tablets', packSize: 10, hsn: '30049099', gst: 5 },
   { name: 'Huminsulin R 40IU Injection', generic: 'Human Insulin', manufacturer: 'Eli Lilly', strength: '40IU/ml', form: 'injection', packLabel: 'Vial of 10ml', packSize: null, hsn: '30043110', gst: 5 },
-  { name: 'Electral ORS Powder', generic: 'Oral Rehydration Salts', manufacturer: 'FDC', strength: '21.8g', form: 'other', packLabel: 'Sachet of 21.8g', packSize: null, hsn: '30049010', gst: 0 },
+  { name: 'Electral ORS Powder', generic: 'Oral Rehydration Salts', manufacturer: 'FDC', strength: '21.8g', form: 'other', packLabel: 'Sachet of 21.8g', packSize: null, hsn: '30049010', gst: 5 },
   { name: 'Ascoril LS Syrup', generic: 'Ambroxol + Levosalbutamol + Guaifenesin', manufacturer: 'Glenmark', strength: '100ml', form: 'syrup', packLabel: 'Bottle of 100ml', packSize: null, hsn: '30049099', gst: 5 },
   { name: 'Volini Gel', generic: 'Diclofenac Diethylamine', manufacturer: 'Sun Pharma', strength: '30g', form: 'cream', packLabel: 'Tube of 30g', packSize: null, hsn: '30049099', gst: 5 },
   { name: 'Supradyn Daily Tablet', generic: 'Multivitamin + Multimineral', manufacturer: 'Bayer', strength: 'Once daily', form: 'tablet', packLabel: 'Strip of 15 tablets', packSize: 15, hsn: '21069099', gst: 18 },

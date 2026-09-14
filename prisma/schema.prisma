@@ -4207,6 +4207,19 @@ model DrugMaster {
   manufacturerCode  String?     @map("manufacturer_code") @db.VarChar(100)
   hsnCode           String?     @map("hsn_code") @db.VarChar(20)
   gstRate           Decimal?    @map("gst_rate") @db.Decimal(5, 2)
+  // Explicit product-level treatment for exceptions that HSN alone cannot
+  // express (for example the medicines named in Notification 10/2025-CT(R)).
+  // Null means "resolve from the HSN master"; ordinary taxable medicines stay
+  // null so a later statutory HSN-rate change is picked up automatically.
+  gstTreatment      String?     @map("gst_treatment") @db.VarChar(20)
+  // 'notification' for the built-in named-medicine exemption, 'manual' for a
+  // super-admin classification. Lets a later catalogue refresh safely remove
+  // an inferred exemption without touching a person's decision.
+  gstTreatmentSource String?    @map("gst_treatment_source") @db.VarChar(20)
+  // Version of the catalogue GST classifier that last considered this row.
+  // It lets startup process only new/changed vendor rows instead of rescanning
+  // the entire catalogue on every boot.
+  gstClassifierVersion Int?     @map("gst_classifier_version")
   aliases           String[]    @default([])
   tags              String[]    @default([])
   // Rich clinical detail (populated from the richer dataset / future provider
@@ -5240,6 +5253,11 @@ model DrugFormulary {
   unitsPerCase           Int?              @map("units_per_case")
   manufacturerCode       String?           @map("manufacturer_code") @db.VarChar(100)
   hsnCode                String?           @map("hsn_code") @db.VarChar(20)
+  // Null = resolve from HSN. Set only for a product-specific exception such as
+  // exempt / nil-rated / non-GST, or an authorised item-level override.
+  gstTreatment           String?           @map("gst_treatment") @db.VarChar(20)
+  gstTreatmentSource     String?           @map("gst_treatment_source") @db.VarChar(20)
+  gstClassifierVersion   Int?              @map("gst_classifier_version")
   // G9: reorder level (in base units). When live stock falls to/below this, the
   // drug surfaces in the reorder list for a draft purchase order.
   minStock               Int?              @map("min_stock")

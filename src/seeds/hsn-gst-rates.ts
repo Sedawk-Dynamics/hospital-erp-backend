@@ -10,7 +10,8 @@
  *
  * Rates below follow the GST 2.0 rationalisation effective 22 September 2025:
  * most medicaments (Chapter 30) moved from 12% to 5%, notified life-saving drugs
- * and ORS are nil, and a few items (nutraceuticals, nicotine gum) sit at 18%.
+ * Named notification exemptions are stored on the medicine itself; a few
+ * items (nutraceuticals, nicotine gum) sit at 18%.
  * They are a sensible, editable starting point — a hospital can override any row
  * (the reference is platform data, like the ICD/drug catalogs).
  *
@@ -40,7 +41,7 @@ interface HsnSeed {
 }
 
 // 4-digit headings are chapter-wide defaults; 6/8-digit entries override them for
-// specific tariff items (e.g. ORS 30049010 is nil while the 3004 default is 5%).
+// specific tariff items may override their chapter heading.
 const HSN_RATES: HsnSeed[] = [
   // ── Chapter 30 — pharmaceutical products (heading-level defaults) ──
   { hsn: '3001', gst: 5, desc: 'Glands & organs, heparin (organo-therapeutic uses)', category: 'medicine' },
@@ -50,7 +51,7 @@ const HSN_RATES: HsnSeed[] = [
   { hsn: '3005', gst: 5, desc: 'Wadding, gauze, bandages & similar dressings', category: 'consumable' },
   { hsn: '3006', gst: 5, desc: 'Pharmaceutical goods — surgical catgut, blood-grouping reagents, etc.', category: 'consumable' },
   // ── Specific tariff items that override the heading default ──
-  { hsn: '30049010', gst: 0, desc: 'Oral Rehydration Salts (ORS) — nil-rated', category: 'medicine', treatment: 'nil_rated' },
+  { hsn: '30049010', gst: 5, desc: 'Oral Rehydration Salts (ORS)', category: 'medicine', treatment: 'taxable' },
   { hsn: '30043110', gst: 5, desc: 'Insulin injections', category: 'medicine' },
   // ── Medical devices / diagnostics / consumables. GST 2.0 cut virtually all of
   //    Chapter 90 (and surgical gloves / diagnostic kits) from 12/18% to 5%. ──
@@ -87,7 +88,7 @@ const DRUG_TAGS: DrugSeed[] = [
   { name: 'Azithromycin 500mg Tablet', generic: 'Azithromycin', dosageForm: 'tablet', strength: '500mg', hsn: '30042099', gst: 5 },
   { name: 'Metformin 500mg Tablet', generic: 'Metformin', dosageForm: 'tablet', strength: '500mg', hsn: '30049099', gst: 5 },
   { name: 'Human Insulin 40IU/ml Injection', generic: 'Insulin', dosageForm: 'injection', strength: '40IU/ml', hsn: '30043110', gst: 5 },
-  { name: 'ORS Powder (Oral Rehydration Salts)', generic: 'Oral Rehydration Salts', dosageForm: 'other', strength: '21.8g/L', hsn: '30049010', gst: 0 },
+  { name: 'ORS Powder (Oral Rehydration Salts)', generic: 'Oral Rehydration Salts', dosageForm: 'other', strength: '21.8g/L', hsn: '30049010', gst: 5 },
 ];
 
 async function main() {

@@ -19,7 +19,7 @@ function registered(over: Record<string, unknown> = {}) {
 function masters() {
   (prisma.hsnGstRate.findMany as any).mockResolvedValue([
     { hsnCode: '3004', gstRate: 5, treatment: 'taxable', description: 'Medicaments' },
-    { hsnCode: '30049010', gstRate: 0, treatment: 'nil_rated', description: 'ORS' },
+    { hsnCode: '30049010', gstRate: 5, treatment: 'taxable', description: 'ORS' },
     { hsnCode: '2106', gstRate: 18, treatment: 'taxable', description: 'Supplements' },
   ]);
   (prisma.sacCode.findMany as any).mockResolvedValue([

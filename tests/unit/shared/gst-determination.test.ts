@@ -260,8 +260,8 @@ describe('determineTax — the masters, and the fallback safety rule', () => {
 
   it('reports a nil-rated HSN row as nil rather than as exempt', () => {
     const d = determineTax(
-      ctx({ hsnCode: '30049010' }),
-      masters({ hsnMatch: { code: '30049010', ratePercent: 0, treatment: 'nil_rated' } }),
+      ctx({ hsnCode: '30049011' }),
+      masters({ hsnMatch: { code: '30049011', ratePercent: 0, treatment: 'nil_rated' } }),
     );
     expect(d).toMatchObject({ treatment: 'nil_rated', ratePercent: 0 });
     expect(d.reason).toContain('Nil-rated');
