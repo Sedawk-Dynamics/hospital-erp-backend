@@ -190,6 +190,7 @@ export async function pendingClassificationCount(
           where: {
             ...(opts.tenantId ? { tenantId: opts.tenantId } : {}),
             AND: [
+              { category: { not: 'product' } },
               // Spelled as an explicit OR because `not: 'manual'` alone would
               // also drop every NULL row — in SQL, NULL <> 'manual' is NULL,
               // not true, so the unclassified rows would never be counted.
@@ -378,6 +379,7 @@ export async function runClassification(
     const where = {
       ...(opts.tenantId ? { tenantId: opts.tenantId } : {}),
       AND: [
+        { category: { not: 'product' } },
         { OR: [{ scheduleSource: null }, { scheduleSource: { not: 'manual' } }] },
         ...(opts.force ? [] : [staleOnly]),
       ],

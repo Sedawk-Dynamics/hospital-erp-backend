@@ -124,7 +124,7 @@ export async function classifyFormularyItem(
     const row = await prisma.drugFormulary.findUnique({
       where: { id: formularyId },
       select: {
-        id: true, drugName: true, genericName: true, composition: true,
+        id: true, drugName: true, category: true, genericName: true, composition: true,
         dosageForm: true, drugMasterId: true, scheduleSource: true,
         drugMaster: {
           select: {
@@ -135,6 +135,7 @@ export async function classifyFormularyItem(
       },
     });
     if (!row) return null;
+    if (row.category === 'product') return null;
     // A pharmacist's override outranks the classifier, permanently.
     if (row.scheduleSource === 'manual') return null;
 

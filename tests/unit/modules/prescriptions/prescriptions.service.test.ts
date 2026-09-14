@@ -91,6 +91,33 @@ describe('Prescriptions Service', () => {
         } as any),
       ).rejects.toThrow('Visit not found');
     });
+
+    it('rejects a retail product even when its formulary id is submitted directly', async () => {
+      vi.mocked(prisma.patient.findFirst).mockResolvedValueOnce({ id: 'pat-1' } as any);
+      vi.mocked(prisma.doctorProfile.findFirst).mockResolvedValueOnce({ id: 'doc-1' } as any);
+      vi.mocked(prisma.visit.findFirst).mockResolvedValueOnce({ id: 'visit-1' } as any);
+      vi.mocked(prisma.drugFormulary.findFirst).mockResolvedValueOnce({
+        id: 'product-1',
+        drugName: 'Baby Bottle',
+        category: 'product',
+      } as any);
+
+      await expect(
+        createPrescription(TENANT_ID, USER_ID, {
+          patientId: 'pat-1',
+          doctorId: 'doc-1',
+          visitId: 'visit-1',
+          prescriptionType: 'medication',
+          items: [{
+            drugId: 'product-1',
+            drugName: 'Baby Bottle',
+            dosage: '1',
+            frequency: 'once',
+          }],
+        } as any),
+      ).rejects.toThrow('retail product and cannot be prescribed');
+      expect(prisma.prescription.create).not.toHaveBeenCalled();
+    });
   });
 
   describe('updatePrescription', () => {

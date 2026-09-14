@@ -53,6 +53,21 @@ function resolveItemQuantity(item: {
   return calcDispenseQuantity(item.frequency, item.duration, item.doseQuantity);
 }
 
+async function assertNoRetailProducts(
+  tenantId: string,
+  items: Array<{ drugId?: string | null }>,
+): Promise<void> {
+  const ids = Array.from(new Set(items.map((item) => item.drugId).filter((id): id is string => !!id)));
+  if (!ids.length) return;
+  const product = await prisma.drugFormulary.findFirst({
+    where: { tenantId, id: { in: ids }, category: 'product' },
+    select: { drugName: true },
+  });
+  if (product) {
+    throw AppError.badRequest(`"${product.drugName}" is a retail product and cannot be prescribed.`);
+  }
+}
+
 // ============================================================
 // Prescriptions
 // ============================================================
@@ -91,6 +106,8 @@ export async function createPrescription(
   if (!visit) {
     throw AppError.notFound('Visit not found');
   }
+
+  await assertNoRetailProducts(tenantId, data.items ?? []);
 
   const prescription = await prisma.prescription.create({
     data: {
@@ -466,6 +483,7 @@ export async function updatePrescription(
   // the prescription contents with just `prescriptions:update` — no
   // `prescriptions:delete` permission required.
   const replaceItems = data.items !== undefined;
+  if (replaceItems) await assertNoRetailProducts(tenantId, data.items ?? []);
   const updated = await prisma.$transaction(async (tx) => {
     if (replaceItems) {
       await tx.prescriptionItem.deleteMany({ where: { prescriptionId: id } });
@@ -596,6 +614,7 @@ export async function addPrescriptionItem(
   data: AddPrescriptionItemInput,
 ) {
   const prescription = await getActivePrescription(tenantId, prescriptionId);
+  await assertNoRetailProducts(tenantId, [data]);
 
   // 24-hour edit window
   const hoursElapsed = (Date.now() - new Date(prescription.createdAt).getTime()) / (1000 * 60 * 60);
@@ -643,6 +662,7 @@ export async function updatePrescriptionItem(
   data: UpdatePrescriptionItemInput,
 ) {
   const prescription = await getActivePrescription(tenantId, prescriptionId);
+  if (data.drugId) await assertNoRetailProducts(tenantId, [data]);
 
   // 24-hour edit window
   const hoursElapsed = (Date.now() - new Date(prescription.createdAt).getTime()) / (1000 * 60 * 60);
@@ -1061,7 +1081,7 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
   const [namePrefix, genericPrefix, substringFormulary] = await Promise.all([
     q
       ? prisma.drugFormulary.findMany({
-          where: { tenantId, isActive: true, drugName: { startsWith: q, mode: 'insensitive' } },
+          where: { tenantId, isActive: true, category: { not: 'product' }, drugName: { startsWith: q, mode: 'insensitive' } },
           select: formularySelect,
           take: 100,
           orderBy: { drugName: 'asc' },
@@ -1069,7 +1089,7 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
       : emptyFormulary,
     q
       ? prisma.drugFormulary.findMany({
-          where: { tenantId, isActive: true, genericName: { startsWith: q, mode: 'insensitive' } },
+          where: { tenantId, isActive: true, category: { not: 'product' }, genericName: { startsWith: q, mode: 'insensitive' } },
           select: formularySelect,
           take: 100,
           orderBy: { drugName: 'asc' },
@@ -1079,6 +1099,7 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
       where: {
         tenantId,
         isActive: true,
+        category: { not: 'product' },
         OR: [
           { drugName: { contains: search, mode: 'insensitive' } },
           { genericName: { contains: search, mode: 'insensitive' } },
@@ -1098,14 +1119,14 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
     const fuzzyIds = await fuzzyMatchIds({
       table: 'drug_formulary',
       query: q,
-      where: Prisma.sql`tenant_id = ${tenantId} AND is_active = true`,
+      where: Prisma.sql`tenant_id = ${tenantId} AND is_active = true AND category <> 'product'`,
       limit: 40,
     });
     const known = new Set([...namePrefix, ...genericPrefix, ...substringFormulary].map((f) => f.id));
     const fuzzyNewIds = fuzzyIds.filter((id) => !known.has(id));
     if (fuzzyNewIds.length) {
       fuzzyFormulary = await prisma.drugFormulary.findMany({
-        where: { tenantId, isActive: true, id: { in: fuzzyNewIds } },
+        where: { tenantId, isActive: true, category: { not: 'product' }, id: { in: fuzzyNewIds } },
         select: formularySelect,
       });
     }
@@ -1387,7 +1408,7 @@ export async function checkInteractions(
   // ── Pull formulary contraindications (tenant-scoped) ────
   // Match by normalised drugName or genericName substring on the formulary.
   const formularyRows = await prisma.drugFormulary.findMany({
-    where: { tenantId, isActive: true },
+    where: { tenantId, isActive: true, category: { not: 'product' } },
     select: {
       id: true,
       drugName: true,

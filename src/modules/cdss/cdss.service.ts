@@ -70,7 +70,7 @@ export async function validatePrescription(
   // Resolve drug names to formulary entries so we know the generic name.
   const drugNames = data.items.map((i) => i.drugName);
   const formulary = await prisma.drugFormulary.findMany({
-    where: { tenantId },
+    where: { tenantId, category: { not: 'product' } },
     select: {
       drugName: true, genericName: true, contraindications: true,
     },
