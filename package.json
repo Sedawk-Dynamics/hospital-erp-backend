@@ -33,6 +33,7 @@
     "db:classify-schedules": "tsx prisma/scripts/classify-drug-schedules.ts",
     "db:check-composition": "tsx prisma/scripts/structured-composition-check.ts",
     "db:check-drug-catalog": "tsx prisma/scripts/drug-catalog-e2e.ts",
+    "db:check-retail-products": "tsx prisma/scripts/retail-product-e2e.ts",
     "db:stock-transfer-e2e": "tsx prisma/scripts/stock-transfer-e2e.ts",
     "db:check-prescriptions": "tsx prisma/scripts/prescriptions-e2e.ts",
     "db:check-drug-returns": "tsx prisma/scripts/drug-returns-e2e.ts",

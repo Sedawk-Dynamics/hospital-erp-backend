@@ -85,6 +85,14 @@ are idempotent; heavy catalogs are skipped once populated.
   Every later boot: 13 s for the whole auto-seed, the catalogue step itself one
   query (5 ms). The server is usable throughout; a catalogue drug imported into a
   formulary before classification reaches it is classified on the spot.
+- **Retail products** — catalogue rows from the OTC workbook import into the
+  hospital formulary as `product`, while rows from the two drug workbooks import
+  as `drug`. Products use the same batches, barcodes, HSN/GST, stock ledger and
+  counter-sale path as medicines, but are deliberately excluded from
+  prescriptions, salt/schedule classification and CDSS interaction checks. The
+  schema change is additive (`InventoryCategory.product` plus nullable
+  `drug_formulary.product_category`) and is applied automatically by the Docker
+  start command. Verify the complete path with `npm run db:check-retail-products`.
 - **Imaging modalities** + **role-permission resync** — per-tenant, self-healing
   for tenants created between deploys.
 
