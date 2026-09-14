@@ -83,6 +83,8 @@ export async function searchDrugMaster(query: SearchDrugMasterQuery) {
     // What the vendor's label says, so a picker can mark OTC and Rx-only.
     rxRequired: true,
     productForm: true,
+    productCategory: true,
+    categoryPath: true,
   } as const;
 
   // Wider window so JS relevance ranking can see all near matches; sliced back

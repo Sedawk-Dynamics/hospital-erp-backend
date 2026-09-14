@@ -176,6 +176,36 @@ describe('Pharmacy — getters / CRUD / recalls coverage', () => {
       expect(r.item.id).toBe('d1');
     });
 
+    it('imports an OTC catalogue row as a retail product, not a medicine', async () => {
+      (prisma.drugMaster.findUnique as any).mockResolvedValue({
+        id: 'otc-1',
+        isPublished: true,
+        type: 'otc',
+        name: 'Baby Lotion',
+        productCategory: 'Baby Care',
+        packSize: 1,
+        packSizeLabel: '1 bottle',
+        mrp: 120,
+        scheduleResolved: null,
+      });
+      (prisma.drugFormulary.findFirst as any).mockResolvedValue(null);
+      (prisma.drugFormulary.create as any).mockImplementation(async ({ data }: any) => ({
+        id: 'product-1',
+        ...data,
+      }));
+
+      const result = await importFormularyItem(TENANT_ID, ADMIN_ROLES, {
+        drugMasterId: 'otc-1',
+      } as any);
+
+      expect(result.item).toMatchObject({
+        category: 'product',
+        productCategory: 'Baby Care',
+      });
+      expect(result.item.schedule).toBeUndefined();
+      expect(prisma.drugMaster.findUnique).toHaveBeenCalledTimes(1);
+    });
+
     it('is idempotent — returns already_imported when present', async () => {
       (prisma.drugMaster.findUnique as any).mockResolvedValue({ id: 'm1', isPublished: true, name: 'Amox' });
       (prisma.drugFormulary.findFirst as any).mockResolvedValue({ id: 'd1', drugMasterId: 'm1', category: null });

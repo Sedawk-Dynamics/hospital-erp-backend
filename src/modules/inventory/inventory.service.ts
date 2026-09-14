@@ -604,6 +604,7 @@ export interface UnifiedStockRow {
   // Drug composition (generic/salt name) and learned vendor/invoice names that
   // resolve to this drug — both shown in the list and included in search.
   composition: string | null;
+  productCategory: string | null;
   mappingNames: string | null;
   // Drug schedule (Drugs & Cosmetics Rules 1945) and the NDPS overlay. Null for
   // non-medicine stock. Advisory labelling — nothing gates a sale on it yet.
@@ -656,6 +657,7 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
         false AS is_recalled,
         -- Generic items have no drug composition / vendor-name mappings.
         NULL::text AS composition,
+        NULL::text AS product_category,
         NULL::text AS mapping_names,
         -- Only medicines carry a drug schedule.
         NULL::text AS schedule,
@@ -695,6 +697,7 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
         -- and searchable so staff can find a medicine by its salt or the name a
         -- supplier prints on the invoice.
         df.generic_name AS composition,
+        df.product_category AS product_category,
         mn.mapping_names AS mapping_names,
         -- Drug schedule resolved by the classifier. Two separate axes: the
         -- schedule is what the counter must collect, controlled_class is which
@@ -751,6 +754,7 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
       Prisma.sql`lower(COALESCE(code, '')) LIKE ${like}`,
       // Also match on the drug's composition (salt) and any learned vendor names.
       Prisma.sql`lower(COALESCE(composition, '')) LIKE ${like}`,
+      Prisma.sql`lower(COALESCE(product_category, '')) LIKE ${like}`,
       Prisma.sql`lower(COALESCE(mapping_names, '')) LIKE ${like}`,
     ];
     // Typo-tolerant fill: trigram-similar names/composition ("parcetamol" →
@@ -794,6 +798,7 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
     nearest_expiry: Date | null;
     is_recalled: boolean;
     composition: string | null;
+    product_category: string | null;
     mapping_names: string | null;
     schedule: string | null;
     controlled_class: string | null;
@@ -816,6 +821,7 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
     nearestExpiry: r.nearest_expiry,
     isRecalled: r.is_recalled,
     composition: r.composition,
+    productCategory: r.product_category,
     mappingNames: r.mapping_names,
     schedule: r.schedule,
     controlledClass: r.controlled_class,

@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import type { InventoryCategoryValue } from '../../shared/inventory-category';
 import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
 import { normalizeAdmissionType } from '../../shared/admission-type';
 import { prisma } from '../../config/database';
@@ -164,6 +165,7 @@ export async function findFormularyMatches(
     manufacturer?: string | null;
     strength?: string | null;
     dosageForm?: string | null;
+    category?: InventoryCategoryValue | null;
     excludeId?: string;
   },
 ) {
@@ -184,6 +186,7 @@ export async function findFormularyMatches(
   if (params.manufacturer) or.push({ manufacturer: { contains: params.manufacturer, mode: 'insensitive' } });
 
   const where: any = { tenantId, isActive: true };
+  if (params.category) where.category = params.category;
   if (params.excludeId) where.id = { not: params.excludeId };
   if (or.length) where.OR = or;
 
@@ -417,7 +420,7 @@ async function assertFormularyGtinUnique(
     if (clash) {
       const who = `${clash.drugName}${clash.strength ? ' ' + clash.strength : ''}`;
       throw AppError.conflict(
-        `${label} ${value} is already assigned to "${who}". Each medicine must have a unique GTIN.`,
+        `${label} ${value} is already assigned to "${who}". Each stock item must have a unique GTIN.`,
       );
     }
   }
@@ -442,6 +445,7 @@ export async function createFormularyItem(
       manufacturer: data.manufacturer,
       strength: data.strength,
       dosageForm: data.dosageForm,
+      category: ((data as any).category ?? 'drug') as InventoryCategoryValue,
     });
     if (matches.length && matches[0].score >= MATCH_BLOCK_THRESHOLD) {
       return { status: 'duplicate_suspected' as const, matches };
@@ -457,6 +461,7 @@ export async function createFormularyItem(
       // What KIND of stock this is (medicine / consumable / surgical / …). All
       // types live here so they share one flow; defaults to medicine.
       category: ((data as any).category ?? 'drug') as any,
+      productCategory: (data as any).productCategory?.trim() || undefined,
       // Coerce free-form inward/OCR forms ("Tablet", "INJ", …) to the enum.
       dosageForm: normalizeDosageForm(data.dosageForm) as any,
       strength: data.strength,
@@ -514,7 +519,11 @@ export async function createFormularyItem(
   // Resolve the drug's schedule (H/H1/X/G/H2) from its composition. Advisory
   // labelling only — nothing reads it to gate a sale yet — and it can never fail
   // the create: classifyFormularyItem swallows and logs its own errors.
-  const schedulePatch = await classifyFormularyItem(formularyItem.id);
+  // Retail products share batches and POS with medicines, but must never enter
+  // the salts/schedule/controlled-drug pipeline.
+  const schedulePatch = formularyItem.category === 'drug'
+    ? await classifyFormularyItem(formularyItem.id)
+    : null;
 
   return {
     status: 'created' as const,
@@ -676,6 +685,7 @@ export async function resolveInwardLine(
     manufacturer: line.manufacturer,
     strength: line.strength,
     dosageForm: line.dosageForm,
+    category: (line.category as InventoryCategoryValue | null | undefined) ?? undefined,
   });
   const top = formularyMatches[0];
   let recommendation: InwardRecommendation;
@@ -1109,7 +1119,7 @@ export async function commitInward(
       // that the pharmacy could never bill from.
       const lineCategory = (line.kind === 'item'
         ? (line.category || 'other')
-        : 'drug') as 'drug' | 'consumable' | 'surgical_supply' | 'equipment' | 'other';
+        : 'drug') as InventoryCategoryValue;
 
       const drugQty = line.quantityReceived ?? 0;
       let drugId: string;
@@ -1364,7 +1374,7 @@ export async function importFormularyItem(
   // is, until the deploy's classification pass reaches it — is labelled now, so
   // the drug never enters a formulary without the schedule the counter's gate
   // reads. classifyDrugMasterItem never throws.
-  if (!master.scheduleResolved) {
+  if (master.type !== 'otc' && !master.scheduleResolved) {
     await classifyDrugMasterItem(master.id);
     master = (await prisma.drugMaster.findUnique({ where: { id: master.id } })) ?? master;
   }
@@ -1389,6 +1399,11 @@ export async function importFormularyItem(
       tenantId,
       drugMasterId: master.id,
       drugName: master.name,
+      // Rows from the OTC workbook are retail products. They remain batch-
+      // tracked and sellable, but are not medicines and must not participate in
+      // salt, schedule, alternatives, prescribing, or controlled-drug flows.
+      category: master.type === 'otc' ? 'product' : 'drug',
+      productCategory: master.productCategory?.slice(0, 120) ?? undefined,
       // Catalog columns are wider than the formulary's — clamp to the formulary
       // column widths (genericName 255, unitOfMeasurement 20) to avoid overflow.
       genericName: master.genericName?.slice(0, 255) ?? null,
@@ -1415,14 +1430,14 @@ export async function importFormularyItem(
       // Carry the catalog's resolved schedule straight into the insert, so an
       // imported drug is labelled from the moment it exists. Empty object when
       // the catalog row has not been classified yet.
-      ...inheritedScheduleFields(master),
+      ...(master.type === 'otc' ? {} : inheritedScheduleFields(master)),
     },
   });
 
   // The classifier could not label the catalogue row either: the hospital's
   // copy is labelled from its own composition, exactly as a hand-added drug is.
   let saved = item;
-  if (!item.schedule) {
+  if (item.category === 'drug' && !item.schedule) {
     const patch = await classifyFormularyItem(item.id);
     if (patch) saved = { ...item, ...patch } as typeof item;
   }
@@ -1461,7 +1476,9 @@ export async function importFormularyItemsBulk(
   // Label any catalogue row not classified yet before copying it, so the copy
   // inherits a schedule in its first insert — see importFormularyItem. One at a
   // time; a bulk pick is tens of rows, not thousands.
-  const unlabelled = toCreate.filter((m) => !m.scheduleResolved).map((m) => m.id);
+  const unlabelled = toCreate
+    .filter((m) => m.type !== 'otc' && !m.scheduleResolved)
+    .map((m) => m.id);
   if (unlabelled.length) {
     for (const id of unlabelled) {
       // eslint-disable-next-line no-await-in-loop
@@ -1474,6 +1491,28 @@ export async function importFormularyItemsBulk(
   }
 
   if (toCreate.length) {
+    // Bulk import must carry the same identity/tax fields as one-click import.
+    // Claim GTIN variants in memory first so one colliding catalogue row cannot
+    // abort the entire createMany operation under the tenant-scoped uniques.
+    const occupiedRows = await prisma.drugFormulary.findMany({
+      where: {
+        tenantId,
+        OR: [{ gtin: { not: null } }, { casePackGtin: { not: null } }],
+      },
+      select: { gtin: true, casePackGtin: true },
+    });
+    const claimedGtins = new Set(
+      occupiedRows.flatMap((row) => [row.gtin, row.casePackGtin]).flatMap((value) => gtinVariants(value)),
+    );
+    const claimGtin = (value: string | null | undefined): string | null => {
+      const normalized = normalizeGtin(value);
+      if (!normalized) return null;
+      const variants = gtinVariants(normalized);
+      if (variants.some((variant) => claimedGtins.has(variant))) return null;
+      variants.forEach((variant) => claimedGtins.add(variant));
+      return normalized;
+    };
+
     await prisma.drugFormulary.createMany({
       data: toCreate.map((m) => {
         // Numeric pack size + loose-unit label so imported strips are sellable
@@ -1482,10 +1521,14 @@ export async function importFormularyItemsBulk(
         const packSize = m.packSize ?? resolvePackSize(m.dosageForm, m.packSizeLabel);
         const looseUnitLabel =
           packSize && packSize > 1 ? inferLooseUnitLabel(m.dosageForm, m.name) : null;
+        const carryGtin = claimGtin(m.gtin);
+        const carryCaseGtin = claimGtin(m.casePackGtin);
         return {
           tenantId,
           drugMasterId: m.id,
           drugName: m.name,
+          category: m.type === 'otc' ? 'product' : 'drug',
+          productCategory: m.productCategory?.slice(0, 120) ?? undefined,
           // Clamp to the formulary column widths (catalog columns are wider):
           // genericName 255 (catalog 500), unitOfMeasurement 20 (packSizeLabel 255).
           genericName: m.genericName?.slice(0, 255) ?? null,
@@ -1495,19 +1538,27 @@ export async function importFormularyItemsBulk(
           unitOfMeasurement: m.packSizeLabel?.slice(0, 20) ?? null,
           packSize: packSize ?? undefined,
           looseUnitLabel: looseUnitLabel ?? undefined,
+          gtin: carryGtin,
+          casePackGtin: carryCaseGtin,
+          unitsPerCase: m.unitsPerCase ?? undefined,
+          hsnCode: m.hsnCode ?? undefined,
+          manufacturerCode: m.manufacturerCode ?? undefined,
+          taxPercent: m.gstRate ?? undefined,
           // Per BASE UNIT (MRP ÷ packSize) — see importFormularyItem.
           price: perBaseUnitPrice(m.mrp, packSize),
           isActive: true,
           // Carried in the same insert rather than a second pass, so a bulk
           // import of hundreds of drugs costs no extra queries.
-          ...inheritedScheduleFields(m),
+          ...(m.type === 'otc' ? {} : inheritedScheduleFields(m)),
         };
       }),
     });
 
     // A copy whose catalogue drug the classifier still could not label is
     // labelled from its own composition, as a hand-added drug is.
-    const stillBare = toCreate.filter((m) => !m.scheduleResolved).map((m) => m.id);
+    const stillBare = toCreate
+      .filter((m) => m.type !== 'otc' && !m.scheduleResolved)
+      .map((m) => m.id);
     if (stillBare.length) {
       const rows = await prisma.drugFormulary.findMany({
         where: { tenantId, drugMasterId: { in: stillBare }, schedule: null },
@@ -1932,6 +1983,9 @@ export async function updateFormularyItem(
   const updateData: any = {};
   if (data.drugName !== undefined) updateData.drugName = data.drugName;
   if ((data as any).category !== undefined) updateData.category = (data as any).category;
+  if ((data as any).productCategory !== undefined) {
+    updateData.productCategory = (data as any).productCategory?.trim() || null;
+  }
   if (data.genericName !== undefined) updateData.genericName = data.genericName;
   if (data.manufacturer !== undefined) updateData.manufacturer = data.manufacturer;
   if (data.dosageForm !== undefined) updateData.dosageForm = data.dosageForm;
@@ -1998,7 +2052,8 @@ export async function updateFormularyItem(
   // reading "OTC" forever. A manual override is still respected inside
   // classifyFormularyItem, and a failure there leaves the drug saved.
   let schedulePatch: Record<string, unknown> | null = null;
-  if (affectsClassification({ ...(data as Record<string, unknown>) })) {
+  const resultingCategory = updateData.category ?? existing.category;
+  if (resultingCategory === 'drug' && affectsClassification({ ...(data as Record<string, unknown>) })) {
     schedulePatch = await classifyFormularyItem(id);
   }
   return { ...item, composition, ...(schedulePatch ?? {}) };

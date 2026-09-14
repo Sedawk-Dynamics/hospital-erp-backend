@@ -99,6 +99,36 @@ describe('Pharmacy Service', () => {
         }),
       );
     });
+
+    it('creates a retail product without running medicine classification', async () => {
+      const created = {
+        id: 'product-1',
+        tenantId: TENANT_ID,
+        drugName: 'Baby Feeding Bottle',
+        category: 'product',
+        productCategory: 'Baby Care',
+        isActive: true,
+      };
+      (prisma.drugFormulary.create as any).mockResolvedValue(created);
+
+      const result = await createFormularyItem(TENANT_ID, ADMIN_ROLES, {
+        drugName: 'Baby Feeding Bottle',
+        category: 'product',
+        productCategory: 'Baby Care',
+        force: true,
+      } as any);
+
+      expect(result).toMatchObject({
+        status: 'created',
+        item: { id: 'product-1', category: 'product', productCategory: 'Baby Care' },
+      });
+      expect(prisma.drugScheduleRule.findMany).not.toHaveBeenCalled();
+      expect(prisma.drugFormulary.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ category: 'product', productCategory: 'Baby Care' }),
+        }),
+      );
+    });
   });
 
   describe('getFormulary', () => {

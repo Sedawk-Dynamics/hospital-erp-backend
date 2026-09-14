@@ -112,16 +112,17 @@ export async function createUnifiedStock(req: AuthenticatedRequest, res: Respons
 
     if (body.kind === 'drug') {
       const { openingStock, costPerUnit, ...drugInput } = body.drug ?? {};
+      const isRetailProduct = drugInput.category === 'product';
       const result = await pharmacyService.createFormularyItem(tenantId, roles, {
         ...drugInput,
         force: body.force,
       });
-      // A near-duplicate medicine already exists — hand the suggestions back so the
+      // A near-duplicate item already exists — hand the suggestions back so the
       // UI can confirm and re-submit with force=true (mirrors the formulary guard).
       if (result.status === 'duplicate_suspected') {
         sendResponse({
           res,
-          message: 'A similar medicine already exists',
+          message: `A similar ${isRetailProduct ? 'product' : 'medicine'} already exists`,
           data: { kind: 'drug', status: 'duplicate_suspected', matches: result.matches },
         });
         return;

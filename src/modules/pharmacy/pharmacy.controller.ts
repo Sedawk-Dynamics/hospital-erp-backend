@@ -65,6 +65,7 @@ export async function findFormularyMatches(
       manufacturer: q.manufacturer,
       strength: q.strength,
       dosageForm: q.dosageForm,
+      category: q.category as any,
       excludeId: q.excludeId,
     });
     sendResponse({ res, message: 'Formulary matches retrieved', data: { matches } });
@@ -695,8 +696,8 @@ export async function importFormularyItem(
       statusCode: result.status === 'created' ? 201 : 200,
       message:
         result.status === 'created'
-          ? 'Drug imported into formulary'
-          : 'Drug already in formulary',
+          ? `${result.item.category === 'product' ? 'Product' : 'Drug'} imported into storage`
+          : 'Catalogue item already in storage',
       data: result.item,
     });
   } catch (err) {
@@ -736,7 +737,7 @@ export async function importFormularyItemsBulk(
     sendResponse({
       res,
       statusCode: 201,
-      message: `Imported ${result.created} drug(s)${result.skipped ? `, ${result.skipped} already in formulary` : ''}`,
+      message: `Imported ${result.created} catalogue item(s)${result.skipped ? `, ${result.skipped} already in storage` : ''}`,
       data: result,
     });
   } catch (err) {
