@@ -1358,10 +1358,10 @@ model Tenant {
   drugNameMappings           DrugNameMapping[]
   gstDocumentSeries          GstDocumentSeries[]
   creditNotes                CreditNote[]
+  gstFiledPeriods            GstFiledPeriod[]
+  gstr2bImports              Gstr2bImport[]
 
   @@map("tenants")
-  gstFiledPeriods         GstFiledPeriod[]
-  gstr2bImports           Gstr2bImport[]
 }
 
 model SubscriptionPlan {
@@ -1720,8 +1720,8 @@ model User {
   formSubmissions                HospitalFormSubmission[]     @relation("FormSubmitter")
   labTestTemplatesCreated        LabTestTemplate[]            @relation("LabTestTemplateCreator")
   gstRateChanges                 GstRateChange[]
-  gstPeriodsFiled                GstFiledPeriod[] @relation("GstPeriodFiler")
-  gstPeriodsLocked               GstFiledPeriod[] @relation("GstPeriodLocker")
+  gstPeriodsFiled                GstFiledPeriod[]             @relation("GstPeriodFiler")
+  gstPeriodsLocked               GstFiledPeriod[]             @relation("GstPeriodLocker")
   gstr2bImports                  Gstr2bImport[]
 
   @@unique([tenantId, email])
@@ -3546,6 +3546,7 @@ model EmarSchedule {
   givenBy          User?            @relation("EmarGivenBy", fields: [givenById], references: [id])
   amendedBy        User?            @relation("EmarAmendedBy", fields: [amendedById], references: [id])
   auditLogs        EmarAuditLog[]
+  ndpsPatientDose  NdpsPatientDose?
 
   @@index([tenantId, scheduledAt])
   @@index([tenantId, patientId, scheduledAt])
@@ -4153,46 +4154,46 @@ model DicomInstance {
 // lands in DrugFormulary with drugMasterId set (mirrors LabTestTemplate ->
 // LabTestCatalog). Doctors can still free-text any drug not present here.
 model DrugMaster {
-  id                String      @id @default(uuid())
-  name              String      @db.VarChar(255)
-  genericName       String?     @map("generic_name") @db.VarChar(500)
-  manufacturer      String?     @db.VarChar(255)
-  type              String?     @db.VarChar(50)
-  dosageForm        DosageForm? @map("dosage_form")
-  strength          String?     @db.VarChar(100)
-  packSizeLabel     String?     @map("pack_size_label") @db.VarChar(255)
+  id                   String      @id @default(uuid())
+  name                 String      @db.VarChar(255)
+  genericName          String?     @map("generic_name") @db.VarChar(500)
+  manufacturer         String?     @db.VarChar(255)
+  type                 String?     @db.VarChar(50)
+  dosageForm           DosageForm? @map("dosage_form")
+  strength             String?     @db.VarChar(100)
+  packSizeLabel        String?     @map("pack_size_label") @db.VarChar(255)
   // Numeric base units per pack/strip (e.g. 10), resolved from the label. Copied
   // straight into DrugFormulary.packSize on import so a strip sells as loose
   // units. Null = indivisible container (bottle/vial/tube).
-  packSize          Int?        @map("pack_size")
-  mrp               Decimal?    @db.Decimal(10, 2)
-  isDiscontinued    Boolean     @default(false) @map("is_discontinued")
+  packSize             Int?        @map("pack_size")
+  mrp                  Decimal?    @db.Decimal(10, 2)
+  isDiscontinued       Boolean     @default(false) @map("is_discontinued")
   // LEGACY, DELIBERATELY LEFT NULL. checkSaleCompliance() already reads this
   // column and is already wired into createPharmacySale, so populating it would
   // silently switch counter enforcement on. The classifier writes
   // `scheduleResolved` instead; the compliance gate is repointed at that field
   // in a later phase, behind a per-hospital enforcement setting.
-  schedule          String?     @db.VarChar(10)
+  schedule             String?     @db.VarChar(10)
   // ── Resolved by the schedule classifier (see drug-schedule.classifier.ts) ──
   // 'X' | 'H1' | 'H' | 'G' | 'H2' | 'OTC'. Null = not yet classified.
-  scheduleResolved  String?     @map("schedule_resolved") @db.VarChar(10)
+  scheduleResolved     String?     @map("schedule_resolved") @db.VarChar(10)
   // Human-readable justification ("matched Schedule H1 salt Tramadol"), kept so
   // a pharmacist or an inspector can see WHY a drug carries its schedule.
-  scheduleReason    String?     @map("schedule_reason")
+  scheduleReason       String?     @map("schedule_reason")
   // NDPS overlay, independent of scheduleResolved: 'narcotic' | 'psychotropic'.
-  controlledClass   String?     @map("controlled_class") @db.VarChar(20)
+  controlledClass      String?     @map("controlled_class") @db.VarChar(20)
   // Physical safe custody + witness co-sign. False for benzodiazepines,
   // tramadol and zolpidem, which dispense over the counter under their own
   // schedule.
-  vaultControlled   Boolean     @default(false) @map("vault_controlled")
+  vaultControlled      Boolean     @default(false) @map("vault_controlled")
   // Schedule H2 brand — Rule 96(6)-(7) QR/barcode obligation, not an Rx gate.
-  requiresQrScan    Boolean     @default(false) @map("requires_qr_scan")
+  requiresQrScan       Boolean     @default(false) @map("requires_qr_scan")
   // Salts parsed out of genericName: [{ raw, norm, strengthValue, strengthUnit,
   // perVolumeMl }]. Cached so the backfill and the reports do not re-parse.
-  saltsJson         Json?       @map("salts_json")
-  classifiedAt      DateTime?   @map("classified_at")
+  saltsJson            Json?       @map("salts_json")
+  classifiedAt         DateTime?   @map("classified_at")
   // Bumped when the classifier's logic changes, so a re-run can find stale rows.
-  classifierVersion Int?        @map("classifier_version")
+  classifierVersion    Int?        @map("classifier_version")
   // Product Resolution Engine identity + compliance fields. GTIN-13 is the
   // consumer unit (a single strip/bottle); casePackGtin (GTIN-14) is the outer
   // wholesale case, and unitsPerCase translates a scanned case into N consumer
@@ -4201,83 +4202,83 @@ model DrugMaster {
   // A GTIN identifies one product, so it is unique across the whole platform
   // catalog. Nulls are allowed to repeat (Postgres treats them as distinct);
   // writes normalise a blank to NULL so an empty field never trips the index.
-  gtin              String?     @unique @db.VarChar(20)
-  casePackGtin      String?     @unique @map("case_pack_gtin") @db.VarChar(20)
-  unitsPerCase      Int?        @map("units_per_case")
-  manufacturerCode  String?     @map("manufacturer_code") @db.VarChar(100)
-  hsnCode           String?     @map("hsn_code") @db.VarChar(20)
-  gstRate           Decimal?    @map("gst_rate") @db.Decimal(5, 2)
+  gtin                 String?     @unique @db.VarChar(20)
+  casePackGtin         String?     @unique @map("case_pack_gtin") @db.VarChar(20)
+  unitsPerCase         Int?        @map("units_per_case")
+  manufacturerCode     String?     @map("manufacturer_code") @db.VarChar(100)
+  hsnCode              String?     @map("hsn_code") @db.VarChar(20)
+  gstRate              Decimal?    @map("gst_rate") @db.Decimal(5, 2)
   // Explicit product-level treatment for exceptions that HSN alone cannot
   // express (for example the medicines named in Notification 10/2025-CT(R)).
   // Null means "resolve from the HSN master"; ordinary taxable medicines stay
   // null so a later statutory HSN-rate change is picked up automatically.
-  gstTreatment      String?     @map("gst_treatment") @db.VarChar(20)
+  gstTreatment         String?     @map("gst_treatment") @db.VarChar(20)
   // 'notification' for the built-in named-medicine exemption, 'manual' for a
   // super-admin classification. Lets a later catalogue refresh safely remove
   // an inferred exemption without touching a person's decision.
-  gstTreatmentSource String?    @map("gst_treatment_source") @db.VarChar(20)
+  gstTreatmentSource   String?     @map("gst_treatment_source") @db.VarChar(20)
   // Version of the catalogue GST classifier that last considered this row.
   // It lets startup process only new/changed vendor rows instead of rescanning
   // the entire catalogue on every boot.
-  gstClassifierVersion Int?     @map("gst_classifier_version")
-  aliases           String[]    @default([])
-  tags              String[]    @default([])
+  gstClassifierVersion Int?        @map("gst_classifier_version")
+  aliases              String[]    @default([])
+  tags                 String[]    @default([])
   // Rich clinical detail (populated from the richer dataset / future provider
   // feeds). Reference data shared by all hospitals.
-  saltComposition   String?     @map("salt_composition")
-  description       String? // uses / "about" text
-  sideEffects       String?     @map("side_effects")
-  drugInteractions  Json?       @map("drug_interactions") // { drug[], brand[], effect[] }
+  saltComposition      String?     @map("salt_composition")
+  description          String? // uses / "about" text
+  sideEffects          String?     @map("side_effects")
+  drugInteractions     Json?       @map("drug_interactions") // { drug[], brand[], effect[] }
   // Denormalised lowercase index of name + generic + manufacturer, recomputed
   // on every create/update — drives the catalog search endpoint.
-  searchTokens      String?     @map("search_tokens")
-  isPublished       Boolean     @default(true) @map("is_published")
-  createdById       String?     @map("created_by_id")
-  createdAt         DateTime    @default(now()) @map("created_at")
-  updatedAt         DateTime    @default(now()) @updatedAt @map("updated_at")
+  searchTokens         String?     @map("search_tokens")
+  isPublished          Boolean     @default(true) @map("is_published")
+  createdById          String?     @map("created_by_id")
+  createdAt            DateTime    @default(now()) @map("created_at")
+  updatedAt            DateTime    @default(now()) @updatedAt @map("updated_at")
 
   // ── Vendor catalogue (see drug-catalog.release.ts) ──
   // The vendor's own product ID: "DRS003256" for a drug, "DR001826" for an OTC
   // product. Stable from one monthly drop to the next, so a refresh matches on
   // it instead of guessing from name + manufacturer + pack. Null on a row a
   // super admin or a pharmacist added by hand.
-  sourceId          String?     @unique @map("source_id") @db.VarChar(40)
+  sourceId         String?  @unique @map("source_id") @db.VarChar(40)
   // The release that last wrote the row ("2026-06"). A product missing from a
   // later release is marked discontinued, never deleted — a hospital's
   // formulary may still point at it.
-  sourceRelease     String?     @map("source_release") @db.VarChar(20)
+  sourceRelease    String?  @map("source_release") @db.VarChar(20)
   // Fingerprint of everything the vendor supplied for this row, so a refresh
   // rewrites only the products that actually changed.
-  sourceHash        String?     @map("source_hash") @db.VarChar(32)
+  sourceHash       String?  @map("source_hash") @db.VarChar(32)
   // The pack as data: "Strip" + "10", "Bottle" + "100 ml". packSizeLabel keeps
   // the sentence ("strip of 10 tablets") that the pack-size parser reads.
-  packageType       String?     @map("package_type") @db.VarChar(40)
-  packQuantity      String?     @map("pack_quantity") @db.VarChar(40)
+  packageType      String?  @map("package_type") @db.VarChar(40)
+  packQuantity     String?  @map("pack_quantity") @db.VarChar(40)
   // The vendor's dosage form, finer than the DosageForm it maps to: "Tablet SR",
   // "Oral Suspension", "Powder for Injection".
-  productForm       String?     @map("product_form") @db.VarChar(60)
+  productForm      String?  @map("product_form") @db.VarChar(60)
   // What the vendor's label says. NOT a schedule — the schedule is decided by
   // the salt master and the classifier, and nothing reads this to gate a sale.
-  rxRequired        Boolean?    @map("rx_required")
-  habitForming      Boolean?    @map("habit_forming")
-  therapeuticClass  String?     @map("therapeutic_class") @db.VarChar(120)
-  chemicalClass     String?     @map("chemical_class") @db.VarChar(255)
-  actionClass       String?     @map("action_class") @db.VarChar(255)
+  rxRequired       Boolean? @map("rx_required")
+  habitForming     Boolean? @map("habit_forming")
+  therapeuticClass String?  @map("therapeutic_class") @db.VarChar(120)
+  chemicalClass    String?  @map("chemical_class") @db.VarChar(255)
+  actionClass      String?  @map("action_class") @db.VarChar(255)
   // OTC products: the vendor's category ("Vitamins & Nutrition") and where it
   // sits ("Nutritional Needs > Vitamins & Nutrition").
-  productCategory   String?     @map("product_category") @db.VarChar(120)
-  categoryPath      String?     @map("category_path") @db.VarChar(400)
-  storage           String?     @db.VarChar(120)
-  countryOfOrigin   String?     @map("country_of_origin") @db.VarChar(80)
+  productCategory  String?  @map("product_category") @db.VarChar(120)
+  categoryPath     String?  @map("category_path") @db.VarChar(400)
+  storage          String?  @db.VarChar(120)
+  countryOfOrigin  String?  @map("country_of_origin") @db.VarChar(80)
   // The vendor's six verdicts: { alcohol, pregnancy, lactation, driving,
   // kidney, liver } → 'safe' | 'safe_if_prescribed' | 'caution' | 'unsafe' |
   // 'consult_doctor' | 'not_relevant'. The advice behind them is in `monograph`.
-  safetyAdvice      Json?       @map("safety_advice")
+  safetyAdvice     Json?    @map("safety_advice")
   // Section → DrugText.id. A drug has { intro, benefits, howToUse, howItWorks,
   // safetyAdvice, missedDose, interactions, faq, marketer }, an OTC product
   // { highlights, information, ingredients, benefits, directions, safetyInfo,
   // marketer }. The prose lives in DrugText because it is shared — see there.
-  monograph         Json?
+  monograph        Json?
 
   formularyItems DrugFormulary[]
   /// Structured composition. Replaces parsing `saltComposition` at classify time.
@@ -4511,15 +4512,15 @@ model GstRateChange {
 /// rate summary, the HSN summary, the GSTR-1 tables and the GSTR-3B boxes. They
 /// are small, they are what was filed, and they cannot drift.
 model GstFiledPeriod {
-  id            String   @id @default(uuid())
-  tenantId      String   @map("tenant_id")
-  financialYear String   @map("financial_year") @db.VarChar(7)
+  id            String    @id @default(uuid())
+  tenantId      String    @map("tenant_id")
+  financialYear String    @map("financial_year") @db.VarChar(7)
   /// The return period as MMYYYY, matching what the portal calls it.
-  returnPeriod  String   @map("return_period") @db.VarChar(6)
-  periodFrom    DateTime @map("period_from") @db.Date
-  periodTo      DateTime @map("period_to") @db.Date
-  filedAt       DateTime @default(now()) @map("filed_at")
-  filedBy       String?  @map("filed_by")
+  returnPeriod  String    @map("return_period") @db.VarChar(6)
+  periodFrom    DateTime  @map("period_from") @db.Date
+  periodTo      DateTime  @map("period_to") @db.Date
+  filedAt       DateTime  @default(now()) @map("filed_at")
+  filedBy       String?   @map("filed_by")
   note          String?
   /// The figures as filed. Not the register — see the model comment.
   snapshot      Json
@@ -4562,8 +4563,8 @@ model Gstr2bImport {
   invoiceCount Int       @default(0) @map("invoice_count")
   taxTotal     Decimal   @default(0) @map("tax_total") @db.Decimal(14, 2)
 
-  tenant   Tenant          @relation(fields: [tenantId], references: [id])
-  importer User?           @relation(fields: [importedBy], references: [id])
+  tenant   Tenant           @relation(fields: [tenantId], references: [id])
+  importer User?            @relation(fields: [importedBy], references: [id])
   rows     Gstr2bDocument[]
 
   /// One statement per period. Re-importing replaces it — the portal reissues
@@ -4575,31 +4576,31 @@ model Gstr2bImport {
 
 /// One document out of a GSTR-2B statement — an invoice or a supplier's note.
 model Gstr2bDocument {
-  id            String    @id @default(uuid())
-  importId      String    @map("import_id")
-  tenantId      String    @map("tenant_id")
-  returnPeriod  String    @map("return_period") @db.VarChar(6)
-  supplierGstin String    @map("supplier_gstin") @db.VarChar(15)
-  supplierName  String?   @map("supplier_name") @db.VarChar(255)
+  id               String    @id @default(uuid())
+  importId         String    @map("import_id")
+  tenantId         String    @map("tenant_id")
+  returnPeriod     String    @map("return_period") @db.VarChar(6)
+  supplierGstin    String    @map("supplier_gstin") @db.VarChar(15)
+  supplierName     String?   @map("supplier_name") @db.VarChar(255)
   /// 'invoice' | 'credit_note' | 'debit_note'.
-  documentType  String    @map("document_type") @db.VarChar(12)
-  documentNumber String   @map("document_number") @db.VarChar(60)
+  documentType     String    @map("document_type") @db.VarChar(12)
+  documentNumber   String    @map("document_number") @db.VarChar(60)
   /// Uppercased with punctuation stripped, so "SUP/001" matches "sup-001".
-  matchKey      String    @map("match_key") @db.VarChar(60)
-  documentDate  DateTime? @map("document_date")
-  documentValue Decimal   @default(0) @map("document_value") @db.Decimal(14, 2)
-  taxableValue  Decimal   @default(0) @map("taxable_value") @db.Decimal(14, 2)
-  igstAmount    Decimal   @default(0) @map("igst_amount") @db.Decimal(14, 2)
-  cgstAmount    Decimal   @default(0) @map("cgst_amount") @db.Decimal(14, 2)
-  sgstAmount    Decimal   @default(0) @map("sgst_amount") @db.Decimal(14, 2)
-  cessAmount    Decimal   @default(0) @map("cess_amount") @db.Decimal(14, 2)
-  taxAmount     Decimal   @default(0) @map("tax_amount") @db.Decimal(14, 2)
-  placeOfSupply String?   @map("place_of_supply") @db.VarChar(2)
+  matchKey         String    @map("match_key") @db.VarChar(60)
+  documentDate     DateTime? @map("document_date")
+  documentValue    Decimal   @default(0) @map("document_value") @db.Decimal(14, 2)
+  taxableValue     Decimal   @default(0) @map("taxable_value") @db.Decimal(14, 2)
+  igstAmount       Decimal   @default(0) @map("igst_amount") @db.Decimal(14, 2)
+  cgstAmount       Decimal   @default(0) @map("cgst_amount") @db.Decimal(14, 2)
+  sgstAmount       Decimal   @default(0) @map("sgst_amount") @db.Decimal(14, 2)
+  cessAmount       Decimal   @default(0) @map("cess_amount") @db.Decimal(14, 2)
+  taxAmount        Decimal   @default(0) @map("tax_amount") @db.Decimal(14, 2)
+  placeOfSupply    String?   @map("place_of_supply") @db.VarChar(2)
   /// The portal's own verdict. 'N' means the credit is blocked whatever we did.
-  itcAvailable  Boolean   @default(true) @map("itc_available")
-  itcBlockedReason String? @map("itc_blocked_reason") @db.VarChar(255)
-  supplierFiledOn DateTime? @map("supplier_filed_on")
-  createdAt     DateTime  @default(now()) @map("created_at")
+  itcAvailable     Boolean   @default(true) @map("itc_available")
+  itcBlockedReason String?   @map("itc_blocked_reason") @db.VarChar(255)
+  supplierFiledOn  DateTime? @map("supplier_filed_on")
+  createdAt        DateTime  @default(now()) @map("created_at")
 
   import Gstr2bImport @relation(fields: [importId], references: [id], onDelete: Cascade)
 
@@ -4676,37 +4677,37 @@ model CreditNote {
   refundId         String?  @map("refund_id")
   drugReturnId     String?  @map("drug_return_id")
 
-  taxableValue     Decimal  @default(0) @map("taxable_value") @db.Decimal(12, 2)
-  cgstAmount       Decimal  @default(0) @map("cgst_amount") @db.Decimal(12, 2)
-  sgstAmount       Decimal  @default(0) @map("sgst_amount") @db.Decimal(12, 2)
-  igstAmount       Decimal  @default(0) @map("igst_amount") @db.Decimal(12, 2)
-  cessAmount       Decimal  @default(0) @map("cess_amount") @db.Decimal(12, 2)
-  taxAmount        Decimal  @default(0) @map("tax_amount") @db.Decimal(12, 2)
-  totalAmount      Decimal  @default(0) @map("total_amount") @db.Decimal(12, 2)
+  taxableValue Decimal @default(0) @map("taxable_value") @db.Decimal(12, 2)
+  cgstAmount   Decimal @default(0) @map("cgst_amount") @db.Decimal(12, 2)
+  sgstAmount   Decimal @default(0) @map("sgst_amount") @db.Decimal(12, 2)
+  igstAmount   Decimal @default(0) @map("igst_amount") @db.Decimal(12, 2)
+  cessAmount   Decimal @default(0) @map("cess_amount") @db.Decimal(12, 2)
+  taxAmount    Decimal @default(0) @map("tax_amount") @db.Decimal(12, 2)
+  totalAmount  Decimal @default(0) @map("total_amount") @db.Decimal(12, 2)
 
   /// Snapshots, like the invoice's — this note was issued under these details.
-  supplierGstin          String?  @map("supplier_gstin") @db.VarChar(15)
-  placeOfSupplyStateCode String?  @map("place_of_supply_state_code") @db.VarChar(2)
-  recipientGstin         String?  @map("recipient_gstin") @db.VarChar(15)
+  supplierGstin          String? @map("supplier_gstin") @db.VarChar(15)
+  placeOfSupplyStateCode String? @map("place_of_supply_state_code") @db.VarChar(2)
+  recipientGstin         String? @map("recipient_gstin") @db.VarChar(15)
   /// A note raised after 30 November following the year end cannot reduce tax
   /// liability. The money still goes back; the tax simply cannot be recovered.
-  withinTimeLimit  Boolean  @default(true) @map("within_time_limit")
+  withinTimeLimit        Boolean @default(true) @map("within_time_limit")
 
   // ── E-invoice ──
   // A note raised against a REGISTERED recipient is an e-invoice document in
   // its own right. Reported by D-1 and D-2 alongside the invoices, because a
   // register showing every B2B invoice registered while the notes reversing
   // them had never been sent would be complete-looking and wrong.
-  irn              String?  @unique @db.VarChar(64)
-  irnAckNo         String?  @map("irn_ack_no") @db.VarChar(30)
-  irnAckDate       DateTime? @map("irn_ack_date")
-  irnQrPayload     String?  @map("irn_qr_payload")
-  irnStatus        String?  @map("irn_status") @db.VarChar(20)
-  irnError         String?  @map("irn_error")
-  irnAttemptedAt   DateTime? @map("irn_attempted_at")
+  irn            String?   @unique @db.VarChar(64)
+  irnAckNo       String?   @map("irn_ack_no") @db.VarChar(30)
+  irnAckDate     DateTime? @map("irn_ack_date")
+  irnQrPayload   String?   @map("irn_qr_payload")
+  irnStatus      String?   @map("irn_status") @db.VarChar(20)
+  irnError       String?   @map("irn_error")
+  irnAttemptedAt DateTime? @map("irn_attempted_at")
 
-  issuedBy         String?  @map("issued_by")
-  createdAt        DateTime @default(now()) @map("created_at")
+  issuedBy  String?  @map("issued_by")
+  createdAt DateTime @default(now()) @map("created_at")
 
   tenant  Tenant           @relation(fields: [tenantId], references: [id])
   bill    Bill             @relation(fields: [billId], references: [id])
@@ -4721,23 +4722,23 @@ model CreditNote {
 }
 
 model CreditNoteItem {
-  id           String  @id @default(uuid())
-  creditNoteId String  @map("credit_note_id")
+  id           String   @id @default(uuid())
+  creditNoteId String   @map("credit_note_id")
   /// The line being reversed, so a partial credit can be traced to its debit.
-  billItemId   String? @map("bill_item_id")
-  description  String  @db.VarChar(500)
-  hsnSacCode   String? @map("hsn_sac_code") @db.VarChar(20)
-  gstTreatment String? @map("gst_treatment") @db.VarChar(20)
-  quantity     Decimal @default(0) @db.Decimal(12, 2)
-  unitPrice    Decimal @default(0) @map("unit_price") @db.Decimal(12, 2)
-  taxableValue Decimal @default(0) @map("taxable_value") @db.Decimal(12, 2)
-  taxPercent   Decimal @default(0) @map("tax_percent") @db.Decimal(5, 2)
-  taxAmount    Decimal @default(0) @map("tax_amount") @db.Decimal(12, 2)
-  cgstAmount   Decimal @default(0) @map("cgst_amount") @db.Decimal(12, 2)
-  sgstAmount   Decimal @default(0) @map("sgst_amount") @db.Decimal(12, 2)
-  igstAmount   Decimal @default(0) @map("igst_amount") @db.Decimal(12, 2)
-  cessAmount   Decimal @default(0) @map("cess_amount") @db.Decimal(12, 2)
-  totalAmount  Decimal @default(0) @map("total_amount") @db.Decimal(12, 2)
+  billItemId   String?  @map("bill_item_id")
+  description  String   @db.VarChar(500)
+  hsnSacCode   String?  @map("hsn_sac_code") @db.VarChar(20)
+  gstTreatment String?  @map("gst_treatment") @db.VarChar(20)
+  quantity     Decimal  @default(0) @db.Decimal(12, 2)
+  unitPrice    Decimal  @default(0) @map("unit_price") @db.Decimal(12, 2)
+  taxableValue Decimal  @default(0) @map("taxable_value") @db.Decimal(12, 2)
+  taxPercent   Decimal  @default(0) @map("tax_percent") @db.Decimal(5, 2)
+  taxAmount    Decimal  @default(0) @map("tax_amount") @db.Decimal(12, 2)
+  cgstAmount   Decimal  @default(0) @map("cgst_amount") @db.Decimal(12, 2)
+  sgstAmount   Decimal  @default(0) @map("sgst_amount") @db.Decimal(12, 2)
+  igstAmount   Decimal  @default(0) @map("igst_amount") @db.Decimal(12, 2)
+  cessAmount   Decimal  @default(0) @map("cess_amount") @db.Decimal(12, 2)
+  totalAmount  Decimal  @default(0) @map("total_amount") @db.Decimal(12, 2)
   createdAt    DateTime @default(now()) @map("created_at")
 
   creditNote CreditNote @relation(fields: [creditNoteId], references: [id], onDelete: Cascade)
@@ -5033,50 +5034,119 @@ model NdpsStockBalance {
 /// fields each form mandates. from/to locations are plain ids resolved against
 /// NdpsLocation (kept relation-free so the ledger never blocks a location edit).
 model NdpsTransaction {
-  id                String    @id @default(uuid())
-  tenantId          String    @map("tenant_id")
-  drugFormularyId   String    @map("drug_formulary_id")
-  entryType         String    @map("entry_type") // 'inward' | 'transfer' | 'dispense' | 'disposal'
-  quantity          Int
-  fromLocationId    String?   @map("from_location_id")
-  toLocationId      String?   @map("to_location_id")
+  id                   String    @id @default(uuid())
+  tenantId             String    @map("tenant_id")
+  drugFormularyId      String    @map("drug_formulary_id")
+  entryType            String    @map("entry_type") // 'inward' | 'transfer' | 'dispense' | 'disposal'
+  quantity             Int
+  fromLocationId       String?   @map("from_location_id")
+  toLocationId         String?   @map("to_location_id")
   // Form 3C (procurement) — consignment provenance.
-  ndpsLicenseNumber String?   @map("ndps_license_number") @db.VarChar(120)
-  form3cNumber      String?   @map("form_3c_number") @db.VarChar(120)
-  transportDetails  String?   @map("transport_details")
-  grossWeight       String?   @map("gross_weight") @db.VarChar(60)
-  supplierId        String?   @map("supplier_id")
-  batchNumber       String?   @map("batch_number") @db.VarChar(100)
-  expiryDate        DateTime? @map("expiry_date") @db.Date
+  ndpsLicenseNumber    String?   @map("ndps_license_number") @db.VarChar(120)
+  form3cNumber         String?   @map("form_3c_number") @db.VarChar(120)
+  transportDetails     String?   @map("transport_details")
+  grossWeight          String?   @map("gross_weight") @db.VarChar(60)
+  supplierId           String?   @map("supplier_id")
+  batchNumber          String?   @map("batch_number") @db.VarChar(100)
+  expiryDate           DateTime? @map("expiry_date") @db.Date
   // The real stock batch this statutory entry moved. Narcotic stock used to live
   // in a ledger of its own, invisible to valuation, expiry alerts, recalls and
   // GST; it now sits in DrugBatch like every other medicine, and this points at
   // the batch so the register and the stock agree line for line.
-  drugBatchId       String?   @map("drug_batch_id")
+  drugBatchId          String?   @map("drug_batch_id")
   // Form 3E (patient consumption) — mandatory audit fields.
-  patientId         String?   @map("patient_id")
-  doctorRegNo       String?   @map("doctor_reg_no") @db.VarChar(60)
-  bedNumber         String?   @map("bed_number") @db.VarChar(40)
-  diagnosis         String?
+  patientId            String?   @map("patient_id")
+  doctorRegNo          String?   @map("doctor_reg_no") @db.VarChar(60)
+  bedNumber            String?   @map("bed_number") @db.VarChar(40)
+  diagnosis            String?
   // Disposal — non-clinical loss accounting.
-  reasonCode        String?   @map("reason_code") @db.VarChar(40) // 'breakage' | 'contamination' | 'expiry' | 'other'
-  referenceNumber   String?   @map("reference_number") @db.VarChar(120) // police complaint / destruction memo
-  attachmentUrl     String?   @map("attachment_url")
-  coSignById        String?   @map("co_sign_by_id")
+  reasonCode           String?   @map("reason_code") @db.VarChar(40) // 'breakage' | 'contamination' | 'expiry' | 'other'
+  referenceNumber      String?   @map("reference_number") @db.VarChar(120) // police complaint / destruction memo
+  attachmentUrl        String?   @map("attachment_url")
+  coSignById           String?   @map("co_sign_by_id")
+  // Patient-dose traceability. These fields are populated by the eMAR residual
+  // workflow and remain null for historical/manual Form 3E and stock-disposal
+  // entries. `quantity` continues to mean physical containers for Form 3H;
+  // the decimal fields capture the contents administered and left over.
+  patientDoseId        String?   @map("patient_dose_id")
+  emarScheduleId       String?   @map("emar_schedule_id")
+  dispensingRecordId   String?   @map("dispensing_record_id")
+  labelledQuantity     Decimal?  @map("labelled_quantity") @db.Decimal(14, 4)
+  administeredQuantity Decimal?  @map("administered_quantity") @db.Decimal(14, 4)
+  residualQuantity     Decimal?  @map("residual_quantity") @db.Decimal(14, 4)
+  quantityUnit         String?   @map("quantity_unit") @db.VarChar(20)
+  residualDisposition  String?   @map("residual_disposition") @db.VarChar(30)
+  // Which canonical stock movement already accounts for the container:
+  // dispensing_record | ward_stock | drug_batch | residual_only.
+  stockSource          String?   @map("stock_source") @db.VarChar(30)
   // Chain of custody — who recorded it + the counterparty who received it.
-  recordedById      String    @map("recorded_by_id")
-  counterpartyId    String?   @map("counterparty_id")
-  notes             String?
-  occurredAt        DateTime  @default(now()) @map("occurred_at")
-  createdAt         DateTime  @default(now()) @map("created_at")
+  recordedById         String    @map("recorded_by_id")
+  counterpartyId       String?   @map("counterparty_id")
+  notes                String?
+  occurredAt           DateTime  @default(now()) @map("occurred_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
 
   tenant Tenant        @relation(fields: [tenantId], references: [id])
   drug   DrugFormulary @relation(fields: [drugFormularyId], references: [id])
 
   @@index([tenantId, entryType, occurredAt])
   @@index([drugBatchId])
+  @@index([patientDoseId])
+  @@index([emarScheduleId])
   @@index([tenantId, drugFormularyId, occurredAt])
   @@map("ndps_transactions")
+}
+
+/// One immutable quantity reconciliation for a narcotic container opened for a
+/// patient. The eMAR schedule owns the clinical event; this row owns the
+/// labelled/administered/residual arithmetic and the residual's final custody.
+/// A quarantined row remains visible in the pending worklist until a witnessed
+/// disposal changes it to destroyed. Opened residuals never return to stock.
+model NdpsPatientDose {
+  id                          String    @id @default(uuid())
+  tenantId                    String    @map("tenant_id")
+  emarScheduleId              String    @unique @map("emar_schedule_id")
+  prescriptionItemId          String    @map("prescription_item_id")
+  patientId                   String    @map("patient_id")
+  admissionId                 String?   @map("admission_id")
+  drugFormularyId             String    @map("drug_formulary_id")
+  drugBatchId                 String    @map("drug_batch_id")
+  dispensingRecordId          String?   @map("dispensing_record_id")
+  ndpsLocationId              String    @map("ndps_location_id")
+  administrationTransactionId String    @unique @map("administration_transaction_id")
+  disposalTransactionId       String?   @unique @map("disposal_transaction_id")
+  labelledQuantity            Decimal   @map("labelled_quantity") @db.Decimal(14, 4)
+  administeredQuantity        Decimal   @map("administered_quantity") @db.Decimal(14, 4)
+  residualQuantity            Decimal   @map("residual_quantity") @db.Decimal(14, 4)
+  quantityUnit                String    @map("quantity_unit") @db.VarChar(20)
+  containerQuantity           Int       @default(1) @map("container_quantity")
+  // fully_administered | destroyed | quarantined
+  status                      String    @db.VarChar(30)
+  // none | destroyed | quarantined
+  disposition                 String    @db.VarChar(30)
+  stockSource                 String    @map("stock_source") @db.VarChar(30)
+  emergencyUse                Boolean   @default(false) @map("emergency_use")
+  emergencyReason             String?   @map("emergency_reason")
+  administeredById            String    @map("administered_by_id")
+  administeredAt              DateTime  @map("administered_at")
+  witnessedById               String?   @map("witnessed_by_id")
+  witnessedAt                 DateTime? @map("witnessed_at")
+  disposalMethod              String?   @map("disposal_method") @db.VarChar(160)
+  quarantineLocation          String?   @map("quarantine_location") @db.VarChar(160)
+  quarantinedAt               DateTime? @map("quarantined_at")
+  destroyedAt                 DateTime? @map("destroyed_at")
+  billId                      String?   @map("bill_id")
+  notes                       String?
+  createdAt                   DateTime  @default(now()) @map("created_at")
+  updatedAt                   DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  schedule EmarSchedule @relation(fields: [emarScheduleId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, status, createdAt])
+  @@index([tenantId, patientId, administeredAt])
+  @@index([drugBatchId])
+  @@index([ndpsLocationId])
+  @@map("ndps_patient_doses")
 }
 
 /// Form 3H — the daily account. A nightly cutoff hard-writes one row per narcotic
@@ -6116,45 +6186,45 @@ model ServiceTariff {
   createdAt      DateTime              @default(now()) @map("created_at")
   updatedAt      DateTime              @default(now()) @updatedAt @map("updated_at")
 
-  tenant    Tenant     @relation(fields: [tenantId], references: [id])
-  billItems BillItem[]
+  tenant     Tenant      @relation(fields: [tenantId], references: [id])
+  billItems  BillItem[]
   otRequests OtRequest[]
 
   @@map("service_tariffs")
 }
 
 model Bill {
-  id                     String     @id @default(uuid())
-  tenantId               String     @map("tenant_id")
-  patientId              String     @map("patient_id")
-  visitId                String?    @map("visit_id")
-  admissionId            String?    @map("admission_id")
-  billNumber             String     @unique @map("bill_number") @db.VarChar(50)
-  billDate               DateTime   @map("bill_date")
-  subtotal               Decimal    @default(0) @db.Decimal(12, 2)
-  discountAmount         Decimal    @default(0) @map("discount_amount") @db.Decimal(12, 2)
-  taxAmount              Decimal    @default(0) @map("tax_amount") @db.Decimal(12, 2)
-  totalAmount            Decimal    @default(0) @map("total_amount") @db.Decimal(12, 2)
-  insuranceCoveredAmount Decimal    @default(0) @map("insurance_covered_amount") @db.Decimal(12, 2)
-  patientPayableAmount   Decimal    @default(0) @map("patient_payable_amount") @db.Decimal(12, 2)
+  id                     String   @id @default(uuid())
+  tenantId               String   @map("tenant_id")
+  patientId              String   @map("patient_id")
+  visitId                String?  @map("visit_id")
+  admissionId            String?  @map("admission_id")
+  billNumber             String   @unique @map("bill_number") @db.VarChar(50)
+  billDate               DateTime @map("bill_date")
+  subtotal               Decimal  @default(0) @db.Decimal(12, 2)
+  discountAmount         Decimal  @default(0) @map("discount_amount") @db.Decimal(12, 2)
+  taxAmount              Decimal  @default(0) @map("tax_amount") @db.Decimal(12, 2)
+  totalAmount            Decimal  @default(0) @map("total_amount") @db.Decimal(12, 2)
+  insuranceCoveredAmount Decimal  @default(0) @map("insurance_covered_amount") @db.Decimal(12, 2)
+  patientPayableAmount   Decimal  @default(0) @map("patient_payable_amount") @db.Decimal(12, 2)
 
   // ── GST rollup and identity ──
   // taxAmount above is the single figure the bill has always carried. These are
   // the same money broken out the way every GST return asks for it, plus the
   // three facts that decide the split. They are SNAPSHOTS: the hospital's GSTIN
   // may change, but this bill was raised under the one recorded here.
-  taxableValue           Decimal    @default(0) @map("taxable_value") @db.Decimal(12, 2)
-  cgstAmount             Decimal    @default(0) @map("cgst_amount") @db.Decimal(12, 2)
-  sgstAmount             Decimal    @default(0) @map("sgst_amount") @db.Decimal(12, 2)
-  igstAmount             Decimal    @default(0) @map("igst_amount") @db.Decimal(12, 2)
-  cessAmount             Decimal    @default(0) @map("cess_amount") @db.Decimal(12, 2)
-  roundOff               Decimal    @default(0) @map("round_off") @db.Decimal(6, 2)
-  supplierGstin          String?    @map("supplier_gstin") @db.VarChar(15)
-  supplierStateCode      String?    @map("supplier_state_code") @db.VarChar(2)
+  taxableValue           Decimal @default(0) @map("taxable_value") @db.Decimal(12, 2)
+  cgstAmount             Decimal @default(0) @map("cgst_amount") @db.Decimal(12, 2)
+  sgstAmount             Decimal @default(0) @map("sgst_amount") @db.Decimal(12, 2)
+  igstAmount             Decimal @default(0) @map("igst_amount") @db.Decimal(12, 2)
+  cessAmount             Decimal @default(0) @map("cess_amount") @db.Decimal(12, 2)
+  roundOff               Decimal @default(0) @map("round_off") @db.Decimal(6, 2)
+  supplierGstin          String? @map("supplier_gstin") @db.VarChar(15)
+  supplierStateCode      String? @map("supplier_state_code") @db.VarChar(2)
   /// Set only for a B2B document — a corporate, insurer or TPA with a GSTIN.
-  recipientGstin         String?    @map("recipient_gstin") @db.VarChar(15)
-  placeOfSupplyStateCode String?    @map("place_of_supply_state_code") @db.VarChar(2)
-  isInterState           Boolean    @default(false) @map("is_inter_state")
+  recipientGstin         String? @map("recipient_gstin") @db.VarChar(15)
+  placeOfSupplyStateCode String? @map("place_of_supply_state_code") @db.VarChar(2)
+  isInterState           Boolean @default(false) @map("is_inter_state")
 
   // ── The document this bill IS ──
   // billNumber above is the internal reference and resets daily. An invoice
@@ -6162,8 +6232,8 @@ model Bill {
   // the whole financial year. Allotted at FINALISE, never at draft, so an
   // abandoned draft cannot burn a number and leave a hole in the series.
   /// 'tax_invoice' | 'bill_of_supply' | 'invoice_cum_bill_of_supply'.
-  gstDocumentType        String?    @map("gst_document_type") @db.VarChar(30)
-  invoiceNumber          String?    @unique @map("invoice_number") @db.VarChar(50)
+  gstDocumentType    String?   @map("gst_document_type") @db.VarChar(30)
+  invoiceNumber      String?   @unique @map("invoice_number") @db.VarChar(50)
   /// The SECOND document a GST-registered recipient is owed.
   ///
   /// Rule 46A allows the combined Invoice-cum-Bill of Supply only for an
@@ -6174,11 +6244,11 @@ model Bill {
   /// One bill, two numbers, rather than two bills — the bill is one commercial
   /// event with one balance to settle, and splitting it would double every
   /// payment, credit note and report row that keys on a bill.
-  billOfSupplyNumber     String?    @unique @map("bill_of_supply_number") @db.VarChar(50)
+  billOfSupplyNumber String?   @unique @map("bill_of_supply_number") @db.VarChar(50)
   /// "2026-27" — the year the series belongs to.
-  financialYear          String?    @map("financial_year") @db.VarChar(7)
+  financialYear      String?   @map("financial_year") @db.VarChar(7)
   /// Set when the document was issued. Tax figures are read-only after it.
-  gstFrozenAt            DateTime?  @map("gst_frozen_at")
+  gstFrozenAt        DateTime? @map("gst_frozen_at")
 
   // ── E-invoice: what the government portal gave back ──
   //
@@ -6190,27 +6260,27 @@ model Bill {
   //
   /// The portal's 64-character hash of the invoice. Unique: the same IRN on
   /// two bills means one invoice was registered twice.
-  irn                    String?    @unique @db.VarChar(64)
-  irnAckNo               String?    @map("irn_ack_no") @db.VarChar(30)
-  irnAckDate             DateTime?  @map("irn_ack_date")
+  irn                String?    @unique @db.VarChar(64)
+  irnAckNo           String?    @map("irn_ack_no") @db.VarChar(30)
+  irnAckDate         DateTime?  @map("irn_ack_date")
   /// The signed QR string, printed as-is. Never re-encoded — the signature is
   /// over these exact bytes.
-  irnQrPayload           String?    @map("irn_qr_payload")
+  irnQrPayload       String?    @map("irn_qr_payload")
   /// 'pending' | 'registered' | 'failed' | 'cancelled'. Null means never sent,
   /// which is a different fact from "sent and rejected" — D-2 exists to keep
   /// the two apart, and a null IRN alone cannot.
-  irnStatus              String?    @map("irn_status") @db.VarChar(20)
+  irnStatus          String?    @map("irn_status") @db.VarChar(20)
   /// The portal's own words for the refusal. D-2 reports them verbatim.
-  irnError               String?    @map("irn_error")
-  irnAttemptedAt         DateTime?  @map("irn_attempted_at")
-  irnCancelledAt         DateTime?  @map("irn_cancelled_at")
-  amountPaid             Decimal    @default(0) @map("amount_paid") @db.Decimal(12, 2)
-  balanceDue             Decimal    @default(0) @map("balance_due") @db.Decimal(12, 2)
-  status                 BillStatus @default(draft)
-  generatedBy            String?    @map("generated_by")
-  approvedBy             String?    @map("approved_by")
-  cancelledBy            String?    @map("cancelled_by")
-  cancellationReason     String?    @map("cancellation_reason")
+  irnError           String?    @map("irn_error")
+  irnAttemptedAt     DateTime?  @map("irn_attempted_at")
+  irnCancelledAt     DateTime?  @map("irn_cancelled_at")
+  amountPaid         Decimal    @default(0) @map("amount_paid") @db.Decimal(12, 2)
+  balanceDue         Decimal    @default(0) @map("balance_due") @db.Decimal(12, 2)
+  status             BillStatus @default(draft)
+  generatedBy        String?    @map("generated_by")
+  approvedBy         String?    @map("approved_by")
+  cancelledBy        String?    @map("cancelled_by")
+  cancellationReason String?    @map("cancellation_reason")
   /// When it was cancelled, as its own fact.
   ///
   /// C-9 reported `updated_at` as the cancellation date and FILTERED on
@@ -6218,10 +6288,10 @@ model Bill {
   /// appeared in July — where the cancellation had not happened yet — and was
   /// missing from September, which is the month the reversal belongs to.
   /// `updated_at` cannot stand in for this: any later touch of the row moves it.
-  cancelledAt            DateTime?  @map("cancelled_at")
-  pdfUrl                 String?    @map("pdf_url")
-  createdAt              DateTime   @default(now()) @map("created_at")
-  updatedAt              DateTime   @default(now()) @updatedAt @map("updated_at")
+  cancelledAt        DateTime?  @map("cancelled_at")
+  pdfUrl             String?    @map("pdf_url")
+  createdAt          DateTime   @default(now()) @map("created_at")
+  updatedAt          DateTime   @default(now()) @updatedAt @map("updated_at")
 
   tenant          Tenant           @relation(fields: [tenantId], references: [id])
   patient         Patient          @relation(fields: [patientId], references: [id])
@@ -6261,36 +6331,36 @@ model BillItem {
   // was, under which code, and how the tax splits between the heads. All three
   // are reported separately, and none of them can be recovered afterwards from
   // a percentage alone.
-  hsnSacCode      String?          @map("hsn_sac_code") @db.VarChar(20)
+  hsnSacCode            String? @map("hsn_sac_code") @db.VarChar(20)
   /// 'taxable' | 'exempt' | 'nil_rated' | 'non_gst' | 'zero_rated'.
-  gstTreatment    String?          @map("gst_treatment") @db.VarChar(20)
+  gstTreatment          String? @map("gst_treatment") @db.VarChar(20)
   /// True when the tax was already inside unitPrice — a medicine at MRP.
-  taxInclusive    Boolean          @default(false) @map("tax_inclusive")
+  taxInclusive          Boolean @default(false) @map("tax_inclusive")
   /// What the tax was charged ON: net of discount, and net of embedded tax.
-  taxableValue    Decimal          @default(0) @map("taxable_value") @db.Decimal(12, 2)
-  cgstRate        Decimal          @default(0) @map("cgst_rate") @db.Decimal(5, 2)
-  cgstAmount      Decimal          @default(0) @map("cgst_amount") @db.Decimal(12, 2)
-  sgstRate        Decimal          @default(0) @map("sgst_rate") @db.Decimal(5, 2)
-  sgstAmount      Decimal          @default(0) @map("sgst_amount") @db.Decimal(12, 2)
-  igstRate        Decimal          @default(0) @map("igst_rate") @db.Decimal(5, 2)
-  igstAmount      Decimal          @default(0) @map("igst_amount") @db.Decimal(12, 2)
-  cessAmount      Decimal          @default(0) @map("cess_amount") @db.Decimal(12, 2)
+  taxableValue          Decimal @default(0) @map("taxable_value") @db.Decimal(12, 2)
+  cgstRate              Decimal @default(0) @map("cgst_rate") @db.Decimal(5, 2)
+  cgstAmount            Decimal @default(0) @map("cgst_amount") @db.Decimal(12, 2)
+  sgstRate              Decimal @default(0) @map("sgst_rate") @db.Decimal(5, 2)
+  sgstAmount            Decimal @default(0) @map("sgst_amount") @db.Decimal(12, 2)
+  igstRate              Decimal @default(0) @map("igst_rate") @db.Decimal(5, 2)
+  igstAmount            Decimal @default(0) @map("igst_amount") @db.Decimal(12, 2)
+  cessAmount            Decimal @default(0) @map("cess_amount") @db.Decimal(12, 2)
   /// Which rule decided the rate — 'hsn_master', 'inpatient_composite', etc.
   /// Kept so a patient's question can be answered without reading the code.
-  rateSource      String?          @map("rate_source") @db.VarChar(32)
-  taxReason       String?          @map("tax_reason") @db.VarChar(255)
+  rateSource            String? @map("rate_source") @db.VarChar(32)
+  taxReason             String? @map("tax_reason") @db.VarChar(255)
   /// A taxable rate that only a fallback produced. Blocks finalisation.
-  requiresTaxResolution Boolean    @default(false) @map("requires_tax_resolution")
+  requiresTaxResolution Boolean @default(false) @map("requires_tax_resolution")
 
-  referenceType   String?          @map("reference_type") @db.VarChar(50)
-  referenceId     String?          @map("reference_id")
-  isAutoPulled    Boolean          @default(false) @map("is_auto_pulled")
+  referenceType  String?  @map("reference_type") @db.VarChar(50)
+  referenceId    String?  @map("reference_id")
+  isAutoPulled   Boolean  @default(false) @map("is_auto_pulled")
   // G7 (3.2): TPA split at the line level — the billing desk sees, per line,
   // what the insurer reimburses vs what the patient pays out-of-pocket (e.g. the
   // drug is covered but the disposable syringe is not). null = not categorised.
-  isReimbursable  Boolean?         @map("is_reimbursable")
-  tpaCategory     String?          @map("tpa_category") @db.VarChar(40)
-  createdAt       DateTime         @default(now()) @map("created_at")
+  isReimbursable Boolean? @map("is_reimbursable")
+  tpaCategory    String?  @map("tpa_category") @db.VarChar(40)
+  createdAt      DateTime @default(now()) @map("created_at")
 
   bill          Bill           @relation(fields: [billId], references: [id])
   serviceTariff ServiceTariff? @relation(fields: [serviceTariffId], references: [id])
@@ -6335,31 +6405,31 @@ model Payment {
   //
   // Only ever set on an advance receipt or a voucher. A payment settling an
   // already-issued invoice leaves all of this null: the tax is on the invoice.
-  gstTreatment     String?         @map("gst_treatment") @db.VarChar(20)
-  taxRatePercent   Decimal?        @map("tax_rate_percent") @db.Decimal(5, 2)
-  taxableValue     Decimal?        @map("taxable_value") @db.Decimal(12, 2)
-  taxAmount        Decimal?        @map("tax_amount") @db.Decimal(12, 2)
-  cgstAmount       Decimal?        @map("cgst_amount") @db.Decimal(12, 2)
-  sgstAmount       Decimal?        @map("sgst_amount") @db.Decimal(12, 2)
-  igstAmount       Decimal?        @map("igst_amount") @db.Decimal(12, 2)
+  gstTreatment           String?  @map("gst_treatment") @db.VarChar(20)
+  taxRatePercent         Decimal? @map("tax_rate_percent") @db.Decimal(5, 2)
+  taxableValue           Decimal? @map("taxable_value") @db.Decimal(12, 2)
+  taxAmount              Decimal? @map("tax_amount") @db.Decimal(12, 2)
+  cgstAmount             Decimal? @map("cgst_amount") @db.Decimal(12, 2)
+  sgstAmount             Decimal? @map("sgst_amount") @db.Decimal(12, 2)
+  igstAmount             Decimal? @map("igst_amount") @db.Decimal(12, 2)
   /// 'receipt_voucher' (Rule 50, advance in) | 'refund_voucher' (Rule 51, out).
-  voucherType      String?         @map("voucher_type") @db.VarChar(20)
-  voucherNumber    String?         @unique @map("voucher_number") @db.VarChar(50)
+  voucherType            String?  @map("voucher_type") @db.VarChar(20)
+  voucherNumber          String?  @unique @map("voucher_number") @db.VarChar(50)
   /// The advance receipt this row draws down, so an adjustment can be traced to
   /// the money it came out of. GSTR-1 table 11B has no other source.
-  sourceAdvancePaymentId String?   @map("source_advance_payment_id")
+  sourceAdvancePaymentId String?  @map("source_advance_payment_id")
 
-  createdAt        DateTime        @default(now()) @map("created_at")
+  createdAt DateTime @default(now()) @map("created_at")
 
-  tenant    Tenant            @relation(fields: [tenantId], references: [id])
-  bill      Bill              @relation(fields: [billId], references: [id])
-  patient   Patient           @relation(fields: [patientId], references: [id])
-  processor User?             @relation(fields: [processedBy], references: [id])
-  receipt   Receipt?
-  refunds   Refund[]
-  transfers PaymentTransfer[]
-  sourceAdvance    Payment?  @relation("AdvanceDrawdown", fields: [sourceAdvancePaymentId], references: [id])
-  drawdowns        Payment[] @relation("AdvanceDrawdown")
+  tenant        Tenant            @relation(fields: [tenantId], references: [id])
+  bill          Bill              @relation(fields: [billId], references: [id])
+  patient       Patient           @relation(fields: [patientId], references: [id])
+  processor     User?             @relation(fields: [processedBy], references: [id])
+  receipt       Receipt?
+  refunds       Refund[]
+  transfers     PaymentTransfer[]
+  sourceAdvance Payment?          @relation("AdvanceDrawdown", fields: [sourceAdvancePaymentId], references: [id])
+  drawdowns     Payment[]         @relation("AdvanceDrawdown")
 
   @@index([sourceAdvancePaymentId])
   @@map("payments")
@@ -7363,14 +7433,14 @@ model OtRequest {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
-  tenant       Tenant            @relation(fields: [tenantId], references: [id])
-  patient      Patient           @relation(fields: [patientId], references: [id])
-  visit        Visit             @relation(fields: [visitId], references: [id])
-  doctor       DoctorProfile     @relation(fields: [doctorId], references: [id])
-  surgeon      DoctorProfile?    @relation("OtSurgeon", fields: [surgeonId], references: [id])
-  anaesthetist DoctorProfile?    @relation("OtAnaesthetist", fields: [anaesthetistId], references: [id])
-  serviceTariff ServiceTariff?  @relation(fields: [serviceTariffId], references: [id])
-  ot           OperatingTheater? @relation(fields: [otId], references: [id])
+  tenant        Tenant            @relation(fields: [tenantId], references: [id])
+  patient       Patient           @relation(fields: [patientId], references: [id])
+  visit         Visit             @relation(fields: [visitId], references: [id])
+  doctor        DoctorProfile     @relation(fields: [doctorId], references: [id])
+  surgeon       DoctorProfile?    @relation("OtSurgeon", fields: [surgeonId], references: [id])
+  anaesthetist  DoctorProfile?    @relation("OtAnaesthetist", fields: [anaesthetistId], references: [id])
+  serviceTariff ServiceTariff?    @relation(fields: [serviceTariffId], references: [id])
+  ot            OperatingTheater? @relation(fields: [otId], references: [id])
 
   @@index([surgeonId])
   @@index([anaesthetistId])
