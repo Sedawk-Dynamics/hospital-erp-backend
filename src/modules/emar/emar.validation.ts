@@ -91,6 +91,10 @@ export const scheduleIdParamSchema = z.object({
   params: z.object({ id: z.string().uuid() }),
 });
 
+export const prescriptionItemIdParamSchema = z.object({
+  params: z.object({ id: z.string().uuid() }),
+});
+
 // ── Dose actions ─────────────────────────────────────────────
 
 export const ndpsPatientDoseSchema = z.object({
@@ -144,6 +148,7 @@ export const amendDoseSchema = z.object({
     actualGivenTime: z.string().datetime().optional(),
     reason: z.string().max(500).optional(),
     notes: z.string().max(1000).optional(),
+    ndps: ndpsPatientDoseSchema.optional(),
   }),
 });
 
@@ -154,6 +159,7 @@ export const triggerPrnSchema = z.object({
   body: z.object({
     actualGivenTime: z.string().datetime().optional(),
     notes: z.string().max(1000).optional(),
+    ndps: ndpsPatientDoseSchema.optional(),
   }),
 });
 
@@ -168,6 +174,7 @@ export const catchUpDoseSchema = z.object({
     actualGivenTime: z.string().datetime().optional(),
     reason: z.string().max(500).optional(),
     notes: z.string().max(1000).optional(),
+    ndps: ndpsPatientDoseSchema.optional(),
   }),
 });
 

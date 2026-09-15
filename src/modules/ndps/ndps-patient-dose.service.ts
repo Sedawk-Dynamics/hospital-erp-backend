@@ -37,6 +37,7 @@ export interface PreparedPatientDose {
   disposition: ResidualDisposition;
   status: 'fully_administered' | 'destroyed' | 'quarantined';
   stockSource: 'dispensing_record' | 'ward_stock' | 'drug_batch';
+  dispensingRecordId: string | null;
   witnessedAt: Date | null;
   doctorRegNo: string;
   bedNumber: string;
@@ -95,8 +96,10 @@ function isNdpsDrug(drug: {
   return drug.isNarcotic || drug.vaultControlled || drug.controlledClass?.toLowerCase() === 'narcotic';
 }
 
-async function loadDoseSchedule(tenantId: string, scheduleId: string) {
-  return prisma.emarSchedule.findFirst({
+type DoseDb = typeof prisma | Prisma.TransactionClient;
+
+async function loadDoseSchedule(tenantId: string, scheduleId: string, db: DoseDb = prisma) {
+  return db.emarSchedule.findFirst({
     where: { id: scheduleId, tenantId },
     include: {
       prescriptionItem: {
@@ -178,17 +181,17 @@ export async function getPatientDoseContext(tenantId: string, scheduleId: string
       orderBy: [{ expiryDate: 'asc' }, { batchNumber: 'asc' }],
       select: { id: true, batchNumber: true, expiryDate: true, quantityInStock: true },
     }),
-    schedule.dispensingRecordId
-      ? prisma.dispensingRecord.findFirst({
+    prisma.dispensingRecord.findFirst({
           where: {
-            id: schedule.dispensingRecordId,
             tenantId,
             patientId: schedule.patientId,
+            prescriptionItemId: schedule.prescriptionItemId,
             cancelledAt: null,
+            ...(schedule.dispensingRecordId ? { id: schedule.dispensingRecordId } : {}),
           },
+          orderBy: { dispensedAt: 'desc' },
           select: { id: true, drugBatchId: true, quantityDispensed: true, billId: true },
-        })
-      : null,
+        }),
   ]);
 
   return {
@@ -221,13 +224,114 @@ export async function getPatientDoseContext(tenantId: string, scheduleId: string
   };
 }
 
+export async function getPrescriptionItemDoseContext(tenantId: string, prescriptionItemId: string) {
+  const item = await prisma.prescriptionItem.findFirst({
+    where: { id: prescriptionItemId, prescription: { tenantId } },
+    include: {
+      drug: {
+        select: {
+          id: true, drugName: true, strength: true, isNarcotic: true,
+          vaultControlled: true, controlledClass: true,
+        },
+      },
+      prescription: {
+        include: {
+          doctor: { select: { licenseNumber: true } },
+          visit: {
+            select: {
+              diagnoses: {
+                orderBy: [{ diagnosisType: 'asc' }, { diagnosedAt: 'desc' }],
+                take: 1,
+                select: { diagnosisName: true },
+              },
+              admission: {
+                select: {
+                  id: true, wardId: true, admissionType: true, admissionReason: true,
+                  bed: { select: { bedNumber: true } },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+  if (!item) throw AppError.notFound('Prescription item not found');
+  const drug = item.drug;
+  if (!drug || !isNdpsDrug(drug)) return { isNdps: false, existingDose: null };
+
+  const admission = item.prescription.visit.admission;
+  const [locations, batches, dispensing] = await Promise.all([
+    prisma.ndpsLocation.findMany({
+      where: { tenantId, isActive: true },
+      orderBy: [{ type: 'asc' }, { name: 'asc' }],
+      include: {
+        balances: {
+          where: { tenantId, drugFormularyId: drug.id },
+          select: { quantity: true },
+        },
+      },
+    }),
+    prisma.drugBatch.findMany({
+      where: { tenantId, drugId: drug.id, isExpired: false, isRecalled: false, quantityInStock: { gt: 0 } },
+      orderBy: [{ expiryDate: 'asc' }, { batchNumber: 'asc' }],
+      select: { id: true, batchNumber: true, expiryDate: true, quantityInStock: true },
+    }),
+    prisma.dispensingRecord.findFirst({
+      where: {
+        tenantId,
+        patientId: item.prescription.patientId,
+        prescriptionItemId: item.id,
+        cancelledAt: null,
+      },
+      orderBy: { dispensedAt: 'desc' },
+      select: { id: true, drugBatchId: true, quantityDispensed: true, billId: true },
+    }),
+  ]);
+
+  // A linked batch may have zero current shelf stock because pharmacy already
+  // issued it to this patient. Keep it selectable even though the general batch
+  // query correctly shows only available stock.
+  if (dispensing && !batches.some((batch) => batch.id === dispensing.drugBatchId)) {
+    const issuedBatch = await prisma.drugBatch.findFirst({
+      where: { id: dispensing.drugBatchId, tenantId, drugId: drug.id },
+      select: { id: true, batchNumber: true, expiryDate: true, quantityInStock: true },
+    });
+    if (issuedBatch) batches.unshift(issuedBatch);
+  }
+
+  return {
+    isNdps: true,
+    drug: { id: drug.id, name: drug.drugName, strength: drug.strength },
+    linkedBatchId: dispensing?.drugBatchId ?? null,
+    dispensingRecordId: dispensing?.id ?? null,
+    requiresEmergencyReason: !dispensing,
+    clinicalDetails: {
+      doctorRegistration: item.prescription.doctor.licenseNumber,
+      bedNumber: admission?.bed?.bedNumber ?? (admission?.admissionType === 'emergency' ? 'EMERGENCY' : null),
+      diagnosis: item.prescription.visit.diagnoses[0]?.diagnosisName ?? admission?.admissionReason ?? null,
+    },
+    batches,
+    locations: locations.map((location) => ({
+      id: location.id,
+      name: location.name,
+      type: location.type,
+      wardId: location.wardId,
+      availableContainers: location.balances[0]?.quantity ?? 0,
+      preferred: Boolean(admission?.wardId && location.wardId === admission.wardId),
+    })),
+    existingDose: null,
+  };
+}
+
 export async function preparePatientDose(
   tenantId: string,
   userId: string,
   scheduleId: string,
   input: PatientDoseInput | undefined,
+  db: DoseDb = prisma,
 ): Promise<PreparedPatientDose | null> {
-  const schedule = await loadDoseSchedule(tenantId, scheduleId);
+  const schedule = await loadDoseSchedule(tenantId, scheduleId, db);
   if (!schedule) throw AppError.notFound('Schedule row not found');
   const drug = schedule.prescriptionItem.drug;
   if (!drug || !isNdpsDrug(drug)) return null;
@@ -256,7 +360,7 @@ export async function preparePatientDose(
   }
 
   const [batch, location, dispensing, wardStock] = await Promise.all([
-    prisma.drugBatch.findFirst({
+    db.drugBatch.findFirst({
       where: { id: input.drugBatchId, tenantId, drugId: drug.id },
       select: {
         id: true,
@@ -267,24 +371,24 @@ export async function preparePatientDose(
         isRecalled: true,
       },
     }),
-    prisma.ndpsLocation.findFirst({
+    db.ndpsLocation.findFirst({
       where: { id: input.ndpsLocationId, tenantId, isActive: true },
       select: { id: true, name: true, wardId: true },
     }),
-    schedule.dispensingRecordId
-      ? prisma.dispensingRecord.findFirst({
+    db.dispensingRecord.findFirst({
           where: {
-            id: schedule.dispensingRecordId,
             tenantId,
             patientId: schedule.patientId,
+            prescriptionItemId: schedule.prescriptionItemId,
             drugBatchId: input.drugBatchId,
             cancelledAt: null,
+            ...(schedule.dispensingRecordId ? { id: schedule.dispensingRecordId } : {}),
           },
+          orderBy: { dispensedAt: 'desc' },
           select: { id: true, billId: true },
-        })
-      : null,
+        }),
     schedule.admission?.wardId
-      ? prisma.wardStock.findFirst({
+      ? db.wardStock.findFirst({
           where: {
             tenantId,
             wardId: schedule.admission.wardId,
@@ -317,7 +421,7 @@ export async function preparePatientDose(
     }
   }
 
-  const balance = await prisma.ndpsStockBalance.findFirst({
+  const balance = await db.ndpsStockBalance.findFirst({
     where: { tenantId, drugFormularyId: drug.id, locationId: location.id },
     select: { quantity: true },
   });
@@ -364,6 +468,7 @@ export async function preparePatientDose(
     disposition,
     status: reconciliation.status,
     stockSource,
+    dispensingRecordId: dispensing?.id ?? null,
     witnessedAt,
     doctorRegNo,
     bedNumber,
@@ -452,7 +557,7 @@ export async function recordPreparedPatientDose(
       diagnosis: prepared.diagnosis,
       patientDoseId,
       emarScheduleId: prepared.schedule.id,
-      dispensingRecordId: prepared.schedule.dispensingRecordId,
+      dispensingRecordId: prepared.dispensingRecordId,
       labelledQuantity: prepared.labelledQuantity,
       administeredQuantity: prepared.administeredQuantity,
       residualQuantity: prepared.residualQuantity,
@@ -483,7 +588,7 @@ export async function recordPreparedPatientDose(
         coSignById: prepared.input.witnessedById!,
         patientDoseId,
         emarScheduleId: prepared.schedule.id,
-        dispensingRecordId: prepared.schedule.dispensingRecordId,
+        dispensingRecordId: prepared.dispensingRecordId,
         labelledQuantity: prepared.labelledQuantity,
         administeredQuantity: prepared.administeredQuantity,
         residualQuantity: prepared.residualQuantity,
@@ -547,7 +652,7 @@ export async function recordPreparedPatientDose(
       admissionId: prepared.schedule.admissionId,
       drugFormularyId: drug.id,
       drugBatchId: prepared.input.drugBatchId,
-      dispensingRecordId: prepared.schedule.dispensingRecordId,
+      dispensingRecordId: prepared.dispensingRecordId,
       ndpsLocationId: prepared.input.ndpsLocationId,
       administrationTransactionId,
       disposalTransactionId,

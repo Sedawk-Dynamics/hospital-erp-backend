@@ -19,6 +19,7 @@ import type {
   AmendDoseInput,
   GiveDoseInput,
   TriggerPrnInput,
+  CatchUpDoseInput,
 } from './emar.validation';
 import type { EmarDoseStatus, EmarSchedule, MedicationRoute } from '@prisma/client';
 import {
@@ -464,6 +465,19 @@ export async function amendDose(
     if (data.toStatus === 'given_late' && delayMinutes <= grace) finalStatus = 'given';
   }
 
+  const existingNdpsDose = await prisma.ndpsPatientDose.findUnique({
+    where: { emarScheduleId: s.id },
+    select: { id: true, administrationTransactionId: true },
+  });
+  if (existingNdpsDose && finalStatus !== 'given' && finalStatus !== 'given_late') {
+    throw AppError.badRequest(
+      'A reconciled NDPS administration cannot be changed to a non-given outcome. Record a clinical correction/incident instead so the controlled-drug ledger is not erased.',
+    );
+  }
+  const preparedNdps = (finalStatus === 'given' || finalStatus === 'given_late') && !existingNdpsDose
+    ? await preparePatientDose(tenantId, userId, id, data.ndps)
+    : null;
+
   const updated = await prisma.$transaction(async (tx) => {
     const row = await tx.emarSchedule.update({
       where: { id },
@@ -480,6 +494,19 @@ export async function amendDose(
         notes: data.notes ?? s.notes,
       },
     });
+    const ndpsResult = preparedNdps && actualGivenTime
+      ? await recordPreparedPatientDose(tx, tenantId, userId, actualGivenTime, preparedNdps)
+      : null;
+    if (existingNdpsDose && actualGivenTime) {
+      await tx.ndpsPatientDose.update({
+        where: { id: existingNdpsDose.id },
+        data: { administeredAt: actualGivenTime },
+      });
+      await tx.ndpsTransaction.update({
+        where: { id: existingNdpsDose.administrationTransactionId },
+        data: { occurredAt: actualGivenTime },
+      });
+    }
     await tx.emarAuditLog.create({
       data: {
         tenantId,
@@ -495,26 +522,26 @@ export async function amendDose(
           actualGivenTime: actualGivenTime?.toISOString(),
           originalStatus: s.status,
           originalActualGivenTime: s.actualGivenTime?.toISOString() ?? null,
+          ...patientDoseAuditMetadata(preparedNdps),
         },
       },
     });
-    return row;
+    // Mirror to legacy table only for actual given outcomes, atomically.
+    if ((finalStatus === 'given' || finalStatus === 'given_late') && actualGivenTime) {
+      await tx.medicationAdministration.create({
+        data: {
+          prescriptionItemId: s.prescriptionItemId,
+          patientId: s.patientId,
+          administeredBy: userId,
+          administeredAt: actualGivenTime,
+          doseGiven: s.dosage,
+          status: 'given',
+          notes: ['amended', data.reason, data.notes].filter(Boolean).join(' — '),
+        },
+      });
+    }
+    return { ...row, ndpsPatientDose: ndpsResult?.patientDose ?? existingNdpsDose ?? null, ndpsBilling: ndpsResult?.billing ?? null };
   });
-
-  // Mirror to legacy table only for actual given outcomes
-  if ((finalStatus === 'given' || finalStatus === 'given_late') && actualGivenTime) {
-    await prisma.medicationAdministration.create({
-      data: {
-        prescriptionItemId: s.prescriptionItemId,
-        patientId: s.patientId,
-        administeredBy: userId,
-        administeredAt: actualGivenTime,
-        doseGiven: s.dosage,
-        status: 'given',
-        notes: ['amended', data.reason, data.notes].filter(Boolean).join(' — '),
-      },
-    });
-  }
 
   logger.info(
     { tenantId, scheduleId: id, fromStatus: s.status, toStatus: finalStatus, delayMinutes },
@@ -580,6 +607,16 @@ export async function triggerPrn(
   const admissionId = visit?.admission?.id ?? null;
 
   const actualGivenTime = data.actualGivenTime ? new Date(data.actualGivenTime) : new Date();
+  const linkedDispensing = await prisma.dispensingRecord.findFirst({
+    where: {
+      tenantId,
+      patientId: item.prescription.patientId,
+      prescriptionItemId: item.id,
+      cancelledAt: null,
+    },
+    orderBy: { dispensedAt: 'desc' },
+    select: { id: true, drugBatchId: true },
+  });
 
   const created = await prisma.$transaction(async (tx) => {
     const row = await tx.emarSchedule.create({
@@ -589,6 +626,8 @@ export async function triggerPrn(
         prescriptionItemId: item.id,
         patientId: item.prescription.patientId,
         admissionId,
+        drugBatchId: linkedDispensing?.drugBatchId ?? null,
+        dispensingRecordId: linkedDispensing?.id ?? null,
         drugName: item.drugName,
         dosage: item.dosage,
         route: (item.route ?? 'oral') as MedicationRoute,
@@ -604,6 +643,10 @@ export async function triggerPrn(
         notes: data.notes ?? null,
       },
     });
+    const preparedNdps = await preparePatientDose(tenantId, userId, row.id, data.ndps, tx);
+    const ndpsResult = preparedNdps
+      ? await recordPreparedPatientDose(tx, tenantId, userId, actualGivenTime, preparedNdps)
+      : null;
     await tx.emarAuditLog.create({
       data: {
         tenantId,
@@ -613,21 +656,21 @@ export async function triggerPrn(
         toStatus: 'given',
         performedById: userId,
         notes: data.notes,
+        metadata: patientDoseAuditMetadata(preparedNdps),
       },
     });
-    return row;
-  });
-
-  await prisma.medicationAdministration.create({
-    data: {
-      prescriptionItemId: item.id,
-      patientId: item.prescription.patientId,
-      administeredBy: userId,
-      administeredAt: actualGivenTime,
-      doseGiven: item.dosage,
-      status: 'given',
-      notes: data.notes ?? null,
-    },
+    await tx.medicationAdministration.create({
+      data: {
+        prescriptionItemId: item.id,
+        patientId: item.prescription.patientId,
+        administeredBy: userId,
+        administeredAt: actualGivenTime,
+        doseGiven: item.dosage,
+        status: 'given',
+        notes: data.notes ?? null,
+      },
+    });
+    return { ...row, ndpsPatientDose: ndpsResult?.patientDose ?? null, ndpsBilling: ndpsResult?.billing ?? null };
   });
 
   logger.info({ tenantId, prescriptionItemId, scheduleId: created.id }, 'eMAR PRN dose given');
@@ -649,15 +692,7 @@ export async function triggerPrn(
 export async function applyCatchUpDose(
   tenantId: string,
   userId: string,
-  data: {
-    prescriptionItemId: string;
-    slotCode: string;
-    date: string; // YYYY-MM-DD (local/IST)
-    action: 'give' | 'hold' | 'refuse' | 'missed';
-    actualGivenTime?: string;
-    reason?: string;
-    notes?: string;
-  },
+  data: CatchUpDoseInput,
 ) {
   const item = await prisma.prescriptionItem.findFirst({
     where: { id: data.prescriptionItemId, prescription: { tenantId } },
@@ -706,7 +741,7 @@ export async function applyCatchUpDose(
   // Reuse the frequencyCode the item's other rows carry, for a consistent record.
   const sibling = await prisma.emarSchedule.findFirst({
     where: { tenantId, prescriptionItemId: item.id, isPrn: false },
-    select: { frequencyCode: true },
+    select: { frequencyCode: true, drugBatchId: true, dispensingRecordId: true },
     orderBy: { scheduledAt: 'asc' },
   });
   const frequencyCode = sibling?.frequencyCode ?? null;
@@ -731,6 +766,8 @@ export async function applyCatchUpDose(
         prescriptionItemId: item.id,
         patientId: item.prescription.patientId,
         admissionId,
+        drugBatchId: sibling?.drugBatchId ?? null,
+        dispensingRecordId: sibling?.dispensingRecordId ?? null,
         drugName: item.drugName,
         dosage: item.dosage,
         route: (item.route ?? 'oral') as MedicationRoute,
@@ -747,6 +784,12 @@ export async function applyCatchUpDose(
         notes: data.notes ?? null,
       },
     });
+    const preparedNdps = finalStatus === 'given' || finalStatus === 'given_late'
+      ? await preparePatientDose(tenantId, userId, row.id, data.ndps, tx)
+      : null;
+    const ndpsResult = preparedNdps
+      ? await recordPreparedPatientDose(tx, tenantId, userId, actualGivenTime!, preparedNdps)
+      : null;
     // Two audit rows: the materialization, then the applied outcome.
     await tx.emarAuditLog.create({
       data: {
@@ -770,37 +813,26 @@ export async function applyCatchUpDose(
         delayMinutes: delayMinutes ?? undefined,
         reason: data.reason,
         notes: data.notes,
+        metadata: patientDoseAuditMetadata(preparedNdps),
       },
     });
-    return row;
+    // Mirror to legacy MedicationAdministration for compatibility, but keep it
+    // inside the same transaction as the catch-up row and NDPS reconciliation.
+    await tx.medicationAdministration.create({
+      data: {
+        prescriptionItemId: item.id,
+        patientId: item.prescription.patientId,
+        administeredBy: userId,
+        administeredAt: actualGivenTime ?? now,
+        doseGiven: item.dosage,
+        status: (finalStatus === 'given_late' ? 'given' : finalStatus) as any,
+        notes: finalStatus === 'given' || finalStatus === 'given_late'
+          ? data.notes ?? null
+          : [data.reason, data.notes].filter(Boolean).join(' — ') || null,
+      },
+    });
+    return { ...row, ndpsPatientDose: ndpsResult?.patientDose ?? null, ndpsBilling: ndpsResult?.billing ?? null };
   });
-
-  // Mirror to legacy MedicationAdministration for compatibility.
-  if (finalStatus === 'given' || finalStatus === 'given_late') {
-    await prisma.medicationAdministration.create({
-      data: {
-        prescriptionItemId: item.id,
-        patientId: item.prescription.patientId,
-        administeredBy: userId,
-        administeredAt: actualGivenTime!,
-        doseGiven: item.dosage,
-        status: 'given',
-        notes: data.notes ?? null,
-      },
-    });
-  } else if (finalStatus === 'held' || finalStatus === 'refused' || finalStatus === 'missed') {
-    await prisma.medicationAdministration.create({
-      data: {
-        prescriptionItemId: item.id,
-        patientId: item.prescription.patientId,
-        administeredBy: userId,
-        administeredAt: now,
-        doseGiven: item.dosage,
-        status: finalStatus as any,
-        notes: [data.reason, data.notes].filter(Boolean).join(' — ') || null,
-      },
-    });
-  }
 
   logger.info(
     { tenantId, prescriptionItemId: item.id, slotCode: slot.code, action: data.action, status: finalStatus },
