@@ -1654,10 +1654,10 @@ export async function updateAppointmentStatus(
         id,
         data.cancellationReason || 'cancelled by staff',
       );
-      if (settled.creditedToAdvance > 0) {
+      if (settled.refundedAmount > 0) {
         logger.info(
-          { tenantId, appointmentId: id, amount: settled.creditedToAdvance },
-          'Cancelled consultation fee carried to patient advance',
+          { tenantId, appointmentId: id, amount: settled.refundedAmount },
+          'Cancelled consultation fee refunded to patient',
         );
       }
     } catch (err) {

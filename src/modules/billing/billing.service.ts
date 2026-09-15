@@ -2011,8 +2011,6 @@ export async function createRefund(
       amount: data.amount,
       reason: data.reason,
       status: 'requested',
-      // Populates the Refunds tab's requester column, which was permanently
-      // blank because nothing ever wrote this.
       requestedBy: userId,
     },
   });
@@ -6906,11 +6904,12 @@ export async function reversePayment(
  * consultation demonstrably never happened and the money cannot be earned:
  *
  *   - nothing collected → cancel the bill. There is no charge to answer for.
- *   - money collected  → reverse the payment off the bill and put the same sum
- *     on the patient's advance, then cancel the bill. No cash moves (the two
- *     rows net to zero in the drawer) and the patient keeps their money as a
- *     credit, which the counter's existing "From advance" option settles the
- *     rebooked consultation from.
+ *   - money collected  → refund it. Each collected payment gets a refund
+ *     request that is immediately approved, which mints a `paymentType:'refund'`
+ *     payout (money out of the drawer), issues a receipt, reverses the GST and
+ *     drives the bill to `refunded`. This is what the Cash Counter's "Refunded"
+ *     total and "Net in drawer" read from, so the money is recorded as handed
+ *     back rather than silently kept in the drawer.
  *
  * Best-effort by design — the caller treats a failure as non-fatal. A booking
  * that cannot be cancelled because its money could not be tidied up would be a
@@ -6921,7 +6920,7 @@ export async function settleCancelledAppointmentCharge(
   userId: string,
   appointmentId: string,
   reason: string,
-): Promise<{ cancelledBillId: string | null; creditedToAdvance: number }> {
+): Promise<{ cancelledBillId: string | null; refundedAmount: number }> {
   const bill = await prisma.bill.findFirst({
     where: {
       tenantId,
@@ -6930,42 +6929,36 @@ export async function settleCancelledAppointmentCharge(
     },
     include: { payments: { where: { status: 'completed' } } },
   });
-  if (!bill) return { cancelledBillId: null, creditedToAdvance: 0 };
+  if (!bill) return { cancelledBillId: null, refundedAmount: 0 };
 
-  // Only rows that actually brought money in. A refund payout or an advance
-  // adjustment is not something to hand back again.
+  // Only rows that actually brought money in. A refund payout is not something
+  // to hand back again.
   const collected = bill.payments.filter((p) => p.paymentType !== 'refund');
   const collectedTotal = r2(collected.reduce((sum, p) => sum + toNumber(p.amount), 0));
 
+  // Refund every collected payment. createRefund logs the request (who/why) and
+  // approveRefund mints the `paymentType:'refund'` payout, issues a receipt,
+  // reverses the GST and moves the bill to `refunded`. The full payment amount
+  // is refunded — the consultation never happened, so nothing was earned.
   for (const payment of collected) {
-    await reversePayment(tenantId, userId, {
+    const refund = await createRefund(tenantId, userId, {
       paymentId: payment.id,
+      amount: toNumber(payment.amount),
+      reason: `Appointment cancelled — ${reason}`,
+    });
+    await approveRefund(tenantId, refund.id, userId);
+  }
+  if (collectedTotal <= 0) {
+    await cancelBill(tenantId, userId, bill.id, {
       reason: `Appointment cancelled — ${reason}`,
     });
   }
 
-  if (collectedTotal > 0) {
-    await createAdvancePayment(tenantId, userId, {
-      patientId: bill.patientId,
-      amount: collectedTotal,
-      // Not a fresh collection — the money is already in the drawer. Mirrors
-      // the method so the day-end split is not distorted.
-      paymentMethod: collected[0]?.paymentMethod ?? 'cash',
-      notes:
-        `Consultation fee carried forward from cancelled appointment ` +
-        `(bill ${bill.billNumber}) — available against the next booking`,
-    });
-  }
-
-  await cancelBill(tenantId, userId, bill.id, {
-    reason: `Appointment cancelled — ${reason}`,
-  });
-
   logger.info(
-    { tenantId, appointmentId, billId: bill.id, creditedToAdvance: collectedTotal },
+    { tenantId, appointmentId, billId: bill.id, refundedAmount: collectedTotal },
     'Cancelled appointment charge settled',
   );
-  return { cancelledBillId: bill.id, creditedToAdvance: collectedTotal };
+  return { cancelledBillId: bill.id, refundedAmount: collectedTotal };
 }
 
 export async function cancelBill(
