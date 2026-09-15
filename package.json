@@ -4,6 +4,7 @@
   "description": "Hospital ERP SaaS - Backend API",
   "main": "dist/server.js",
   "scripts": {
+    "predev": "prisma generate",
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "prisma db push --skip-generate --accept-data-loss && node dist/server.js",
