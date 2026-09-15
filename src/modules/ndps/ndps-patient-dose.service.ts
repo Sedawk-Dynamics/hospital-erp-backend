@@ -38,6 +38,7 @@ export interface PreparedPatientDose {
   status: 'fully_administered' | 'destroyed' | 'quarantined';
   stockSource: 'dispensing_record' | 'ward_stock' | 'drug_batch';
   dispensingRecordId: string | null;
+  existingBillId: string | null;
   witnessedAt: Date | null;
   doctorRegNo: string;
   bedNumber: string;
@@ -469,6 +470,7 @@ export async function preparePatientDose(
     status: reconciliation.status,
     stockSource,
     dispensingRecordId: dispensing?.id ?? null,
+    existingBillId: dispensing?.billId ?? null,
     witnessedAt,
     doctorRegNo,
     bedNumber,
@@ -674,7 +676,7 @@ export async function recordPreparedPatientDose(
       quarantineLocation: prepared.input.quarantineLocation?.trim() || null,
       quarantinedAt: prepared.disposition === 'quarantined' ? administeredAt : null,
       destroyedAt: prepared.disposition === 'destroyed' ? administeredAt : null,
-      billId: billing?.billId ?? null,
+      billId: billing?.billId ?? prepared.existingBillId,
       notes: prepared.input.notes ?? null,
     },
   });
