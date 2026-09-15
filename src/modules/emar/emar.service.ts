@@ -185,6 +185,20 @@ export async function listSchedules(tenantId: string, query: ListSchedulesQuery)
         admission: { select: { id: true, wardId: true, bedId: true } },
         givenBy: { select: { id: true, firstName: true, lastName: true } },
         amendedBy: { select: { id: true, firstName: true, lastName: true } },
+        ndpsPatientDose: {
+          select: {
+            id: true,
+            labelledQuantity: true,
+            administeredQuantity: true,
+            residualQuantity: true,
+            quantityUnit: true,
+            status: true,
+            disposition: true,
+            quarantineLocation: true,
+            disposalMethod: true,
+            emergencyUse: true,
+          },
+        },
       },
     }),
     prisma.emarSchedule.count({ where }),
@@ -202,6 +216,7 @@ export async function getScheduleById(tenantId: string, id: string) {
       patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
       givenBy: { select: { id: true, firstName: true, lastName: true } },
       amendedBy: { select: { id: true, firstName: true, lastName: true } },
+      ndpsPatientDose: true,
       auditLogs: {
         orderBy: { performedAt: 'desc' },
         include: { performedBy: { select: { id: true, firstName: true, lastName: true } } },
