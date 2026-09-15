@@ -386,7 +386,7 @@ export async function preparePatientDose(
             ...(schedule.dispensingRecordId ? { id: schedule.dispensingRecordId } : {}),
           },
           orderBy: { dispensedAt: 'desc' },
-          select: { id: true, billId: true },
+          select: { id: true, billId: true, quantityDispensed: true },
         }),
     schedule.admission?.wardId
       ? db.wardStock.findFirst({
@@ -409,6 +409,15 @@ export async function preparePatientDose(
 
   let stockSource: PreparedPatientDose['stockSource'];
   if (dispensing) {
+    const alreadyUsed = await db.ndpsPatientDose.aggregate({
+      where: { tenantId, dispensingRecordId: dispensing.id },
+      _sum: { containerQuantity: true },
+    });
+    if ((alreadyUsed._sum.containerQuantity ?? 0) + containerQuantity > dispensing.quantityDispensed) {
+      throw AppError.badRequest(
+        `The linked pharmacy issue has only ${Math.max(0, dispensing.quantityDispensed - (alreadyUsed._sum.containerQuantity ?? 0))} unused container(s) remaining.`,
+      );
+    }
     stockSource = 'dispensing_record';
   } else {
     if (!input.emergencyUse || !input.emergencyReason?.trim()) {
@@ -535,10 +544,36 @@ export async function recordPreparedPatientDose(
   });
   if (duplicate) throw AppError.conflict('This NDPS dose has already been reconciled.');
 
+  if (prepared.dispensingRecordId) {
+    // Serialize all administrations drawing on the same patient issue so two
+    // nurses cannot consume its last container at the same time.
+    await tx.$queryRaw`
+      SELECT "id" FROM "dispensing_records"
+      WHERE "id" = ${prepared.dispensingRecordId} AND "tenant_id" = ${tenantId}
+      FOR UPDATE
+    `;
+    const linkedIssue = await tx.dispensingRecord.findFirst({
+      where: { id: prepared.dispensingRecordId, tenantId, cancelledAt: null },
+      select: { quantityDispensed: true },
+    });
+    if (!linkedIssue) throw AppError.conflict('The linked pharmacy issue was cancelled. Refresh the eMAR.');
+    const alreadyUsed = await tx.ndpsPatientDose.aggregate({
+      where: { tenantId, dispensingRecordId: prepared.dispensingRecordId },
+      _sum: { containerQuantity: true },
+    });
+    const requested = prepared.input.containerQuantity ?? 1;
+    if ((alreadyUsed._sum.containerQuantity ?? 0) + requested > linkedIssue.quantityDispensed) {
+      throw AppError.conflict('The linked pharmacy issue no longer has enough unused containers. Refresh the eMAR.');
+    }
+  }
+
   const { containers, drug } = await consumePhysicalContainer(tx, tenantId, userId, prepared);
   const patientDoseId = randomUUID();
   const administrationTransactionId = randomUUID();
   const disposalTransactionId = prepared.disposition === 'destroyed' ? randomUUID() : null;
+  const immediateDestroyedAt = prepared.disposition === 'destroyed'
+    ? prepared.witnessedAt ?? new Date()
+    : null;
   const batch = await tx.drugBatch.findUnique({
     where: { id: prepared.input.drugBatchId },
     select: { batchNumber: true, expiryDate: true },
@@ -601,7 +636,7 @@ export async function recordPreparedPatientDose(
         expiryDate: batch?.expiryDate ?? null,
         recordedById: userId,
         notes: [prepared.input.disposalMethod, prepared.input.notes].filter(Boolean).join(' — ') || null,
-        occurredAt: administeredAt,
+        occurredAt: immediateDestroyedAt ?? administeredAt,
       },
     });
   }
@@ -675,7 +710,7 @@ export async function recordPreparedPatientDose(
       disposalMethod: prepared.input.disposalMethod?.trim() || null,
       quarantineLocation: prepared.input.quarantineLocation?.trim() || null,
       quarantinedAt: prepared.disposition === 'quarantined' ? administeredAt : null,
-      destroyedAt: prepared.disposition === 'destroyed' ? administeredAt : null,
+      destroyedAt: immediateDestroyedAt,
       billId: billing?.billId ?? prepared.existingBillId,
       notes: prepared.input.notes ?? null,
     },
