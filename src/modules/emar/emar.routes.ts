@@ -159,6 +159,13 @@ emarRoutes.get(
   validate(scheduleIdParamSchema),
   ctrl.getSchedule,
 );
+emarRoutes.get(
+  '/doses/:id/ndps-context',
+  authenticate,
+  requirePermission('prescriptions', 'read'),
+  validate(scheduleIdParamSchema),
+  ctrl.getNdpsDoseContext,
+);
 emarRoutes.post(
   '/doses/:id/give',
   authenticate,

@@ -95,6 +95,14 @@ export async function getSchedule(req: AuthenticatedRequest, res: Response, next
   } catch (err) { next(err); }
 }
 
+export async function getNdpsDoseContext(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const { getPatientDoseContext } = await import('../ndps/ndps-patient-dose.service');
+    const data = await getPatientDoseContext(req.user!.tenantId, String(req.params.id));
+    sendResponse({ res, message: 'NDPS dose context retrieved', data });
+  } catch (err) { next(err); }
+}
+
 // ── Dose actions ────────────────────────────────────────────
 
 export async function giveDose(req: AuthenticatedRequest, res: Response, next: NextFunction) {

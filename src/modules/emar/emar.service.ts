@@ -21,6 +21,11 @@ import type {
   TriggerPrnInput,
 } from './emar.validation';
 import type { EmarDoseStatus, EmarSchedule, MedicationRoute } from '@prisma/client';
+import {
+  patientDoseAuditMetadata,
+  preparePatientDose,
+  recordPreparedPatientDose,
+} from '../ndps/ndps-patient-dose.service';
 
 // ============================================================
 // Time Slot Master
@@ -256,10 +261,14 @@ export async function giveDose(
   const isLate = delayMinutes > grace;
 
   const newStatus: EmarDoseStatus = isLate ? 'given_late' : 'given';
+  // Resolve and authenticate the controlled-drug details before opening the
+  // transaction. The write itself still happens atomically with the eMAR dose.
+  const preparedNdps = await preparePatientDose(tenantId, userId, id, data.ndps);
 
   const updated = await prisma.$transaction(async (tx) => {
-    const row = await tx.emarSchedule.update({
-      where: { id },
+    // A conditional update closes the double-click/concurrent-client window.
+    const changed = await tx.emarSchedule.updateMany({
+      where: { id, tenantId, status: { in: ACTIONABLE_STATUSES } },
       data: {
         status: newStatus,
         actionedAt: new Date(),
@@ -269,6 +278,13 @@ export async function giveDose(
         notes: data.notes ?? s.notes,
       },
     });
+    if (changed.count !== 1) {
+      throw AppError.conflict('This dose was already actioned. Refresh the eMAR.');
+    }
+    const row = await tx.emarSchedule.findUniqueOrThrow({ where: { id } });
+    const ndpsResult = preparedNdps
+      ? await recordPreparedPatientDose(tx, tenantId, userId, actualGivenTime, preparedNdps)
+      : null;
     await tx.emarAuditLog.create({
       data: {
         tenantId,
@@ -279,22 +295,23 @@ export async function giveDose(
         performedById: userId,
         delayMinutes,
         notes: data.notes,
+        metadata: patientDoseAuditMetadata(preparedNdps),
       },
     });
-    return row;
-  });
-
-  // Mirror to legacy MedicationAdministration for compatibility
-  await prisma.medicationAdministration.create({
-    data: {
-      prescriptionItemId: updated.prescriptionItemId,
-      patientId: updated.patientId,
-      administeredBy: userId,
-      administeredAt: actualGivenTime,
-      doseGiven: updated.dosage,
-      status: 'given',
-      notes: data.notes ?? null,
-    },
+    // Keep the legacy mirror inside the same commit boundary. Previously an
+    // eMAR row could say "given" while this compatibility record failed.
+    await tx.medicationAdministration.create({
+      data: {
+        prescriptionItemId: row.prescriptionItemId,
+        patientId: row.patientId,
+        administeredBy: userId,
+        administeredAt: actualGivenTime,
+        doseGiven: row.dosage,
+        status: 'given',
+        notes: data.notes ?? null,
+      },
+    });
+    return { ...row, ndpsPatientDose: ndpsResult?.patientDose ?? null, ndpsBilling: ndpsResult?.billing ?? null };
   });
 
   logger.info(

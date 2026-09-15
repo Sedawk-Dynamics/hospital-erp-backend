@@ -93,11 +93,29 @@ export const scheduleIdParamSchema = z.object({
 
 // ── Dose actions ─────────────────────────────────────────────
 
+export const ndpsPatientDoseSchema = z.object({
+  drugBatchId: z.string().uuid('Select the administered batch'),
+  ndpsLocationId: z.string().uuid('Select the NDPS custody location'),
+  labelledQuantity: z.number().positive().max(1_000_000),
+  administeredQuantity: z.number().positive().max(1_000_000),
+  quantityUnit: z.string().trim().min(1).max(20),
+  containerQuantity: z.number().int().positive().max(100).default(1),
+  disposition: z.enum(['none', 'destroyed', 'quarantined']).optional(),
+  disposalMethod: z.string().trim().min(1).max(160).optional(),
+  quarantineLocation: z.string().trim().min(1).max(160).optional(),
+  witnessedById: z.string().uuid().optional(),
+  witnessPassword: z.string().min(1).max(200).optional(),
+  emergencyUse: z.boolean().optional(),
+  emergencyReason: z.string().trim().min(1).max(1000).optional(),
+  notes: z.string().max(1000).optional(),
+});
+
 export const giveDoseSchema = z.object({
   params: z.object({ id: z.string().uuid() }),
   body: z.object({
     actualGivenTime: z.string().datetime().optional(), // server-side default = now
     notes: z.string().max(1000).optional(),
+    ndps: ndpsPatientDoseSchema.optional(),
   }),
 });
 

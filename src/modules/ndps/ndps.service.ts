@@ -61,7 +61,7 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 async function assertNarcoticDrug(tenantId: string, drugFormularyId: string) {
   const drug = await prisma.drugFormulary.findFirst({
     where: { id: drugFormularyId, tenantId },
-    select: { id: true, drugName: true, isNarcotic: true, price: true, taxPercent: true },
+    select: { id: true, drugName: true, isNarcotic: true, price: true, taxPercent: true, hsnCode: true },
   });
   if (!drug) throw AppError.notFound('Drug not found in formulary');
   if (!drug.isNarcotic) {
@@ -78,7 +78,7 @@ async function assertNarcoticDrug(tenantId: string, drugFormularyId: string) {
  * (tax-inclusive); if no price is configured the consumption is still recorded
  * clinically and no charge is posted. Returns the billing summary, or null.
  */
-async function postConsumptionCharge(
+export async function postConsumptionCharge(
   tx: any,
   tenantId: string,
   userId: string,
@@ -689,6 +689,14 @@ export async function getRegister(
       reasonCode: r.reasonCode,
       referenceNumber: r.referenceNumber,
       attachmentUrl: r.attachmentUrl,
+      patientDoseId: r.patientDoseId,
+      emarScheduleId: r.emarScheduleId,
+      labelledQuantity: r.labelledQuantity,
+      administeredQuantity: r.administeredQuantity,
+      residualQuantity: r.residualQuantity,
+      quantityUnit: r.quantityUnit,
+      residualDisposition: r.residualDisposition,
+      stockSource: r.stockSource,
       notes: r.notes,
     })),
     total: rows.length,

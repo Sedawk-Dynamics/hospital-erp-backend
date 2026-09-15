@@ -405,7 +405,15 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
       // A challan moved NdpsStockBalance between locations and never touched a
       // batch, so hospital-wide it weighs nothing. A 3E administration or a
       // disposal does spend the stock.
-      stockDelta: isTransfer ? 0 : -t.quantity,
+      // A patient-specific pharmacy issue or ward-stock movement has already
+      // moved the physical container in another canonical ledger row. Form 3E
+      // still appears here for statutory traceability, but must not move the
+      // hospital-wide running balance twice. Direct emergency batch use remains
+      // a real outward movement; historical rows (null source) keep old logic.
+      stockDelta: isTransfer || t.stockSource === 'dispensing_record' ||
+        t.stockSource === 'ward_stock' || t.stockSource === 'residual_only'
+        ? 0
+        : -t.quantity,
       patientOrDept: p
         ? `${personName(p)} (${p.mrn})`
         : isTransfer
