@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { reconcilePatientDoseQuantities } from '../../../../src/modules/ndps/ndps-patient-dose.service';
+import { ndpsPatientDoseSchema } from '../../../../src/modules/emar/emar.validation';
 
 describe('NDPS patient dose reconciliation', () => {
   it('closes a fully administered container with no residual disposition', () => {
@@ -12,12 +13,10 @@ describe('NDPS patient dose reconciliation', () => {
     expect(result.status).toBe('fully_administered');
   });
 
-  it('calculates a partial dose and preserves immediate destruction', () => {
-    const result = reconcilePatientDoseQuantities(50, 12.5, 'destroyed');
-
-    expect(result.residualQuantity.toString()).toBe('37.5');
-    expect(result.disposition).toBe('destroyed');
-    expect(result.status).toBe('destroyed');
+  it('does not allow bedside staff to record immediate destruction', () => {
+    expect(() => reconcilePatientDoseQuantities(50, 12.5, 'destroyed')).toThrow(
+      'Residual destruction cannot be recorded during patient administration.',
+    );
   });
 
   it('defaults an unresolved residual to quarantine, never back to stock', () => {
@@ -42,7 +41,24 @@ describe('NDPS patient dose reconciliation', () => {
 
   it('does not allow a positive residual to be marked as none', () => {
     expect(() => reconcilePatientDoseQuantities(10, 5, 'none')).toThrow(
-      'Choose immediate witnessed destruction or sealed quarantine for the residual.',
+      'A positive remainder must be sealed and quarantined for authorised NDPS disposal.',
     );
+  });
+
+  it('rejects bedside destruction fields at the eMAR API boundary', () => {
+    const result = ndpsPatientDoseSchema.safeParse({
+      drugBatchId: '11111111-1111-4111-8111-111111111111',
+      ndpsLocationId: '22222222-2222-4222-8222-222222222222',
+      labelledQuantity: 2,
+      administeredQuantity: 0.5,
+      quantityUnit: 'mL',
+      containerQuantity: 1,
+      disposition: 'destroyed',
+      disposalMethod: 'bedside destruction',
+      witnessedById: '33333333-3333-4333-8333-333333333333',
+      witnessPassword: 'secret',
+    });
+
+    expect(result.success).toBe(false);
   });
 });

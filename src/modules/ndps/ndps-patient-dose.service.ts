@@ -17,10 +17,7 @@ export interface PatientDoseInput {
   quantityUnit: string;
   containerQuantity?: number;
   disposition?: ResidualDisposition;
-  disposalMethod?: string;
   quarantineLocation?: string;
-  witnessedById?: string;
-  witnessPassword?: string;
   emergencyUse?: boolean;
   emergencyReason?: string;
   notes?: string;
@@ -39,7 +36,6 @@ export interface PreparedPatientDose {
   stockSource: 'dispensing_record' | 'ward_stock' | 'drug_batch';
   dispensingRecordId: string | null;
   existingBillId: string | null;
-  witnessedAt: Date | null;
   doctorRegNo: string;
   bedNumber: string;
   diagnosis: string;
@@ -62,6 +58,11 @@ export function reconcilePatientDoseQuantities(
   administeredQuantity: number,
   requestedDisposition?: ResidualDisposition,
 ) {
+  if (requestedDisposition === 'destroyed') {
+    throw AppError.badRequest(
+      'Residual destruction cannot be recorded during patient administration. Seal and quarantine the remainder for authorised NDPS disposal.',
+    );
+  }
   const labelledScaled = fourDp(labelledQuantity, 'Labelled quantity');
   const administeredScaled = fourDp(administeredQuantity, 'Administered quantity');
   if (administeredScaled > labelledScaled) {
@@ -75,16 +76,14 @@ export function reconcilePatientDoseQuantities(
     throw AppError.badRequest('A fully administered container has no residual to destroy or quarantine.');
   }
   if (residualScaled > 0 && disposition === 'none') {
-    throw AppError.badRequest('Choose immediate witnessed destruction or sealed quarantine for the residual.');
+    throw AppError.badRequest('A positive remainder must be sealed and quarantined for authorised NDPS disposal.');
   }
   return {
     labelledQuantity: new Prisma.Decimal((labelledScaled / 10_000).toFixed(4)),
     administeredQuantity: new Prisma.Decimal((administeredScaled / 10_000).toFixed(4)),
     residualQuantity: new Prisma.Decimal((residualScaled / 10_000).toFixed(4)),
     disposition,
-    status: (residualScaled === 0
-      ? 'fully_administered'
-      : disposition === 'destroyed' ? 'destroyed' : 'quarantined') as
+    status: (residualScaled === 0 ? 'fully_administered' : 'quarantined') as
       'fully_administered' | 'destroyed' | 'quarantined',
   };
 }
@@ -338,7 +337,7 @@ export async function preparePatientDose(
   if (!drug || !isNdpsDrug(drug)) return null;
   if (!input) {
     throw AppError.badRequest(
-      'This is an NDPS/controlled narcotic. Record the labelled quantity, administered quantity and residual disposition before confirming the dose.',
+      'This is an NDPS/controlled narcotic. Record the labelled quantity, administered quantity and sealed quarantine location for any remainder before confirming the dose.',
     );
   }
   if (schedule.ndpsPatientDose) {
@@ -441,18 +440,6 @@ export async function preparePatientDose(
     );
   }
 
-  let witnessedAt: Date | null = null;
-  if (disposition === 'destroyed') {
-    if (!input.disposalMethod?.trim()) {
-      throw AppError.badRequest('Record the approved residual destruction method.');
-    }
-    if (!input.witnessedById || input.witnessedById === userId) {
-      throw AppError.badRequest('Immediate residual destruction requires a different authorised witness.');
-    }
-    const settings = await getControlledDrugSettings(tenantId);
-    await assertWitnessIdentity(tenantId, input.witnessedById, input.witnessPassword, settings.witnessRoles);
-    witnessedAt = new Date();
-  }
   if (disposition === 'quarantined' && !input.quarantineLocation?.trim()) {
     throw AppError.badRequest('Record where the sealed residual is quarantined.');
   }
@@ -480,7 +467,6 @@ export async function preparePatientDose(
     stockSource,
     dispensingRecordId: dispensing?.id ?? null,
     existingBillId: dispensing?.billId ?? null,
-    witnessedAt,
     doctorRegNo,
     bedNumber,
     diagnosis,
@@ -570,10 +556,6 @@ export async function recordPreparedPatientDose(
   const { containers, drug } = await consumePhysicalContainer(tx, tenantId, userId, prepared);
   const patientDoseId = randomUUID();
   const administrationTransactionId = randomUUID();
-  const disposalTransactionId = prepared.disposition === 'destroyed' ? randomUUID() : null;
-  const immediateDestroyedAt = prepared.disposition === 'destroyed'
-    ? prepared.witnessedAt ?? new Date()
-    : null;
   const batch = await tx.drugBatch.findUnique({
     where: { id: prepared.input.drugBatchId },
     select: { batchNumber: true, expiryDate: true },
@@ -608,38 +590,6 @@ export async function recordPreparedPatientDose(
       occurredAt: administeredAt,
     },
   });
-
-  if (disposalTransactionId) {
-    await tx.ndpsTransaction.create({
-      data: {
-        id: disposalTransactionId,
-        tenantId,
-        drugFormularyId: drug.id,
-        drugBatchId: prepared.input.drugBatchId,
-        entryType: 'disposal',
-        quantity: 0,
-        fromLocationId: prepared.input.ndpsLocationId,
-        patientId: prepared.schedule.patientId,
-        reasonCode: 'patient_residual',
-        referenceNumber: `EMAR-${prepared.schedule.id.slice(0, 8).toUpperCase()}`,
-        coSignById: prepared.input.witnessedById!,
-        patientDoseId,
-        emarScheduleId: prepared.schedule.id,
-        dispensingRecordId: prepared.dispensingRecordId,
-        labelledQuantity: prepared.labelledQuantity,
-        administeredQuantity: prepared.administeredQuantity,
-        residualQuantity: prepared.residualQuantity,
-        quantityUnit: prepared.input.quantityUnit.trim(),
-        residualDisposition: 'destroyed',
-        stockSource: 'residual_only',
-        batchNumber: batch?.batchNumber ?? null,
-        expiryDate: batch?.expiryDate ?? null,
-        recordedById: userId,
-        notes: [prepared.input.disposalMethod, prepared.input.notes].filter(Boolean).join(' — ') || null,
-        occurredAt: immediateDestroyedAt ?? administeredAt,
-      },
-    });
-  }
 
   let billing: { billId: string; billNumber: string; charged: number } | null = null;
   if (prepared.resolver) {
@@ -692,7 +642,7 @@ export async function recordPreparedPatientDose(
       dispensingRecordId: prepared.dispensingRecordId,
       ndpsLocationId: prepared.input.ndpsLocationId,
       administrationTransactionId,
-      disposalTransactionId,
+      disposalTransactionId: null,
       labelledQuantity: prepared.labelledQuantity,
       administeredQuantity: prepared.administeredQuantity,
       residualQuantity: prepared.residualQuantity,
@@ -705,12 +655,12 @@ export async function recordPreparedPatientDose(
       emergencyReason: prepared.input.emergencyReason?.trim() || null,
       administeredById: userId,
       administeredAt,
-      witnessedById: prepared.input.witnessedById ?? null,
-      witnessedAt: prepared.witnessedAt,
-      disposalMethod: prepared.input.disposalMethod?.trim() || null,
+      witnessedById: null,
+      witnessedAt: null,
+      disposalMethod: null,
       quarantineLocation: prepared.input.quarantineLocation?.trim() || null,
       quarantinedAt: prepared.disposition === 'quarantined' ? administeredAt : null,
-      destroyedAt: immediateDestroyedAt,
+      destroyedAt: null,
       billId: billing?.billId ?? prepared.existingBillId,
       notes: prepared.input.notes ?? null,
     },
