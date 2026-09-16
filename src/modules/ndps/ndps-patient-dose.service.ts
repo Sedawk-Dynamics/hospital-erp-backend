@@ -20,6 +20,7 @@ export interface PatientDoseInput {
   disposition?: ResidualDisposition;
   residualHandling?: ResidualHandling;
   quarantineLocation?: string;
+  prescriberRegistrationNumber?: string;
   emergencyUse?: boolean;
   emergencyReason?: string;
   notes?: string;
@@ -455,9 +456,10 @@ export async function preparePatientDose(
     ? input.quarantineLocation?.trim() || `${location.name} - awaiting authorised destruction`
     : undefined;
 
-  const doctorRegNo = schedule.prescription.doctor.licenseNumber?.trim();
+  const doctorRegNo = schedule.prescription.doctor.licenseNumber?.trim()
+    || input.prescriberRegistrationNumber?.trim();
   if (!doctorRegNo) {
-    throw AppError.badRequest("The prescribing doctor's registration number must be completed before recording NDPS administration.");
+    throw AppError.badRequest("Enter the prescribing doctor's medical council registration number before recording NDPS administration.");
   }
   const bedNumber = schedule.admission?.bed?.bedNumber?.trim() ||
     (schedule.admission?.admissionType === 'emergency' ? 'EMERGENCY' : 'UNASSIGNED');
@@ -696,6 +698,7 @@ export function patientDoseAuditMetadata(prepared: PreparedPatientDose | null) {
       residualHandling: prepared.input.residualHandling ?? null,
       stockSource: prepared.stockSource,
       emergencyUse: Boolean(prepared.input.emergencyUse),
+      prescriberRegistrationNumber: prepared.doctorRegNo,
     },
   };
 }

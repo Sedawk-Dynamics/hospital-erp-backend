@@ -82,6 +82,7 @@ describe('NDPS patient dose reconciliation', () => {
       ...base,
       residualHandling: 'sealed_quarantine',
       quarantineLocation: 'ICU narcotic safe - residual bin A',
+      prescriberRegistrationNumber: 'SMC-98765',
     }).success).toBe(true);
   });
 });
