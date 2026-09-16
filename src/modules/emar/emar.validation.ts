@@ -105,6 +105,7 @@ export const ndpsPatientDoseSchema = z.object({
   quantityUnit: z.string().trim().min(1).max(20),
   containerQuantity: z.number().int().positive().max(100).default(1),
   disposition: z.enum(['none', 'quarantined']).optional(),
+  residualHandling: z.enum(['pending_destruction', 'sealed_quarantine']).optional(),
   quarantineLocation: z.string().trim().min(1).max(160).optional(),
   emergencyUse: z.boolean().optional(),
   emergencyReason: z.string().trim().min(1).max(1000).optional(),

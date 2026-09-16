@@ -8,6 +8,7 @@ import { assertWitnessIdentity } from '../pharmacy/controlled-dispense';
 import { postConsumptionCharge } from './ndps.service';
 
 export type ResidualDisposition = 'none' | 'destroyed' | 'quarantined';
+export type ResidualHandling = 'pending_destruction' | 'sealed_quarantine';
 
 export interface PatientDoseInput {
   drugBatchId: string;
@@ -17,6 +18,7 @@ export interface PatientDoseInput {
   quantityUnit: string;
   containerQuantity?: number;
   disposition?: ResidualDisposition;
+  residualHandling?: ResidualHandling;
   quarantineLocation?: string;
   emergencyUse?: boolean;
   emergencyReason?: string;
@@ -358,6 +360,12 @@ export async function preparePatientDose(
   if (!input.quantityUnit?.trim() || input.quantityUnit.trim().length > 20) {
     throw AppError.badRequest('A valid content unit (for example mg, mcg or mL) is required.');
   }
+  if (Number(reconciliation.residualQuantity) > 0 && !input.residualHandling) {
+    throw AppError.badRequest('Choose whether the remainder should be sent for destruction or sealed and quarantined.');
+  }
+  if (Number(reconciliation.residualQuantity) === 0 && input.residualHandling) {
+    throw AppError.badRequest('No residual-handling instruction is needed when the full labelled quantity was administered.');
+  }
 
   const [batch, location, dispensing, wardStock] = await Promise.all([
     db.drugBatch.findFirst({
@@ -440,9 +448,12 @@ export async function preparePatientDose(
     );
   }
 
-  if (disposition === 'quarantined' && !input.quarantineLocation?.trim()) {
+  if (input.residualHandling === 'sealed_quarantine' && !input.quarantineLocation?.trim()) {
     throw AppError.badRequest('Record where the sealed residual is quarantined.');
   }
+  const quarantineLocation = disposition === 'quarantined'
+    ? input.quarantineLocation?.trim() || `${location.name} - awaiting authorised destruction`
+    : undefined;
 
   const doctorRegNo = schedule.prescription.doctor.licenseNumber?.trim();
   if (!doctorRegNo) {
@@ -458,7 +469,7 @@ export async function preparePatientDose(
 
   return {
     schedule,
-    input: { ...input, containerQuantity },
+    input: { ...input, containerQuantity, quarantineLocation },
     labelledQuantity: reconciliation.labelledQuantity,
     administeredQuantity: reconciliation.administeredQuantity,
     residualQuantity: reconciliation.residualQuantity,
@@ -582,6 +593,7 @@ export async function recordPreparedPatientDose(
       residualQuantity: prepared.residualQuantity,
       quantityUnit: prepared.input.quantityUnit.trim(),
       residualDisposition: prepared.disposition,
+      residualHandling: prepared.input.residualHandling ?? null,
       stockSource: prepared.stockSource,
       batchNumber: batch?.batchNumber ?? null,
       expiryDate: batch?.expiryDate ?? null,
@@ -650,6 +662,7 @@ export async function recordPreparedPatientDose(
       containerQuantity: containers,
       status: prepared.status,
       disposition: prepared.disposition,
+      residualHandling: prepared.input.residualHandling ?? null,
       stockSource: prepared.stockSource,
       emergencyUse: Boolean(prepared.input.emergencyUse),
       emergencyReason: prepared.input.emergencyReason?.trim() || null,
@@ -680,6 +693,7 @@ export function patientDoseAuditMetadata(prepared: PreparedPatientDose | null) {
       residualQuantity: prepared.residualQuantity.toString(),
       quantityUnit: prepared.input.quantityUnit,
       disposition: prepared.disposition,
+      residualHandling: prepared.input.residualHandling ?? null,
       stockSource: prepared.stockSource,
       emergencyUse: Boolean(prepared.input.emergencyUse),
     },
@@ -768,6 +782,7 @@ export async function listPatientResiduals(
         containerQuantity: dose.containerQuantity,
         status: dose.status,
         disposition: dose.disposition,
+        residualHandling: dose.residualHandling,
         quarantineLocation: dose.quarantineLocation,
         quarantinedAt: dose.quarantinedAt,
         disposalMethod: dose.disposalMethod,
@@ -867,6 +882,7 @@ export async function destroyQuarantinedResidual(
         residualQuantity: dose.residualQuantity,
         quantityUnit: dose.quantityUnit,
         residualDisposition: 'destroyed',
+        residualHandling: dose.residualHandling,
         stockSource: 'residual_only',
         batchNumber: batch?.batchNumber ?? null,
         expiryDate: batch?.expiryDate ?? null,

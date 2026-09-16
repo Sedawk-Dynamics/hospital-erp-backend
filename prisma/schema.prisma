@@ -5076,6 +5076,9 @@ model NdpsTransaction {
   residualQuantity     Decimal?  @map("residual_quantity") @db.Decimal(14, 4)
   quantityUnit         String?   @map("quantity_unit") @db.VarChar(20)
   residualDisposition  String?   @map("residual_disposition") @db.VarChar(30)
+  // pending_destruction | sealed_quarantine. This is the bedside instruction,
+  // not proof of final destruction.
+  residualHandling     String?   @map("residual_handling") @db.VarChar(30)
   // Which canonical stock movement already accounts for the container:
   // dispensing_record | ward_stock | drug_batch | residual_only.
   stockSource          String?   @map("stock_source") @db.VarChar(30)
@@ -5124,6 +5127,8 @@ model NdpsPatientDose {
   status                      String    @db.VarChar(30)
   // none | destroyed | quarantined
   disposition                 String    @db.VarChar(30)
+  // pending_destruction | sealed_quarantine (null when no remainder exists)
+  residualHandling            String?   @map("residual_handling") @db.VarChar(30)
   stockSource                 String    @map("stock_source") @db.VarChar(30)
   emergencyUse                Boolean   @default(false) @map("emergency_use")
   emergencyReason             String?   @map("emergency_reason")

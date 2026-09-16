@@ -195,6 +195,7 @@ export async function listSchedules(tenantId: string, query: ListSchedulesQuery)
             quantityUnit: true,
             status: true,
             disposition: true,
+            residualHandling: true,
             quarantineLocation: true,
             disposalMethod: true,
             emergencyUse: true,

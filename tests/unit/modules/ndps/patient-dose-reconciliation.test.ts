@@ -54,11 +54,34 @@ describe('NDPS patient dose reconciliation', () => {
       quantityUnit: 'mL',
       containerQuantity: 1,
       disposition: 'destroyed',
+      residualHandling: 'pending_destruction',
       disposalMethod: 'bedside destruction',
       witnessedById: '33333333-3333-4333-8333-333333333333',
       witnessPassword: 'secret',
     });
 
     expect(result.success).toBe(false);
+  });
+
+  it('accepts both bedside handling instructions without marking destruction complete', () => {
+    const base = {
+      drugBatchId: '11111111-1111-4111-8111-111111111111',
+      ndpsLocationId: '22222222-2222-4222-8222-222222222222',
+      labelledQuantity: 2,
+      administeredQuantity: 0.5,
+      quantityUnit: 'mL',
+      containerQuantity: 1,
+      disposition: 'quarantined' as const,
+    };
+
+    expect(ndpsPatientDoseSchema.safeParse({
+      ...base,
+      residualHandling: 'pending_destruction',
+    }).success).toBe(true);
+    expect(ndpsPatientDoseSchema.safeParse({
+      ...base,
+      residualHandling: 'sealed_quarantine',
+      quarantineLocation: 'ICU narcotic safe - residual bin A',
+    }).success).toBe(true);
   });
 });
