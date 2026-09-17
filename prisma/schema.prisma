@@ -5308,6 +5308,7 @@ model DrugFormulary {
   productCategory        String?           @map("product_category") @db.VarChar(120)
   dosageForm             DosageForm?       @map("dosage_form")
   strength               String?           @db.VarChar(100)
+  // Primary purchase/packaging unit with its UQC label, e.g. "Strip (UQC PAC)".
   unitOfMeasurement      String?           @map("unit_of_measurement") @db.VarChar(20)
   price                  Decimal?          @db.Decimal(10, 2)
   // Loose / sub-unit sale support. packSize = number of base (loose) units in a
@@ -5451,7 +5452,9 @@ model DrugBatch {
   // Purchase economics captured at inward (G2 — separate fields so the GRN can
   // show MRP, purchase rate, discount and GST distinctly). purchasePrice is the
   // per-unit purchase RATE (gross, before discount); the net purchase price and
-  // landing cost are derived from rate + discount. mrp is the printed MRP.
+  // landing cost are derived from rate + discount. All monetary values stored on
+  // a batch are canonical PER-BASE-UNIT values; Add Stock converts a printed
+  // package/strip MRP before persistence when priceBasis = package.
   mrp                     Decimal?  @map("mrp") @db.Decimal(10, 2)
   purchaseDiscountPercent Decimal?  @map("purchase_discount_percent") @db.Decimal(5, 2)
   gstPercent              Decimal?  @map("gst_percent") @db.Decimal(5, 2)
