@@ -923,6 +923,8 @@ enum InsurancePolicyStatus {
 enum ClaimStatus {
   submitted          @map("submitted")
   under_review       @map("under_review")
+  query_raised       @map("query_raised")
+  response_submitted @map("response_submitted")
   approved           @map("approved")
   partially_approved @map("partially_approved")
   rejected           @map("rejected")
@@ -951,6 +953,115 @@ enum CommunicationType {
 enum CommunicationDirection {
   inbound  @map("inbound")
   outbound @map("outbound")
+}
+
+enum InsuranceCaseType {
+  insurance        @map("insurance")
+  corporate        @map("corporate")
+  governmentScheme @map("government_scheme")
+}
+
+enum InsuranceSettlementMode {
+  cashless      @map("cashless")
+  reimbursement @map("reimbursement")
+  credit        @map("credit")
+}
+
+enum InsuranceCaseStatus {
+  open                          @map("open")
+  eligibilityPending            @map("eligibility_pending")
+  eligible                      @map("eligible")
+  preAuthPending                @map("pre_auth_pending")
+  authorized                    @map("authorized")
+  admitted                      @map("admitted")
+  treatment                     @map("treatment")
+  dischargeAuthorizationPending @map("discharge_authorization_pending")
+  discharged                    @map("discharged")
+  claimSubmitted                @map("claim_submitted")
+  queryPending                  @map("query_pending")
+  approved                      @map("approved")
+  settled                       @map("settled")
+  closed                        @map("closed")
+  cancelled                     @map("cancelled")
+}
+
+enum InsurancePriority {
+  routine  @map("routine")
+  urgent   @map("urgent")
+  critical @map("critical")
+  deceased @map("deceased")
+}
+
+enum InsuranceClaimTier {
+  primary       @map("primary")
+  secondary     @map("secondary")
+  supplementary @map("supplementary")
+}
+
+enum PreAuthRequestType {
+  initial        @map("initial")
+  enhancement    @map("enhancement")
+  finalDischarge @map("final_discharge")
+}
+
+enum ClaimQueryStatus {
+  open              @map("open")
+  responseSubmitted @map("response_submitted")
+  resolved          @map("resolved")
+  closed            @map("closed")
+}
+
+enum ClaimDocumentStatus {
+  pending  @map("pending")
+  uploaded @map("uploaded")
+  verified @map("verified")
+  rejected @map("rejected")
+}
+
+enum ClaimDocumentCategory {
+  identity       @map("identity")
+  eligibility    @map("eligibility")
+  clinical       @map("clinical")
+  diagnostic     @map("diagnostic")
+  billing        @map("billing")
+  authorization  @map("authorization")
+  settlement     @map("settlement")
+  correspondence @map("correspondence")
+  other          @map("other")
+}
+
+enum InsuranceSubmissionChannel {
+  portal @map("portal")
+  email  @map("email")
+  nhcx   @map("nhcx")
+  api    @map("api")
+  manual @map("manual")
+}
+
+enum ClaimWriteOffStatus {
+  pending  @map("pending")
+  approved @map("approved")
+  rejected @map("rejected")
+}
+
+enum ClaimAdjustmentType {
+  supplementaryPayment @map("supplementary_payment")
+  creditNote           @map("credit_note")
+  debitNote            @map("debit_note")
+}
+
+enum PayerType {
+  insurer          @map("insurer")
+  tpa              @map("tpa")
+  corporate        @map("corporate")
+  governmentScheme @map("government_scheme")
+}
+
+enum InsuranceExchangeStatus {
+  queued       @map("queued")
+  submitted    @map("submitted")
+  acknowledged @map("acknowledged")
+  failed       @map("failed")
 }
 
 enum DonationType {
@@ -1309,6 +1420,18 @@ model Tenant {
   insuranceClaims            InsuranceClaim[]
   preAuthRequests            PreAuthorizationRequest[]
   tpaCommunicationLogs       TpaCommunicationLog[]
+  corporatePayers            CorporatePayer[]
+  governmentSchemePayers     GovernmentSchemePayer[]
+  insuranceCases             InsuranceCase[]
+  payerContracts             PayerContract[]
+  policyEligibilityChecks    PolicyEligibilityCheck[]
+  claimDocuments             ClaimDocument[]
+  claimQueries               ClaimQuery[]
+  claimSettlements           ClaimSettlement[]
+  claimWriteOffs             ClaimWriteOff[]
+  claimAdjustments           ClaimAdjustment[]
+  insuranceAuditEvents       InsuranceAuditEvent[]
+  insuranceExchanges         InsuranceExchange[]
   bloodDonors                BloodDonor[]
   bloodDonations             BloodDonation[]
   bloodInventory             BloodInventory[]
@@ -1662,6 +1785,16 @@ model User {
   insuranceClaimsReviewed        InsuranceClaim[]             @relation("ClaimReviewer")
   preAuthSubmitted               PreAuthorizationRequest[]
   tpaCommunications              TpaCommunicationLog[]
+  insuranceCasesCreated          InsuranceCase[]              @relation("InsuranceCaseCreator")
+  claimDocumentsUploaded         ClaimDocument[]              @relation("ClaimDocumentUploader")
+  claimDocumentsVerified         ClaimDocument[]              @relation("ClaimDocumentVerifier")
+  claimQueriesRaised             ClaimQuery[]                 @relation("ClaimQueryRaiser")
+  claimQueryResponses            ClaimQuery[]                 @relation("ClaimQueryResponder")
+  claimSettlementsRecorded       ClaimSettlement[]            @relation("ClaimSettlementRecorder")
+  claimWriteOffsRequested        ClaimWriteOff[]              @relation("ClaimWriteOffRequester")
+  claimWriteOffsDecided          ClaimWriteOff[]              @relation("ClaimWriteOffDecider")
+  claimAdjustmentsRecorded       ClaimAdjustment[]            @relation("ClaimAdjustmentRecorder")
+  insuranceAuditEvents           InsuranceAuditEvent[]
   bloodDonationsCollected        BloodDonation[]
   crossMatchTests                CrossMatchTest[]
   transfusionsAdministered       Transfusion[]                @relation("TransfusionAdministerer")
@@ -2116,6 +2249,8 @@ model Patient {
   insurancePolicies         InsurancePolicy[]
   insuranceClaims           InsuranceClaim[]
   preAuthRequests           PreAuthorizationRequest[]
+  insuranceCases            InsuranceCase[]
+  policyEligibilityChecks   PolicyEligibilityCheck[]
   crossMatchTests           CrossMatchTest[]
   transfusions              Transfusion[]
   tickets                   Ticket[]
@@ -2545,6 +2680,7 @@ model Visit {
   otRequests           OtRequest[]
   admissionRequests    AdmissionRequest[]
   formSubmissions      HospitalFormSubmission[]
+  insuranceCases       InsuranceCase[]
 
   @@map("visits")
 }
@@ -2602,6 +2738,7 @@ model Admission {
   bills                Bill[]
   emarSchedules        EmarSchedule[]
   formSubmissions      HospitalFormSubmission[]
+  insuranceCases       InsuranceCase[]
 
   @@map("admissions")
 }
@@ -6629,6 +6766,7 @@ model Insurer {
 
   tenant            Tenant            @relation(fields: [tenantId], references: [id])
   insurancePolicies InsurancePolicy[]
+  insuranceCases    InsuranceCase[]
 
   @@map("insurers")
 }
@@ -6653,6 +6791,7 @@ model TpaProvider {
   tenant               Tenant                @relation(fields: [tenantId], references: [id])
   insurancePolicies    InsurancePolicy[]
   tpaCommunicationLogs TpaCommunicationLog[]
+  insuranceCases       InsuranceCase[]
 
   @@map("tpa_providers")
 }
@@ -6675,83 +6814,139 @@ model InsurancePolicy {
   status           InsurancePolicyStatus @default(active)
   createdAt        DateTime              @default(now()) @map("created_at")
 
-  tenant          Tenant                    @relation(fields: [tenantId], references: [id])
-  patient         Patient                   @relation(fields: [patientId], references: [id])
-  insurer         Insurer                   @relation(fields: [insurerId], references: [id])
-  tpa             TpaProvider?              @relation(fields: [tpaId], references: [id])
-  insuranceClaims InsuranceClaim[]
-  preAuthRequests PreAuthorizationRequest[]
+  tenant                Tenant                    @relation(fields: [tenantId], references: [id])
+  patient               Patient                   @relation(fields: [patientId], references: [id])
+  insurer               Insurer                   @relation(fields: [insurerId], references: [id])
+  tpa                   TpaProvider?              @relation(fields: [tpaId], references: [id])
+  insuranceClaims       InsuranceClaim[]
+  preAuthRequests       PreAuthorizationRequest[]
+  insuranceCasePolicies InsuranceCasePolicy[]
+  eligibilityChecks     PolicyEligibilityCheck[]
 
   @@map("insurance_policies")
 }
 
 model InsuranceClaim {
-  id                String      @id @default(uuid())
-  tenantId          String      @map("tenant_id")
-  patientId         String      @map("patient_id")
-  policyId          String      @map("policy_id")
-  billId            String      @map("bill_id")
-  claimNumber       String?     @unique @map("claim_number") @db.VarChar(100)
-  claimAmount       Decimal     @map("claim_amount") @db.Decimal(12, 2)
-  approvedAmount    Decimal?    @map("approved_amount") @db.Decimal(12, 2)
-  patientShare      Decimal?    @map("patient_share") @db.Decimal(12, 2)
-  copayAmount       Decimal?    @map("copay_amount") @db.Decimal(12, 2)
-  deductibleAmount  Decimal?    @map("deductible_amount") @db.Decimal(12, 2)
-  coveredAmount     Decimal?    @map("covered_amount") @db.Decimal(12, 2)
-  paidAmount        Decimal     @default(0) @map("paid_amount") @db.Decimal(12, 2)
-  outstandingAmount Decimal?    @map("outstanding_amount") @db.Decimal(12, 2)
-  status            ClaimStatus @default(submitted)
-  submissionDate    DateTime    @map("submission_date")
-  approvalDate      DateTime?   @map("approval_date")
-  settlementDate    DateTime?   @map("settlement_date")
-  expiryDate        DateTime?   @map("expiry_date")
-  rejectionReason   String?     @map("rejection_reason")
-  documentsUrl      Json?       @map("documents_url")
-  notes             String?
-  resubmissionCount Int         @default(0) @map("resubmission_count")
-  previousClaimId   String?     @map("previous_claim_id")
-  submittedBy       String?     @map("submitted_by")
-  reviewedBy        String?     @map("reviewed_by")
-  createdAt         DateTime    @default(now()) @map("created_at")
-  updatedAt         DateTime    @default(now()) @updatedAt @map("updated_at")
+  id                            String                      @id @default(uuid())
+  tenantId                      String                      @map("tenant_id")
+  patientId                     String                      @map("patient_id")
+  policyId                      String?                     @map("policy_id")
+  insuranceCaseId               String?                     @map("insurance_case_id")
+  preAuthId                     String?                     @map("pre_auth_id")
+  billId                        String                      @map("bill_id")
+  claimNumber                   String?                     @unique @map("claim_number") @db.VarChar(100)
+  claimAmount                   Decimal                     @map("claim_amount") @db.Decimal(12, 2)
+  approvedAmount                Decimal?                    @map("approved_amount") @db.Decimal(12, 2)
+  patientShare                  Decimal?                    @map("patient_share") @db.Decimal(12, 2)
+  copayAmount                   Decimal?                    @map("copay_amount") @db.Decimal(12, 2)
+  deductibleAmount              Decimal?                    @map("deductible_amount") @db.Decimal(12, 2)
+  coveredAmount                 Decimal?                    @map("covered_amount") @db.Decimal(12, 2)
+  paidAmount                    Decimal                     @default(0) @map("paid_amount") @db.Decimal(12, 2)
+  outstandingAmount             Decimal?                    @map("outstanding_amount") @db.Decimal(12, 2)
+  status                        ClaimStatus                 @default(submitted)
+  tier                          InsuranceClaimTier          @default(primary)
+  sequence                      Int                         @default(1)
+  settlementMode                InsuranceSettlementMode     @default(cashless) @map("settlement_mode")
+  submissionChannel             InsuranceSubmissionChannel? @map("submission_channel")
+  payerClaimReference           String?                     @map("payer_claim_reference") @db.VarChar(100)
+  submissionReference           String?                     @map("submission_reference") @db.VarChar(100)
+  nhcxTransactionId             String?                     @map("nhcx_transaction_id") @db.VarChar(100)
+  finalAuthorizationRequestedAt DateTime?                   @map("final_authorization_requested_at")
+  finalAuthorizationDueAt       DateTime?                   @map("final_authorization_due_at")
+  finalAuthorizationReceivedAt  DateTime?                   @map("final_authorization_received_at")
+  delayLiabilityAmount          Decimal                     @default(0) @map("delay_liability_amount") @db.Decimal(12, 2)
+  tdsReceivableAmount           Decimal                     @default(0) @map("tds_receivable_amount") @db.Decimal(12, 2)
+  disallowedAmount              Decimal                     @default(0) @map("disallowed_amount") @db.Decimal(12, 2)
+  writtenOffAmount              Decimal                     @default(0) @map("written_off_amount") @db.Decimal(12, 2)
+  submissionDate                DateTime                    @map("submission_date")
+  approvalDate                  DateTime?                   @map("approval_date")
+  settlementDate                DateTime?                   @map("settlement_date")
+  expiryDate                    DateTime?                   @map("expiry_date")
+  rejectionReason               String?                     @map("rejection_reason")
+  documentsUrl                  Json?                       @map("documents_url")
+  notes                         String?
+  resubmissionCount             Int                         @default(0) @map("resubmission_count")
+  previousClaimId               String?                     @map("previous_claim_id")
+  submittedBy                   String?                     @map("submitted_by")
+  reviewedBy                    String?                     @map("reviewed_by")
+  createdAt                     DateTime                    @default(now()) @map("created_at")
+  updatedAt                     DateTime                    @default(now()) @updatedAt @map("updated_at")
 
-  tenant               Tenant                @relation(fields: [tenantId], references: [id])
-  patient              Patient               @relation(fields: [patientId], references: [id])
-  policy               InsurancePolicy       @relation(fields: [policyId], references: [id])
-  bill                 Bill                  @relation(fields: [billId], references: [id])
-  submitter            User?                 @relation("ClaimSubmitter", fields: [submittedBy], references: [id])
-  reviewer             User?                 @relation("ClaimReviewer", fields: [reviewedBy], references: [id])
-  previousClaim        InsuranceClaim?       @relation("ClaimResubmission", fields: [previousClaimId], references: [id])
-  resubmittedClaims    InsuranceClaim[]      @relation("ClaimResubmission")
+  tenant               Tenant                   @relation(fields: [tenantId], references: [id])
+  patient              Patient                  @relation(fields: [patientId], references: [id])
+  policy               InsurancePolicy?         @relation(fields: [policyId], references: [id])
+  insuranceCase        InsuranceCase?           @relation(fields: [insuranceCaseId], references: [id])
+  preAuth              PreAuthorizationRequest? @relation(fields: [preAuthId], references: [id])
+  bill                 Bill                     @relation(fields: [billId], references: [id])
+  submitter            User?                    @relation("ClaimSubmitter", fields: [submittedBy], references: [id])
+  reviewer             User?                    @relation("ClaimReviewer", fields: [reviewedBy], references: [id])
+  previousClaim        InsuranceClaim?          @relation("ClaimResubmission", fields: [previousClaimId], references: [id])
+  resubmittedClaims    InsuranceClaim[]         @relation("ClaimResubmission")
   tpaCommunicationLogs TpaCommunicationLog[]
+  documents            ClaimDocument[]
+  checklistItems       ClaimChecklistItem[]
+  queries              ClaimQuery[]
+  settlements          ClaimSettlement[]
+  writeOffs            ClaimWriteOff[]
+  adjustments          ClaimAdjustment[]
+  auditEvents          InsuranceAuditEvent[]
+  exchanges            InsuranceExchange[]
 
+  @@unique([insuranceCaseId, sequence])
+  @@index([tenantId, status, submissionDate])
   @@map("insurance_claims")
 }
 
 model PreAuthorizationRequest {
-  id                   String        @id @default(uuid())
-  tenantId             String        @map("tenant_id")
-  patientId            String        @map("patient_id")
-  policyId             String        @map("policy_id")
-  procedureDescription String        @map("procedure_description")
-  estimatedCost        Decimal?      @map("estimated_cost") @db.Decimal(12, 2)
-  approvedAmount       Decimal?      @map("approved_amount") @db.Decimal(12, 2)
-  status               PreAuthStatus @default(pending)
-  approvalNumber       String?       @map("approval_number") @db.VarChar(100)
-  validFrom            DateTime?     @map("valid_from") @db.Date
-  validTo              DateTime?     @map("valid_to") @db.Date
-  holdReason           String?       @map("hold_reason")
-  notes                String?
-  submittedBy          String?       @map("submitted_by")
-  createdAt            DateTime      @default(now()) @map("created_at")
-  updatedAt            DateTime      @default(now()) @updatedAt @map("updated_at")
+  id                    String                      @id @default(uuid())
+  tenantId              String                      @map("tenant_id")
+  patientId             String                      @map("patient_id")
+  policyId              String?                     @map("policy_id")
+  insuranceCaseId       String?                     @map("insurance_case_id")
+  requestNumber         String                      @map("request_number") @db.VarChar(100)
+  requestType           PreAuthRequestType          @default(initial) @map("request_type")
+  parentRequestId       String?                     @map("parent_request_id")
+  admissionId           String?                     @map("admission_id")
+  visitId               String?                     @map("visit_id")
+  doctorId              String?                     @map("doctor_id")
+  diagnosisCode         String?                     @map("diagnosis_code") @db.VarChar(50)
+  procedureCode         String?                     @map("procedure_code") @db.VarChar(50)
+  procedureDescription  String                      @map("procedure_description")
+  estimatedCost         Decimal?                    @map("estimated_cost") @db.Decimal(12, 2)
+  approvedAmount        Decimal?                    @map("approved_amount") @db.Decimal(12, 2)
+  status                PreAuthStatus               @default(pending)
+  approvalNumber        String?                     @map("approval_number") @db.VarChar(100)
+  payerPreAuthReference String?                     @map("payer_pre_auth_reference") @db.VarChar(100)
+  submissionReference   String?                     @map("submission_reference") @db.VarChar(100)
+  nhcxTransactionId     String?                     @map("nhcx_transaction_id") @db.VarChar(100)
+  submissionChannel     InsuranceSubmissionChannel? @map("submission_channel")
+  submittedAt           DateTime?                   @map("submitted_at")
+  decisionDueAt         DateTime?                   @map("decision_due_at")
+  alertAt               DateTime?                   @map("alert_at")
+  decidedAt             DateTime?                   @map("decided_at")
+  escalatedAt           DateTime?                   @map("escalated_at")
+  validFrom             DateTime?                   @map("valid_from") @db.Date
+  validTo               DateTime?                   @map("valid_to") @db.Date
+  holdReason            String?                     @map("hold_reason")
+  notes                 String?
+  submittedBy           String?                     @map("submitted_by")
+  createdAt             DateTime                    @default(now()) @map("created_at")
+  updatedAt             DateTime                    @default(now()) @updatedAt @map("updated_at")
 
-  tenant               Tenant                @relation(fields: [tenantId], references: [id])
-  patient              Patient               @relation(fields: [patientId], references: [id])
-  policy               InsurancePolicy       @relation(fields: [policyId], references: [id])
-  submitter            User?                 @relation(fields: [submittedBy], references: [id])
+  tenant               Tenant                    @relation(fields: [tenantId], references: [id])
+  patient              Patient                   @relation(fields: [patientId], references: [id])
+  policy               InsurancePolicy?          @relation(fields: [policyId], references: [id])
+  insuranceCase        InsuranceCase?            @relation(fields: [insuranceCaseId], references: [id])
+  parentRequest        PreAuthorizationRequest?  @relation("PreAuthEnhancementChain", fields: [parentRequestId], references: [id])
+  enhancementRequests  PreAuthorizationRequest[] @relation("PreAuthEnhancementChain")
+  submitter            User?                     @relation(fields: [submittedBy], references: [id])
   tpaCommunicationLogs TpaCommunicationLog[]
+  claims               InsuranceClaim[]
+  auditEvents          InsuranceAuditEvent[]
+  exchanges            InsuranceExchange[]
 
+  @@unique([tenantId, requestNumber])
+  @@index([tenantId, status, decisionDueAt])
   @@map("pre_authorization_requests")
 }
 
@@ -6785,6 +6980,449 @@ model TpaCommunicationLog {
   @@index([claimId])
   @@index([preAuthId])
   @@map("tpa_communication_logs")
+}
+
+/// A credit customer whose own employee/beneficiary plan pays the hospital.
+/// This is intentionally separate from a TPA: the payer and the claim
+/// administrator are different commercial roles.
+model CorporatePayer {
+  id            String   @id @default(uuid())
+  tenantId      String   @map("tenant_id")
+  name          String   @db.VarChar(255)
+  code          String?  @db.VarChar(50)
+  contactPerson String?  @map("contact_person") @db.VarChar(100)
+  phone         String?  @db.VarChar(20)
+  email         String?  @db.VarChar(255)
+  address       String?
+  gstin         String?  @db.VarChar(15)
+  stateCode     String?  @map("state_code") @db.VarChar(2)
+  creditDays    Int      @default(30) @map("credit_days")
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant Tenant          @relation(fields: [tenantId], references: [id])
+  cases  InsuranceCase[]
+
+  @@unique([tenantId, name])
+  @@map("corporate_payers")
+}
+
+model GovernmentSchemePayer {
+  id            String   @id @default(uuid())
+  tenantId      String   @map("tenant_id")
+  name          String   @db.VarChar(255)
+  schemeCode    String?  @map("scheme_code") @db.VarChar(100)
+  contactPerson String?  @map("contact_person") @db.VarChar(100)
+  phone         String?  @db.VarChar(20)
+  email         String?  @db.VarChar(255)
+  portalUrl     String?  @map("portal_url")
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant Tenant          @relation(fields: [tenantId], references: [id])
+  cases  InsuranceCase[]
+
+  @@unique([tenantId, name])
+  @@map("government_scheme_payers")
+}
+
+/// The longitudinal payer file for one care episode. Claims and pre-auths are
+/// children of this record, allowing cashless, reimbursement and credit cases
+/// to share one auditable workflow without pretending every payer is a TPA.
+model InsuranceCase {
+  id                       String                  @id @default(uuid())
+  tenantId                 String                  @map("tenant_id")
+  caseNumber               String                  @map("case_number") @db.VarChar(100)
+  patientId                String                  @map("patient_id")
+  admissionId              String?                 @map("admission_id")
+  visitId                  String?                 @map("visit_id")
+  caseType                 InsuranceCaseType       @map("case_type")
+  settlementMode           InsuranceSettlementMode @map("settlement_mode")
+  status                   InsuranceCaseStatus     @default(open)
+  priority                 InsurancePriority       @default(routine)
+  insurerId                String?                 @map("insurer_id")
+  tpaId                    String?                 @map("tpa_id")
+  corporatePayerId         String?                 @map("corporate_payer_id")
+  governmentSchemePayerId  String?                 @map("government_scheme_payer_id")
+  paymentResponsibleType   PayerType               @map("payment_responsible_type")
+  paymentResponsibleId     String                  @map("payment_responsible_id")
+  claimAdministratorType   PayerType?              @map("claim_administrator_type")
+  claimAdministratorId     String?                 @map("claim_administrator_id")
+  memberId                 String?                 @map("member_id") @db.VarChar(100)
+  employeeId               String?                 @map("employee_id") @db.VarChar(100)
+  abhaNumber               String?                 @map("abha_number") @db.VarChar(20)
+  eligibilitySnapshot      Json?                   @map("eligibility_snapshot")
+  emergencyIntimationDueAt DateTime?               @map("emergency_intimation_due_at")
+  emergencyIntimatedAt     DateTime?               @map("emergency_intimated_at")
+  deceasedProtocol         Boolean                 @default(false) @map("deceased_protocol")
+  physicalReleaseAt        DateTime?               @map("physical_release_at")
+  releaseUndertaking       String?                 @map("release_undertaking")
+  notes                    String?
+  createdBy                String?                 @map("created_by")
+  createdAt                DateTime                @default(now()) @map("created_at")
+  updatedAt                DateTime                @default(now()) @updatedAt @map("updated_at")
+
+  tenant                Tenant                    @relation(fields: [tenantId], references: [id])
+  patient               Patient                   @relation(fields: [patientId], references: [id])
+  admission             Admission?                @relation(fields: [admissionId], references: [id])
+  visit                 Visit?                    @relation(fields: [visitId], references: [id])
+  insurer               Insurer?                  @relation(fields: [insurerId], references: [id])
+  tpa                   TpaProvider?              @relation(fields: [tpaId], references: [id])
+  corporatePayer        CorporatePayer?           @relation(fields: [corporatePayerId], references: [id])
+  governmentSchemePayer GovernmentSchemePayer?    @relation(fields: [governmentSchemePayerId], references: [id])
+  creator               User?                     @relation("InsuranceCaseCreator", fields: [createdBy], references: [id])
+  policies              InsuranceCasePolicy[]
+  eligibilityChecks     PolicyEligibilityCheck[]
+  preAuthRequests       PreAuthorizationRequest[]
+  claims                InsuranceClaim[]
+  auditEvents           InsuranceAuditEvent[]
+
+  @@unique([tenantId, caseNumber])
+  @@index([tenantId, patientId, status])
+  @@index([admissionId])
+  @@map("insurance_cases")
+}
+
+model InsuranceCasePolicy {
+  id                      String   @id @default(uuid())
+  insuranceCaseId         String   @map("insurance_case_id")
+  policyId                String   @map("policy_id")
+  sequence                Int      @default(1)
+  allocatedAmount         Decimal? @map("allocated_amount") @db.Decimal(12, 2)
+  originalDocumentsHeld   Boolean  @default(false) @map("original_documents_held")
+  deductionCertificateUrl String?  @map("deduction_certificate_url")
+  createdAt               DateTime @default(now()) @map("created_at")
+
+  insuranceCase InsuranceCase   @relation(fields: [insuranceCaseId], references: [id], onDelete: Cascade)
+  policy        InsurancePolicy @relation(fields: [policyId], references: [id])
+
+  @@unique([insuranceCaseId, sequence])
+  @@unique([insuranceCaseId, policyId])
+  @@map("insurance_case_policies")
+}
+
+model PayerContract {
+  id                   String    @id @default(uuid())
+  tenantId             String    @map("tenant_id")
+  payerType            PayerType @map("payer_type")
+  payerId              String    @map("payer_id")
+  name                 String    @db.VarChar(255)
+  contractNumber       String?   @map("contract_number") @db.VarChar(100)
+  validFrom            DateTime  @map("valid_from") @db.Date
+  validTo              DateTime  @map("valid_to") @db.Date
+  submissionWindowDays Int       @default(15) @map("submission_window_days")
+  queryResponseHours   Int       @default(24) @map("query_response_hours")
+  paymentDueDays       Int       @default(30) @map("payment_due_days")
+  roomRentCap          Decimal?  @map("room_rent_cap") @db.Decimal(12, 2)
+  roomRentCapPercent   Decimal?  @map("room_rent_cap_percent") @db.Decimal(5, 2)
+  terms                Json?
+  isActive             Boolean   @default(true) @map("is_active")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  tenant               Tenant                     @relation(fields: [tenantId], references: [id])
+  serviceRates         PayerServiceRate[]
+  packageRates         PayerPackageRate[]
+  documentRequirements PayerDocumentRequirement[]
+  nonPayableRules      NonPayableItemRule[]
+
+  @@index([tenantId, payerType, payerId, isActive])
+  @@map("payer_contracts")
+}
+
+model PayerServiceRate {
+  id              String    @id @default(uuid())
+  contractId      String    @map("contract_id")
+  serviceTariffId String?   @map("service_tariff_id")
+  serviceCode     String    @map("service_code") @db.VarChar(100)
+  serviceName     String    @map("service_name") @db.VarChar(255)
+  agreedRate      Decimal   @map("agreed_rate") @db.Decimal(12, 2)
+  effectiveFrom   DateTime  @map("effective_from") @db.Date
+  effectiveTo     DateTime? @map("effective_to") @db.Date
+
+  contract PayerContract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@unique([contractId, serviceCode, effectiveFrom])
+  @@map("payer_service_rates")
+}
+
+model PayerPackageRate {
+  id            String    @id @default(uuid())
+  contractId    String    @map("contract_id")
+  packageCode   String    @map("package_code") @db.VarChar(100)
+  packageName   String    @map("package_name") @db.VarChar(255)
+  agreedAmount  Decimal   @map("agreed_amount") @db.Decimal(12, 2)
+  inclusions    Json?
+  exclusions    Json?
+  effectiveFrom DateTime  @map("effective_from") @db.Date
+  effectiveTo   DateTime? @map("effective_to") @db.Date
+
+  contract PayerContract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@unique([contractId, packageCode, effectiveFrom])
+  @@map("payer_package_rates")
+}
+
+model PayerDocumentRequirement {
+  id         String                   @id @default(uuid())
+  contractId String                   @map("contract_id")
+  code       String                   @db.VarChar(100)
+  name       String                   @db.VarChar(255)
+  category   ClaimDocumentCategory
+  isRequired Boolean                  @default(true) @map("is_required")
+  appliesTo  InsuranceSettlementMode? @map("applies_to")
+  sortOrder  Int                      @default(0) @map("sort_order")
+
+  contract PayerContract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@unique([contractId, code])
+  @@map("payer_document_requirements")
+}
+
+model NonPayableItemRule {
+  id             String  @id @default(uuid())
+  contractId     String  @map("contract_id")
+  itemCode       String? @map("item_code") @db.VarChar(100)
+  itemPattern    String? @map("item_pattern") @db.VarChar(255)
+  reason         String
+  patientPayable Boolean @default(true) @map("patient_payable")
+  isActive       Boolean @default(true) @map("is_active")
+
+  contract PayerContract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@index([contractId, isActive])
+  @@map("non_payable_item_rules")
+}
+
+model PolicyEligibilityCheck {
+  id                String    @id @default(uuid())
+  tenantId          String    @map("tenant_id")
+  patientId         String    @map("patient_id")
+  policyId          String?   @map("policy_id")
+  insuranceCaseId   String?   @map("insurance_case_id")
+  isEligible        Boolean   @map("is_eligible")
+  checkedAt         DateTime  @default(now()) @map("checked_at")
+  coverageAvailable Decimal?  @map("coverage_available") @db.Decimal(12, 2)
+  coPayPercent      Decimal?  @map("co_pay_percent") @db.Decimal(5, 2)
+  deductibleAmount  Decimal?  @map("deductible_amount") @db.Decimal(12, 2)
+  roomRentLimit     Decimal?  @map("room_rent_limit") @db.Decimal(12, 2)
+  waitingPeriodMet  Boolean?  @map("waiting_period_met")
+  exclusions        Json?
+  source            String?   @db.VarChar(100)
+  reference         String?   @db.VarChar(100)
+  rawResponse       Json?     @map("raw_response")
+  validUntil        DateTime? @map("valid_until")
+
+  tenant        Tenant           @relation(fields: [tenantId], references: [id])
+  patient       Patient          @relation(fields: [patientId], references: [id])
+  policy        InsurancePolicy? @relation(fields: [policyId], references: [id])
+  insuranceCase InsuranceCase?   @relation(fields: [insuranceCaseId], references: [id])
+
+  @@index([tenantId, patientId, checkedAt])
+  @@map("policy_eligibility_checks")
+}
+
+model ClaimDocument {
+  id              String                @id @default(uuid())
+  tenantId        String                @map("tenant_id")
+  claimId         String                @map("claim_id")
+  code            String?               @db.VarChar(100)
+  name            String                @db.VarChar(255)
+  category        ClaimDocumentCategory
+  fileUrl         String                @map("file_url")
+  mimeType        String?               @map("mime_type") @db.VarChar(100)
+  fileHash        String?               @map("file_hash") @db.VarChar(128)
+  version         Int                   @default(1)
+  status          ClaimDocumentStatus   @default(uploaded)
+  rejectionReason String?               @map("rejection_reason")
+  uploadedBy      String?               @map("uploaded_by")
+  verifiedBy      String?               @map("verified_by")
+  verifiedAt      DateTime?             @map("verified_at")
+  createdAt       DateTime              @default(now()) @map("created_at")
+
+  tenant   Tenant         @relation(fields: [tenantId], references: [id])
+  claim    InsuranceClaim @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  uploader User?          @relation("ClaimDocumentUploader", fields: [uploadedBy], references: [id])
+  verifier User?          @relation("ClaimDocumentVerifier", fields: [verifiedBy], references: [id])
+
+  @@unique([claimId, name, version])
+  @@index([claimId, status])
+  @@map("claim_documents")
+}
+
+model ClaimChecklistItem {
+  id              String   @id @default(uuid())
+  claimId         String   @map("claim_id")
+  requirementCode String   @map("requirement_code") @db.VarChar(100)
+  label           String   @db.VarChar(255)
+  isRequired      Boolean  @default(true) @map("is_required")
+  isComplete      Boolean  @default(false) @map("is_complete")
+  documentId      String?  @map("document_id")
+  notes           String?
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
+
+  claim InsuranceClaim @relation(fields: [claimId], references: [id], onDelete: Cascade)
+
+  @@unique([claimId, requirementCode])
+  @@map("claim_checklist_items")
+}
+
+model ClaimQuery {
+  id              String           @id @default(uuid())
+  tenantId        String           @map("tenant_id")
+  claimId         String           @map("claim_id")
+  queryReference  String?          @map("query_reference") @db.VarChar(100)
+  subject         String           @db.VarChar(255)
+  queryText       String           @map("query_text")
+  status          ClaimQueryStatus @default(open)
+  raisedAt        DateTime         @default(now()) @map("raised_at")
+  responseDueAt   DateTime?        @map("response_due_at")
+  respondedAt     DateTime?        @map("responded_at")
+  resolvedAt      DateTime?        @map("resolved_at")
+  responseText    String?          @map("response_text")
+  raisedBy        String?          @map("raised_by")
+  respondedBy     String?          @map("responded_by")
+  escalationLevel Int              @default(0) @map("escalation_level")
+  createdAt       DateTime         @default(now()) @map("created_at")
+  updatedAt       DateTime         @default(now()) @updatedAt @map("updated_at")
+
+  tenant    Tenant         @relation(fields: [tenantId], references: [id])
+  claim     InsuranceClaim @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  raiser    User?          @relation("ClaimQueryRaiser", fields: [raisedBy], references: [id])
+  responder User?          @relation("ClaimQueryResponder", fields: [respondedBy], references: [id])
+
+  @@index([tenantId, status, responseDueAt])
+  @@map("claim_queries")
+}
+
+model ClaimSettlement {
+  id                   String    @id @default(uuid())
+  tenantId             String    @map("tenant_id")
+  claimId              String    @map("claim_id")
+  grossApprovedAmount  Decimal   @map("gross_approved_amount") @db.Decimal(12, 2)
+  grossPaidAmount      Decimal   @map("gross_paid_amount") @db.Decimal(12, 2)
+  tdsAmount            Decimal   @default(0) @map("tds_amount") @db.Decimal(12, 2)
+  tdsSection           String?   @map("tds_section") @db.VarChar(50)
+  tdsRate              Decimal?  @map("tds_rate") @db.Decimal(7, 4)
+  disallowedAmount     Decimal   @default(0) @map("disallowed_amount") @db.Decimal(12, 2)
+  disallowanceReason   String?   @map("disallowance_reason")
+  netPaidAmount        Decimal   @map("net_paid_amount") @db.Decimal(12, 2)
+  paymentReference     String?   @map("payment_reference") @db.VarChar(100)
+  bankReference        String?   @map("bank_reference") @db.VarChar(100)
+  bankStatementDate    DateTime? @map("bank_statement_date") @db.Date
+  tdsCertificateNumber String?   @map("tds_certificate_number") @db.VarChar(100)
+  tdsCertificateDate   DateTime? @map("tds_certificate_date") @db.Date
+  settlementDate       DateTime  @map("settlement_date") @db.Date
+  notes                String?
+  recordedBy           String?   @map("recorded_by")
+  createdAt            DateTime  @default(now()) @map("created_at")
+
+  tenant   Tenant         @relation(fields: [tenantId], references: [id])
+  claim    InsuranceClaim @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  recorder User?          @relation("ClaimSettlementRecorder", fields: [recordedBy], references: [id])
+
+  @@index([claimId, settlementDate])
+  @@index([tenantId, bankReference])
+  @@map("claim_settlements")
+}
+
+model ClaimWriteOff {
+  id           String              @id @default(uuid())
+  tenantId     String              @map("tenant_id")
+  claimId      String              @map("claim_id")
+  amount       Decimal             @db.Decimal(12, 2)
+  reason       String
+  status       ClaimWriteOffStatus @default(pending)
+  requestedBy  String?             @map("requested_by")
+  decidedBy    String?             @map("decided_by")
+  decidedAt    DateTime?           @map("decided_at")
+  decisionNote String?             @map("decision_note")
+  createdAt    DateTime            @default(now()) @map("created_at")
+
+  tenant    Tenant         @relation(fields: [tenantId], references: [id])
+  claim     InsuranceClaim @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  requester User?          @relation("ClaimWriteOffRequester", fields: [requestedBy], references: [id])
+  decider   User?          @relation("ClaimWriteOffDecider", fields: [decidedBy], references: [id])
+
+  @@index([tenantId, status])
+  @@map("claim_write_offs")
+}
+
+model ClaimAdjustment {
+  id             String              @id @default(uuid())
+  tenantId       String              @map("tenant_id")
+  claimId        String              @map("claim_id")
+  adjustmentType ClaimAdjustmentType @map("adjustment_type")
+  amount         Decimal             @db.Decimal(12, 2)
+  reference      String?             @db.VarChar(100)
+  reason         String
+  effectiveDate  DateTime            @map("effective_date") @db.Date
+  recordedBy     String?             @map("recorded_by")
+  createdAt      DateTime            @default(now()) @map("created_at")
+
+  tenant   Tenant         @relation(fields: [tenantId], references: [id])
+  claim    InsuranceClaim @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  recorder User?          @relation("ClaimAdjustmentRecorder", fields: [recordedBy], references: [id])
+
+  @@index([claimId, effectiveDate])
+  @@map("claim_adjustments")
+}
+
+model InsuranceAuditEvent {
+  id              String   @id @default(uuid())
+  tenantId        String   @map("tenant_id")
+  insuranceCaseId String?  @map("insurance_case_id")
+  claimId         String?  @map("claim_id")
+  preAuthId       String?  @map("pre_auth_id")
+  eventType       String   @map("event_type") @db.VarChar(100)
+  fromStatus      String?  @map("from_status") @db.VarChar(100)
+  toStatus        String?  @map("to_status") @db.VarChar(100)
+  details         Json?
+  actorId         String?  @map("actor_id")
+  occurredAt      DateTime @default(now()) @map("occurred_at")
+
+  tenant        Tenant                   @relation(fields: [tenantId], references: [id])
+  insuranceCase InsuranceCase?           @relation(fields: [insuranceCaseId], references: [id])
+  claim         InsuranceClaim?          @relation(fields: [claimId], references: [id])
+  preAuth       PreAuthorizationRequest? @relation(fields: [preAuthId], references: [id])
+  actor         User?                    @relation(fields: [actorId], references: [id])
+
+  @@index([tenantId, insuranceCaseId, occurredAt])
+  @@index([claimId, occurredAt])
+  @@map("insurance_audit_events")
+}
+
+/// Protocol-neutral exchange/outbox record. NHCX uses FHIR R4 payloads, while
+/// a payer-specific portal/API connector can use the same retryable envelope.
+model InsuranceExchange {
+  id              String                     @id @default(uuid())
+  tenantId        String                     @map("tenant_id")
+  claimId         String?                    @map("claim_id")
+  preAuthId       String?                    @map("pre_auth_id")
+  channel         InsuranceSubmissionChannel
+  messageType     String                     @map("message_type") @db.VarChar(100)
+  transactionId   String                     @map("transaction_id") @db.VarChar(100)
+  status          InsuranceExchangeStatus    @default(queued)
+  requestPayload  Json                       @map("request_payload")
+  responsePayload Json?                      @map("response_payload")
+  errorMessage    String?                    @map("error_message")
+  attemptCount    Int                        @default(0) @map("attempt_count")
+  nextAttemptAt   DateTime?                  @map("next_attempt_at")
+  submittedAt     DateTime?                  @map("submitted_at")
+  acknowledgedAt  DateTime?                  @map("acknowledged_at")
+  createdAt       DateTime                   @default(now()) @map("created_at")
+  updatedAt       DateTime                   @default(now()) @updatedAt @map("updated_at")
+
+  tenant  Tenant                   @relation(fields: [tenantId], references: [id])
+  claim   InsuranceClaim?          @relation(fields: [claimId], references: [id])
+  preAuth PreAuthorizationRequest? @relation(fields: [preAuthId], references: [id])
+
+  @@unique([tenantId, transactionId])
+  @@index([tenantId, status, nextAttemptAt])
+  @@map("insurance_exchanges")
 }
 
 // ============================================================

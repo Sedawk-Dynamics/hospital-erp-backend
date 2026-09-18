@@ -4882,7 +4882,7 @@ export async function setBillItemReimbursable(tenantId: string, itemId: string, 
     orderBy: { createdAt: 'desc' },
     select: { id: true, policyId: true },
   });
-  if (claim) {
+  if (claim?.policyId) {
     const insurance = await import('../insurance/insurance.service');
     const items = await prisma.billItem.findMany({ where: { billId: item.billId }, select: { totalAmount: true, isReimbursable: true } });
     const reimbursable = r2(items.filter((it) => it.isReimbursable !== false).reduce((s, it) => s + Number(it.totalAmount), 0));
