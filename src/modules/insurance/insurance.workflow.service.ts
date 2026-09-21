@@ -417,6 +417,117 @@ export async function getContract(tenantId: string, id: string) {
   return result;
 }
 
+export async function getCoveragePreview(tenantId: string, caseId: string, billId: string) {
+  const insuranceCase = await prisma.insuranceCase.findFirst({ where: { id: caseId, tenantId } });
+  if (!insuranceCase) throw AppError.notFound('Insurance / payer case not found');
+  const bill = await prisma.bill.findFirst({
+    where: { id: billId, tenantId, patientId: insuranceCase.patientId },
+    include: { billItems: { include: { serviceTariff: { select: { id: true, serviceCode: true, serviceName: true } } } } },
+  });
+  if (!bill) throw AppError.notFound('Bill not found for this payer case patient');
+  const contract = await prisma.payerContract.findFirst({
+    where: {
+      tenantId,
+      payerType: insuranceCase.paymentResponsibleType,
+      payerId: insuranceCase.paymentResponsibleId,
+      isActive: true,
+      validFrom: { lte: bill.billDate },
+      validTo: { gte: bill.billDate },
+    },
+    include: {
+      serviceRates: { where: { effectiveFrom: { lte: bill.billDate }, OR: [{ effectiveTo: null }, { effectiveTo: { gte: bill.billDate } }] } },
+      packageRates: { where: { effectiveFrom: { lte: bill.billDate }, OR: [{ effectiveTo: null }, { effectiveTo: { gte: bill.billDate } }] } },
+      nonPayableRules: { where: { isActive: true } },
+    },
+    orderBy: { validFrom: 'desc' },
+  });
+  if (!contract) throw AppError.badRequest('No active payer contract covers this bill date');
+
+  const lines = bill.billItems.map((item) => {
+    const billedAmount = money(item.totalAmount);
+    const code = item.serviceTariff?.serviceCode ?? '';
+    const name = item.serviceTariff?.serviceName ?? item.description;
+    const nonPayable = contract.nonPayableRules.find((rule) =>
+      (rule.itemCode && code && rule.itemCode.toLowerCase() === code.toLowerCase()) ||
+      (rule.itemPattern && name.toLowerCase().includes(rule.itemPattern.toLowerCase())),
+    );
+    const agreedRate = contract.serviceRates.find((rate) =>
+      (rate.serviceTariffId && rate.serviceTariffId === item.serviceTariffId) ||
+      (code && rate.serviceCode.toLowerCase() === code.toLowerCase()),
+    );
+    let allowedAmount = nonPayable ? 0 : agreedRate ? Math.min(billedAmount, money(agreedRate.agreedRate) * item.quantity) : billedAmount;
+    let ruleApplied = nonPayable ? `Non-payable: ${nonPayable.reason}` : agreedRate ? `Agreed service rate: ${money(agreedRate.agreedRate)} × ${item.quantity}` : 'Hospital bill rate (no negotiated override)';
+    if (!nonPayable && item.category === 'room' && contract.roomRentCap != null) {
+      const roomAllowed = money(contract.roomRentCap) * item.quantity;
+      if (roomAllowed < allowedAmount) {
+        allowedAmount = roomAllowed;
+        ruleApplied = `Room-rent cap: ${money(contract.roomRentCap)} × ${item.quantity}`;
+      }
+    }
+    allowedAmount = Number(allowedAmount.toFixed(2));
+    return {
+      billItemId: item.id,
+      serviceTariffId: item.serviceTariffId,
+      serviceCode: code || null,
+      description: item.description,
+      category: item.category,
+      quantity: item.quantity,
+      billedAmount,
+      allowedAmount,
+      patientPayableAmount: Number(Math.max(0, billedAmount - allowedAmount).toFixed(2)),
+      isReimbursable: allowedAmount > 0,
+      nonPayable: Boolean(nonPayable),
+      ruleApplied,
+    };
+  });
+  const billedAmount = lines.reduce((sum, item) => sum + item.billedAmount, 0);
+  const payerAllowedAmount = lines.reduce((sum, item) => sum + item.allowedAmount, 0);
+  const patientPayableAmount = lines.reduce((sum, item) => sum + item.patientPayableAmount, 0);
+  return {
+    insuranceCase: { id: insuranceCase.id, caseNumber: insuranceCase.caseNumber },
+    contract: { id: contract.id, name: contract.name, contractNumber: contract.contractNumber, roomRentCap: contract.roomRentCap, roomRentCapPercent: contract.roomRentCapPercent },
+    bill: { id: bill.id, billNumber: bill.billNumber, billDate: bill.billDate, totalAmount: bill.totalAmount },
+    packageRates: contract.packageRates,
+    lines,
+    summary: {
+      billedAmount: Number(billedAmount.toFixed(2)),
+      payerAllowedAmount: Number(payerAllowedAmount.toFixed(2)),
+      patientPayableAmount: Number(patientPayableAmount.toFixed(2)),
+      contractualReduction: Number(Math.max(0, billedAmount - payerAllowedAmount).toFixed(2)),
+    },
+  };
+}
+
+export async function applyCoverage(tenantId: string, userId: string, caseId: string, billId: string) {
+  const preview = await getCoveragePreview(tenantId, caseId, billId);
+  await prisma.$transaction(async (tx) => {
+    for (const line of preview.lines) {
+      await tx.billItem.update({
+        where: { id: line.billItemId },
+        data: {
+          isReimbursable: line.isReimbursable,
+          tpaCategory: line.nonPayable ? 'non_payable' : line.allowedAmount < line.billedAmount ? 'partially_payable' : 'payable',
+        },
+      });
+    }
+    await tx.bill.update({
+      where: { id: billId },
+      data: {
+        insuranceCoveredAmount: preview.summary.payerAllowedAmount,
+        patientPayableAmount: preview.summary.patientPayableAmount,
+      },
+    });
+    await audit({
+      tenantId,
+      actorId: userId,
+      insuranceCaseId: caseId,
+      eventType: 'contract.coverage_applied',
+      details: { billId, contractId: preview.contract.id, ...preview.summary },
+    }, tx);
+  });
+  return preview;
+}
+
 // ---------------------------------------------------------------------------
 // SLA-aware pre-authorisation chain
 // ---------------------------------------------------------------------------

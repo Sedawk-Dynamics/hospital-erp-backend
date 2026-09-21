@@ -188,6 +188,16 @@ export const contractQuerySchema = z.object({
   query: z.object({ payerType: payerType.optional(), payerId: uuid.optional(), activeOn: z.coerce.date().optional() }),
 });
 
+export const coveragePreviewSchema = z.object({
+  params: z.object({ id: uuid }),
+  query: z.object({ billId: uuid }),
+});
+
+export const applyCoverageSchema = z.object({
+  params: z.object({ id: uuid }),
+  body: z.object({ billId: uuid }),
+});
+
 export const createEnhancementSchema = z.object({
   params: z.object({ id: uuid }),
   body: z.object({

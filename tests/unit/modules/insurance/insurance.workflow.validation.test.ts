@@ -4,6 +4,8 @@ import {
   queueExchangeSchema,
   recordSettlementSchema,
   requestFinalAuthorizationSchema,
+  coveragePreviewSchema,
+  applyCoverageSchema,
 } from '../../../../src/modules/insurance/insurance.workflow.validation';
 import { createClaimSchema, createPreAuthSchema } from '../../../../src/modules/insurance/insurance.validation';
 
@@ -111,5 +113,11 @@ describe('insurance workflow validation', () => {
       body: { channel: 'nhcx', messageType: 'claim-submit', payload: { resourceType: 'Claim' } },
     });
     expect(parsed.success).toBe(false);
+  });
+
+  it('requires a concrete bill when previewing or applying payer contract coverage', () => {
+    expect(coveragePreviewSchema.safeParse({ params: { id: ID }, query: {} }).success).toBe(false);
+    expect(coveragePreviewSchema.safeParse({ params: { id: ID }, query: { billId: ID2 } }).success).toBe(true);
+    expect(applyCoverageSchema.safeParse({ params: { id: ID }, body: { billId: ID2 } }).success).toBe(true);
   });
 });

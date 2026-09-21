@@ -46,6 +46,8 @@ import {
   caseIdParamSchema,
   claimIdParamSchema,
   contractQuerySchema,
+  coveragePreviewSchema,
+  applyCoverageSchema,
   createAdjustmentSchema,
   createCorporatePayerSchema,
   createEnhancementSchema,
@@ -104,6 +106,8 @@ insuranceRoutes.post('/cases/:id/eligibility', authenticate, requirePermission('
 insuranceRoutes.patch('/cases/:id/emergency-intimation', authenticate, requirePermission('insurance', 'update'), validate(emergencyIntimationSchema), workflowController.recordEmergencyIntimation);
 insuranceRoutes.patch('/cases/:id/physical-release', authenticate, requirePermission('insurance', 'update'), validate(physicalReleaseSchema), workflowController.recordPhysicalRelease);
 insuranceRoutes.post('/cases/:id/final-authorization', authenticate, requirePermission('insurance', 'create'), validate(requestFinalAuthorizationSchema), workflowController.requestFinalAuthorization);
+insuranceRoutes.get('/cases/:id/coverage-preview', authenticate, requirePermission('insurance', 'read'), validate(coveragePreviewSchema), workflowController.getCoveragePreview);
+insuranceRoutes.post('/cases/:id/apply-coverage', authenticate, requirePermission('insurance', 'update'), validate(applyCoverageSchema), workflowController.applyCoverage);
 
 // Integration outbox (including NHCX/FHIR R4 envelopes).
 insuranceRoutes.post('/exchanges', authenticate, requirePermission('insurance', 'create'), validate(queueExchangeSchema), workflowController.queueExchange);

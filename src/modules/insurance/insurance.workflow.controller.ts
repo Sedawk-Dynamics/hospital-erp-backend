@@ -45,6 +45,12 @@ export async function recordPhysicalRelease(req: AuthenticatedRequest, res: Resp
 export async function getPatientCaseStatus(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try { sendResponse({ res, message: 'Case status retrieved', data: await service.getPatientCaseStatus(req.user!.tenantId, req.params.id as string) }); } catch (error) { next(error); }
 }
+export async function getCoveragePreview(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try { sendResponse({ res, message: 'Payer contract coverage preview generated', data: await service.getCoveragePreview(req.user!.tenantId, req.params.id as string, String(req.query.billId)) }); } catch (error) { next(error); }
+}
+export async function applyCoverage(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try { const { tenantId, userId } = ids(req); sendResponse({ res, message: 'Payer contract coverage applied to bill split', data: await service.applyCoverage(tenantId, userId, req.params.id as string, req.body.billId) }); } catch (error) { next(error); }
+}
 
 export async function createContract(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try { sendResponse({ res, statusCode: 201, message: 'Payer contract created', data: await service.createContract(req.user!.tenantId, req.body) }); } catch (error) { next(error); }
