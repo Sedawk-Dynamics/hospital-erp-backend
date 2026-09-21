@@ -4484,6 +4484,7 @@ export async function transferAdmissionToTpa(tenantId: string, userId: string, a
     patientId: admission.patientId,
     billId: bill.id,
     claimAmount: claimAmountToTpa,
+    tier: 'primary',
   });
   // Reflect the insurer-covered vs patient-payable split on the WHOLE bill:
   // insurer covers the covered portion of the claimed lines; the patient owes

@@ -603,12 +603,25 @@ export async function verifyPolicy(tenantId: string, id: string) {
 // ============================================================
 
 export async function createClaim(tenantId: string, userId: string, data: CreateClaimInput) {
-  // Verify policy exists and belongs to tenant
-  const policy = await prisma.insurancePolicy.findFirst({
-    where: { id: data.policyId, tenantId },
-  });
-  if (!policy) {
-    throw AppError.notFound('Insurance policy not found');
+  const insuranceCase = data.insuranceCaseId
+    ? await prisma.insuranceCase.findFirst({
+        where: { id: data.insuranceCaseId, tenantId, patientId: data.patientId },
+        include: { policies: { orderBy: { sequence: 'asc' } } },
+      })
+    : null;
+  if (data.insuranceCaseId && !insuranceCase) {
+    throw AppError.notFound('Insurance / payer case not found for this patient');
+  }
+
+  const policyId = data.policyId ?? insuranceCase?.policies[0]?.policyId;
+  const policy = policyId
+    ? await prisma.insurancePolicy.findFirst({ where: { id: policyId, tenantId, patientId: data.patientId } })
+    : null;
+  if (policyId && !policy) throw AppError.notFound('Insurance policy not found for this patient');
+  if (!policy && !insuranceCase) throw AppError.badRequest('A policy or insurance / payer case is required');
+  if (insuranceCase && policyId) {
+    const linked = insuranceCase.policies.some((item) => item.policyId === policyId);
+    if (!linked) throw AppError.badRequest('Selected policy is not linked to this payer case');
   }
 
   // Verify patient exists
@@ -629,27 +642,56 @@ export async function createClaim(tenantId: string, userId: string, data: Create
 
   // Policy validity
   const now = new Date();
-  if (policy.status !== 'active' || policy.validFrom > now || policy.validTo < now) {
+  if (policy && (policy.status !== 'active' || policy.validFrom > now || policy.validTo < now)) {
     throw AppError.badRequest('Insurance policy is not active for this date');
+  }
+
+  if (data.preAuthId) {
+    const preAuth = await prisma.preAuthorizationRequest.findFirst({
+      where: { id: data.preAuthId, tenantId, patientId: data.patientId },
+    });
+    if (!preAuth || (insuranceCase && preAuth.insuranceCaseId !== insuranceCase.id)) {
+      throw AppError.badRequest('Pre-authorization is not linked to this patient and payer case');
+    }
   }
 
   // Co-pay / deductible / covered split
   const split = computeResponsibility(
     decNum(data.claimAmount),
-    decNum(policy.coPayPercent),
-    decNum(policy.deductibleAmount),
-    decNum(policy.coverageAmount),
+    decNum(policy?.coPayPercent),
+    decNum(policy?.deductibleAmount),
+    decNum(policy?.coverageAmount),
   );
 
   const claimNumber = await generateClaimNumber(tenantId);
-  const expiryDays = data.expiryDays ?? DEFAULT_CLAIM_EXPIRY_DAYS;
+  let expiryDays = data.expiryDays ?? DEFAULT_CLAIM_EXPIRY_DAYS;
+  if (!data.expiryDays && insuranceCase) {
+    const contract = await prisma.payerContract.findFirst({
+      where: {
+        tenantId,
+        payerType: insuranceCase.paymentResponsibleType,
+        payerId: insuranceCase.paymentResponsibleId,
+        isActive: true,
+        validFrom: { lte: now },
+        validTo: { gte: now },
+      },
+      orderBy: { validFrom: 'desc' },
+    });
+    if (contract) expiryDays = contract.submissionWindowDays;
+  }
   const expiryDate = new Date(now.getTime() + expiryDays * 24 * 60 * 60 * 1000);
+
+  const sequence = data.sequence ?? (insuranceCase
+    ? (await prisma.insuranceClaim.count({ where: { insuranceCaseId: insuranceCase.id } })) + 1
+    : 1);
 
   const claim = await prisma.insuranceClaim.create({
     data: {
       tenantId,
       patientId: data.patientId,
-      policyId: data.policyId,
+      policyId,
+      insuranceCaseId: insuranceCase?.id,
+      preAuthId: data.preAuthId,
       billId: data.billId,
       claimNumber,
       claimAmount: data.claimAmount,
@@ -660,6 +702,13 @@ export async function createClaim(tenantId: string, userId: string, data: Create
       outstandingAmount: data.claimAmount,
       expiryDate,
       status: 'submitted',
+      tier: data.tier,
+      sequence,
+      settlementMode: data.settlementMode ?? insuranceCase?.settlementMode ?? 'cashless',
+      submissionChannel: data.submissionChannel,
+      payerClaimReference: data.payerClaimReference,
+      submissionReference: data.submissionReference,
+      nhcxTransactionId: data.nhcxTransactionId,
       submissionDate: now,
       documentsUrl: data.documentsUrl ?? undefined,
       notes: data.notes,
@@ -671,6 +720,14 @@ export async function createClaim(tenantId: string, userId: string, data: Create
       bill: { select: { id: true, billNumber: true, totalAmount: true } },
     },
   });
+
+  if (insuranceCase) {
+    await prisma.insuranceCase.update({ where: { id: insuranceCase.id }, data: { status: 'claimSubmitted' } });
+  }
+  // Build payer-specific requirements immediately so submission has a real
+  // completeness gate instead of a free-form attachment list.
+  const workflow = await import('./insurance.workflow.service');
+  await workflow.syncClaimChecklist(tenantId, claim.id);
 
   logger.info({ tenantId, claimId: claim.id, claimNumber }, 'Insurance claim created');
   return claim;
@@ -939,6 +996,12 @@ export async function submitClaim(tenantId: string, id: string, userId?: string)
 
   if (claim.status !== 'submitted' && claim.status !== 'resubmitted') {
     throw AppError.badRequest('Claim is not in a submittable status');
+  }
+
+  const checklist = await prisma.claimChecklistItem.findMany({ where: { claimId: id, isRequired: true } });
+  if (checklist.length && checklist.some((item) => !item.isComplete)) {
+    const missing = checklist.filter((item) => !item.isComplete).map((item) => item.label);
+    throw AppError.badRequest(`Claim dossier is incomplete: ${missing.join(', ')}`);
   }
 
   const updated = await prisma.insuranceClaim.update({
@@ -1492,13 +1555,18 @@ export async function exportClaimForTpa(tenantId: string, id: string) {
 // ============================================================
 
 export async function createPreAuth(tenantId: string, userId: string, data: CreatePreAuthInput) {
-  // Verify policy exists
-  const policy = await prisma.insurancePolicy.findFirst({
-    where: { id: data.policyId, tenantId },
-  });
-  if (!policy) {
-    throw AppError.notFound('Insurance policy not found');
-  }
+  const insuranceCase = data.insuranceCaseId
+    ? await prisma.insuranceCase.findFirst({
+        where: { id: data.insuranceCaseId, tenantId, patientId: data.patientId },
+        include: { policies: { orderBy: { sequence: 'asc' } } },
+      })
+    : null;
+  if (data.insuranceCaseId && !insuranceCase) throw AppError.notFound('Insurance / payer case not found');
+  const policyId = data.policyId ?? insuranceCase?.policies[0]?.policyId;
+  const policy = policyId
+    ? await prisma.insurancePolicy.findFirst({ where: { id: policyId, tenantId, patientId: data.patientId } })
+    : null;
+  if (policyId && !policy) throw AppError.notFound('Insurance policy not found for this patient');
 
   // Verify patient exists
   const patient = await prisma.patient.findFirst({
@@ -1513,8 +1581,15 @@ export async function createPreAuth(tenantId: string, userId: string, data: Crea
     data: {
       tenantId,
       patientId: data.patientId,
-      policyId: data.policyId,
+      policyId,
+      insuranceCaseId: insuranceCase?.id,
       requestNumber: await generatePreAuthRequestNumber(tenantId),
+      requestType: 'initial',
+      admissionId: data.admissionId ?? insuranceCase?.admissionId,
+      visitId: data.visitId ?? insuranceCase?.visitId,
+      doctorId: data.doctorId,
+      diagnosisCode: data.diagnosisCode,
+      procedureCode: data.procedureCode,
       procedureDescription: data.procedureDescription,
       estimatedCost: data.estimatedCost,
       status: 'pending',
@@ -1522,6 +1597,8 @@ export async function createPreAuth(tenantId: string, userId: string, data: Crea
       validTo: data.validTo ? new Date(data.validTo) : undefined,
       notes: data.notes,
       submittedBy: userId,
+      submissionChannel: data.submissionChannel,
+      submissionReference: data.submissionReference,
       submittedAt: now,
       alertAt: new Date(now.getTime() + 45 * 60 * 1000),
       decisionDueAt: new Date(now.getTime() + 60 * 60 * 1000),
@@ -1531,6 +1608,21 @@ export async function createPreAuth(tenantId: string, userId: string, data: Crea
       policy: { select: { id: true, policyNumber: true } },
     },
   });
+
+  if (insuranceCase) {
+    await prisma.insuranceCase.update({ where: { id: insuranceCase.id }, data: { status: 'preAuthPending' } });
+    await prisma.insuranceAuditEvent.create({
+      data: {
+        tenantId,
+        actorId: userId,
+        insuranceCaseId: insuranceCase.id,
+        preAuthId: preAuth.id,
+        eventType: 'preauth.initial_submitted',
+        toStatus: 'pending',
+        details: { requestNumber: preAuth.requestNumber, decisionDueAt: preAuth.decisionDueAt },
+      },
+    });
+  }
 
   await recordTpaCommunication({
     tenantId,
@@ -1691,6 +1783,27 @@ export async function approvePreAuth(tenantId: string, id: string, data: Approve
     },
   });
 
+  if (existing.insuranceCaseId) {
+    await prisma.$transaction(async (tx) => {
+      await tx.insuranceCase.update({ where: { id: existing.insuranceCaseId! }, data: { status: 'authorized' } });
+      if (existing.requestType === 'finalDischarge') {
+        await tx.insuranceClaim.updateMany({ where: { tenantId, preAuthId: id }, data: { finalAuthorizationReceivedAt: new Date() } });
+      }
+      await tx.insuranceAuditEvent.create({
+        data: {
+          tenantId,
+          actorId: userId,
+          insuranceCaseId: existing.insuranceCaseId,
+          preAuthId: id,
+          eventType: existing.requestType === 'finalDischarge' ? 'final_authorization.approved' : 'preauth.approved',
+          fromStatus: existing.status,
+          toStatus: 'approved',
+          details: { payerPreAuthReference: payerReference, approvedAmount: data.approvedAmount },
+        },
+      });
+    });
+  }
+
   await recordTpaCommunication({
     tenantId,
     preAuthId: id,
@@ -1732,6 +1845,21 @@ export async function rejectPreAuth(tenantId: string, id: string, data: RejectPr
       policy: { select: { id: true, policyNumber: true } },
     },
   });
+
+  if (existing.insuranceCaseId) {
+    await prisma.insuranceAuditEvent.create({
+      data: {
+        tenantId,
+        actorId: userId,
+        insuranceCaseId: existing.insuranceCaseId,
+        preAuthId: id,
+        eventType: existing.requestType === 'finalDischarge' ? 'final_authorization.denied' : 'preauth.denied',
+        fromStatus: existing.status,
+        toStatus: 'denied',
+        details: { reason: data.notes },
+      },
+    });
+  }
 
   await recordTpaCommunication({
     tenantId,

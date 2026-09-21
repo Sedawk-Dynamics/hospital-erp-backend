@@ -416,7 +416,13 @@ describe('Insurance Service', () => {
       // to make a second, re-checking that number for the tenant, which could
       // never fire; queueing a value for a call that no longer happens leaves it
       // in the mock's queue for whatever test runs next.
-      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValueOnce(null);
+      vi.mocked(prisma.insuranceClaim.findFirst)
+        .mockResolvedValueOnce(null)
+        // The new document-completeness gate immediately builds a checklist
+        // for the claim it just created, and therefore reads it back three times.
+        .mockResolvedValueOnce(mockClaim as any)
+        .mockResolvedValueOnce({ ...mockClaim, insuranceCase: null } as any)
+        .mockResolvedValueOnce(mockClaim as any);
       vi.mocked(prisma.insuranceClaim.create).mockResolvedValue(mockClaim as any);
 
       const result = await createClaim(TENANT_ID, USER_ID, claimInput);
