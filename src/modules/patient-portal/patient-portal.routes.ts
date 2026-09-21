@@ -545,6 +545,19 @@ router.get('/follow-ups', async (req: AuthenticatedRequest, res: Response, next:
 });
 
 // GET /patient-portal/billing
+router.get('/insurance-cases', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const data = await patientPortalService.getPatientInsuranceCases(req.user!.userId, req.user!.email, {
+      tenantId: req.query.tenantId as string | undefined,
+      profileId: req.query.profileId as string | undefined,
+    });
+    sendResponse({ res, statusCode: 200, message: 'Patient insurance and payer cases', data });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /patient-portal/billing
 router.get('/billing', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
     const result = await patientPortalService.getPatientBills(req.user!.userId, req.user!.email, {
