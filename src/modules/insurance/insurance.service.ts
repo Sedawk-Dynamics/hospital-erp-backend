@@ -834,6 +834,7 @@ export async function getClaims(tenantId: string, query: any) {
 
   if (query.patientId) where.patientId = query.patientId;
   if (query.policyId) where.policyId = query.policyId;
+  if (query.insuranceCaseId) where.insuranceCaseId = query.insuranceCaseId;
   if (query.status) where.status = query.status;
 
   if (query.fromDate) {
@@ -861,7 +862,16 @@ export async function getClaims(tenantId: string, query: any) {
           select: { id: true, firstName: true, lastName: true },
         },
         policy: {
-          select: { id: true, policyNumber: true },
+          select: { id: true, policyNumber: true, insurer: { select: { id: true, name: true } } },
+        },
+        insuranceCase: {
+          select: {
+            id: true, caseNumber: true, status: true,
+            insurer: { select: { id: true, name: true } },
+            tpa: { select: { id: true, name: true } },
+            corporatePayer: { select: { id: true, name: true } },
+            governmentSchemePayer: { select: { id: true, name: true } },
+          },
         },
         bill: {
           select: { id: true, billNumber: true, totalAmount: true },
@@ -891,6 +901,18 @@ export async function getClaimById(tenantId: string, id: string) {
           insurer: { select: { id: true, name: true } },
         },
       },
+      insuranceCase: {
+        select: {
+          id: true,
+          caseNumber: true,
+          status: true,
+          insurer: { select: { id: true, name: true } },
+          tpa: { select: { id: true, name: true } },
+          corporatePayer: { select: { id: true, name: true } },
+          governmentSchemePayer: { select: { id: true, name: true } },
+        },
+      },
+      preAuth: true,
       bill: {
         select: { id: true, billNumber: true, totalAmount: true, status: true },
       },
@@ -904,6 +926,13 @@ export async function getClaimById(tenantId: string, id: string) {
         orderBy: { createdAt: 'desc' },
         take: 10,
       },
+      documents: { orderBy: [{ name: 'asc' }, { version: 'desc' }] },
+      checklistItems: { orderBy: { createdAt: 'asc' } },
+      queries: { orderBy: { raisedAt: 'desc' } },
+      settlements: { orderBy: { settlementDate: 'desc' } },
+      writeOffs: { orderBy: { createdAt: 'desc' } },
+      adjustments: { orderBy: { effectiveDate: 'desc' } },
+      auditEvents: { orderBy: { occurredAt: 'desc' }, take: 100 },
     },
   });
 

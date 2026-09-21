@@ -214,6 +214,7 @@ export const getClaimsQuerySchema = z.object({
   query: paginationSchema.extend({
     patientId: z.string().uuid().optional(),
     policyId: z.string().uuid().optional(),
+    insuranceCaseId: z.string().uuid().optional(),
     status: z
       .enum([
         'submitted',
