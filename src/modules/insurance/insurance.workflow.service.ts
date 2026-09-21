@@ -28,6 +28,7 @@ const CASE_INCLUDE = {
   eligibilityChecks: { orderBy: { checkedAt: 'desc' as const }, take: 5 },
   preAuthRequests: { orderBy: { createdAt: 'desc' as const } },
   claims: { orderBy: { sequence: 'asc' as const } },
+  auditEvents: { orderBy: { occurredAt: 'desc' as const }, take: 100 },
 } satisfies Prisma.InsuranceCaseInclude;
 
 const CLAIM_WORKFLOW_INCLUDE = {
