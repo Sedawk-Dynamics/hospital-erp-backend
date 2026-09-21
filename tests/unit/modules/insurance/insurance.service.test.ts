@@ -22,12 +22,21 @@ import {
   createTpaLog,
   getTpaLogs,
   recordTpaCommunication,
+  calculateDelayLiability,
 } from '../../../../src/modules/insurance/insurance.service';
 
 // ─── Shared test fixtures ───
 
 const TENANT_ID = 'tenant-1';
 const USER_ID = 'user-1';
+
+describe('final authorization delay liability', () => {
+  it('prorates the daily room rate only for time beyond the authorization deadline', () => {
+    const dueAt = new Date('2026-09-20T09:00:00.000Z');
+    expect(calculateDelayLiability(dueAt, new Date('2026-09-20T12:00:00.000Z'), 2400)).toEqual({ lateMinutes: 180, amount: 300 });
+    expect(calculateDelayLiability(dueAt, new Date('2026-09-20T08:59:00.000Z'), 2400)).toEqual({ lateMinutes: 0, amount: 0 });
+  });
+});
 
 const mockInsurer = {
   id: 'insurer-1',

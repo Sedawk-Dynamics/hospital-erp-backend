@@ -46,6 +46,16 @@ function decNum(value: Prisma.Decimal | number | string | null | undefined): num
   return Number(value.toString());
 }
 
+export function calculateDelayLiability(decisionDueAt: Date | null, decidedAt: Date, dailyRoomRate: number) {
+  const lateMinutes = decisionDueAt
+    ? Math.max(0, (decidedAt.getTime() - decisionDueAt.getTime()) / 60_000)
+    : 0;
+  return {
+    lateMinutes,
+    amount: Number(((dailyRoomRate * lateMinutes) / (24 * 60)).toFixed(2)),
+  };
+}
+
 // ============================================================
 // Helpers
 // ============================================================
@@ -1792,6 +1802,7 @@ export async function approvePreAuth(tenantId: string, id: string, data: Approve
   // only when the insurer/administrator actually supplies one; it must never
   // be fabricated by the hospital application.
   const payerReference = data.approvalNumber?.trim() || null;
+  const decidedAt = new Date();
 
   const preAuth = await prisma.preAuthorizationRequest.update({
     where: { id },
@@ -1804,7 +1815,7 @@ export async function approvePreAuth(tenantId: string, id: string, data: Approve
       validTo: data.validTo ? new Date(data.validTo) : existing.validTo ?? undefined,
       holdReason: null,
       notes: data.notes ?? existing.notes,
-      decidedAt: new Date(),
+      decidedAt,
     },
     include: {
       patient: { select: { id: true, firstName: true, lastName: true } },
@@ -1816,7 +1827,32 @@ export async function approvePreAuth(tenantId: string, id: string, data: Approve
     await prisma.$transaction(async (tx) => {
       await tx.insuranceCase.update({ where: { id: existing.insuranceCaseId! }, data: { status: 'authorized' } });
       if (existing.requestType === 'finalDischarge') {
-        await tx.insuranceClaim.updateMany({ where: { tenantId, preAuthId: id }, data: { finalAuthorizationReceivedAt: new Date() } });
+        const linkedClaims = await tx.insuranceClaim.findMany({
+          where: { tenantId, preAuthId: id },
+          include: { bill: { include: { billItems: { where: { category: 'room' } } } } },
+        });
+        for (const claim of linkedClaims) {
+          const dailyRoomRate = claim.bill.billItems.reduce((highest, item) => Math.max(highest, Number(item.unitPrice)), 0);
+          const liability = calculateDelayLiability(existing.decisionDueAt, decidedAt, dailyRoomRate);
+          const delayLiabilityAmount = liability.amount;
+          await tx.insuranceClaim.update({
+            where: { id: claim.id },
+            data: { finalAuthorizationReceivedAt: decidedAt, delayLiabilityAmount },
+          });
+          if (delayLiabilityAmount > 0) {
+            await tx.insuranceAuditEvent.create({
+              data: {
+                tenantId,
+                actorId: userId,
+                insuranceCaseId: existing.insuranceCaseId,
+                claimId: claim.id,
+                preAuthId: id,
+                eventType: 'final_authorization.delay_liability_calculated',
+                details: { decisionDueAt: existing.decisionDueAt, decidedAt, lateMinutes: liability.lateMinutes, dailyRoomRate, delayLiabilityAmount },
+              },
+            });
+          }
+        }
       }
       await tx.insuranceAuditEvent.create({
         data: {
