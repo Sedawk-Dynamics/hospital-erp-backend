@@ -17,6 +17,111 @@ async function getInsuranceRecipients(tenantId: string): Promise<string[]> {
   return usersWithRoles(tenantId, ['admin', 'insurance_staff', 'billing_admin']);
 }
 
+async function createNotificationOnce(data: {
+  tenantId: string;
+  userId: string;
+  title: string;
+  message: string;
+  referenceType: string;
+  referenceId: string;
+}) {
+  const exists = await prisma.notification.findFirst({
+    where: {
+      tenantId: data.tenantId,
+      userId: data.userId,
+      title: data.title,
+      referenceType: data.referenceType,
+      referenceId: data.referenceId,
+    },
+    select: { id: true },
+  });
+  if (exists) return false;
+  await prisma.notification.create({
+    data: {
+      ...data,
+      notificationType: 'alert',
+      channel: 'in_app',
+    },
+  });
+  return true;
+}
+
+/**
+ * Five-minute operational clock for IRDAI authorization SLAs and payer query
+ * deadlines. Notification writes are idempotent, and failures are isolated so
+ * they can never roll back a clinical or financial workflow action.
+ */
+export async function runInsuranceSlaJob(now = new Date()) {
+  const preAuths = await prisma.preAuthorizationRequest.findMany({
+    where: {
+      status: { in: ['pending', 'on_hold'] },
+      OR: [{ alertAt: { lte: now } }, { decisionDueAt: { lte: now } }],
+    },
+    include: { patient: { select: { firstName: true, lastName: true } } },
+  });
+
+  let authorizationAlerts = 0;
+  for (const preAuth of preAuths) {
+    const breached = Boolean(preAuth.decisionDueAt && preAuth.decisionDueAt <= now);
+    const finalDischarge = preAuth.requestType === 'finalDischarge';
+    const recipients = new Set(await getInsuranceRecipients(preAuth.tenantId));
+    if (preAuth.submittedBy) recipients.add(preAuth.submittedBy);
+    const title = breached
+      ? `${finalDischarge ? 'Final discharge authorization' : 'Pre-authorization'} SLA breached`
+      : `${finalDischarge ? 'Final discharge authorization' : 'Pre-authorization'} SLA warning`;
+    const deadline = preAuth.decisionDueAt ? formatDateIST(preAuth.decisionDueAt) : 'the configured deadline';
+    const message = `${preAuth.requestNumber} for ${fullName(preAuth.patient)} ${breached ? 'passed' : 'is approaching'} ${deadline}. Follow up with the payer immediately.`;
+    for (const userId of recipients) {
+      try {
+        if (await createNotificationOnce({ tenantId: preAuth.tenantId, userId, title, message, referenceType: 'pre_authorization_request', referenceId: preAuth.id })) authorizationAlerts += 1;
+      } catch (err) {
+        logger.warn({ err, preAuthId: preAuth.id, userId }, 'Insurance SLA notification failed');
+      }
+    }
+    if (breached && !preAuth.escalatedAt) {
+      await prisma.preAuthorizationRequest.update({ where: { id: preAuth.id }, data: { escalatedAt: now } });
+    }
+  }
+
+  const queryHorizon = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  const queries = await prisma.claimQuery.findMany({
+    where: { status: 'open', responseDueAt: { not: null, lte: queryHorizon } },
+    include: {
+      claim: {
+        select: {
+          claimNumber: true,
+          patient: { select: { firstName: true, lastName: true } },
+        },
+      },
+    },
+  });
+
+  let queryAlerts = 0;
+  for (const query of queries) {
+    const overdue = Boolean(query.responseDueAt && query.responseDueAt <= now);
+    const level = overdue ? 2 : 1;
+    if (query.escalationLevel >= level) continue;
+    const recipients = new Set<string>();
+    if (query.raisedBy) recipients.add(query.raisedBy);
+    if (overdue) (await getInsuranceRecipients(query.tenantId)).forEach((id) => recipients.add(id));
+    const title = overdue ? 'Insurance query response overdue' : 'Insurance query response due within 24 hours';
+    const message = `${query.claim.claimNumber ?? query.claimId} for ${fullName(query.claim.patient)}: ${query.subject}. Reply by ${query.responseDueAt ? formatDateIST(query.responseDueAt) : 'the configured deadline'}.`;
+    for (const userId of recipients) {
+      try {
+        if (await createNotificationOnce({ tenantId: query.tenantId, userId, title, message, referenceType: 'claim_query', referenceId: query.id })) queryAlerts += 1;
+      } catch (err) {
+        logger.warn({ err, queryId: query.id, userId }, 'Insurance query notification failed');
+      }
+    }
+    await prisma.claimQuery.update({ where: { id: query.id }, data: { escalationLevel: level } });
+  }
+
+  if (authorizationAlerts || queryAlerts) {
+    logger.info({ authorizationAlerts, queryAlerts }, 'Insurance SLA alerts processed');
+  }
+  return { authorizationAlerts, queryAlerts };
+}
+
 /**
  * Daily insurance maintenance:
  *   1. Sweep policies/pre-auths whose validity passed → mark expired.

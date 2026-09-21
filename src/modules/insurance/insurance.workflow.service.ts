@@ -755,10 +755,27 @@ async function recordSettlementWithClient(tx: Prisma.TransactionClient, tenantId
   const claim = await tx.insuranceClaim.findFirst({ where: { id: claimId, tenantId } });
   if (!claim) throw AppError.notFound('Insurance claim not found');
   if (!['approved', 'partially_approved', 'partially_settled', 'settled'].includes(claim.status)) throw AppError.badRequest('Claim must be approved before settlement');
+
+  const approved = money(claim.approvedAmount ?? data.grossApprovedAmount);
+  if (Math.abs(money(data.grossApprovedAmount) - approved) > 0.01) {
+    throw AppError.badRequest('Settlement approved amount must match the claim approved amount');
+  }
+
+  // Check before inserting so concurrent/bulk allocation can never silently
+  // over-apply a remittance. The enclosing transaction serializes every item
+  // in a bulk allocation and rolls the complete batch back on any mismatch.
+  const before = await tx.claimSettlement.aggregate({
+    where: { claimId },
+    _sum: { grossPaidAmount: true },
+  });
+  const proposedGrossPaid = money(before._sum.grossPaidAmount) + money(data.grossPaidAmount);
+  if (proposedGrossPaid > approved + 0.01) {
+    throw AppError.badRequest('Total settlement cannot exceed the claim approved amount');
+  }
+
   const settlement = await tx.claimSettlement.create({ data: { tenantId, claimId, ...data, recordedBy: userId } });
   const totals = await tx.claimSettlement.aggregate({ where: { claimId }, _sum: { grossPaidAmount: true, tdsAmount: true, disallowedAmount: true } });
   const grossPaid = money(totals._sum.grossPaidAmount);
-  const approved = money(claim.approvedAmount ?? data.grossApprovedAmount);
   const outstanding = Math.max(0, approved - grossPaid);
   const status = outstanding <= 0.009 ? 'settled' : 'partially_settled';
   await tx.insuranceClaim.update({ where: { id: claimId }, data: { paidAmount: grossPaid, tdsReceivableAmount: money(totals._sum.tdsAmount), disallowedAmount: money(totals._sum.disallowedAmount), outstandingAmount: outstanding, settlementDate: data.settlementDate, status } });

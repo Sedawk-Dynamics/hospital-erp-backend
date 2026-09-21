@@ -6,7 +6,7 @@ import { redis } from './config/redis';
 import { app } from './app';
 import { runAutoSeed } from './bootstrap/auto-seed';
 import { runSubscriptionJobs } from './jobs/subscription-reminders';
-import { runInsuranceExpiryJob } from './jobs/insurance-expiry';
+import { runInsuranceExpiryJob, runInsuranceSlaJob } from './jobs/insurance-expiry';
 import { runAppointmentReminderJob } from './jobs/appointment-reminders';
 import { runInventoryAlertsJob } from './jobs/inventory-alerts';
 import { runNdpsDailyCloseJob } from './jobs/ndps-daily-close';
@@ -59,6 +59,16 @@ setTimeout(() => {
 setInterval(() => {
   runInsuranceExpiryJob().catch((err) => logger.error({ err }, 'Insurance expiry job failed'));
 }, TWELVE_HOURS);
+
+// IRDAI authorization warnings (45m / 2.5h), breaches (1h / 3h), and payer
+// query reply deadlines need a much tighter clock than the daily expiry sweep.
+const FIVE_MINUTES = 5 * 60 * 1000;
+setTimeout(() => {
+  runInsuranceSlaJob().catch((err) => logger.error({ err }, 'Insurance SLA job failed on startup'));
+}, 45_000);
+setInterval(() => {
+  runInsuranceSlaJob().catch((err) => logger.error({ err }, 'Insurance SLA job failed'));
+}, FIVE_MINUTES);
 
 // Appointment reminders for next-day appointments (hourly; idempotent via notification lookup)
 setTimeout(() => {
