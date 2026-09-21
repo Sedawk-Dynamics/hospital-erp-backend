@@ -201,10 +201,18 @@ export const dischargePatientSchema = z.object({
     // to the audit log.
     force: z.boolean().optional(),
     reason: z.string().max(500).optional(),
+    // Physical discharge is independent of insurer settlement. This pair
+    // acknowledges the pending payer balance while keeping the claim active.
+    payerCaseId: z.string().uuid('Invalid insurance / payer case ID').optional(),
+    releaseUndertaking: z.string().trim().min(5).max(2000).optional(),
   })
     .refine((b) => !b.force || !!b.reason?.trim(), {
       message: 'A reason is required when overriding the discharge gates',
       path: ['reason'],
+    })
+    .refine((b) => Boolean(b.payerCaseId) === Boolean(b.releaseUndertaking), {
+      message: 'Payer case and release undertaking must be supplied together',
+      path: ['releaseUndertaking'],
     })
     .optional(),
 });

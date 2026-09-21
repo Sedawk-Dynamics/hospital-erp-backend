@@ -1171,7 +1171,7 @@ export async function dischargePatient(
   tenantId: string,
   id: string,
   userId: string,
-  data?: { dischargeDate?: string; notes?: string; force?: boolean; reason?: string },
+  data?: { dischargeDate?: string; notes?: string; force?: boolean; reason?: string; payerCaseId?: string; releaseUndertaking?: string },
 ) {
   const admission = await prisma.admission.findFirst({
     where: { id, tenantId },
@@ -1209,10 +1209,17 @@ export async function dischargePatient(
 
     const billing = await import('../billing/billing.service');
     const outstanding = await billing.getAdmissionOutstanding(tenantId, id);
-    if (!outstanding.isCleared) {
+    if (!outstanding.isCleared && !data?.payerCaseId) {
       throw AppError.badRequest(
         `The final bill is not cleared — ₹${outstanding.balanceAfterDeposit.toFixed(2)} is still outstanding. Collect or settle the balance before discharging this patient.`,
       );
+    }
+    if (!outstanding.isCleared && data?.payerCaseId) {
+      const payerCase = await prisma.insuranceCase.findFirst({
+        where: { id: data.payerCaseId, tenantId, admissionId: id, patientId: admission.patientId },
+      });
+      if (!payerCase) throw AppError.badRequest('Insurance / payer case does not belong to this admission');
+      if (!data.releaseUndertaking?.trim()) throw AppError.badRequest('A release undertaking is required while payer settlement remains pending');
     }
   } else if (!data.reason?.trim()) {
     throw AppError.badRequest(
@@ -1223,6 +1230,22 @@ export async function dischargePatient(
   const dischargeDate = data?.dischargeDate ? new Date(data.dischargeDate) : new Date();
 
   const updated = await prisma.$transaction(async (tx) => {
+    if (data?.payerCaseId && data.releaseUndertaking) {
+      await tx.insuranceCase.update({
+        where: { id: data.payerCaseId },
+        data: { physicalReleaseAt: dischargeDate, releaseUndertaking: data.releaseUndertaking, status: 'discharged' },
+      });
+      await tx.insuranceAuditEvent.create({
+        data: {
+          tenantId,
+          actorId: userId,
+          insuranceCaseId: data.payerCaseId,
+          eventType: 'patient.physical_release',
+          toStatus: 'discharged',
+          details: { admissionId: id, settlementRemainsOpen: true, undertaking: data.releaseUndertaking },
+        },
+      });
+    }
     // Update admission status
     const discharged = await tx.admission.update({
       where: { id },
