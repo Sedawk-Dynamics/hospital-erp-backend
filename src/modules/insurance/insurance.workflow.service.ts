@@ -12,6 +12,7 @@ import type {
   RecordEligibilityInput,
   SettlementInput,
 } from './insurance.workflow.validation';
+import { notifyPatientInsuranceMilestone } from './insurance.notifications';
 
 const CASE_INCLUDE = {
   patient: { select: { id: true, mrn: true, firstName: true, lastName: true, phone: true, abhaNumber: true, deceasedAt: true } },
@@ -351,6 +352,14 @@ export async function recordPhysicalRelease(tenantId: string, userId: string, id
     data: { physicalReleaseAt: now, releaseUndertaking: data.undertaking, deceasedProtocol: data.deceased || existing.deceasedProtocol, priority: data.deceased ? 'deceased' : existing.priority },
   });
   await audit({ tenantId, actorId: userId, insuranceCaseId: id, eventType: data.deceased ? 'deceased.immediate_release' : 'patient.physical_release', details: { undertaking: data.undertaking, payerSettlementPending: !['settled', 'closed'].includes(existing.status) } });
+  await notifyPatientInsuranceMilestone({
+    tenantId,
+    patientId: existing.patientId,
+    title: 'Discharge clearance recorded',
+    message: 'Physical discharge has been cleared. Insurance processing can continue separately from your release.',
+    referenceType: 'insurance_case',
+    referenceId: id,
+  });
   return updated;
 }
 
@@ -691,13 +700,23 @@ export async function verifyClaimDocument(tenantId: string, userId: string, docu
 export async function raiseClaimQuery(tenantId: string, userId: string, claimId: string, data: any) {
   const claim = await requireClaim(tenantId, claimId);
   const due = data.responseDueAt ?? new Date(Date.now() + (data.responseHours ?? 24) * 60 * 60 * 1000);
-  return prisma.$transaction(async (tx) => {
+  const query = await prisma.$transaction(async (tx) => {
     const query = await tx.claimQuery.create({ data: { tenantId, claimId, queryReference: data.queryReference, subject: data.subject, queryText: data.queryText, responseDueAt: due, raisedBy: userId } });
     await tx.insuranceClaim.update({ where: { id: claimId }, data: { status: 'query_raised' } });
     if (claim.insuranceCaseId) await tx.insuranceCase.update({ where: { id: claim.insuranceCaseId }, data: { status: 'queryPending' } });
     await audit({ tenantId, actorId: userId, claimId, insuranceCaseId: claim.insuranceCaseId, eventType: 'claim.query_raised', fromStatus: claim.status, toStatus: 'query_raised', details: { queryId: query.id, responseDueAt: due } }, tx);
     return query;
   });
+  await notifyPatientInsuranceMilestone({
+    tenantId,
+    patientId: claim.patientId,
+    title: 'Insurance claim query raised',
+    message: `${data.subject}. The hospital insurance team is preparing the response.`,
+    referenceType: 'claim_query',
+    referenceId: query.id,
+    alert: true,
+  });
+  return query;
 }
 
 export async function respondClaimQuery(tenantId: string, userId: string, queryId: string, responseText: string) {
@@ -785,7 +804,17 @@ async function recordSettlementWithClient(tx: Prisma.TransactionClient, tenantId
 }
 
 export async function recordSettlement(tenantId: string, userId: string, claimId: string, data: SettlementInput) {
-  return prisma.$transaction((tx) => recordSettlementWithClient(tx, tenantId, userId, claimId, data));
+  const settlement = await prisma.$transaction((tx) => recordSettlementWithClient(tx, tenantId, userId, claimId, data));
+  const claim = await requireClaim(tenantId, claimId);
+  await notifyPatientInsuranceMilestone({
+    tenantId,
+    patientId: claim.patientId,
+    title: 'Insurance settlement received',
+    message: `A payer settlement of ${money(data.grossPaidAmount).toFixed(2)} has been recorded against your claim.`,
+    referenceType: 'insurance_claim',
+    referenceId: claimId,
+  });
+  return settlement;
 }
 
 export async function recordBulkSettlements(tenantId: string, userId: string, settlements: Array<SettlementInput & { claimId: string }>) {

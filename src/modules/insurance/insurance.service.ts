@@ -28,6 +28,7 @@ import type {
   SplitBillInput,
   CreateTpaLogInput,
 } from './insurance.validation';
+import { notifyPatientInsuranceMilestone } from './insurance.notifications';
 
 // ============================================================
 // Defaults
@@ -1124,6 +1125,15 @@ export async function approveClaim(
     content: `Approved ${approvedAmount.toFixed(2)} of ${claimAmount.toFixed(2)}. Patient share ${patientShare.toFixed(2)}.`,
   });
 
+  await notifyPatientInsuranceMilestone({
+    tenantId,
+    patientId: claim.patientId,
+    title: 'Insurance claim approved',
+    message: `Your payer approved ${approvedAmount.toFixed(2)}. Your current estimated share is ${patientShare.toFixed(2)}.`,
+    referenceType: 'insurance_claim',
+    referenceId: id,
+  });
+
   logger.info(
     { tenantId, claimId: id, approvedAmount: data.approvedAmount },
     'Insurance claim approved',
@@ -1193,6 +1203,16 @@ export async function partialApproveClaim(
       (data.rejectionReason ? ` Insurer's reason: ${data.rejectionReason}` : ''),
   });
 
+  await notifyPatientInsuranceMilestone({
+    tenantId,
+    patientId: claim.patientId,
+    title: 'Insurance claim partially approved',
+    message: `Your payer approved ${approvedAmount.toFixed(2)} of ${claimAmount.toFixed(2)}. Your current estimated share is ${patientShare.toFixed(2)}.`,
+    referenceType: 'insurance_claim',
+    referenceId: id,
+    alert: true,
+  });
+
   logger.info({ tenantId, claimId: id, approvedAmount }, 'Insurance claim partially approved');
   return updated;
 }
@@ -1246,6 +1266,15 @@ export async function settleClaim(
     content:
       `Received ${data.paidAmount.toFixed(2)}. Paid to date ${newPaid.toFixed(2)} ` +
       `of ${approved.toFixed(2)} approved; outstanding ${outstanding.toFixed(2)}.`,
+  });
+
+  await notifyPatientInsuranceMilestone({
+    tenantId,
+    patientId: claim.patientId,
+    title: fullySettled ? 'Insurance claim settled' : 'Insurance claim part-settled',
+    message: `The payer has settled ${newPaid.toFixed(2)} of ${approved.toFixed(2)}. Payer outstanding is ${outstanding.toFixed(2)}.`,
+    referenceType: 'insurance_claim',
+    referenceId: id,
   });
 
   logger.info({ tenantId, claimId: id, paid: data.paidAmount, status: updated.status }, 'Insurance claim settled (partial or full)');
@@ -1489,6 +1518,16 @@ export async function rejectClaim(
     direction: 'inbound',
     subject: `${claimRef(claim.claimNumber)} rejected`,
     content: `Insurer's reason: ${data.rejectionReason}`,
+  });
+
+  await notifyPatientInsuranceMilestone({
+    tenantId,
+    patientId: claim.patientId,
+    title: 'Insurance claim rejected',
+    message: `The payer rejected the claim. Reason: ${data.rejectionReason}`,
+    referenceType: 'insurance_claim',
+    referenceId: id,
+    alert: true,
   });
 
   logger.info({ tenantId, claimId: id }, 'Insurance claim rejected');
@@ -1880,6 +1919,15 @@ export async function approvePreAuth(tenantId: string, id: string, data: Approve
       (data.approvedAmount ? ` for ${Number(data.approvedAmount).toFixed(2)}` : '') + '.',
   });
 
+  await notifyPatientInsuranceMilestone({
+    tenantId,
+    patientId: existing.patientId,
+    title: existing.requestType === 'finalDischarge' ? 'Discharge authorization approved' : 'Pre-authorization approved',
+    message: `${existing.procedureDescription} was approved${data.approvedAmount ? ` for ${Number(data.approvedAmount).toFixed(2)}` : ''}.`,
+    referenceType: 'pre_authorization_request',
+    referenceId: id,
+  });
+
   logger.info({ tenantId, preAuthId: id, payerReference }, 'Pre-authorization request approved');
   return preAuth;
 }
@@ -1933,6 +1981,16 @@ export async function rejectPreAuth(tenantId: string, id: string, data: RejectPr
     direction: 'inbound',
     subject: 'Pre-authorization denied',
     content: `${existing.procedureDescription} denied.` + (data.notes ? ` ${data.notes}` : ''),
+  });
+
+  await notifyPatientInsuranceMilestone({
+    tenantId,
+    patientId: existing.patientId,
+    title: existing.requestType === 'finalDischarge' ? 'Discharge authorization denied' : 'Pre-authorization denied',
+    message: `${existing.procedureDescription} was denied.${data.notes ? ` ${data.notes}` : ''}`,
+    referenceType: 'pre_authorization_request',
+    referenceId: id,
+    alert: true,
   });
 
   logger.info({ tenantId, preAuthId: id }, 'Pre-authorization request denied');
