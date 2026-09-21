@@ -1501,6 +1501,7 @@ export async function getAppointments(tenantId: string, query: GetAppointmentsQu
     let paymentStatus:
       | 'paid_online'
       | 'paid_at_frontdesk'
+      | 'waived'
       | 'pay_at_frontdesk'
       | 'pending'
       | 'no_billing' = 'no_billing';
@@ -1508,7 +1509,13 @@ export async function getAppointments(tenantId: string, query: GetAppointmentsQu
     if (bill) {
       const completedSource = latestPayment?.status === 'completed' ? latestPayment.paymentSource : null;
 
-      if (bill.status === 'paid' || bill.status === 'partially_paid') {
+      if (Number(bill.totalAmount) === 0 && bill.status !== 'cancelled') {
+        // A ₹0 bill has nothing to collect — a waived follow-up. Detected by the
+        // total (not the status flag), because such a bill may still read
+        // `pending` if it was raised before it was settled to `paid`. Say
+        // "waived" rather than "paid"/"pay at desk" — no money is or was owed.
+        paymentStatus = 'waived';
+      } else if (bill.status === 'paid' || bill.status === 'partially_paid') {
         // The bill has been (at least partly) collected — label by source.
         paymentStatus = completedSource === 'frontdesk' ? 'paid_at_frontdesk' : 'paid_online';
       } else if (latestPayment?.status === 'pending') {
@@ -1846,9 +1853,20 @@ export async function cancelAppointment(
  */
 async function resolveConsultationFee(
   tenantId: string,
-  appointment: { id: string; patientId: string; doctorId: string; doctor: { consultationFee: unknown; freeFollowUpDays?: number | null } },
+  appointment: { id: string; patientId: string; doctorId: string; consultationType?: string | null; doctor: { consultationFee: unknown; freeFollowUpDays?: number | null } },
 ): Promise<{ fee: number; isFreeFollowUp: boolean; basedOn: Date | null; windowDays: number }> {
   const listFee = appointment.doctor?.consultationFee ? Number(appointment.doctor.consultationFee) : 0;
+
+  // Front-desk-declared follow-up → no consultation fee. The desk sees the
+  // patient's last-visit date at booking and picks "Follow Up" when the return
+  // is a genuine follow-up (e.g. reviewing a lab ordered on the prior visit),
+  // so the fee is waived on their explicit say-so — no time-window rule needed.
+  // Only the consultation fee is waived here; any new orders (labs, meds) and
+  // the one-time registration fee are billed separately and are unaffected.
+  if (appointment.consultationType === 'follow_up') {
+    return { fee: 0, isFreeFollowUp: true, basedOn: null, windowDays: 0 };
+  }
+
   const windowDays = Number(appointment.doctor?.freeFollowUpDays ?? 0) || 0;
   if (windowDays <= 0 || listFee <= 0) {
     return { fee: listFee, isFreeFollowUp: false, basedOn: null, windowDays: 0 };
@@ -1966,6 +1984,17 @@ async function ensureAppointmentBill(
   );
   const total = round2(consultationTax.money.totalAmount + registrationTotal);
 
+  // A front-desk-declared follow-up carries no consultation fee. When nothing
+  // else lands on the bill either (no registration fee), the bill nets to ₹0 —
+  // there is nothing to collect, so it must NOT sit in the "pending payment"
+  // queue as if money were owed. Settle it (`paid`, zero balance) and label the
+  // line "Waived (Follow-up)" so it reads as a deliberate waiver, not a payment.
+  const isWaivedFollowUp = appointment.consultationType === 'follow_up' && amount === 0;
+  const billStatus = total <= 0 ? 'paid' : 'pending';
+  const consultationDescription = isWaivedFollowUp
+    ? 'Consultation Fee — Waived (Follow-up)'
+    : description;
+
   // `bill_number` is unique GLOBALLY, so a per-tenant sequence collides between
   // hospitals: two of them raising a consultation bill on the same day both
   // computed BILL-<ymd>-0001 and the second insert violated the index. This is
@@ -1984,12 +2013,12 @@ async function ensureAppointmentBill(
       patientPayableAmount: total,
       amountPaid: 0,
       balanceDue: total,
-      status: 'pending',
+      status: billStatus,
       generatedBy: userId,
       billItems: {
         create: [
           {
-            description,
+            description: consultationDescription,
             category: 'consultation',
             quantity: 1,
             unitPrice: amount,

@@ -6621,18 +6621,30 @@ export async function adjustAdvanceToBill(
   data: { patientId: string; billId: string; amount: number },
 ) {
   if (data.amount <= 0) throw AppError.badRequest('Amount must be > 0');
-  const bill = await prisma.bill.findFirst({
+  let bill = await prisma.bill.findFirst({
     where: { id: data.billId, tenantId, patientId: data.patientId },
   });
   if (!bill) throw AppError.notFound('Bill not found');
   if (bill.status === 'draft') {
-    // The running IP bill is a draft for the whole stay while charges accrue —
-    // it has to be consolidated and finalized before money can be set against
-    // it. "Bill cannot accept payment (status: draft)" told the desk nothing
-    // they could act on, and this is the 400 QA hit on every "From advance".
-    throw AppError.badRequest(
-      'This bill is still open for charges. Generate / refresh the bill first — that pulls the pending charges on and finalizes it for payment.',
-    );
+    // The running IP bill is a draft for the whole stay while charges accrue,
+    // and a draft cannot accept money — this was the 400 QA hit on every
+    // "From advance". Rather than send the desk away to press "Generate /
+    // refresh bill" first, finalize it here (draft → pending) and carry on.
+    // finalizeBill only closes the bill — it does NOT auto-apply any held money,
+    // so it neither changes the balance the desk is settling nor recurses back
+    // into this function via applyHeldMoneyToBill.
+    try {
+      await finalizeBill(tenantId, userId, data.billId);
+    } catch (err) {
+      logger.warn({ tenantId, billId: data.billId, err }, 'Could not finalize draft bill before advance adjustment');
+      throw AppError.badRequest(
+        'This bill is still open for charges. Generate / refresh the bill first — that pulls the pending charges on and finalizes it for payment.',
+      );
+    }
+    bill = await prisma.bill.findFirst({
+      where: { id: data.billId, tenantId, patientId: data.patientId },
+    });
+    if (!bill) throw AppError.notFound('Bill not found');
   }
   if (bill.status === 'cancelled' || bill.status === 'paid') {
     throw AppError.badRequest(`Bill cannot accept payment (status: ${bill.status})`);
