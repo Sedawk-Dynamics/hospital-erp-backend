@@ -12,6 +12,9 @@ COPY prisma ./prisma
 RUN npx prisma generate
 COPY tsconfig.json tsconfig.seed.json ./
 COPY src ./src
+# The generated Prisma surface plus the full ERP service graph can exceed
+# Node's default ~2 GB heap during TypeScript compilation in clean CI builds.
+ENV NODE_OPTIONS=--max-old-space-size=4096
 RUN npm run build && npx tsc -p tsconfig.seed.json
 
 FROM base AS runner
@@ -34,10 +37,8 @@ EXPOSE 4000
 # (some tables only ever existed via db push), whereas db push always brings the
 # database in sync with schema.prisma and is a no-op once synced. The server
 # then seeds all reference data automatically on boot (see src/bootstrap).
-# --accept-data-loss lets non-interactive db push apply constraints/column
-# changes the running DB doesn't have yet (e.g. new unique indexes); it will
-# still fail loudly if a change is genuinely impossible (e.g. real duplicate
-# values). NOTE: this means a schema change that drops a column WILL drop it on
-# deploy — review schema.prisma diffs before shipping.
+# Deliberately do not pass `--accept-data-loss`: a deployment must fail safely
+# when Prisma detects a destructive schema change. Review and apply destructive
+# changes through an explicit, backed-up maintenance procedure instead.
 # `exec` makes node PID 1 so SIGTERM reaches it for graceful shutdown.
-CMD ["sh", "-c", "./node_modules/.bin/prisma db push --skip-generate --accept-data-loss && exec node dist/server.js"]
+CMD ["sh", "-c", "./node_modules/.bin/prisma db push --skip-generate && exec node dist/server.js"]

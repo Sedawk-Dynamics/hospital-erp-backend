@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
-    "start": "prisma db push --skip-generate --accept-data-loss && node dist/server.js",
+    "start": "prisma db push --skip-generate && node dist/server.js",
     "start:no-provision": "node dist/server.js",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
