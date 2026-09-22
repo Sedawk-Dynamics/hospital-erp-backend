@@ -20,7 +20,6 @@ export interface PatientDoseInput {
   disposition?: ResidualDisposition;
   residualHandling?: ResidualHandling;
   quarantineLocation?: string;
-  prescriberRegistrationNumber?: string;
   clinicalJustification?: string;
   emergencyUse?: boolean;
   emergencyReason?: string;
@@ -40,7 +39,7 @@ export interface PreparedPatientDose {
   stockSource: 'dispensing_record' | 'ward_stock' | 'drug_batch';
   dispensingRecordId: string | null;
   existingBillId: string | null;
-  doctorRegNo: string;
+  doctorRegNo: string | null;
   bedNumber: string;
   diagnosis: string;
   resolver: TaxResolver | null;
@@ -475,11 +474,9 @@ export async function preparePatientDose(
     ? input.quarantineLocation?.trim() || `${location.name} - awaiting authorised destruction`
     : undefined;
 
-  const doctorRegNo = schedule.prescription.doctor.licenseNumber?.trim()
-    || input.prescriberRegistrationNumber?.trim();
-  if (!doctorRegNo) {
-    throw AppError.badRequest("Enter the prescribing doctor's medical council registration number before recording NDPS administration.");
-  }
+  // Capture the profile value when available, but administration must not be
+  // blocked because an unrelated doctor-profile field is incomplete.
+  const doctorRegNo = schedule.prescription.doctor.licenseNumber?.trim() || null;
   const bedNumber = schedule.admission?.bed?.bedNumber?.trim() ||
     (schedule.admission?.admissionType === 'emergency' ? 'EMERGENCY' : 'UNASSIGNED');
   const diagnosis = resolveDoseClinicalJustification(
