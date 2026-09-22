@@ -190,4 +190,24 @@ describe('compliance — an outside prescription counts as a prescription', () =
     expect(r.ok).toBe(false);
     expect(r.blockers[0]).toMatch(/needs a prescription/i);
   });
+
+  it('allows a narcotic sale with a prescription and no witness', async () => {
+    setMode('inline');
+    (prisma.drugBatch.findMany as any).mockResolvedValue([
+      {
+        id: 'b1',
+        drug: {
+          drugName: 'Morphine', hsnCode: '3004', taxPercent: 5,
+          schedule: 'H1', isNarcotic: true, vaultControlled: true,
+          controlledClass: 'narcotic',
+        },
+      },
+    ]);
+    const r = await checkSaleCompliance(TENANT_ID, {
+      items: [{ drugBatchId: 'b1' }],
+      prescriptionId: 'rx-1',
+    });
+    expect(r.ok).toBe(true);
+    expect(r.blockers).toHaveLength(0);
+  });
 });

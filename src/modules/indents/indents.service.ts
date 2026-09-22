@@ -598,8 +598,6 @@ export async function dispenseIpPrescription(
   prescriptionId: string,
   data: {
     batches?: Array<{ itemId: string; drugBatchId: string }>;
-    witnessedById?: string | null;
-    witnessPassword?: string | null;
   } = {},
 ) {
   assertPharmacyOperator(roles, 'dispense an IP prescription');
@@ -666,14 +664,16 @@ export async function dispenseIpPrescription(
         },
       });
       if (!drug) continue; // free-text / no longer stocked — skip (nothing to draw from stock)
-      const controlledDecision = await checkControlledDispense(
+      await checkControlledDispense(
         tenantId,
         drug,
         {
           userId,
           prescriptionId,
-          witnessedById: data.witnessedById,
-          witnessPassword: data.witnessPassword,
+          // Pharmacy issue is prescription-backed and registered; a second
+          // person is required later only by the clinical administration and
+          // residual-handling workflow, not by the pharmacy hand-over.
+          requireWitness: false,
           fromBatchStock: true,
         },
         'workflow',
@@ -726,8 +726,6 @@ export async function dispenseIpPrescription(
           tenantId, prescriptionId, prescriptionItemId: it.id, patientId: rx.patientId, drugBatchId: batch.id,
           quantityDispensed: handedOver, dispensedBy: userId, saleUnit: 'loose', unitPrice, taxPercent: taxPct,
           lineTotal: gross, isTto: false, billId: bill.id,
-          witnessedById: controlledDecision.witnessedById,
-          witnessedAt: controlledDecision.witnessedAt,
           notes: `IP Rx dispense${shortfall > 0 ? ` — ordered ${baseQty}, stock short by ${shortfall}` : ''}`,
         },
       });

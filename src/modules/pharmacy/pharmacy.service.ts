@@ -3410,8 +3410,7 @@ export async function createDispense(tenantId: string, userId: string, data: Cre
     {
       userId,
       prescriptionId: data.prescriptionId,
-      witnessedById: (data as any).witnessedById,
-      witnessPassword: (data as any).witnessPassword,
+      requireWitness: false,
       fromBatchStock: true,
     },
     'consumption workflow',
@@ -3956,8 +3955,9 @@ export async function createPharmacySale(
       if (!batch) throw AppError.notFound(`Drug batch ${item.drugBatchId} not found`);
       if (isBatchExpired(batch)) throw AppError.badRequest('Cannot sell from an expired batch');
       if (batch.isRecalled) throw AppError.badRequest('Cannot sell from a recalled batch');
-      // Controlled-drug gate — see createDispense above. Resolved per line and
-      // collected, so the witness co-sign is written onto the dispensing record.
+      // A pharmacy sale needs its prescription and controlled-register entry,
+      // but not a second staff witness. Clinical administration and residual
+      // handling keep their separate witness controls.
       const lineControl = await checkControlledDispense(
         tenantId,
         batch.drug,
@@ -3965,8 +3965,7 @@ export async function createPharmacySale(
           userId,
           prescriptionId: data.prescriptionId,
           externalPrescriptionId: (data as any).externalPrescriptionId,
-          witnessedById: (data as any).witnessedById,
-          witnessPassword: (data as any).witnessPassword,
+          requireWitness: false,
           fromBatchStock: true,
         },
         'consumption workflow, not the counter',
@@ -6717,10 +6716,6 @@ export async function checkSaleCompliance(
       );
     } else if (CONTROLLED_SCHEDULES.includes(schedule) && !hasRx) {
       warnings.push(`${name} is a Schedule ${schedule} drug — record the prescriber/Rx for this sale.`);
-    }
-
-    if (enforcing && req.needsWitness) {
-      blockers.push(`${name} is a controlled narcotic — a second authorised person must co-sign the hand-over.`);
     }
 
     // Schedule H2. Deliberately not part of the schedule cascade above: it is
