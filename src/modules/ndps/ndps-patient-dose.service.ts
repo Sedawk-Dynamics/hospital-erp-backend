@@ -21,6 +21,7 @@ export interface PatientDoseInput {
   residualHandling?: ResidualHandling;
   quarantineLocation?: string;
   prescriberRegistrationNumber?: string;
+  clinicalJustification?: string;
   emergencyUse?: boolean;
   emergencyReason?: string;
   notes?: string;
@@ -89,6 +90,24 @@ export function reconcilePatientDoseQuantities(
     status: (residualScaled === 0 ? 'fully_administered' : 'quarantined') as
       'fully_administered' | 'destroyed' | 'quarantined',
   };
+}
+
+/**
+ * Form 3E needs the condition/clinical reason for administration. Prefer the
+ * signed patient record, but allow the administering clinician to enter the
+ * justification on this dose when the visit/admission has not been completed.
+ */
+export function resolveDoseClinicalJustification(
+  recordedDiagnosis?: string | null,
+  admissionReason?: string | null,
+  enteredJustification?: string | null,
+  emergencyReason?: string | null,
+) {
+  return recordedDiagnosis?.trim()
+    || admissionReason?.trim()
+    || enteredJustification?.trim()
+    || emergencyReason?.trim()
+    || null;
 }
 
 function isNdpsDrug(drug: {
@@ -463,8 +482,12 @@ export async function preparePatientDose(
   }
   const bedNumber = schedule.admission?.bed?.bedNumber?.trim() ||
     (schedule.admission?.admissionType === 'emergency' ? 'EMERGENCY' : 'UNASSIGNED');
-  const diagnosis = schedule.prescription.visit.diagnoses[0]?.diagnosisName?.trim() ||
-    schedule.admission?.admissionReason?.trim() || input.emergencyReason?.trim();
+  const diagnosis = resolveDoseClinicalJustification(
+    schedule.prescription.visit.diagnoses[0]?.diagnosisName,
+    schedule.admission?.admissionReason,
+    input.clinicalJustification,
+    input.emergencyReason,
+  );
   if (!diagnosis) {
     throw AppError.badRequest('A diagnosis or clinical justification is required for Form 3E.');
   }

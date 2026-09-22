@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { reconcilePatientDoseQuantities } from '../../../../src/modules/ndps/ndps-patient-dose.service';
+import {
+  reconcilePatientDoseQuantities,
+  resolveDoseClinicalJustification,
+} from '../../../../src/modules/ndps/ndps-patient-dose.service';
 import { ndpsPatientDoseSchema } from '../../../../src/modules/emar/emar.validation';
 
 describe('NDPS patient dose reconciliation', () => {
@@ -84,5 +87,25 @@ describe('NDPS patient dose reconciliation', () => {
       quarantineLocation: 'ICU narcotic safe - residual bin A',
       prescriberRegistrationNumber: 'SMC-98765',
     }).success).toBe(true);
+  });
+
+  it('uses an entered dose justification when the patient record has no diagnosis', () => {
+    expect(resolveDoseClinicalJustification(null, null, 'Severe breakthrough pain', null)).toBe(
+      'Severe breakthrough pain',
+    );
+  });
+
+  it('accepts a clinical justification at the eMAR API boundary', () => {
+    const result = ndpsPatientDoseSchema.safeParse({
+      drugBatchId: '11111111-1111-4111-8111-111111111111',
+      ndpsLocationId: '22222222-2222-4222-8222-222222222222',
+      labelledQuantity: 2,
+      administeredQuantity: 2,
+      quantityUnit: 'mL',
+      containerQuantity: 1,
+      disposition: 'none',
+      clinicalJustification: 'Severe breakthrough pain',
+    });
+    expect(result.success).toBe(true);
   });
 });
