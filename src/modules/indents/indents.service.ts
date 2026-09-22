@@ -586,7 +586,7 @@ export async function dispenseIndent(
 /**
  * Dispense an IP prescription DIRECTLY from the pharmacy queue (no indent). The
  * doctor's IP Rx flows to the queue; the pharmacist dispenses here and every
- * stocked, non-PRN line is billed to the patient's running IP bill (hospital
+ * stocked line is billed to the patient's running IP bill (hospital
  * ledger) — NOT sold at the pharmacy counter. FEFO across batches; a stock
  * shortage doesn't block the (approved) medicine. Marks the Rx pharmacyStatus
  * 'collected'. Idempotent (one dispense per prescription).
@@ -596,7 +596,11 @@ export async function dispenseIpPrescription(
   userId: string,
   roles: string[],
   prescriptionId: string,
-  data: { batches?: Array<{ itemId: string; drugBatchId: string }> } = {},
+  data: {
+    batches?: Array<{ itemId: string; drugBatchId: string }>;
+    witnessedById?: string | null;
+    witnessPassword?: string | null;
+  } = {},
 ) {
   assertPharmacyOperator(roles, 'dispense an IP prescription');
   const rx = await prisma.prescription.findFirst({
@@ -611,10 +615,13 @@ export async function dispenseIpPrescription(
   const already = await prisma.dispensingRecord.findFirst({ where: { tenantId, prescriptionId, cancelledAt: null }, select: { id: true } });
   if (already) throw AppError.badRequest('This prescription has already been dispensed.');
 
-  // Only stocked (formulary) non-PRN lines with a quantity can be dispensed to stock.
-  const dispensable = rx.prescriptionItems.filter((i) => i.drugId && !i.isPrn && Number(i.quantity ?? 0) > 0);
+  // PRN lines still have to leave pharmacy stock before a nurse/doctor can
+  // administer a dose. Excluding them here made a PRN-only prescription
+  // impossible to issue, and therefore impossible to link to the eMAR/NDPS
+  // patient-dose record that accounts for the used and residual quantities.
+  const dispensable = rx.prescriptionItems.filter((i) => i.drugId && Number(i.quantity ?? 0) > 0);
   if (dispensable.length === 0) {
-    throw AppError.badRequest('No stocked, non-PRN medicine with a quantity to dispense on this prescription.');
+    throw AppError.badRequest('No stocked medicine with a quantity to dispense on this prescription.');
   }
   const batchMap = new Map((data.batches ?? []).map((b) => [b.itemId, b.drugBatchId]));
 
@@ -659,10 +666,16 @@ export async function dispenseIpPrescription(
         },
       });
       if (!drug) continue; // free-text / no longer stocked — skip (nothing to draw from stock)
-      await checkControlledDispense(
+      const controlledDecision = await checkControlledDispense(
         tenantId,
         drug,
-        { userId, prescriptionId, witnessedById: (data as any)?.witnessedById, witnessPassword: (data as any)?.witnessPassword, fromBatchStock: true },
+        {
+          userId,
+          prescriptionId,
+          witnessedById: data.witnessedById,
+          witnessPassword: data.witnessPassword,
+          fromBatchStock: true,
+        },
         'workflow',
       );
 
@@ -713,6 +726,8 @@ export async function dispenseIpPrescription(
           tenantId, prescriptionId, prescriptionItemId: it.id, patientId: rx.patientId, drugBatchId: batch.id,
           quantityDispensed: handedOver, dispensedBy: userId, saleUnit: 'loose', unitPrice, taxPercent: taxPct,
           lineTotal: gross, isTto: false, billId: bill.id,
+          witnessedById: controlledDecision.witnessedById,
+          witnessedAt: controlledDecision.witnessedAt,
           notes: `IP Rx dispense${shortfall > 0 ? ` — ordered ${baseQty}, stock short by ${shortfall}` : ''}`,
         },
       });

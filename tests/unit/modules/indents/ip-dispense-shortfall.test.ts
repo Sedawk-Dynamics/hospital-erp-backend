@@ -25,10 +25,10 @@ const DRUG = {
   schedule: 'H', controlledClass: null, vaultControlled: false,
 };
 
-function setup(stock: number, ordered = 30) {
+function setup(stock: number, ordered = 30, isPrn = false) {
   (prisma.prescription.findFirst as any).mockResolvedValue({
     id: RX, tenantId: TENANT, patientId: 'pat-1', prescriptionType: 'ip',
-    prescriptionItems: [{ id: 'item-1', drugId: 'drug-1', isPrn: false, quantity: ordered }],
+    prescriptionItems: [{ id: 'item-1', drugId: 'drug-1', isPrn, quantity: ordered }],
     visit: { admission: { id: 'adm-1' } },
   });
   (prisma.dispensingRecord.findFirst as any).mockResolvedValue(null);
@@ -96,5 +96,20 @@ describe('an IP dispense the shelf cannot fill', () => {
     expect(line.quantity).toBe(30);
     expect(line.totalAmount).toBe(150);
     expect(line.description).not.toMatch(/still owed/);
+  });
+
+  it('dispenses a PRN prescription line so it can be administered from eMAR', async () => {
+    const tx = setup(1, 1, true);
+    await dispenseIpPrescription(TENANT, USER, ROLES, RX);
+    expect(tx.dispensingRecord.create).toHaveBeenCalledOnce();
+    expect(tx.emarSchedule.updateMany).toHaveBeenCalledWith({
+      where: {
+        tenantId: TENANT,
+        prescriptionItemId: 'item-1',
+        status: 'pending',
+        drugBatchId: null,
+      },
+      data: { drugBatchId: 'batch-1', dispensingRecordId: 'rec-1' },
+    });
   });
 });
