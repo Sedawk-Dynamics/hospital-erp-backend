@@ -20,7 +20,6 @@ export interface PatientDoseInput {
   disposition?: ResidualDisposition;
   residualHandling?: ResidualHandling;
   quarantineLocation?: string;
-  clinicalJustification?: string;
   emergencyUse?: boolean;
   emergencyReason?: string;
   notes?: string;
@@ -92,21 +91,18 @@ export function reconcilePatientDoseQuantities(
 }
 
 /**
- * Form 3E needs the condition/clinical reason for administration. Prefer the
- * signed patient record, but allow the administering clinician to enter the
- * justification on this dose when the visit/admission has not been completed.
+ * Prefer clinical context already recorded in the patient chart. Dose entry
+ * must not be blocked when diagnosis coding has not yet been completed.
  */
-export function resolveDoseClinicalJustification(
+export function resolveDoseClinicalContext(
   recordedDiagnosis?: string | null,
   admissionReason?: string | null,
-  enteredJustification?: string | null,
   emergencyReason?: string | null,
 ) {
   return recordedDiagnosis?.trim()
     || admissionReason?.trim()
-    || enteredJustification?.trim()
     || emergencyReason?.trim()
-    || null;
+    || 'Prescribed medication administration';
 }
 
 function isNdpsDrug(drug: {
@@ -358,7 +354,7 @@ export async function preparePatientDose(
   if (!drug || !isNdpsDrug(drug)) return null;
   if (!input) {
     throw AppError.badRequest(
-      'This is an NDPS/controlled narcotic. Record the labelled quantity, administered quantity and sealed quarantine location for any remainder before confirming the dose.',
+      'This is an NDPS/controlled narcotic. Record the labelled and administered quantities before confirming the dose.',
     );
   }
   if (schedule.ndpsPatientDose) {
@@ -379,12 +375,9 @@ export async function preparePatientDose(
   if (!input.quantityUnit?.trim() || input.quantityUnit.trim().length > 20) {
     throw AppError.badRequest('A valid content unit (for example mg, mcg or mL) is required.');
   }
-  if (Number(reconciliation.residualQuantity) > 0 && !input.residualHandling) {
-    throw AppError.badRequest('Choose whether the remainder should be sent for destruction or sealed and quarantined.');
-  }
-  if (Number(reconciliation.residualQuantity) === 0 && input.residualHandling) {
-    throw AppError.badRequest('No residual-handling instruction is needed when the full labelled quantity was administered.');
-  }
+  const residualHandling: ResidualHandling | undefined = Number(reconciliation.residualQuantity) > 0
+    ? 'pending_destruction'
+    : undefined;
 
   const [batch, location, dispensing, wardStock] = await Promise.all([
     db.drugBatch.findFirst({
@@ -467,11 +460,8 @@ export async function preparePatientDose(
     );
   }
 
-  if (input.residualHandling === 'sealed_quarantine' && !input.quarantineLocation?.trim()) {
-    throw AppError.badRequest('Record where the sealed residual is quarantined.');
-  }
   const quarantineLocation = disposition === 'quarantined'
-    ? input.quarantineLocation?.trim() || `${location.name} - awaiting authorised destruction`
+    ? `${location.name} - awaiting authorised destruction`
     : undefined;
 
   // Capture the profile value when available, but administration must not be
@@ -479,19 +469,15 @@ export async function preparePatientDose(
   const doctorRegNo = schedule.prescription.doctor.licenseNumber?.trim() || null;
   const bedNumber = schedule.admission?.bed?.bedNumber?.trim() ||
     (schedule.admission?.admissionType === 'emergency' ? 'EMERGENCY' : 'UNASSIGNED');
-  const diagnosis = resolveDoseClinicalJustification(
+  const diagnosis = resolveDoseClinicalContext(
     schedule.prescription.visit.diagnoses[0]?.diagnosisName,
     schedule.admission?.admissionReason,
-    input.clinicalJustification,
     input.emergencyReason,
   );
-  if (!diagnosis) {
-    throw AppError.badRequest('A diagnosis or clinical justification is required for Form 3E.');
-  }
 
   return {
     schedule,
-    input: { ...input, containerQuantity, quarantineLocation },
+    input: { ...input, containerQuantity, residualHandling, quarantineLocation },
     labelledQuantity: reconciliation.labelledQuantity,
     administeredQuantity: reconciliation.administeredQuantity,
     residualQuantity: reconciliation.residualQuantity,
