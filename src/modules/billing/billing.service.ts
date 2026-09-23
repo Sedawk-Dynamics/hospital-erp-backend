@@ -4320,7 +4320,10 @@ async function resolveTransferPolicy(tenantId: string, patientId: string, opts: 
   const insurance = await import('../insurance/insurance.service');
   if (opts.policyId) {
     return prisma.insurancePolicy.findFirst({
-      where: { id: opts.policyId, tenantId },
+      // A policy can only be attached to the patient whose admission is being
+      // converted. Tenant scoping alone would let a billing user accidentally
+      // select another patient's policy from the same hospital.
+      where: { id: opts.policyId, tenantId, patientId, status: 'active' },
       include: {
         insurer: { select: { id: true, name: true, gstin: true, stateCode: true } },
         tpa: { select: { id: true, name: true, gstin: true, stateCode: true } },
@@ -4504,6 +4507,86 @@ export async function transferAdmissionToTpa(tenantId: string, userId: string, a
     claim,
     bill: updatedBill,
     policy: { id: policy.id, policyNumber: policy.policyNumber, insurer: policy.insurer, tpa: policy.tpa },
+  };
+}
+
+/**
+ * Change an active admission from direct/package billing to the cashless TPA
+ * workflow without prematurely finalising its running bill.
+ *
+ * The billing counter may discover insurance after admission. This action makes
+ * that correction in one place: it changes the admission category, resolves the
+ * patient's policy (or creates the normal pending-assignment placeholder), and
+ * lets the existing auto-link flow raise/synchronise a claim when charges exist.
+ */
+export async function changeAdmissionBillingToTpa(
+  tenantId: string,
+  userId: string,
+  admissionId: string,
+  opts: TransferToTpaOptions = {},
+) {
+  const admission = await prisma.admission.findFirst({
+    where: { id: admissionId, tenantId },
+    select: { id: true, patientId: true, billingCategory: true, status: true },
+  });
+  if (!admission) throw AppError.notFound('Admission not found');
+  if (!isActiveAdmission(admission.status)) {
+    throw AppError.badRequest('Billing can only be changed to TPA while the admission is active.');
+  }
+
+  // Resolve and validate the policy before changing the admission. With no
+  // policy selected this uses the active policy, or creates the same pending
+  // TPA assignment used by insurance admissions created at the front desk.
+  const policy = await resolveTransferPolicy(tenantId, admission.patientId, opts);
+  if (!policy) {
+    throw AppError.badRequest('The selected insurance policy is not valid for this patient.');
+  }
+
+  const oldCategory = (admission.billingCategory ?? 'cash').toLowerCase();
+  if (!INSURANCE_CATEGORIES.has(oldCategory)) {
+    await prisma.admission.update({
+      where: { id: admissionId },
+      data: { billingCategory: 'insurance' },
+    });
+  }
+
+  // If a payer GST identity is available it must be present before the bill is
+  // eventually finalised. This helper is deliberately harmless when no GSTIN
+  // has been configured yet.
+  await stampPayerOnAdmissionBill(tenantId, userId, admissionId, policy);
+
+  const linked = await ensureAdmissionTpaLink(tenantId, userId, admissionId, {
+    policyId: policy.id,
+  });
+
+  if (!INSURANCE_CATEGORIES.has(oldCategory)) {
+    await writeAudit({
+      tenantId,
+      userId,
+      action: 'update',
+      entityType: 'admission',
+      entityId: admissionId,
+      description: 'Billing category changed to TPA / insurance from Hospital Billing',
+      oldValues: { billingCategory: oldCategory },
+      newValues: { billingCategory: 'insurance', policyId: policy.id },
+    });
+  }
+
+  logger.info(
+    { tenantId, admissionId, patientId: admission.patientId, policyId: policy.id, oldCategory },
+    'Admission billing changed to TPA',
+  );
+
+  return {
+    admission: { id: admissionId, billingCategory: 'insurance', status: admission.status },
+    policy: {
+      id: policy.id,
+      policyNumber: policy.policyNumber,
+      insurer: policy.insurer,
+      tpa: policy.tpa,
+    },
+    claim: linked?.claim ?? null,
+    connected: linked?.connected ?? true,
   };
 }
 
@@ -5694,7 +5777,12 @@ const INSURANCE_CATEGORIES = new Set(['insurance', 'corporate']);
  * is only auto-adjusted while it is still pre-processing (submitted / resubmitted);
  * once the TPA team picks it up it is left alone. Idempotent + meant to be non-fatal.
  */
-export async function ensureAdmissionTpaLink(tenantId: string, userId: string, admissionId: string) {
+export async function ensureAdmissionTpaLink(
+  tenantId: string,
+  userId: string,
+  admissionId: string,
+  opts: TransferToTpaOptions = {},
+) {
   const r2 = (n: number) => Math.round(n * 100) / 100;
   const admission = await prisma.admission.findFirst({
     where: { id: admissionId, tenantId },
@@ -5707,7 +5795,7 @@ export async function ensureAdmissionTpaLink(tenantId: string, userId: string, a
   const insurance = await import('../insurance/insurance.service');
 
   // 1) The connection: ensure the patient is linked to a TPA policy (from booking).
-  const policy = await resolveTransferPolicy(tenantId, admission.patientId, {});
+  const policy = await resolveTransferPolicy(tenantId, admission.patientId, opts);
   if (!policy) return { policy: null, claim: null, connected: false };
 
   // 2) The admission's bills — do NOT create one here; the connection stands even

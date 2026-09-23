@@ -885,6 +885,20 @@ export async function transferAdmissionToTpa(req: AuthenticatedRequest, res: Res
   }
 }
 
+export async function changeAdmissionBillingToTpa(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await billingService.changeAdmissionBillingToTpa(
+      req.user!.tenantId,
+      req.user!.userId,
+      req.params.admissionId as string,
+      req.body ?? {},
+    );
+    sendResponse({ res, message: 'Billing changed to TPA / insurance', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function recordTpaSettlement(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const data = await billingService.recordTpaSettlement(
