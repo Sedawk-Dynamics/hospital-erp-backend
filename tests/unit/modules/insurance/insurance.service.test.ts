@@ -12,6 +12,7 @@ import {
   updatePolicy,
   createClaim,
   getClaims,
+  getClaimById,
   approveClaim,
   rejectClaim,
   createPreAuth,
@@ -493,6 +494,65 @@ describe('Insurance Service', () => {
         page: 1,
         limit: 20,
       });
+    });
+  });
+
+  describe('getClaimById', () => {
+    it('returns the complete source bill for TPA review', async () => {
+      const detailedClaim = {
+        ...mockClaim,
+        bill: {
+          ...mockClaim.bill,
+          subtotal: 24000,
+          discountAmount: 1000,
+          taxAmount: 2000,
+          insuranceCoveredAmount: 18000,
+          patientPayableAmount: 7000,
+          amountPaid: 2000,
+          balanceDue: 5000,
+          billItems: [
+            {
+              id: 'item-1',
+              description: 'Room charges',
+              category: 'room',
+              quantity: 2,
+              unitPrice: 10000,
+              totalAmount: 20000,
+              isReimbursable: true,
+            },
+          ],
+          payments: [
+            {
+              id: 'payment-1',
+              paymentDate: new Date('2024-03-15'),
+              amount: 2000,
+              paymentMethod: 'cash',
+              status: 'completed',
+            },
+          ],
+        },
+      };
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue(detailedClaim as any);
+
+      const result = await getClaimById(TENANT_ID, 'claim-1');
+
+      expect(prisma.insuranceClaim.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+        where: { id: 'claim-1', tenantId: TENANT_ID },
+        include: expect.objectContaining({
+          bill: expect.objectContaining({
+            select: expect.objectContaining({
+              subtotal: true,
+              discountAmount: true,
+              insuranceCoveredAmount: true,
+              patientPayableAmount: true,
+              billItems: expect.objectContaining({ orderBy: { createdAt: 'asc' } }),
+              payments: expect.objectContaining({ orderBy: { paymentDate: 'asc' } }),
+            }),
+          }),
+        }),
+      }));
+      expect(result.bill.billItems).toHaveLength(1);
+      expect(result.bill.payments).toHaveLength(1);
     });
   });
 
