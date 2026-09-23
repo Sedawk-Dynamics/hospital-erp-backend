@@ -1,0 +1,49 @@
+# Standalone Orthanc (PACS) deployment for Dokploy.
+#
+# This is deployed as its OWN Dokploy Compose service — separate from the main
+# stack (postgres / redis / api / frontend are each deployed on their own).
+# It brings up ONLY Orthanc, so nothing in the main stack is duplicated.
+#
+# Storage: DICOM blobs + SQLite index live on the `orthanc_data` volume, so
+# images survive restarts/redeploys. To scale later, switch to a managed
+# Postgres index + S3 storage via the ORTHANC__POSTGRESQL / AWS_S3 plugins.
+#
+# Networking: joins the shared `dokploy-network` so the backend can reach it by
+# service name. The backend must set ORTHANC_URL to the hostname Dokploy assigns
+# this service (see README/notes) — typically http://orthanc:8042.
+#
+# NOT exposed publicly: browsers reach it only through the backend's
+# authenticating /api/v1/pacs proxy. 4242 (DIMSE) is optional, for modality
+# C-STORE — restrict it at the firewall if published.
+
+services:
+  orthanc:
+    image: orthancteam/orthanc:latest
+    container_name: hospital-erp-orthanc
+    restart: unless-stopped
+    environment:
+      ORTHANC__NAME: HospitalERP-PACS
+      # Blobs + index on the mounted volume (no external Postgres/S3).
+      ORTHANC__STORAGE_DIRECTORY: /var/lib/orthanc/db
+      ORTHANC__INDEX_DIRECTORY: /var/lib/orthanc/db
+      ORTHANC__REMOTE_ACCESS_ALLOWED: "true"
+      # Auth — the backend logs in with these. Keep in sync with the backend's
+      # ORTHANC_USERNAME / ORTHANC_PASSWORD env.
+      ORTHANC__AUTHENTICATION_ENABLED: "true"
+      ORTHANC__REGISTERED_USERS: '{"${ORTHANC_USERNAME:-hospital}": "${ORTHANC_PASSWORD:-change-me}"}'
+      # Plugins the viewer needs.
+      DICOM_WEB_PLUGIN_ENABLED: "true"
+      OHIF_PLUGIN_ENABLED: "true"
+      # OHIF served behind the backend PACS proxy.
+      ORTHANC__OHIF__ROUTER_BASENAME: "/api/v1/pacs/o/ohif/"
+    volumes:
+      - orthanc_data:/var/lib/orthanc/db
+    networks:
+      - dokploy-network
+
+networks:
+  dokploy-network:
+    external: true
+
+volumes:
+  orthanc_data:
