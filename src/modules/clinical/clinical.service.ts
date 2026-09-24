@@ -2145,6 +2145,7 @@ export async function addDiagnosis(tenantId: string, userId: string, data: AddDi
       visitId: data.visitId,
       patientId: data.patientId,
       icdCode: data.icdCode,
+      snomedCode: data.snomedCode,
       diagnosisName: data.diagnosisName,
       diagnosisType: data.diagnosisType ?? 'primary',
       notes: data.notes,
