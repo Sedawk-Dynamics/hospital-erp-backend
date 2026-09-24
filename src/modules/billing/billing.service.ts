@@ -4899,7 +4899,7 @@ export async function addIpCharge(
   tenantId: string,
   userId: string,
   admissionId: string,
-  data: { category: string; description: string; quantity?: number; unitPrice: number; taxRate?: number; serviceTariffId?: string; notes?: string },
+  data: { category: string; description: string; quantity?: number; unitPrice: number; discount?: number; taxRate?: number; serviceTariffId?: string; notes?: string },
   roles: string[] = [],
 ) {
   await assertIpLedgerAccess(tenantId, admissionId, { userId, roles }, { write: true, nurseWrite: true });
@@ -4908,6 +4908,8 @@ export async function addIpCharge(
   const bill = await getOrCreateRunningIpBill(tenantId, admissionId, userId);
   const qty = Math.max(1, Math.trunc(data.quantity ?? 1));
   const unitPrice = r2(Math.max(0, data.unitPrice));
+  const discountAmount = r2(Math.max(0, data.discount ?? 0));
+  const discountPercent = unitPrice > 0 ? (discountAmount / (qty * unitPrice)) * 100 : 0;
 
   const tariff = data.serviceTariffId
     ? await prisma.serviceTariff.findFirst({ where: { id: data.serviceTariffId, tenantId } })
@@ -4931,7 +4933,7 @@ export async function addIpCharge(
       patientAdmitted: true,
       issuedForTreatment: true,
     },
-    { unitPrice, quantity: qty },
+    { unitPrice, quantity: qty, discountAmount },
   );
   const totalAmount = priced.money.totalAmount;
 
@@ -4943,6 +4945,8 @@ export async function addIpCharge(
       category: category as any,
       quantity: qty,
       unitPrice,
+      discountPercent,
+      discountAmount,
       ...billItemTaxFields(priced),
       referenceType: 'manual_clinical',
       referenceId: `${userId}:${Date.now()}`,
@@ -4950,6 +4954,53 @@ export async function addIpCharge(
     },
   });
   await recalculateBillTotals(bill.id);
+
+  // A running IP bill may already be pending because the counter generated an
+  // interim bill or sent it to the TPA. Posting a bedside/manual charge is still
+  // valid for the active stay, but recalculation rebuilds balanceDue from the
+  // payment ledger. Restore the insurance split immediately so the new line
+  // cannot make the screen demand the full bill from the patient.
+  try {
+    const claim = await prisma.insuranceClaim.findFirst({
+      where: { tenantId, billId: bill.id, status: { notIn: ['cancelled', 'rejected'] } },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        status: true,
+        approvedAmount: true,
+        coveredAmount: true,
+      },
+    });
+    const insurance = await import('../insurance/insurance.service');
+    if (claim && claim.status !== 'submitted' && claim.status !== 'resubmitted') {
+      const freshBill = await prisma.bill.findFirst({
+        where: { id: bill.id, tenantId },
+        select: { totalAmount: true },
+      });
+      const committedCover = Math.min(
+        Number(freshBill?.totalAmount ?? 0),
+        Number(claim.approvedAmount ?? claim.coveredAmount ?? 0),
+      );
+      await insurance.applyBillSplit(
+        tenantId,
+        bill.id,
+        committedCover,
+        Math.max(0, Number(freshBill?.totalAmount ?? 0) - committedCover),
+      );
+    } else {
+      // Submitted/resubmitted claims are still editable, so the normal TPA link
+      // expands the claim itself. With no claim it creates one only when this is
+      // actually an insurance/corporate admission; cash stays are a no-op.
+      await ensureAdmissionTpaLink(tenantId, userId, admissionId);
+    }
+  } catch (err) {
+    // The charge is already on the clinical ledger. Returning an error here
+    // invites a retry and a duplicate charge; surface the sync issue in logs and
+    // let the insurance desk use its explicit split/adjustment action.
+    logger.warn(
+      { err, tenantId, admissionId, billId: bill.id, itemId: item.id },
+      'IP charge posted but the TPA split could not be refreshed',
+    );
+  }
   logger.info({ tenantId, admissionId, billId: bill.id, category, totalAmount }, 'IP clinical charge added to ledger');
   return { billId: bill.id, item };
 }
