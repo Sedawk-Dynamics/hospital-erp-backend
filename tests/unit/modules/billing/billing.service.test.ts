@@ -29,6 +29,7 @@ import {
   decideDiscount,
   recalculateBillTotalsPublic,
   getPatientAdvanceBalance,
+  reopenBill,
 } from '../../../../src/modules/billing/billing.service';
 
 // ─── Extend mocks that setup.ts does not provide ───
@@ -1057,10 +1058,111 @@ describe('BillingService', () => {
   // getBillById
   // ═══════════════════════════════════════════
   describe('getBillById', () => {
+    it('returns server-authoritative reopen eligibility for an unpaid pending bill', async () => {
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue({
+        ...mockBillPending,
+        amountPaid: 0,
+        payments: [],
+        insuranceClaims: [],
+      } as any);
+
+      const bill = await getBillById(TENANT_ID, 'bill-1');
+
+      expect(bill).toMatchObject({ canReopen: true, reopenBlockedReason: null });
+    });
+
+    it('explains that a live TPA claim prevents reopening', async () => {
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue({
+        ...mockBillPending,
+        amountPaid: 0,
+        payments: [],
+        insuranceClaims: [
+          { status: 'partially_settled', claimNumber: 'CLM-20260923-0001' },
+        ],
+      } as any);
+
+      const bill = await getBillById(TENANT_ID, 'bill-1');
+
+      expect(bill).toMatchObject({ canReopen: false });
+      expect(bill.reopenBlockedReason).toContain('CLM-20260923-0001');
+      expect(bill.reopenBlockedReason).toContain('partially settled');
+    });
+
     it('should throw notFound for non-existent bill', async () => {
       vi.mocked(prisma.bill.findFirst).mockResolvedValue(null);
 
       await expect(getBillById(TENANT_ID, 'no-bill')).rejects.toThrow('Bill not found');
+    });
+  });
+
+  // ═══════════════════════════════════════════
+  // reopenBill — issued bill safely returned to draft
+  // ═══════════════════════════════════════════
+  describe('reopenBill', () => {
+    function mockReopenCandidate(overrides: Record<string, unknown> = {}) {
+      vi.mocked(prisma.bill.findFirst)
+        .mockResolvedValueOnce({ billDate: new Date('2026-09-24T00:00:00.000Z') } as any)
+        .mockResolvedValueOnce({
+          ...mockBillPending,
+          amountPaid: 0,
+          payments: [],
+          insuranceClaims: [],
+          ...overrides,
+        } as any);
+    }
+
+    it('reopens a pending bill with no active payment or claim', async () => {
+      mockReopenCandidate();
+      vi.mocked(prisma.bill.update).mockResolvedValue({
+        ...mockBillPending,
+        status: 'draft',
+        patient: mockPatient,
+        billItems: [mockBillItem],
+      } as any);
+
+      const result = await reopenBill(TENANT_ID, 'bill-1');
+
+      expect(result.status).toBe('draft');
+      expect(prisma.bill.update).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 'bill-1' }, data: { status: 'draft' } }),
+      );
+    });
+
+    it('does not let a TPA-linked issued bill be changed underneath its claim', async () => {
+      mockReopenCandidate({
+        insuranceClaims: [
+          { status: 'partially_settled', claimNumber: 'CLM-20260923-0001' },
+        ],
+      });
+
+      await expect(reopenBill(TENANT_ID, 'bill-1')).rejects.toThrow(
+        'This bill is linked to TPA claim CLM-20260923-0001 (partially settled)',
+      );
+      expect(prisma.bill.update).not.toHaveBeenCalled();
+    });
+
+    it('blocks an applied admission advance even when the TPA split leaves amountPaid at zero', async () => {
+      mockReopenCandidate({
+        amountPaid: 0,
+        payments: [{ status: 'completed', amount: 1500 }],
+      });
+
+      await expect(reopenBill(TENANT_ID, 'bill-1')).rejects.toThrow(
+        'This bill already has a payment or applied advance',
+      );
+      expect(prisma.bill.update).not.toHaveBeenCalled();
+    });
+
+    it('ignores reversed payment history when deciding whether it can reopen', async () => {
+      mockReopenCandidate({
+        payments: [{ status: 'reversed', amount: 1100 }],
+      });
+      vi.mocked(prisma.bill.update).mockResolvedValue({
+        ...mockBillPending,
+        status: 'draft',
+      } as any);
+
+      await expect(reopenBill(TENANT_ID, 'bill-1')).resolves.toMatchObject({ status: 'draft' });
     });
   });
 

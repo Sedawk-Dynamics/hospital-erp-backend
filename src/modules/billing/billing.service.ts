@@ -1297,6 +1297,10 @@ export async function getBillById(tenantId: string, id: string) {
       payments: {
         orderBy: { createdAt: 'desc' },
       },
+      insuranceClaims: {
+        select: { id: true, claimNumber: true, status: true },
+        orderBy: { createdAt: 'desc' },
+      },
     },
   });
 
@@ -1304,7 +1308,70 @@ export async function getBillById(tenantId: string, id: string) {
     throw AppError.notFound('Bill not found');
   }
 
-  return bill;
+  return { ...bill, ...billReopenState(bill) };
+}
+
+type BillReopenStateInput = {
+  status: string;
+  amountPaid: Decimal | number | string;
+  payments: Array<{ status: string; amount: Decimal | number | string }>;
+  insuranceClaims: Array<{ status: string; claimNumber?: string | null }>;
+};
+
+/**
+ * One definition of whether an issued bill may return to draft. This is sent
+ * with the bill and reused by the mutation, so the screen never advertises an
+ * action that the server is guaranteed to reject.
+ */
+function billReopenState(bill: BillReopenStateInput): {
+  canReopen: boolean;
+  reopenBlockedReason: string | null;
+} {
+  if (bill.status === 'draft') {
+    return { canReopen: false, reopenBlockedReason: 'This bill is already open for editing.' };
+  }
+
+  if (bill.status !== 'pending') {
+    return {
+      canReopen: false,
+      reopenBlockedReason: `A ${bill.status.replace(/_/g, ' ')} bill cannot be reopened.`,
+    };
+  }
+
+  // Rejected/cancelled claims no longer have a live financial workflow. Every
+  // other state — especially approved/settled — must keep the issued bill
+  // immutable so its TPA ledger continues to reconcile.
+  const activeClaim = bill.insuranceClaims.find(
+    (claim) => claim.status !== 'rejected' && claim.status !== 'cancelled',
+  );
+  if (activeClaim) {
+    const claimLabel = activeClaim.claimNumber ? ` ${activeClaim.claimNumber}` : '';
+    return {
+      canReopen: false,
+      reopenBlockedReason:
+        `This bill is linked to TPA claim${claimLabel} (${activeClaim.status.replace(/_/g, ' ')}). ` +
+        'Use the IP ledger for new charges or the insurance adjustment flow; the issued bill cannot be changed.',
+    };
+  }
+
+  // Failed/reversed attempts do not represent money held by the hospital.
+  // Pending or completed rows do, including an applied admission advance even
+  // when amountPaid was later redistributed by an insurance split.
+  const activePayment = bill.payments.find(
+    (payment) =>
+      payment.status !== 'failed' &&
+      payment.status !== 'reversed' &&
+      Number(payment.amount) > 0,
+  );
+  if (Number(bill.amountPaid) > 0 || activePayment) {
+    return {
+      canReopen: false,
+      reopenBlockedReason:
+        'This bill already has a payment or applied advance. Reverse it before reopening the bill.',
+    };
+  }
+
+  return { canReopen: true, reopenBlockedReason: null };
 }
 
 /**
@@ -1747,7 +1814,9 @@ export async function finalizeBill(tenantId: string, userId: string, billId: str
  * adding items to the same bill instead of abandoning it and starting a new
  * one. Only safe while nothing has been collected against it — once a payment
  * (or an insurance claim) exists the bill has left the counter's hands and must
- * be adjusted/cancelled through the normal routes instead.
+ * be adjusted/cancelled through the normal routes instead. Reversed/failed
+ * payment history and rejected/cancelled claims are not financial commitments,
+ * so those historical rows do not keep an otherwise clean bill locked.
  */
 export async function reopenBill(tenantId: string, billId: string) {
   // Section 6.10 — a bill inside a filed-and-locked return period cannot be
@@ -1756,7 +1825,8 @@ export async function reopenBill(tenantId: string, billId: string) {
   const bill = await prisma.bill.findFirst({
     where: { id: billId, tenantId },
     include: {
-      _count: { select: { payments: true, insuranceClaims: true } },
+      payments: { select: { status: true, amount: true } },
+      insuranceClaims: { select: { status: true, claimNumber: true } },
     },
   });
 
@@ -1768,22 +1838,9 @@ export async function reopenBill(tenantId: string, billId: string) {
     return bill; // already editable — idempotent
   }
 
-  if (bill.status !== 'pending') {
-    throw AppError.badRequest(
-      `Cannot reopen a ${bill.status.replace(/_/g, ' ')} bill`,
-    );
-  }
-
-  if (Number(bill.amountPaid) > 0 || bill._count.payments > 0) {
-    throw AppError.badRequest(
-      'Cannot reopen a bill that already has payments. Reverse the payment first.',
-    );
-  }
-
-  if (bill._count.insuranceClaims > 0) {
-    throw AppError.badRequest(
-      'Cannot reopen a bill that has been transferred to insurance/TPA.',
-    );
+  const reopenState = billReopenState(bill);
+  if (!reopenState.canReopen) {
+    throw AppError.badRequest(reopenState.reopenBlockedReason ?? 'This bill cannot be reopened.');
   }
 
   const updated = await prisma.bill.update({
