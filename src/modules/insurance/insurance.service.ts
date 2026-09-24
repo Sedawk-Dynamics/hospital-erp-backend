@@ -1491,19 +1491,34 @@ export async function applyBillSplit(
   tenantId: string,
   billId: string,
   insurancePortion: number,
-  patientPortion: number,
+  claimPatientPortion: number,
 ) {
   const bill = await prisma.bill.findFirst({ where: { id: billId, tenantId } });
-  if (!bill) return;
+  if (!bill) return null;
+
+  // Claim responsibility only covers the amount submitted to insurance. The
+  // bill can also contain explicitly patient-only lines, so the bill-level
+  // patient share must always be the full bill total minus the payer share.
+  const billTotal = round2(Math.max(0, decNum(bill.totalAmount)));
+  const normalizedInsurance = round2(Math.min(Math.max(0, insurancePortion), billTotal));
+  const normalizedPatient = round2(Math.max(0, billTotal - normalizedInsurance));
+  const balanceDue = round2(Math.max(0, normalizedPatient - decNum(bill.amountPaid)));
 
   await prisma.bill.update({
     where: { id: billId },
     data: {
-      insuranceCoveredAmount: round2(insurancePortion),
-      patientPayableAmount: round2(patientPortion),
-      balanceDue: round2(Math.max(0, patientPortion - decNum(bill.amountPaid))),
+      insuranceCoveredAmount: normalizedInsurance,
+      patientPayableAmount: normalizedPatient,
+      balanceDue,
     },
   });
+
+  return {
+    insurancePortion: normalizedInsurance,
+    patientPortion: normalizedPatient,
+    claimPatientPortion: round2(Math.max(0, claimPatientPortion)),
+    balanceDue,
+  };
 }
 
 export async function splitBill(tenantId: string, billId: string, data: SplitBillInput) {
@@ -1511,12 +1526,12 @@ export async function splitBill(tenantId: string, billId: string, data: SplitBil
   if (!bill) throw AppError.notFound('Bill not found');
 
   const policy = await prisma.insurancePolicy.findFirst({
-    where: { id: data.policyId, tenantId },
+    where: { id: data.policyId, tenantId, patientId: bill.patientId },
     include: { insurer: { select: { id: true, name: true } } },
   });
-  if (!policy) throw AppError.notFound('Insurance policy not found');
+  if (!policy) throw AppError.notFound('Insurance policy not found for this patient');
 
-  const claimAmount = data.claimAmount ?? decNum(bill.totalAmount);
+  const claimAmount = Math.min(data.claimAmount ?? decNum(bill.totalAmount), decNum(bill.totalAmount));
   const split = computeResponsibility(
     claimAmount,
     decNum(policy.coPayPercent),
@@ -1524,12 +1539,14 @@ export async function splitBill(tenantId: string, billId: string, data: SplitBil
     decNum(policy.coverageAmount),
   );
 
-  await applyBillSplit(tenantId, billId, split.coveredAmount, split.patientResponsibility);
+  const billSplit = await applyBillSplit(tenantId, billId, split.coveredAmount, split.patientResponsibility);
+  if (!billSplit) throw AppError.notFound('Bill not found');
 
   return {
     billId,
     policy: { id: policy.id, policyNumber: policy.policyNumber, insurer: policy.insurer },
     split,
+    billSplit,
   };
 }
 

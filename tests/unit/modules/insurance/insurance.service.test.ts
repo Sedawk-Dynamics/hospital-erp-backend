@@ -13,6 +13,8 @@ import {
   createClaim,
   getClaims,
   getClaimById,
+  applyBillSplit,
+  splitBill,
   approveClaim,
   rejectClaim,
   createPreAuth,
@@ -553,6 +555,71 @@ describe('Insurance Service', () => {
       }));
       expect(result.bill.billItems).toHaveLength(1);
       expect(result.bill.payments).toHaveLength(1);
+    });
+  });
+
+  describe('bill responsibility split', () => {
+    it('keeps non-claim bill lines in the patient share', async () => {
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue({
+        id: 'bill-1',
+        totalAmount: 11000,
+        amountPaid: 500,
+      } as any);
+      vi.mocked(prisma.bill.update).mockResolvedValue({ id: 'bill-1' } as any);
+
+      const result = await applyBillSplit(TENANT_ID, 'bill-1', 9000, 0);
+
+      expect(prisma.bill.update).toHaveBeenCalledWith({
+        where: { id: 'bill-1' },
+        data: {
+          insuranceCoveredAmount: 9000,
+          patientPayableAmount: 2000,
+          balanceDue: 1500,
+        },
+      });
+      expect(result).toEqual({
+        insurancePortion: 9000,
+        patientPortion: 2000,
+        claimPatientPortion: 0,
+        balanceDue: 1500,
+      });
+    });
+
+    it('recalculates against a policy belonging to the billed patient', async () => {
+      vi.mocked(prisma.bill.findFirst)
+        .mockResolvedValueOnce({
+          id: 'bill-1',
+          patientId: 'patient-1',
+          totalAmount: 11000,
+          amountPaid: 500,
+        } as any)
+        .mockResolvedValueOnce({
+          id: 'bill-1',
+          patientId: 'patient-1',
+          totalAmount: 11000,
+          amountPaid: 500,
+        } as any);
+      vi.mocked(prisma.insurancePolicy.findFirst).mockResolvedValue({
+        ...mockPolicy,
+        coPayPercent: 0,
+        deductibleAmount: 0,
+        coverageAmount: null,
+      } as any);
+      vi.mocked(prisma.bill.update).mockResolvedValue({ id: 'bill-1' } as any);
+
+      const result = await splitBill(TENANT_ID, 'bill-1', {
+        policyId: 'policy-1',
+        claimAmount: 9000,
+      });
+
+      expect(prisma.insurancePolicy.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+        where: { id: 'policy-1', tenantId: TENANT_ID, patientId: 'patient-1' },
+      }));
+      expect(result.billSplit).toEqual(expect.objectContaining({
+        insurancePortion: 9000,
+        patientPortion: 2000,
+        balanceDue: 1500,
+      }));
     });
   });
 
