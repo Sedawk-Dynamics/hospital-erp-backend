@@ -352,6 +352,7 @@ export const addDiagnosisSchema = z.object({
     patientId: z.string().uuid('Invalid patient ID'),
     visitId: z.string().uuid('Invalid visit ID'),
     icdCode: z.string().max(20).optional(),
+    snomedCode: z.string().max(32).optional(),
     diagnosisName: z.string().min(1, 'Diagnosis name is required').max(500),
     diagnosisType: z.enum(['primary', 'secondary', 'differential']).default('primary'),
     notes: z.string().max(2000).optional(),

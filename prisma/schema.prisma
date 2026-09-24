@@ -1553,6 +1553,52 @@ model IcdCode {
   @@map("icd_codes")
 }
 
+
+model SnomedDescription {
+  id                 String   @id @default(uuid())
+  descriptionId      String   @unique @map("description_id") @db.VarChar(32)
+  conceptId          String   @map("concept_id") @db.VarChar(32)
+  term               String   @db.VarChar(500)
+  typeId             String?  @map("type_id") @db.VarChar(32)
+  languageCode       String?  @map("language_code") @db.VarChar(10)
+  caseSignificanceId String?  @map("case_significance_id") @db.VarChar(32)
+  moduleId           String?  @map("module_id") @db.VarChar(32)
+  effectiveTime      String?  @map("effective_time") @db.VarChar(20)
+  active             Boolean  @default(true)
+  searchTokens       String?  @map("search_tokens")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([conceptId])
+  @@index([active])
+  @@map("snomed_descriptions")
+}
+
+
+model SnomedIcdMap {
+  id                    String   @id @default(uuid())
+  refsetMemberId        String?  @unique @map("refset_member_id") @db.VarChar(64)
+  refsetId              String?  @map("refset_id") @db.VarChar(32)
+  referencedComponentId String   @map("referenced_component_id") @db.VarChar(32)
+  mapGroup              Int      @default(1) @map("map_group")
+  mapPriority           Int      @default(1) @map("map_priority")
+  mapRule               String?  @map("map_rule")
+  mapAdvice             String?  @map("map_advice")
+  mapTarget             String?  @map("map_target") @db.VarChar(20)
+  correlationId         String?  @map("correlation_id") @db.VarChar(32)
+  mapCategoryId         String?  @map("map_category_id") @db.VarChar(32)
+  moduleId              String?  @map("module_id") @db.VarChar(32)
+  effectiveTime         String?  @map("effective_time") @db.VarChar(20)
+  active                Boolean  @default(true)
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([referencedComponentId])
+  @@index([mapTarget])
+  @@index([active])
+  @@map("snomed_icd_maps")
+}
+
 // ============================================================
 // 2. AUTH / USERS
 // ============================================================
@@ -2778,6 +2824,9 @@ model Diagnosis {
   visitId       String        @map("visit_id")
   patientId     String        @map("patient_id")
   icdCode       String?       @map("icd_code") @db.VarChar(20)
+  /// SNOMED CT concept the clinician selected. Backend-only (hidden in UI); the
+  /// icdCode above is derived from it via the SNOMED→ICD cross-map at pick time.
+  snomedCode    String?       @map("snomed_code") @db.VarChar(32)
   diagnosisName String        @map("diagnosis_name") @db.VarChar(500)
   diagnosisType DiagnosisType @default(primary) @map("diagnosis_type")
   notes         String?

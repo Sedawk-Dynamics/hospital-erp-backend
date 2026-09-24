@@ -30,21 +30,9 @@ const ICD_SEARCH_SELECT = {
   searchTokens: true,
 } as const;
 
-/** Candidates pulled per window before ranking; 20 are returned. */
 const ICD_SEARCH_WINDOW = 60;
 
-/**
- * Search ICD codes available to a tenant: the shared platform set (tenantId
- * null) plus the tenant's own custom codes. Matches code, title or keywords.
- *
- * The substring window alone is not enough now that the catalogue is the full
- * WHO release. It is capped, and a plain `contains` puts the obvious answer
- * wherever the alphabet happens to leave it — "pneumonia" returned salmonella
- * and tuberculosis while J18.9 sat 54th. So the code-prefix, title-prefix and
- * exact-keyword matches are fetched as their own windows, guaranteeing the
- * strongest matches survive the cap, and {@link rankIcdResults} then orders the
- * union. Same shape as the drug catalogue search.
- */
+
 export async function searchIcdCodes(tenantId: string, q: string, limit = 20) {
   const term = q.trim().toLowerCase();
   if (!term) return [];
@@ -61,9 +49,6 @@ export async function searchIcdCodes(tenantId: string, q: string, limit = 20) {
       select: ICD_SEARCH_SELECT,
     });
 
-  // Every word present, in any order. The phrase windows above only match text
-  // written the way ICD writes it, so "fracture femur" found nothing at all
-  // against "Fracture of neck of femur".
   const words = queryWords(term);
   const allWords = (ws: string[]) => window({ AND: ws.map((w) => ({ searchTokens: { contains: w } })) });
 
@@ -87,14 +72,7 @@ export async function searchIcdCodes(tenantId: string, q: string, limit = 20) {
 
   let ranked = rankIcdResults([...byCode, ...byTitle, ...byKeyword, ...anywhere, ...byWords], term, limit);
 
-  // Still nothing, and enough words to spare one: ICD's vocabulary differs from
-  // clinical speech by a word more often than it differs by two. "lower back
-  // pain" against "Low back pain", "severe chest pain" against "Chest pain on
-  // breathing". Dropping each word in turn recovers those; requiring three
-  // words to start with keeps it from degenerating into a single-word search.
-  //
-  // This costs one extra round of queries and only runs where the alternative
-  // is showing the doctor "No matching ICD codes".
+ 
   if (!ranked.length && words.length > 2) {
     const partial = await Promise.all(
       words.map((_, i) => allWords(words.filter((__, j) => j !== i))),
@@ -102,11 +80,6 @@ export async function searchIcdCodes(tenantId: string, q: string, limit = 20) {
     ranked = rankIcdResults(partial.flat(), term, limit);
   }
 
-  // Last resort: the query may simply be misspelled. Everything above matches
-  // letter for letter, so "diabtes" finds nothing at all — and an empty picker
-  // gives the doctor nothing to correct from. Trigram-similar rows are fetched
-  // only here, where the alternative is an empty screen, and the ranker scores
-  // them in a tier below every literal match, so no working search is disturbed.
   if (!ranked.length) {
     const fuzzyIds = await fuzzyIcdMatchIds({ query: term, tenantId, limit: ICD_SEARCH_WINDOW });
     if (fuzzyIds.length) {
@@ -118,8 +91,6 @@ export async function searchIcdCodes(tenantId: string, q: string, limit = 20) {
     }
   }
 
-  // `keywords` and `searchTokens` are only here to rank with — neither is part
-  // of the picker's shape.
   return ranked.map(({ keywords: _keywords, searchTokens: _searchTokens, ...row }) => row);
 }
 

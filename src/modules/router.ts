@@ -57,6 +57,9 @@ import { hospitalBrandingRoutes } from './hospital-branding/hospital-branding.ro
 import { hospitalSettingsRoutes } from './hospital-settings/hospital-settings.routes';
 import { gstRoutes } from './gst/gst.routes';
 
+//snomed modules
+import { snomedRoutes } from './snomed/snomed.routes';
+
 const apiRouter = Router();
 
 // NOTE on rate limiting:
@@ -165,5 +168,8 @@ apiRouter.use('/hospitals', authenticate, userTierLimiter, hospitalsRoutes);
 
 // --- Demo Requests (public submit + super_admin management) ---
 apiRouter.use('/demo-requests', demoRequestRoutes);
+
+// --- snomed requests --- //
+apiRouter.use('/snomed', authenticate, userTierLimiter, snomedRoutes);
 
 export { apiRouter };
