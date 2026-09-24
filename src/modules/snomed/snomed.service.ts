@@ -1,4 +1,4 @@
-import { prisma } from "@/config/database";
+import { prisma } from "../../config/database";
 import { kStringMaxLength } from "buffer";
 import { map } from "zod";
 import { SnomedSearchResult,PatientMapContext,SnomedMapCandidate,SnomedMapResult } from "./snomed.types";
