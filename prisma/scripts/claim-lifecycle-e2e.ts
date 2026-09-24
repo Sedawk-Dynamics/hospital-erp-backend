@@ -371,12 +371,18 @@ async function main() {
     ck('back to pending', release.data?.status === 'pending', String(release.data?.status));
     ck('with the hold reason cleared', !release.data?.holdReason, String(release.data?.holdReason));
 
+    const preApprovalNumber = `${TAG}-PA-1`;
     const approvePre = await api('admin', 'PATCH', `/insurance/pre-auth/${pre.data.id}/approve`, {
+      approvalNumber: preApprovalNumber,
       approvedAmount: 200000,
     });
     ck('it can be approved', approvePre.status === 200, `HTTP ${approvePre.status}`);
     ck('for the amount the insurer allowed', money(approvePre.data?.approvedAmount) === 200000, String(approvePre.data?.approvedAmount));
-    ck('with an approval number issued', !!approvePre.data?.approvalNumber, String(approvePre.data?.approvalNumber));
+    ck(
+      'with the payer approval number recorded',
+      approvePre.data?.approvalNumber === preApprovalNumber,
+      String(approvePre.data?.approvalNumber),
+    );
 
     const approveTwice = await api('admin', 'PATCH', `/insurance/pre-auth/${pre.data.id}/approve`, {
       approvedAmount: 100,

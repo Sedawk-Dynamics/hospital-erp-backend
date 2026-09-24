@@ -110,6 +110,42 @@ async function logsFor(where: Record<string, unknown>) {
   return p.tpaCommunicationLog.findMany({ where, orderBy: { createdAt: 'asc' } });
 }
 
+/** Upload every required dossier item through the same API used by the UI. */
+async function completeDossier(claimId: string) {
+  const checklist = await api('admin', 'GET', `/insurance/claims/${claimId}/checklist`);
+  if (checklist.status !== 200) {
+    return { ok: false, detail: `checklist HTTP ${checklist.status} ${checklist.message}` };
+  }
+
+  const required = (checklist.data?.items ?? []).filter((item: any) => item.isRequired);
+  for (const item of required) {
+    const category = item.requirementCode === 'FINAL_BILL'
+      ? 'billing'
+      : item.requirementCode === 'DISCHARGE_SUMMARY'
+        ? 'clinical'
+        : 'authorization';
+    const uploaded = await api('admin', 'POST', `/insurance/claims/${claimId}/documents`, {
+      code: item.requirementCode,
+      name: item.label,
+      category,
+      fileUrl: `https://example.test/${TAG}/${item.requirementCode}.pdf`,
+      mimeType: 'application/pdf',
+    });
+    if (uploaded.status !== 201) {
+      return {
+        ok: false,
+        detail: `${item.label}: HTTP ${uploaded.status} ${uploaded.message}`,
+      };
+    }
+  }
+
+  const completed = await api('admin', 'GET', `/insurance/claims/${claimId}/checklist`);
+  return {
+    ok: completed.status === 200 && completed.data?.complete === true,
+    detail: completed.data?.missing?.join(', ') || `HTTP ${completed.status}`,
+  };
+}
+
 async function main() {
   console.log(`TPA communication logs, end to end   [${TAG}]\n`);
 
@@ -175,18 +211,21 @@ async function main() {
 
   async function makeClaim(policyId: string, amount: number) {
     const bill = await makeBill(amount);
-    return api('admin', 'POST', '/insurance/claims', {
+    const claim = await api('admin', 'POST', '/insurance/claims', {
       policyId,
       patientId: patient!.id,
       billId: bill.id,
       claimAmount: amount,
     });
+    if (!claim.data?.id) return claim;
+    return { ...claim, dossier: await completeDossier(claim.data.id) };
   }
 
   // -- Claim lifecycle -------------------------------------------------------
   section('Claim lifecycle writes a log at every step');
   const a = await makeClaim(withTpa.data.id, 10000);
   ck('claim A created', a.status === 201, `HTTP ${a.status} ${a.message}`);
+  ck('claim A dossier completed', a.dossier?.ok === true, a.dossier?.detail ?? 'not created');
   if (!a.data?.id) return;
 
   const aSubmit = await api('admin', 'PATCH', `/insurance/claims/${a.data.id}/submit`);
@@ -338,6 +377,7 @@ async function main() {
     ck('hold released', release.status === 200, `HTTP ${release.status} ${release.message}`);
 
     const approve = await api('admin', 'PATCH', `/insurance/pre-auth/${pre.data.id}/approve`, {
+      approvalNumber: `${TAG}-PA-1`,
       approvedAmount: 60000,
     });
     ck('pre-auth approved', approve.status === 200, `HTTP ${approve.status} ${approve.message}`);
