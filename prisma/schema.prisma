@@ -3793,9 +3793,9 @@ model LabTestCatalog {
   normalRange     String?  @map("normal_range")
   unit            String?  @db.VarChar(50)
   price           Decimal? @db.Decimal(10, 2)
-  // A diagnostic test is an exempt healthcare service, but the invoice still
-  // has to print its SAC and the return still has to group by it. This table
-  // had no tax field of any kind.
+
+  loincCode        String?  @map("loinc_code") @db.VarChar(50)
+  loincDisplayName String?  @map("loinc_display_name") @db.VarChar(255)
   sacCode         String?  @map("sac_code") @db.VarChar(20)
   gstTreatment    String?  @map("gst_treatment") @db.VarChar(20)
   turnaroundHours Int?     @map("turnaround_hours")
@@ -3854,6 +3854,8 @@ model LabTestTemplate {
   turnaroundHours Int?     @map("turnaround_hours")
   parameters      Json // ParameterSpec[]
   interpretation  String?
+  loincCode        String?  @map("loinc_code") @db.VarChar(50)
+  loincDisplayName String?  @map("loinc_display_name") @db.VarChar(255)
   // Synonyms + tags drive the dynamic-search layer. Aliases are alternative
   // test names a hospital might use ("FBC" -> CBC); tags are loose keywords
   // (parameter names, anatomy, indication keywords) that surface the test
@@ -3875,6 +3877,31 @@ model LabTestTemplate {
 
   @@map("lab_test_templates")
 }
+
+
+model LoincCatalog {
+  id          String   @id @default(uuid())
+  loincCode   String   @unique @map("loinc_code") @db.VarChar(50)
+  displayName String   @map("display_name") @db.VarChar(255)
+  component   String?  @db.VarChar(255)
+  property    String?  @db.VarChar(80)
+  timeAspect  String?  @map("time_aspect") @db.VarChar(80)
+  system      String?  @db.VarChar(120)
+  scaleType   String?  @map("scale_type") @db.VarChar(80)
+  method      String?  @db.VarChar(120)
+  status      String?  @db.VarChar(40)
+  synonyms    String[] @default([])
+  keywords    String[] @default([])
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([displayName])
+  @@index([component])
+  @@index([system])
+  @@index([status])
+  @@map("loinc_catalog")
+}
+
 
 // ─────────────────────────────────────────────────────────────
 // Lab Unit Groups + Units

@@ -59,6 +59,8 @@ import { gstRoutes } from './gst/gst.routes';
 
 //snomed modules
 import { snomedRoutes } from './snomed/snomed.routes';
+import { loincRoutes } from './loinc/loinc.routes';
+import {  fhirRoutes } from './fhir/fhir.routes';
 
 const apiRouter = Router();
 
@@ -172,4 +174,9 @@ apiRouter.use('/demo-requests', demoRequestRoutes);
 // --- snomed requests --- //
 apiRouter.use('/snomed', authenticate, userTierLimiter, snomedRoutes);
 
+// --- loinc requests --- //
+apiRouter.use("/loinc",authenticate,userTierLimiter,loincRoutes)
+
+// --- fhir requests --- //
+apiRouter.use("/fhir",authenticate,userTierLimiter,fhirRoutes)
 export { apiRouter };

@@ -65,6 +65,8 @@ export const createLabTemplateSchema = z.object({
   body: z.object({
     name: z.string().min(1).max(255),
     code: z.string().max(50).optional().nullable(),
+    loincCode: z.string().max(50).optional().nullable(),
+    loincDisplayName: z.string().max(255).optional().nullable(),
     sampleType: z.string().max(50).optional().nullable(),
     specimen: z.string().max(255).optional().nullable(),
     instructions: z.string().max(5000).optional().nullable(),
