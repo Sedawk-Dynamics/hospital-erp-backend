@@ -572,6 +572,15 @@ billingRoutes.post(
   validate(admissionActionParamSchema),
   controller.consolidateAdmissionBill,
 );
+// Billing-counter correction: a cash/package admission can be moved into the
+// cashless TPA workflow without finalising its still-running bill.
+billingRoutes.post(
+  '/admissions/:admissionId/change-to-tpa',
+  authenticate,
+  requirePermission('billing', 'update'),
+  validate(transferToTpaSchema),
+  controller.changeAdmissionBillingToTpa,
+);
 billingRoutes.post(
   '/admissions/:admissionId/transfer-to-tpa',
   authenticate,

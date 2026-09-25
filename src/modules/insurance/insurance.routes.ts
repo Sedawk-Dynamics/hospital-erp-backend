@@ -37,6 +37,41 @@ import {
   getTpaLogsQuerySchema,
 } from './insurance.validation';
 import * as controller from './insurance.controller';
+import * as workflowController from './insurance.workflow.controller';
+import {
+  addCasePolicySchema,
+  addClaimDocumentSchema,
+  bankMatchQuerySchema,
+  bulkSettlementSchema,
+  caseIdParamSchema,
+  claimIdParamSchema,
+  contractQuerySchema,
+  coveragePreviewSchema,
+  applyCoverageSchema,
+  createAdjustmentSchema,
+  createCorporatePayerSchema,
+  createEnhancementSchema,
+  createGovernmentSchemeSchema,
+  createInsuranceCaseSchema,
+  createPayerContractSchema,
+  decideWriteOffSchema,
+  emergencyIntimationSchema,
+  insuranceCaseQuerySchema,
+  payerListQuerySchema,
+  physicalReleaseSchema,
+  queueExchangeSchema,
+  raiseClaimQuerySchema,
+  recordEligibilitySchema,
+  recordSettlementSchema,
+  requestFinalAuthorizationSchema,
+  requestWriteOffSchema,
+  resolveClaimQuerySchema,
+  respondClaimQuerySchema,
+  updateInsuranceCaseStatusSchema,
+  updatePayerContractSchema,
+  verifyClaimDocumentSchema,
+  workflowReportQuerySchema,
+} from './insurance.workflow.validation';
 
 export const insuranceRoutes = Router();
 
@@ -44,6 +79,38 @@ export const insuranceRoutes = Router();
 // Dashboard
 // ============================================================
 insuranceRoutes.get('/dashboard', authenticate, requirePermission('insurance', 'read'), controller.getDashboard);
+insuranceRoutes.get('/sla-queue', authenticate, requirePermission('insurance', 'read'), workflowController.getSlaQueue);
+insuranceRoutes.get('/workflow-analytics', authenticate, requirePermission('insurance', 'read'), validate(workflowReportQuerySchema), workflowController.getWorkflowAnalytics);
+
+// Distinct payer roles. A TPA administers a claim; it is not implicitly the
+// party financially responsible for every case.
+insuranceRoutes.post('/corporate-payers', authenticate, requirePermission('insurance', 'create'), validate(createCorporatePayerSchema), workflowController.createCorporatePayer);
+insuranceRoutes.get('/corporate-payers', authenticate, requirePermission('insurance', 'read'), validate(payerListQuerySchema), workflowController.listCorporatePayers);
+insuranceRoutes.post('/government-schemes', authenticate, requirePermission('insurance', 'create'), validate(createGovernmentSchemeSchema), workflowController.createGovernmentScheme);
+insuranceRoutes.get('/government-schemes', authenticate, requirePermission('insurance', 'read'), validate(payerListQuerySchema), workflowController.listGovernmentSchemes);
+
+// Payer contracts, negotiated tariffs, packages, checklists and non-payables.
+insuranceRoutes.post('/contracts', authenticate, requirePermission('insurance', 'create'), validate(createPayerContractSchema), workflowController.createContract);
+insuranceRoutes.get('/contracts', authenticate, requirePermission('insurance', 'read'), validate(contractQuerySchema), workflowController.listContracts);
+insuranceRoutes.get('/contracts/:id', authenticate, requirePermission('insurance', 'read'), validate(caseIdParamSchema), workflowController.getContract);
+insuranceRoutes.put('/contracts/:id', authenticate, requirePermission('insurance', 'update'), validate(updatePayerContractSchema), workflowController.updateContract);
+
+// Longitudinal Insurance / Payer Case (cashless, reimbursement or credit).
+insuranceRoutes.post('/cases', authenticate, requirePermission('insurance', 'create'), validate(createInsuranceCaseSchema), workflowController.createInsuranceCase);
+insuranceRoutes.get('/cases', authenticate, requirePermission('insurance', 'read'), validate(insuranceCaseQuerySchema), workflowController.listInsuranceCases);
+insuranceRoutes.get('/cases/:id', authenticate, requirePermission('insurance', 'read'), validate(caseIdParamSchema), workflowController.getInsuranceCase);
+insuranceRoutes.get('/cases/:id/patient-status', authenticate, requirePermission('insurance', 'read'), validate(caseIdParamSchema), workflowController.getPatientCaseStatus);
+insuranceRoutes.patch('/cases/:id/status', authenticate, requirePermission('insurance', 'update'), validate(updateInsuranceCaseStatusSchema), workflowController.updateInsuranceCaseStatus);
+insuranceRoutes.post('/cases/:id/policies', authenticate, requirePermission('insurance', 'update'), validate(addCasePolicySchema), workflowController.addCasePolicy);
+insuranceRoutes.post('/cases/:id/eligibility', authenticate, requirePermission('insurance', 'update'), validate(recordEligibilitySchema), workflowController.recordEligibility);
+insuranceRoutes.patch('/cases/:id/emergency-intimation', authenticate, requirePermission('insurance', 'update'), validate(emergencyIntimationSchema), workflowController.recordEmergencyIntimation);
+insuranceRoutes.patch('/cases/:id/physical-release', authenticate, requirePermission('insurance', 'update'), validate(physicalReleaseSchema), workflowController.recordPhysicalRelease);
+insuranceRoutes.post('/cases/:id/final-authorization', authenticate, requirePermission('insurance', 'create'), validate(requestFinalAuthorizationSchema), workflowController.requestFinalAuthorization);
+insuranceRoutes.get('/cases/:id/coverage-preview', authenticate, requirePermission('insurance', 'read'), validate(coveragePreviewSchema), workflowController.getCoveragePreview);
+insuranceRoutes.post('/cases/:id/apply-coverage', authenticate, requirePermission('insurance', 'update'), validate(applyCoverageSchema), workflowController.applyCoverage);
+
+// Integration outbox (including NHCX/FHIR R4 envelopes).
+insuranceRoutes.post('/exchanges', authenticate, requirePermission('insurance', 'create'), validate(queueExchangeSchema), workflowController.queueExchange);
 
 // ============================================================
 // Insurers
@@ -88,8 +155,18 @@ insuranceRoutes.patch('/policies/:id/verify', authenticate, requirePermission('i
 insuranceRoutes.post('/claims', authenticate, requirePermission('insurance', 'create'), validate(createClaimSchema), controller.createClaim);
 insuranceRoutes.get('/claims', authenticate, requirePermission('insurance', 'read'), validate(getClaimsQuerySchema), controller.getClaims);
 insuranceRoutes.get('/claims/expiring', authenticate, requirePermission('insurance', 'read'), controller.getExpiringClaims);
+insuranceRoutes.post('/claims/settlements/bulk', authenticate, requirePermission('insurance', 'approve'), validate(bulkSettlementSchema), workflowController.recordBulkSettlements);
+insuranceRoutes.get('/claims/settlements/bank-match', authenticate, requirePermission('insurance', 'read'), validate(bankMatchQuerySchema), workflowController.findBankMatches);
 insuranceRoutes.get('/claims/:id', authenticate, requirePermission('insurance', 'read'), validate(idParamSchema), controller.getClaimById);
 insuranceRoutes.get('/claims/:id/export', authenticate, requirePermission('insurance', 'export'), validate(idParamSchema), controller.exportClaim);
+insuranceRoutes.get('/claims/:id/dossier', authenticate, requirePermission('insurance', 'export'), validate(claimIdParamSchema), workflowController.getClaimDossier);
+insuranceRoutes.get('/claims/:id/checklist', authenticate, requirePermission('insurance', 'read'), validate(claimIdParamSchema), workflowController.getClaimChecklist);
+insuranceRoutes.post('/claims/:id/checklist/sync', authenticate, requirePermission('insurance', 'update'), validate(claimIdParamSchema), workflowController.syncClaimChecklist);
+insuranceRoutes.post('/claims/:id/documents', authenticate, requirePermission('insurance', 'create'), validate(addClaimDocumentSchema), workflowController.addClaimDocument);
+insuranceRoutes.post('/claims/:id/queries', authenticate, requirePermission('insurance', 'update'), validate(raiseClaimQuerySchema), workflowController.raiseClaimQuery);
+insuranceRoutes.post('/claims/:id/settlements', authenticate, requirePermission('insurance', 'approve'), validate(recordSettlementSchema), workflowController.recordSettlement);
+insuranceRoutes.post('/claims/:id/write-offs', authenticate, requirePermission('insurance', 'update'), validate(requestWriteOffSchema), workflowController.requestWriteOff);
+insuranceRoutes.post('/claims/:id/adjustments', authenticate, requirePermission('insurance', 'approve'), validate(createAdjustmentSchema), workflowController.createAdjustment);
 insuranceRoutes.put('/claims/:id', authenticate, requirePermission('insurance', 'update'), validate(updateClaimSchema), controller.updateClaim);
 insuranceRoutes.patch('/claims/:id/submit', authenticate, requirePermission('insurance', 'update'), validate(idParamSchema), controller.submitClaim);
 insuranceRoutes.patch('/claims/:id/approve', authenticate, requirePermission('insurance', 'approve'), validate(approveClaimSchema), controller.approveClaim);
@@ -98,12 +175,17 @@ insuranceRoutes.patch('/claims/:id/reject', authenticate, requirePermission('ins
 insuranceRoutes.patch('/claims/:id/settle', authenticate, requirePermission('insurance', 'approve'), validate(settleClaimSchema), controller.settleClaim);
 insuranceRoutes.post('/claims/:id/resubmit', authenticate, requirePermission('insurance', 'create'), validate(resubmitClaimSchema), controller.resubmitClaim);
 insuranceRoutes.patch('/claims/:id/cancel', authenticate, requirePermission('insurance', 'update'), validate(cancelClaimSchema), controller.cancelClaim);
+insuranceRoutes.patch('/claim-documents/:documentId/verify', authenticate, requirePermission('insurance', 'approve'), validate(verifyClaimDocumentSchema), workflowController.verifyClaimDocument);
+insuranceRoutes.patch('/claim-queries/:queryId/respond', authenticate, requirePermission('insurance', 'update'), validate(respondClaimQuerySchema), workflowController.respondClaimQuery);
+insuranceRoutes.patch('/claim-queries/:queryId/resolve', authenticate, requirePermission('insurance', 'approve'), validate(resolveClaimQuerySchema), workflowController.resolveClaimQuery);
+insuranceRoutes.patch('/claim-write-offs/:writeOffId/decision', authenticate, requirePermission('insurance', 'approve'), validate(decideWriteOffSchema), workflowController.decideWriteOff);
 
 // ============================================================
 // Pre-Authorization
 // ============================================================
 insuranceRoutes.post('/pre-auth', authenticate, requirePermission('insurance', 'create'), validate(createPreAuthSchema), controller.createPreAuth);
 insuranceRoutes.get('/pre-auth', authenticate, requirePermission('insurance', 'read'), validate(getPreAuthsQuerySchema), controller.getPreAuths);
+insuranceRoutes.post('/pre-auth/:id/enhancements', authenticate, requirePermission('insurance', 'create'), validate(createEnhancementSchema), workflowController.createEnhancement);
 insuranceRoutes.get('/pre-auth/:id', authenticate, requirePermission('insurance', 'read'), validate(idParamSchema), controller.getPreAuthById);
 insuranceRoutes.put('/pre-auth/:id', authenticate, requirePermission('insurance', 'update'), validate(updatePreAuthSchema), controller.updatePreAuth);
 insuranceRoutes.patch('/pre-auth/:id/approve', authenticate, requirePermission('insurance', 'approve'), validate(approvePreAuthSchema), controller.approvePreAuth);

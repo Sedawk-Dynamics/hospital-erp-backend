@@ -392,12 +392,22 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
   for (const t of ndpsTxns) {
     const p = t.patientId ? patientById.get(t.patientId) : null;
     const isTransfer = t.entryType === 'transfer';
+    const contentSummary = t.administeredQuantity != null && t.quantityUnit
+      ? ` · ${Number(t.administeredQuantity)} ${t.quantityUnit} given` +
+        (t.residualQuantity != null
+          ? ` · ${Number(t.residualQuantity)} ${t.quantityUnit} residual ${t.residualDisposition ?? 'recorded'}`
+          : '')
+      : '';
     rows.push({
       ...base(t.drugFormularyId),
       occurredAt: t.occurredAt,
       txnId: t.id.slice(0, 8),
       txnType:
-        t.entryType === 'dispense' ? 'Form 3E Admin.' : t.entryType === 'disposal' ? 'Disposal' : 'Internal Transfer',
+        t.entryType === 'dispense'
+          ? 'Form 3E Admin.'
+          : t.entryType === 'disposal'
+            ? t.reasonCode === 'patient_residual' ? 'Patient Residual Disposal' : 'Disposal'
+            : 'Internal Transfer',
       batchNumber: t.batchNumber,
       expiryDate: t.expiryDate,
       qtyOut: isTransfer ? 0 : t.quantity,
@@ -405,9 +415,17 @@ export async function getControlledRegister(tenantId: string, q: RegisterQuery) 
       // A challan moved NdpsStockBalance between locations and never touched a
       // batch, so hospital-wide it weighs nothing. A 3E administration or a
       // disposal does spend the stock.
-      stockDelta: isTransfer ? 0 : -t.quantity,
+      // A patient-specific pharmacy issue or ward-stock movement has already
+      // moved the physical container in another canonical ledger row. Form 3E
+      // still appears here for statutory traceability, but must not move the
+      // hospital-wide running balance twice. Direct emergency batch use remains
+      // a real outward movement; historical rows (null source) keep old logic.
+      stockDelta: isTransfer || t.stockSource === 'dispensing_record' ||
+        t.stockSource === 'ward_stock' || t.stockSource === 'residual_only'
+        ? 0
+        : -t.quantity,
       patientOrDept: p
-        ? `${personName(p)} (${p.mrn})`
+        ? `${personName(p)} (${p.mrn})${contentSummary}`
         : isTransfer
           ? `${t.fromLocationId ? locName.get(t.fromLocationId) ?? '?' : '?'} → ${t.toLocationId ? locName.get(t.toLocationId) ?? '?' : '?'}`
           : t.fromLocationId

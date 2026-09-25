@@ -91,13 +91,33 @@ export const scheduleIdParamSchema = z.object({
   params: z.object({ id: z.string().uuid() }),
 });
 
+export const prescriptionItemIdParamSchema = z.object({
+  params: z.object({ id: z.string().uuid() }),
+});
+
 // ── Dose actions ─────────────────────────────────────────────
+
+export const ndpsPatientDoseSchema = z.object({
+  drugBatchId: z.string().uuid('Select the administered batch'),
+  ndpsLocationId: z.string().uuid('Select the NDPS custody location'),
+  labelledQuantity: z.number().positive().max(1_000_000),
+  administeredQuantity: z.number().positive().max(1_000_000),
+  quantityUnit: z.string().trim().min(1).max(20),
+  containerQuantity: z.number().int().positive().max(100).default(1),
+  disposition: z.enum(['none', 'quarantined']).optional(),
+  residualHandling: z.enum(['pending_destruction', 'sealed_quarantine']).optional(),
+  quarantineLocation: z.string().trim().min(1).max(160).optional(),
+  emergencyUse: z.boolean().optional(),
+  emergencyReason: z.string().trim().min(1).max(1000).optional(),
+  notes: z.string().max(1000).optional(),
+});
 
 export const giveDoseSchema = z.object({
   params: z.object({ id: z.string().uuid() }),
   body: z.object({
     actualGivenTime: z.string().datetime().optional(), // server-side default = now
     notes: z.string().max(1000).optional(),
+    ndps: ndpsPatientDoseSchema.optional(),
   }),
 });
 
@@ -126,6 +146,7 @@ export const amendDoseSchema = z.object({
     actualGivenTime: z.string().datetime().optional(),
     reason: z.string().max(500).optional(),
     notes: z.string().max(1000).optional(),
+    ndps: ndpsPatientDoseSchema.optional(),
   }),
 });
 
@@ -136,6 +157,7 @@ export const triggerPrnSchema = z.object({
   body: z.object({
     actualGivenTime: z.string().datetime().optional(),
     notes: z.string().max(1000).optional(),
+    ndps: ndpsPatientDoseSchema.optional(),
   }),
 });
 
@@ -150,6 +172,7 @@ export const catchUpDoseSchema = z.object({
     actualGivenTime: z.string().datetime().optional(),
     reason: z.string().max(500).optional(),
     notes: z.string().max(1000).optional(),
+    ndps: ndpsPatientDoseSchema.optional(),
   }),
 });
 

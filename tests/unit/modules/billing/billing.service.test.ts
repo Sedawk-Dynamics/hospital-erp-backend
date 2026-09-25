@@ -29,6 +29,8 @@ import {
   decideDiscount,
   recalculateBillTotalsPublic,
   getPatientAdvanceBalance,
+  reopenBill,
+  addIpCharge,
 } from '../../../../src/modules/billing/billing.service';
 
 // ─── Extend mocks that setup.ts does not provide ───
@@ -1057,10 +1059,179 @@ describe('BillingService', () => {
   // getBillById
   // ═══════════════════════════════════════════
   describe('getBillById', () => {
+    it('returns server-authoritative reopen eligibility for an unpaid pending bill', async () => {
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue({
+        ...mockBillPending,
+        amountPaid: 0,
+        payments: [],
+        insuranceClaims: [],
+      } as any);
+
+      const bill = await getBillById(TENANT_ID, 'bill-1');
+
+      expect(bill).toMatchObject({ canReopen: true, reopenBlockedReason: null });
+    });
+
+    it('explains that a live TPA claim prevents reopening', async () => {
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue({
+        ...mockBillPending,
+        amountPaid: 0,
+        payments: [],
+        insuranceClaims: [
+          { status: 'partially_settled', claimNumber: 'CLM-20260923-0001' },
+        ],
+      } as any);
+
+      const bill = await getBillById(TENANT_ID, 'bill-1');
+
+      expect(bill).toMatchObject({ canReopen: false });
+      expect(bill.reopenBlockedReason).toContain('CLM-20260923-0001');
+      expect(bill.reopenBlockedReason).toContain('partially settled');
+    });
+
     it('should throw notFound for non-existent bill', async () => {
       vi.mocked(prisma.bill.findFirst).mockResolvedValue(null);
 
       await expect(getBillById(TENANT_ID, 'no-bill')).rejects.toThrow('Bill not found');
+    });
+  });
+
+  // ═══════════════════════════════════════════
+  // reopenBill — issued bill safely returned to draft
+  // ═══════════════════════════════════════════
+  describe('reopenBill', () => {
+    function mockReopenCandidate(overrides: Record<string, unknown> = {}) {
+      vi.mocked(prisma.bill.findFirst)
+        .mockResolvedValueOnce({ billDate: new Date('2026-09-24T00:00:00.000Z') } as any)
+        .mockResolvedValueOnce({
+          ...mockBillPending,
+          amountPaid: 0,
+          payments: [],
+          insuranceClaims: [],
+          ...overrides,
+        } as any);
+    }
+
+    it('reopens a pending bill with no active payment or claim', async () => {
+      mockReopenCandidate();
+      vi.mocked(prisma.bill.update).mockResolvedValue({
+        ...mockBillPending,
+        status: 'draft',
+        patient: mockPatient,
+        billItems: [mockBillItem],
+      } as any);
+
+      const result = await reopenBill(TENANT_ID, 'bill-1');
+
+      expect(result.status).toBe('draft');
+      expect(prisma.bill.update).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 'bill-1' }, data: { status: 'draft' } }),
+      );
+    });
+
+    it('does not let a TPA-linked issued bill be changed underneath its claim', async () => {
+      mockReopenCandidate({
+        insuranceClaims: [
+          { status: 'partially_settled', claimNumber: 'CLM-20260923-0001' },
+        ],
+      });
+
+      await expect(reopenBill(TENANT_ID, 'bill-1')).rejects.toThrow(
+        'This bill is linked to TPA claim CLM-20260923-0001 (partially settled)',
+      );
+      expect(prisma.bill.update).not.toHaveBeenCalled();
+    });
+
+    it('blocks an applied admission advance even when the TPA split leaves amountPaid at zero', async () => {
+      mockReopenCandidate({
+        amountPaid: 0,
+        payments: [{ status: 'completed', amount: 1500 }],
+      });
+
+      await expect(reopenBill(TENANT_ID, 'bill-1')).rejects.toThrow(
+        'This bill already has a payment or applied advance',
+      );
+      expect(prisma.bill.update).not.toHaveBeenCalled();
+    });
+
+    it('ignores reversed payment history when deciding whether it can reopen', async () => {
+      mockReopenCandidate({
+        payments: [{ status: 'reversed', amount: 1100 }],
+      });
+      vi.mocked(prisma.bill.update).mockResolvedValue({
+        ...mockBillPending,
+        status: 'draft',
+      } as any);
+
+      await expect(reopenBill(TENANT_ID, 'bill-1')).resolves.toMatchObject({ status: 'draft' });
+    });
+  });
+
+  // ═══════════════════════════════════════════
+  // addIpCharge — running admission bills accept later manual charges
+  // ═══════════════════════════════════════════
+  describe('addIpCharge', () => {
+    it('adds to a pending TPA bill and restores its committed insurer split', async () => {
+      vi.mocked(prisma.admission.findFirst).mockResolvedValue({
+        id: 'admission-1', patientId: 'patient-1',
+      } as any);
+      vi.mocked(prisma.bill.findFirst)
+        .mockResolvedValueOnce({
+          ...mockBillPending,
+          id: 'bill-1',
+          status: 'pending',
+          billDate: new Date('2026-09-24T00:00:00.000Z'),
+        } as any)
+        .mockResolvedValueOnce({ totalAmount: 1100 } as any)
+        .mockResolvedValueOnce({ totalAmount: 1100, amountPaid: 0 } as any);
+      vi.mocked(prisma.billItem.create).mockResolvedValue({ id: 'item-ip-1' } as any);
+      vi.mocked((prisma.billItem as any).findMany).mockResolvedValue([{
+        quantity: 1,
+        unitPrice: 1200,
+        discountAmount: 100,
+        taxAmount: 0,
+        totalAmount: 1100,
+        taxableValue: 0,
+        cgstAmount: 0,
+        sgstAmount: 0,
+        igstAmount: 0,
+        cessAmount: 0,
+      }]);
+      vi.mocked((prisma.discount as any).aggregate).mockResolvedValue({ _sum: { value: 0 } });
+      vi.mocked(prisma.payment.aggregate).mockResolvedValue({ _sum: { amount: 0 } } as any);
+      vi.mocked((prisma.refund as any).aggregate).mockResolvedValue({ _sum: { amount: 0 } });
+      vi.mocked(prisma.bill.findUnique)
+        .mockResolvedValueOnce({ tenantId: TENANT_ID } as any)
+        .mockResolvedValueOnce({ status: 'pending' } as any);
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue({
+        status: 'partially_settled',
+        approvedAmount: 900,
+        coveredAmount: 900,
+      } as any);
+      vi.mocked(prisma.bill.update).mockResolvedValue({ id: 'bill-1' } as any);
+
+      const result = await addIpCharge(
+        TENANT_ID,
+        USER_ID,
+        'admission-1',
+        { category: 'other', description: 'Dressing fee', quantity: 1, unitPrice: 1200, discount: 100 },
+        ['billing_admin'],
+      );
+
+      expect(result).toMatchObject({ billId: 'bill-1', item: { id: 'item-ip-1' } });
+      expect(prisma.billItem.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ discountAmount: 100, discountPercent: expect.any(Number) }),
+        }),
+      );
+      expect(prisma.bill.update).toHaveBeenCalledWith({
+        where: { id: 'bill-1' },
+        data: {
+          insuranceCoveredAmount: 900,
+          patientPayableAmount: 200,
+          balanceDue: 200,
+        },
+      });
     });
   });
 

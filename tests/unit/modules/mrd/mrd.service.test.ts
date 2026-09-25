@@ -107,3 +107,77 @@ describe('generateDischargeSummary — folding pins into a draft', () => {
     expect(prisma.dischargeSummary.update).not.toHaveBeenCalled();
   });
 });
+
+describe('generateDischargeSummary — emergency admission doctor fallback', () => {
+  const unassignedEmergencyAdmission = {
+    id: 'adm-emergency',
+    tenantId: TENANT_ID,
+    visitId: 'visit-emergency',
+    patientId: 'patient-1',
+    doctorId: null,
+    doctor: null,
+    visit: { id: 'visit-emergency', doctorId: null, doctor: null },
+    patient: {
+      id: 'patient-1',
+      mrn: 'MRN-001',
+      firstName: 'Emergency',
+      lastName: 'Patient',
+      dateOfBirth: null,
+      gender: null,
+      phone: null,
+      bloodGroup: null,
+    },
+    admissionDate: new Date('2026-09-24T00:00:00.000Z'),
+    dischargeDate: null,
+  };
+
+  beforeEach(() => {
+    vi.mocked(prisma.dischargeSummary.findUnique).mockResolvedValue(null);
+    vi.mocked(prisma.admission.findFirst).mockResolvedValue(unassignedEmergencyAdmission as any);
+    vi.mocked(prisma.diagnosis.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.progressNotePin.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.labResult.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.prescription.findMany).mockResolvedValue([]);
+  });
+
+  it('uses the latest treating doctor from the clinical record instead of returning 400', async () => {
+    vi.mocked(prisma.progressNote.findMany).mockResolvedValue([{
+      id: 'note-1',
+      visitId: 'visit-emergency',
+      patientId: 'patient-1',
+      doctorId: 'doctor-2',
+      content: 'Patient reviewed and stable.',
+      impressions: null,
+      discussions: null,
+      conclusions: null,
+      customFields: null,
+      createdAt: new Date('2026-09-24T08:44:05.301Z'),
+      doctor: {
+        id: 'doctor-2',
+        specialization: 'Emergency Medicine',
+        user: { firstName: 'Doc', lastName: 'Two' },
+      },
+    }] as any);
+    vi.mocked(prisma.dischargeSummary.create).mockImplementation(async (args: any) => ({
+      id: 'summary-1',
+      ...args.data,
+    }));
+
+    const summary = await generateDischargeSummary(TENANT_ID, 'adm-emergency');
+
+    expect(summary).toMatchObject({ doctorId: 'doctor-2', status: 'draft' });
+    const createData = (vi.mocked(prisma.dischargeSummary.create).mock.calls[0][0] as any).data;
+    expect(createData.doctorId).toBe('doctor-2');
+    expect(createData.headerSummary).toContain('Dr. Doc Two (Emergency Medicine)');
+    expect(prisma.admission.update).not.toHaveBeenCalled();
+  });
+
+  it('still gives a clear validation error when no doctor has treated the patient', async () => {
+    vi.mocked(prisma.progressNote.findMany).mockResolvedValue([]);
+
+    await expect(
+      generateDischargeSummary(TENANT_ID, 'adm-emergency'),
+    ).rejects.toThrow('no treating doctor is assigned');
+    expect(prisma.dischargeSummary.create).not.toHaveBeenCalled();
+  });
+});

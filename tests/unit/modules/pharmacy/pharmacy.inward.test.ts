@@ -241,6 +241,51 @@ describe('Pharmacy — G1 bulk stock inward (CSV / OCR / manual)', () => {
       expect(res.purchaseSummary.netValue).toBe(1260);
     });
 
+    it('normalises package / strip prices to the smallest unit before storage and totals', async () => {
+      (prisma.drugFormulary.findFirst as any).mockResolvedValue({
+        id: 'drug-existing',
+        drugName: 'Telmac 40',
+        packSize: 10,
+      });
+      // The reviewed packaging definition is persisted on the mapped product as
+      // well as used to normalize this receipt's package prices.
+      (prisma.drugBatch.findFirst as any).mockResolvedValue(null);
+      (prisma.drugBatch.create as any).mockResolvedValue({ id: 'batch-priced' });
+
+      const res = await commitInward(TENANT_ID, USER_ID, ADMIN_ROLES, {
+        lines: [
+          {
+            action: 'map',
+            targetFormularyId: 'drug-existing',
+            drugName: 'Telmac 40',
+            batchNumber: 'PK-10',
+            expiryDate: '2030-12-31',
+            quantityReceived: 100,
+            unitOfMeasurement: 'Strip (UQC PAC)',
+            packSize: 10,
+            looseUnitLabel: 'Tablet',
+            priceBasis: 'package',
+            mrp: 120,
+            purchasePrice: 80,
+            sellingPrice: 110,
+          },
+        ],
+      } as any);
+
+      const stored = (prisma.drugBatch.create as any).mock.calls[0][0].data;
+      expect(stored).toMatchObject({ mrp: 12, purchasePrice: 8, sellingPrice: 11 });
+      expect(prisma.drugFormulary.update).toHaveBeenCalledWith({
+        where: { id: 'drug-existing' },
+        data: {
+          unitOfMeasurement: 'Strip (UQC PAC)',
+          packSize: 10,
+          looseUnitLabel: 'Tablet',
+        },
+      });
+      // 100 smallest units × ₹8, not 100 × the ₹80 strip rate.
+      expect(res.purchaseSummary.grossValue).toBe(800);
+    });
+
     it('rejects a non-pharmacy-admin caller', async () => {
       await expect(
         commitInward(TENANT_ID, USER_ID, ['pharmacist'], {

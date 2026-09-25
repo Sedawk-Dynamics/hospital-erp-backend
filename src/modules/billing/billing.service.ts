@@ -1297,6 +1297,10 @@ export async function getBillById(tenantId: string, id: string) {
       payments: {
         orderBy: { createdAt: 'desc' },
       },
+      insuranceClaims: {
+        select: { id: true, claimNumber: true, status: true },
+        orderBy: { createdAt: 'desc' },
+      },
     },
   });
 
@@ -1304,7 +1308,70 @@ export async function getBillById(tenantId: string, id: string) {
     throw AppError.notFound('Bill not found');
   }
 
-  return bill;
+  return { ...bill, ...billReopenState(bill) };
+}
+
+type BillReopenStateInput = {
+  status: string;
+  amountPaid: Decimal | number | string;
+  payments: Array<{ status: string; amount: Decimal | number | string }>;
+  insuranceClaims: Array<{ status: string; claimNumber?: string | null }>;
+};
+
+/**
+ * One definition of whether an issued bill may return to draft. This is sent
+ * with the bill and reused by the mutation, so the screen never advertises an
+ * action that the server is guaranteed to reject.
+ */
+function billReopenState(bill: BillReopenStateInput): {
+  canReopen: boolean;
+  reopenBlockedReason: string | null;
+} {
+  if (bill.status === 'draft') {
+    return { canReopen: false, reopenBlockedReason: 'This bill is already open for editing.' };
+  }
+
+  if (bill.status !== 'pending') {
+    return {
+      canReopen: false,
+      reopenBlockedReason: `A ${bill.status.replace(/_/g, ' ')} bill cannot be reopened.`,
+    };
+  }
+
+  // Rejected/cancelled claims no longer have a live financial workflow. Every
+  // other state — especially approved/settled — must keep the issued bill
+  // immutable so its TPA ledger continues to reconcile.
+  const activeClaim = bill.insuranceClaims.find(
+    (claim) => claim.status !== 'rejected' && claim.status !== 'cancelled',
+  );
+  if (activeClaim) {
+    const claimLabel = activeClaim.claimNumber ? ` ${activeClaim.claimNumber}` : '';
+    return {
+      canReopen: false,
+      reopenBlockedReason:
+        `This bill is linked to TPA claim${claimLabel} (${activeClaim.status.replace(/_/g, ' ')}). ` +
+        'Use the IP ledger for new charges or the insurance adjustment flow; the issued bill cannot be changed.',
+    };
+  }
+
+  // Failed/reversed attempts do not represent money held by the hospital.
+  // Pending or completed rows do, including an applied admission advance even
+  // when amountPaid was later redistributed by an insurance split.
+  const activePayment = bill.payments.find(
+    (payment) =>
+      payment.status !== 'failed' &&
+      payment.status !== 'reversed' &&
+      Number(payment.amount) > 0,
+  );
+  if (Number(bill.amountPaid) > 0 || activePayment) {
+    return {
+      canReopen: false,
+      reopenBlockedReason:
+        'This bill already has a payment or applied advance. Reverse it before reopening the bill.',
+    };
+  }
+
+  return { canReopen: true, reopenBlockedReason: null };
 }
 
 /**
@@ -1747,7 +1814,9 @@ export async function finalizeBill(tenantId: string, userId: string, billId: str
  * adding items to the same bill instead of abandoning it and starting a new
  * one. Only safe while nothing has been collected against it — once a payment
  * (or an insurance claim) exists the bill has left the counter's hands and must
- * be adjusted/cancelled through the normal routes instead.
+ * be adjusted/cancelled through the normal routes instead. Reversed/failed
+ * payment history and rejected/cancelled claims are not financial commitments,
+ * so those historical rows do not keep an otherwise clean bill locked.
  */
 export async function reopenBill(tenantId: string, billId: string) {
   // Section 6.10 — a bill inside a filed-and-locked return period cannot be
@@ -1756,7 +1825,8 @@ export async function reopenBill(tenantId: string, billId: string) {
   const bill = await prisma.bill.findFirst({
     where: { id: billId, tenantId },
     include: {
-      _count: { select: { payments: true, insuranceClaims: true } },
+      payments: { select: { status: true, amount: true } },
+      insuranceClaims: { select: { status: true, claimNumber: true } },
     },
   });
 
@@ -1768,22 +1838,9 @@ export async function reopenBill(tenantId: string, billId: string) {
     return bill; // already editable — idempotent
   }
 
-  if (bill.status !== 'pending') {
-    throw AppError.badRequest(
-      `Cannot reopen a ${bill.status.replace(/_/g, ' ')} bill`,
-    );
-  }
-
-  if (Number(bill.amountPaid) > 0 || bill._count.payments > 0) {
-    throw AppError.badRequest(
-      'Cannot reopen a bill that already has payments. Reverse the payment first.',
-    );
-  }
-
-  if (bill._count.insuranceClaims > 0) {
-    throw AppError.badRequest(
-      'Cannot reopen a bill that has been transferred to insurance/TPA.',
-    );
+  const reopenState = billReopenState(bill);
+  if (!reopenState.canReopen) {
+    throw AppError.badRequest(reopenState.reopenBlockedReason ?? 'This bill cannot be reopened.');
   }
 
   const updated = await prisma.bill.update({
@@ -4320,7 +4377,10 @@ async function resolveTransferPolicy(tenantId: string, patientId: string, opts: 
   const insurance = await import('../insurance/insurance.service');
   if (opts.policyId) {
     return prisma.insurancePolicy.findFirst({
-      where: { id: opts.policyId, tenantId },
+      // A policy can only be attached to the patient whose admission is being
+      // converted. Tenant scoping alone would let a billing user accidentally
+      // select another patient's policy from the same hospital.
+      where: { id: opts.policyId, tenantId, patientId, status: 'active' },
       include: {
         insurer: { select: { id: true, name: true, gstin: true, stateCode: true } },
         tpa: { select: { id: true, name: true, gstin: true, stateCode: true } },
@@ -4484,6 +4544,7 @@ export async function transferAdmissionToTpa(tenantId: string, userId: string, a
     patientId: admission.patientId,
     billId: bill.id,
     claimAmount: claimAmountToTpa,
+    tier: 'primary',
   });
   // Reflect the insurer-covered vs patient-payable split on the WHOLE bill:
   // insurer covers the covered portion of the claimed lines; the patient owes
@@ -4503,6 +4564,86 @@ export async function transferAdmissionToTpa(tenantId: string, userId: string, a
     claim,
     bill: updatedBill,
     policy: { id: policy.id, policyNumber: policy.policyNumber, insurer: policy.insurer, tpa: policy.tpa },
+  };
+}
+
+/**
+ * Change an active admission from direct/package billing to the cashless TPA
+ * workflow without prematurely finalising its running bill.
+ *
+ * The billing counter may discover insurance after admission. This action makes
+ * that correction in one place: it changes the admission category, resolves the
+ * patient's policy (or creates the normal pending-assignment placeholder), and
+ * lets the existing auto-link flow raise/synchronise a claim when charges exist.
+ */
+export async function changeAdmissionBillingToTpa(
+  tenantId: string,
+  userId: string,
+  admissionId: string,
+  opts: TransferToTpaOptions = {},
+) {
+  const admission = await prisma.admission.findFirst({
+    where: { id: admissionId, tenantId },
+    select: { id: true, patientId: true, billingCategory: true, status: true },
+  });
+  if (!admission) throw AppError.notFound('Admission not found');
+  if (!isActiveAdmission(admission.status)) {
+    throw AppError.badRequest('Billing can only be changed to TPA while the admission is active.');
+  }
+
+  // Resolve and validate the policy before changing the admission. With no
+  // policy selected this uses the active policy, or creates the same pending
+  // TPA assignment used by insurance admissions created at the front desk.
+  const policy = await resolveTransferPolicy(tenantId, admission.patientId, opts);
+  if (!policy) {
+    throw AppError.badRequest('The selected insurance policy is not valid for this patient.');
+  }
+
+  const oldCategory = (admission.billingCategory ?? 'cash').toLowerCase();
+  if (!INSURANCE_CATEGORIES.has(oldCategory)) {
+    await prisma.admission.update({
+      where: { id: admissionId },
+      data: { billingCategory: 'insurance' },
+    });
+  }
+
+  // If a payer GST identity is available it must be present before the bill is
+  // eventually finalised. This helper is deliberately harmless when no GSTIN
+  // has been configured yet.
+  await stampPayerOnAdmissionBill(tenantId, userId, admissionId, policy);
+
+  const linked = await ensureAdmissionTpaLink(tenantId, userId, admissionId, {
+    policyId: policy.id,
+  });
+
+  if (!INSURANCE_CATEGORIES.has(oldCategory)) {
+    await writeAudit({
+      tenantId,
+      userId,
+      action: 'update',
+      entityType: 'admission',
+      entityId: admissionId,
+      description: 'Billing category changed to TPA / insurance from Hospital Billing',
+      oldValues: { billingCategory: oldCategory },
+      newValues: { billingCategory: 'insurance', policyId: policy.id },
+    });
+  }
+
+  logger.info(
+    { tenantId, admissionId, patientId: admission.patientId, policyId: policy.id, oldCategory },
+    'Admission billing changed to TPA',
+  );
+
+  return {
+    admission: { id: admissionId, billingCategory: 'insurance', status: admission.status },
+    policy: {
+      id: policy.id,
+      policyNumber: policy.policyNumber,
+      insurer: policy.insurer,
+      tpa: policy.tpa,
+    },
+    claim: linked?.claim ?? null,
+    connected: linked?.connected ?? true,
   };
 }
 
@@ -4758,7 +4899,7 @@ export async function addIpCharge(
   tenantId: string,
   userId: string,
   admissionId: string,
-  data: { category: string; description: string; quantity?: number; unitPrice: number; taxRate?: number; serviceTariffId?: string; notes?: string },
+  data: { category: string; description: string; quantity?: number; unitPrice: number; discount?: number; taxRate?: number; serviceTariffId?: string; notes?: string },
   roles: string[] = [],
 ) {
   await assertIpLedgerAccess(tenantId, admissionId, { userId, roles }, { write: true, nurseWrite: true });
@@ -4767,6 +4908,8 @@ export async function addIpCharge(
   const bill = await getOrCreateRunningIpBill(tenantId, admissionId, userId);
   const qty = Math.max(1, Math.trunc(data.quantity ?? 1));
   const unitPrice = r2(Math.max(0, data.unitPrice));
+  const discountAmount = r2(Math.max(0, data.discount ?? 0));
+  const discountPercent = unitPrice > 0 ? (discountAmount / (qty * unitPrice)) * 100 : 0;
 
   const tariff = data.serviceTariffId
     ? await prisma.serviceTariff.findFirst({ where: { id: data.serviceTariffId, tenantId } })
@@ -4790,7 +4933,7 @@ export async function addIpCharge(
       patientAdmitted: true,
       issuedForTreatment: true,
     },
-    { unitPrice, quantity: qty },
+    { unitPrice, quantity: qty, discountAmount },
   );
   const totalAmount = priced.money.totalAmount;
 
@@ -4802,6 +4945,8 @@ export async function addIpCharge(
       category: category as any,
       quantity: qty,
       unitPrice,
+      discountPercent,
+      discountAmount,
       ...billItemTaxFields(priced),
       referenceType: 'manual_clinical',
       referenceId: `${userId}:${Date.now()}`,
@@ -4809,6 +4954,53 @@ export async function addIpCharge(
     },
   });
   await recalculateBillTotals(bill.id);
+
+  // A running IP bill may already be pending because the counter generated an
+  // interim bill or sent it to the TPA. Posting a bedside/manual charge is still
+  // valid for the active stay, but recalculation rebuilds balanceDue from the
+  // payment ledger. Restore the insurance split immediately so the new line
+  // cannot make the screen demand the full bill from the patient.
+  try {
+    const claim = await prisma.insuranceClaim.findFirst({
+      where: { tenantId, billId: bill.id, status: { notIn: ['cancelled', 'rejected'] } },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        status: true,
+        approvedAmount: true,
+        coveredAmount: true,
+      },
+    });
+    const insurance = await import('../insurance/insurance.service');
+    if (claim && claim.status !== 'submitted' && claim.status !== 'resubmitted') {
+      const freshBill = await prisma.bill.findFirst({
+        where: { id: bill.id, tenantId },
+        select: { totalAmount: true },
+      });
+      const committedCover = Math.min(
+        Number(freshBill?.totalAmount ?? 0),
+        Number(claim.approvedAmount ?? claim.coveredAmount ?? 0),
+      );
+      await insurance.applyBillSplit(
+        tenantId,
+        bill.id,
+        committedCover,
+        Math.max(0, Number(freshBill?.totalAmount ?? 0) - committedCover),
+      );
+    } else {
+      // Submitted/resubmitted claims are still editable, so the normal TPA link
+      // expands the claim itself. With no claim it creates one only when this is
+      // actually an insurance/corporate admission; cash stays are a no-op.
+      await ensureAdmissionTpaLink(tenantId, userId, admissionId);
+    }
+  } catch (err) {
+    // The charge is already on the clinical ledger. Returning an error here
+    // invites a retry and a duplicate charge; surface the sync issue in logs and
+    // let the insurance desk use its explicit split/adjustment action.
+    logger.warn(
+      { err, tenantId, admissionId, billId: bill.id, itemId: item.id },
+      'IP charge posted but the TPA split could not be refreshed',
+    );
+  }
   logger.info({ tenantId, admissionId, billId: bill.id, category, totalAmount }, 'IP clinical charge added to ledger');
   return { billId: bill.id, item };
 }
@@ -4882,7 +5074,7 @@ export async function setBillItemReimbursable(tenantId: string, itemId: string, 
     orderBy: { createdAt: 'desc' },
     select: { id: true, policyId: true },
   });
-  if (claim) {
+  if (claim?.policyId) {
     const insurance = await import('../insurance/insurance.service');
     const items = await prisma.billItem.findMany({ where: { billId: item.billId }, select: { totalAmount: true, isReimbursable: true } });
     const reimbursable = r2(items.filter((it) => it.isReimbursable !== false).reduce((s, it) => s + Number(it.totalAmount), 0));
@@ -5693,7 +5885,12 @@ const INSURANCE_CATEGORIES = new Set(['insurance', 'corporate']);
  * is only auto-adjusted while it is still pre-processing (submitted / resubmitted);
  * once the TPA team picks it up it is left alone. Idempotent + meant to be non-fatal.
  */
-export async function ensureAdmissionTpaLink(tenantId: string, userId: string, admissionId: string) {
+export async function ensureAdmissionTpaLink(
+  tenantId: string,
+  userId: string,
+  admissionId: string,
+  opts: TransferToTpaOptions = {},
+) {
   const r2 = (n: number) => Math.round(n * 100) / 100;
   const admission = await prisma.admission.findFirst({
     where: { id: admissionId, tenantId },
@@ -5706,7 +5903,7 @@ export async function ensureAdmissionTpaLink(tenantId: string, userId: string, a
   const insurance = await import('../insurance/insurance.service');
 
   // 1) The connection: ensure the patient is linked to a TPA policy (from booking).
-  const policy = await resolveTransferPolicy(tenantId, admission.patientId, {});
+  const policy = await resolveTransferPolicy(tenantId, admission.patientId, opts);
   if (!policy) return { policy: null, claim: null, connected: false };
 
   // 2) The admission's bills — do NOT create one here; the connection stands even

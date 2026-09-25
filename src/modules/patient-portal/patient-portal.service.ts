@@ -1749,6 +1749,48 @@ export async function getPatientFollowUps(
   return { data: followUps };
 }
 
+export async function getPatientInsuranceCases(
+  userId: string,
+  email: string,
+  query: { tenantId?: string; profileId?: string } = {},
+) {
+  const patientIds = await resolvePatientIds(userId, email, query.tenantId, query.profileId);
+  if (!patientIds.length) return [];
+  return prisma.insuranceCase.findMany({
+    where: {
+      patientId: { in: patientIds },
+      ...(query.tenantId ? { tenantId: query.tenantId } : {}),
+      status: { not: 'cancelled' },
+    },
+    select: {
+      id: true,
+      caseNumber: true,
+      caseType: true,
+      settlementMode: true,
+      status: true,
+      priority: true,
+      createdAt: true,
+      updatedAt: true,
+      physicalReleaseAt: true,
+      patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
+      tenant: { select: { name: true } },
+      insurer: { select: { name: true } },
+      tpa: { select: { name: true } },
+      corporatePayer: { select: { name: true } },
+      governmentSchemePayer: { select: { name: true } },
+      preAuthRequests: {
+        select: { id: true, requestNumber: true, requestType: true, status: true, approvalNumber: true, approvedAmount: true, decisionDueAt: true, decidedAt: true },
+        orderBy: { createdAt: 'desc' },
+      },
+      claims: {
+        select: { id: true, claimNumber: true, tier: true, status: true, claimAmount: true, approvedAmount: true, paidAmount: true, outstandingAmount: true, submissionDate: true, settlementDate: true },
+        orderBy: { sequence: 'asc' },
+      },
+    },
+    orderBy: { updatedAt: 'desc' },
+  });
+}
+
 export async function getPatientBills(
   userId: string,
   email: string,

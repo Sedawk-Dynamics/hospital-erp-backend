@@ -28,6 +28,7 @@ import type {
   SplitBillInput,
   CreateTpaLogInput,
 } from './insurance.validation';
+import { notifyPatientInsuranceMilestone } from './insurance.notifications';
 
 // ============================================================
 // Defaults
@@ -44,6 +45,16 @@ function decNum(value: Prisma.Decimal | number | string | null | undefined): num
   if (value === null || value === undefined) return 0;
   if (typeof value === 'number') return value;
   return Number(value.toString());
+}
+
+export function calculateDelayLiability(decisionDueAt: Date | null, decidedAt: Date, dailyRoomRate: number) {
+  const lateMinutes = decisionDueAt
+    ? Math.max(0, (decidedAt.getTime() - decisionDueAt.getTime()) / 60_000)
+    : 0;
+  return {
+    lateMinutes,
+    amount: Number(((dailyRoomRate * lateMinutes) / (24 * 60)).toFixed(2)),
+  };
 }
 
 // ============================================================
@@ -83,26 +94,20 @@ async function generateClaimNumber(_tenantId: string): Promise<string> {
 }
 
 async function generatePreAuthRequestNumber(tenantId: string): Promise<string> {
-  const today = new Date();
-  const dateStr =
-    today.getFullYear().toString() +
-    (today.getMonth() + 1).toString().padStart(2, '0') +
-    today.getDate().toString().padStart(2, '0');
-
-  const prefix = `PA-${dateStr}-`;
+  const prefix = `PA-${getISTDateStr()}-`;
 
   const latest = await prisma.preAuthorizationRequest.findFirst({
     where: {
       tenantId,
-      approvalNumber: { startsWith: prefix },
+      requestNumber: { startsWith: prefix },
     },
-    orderBy: { approvalNumber: 'desc' },
-    select: { approvalNumber: true },
+    orderBy: { requestNumber: 'desc' },
+    select: { requestNumber: true },
   });
 
   let nextNumber = 1;
-  if (latest?.approvalNumber) {
-    const lastNumber = parseInt(latest.approvalNumber.split('-').pop() || '0', 10);
+  if (latest?.requestNumber) {
+    const lastNumber = parseInt(latest.requestNumber.split('-').pop() || '0', 10);
     nextNumber = lastNumber + 1;
   }
 
@@ -609,12 +614,25 @@ export async function verifyPolicy(tenantId: string, id: string) {
 // ============================================================
 
 export async function createClaim(tenantId: string, userId: string, data: CreateClaimInput) {
-  // Verify policy exists and belongs to tenant
-  const policy = await prisma.insurancePolicy.findFirst({
-    where: { id: data.policyId, tenantId },
-  });
-  if (!policy) {
-    throw AppError.notFound('Insurance policy not found');
+  const insuranceCase = data.insuranceCaseId
+    ? await prisma.insuranceCase.findFirst({
+        where: { id: data.insuranceCaseId, tenantId, patientId: data.patientId },
+        include: { policies: { orderBy: { sequence: 'asc' } } },
+      })
+    : null;
+  if (data.insuranceCaseId && !insuranceCase) {
+    throw AppError.notFound('Insurance / payer case not found for this patient');
+  }
+
+  const policyId = data.policyId ?? insuranceCase?.policies[0]?.policyId;
+  const policy = policyId
+    ? await prisma.insurancePolicy.findFirst({ where: { id: policyId, tenantId, patientId: data.patientId } })
+    : null;
+  if (policyId && !policy) throw AppError.notFound('Insurance policy not found for this patient');
+  if (!policy && !insuranceCase) throw AppError.badRequest('A policy or insurance / payer case is required');
+  if (insuranceCase && policyId) {
+    const linked = insuranceCase.policies.some((item) => item.policyId === policyId);
+    if (!linked) throw AppError.badRequest('Selected policy is not linked to this payer case');
   }
 
   // Verify patient exists
@@ -635,27 +653,56 @@ export async function createClaim(tenantId: string, userId: string, data: Create
 
   // Policy validity
   const now = new Date();
-  if (policy.status !== 'active' || policy.validFrom > now || policy.validTo < now) {
+  if (policy && (policy.status !== 'active' || policy.validFrom > now || policy.validTo < now)) {
     throw AppError.badRequest('Insurance policy is not active for this date');
+  }
+
+  if (data.preAuthId) {
+    const preAuth = await prisma.preAuthorizationRequest.findFirst({
+      where: { id: data.preAuthId, tenantId, patientId: data.patientId },
+    });
+    if (!preAuth || (insuranceCase && preAuth.insuranceCaseId !== insuranceCase.id)) {
+      throw AppError.badRequest('Pre-authorization is not linked to this patient and payer case');
+    }
   }
 
   // Co-pay / deductible / covered split
   const split = computeResponsibility(
     decNum(data.claimAmount),
-    decNum(policy.coPayPercent),
-    decNum(policy.deductibleAmount),
-    decNum(policy.coverageAmount),
+    decNum(policy?.coPayPercent),
+    decNum(policy?.deductibleAmount),
+    decNum(policy?.coverageAmount),
   );
 
   const claimNumber = await generateClaimNumber(tenantId);
-  const expiryDays = data.expiryDays ?? DEFAULT_CLAIM_EXPIRY_DAYS;
+  let expiryDays = data.expiryDays ?? DEFAULT_CLAIM_EXPIRY_DAYS;
+  if (!data.expiryDays && insuranceCase) {
+    const contract = await prisma.payerContract.findFirst({
+      where: {
+        tenantId,
+        payerType: insuranceCase.paymentResponsibleType,
+        payerId: insuranceCase.paymentResponsibleId,
+        isActive: true,
+        validFrom: { lte: now },
+        validTo: { gte: now },
+      },
+      orderBy: { validFrom: 'desc' },
+    });
+    if (contract) expiryDays = contract.submissionWindowDays;
+  }
   const expiryDate = new Date(now.getTime() + expiryDays * 24 * 60 * 60 * 1000);
+
+  const sequence = data.sequence ?? (insuranceCase
+    ? (await prisma.insuranceClaim.count({ where: { insuranceCaseId: insuranceCase.id } })) + 1
+    : 1);
 
   const claim = await prisma.insuranceClaim.create({
     data: {
       tenantId,
       patientId: data.patientId,
-      policyId: data.policyId,
+      policyId,
+      insuranceCaseId: insuranceCase?.id,
+      preAuthId: data.preAuthId,
       billId: data.billId,
       claimNumber,
       claimAmount: data.claimAmount,
@@ -666,6 +713,13 @@ export async function createClaim(tenantId: string, userId: string, data: Create
       outstandingAmount: data.claimAmount,
       expiryDate,
       status: 'submitted',
+      tier: data.tier,
+      sequence,
+      settlementMode: data.settlementMode ?? insuranceCase?.settlementMode ?? 'cashless',
+      submissionChannel: data.submissionChannel,
+      payerClaimReference: data.payerClaimReference,
+      submissionReference: data.submissionReference,
+      nhcxTransactionId: data.nhcxTransactionId,
       submissionDate: now,
       documentsUrl: data.documentsUrl ?? undefined,
       notes: data.notes,
@@ -677,6 +731,14 @@ export async function createClaim(tenantId: string, userId: string, data: Create
       bill: { select: { id: true, billNumber: true, totalAmount: true } },
     },
   });
+
+  if (insuranceCase) {
+    await prisma.insuranceCase.update({ where: { id: insuranceCase.id }, data: { status: 'claimSubmitted' } });
+  }
+  // Build payer-specific requirements immediately so submission has a real
+  // completeness gate instead of a free-form attachment list.
+  const workflow = await import('./insurance.workflow.service');
+  await workflow.syncClaimChecklist(tenantId, claim.id);
 
   logger.info({ tenantId, claimId: claim.id, claimNumber }, 'Insurance claim created');
   return claim;
@@ -783,6 +845,7 @@ export async function getClaims(tenantId: string, query: any) {
 
   if (query.patientId) where.patientId = query.patientId;
   if (query.policyId) where.policyId = query.policyId;
+  if (query.insuranceCaseId) where.insuranceCaseId = query.insuranceCaseId;
   if (query.status) where.status = query.status;
 
   if (query.fromDate) {
@@ -810,7 +873,16 @@ export async function getClaims(tenantId: string, query: any) {
           select: { id: true, firstName: true, lastName: true },
         },
         policy: {
-          select: { id: true, policyNumber: true },
+          select: { id: true, policyNumber: true, insurer: { select: { id: true, name: true } } },
+        },
+        insuranceCase: {
+          select: {
+            id: true, caseNumber: true, status: true,
+            insurer: { select: { id: true, name: true } },
+            tpa: { select: { id: true, name: true } },
+            corporatePayer: { select: { id: true, name: true } },
+            governmentSchemePayer: { select: { id: true, name: true } },
+          },
         },
         bill: {
           select: { id: true, billNumber: true, totalAmount: true },
@@ -840,8 +912,84 @@ export async function getClaimById(tenantId: string, id: string) {
           insurer: { select: { id: true, name: true } },
         },
       },
+      insuranceCase: {
+        select: {
+          id: true,
+          caseNumber: true,
+          status: true,
+          insurer: { select: { id: true, name: true } },
+          tpa: { select: { id: true, name: true } },
+          corporatePayer: { select: { id: true, name: true } },
+          governmentSchemePayer: { select: { id: true, name: true } },
+        },
+      },
+      preAuth: true,
       bill: {
-        select: { id: true, billNumber: true, totalAmount: true, status: true },
+        // The TPA desk must be able to review the source bill, not only the
+        // claimed total. Keep this nested under the tenant-scoped claim so a
+        // claim ID can never be used to read another hospital's bill.
+        select: {
+          id: true,
+          billNumber: true,
+          billDate: true,
+          status: true,
+          subtotal: true,
+          discountAmount: true,
+          taxAmount: true,
+          totalAmount: true,
+          insuranceCoveredAmount: true,
+          patientPayableAmount: true,
+          amountPaid: true,
+          balanceDue: true,
+          taxableValue: true,
+          cgstAmount: true,
+          sgstAmount: true,
+          igstAmount: true,
+          cessAmount: true,
+          roundOff: true,
+          gstDocumentType: true,
+          invoiceNumber: true,
+          billOfSupplyNumber: true,
+          billItems: {
+            orderBy: { createdAt: 'asc' },
+            select: {
+              id: true,
+              description: true,
+              category: true,
+              quantity: true,
+              unitPrice: true,
+              discountPercent: true,
+              discountAmount: true,
+              taxPercent: true,
+              taxAmount: true,
+              totalAmount: true,
+              hsnSacCode: true,
+              gstTreatment: true,
+              taxableValue: true,
+              cgstAmount: true,
+              sgstAmount: true,
+              igstAmount: true,
+              cessAmount: true,
+              isReimbursable: true,
+              tpaCategory: true,
+              createdAt: true,
+            },
+          },
+          payments: {
+            orderBy: { paymentDate: 'asc' },
+            select: {
+              id: true,
+              paymentDate: true,
+              amount: true,
+              paymentMethod: true,
+              paymentSource: true,
+              paymentType: true,
+              status: true,
+              transactionId: true,
+              notes: true,
+            },
+          },
+        },
       },
       submitter: {
         select: { id: true, firstName: true, lastName: true },
@@ -853,6 +1001,13 @@ export async function getClaimById(tenantId: string, id: string) {
         orderBy: { createdAt: 'desc' },
         take: 10,
       },
+      documents: { orderBy: [{ name: 'asc' }, { version: 'desc' }] },
+      checklistItems: { orderBy: { createdAt: 'asc' } },
+      queries: { orderBy: { raisedAt: 'desc' } },
+      settlements: { orderBy: { settlementDate: 'desc' } },
+      writeOffs: { orderBy: { createdAt: 'desc' } },
+      adjustments: { orderBy: { effectiveDate: 'desc' } },
+      auditEvents: { orderBy: { occurredAt: 'desc' }, take: 100 },
     },
   });
 
@@ -912,6 +1067,7 @@ export async function resyncClaimAmount(tenantId: string, claimId: string, newCl
   });
   if (!claim) return null;
   if (claim.status !== 'submitted' && claim.status !== 'resubmitted') return claim;
+  if (!claim.policy) return claim;
 
   const split = computeResponsibility(
     Math.max(0, newClaimAmount),
@@ -944,6 +1100,12 @@ export async function submitClaim(tenantId: string, id: string, userId?: string)
 
   if (claim.status !== 'submitted' && claim.status !== 'resubmitted') {
     throw AppError.badRequest('Claim is not in a submittable status');
+  }
+
+  const checklist = await prisma.claimChecklistItem.findMany({ where: { claimId: id, isRequired: true } });
+  if (checklist.length && checklist.some((item) => !item.isComplete)) {
+    const missing = checklist.filter((item) => !item.isComplete).map((item) => item.label);
+    throw AppError.badRequest(`Claim dossier is incomplete: ${missing.join(', ')}`);
   }
 
   const updated = await prisma.insuranceClaim.update({
@@ -1027,6 +1189,15 @@ export async function approveClaim(
     content: `Approved ${approvedAmount.toFixed(2)} of ${claimAmount.toFixed(2)}. Patient share ${patientShare.toFixed(2)}.`,
   });
 
+  await notifyPatientInsuranceMilestone({
+    tenantId,
+    patientId: claim.patientId,
+    title: 'Insurance claim approved',
+    message: `Your payer approved ${approvedAmount.toFixed(2)}. Your current estimated share is ${patientShare.toFixed(2)}.`,
+    referenceType: 'insurance_claim',
+    referenceId: id,
+  });
+
   logger.info(
     { tenantId, claimId: id, approvedAmount: data.approvedAmount },
     'Insurance claim approved',
@@ -1096,6 +1267,16 @@ export async function partialApproveClaim(
       (data.rejectionReason ? ` Insurer's reason: ${data.rejectionReason}` : ''),
   });
 
+  await notifyPatientInsuranceMilestone({
+    tenantId,
+    patientId: claim.patientId,
+    title: 'Insurance claim partially approved',
+    message: `Your payer approved ${approvedAmount.toFixed(2)} of ${claimAmount.toFixed(2)}. Your current estimated share is ${patientShare.toFixed(2)}.`,
+    referenceType: 'insurance_claim',
+    referenceId: id,
+    alert: true,
+  });
+
   logger.info({ tenantId, claimId: id, approvedAmount }, 'Insurance claim partially approved');
   return updated;
 }
@@ -1151,6 +1332,15 @@ export async function settleClaim(
       `of ${approved.toFixed(2)} approved; outstanding ${outstanding.toFixed(2)}.`,
   });
 
+  await notifyPatientInsuranceMilestone({
+    tenantId,
+    patientId: claim.patientId,
+    title: fullySettled ? 'Insurance claim settled' : 'Insurance claim part-settled',
+    message: `The payer has settled ${newPaid.toFixed(2)} of ${approved.toFixed(2)}. Payer outstanding is ${outstanding.toFixed(2)}.`,
+    referenceType: 'insurance_claim',
+    referenceId: id,
+  });
+
   logger.info({ tenantId, claimId: id, paid: data.paidAmount, status: updated.status }, 'Insurance claim settled (partial or full)');
   return updated;
 }
@@ -1168,17 +1358,16 @@ export async function resubmitClaim(
     throw AppError.badRequest('Only rejected or partially-approved claims can be resubmitted');
   }
 
-  const policy = await prisma.insurancePolicy.findFirst({
-    where: { id: original.policyId, tenantId },
-  });
-  if (!policy) throw AppError.notFound('Insurance policy not found');
+  const policy = original.policyId
+    ? await prisma.insurancePolicy.findFirst({ where: { id: original.policyId, tenantId } })
+    : null;
 
   const newAmount = data.claimAmount ?? decNum(original.claimAmount);
   const split = computeResponsibility(
     newAmount,
-    decNum(policy.coPayPercent),
-    decNum(policy.deductibleAmount),
-    decNum(policy.coverageAmount),
+    decNum(policy?.coPayPercent),
+    decNum(policy?.deductibleAmount),
+    decNum(policy?.coverageAmount),
   );
 
   const now = new Date();
@@ -1302,19 +1491,34 @@ export async function applyBillSplit(
   tenantId: string,
   billId: string,
   insurancePortion: number,
-  patientPortion: number,
+  claimPatientPortion: number,
 ) {
   const bill = await prisma.bill.findFirst({ where: { id: billId, tenantId } });
-  if (!bill) return;
+  if (!bill) return null;
+
+  // Claim responsibility only covers the amount submitted to insurance. The
+  // bill can also contain explicitly patient-only lines, so the bill-level
+  // patient share must always be the full bill total minus the payer share.
+  const billTotal = round2(Math.max(0, decNum(bill.totalAmount)));
+  const normalizedInsurance = round2(Math.min(Math.max(0, insurancePortion), billTotal));
+  const normalizedPatient = round2(Math.max(0, billTotal - normalizedInsurance));
+  const balanceDue = round2(Math.max(0, normalizedPatient - decNum(bill.amountPaid)));
 
   await prisma.bill.update({
     where: { id: billId },
     data: {
-      insuranceCoveredAmount: round2(insurancePortion),
-      patientPayableAmount: round2(patientPortion),
-      balanceDue: round2(Math.max(0, patientPortion - decNum(bill.amountPaid))),
+      insuranceCoveredAmount: normalizedInsurance,
+      patientPayableAmount: normalizedPatient,
+      balanceDue,
     },
   });
+
+  return {
+    insurancePortion: normalizedInsurance,
+    patientPortion: normalizedPatient,
+    claimPatientPortion: round2(Math.max(0, claimPatientPortion)),
+    balanceDue,
+  };
 }
 
 export async function splitBill(tenantId: string, billId: string, data: SplitBillInput) {
@@ -1322,12 +1526,12 @@ export async function splitBill(tenantId: string, billId: string, data: SplitBil
   if (!bill) throw AppError.notFound('Bill not found');
 
   const policy = await prisma.insurancePolicy.findFirst({
-    where: { id: data.policyId, tenantId },
+    where: { id: data.policyId, tenantId, patientId: bill.patientId },
     include: { insurer: { select: { id: true, name: true } } },
   });
-  if (!policy) throw AppError.notFound('Insurance policy not found');
+  if (!policy) throw AppError.notFound('Insurance policy not found for this patient');
 
-  const claimAmount = data.claimAmount ?? decNum(bill.totalAmount);
+  const claimAmount = Math.min(data.claimAmount ?? decNum(bill.totalAmount), decNum(bill.totalAmount));
   const split = computeResponsibility(
     claimAmount,
     decNum(policy.coPayPercent),
@@ -1335,12 +1539,14 @@ export async function splitBill(tenantId: string, billId: string, data: SplitBil
     decNum(policy.coverageAmount),
   );
 
-  await applyBillSplit(tenantId, billId, split.coveredAmount, split.patientResponsibility);
+  const billSplit = await applyBillSplit(tenantId, billId, split.coveredAmount, split.patientResponsibility);
+  if (!billSplit) throw AppError.notFound('Bill not found');
 
   return {
     billId,
     policy: { id: policy.id, policyNumber: policy.policyNumber, insurer: policy.insurer },
     split,
+    billSplit,
   };
 }
 
@@ -1395,6 +1601,16 @@ export async function rejectClaim(
     content: `Insurer's reason: ${data.rejectionReason}`,
   });
 
+  await notifyPatientInsuranceMilestone({
+    tenantId,
+    patientId: claim.patientId,
+    title: 'Insurance claim rejected',
+    message: `The payer rejected the claim. Reason: ${data.rejectionReason}`,
+    referenceType: 'insurance_claim',
+    referenceId: id,
+    alert: true,
+  });
+
   logger.info({ tenantId, claimId: id }, 'Insurance claim rejected');
   return updated;
 }
@@ -1444,7 +1660,7 @@ export async function exportClaimForTpa(tenantId: string, id: string) {
       phone: (claim.patient as { phone?: string }).phone,
       email: (claim.patient as { email?: string }).email,
     },
-    policy: {
+    policy: claim.policy ? {
       policyNumber: claim.policy.policyNumber,
       groupNumber: claim.policy.groupNumber,
       planName: claim.policy.planName,
@@ -1469,7 +1685,7 @@ export async function exportClaimForTpa(tenantId: string, id: string) {
             phone: claim.policy.tpa.phone,
           }
         : null,
-    },
+    } : null,
     bill: {
       billNumber: claim.bill.billNumber,
       billDate: claim.bill.billDate,
@@ -1498,13 +1714,18 @@ export async function exportClaimForTpa(tenantId: string, id: string) {
 // ============================================================
 
 export async function createPreAuth(tenantId: string, userId: string, data: CreatePreAuthInput) {
-  // Verify policy exists
-  const policy = await prisma.insurancePolicy.findFirst({
-    where: { id: data.policyId, tenantId },
-  });
-  if (!policy) {
-    throw AppError.notFound('Insurance policy not found');
-  }
+  const insuranceCase = data.insuranceCaseId
+    ? await prisma.insuranceCase.findFirst({
+        where: { id: data.insuranceCaseId, tenantId, patientId: data.patientId },
+        include: { policies: { orderBy: { sequence: 'asc' } } },
+      })
+    : null;
+  if (data.insuranceCaseId && !insuranceCase) throw AppError.notFound('Insurance / payer case not found');
+  const policyId = data.policyId ?? insuranceCase?.policies[0]?.policyId;
+  const policy = policyId
+    ? await prisma.insurancePolicy.findFirst({ where: { id: policyId, tenantId, patientId: data.patientId } })
+    : null;
+  if (policyId && !policy) throw AppError.notFound('Insurance policy not found for this patient');
 
   // Verify patient exists
   const patient = await prisma.patient.findFirst({
@@ -1514,11 +1735,20 @@ export async function createPreAuth(tenantId: string, userId: string, data: Crea
     throw AppError.notFound('Patient not found');
   }
 
+  const now = new Date();
   const preAuth = await prisma.preAuthorizationRequest.create({
     data: {
       tenantId,
       patientId: data.patientId,
-      policyId: data.policyId,
+      policyId,
+      insuranceCaseId: insuranceCase?.id,
+      requestNumber: await generatePreAuthRequestNumber(tenantId),
+      requestType: 'initial',
+      admissionId: data.admissionId ?? insuranceCase?.admissionId,
+      visitId: data.visitId ?? insuranceCase?.visitId,
+      doctorId: data.doctorId,
+      diagnosisCode: data.diagnosisCode,
+      procedureCode: data.procedureCode,
       procedureDescription: data.procedureDescription,
       estimatedCost: data.estimatedCost,
       status: 'pending',
@@ -1526,12 +1756,32 @@ export async function createPreAuth(tenantId: string, userId: string, data: Crea
       validTo: data.validTo ? new Date(data.validTo) : undefined,
       notes: data.notes,
       submittedBy: userId,
+      submissionChannel: data.submissionChannel,
+      submissionReference: data.submissionReference,
+      submittedAt: now,
+      alertAt: new Date(now.getTime() + 45 * 60 * 1000),
+      decisionDueAt: new Date(now.getTime() + 60 * 60 * 1000),
     },
     include: {
       patient: { select: { id: true, firstName: true, lastName: true } },
       policy: { select: { id: true, policyNumber: true } },
     },
   });
+
+  if (insuranceCase) {
+    await prisma.insuranceCase.update({ where: { id: insuranceCase.id }, data: { status: 'preAuthPending' } });
+    await prisma.insuranceAuditEvent.create({
+      data: {
+        tenantId,
+        actorId: userId,
+        insuranceCaseId: insuranceCase.id,
+        preAuthId: preAuth.id,
+        eventType: 'preauth.initial_submitted',
+        toStatus: 'pending',
+        details: { requestNumber: preAuth.requestNumber, decisionDueAt: preAuth.decisionDueAt },
+      },
+    });
+  }
 
   await recordTpaCommunication({
     tenantId,
@@ -1560,6 +1810,8 @@ export async function getPreAuths(tenantId: string, query: any) {
   if (query.search) {
     where.OR = [
       { procedureDescription: { contains: query.search, mode: 'insensitive' } },
+      { requestNumber: { contains: query.search, mode: 'insensitive' } },
+      { payerPreAuthReference: { contains: query.search, mode: 'insensitive' } },
       { approvalNumber: { contains: query.search, mode: 'insensitive' } },
       { patient: { firstName: { contains: query.search, mode: 'insensitive' } } },
       { patient: { lastName: { contains: query.search, mode: 'insensitive' } } },
@@ -1666,18 +1918,24 @@ export async function approvePreAuth(tenantId: string, id: string, data: Approve
     throw AppError.badRequest('Can only approve pending or on-hold pre-authorization requests');
   }
 
-  const approvalNumber = data.approvalNumber || (await generatePreAuthRequestNumber(tenantId));
+  // `requestNumber` is our internal identifier. A payer reference is stored
+  // only when the insurer/administrator actually supplies one; it must never
+  // be fabricated by the hospital application.
+  const payerReference = data.approvalNumber?.trim() || null;
+  const decidedAt = new Date();
 
   const preAuth = await prisma.preAuthorizationRequest.update({
     where: { id },
     data: {
       status: 'approved',
-      approvalNumber,
+      approvalNumber: payerReference,
+      payerPreAuthReference: payerReference,
       approvedAmount: data.approvedAmount,
       validFrom: data.validFrom ? new Date(data.validFrom) : existing.validFrom ?? new Date(),
       validTo: data.validTo ? new Date(data.validTo) : existing.validTo ?? undefined,
       holdReason: null,
       notes: data.notes ?? existing.notes,
+      decidedAt,
     },
     include: {
       patient: { select: { id: true, firstName: true, lastName: true } },
@@ -1685,18 +1943,73 @@ export async function approvePreAuth(tenantId: string, id: string, data: Approve
     },
   });
 
+  if (existing.insuranceCaseId) {
+    await prisma.$transaction(async (tx) => {
+      await tx.insuranceCase.update({ where: { id: existing.insuranceCaseId! }, data: { status: 'authorized' } });
+      if (existing.requestType === 'finalDischarge') {
+        const linkedClaims = await tx.insuranceClaim.findMany({
+          where: { tenantId, preAuthId: id },
+          include: { bill: { include: { billItems: { where: { category: 'room' } } } } },
+        });
+        for (const claim of linkedClaims) {
+          const dailyRoomRate = claim.bill.billItems.reduce((highest, item) => Math.max(highest, Number(item.unitPrice)), 0);
+          const liability = calculateDelayLiability(existing.decisionDueAt, decidedAt, dailyRoomRate);
+          const delayLiabilityAmount = liability.amount;
+          await tx.insuranceClaim.update({
+            where: { id: claim.id },
+            data: { finalAuthorizationReceivedAt: decidedAt, delayLiabilityAmount },
+          });
+          if (delayLiabilityAmount > 0) {
+            await tx.insuranceAuditEvent.create({
+              data: {
+                tenantId,
+                actorId: userId,
+                insuranceCaseId: existing.insuranceCaseId,
+                claimId: claim.id,
+                preAuthId: id,
+                eventType: 'final_authorization.delay_liability_calculated',
+                details: { decisionDueAt: existing.decisionDueAt, decidedAt, lateMinutes: liability.lateMinutes, dailyRoomRate, delayLiabilityAmount },
+              },
+            });
+          }
+        }
+      }
+      await tx.insuranceAuditEvent.create({
+        data: {
+          tenantId,
+          actorId: userId,
+          insuranceCaseId: existing.insuranceCaseId,
+          preAuthId: id,
+          eventType: existing.requestType === 'finalDischarge' ? 'final_authorization.approved' : 'preauth.approved',
+          fromStatus: existing.status,
+          toStatus: 'approved',
+          details: { payerPreAuthReference: payerReference, approvedAmount: data.approvedAmount },
+        },
+      });
+    });
+  }
+
   await recordTpaCommunication({
     tenantId,
     preAuthId: id,
     userId,
     direction: 'inbound',
-    subject: `Pre-authorization approved (${approvalNumber})`,
+    subject: `Pre-authorization approved (${payerReference ?? existing.requestNumber})`,
     content:
       `${existing.procedureDescription} approved` +
       (data.approvedAmount ? ` for ${Number(data.approvedAmount).toFixed(2)}` : '') + '.',
   });
 
-  logger.info({ tenantId, preAuthId: id, approvalNumber }, 'Pre-authorization request approved');
+  await notifyPatientInsuranceMilestone({
+    tenantId,
+    patientId: existing.patientId,
+    title: existing.requestType === 'finalDischarge' ? 'Discharge authorization approved' : 'Pre-authorization approved',
+    message: `${existing.procedureDescription} was approved${data.approvedAmount ? ` for ${Number(data.approvedAmount).toFixed(2)}` : ''}.`,
+    referenceType: 'pre_authorization_request',
+    referenceId: id,
+  });
+
+  logger.info({ tenantId, preAuthId: id, payerReference }, 'Pre-authorization request approved');
   return preAuth;
 }
 
@@ -1719,12 +2032,28 @@ export async function rejectPreAuth(tenantId: string, id: string, data: RejectPr
       status: 'denied',
       notes: data.notes,
       holdReason: null,
+      decidedAt: new Date(),
     },
     include: {
       patient: { select: { id: true, firstName: true, lastName: true } },
       policy: { select: { id: true, policyNumber: true } },
     },
   });
+
+  if (existing.insuranceCaseId) {
+    await prisma.insuranceAuditEvent.create({
+      data: {
+        tenantId,
+        actorId: userId,
+        insuranceCaseId: existing.insuranceCaseId,
+        preAuthId: id,
+        eventType: existing.requestType === 'finalDischarge' ? 'final_authorization.denied' : 'preauth.denied',
+        fromStatus: existing.status,
+        toStatus: 'denied',
+        details: { reason: data.notes },
+      },
+    });
+  }
 
   await recordTpaCommunication({
     tenantId,
@@ -1733,6 +2062,16 @@ export async function rejectPreAuth(tenantId: string, id: string, data: RejectPr
     direction: 'inbound',
     subject: 'Pre-authorization denied',
     content: `${existing.procedureDescription} denied.` + (data.notes ? ` ${data.notes}` : ''),
+  });
+
+  await notifyPatientInsuranceMilestone({
+    tenantId,
+    patientId: existing.patientId,
+    title: existing.requestType === 'finalDischarge' ? 'Discharge authorization denied' : 'Pre-authorization denied',
+    message: `${existing.procedureDescription} was denied.${data.notes ? ` ${data.notes}` : ''}`,
+    referenceType: 'pre_authorization_request',
+    referenceId: id,
+    alert: true,
   });
 
   logger.info({ tenantId, preAuthId: id }, 'Pre-authorization request denied');
@@ -2131,6 +2470,7 @@ export async function getApprovalRateReport(tenantId: string, filters: ReportFil
   let approvedAmt = 0;
 
   for (const c of claims) {
+    if (!c.policy) continue;
     const id = c.policy.insurer.id;
     const name = c.policy.insurer.name;
     const row = byInsurer.get(id) ?? {
@@ -2236,7 +2576,7 @@ export async function getAgingReport(tenantId: string, filters: ReportFilters) {
         id: c.id,
         claimNumber: c.claimNumber,
         patient: c.patient,
-        insurer: c.policy.insurer,
+        insurer: c.policy?.insurer ?? null,
         status: c.status,
         outstandingAmount: decNum(c.outstandingAmount ?? c.claimAmount),
         submissionDate: c.submissionDate,
@@ -2272,8 +2612,8 @@ export async function getOutstandingReport(tenantId: string, filters: ReportFilt
       id: c.id,
       claimNumber: c.claimNumber,
       patient: c.patient,
-      insurer: c.policy.insurer,
-      policyNumber: c.policy.policyNumber,
+      insurer: c.policy?.insurer ?? null,
+      policyNumber: c.policy?.policyNumber ?? null,
       status: c.status,
       claimAmount: decNum(c.claimAmount),
       approvedAmount: decNum(c.approvedAmount),

@@ -564,6 +564,7 @@ export const addIpChargeSchema = z.object({
     description: z.string().min(1).max(500),
     quantity: z.number().int().positive().default(1),
     unitPrice: z.number().positive(),
+    discount: z.number().min(0).default(0),
     taxRate: z.number().min(0).max(100).default(0),
     serviceTariffId: z.string().uuid().optional(),
     notes: z.string().max(500).optional(),

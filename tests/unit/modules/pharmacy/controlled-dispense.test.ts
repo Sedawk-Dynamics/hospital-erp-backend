@@ -85,6 +85,18 @@ describe('inline — the dispense completes on the same screen', () => {
     expect(r.witnessedById).toBeNull();
   });
 
+  it('allows a prescription-backed narcotic pharmacy sale without a witness', async () => {
+    const r = await checkControlledDispense(
+      TENANT,
+      MORPHINE,
+      { userId: USER, prescriptionId: 'rx-1', requireWitness: false },
+      'workflow',
+    );
+    expect(r.requirements.needsRx).toBe(true);
+    expect(r.requirements.registerType).toBe('NDPS');
+    expect(r.witnessedById).toBeNull();
+  });
+
   it('reaches the witness check for a vault narcotic drawn from batch stock', async () => {
     // Regression guard. There used to be a "the stock is in the safe, you
     // cannot draw it from a batch" refusal ahead of this, which made sense

@@ -14,6 +14,8 @@ import {
   verifyDailySchema,
   stockQuerySchema,
   registerQuerySchema,
+  patientResidualQuerySchema,
+  destroyPatientResidualSchema,
 } from './ndps.validation';
 
 export const ndpsRoutes = Router();
@@ -30,6 +32,20 @@ ndpsRoutes.post('/consignments', authenticate, requirePermission('pharmacy', 'cr
 // ledger, so leaving it would have let the two disagree about the same stock.
 ndpsRoutes.post('/consumption', authenticate, requirePermission('pharmacy', 'create'), validate(consumptionSchema), controller.recordConsumption);
 ndpsRoutes.post('/disposals', authenticate, requirePermission('pharmacy', 'create'), validate(disposalSchema), controller.logDisposal);
+ndpsRoutes.get(
+  '/patient-residuals',
+  authenticate,
+  requirePermission('pharmacy', 'read'),
+  validate(patientResidualQuerySchema),
+  controller.listPatientResiduals,
+);
+ndpsRoutes.post(
+  '/patient-residuals/:id/destroy',
+  authenticate,
+  requirePermission('pharmacy', 'create'),
+  validate(destroyPatientResidualSchema),
+  controller.destroyPatientResidual,
+);
 ndpsRoutes.post(
   '/disposals/evidence',
   authenticate,

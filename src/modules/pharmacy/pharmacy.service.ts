@@ -207,7 +207,9 @@ export async function findFormularyMatches(
       manufacturer: true,
       dosageForm: true,
       strength: true,
+      unitOfMeasurement: true,
       packSize: true,
+      looseUnitLabel: true,
       price: true,
       drugMasterId: true,
       // Identity fields the inward review adopts onto a mapped line (read-only,
@@ -677,7 +679,8 @@ export async function resolveInwardLine(
       where: { tenantId, isActive: true, OR: [{ gtin: { in: variants } }, { casePackGtin: { in: variants } }] },
       select: {
         id: true, drugName: true, category: true, genericName: true, composition: true,
-        manufacturer: true, dosageForm: true, strength: true, packSize: true, price: true,
+        manufacturer: true, dosageForm: true, strength: true, unitOfMeasurement: true,
+        packSize: true, looseUnitLabel: true, price: true,
         gtin: true, casePackGtin: true, unitsPerCase: true,
       },
     });
@@ -745,7 +748,8 @@ export async function resolveInwardLine(
       where: { id: mappedId, tenantId, isActive: true },
       select: {
         id: true, drugName: true, category: true, genericName: true, composition: true,
-        manufacturer: true, dosageForm: true, strength: true, packSize: true, price: true,
+        manufacturer: true, dosageForm: true, strength: true, unitOfMeasurement: true,
+        packSize: true, looseUnitLabel: true, price: true,
         gtin: true, casePackGtin: true, unitsPerCase: true,
       },
     });
@@ -1072,6 +1076,66 @@ export async function attachBarcodeToDrug(
  * and dismissed the duplicate suggestions) before its batch is received. Header
  * supplier/invoice values fall through to every line unless the line overrides.
  */
+async function normaliseInwardPricing(
+  tenantId: string,
+  lines: CommitInwardInput['lines'],
+): Promise<CommitInwardInput['lines']> {
+  // A mapped/catalog line may rely on the pack size already held in master data
+  // instead of repeating it on every supplier invoice. Resolve only those rows;
+  // manually supplied pack sizes remain authoritative.
+  const needsResolvedPack = lines.filter(
+    (line) => line.priceBasis === 'package' && !(line.packSize && line.packSize > 0),
+  );
+  const targetIds = Array.from(
+    new Set(
+      needsResolvedPack
+        .map((line) => line.targetFormularyId ?? line.targetInventoryItemId)
+        .filter((id): id is string => !!id),
+    ),
+  );
+  const masterIds = Array.from(
+    new Set(needsResolvedPack.map((line) => line.drugMasterId).filter((id): id is string => !!id)),
+  );
+
+  const [formularyRows, masterRows] = await Promise.all([
+    targetIds.length
+      ? prisma.drugFormulary.findMany({
+          where: { tenantId, id: { in: targetIds } },
+          select: { id: true, packSize: true },
+        })
+      : Promise.resolve([]),
+    masterIds.length
+      ? prisma.drugMaster.findMany({
+          where: { id: { in: masterIds } },
+          select: { id: true, packSize: true },
+        })
+      : Promise.resolve([]),
+  ]);
+  const formularyPack = new Map(formularyRows.map((row) => [row.id, row.packSize]));
+  const masterPack = new Map(masterRows.map((row) => [row.id, row.packSize]));
+
+  return lines.map((line) => {
+    if (line.priceBasis !== 'package') return line;
+    const targetId = line.targetFormularyId ?? line.targetInventoryItemId;
+    const resolvedPackSize =
+      line.packSize ??
+      (targetId ? formularyPack.get(targetId) : null) ??
+      (line.drugMasterId ? masterPack.get(line.drugMasterId) : null) ??
+      1;
+    const price = (value: number | undefined) =>
+      value == null ? undefined : perBaseUnitPrice(value, resolvedPackSize);
+    return {
+      ...line,
+      // Carry a master-resolved size forward when a new catalog product is made.
+      packSize: line.packSize ?? resolvedPackSize,
+      mrp: price(line.mrp),
+      purchasePrice: price(line.purchasePrice),
+      sellingPrice: price(line.sellingPrice),
+      priceBasis: 'smallest_unit' as const,
+    };
+  });
+}
+
 export async function commitInward(
   tenantId: string,
   userId: string,
@@ -1079,6 +1143,11 @@ export async function commitInward(
   data: CommitInwardInput,
 ) {
   assertPharmacyAdmin(roles, 'receive stock inward');
+
+  // Convert once at the API boundary. Everything below this point — invoice
+  // economics, formulary defaults, stored batches, reports and POS billing — is
+  // consistently per smallest sellable unit.
+  const inwardLines = await normaliseInwardPricing(tenantId, data.lines);
 
   // G2 purchase-side TOTAL-BILL discount. The distributor may discount the whole
   // invoice on top of per-line discounts. We resolve it to ONE effective percent
@@ -1093,9 +1162,9 @@ export async function commitInward(
   const lineNetValue = (l: CommitInwardInput['lines'][number]) =>
     (l.purchasePrice ?? 0) * (1 - (l.purchaseDiscountPercent ?? 0) / 100) * paidUnits(l);
   const grossValue = r2(
-    data.lines.reduce((s, l) => s + (l.purchasePrice ?? 0) * paidUnits(l), 0),
+    inwardLines.reduce((s, l) => s + (l.purchasePrice ?? 0) * paidUnits(l), 0),
   );
-  const invoiceNet = r2(data.lines.reduce((s, l) => s + lineNetValue(l), 0));
+  const invoiceNet = r2(inwardLines.reduce((s, l) => s + lineNetValue(l), 0));
   const billPct = Math.min(
     100,
     Math.max(
@@ -1131,8 +1200,8 @@ export async function commitInward(
   // blank GST from its HSN code (longest-prefix match) with no query per line.
   const hsnRows = await getHsnGstRows();
 
-  for (let i = 0; i < data.lines.length; i++) {
-    const line = data.lines[i];
+  for (let i = 0; i < inwardLines.length; i++) {
+    const line = inwardLines[i];
     try {
       // ── Stock line (any type) ─────────────────────────────────────────────
       // EVERY type — medicine, consumable, surgical supply, equipment, other —
@@ -1179,6 +1248,19 @@ export async function commitInward(
           hsnCode: line.hsnCode,
           manufacturerCode: line.manufacturerCode,
         });
+        // Packaging belongs to the product, not only this receipt. Persist the
+        // reviewed Primary Unit → Per Pack → Smallest Unit definition so future
+        // receipts and counter sales use the same conversion.
+        if (line.unitOfMeasurement || line.packSize || line.looseUnitLabel) {
+          await prisma.drugFormulary.update({
+            where: { id: existing.id },
+            data: {
+              ...(line.unitOfMeasurement ? { unitOfMeasurement: line.unitOfMeasurement } : {}),
+              ...(line.packSize ? { packSize: line.packSize } : {}),
+              ...(line.looseUnitLabel ? { looseUnitLabel: line.looseUnitLabel } : {}),
+            },
+          });
+        }
       } else {
         // Genuinely new drug — create it (force past the duplicate guard since the
         // user reviewed the suggestions and chose "create new").
@@ -1217,6 +1299,7 @@ export async function commitInward(
           manufacturer: line.manufacturer ?? master?.manufacturer ?? undefined,
           dosageForm: (line.dosageForm ?? master?.dosageForm) as CreateFormularyInput['dosageForm'],
           strength: line.strength ?? master?.strength ?? undefined,
+          unitOfMeasurement: line.unitOfMeasurement,
           packSize: line.packSize ?? master?.packSize ?? undefined,
           looseUnitLabel: line.looseUnitLabel,
           minStock: line.minStock,
@@ -1228,7 +1311,8 @@ export async function commitInward(
           manufacturerCode: line.manufacturerCode ?? undefined,
           // Link the new formulary row back to the catalog drug.
           drugMasterId: line.drugMasterId ?? undefined,
-          // Default selling price per base unit; MRP (per pack) is kept on the batch.
+          // Default selling price per base unit; package prices were normalised at
+          // the API boundary before this product/batch is created.
           price: line.sellingPrice,
           isActive: true,
           force: true,
@@ -2334,6 +2418,9 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
   if (data.mrp != null && data.purchasePrice != null && Number(data.purchasePrice) > Number(data.mrp)) {
     throw AppError.badRequest('Purchase rate cannot exceed MRP — please re-check the pricing.');
   }
+  if (data.mrp != null && data.sellingPrice != null && Number(data.sellingPrice) > Number(data.mrp)) {
+    throw AppError.badRequest('Selling price cannot exceed MRP — please re-check the pricing.');
+  }
 
   // Free units count toward stock but not toward purchase value. quantityReceived
   // is the TOTAL received (paid + free); freeQuantity records the free portion.
@@ -3323,8 +3410,7 @@ export async function createDispense(tenantId: string, userId: string, data: Cre
     {
       userId,
       prescriptionId: data.prescriptionId,
-      witnessedById: (data as any).witnessedById,
-      witnessPassword: (data as any).witnessPassword,
+      requireWitness: false,
       fromBatchStock: true,
     },
     'consumption workflow',
@@ -3869,8 +3955,9 @@ export async function createPharmacySale(
       if (!batch) throw AppError.notFound(`Drug batch ${item.drugBatchId} not found`);
       if (isBatchExpired(batch)) throw AppError.badRequest('Cannot sell from an expired batch');
       if (batch.isRecalled) throw AppError.badRequest('Cannot sell from a recalled batch');
-      // Controlled-drug gate — see createDispense above. Resolved per line and
-      // collected, so the witness co-sign is written onto the dispensing record.
+      // A pharmacy sale needs its prescription and controlled-register entry,
+      // but not a second staff witness. Clinical administration and residual
+      // handling keep their separate witness controls.
       const lineControl = await checkControlledDispense(
         tenantId,
         batch.drug,
@@ -3878,8 +3965,7 @@ export async function createPharmacySale(
           userId,
           prescriptionId: data.prescriptionId,
           externalPrescriptionId: (data as any).externalPrescriptionId,
-          witnessedById: (data as any).witnessedById,
-          witnessPassword: (data as any).witnessPassword,
+          requireWitness: false,
           fromBatchStock: true,
         },
         'consumption workflow, not the counter',
@@ -6630,10 +6716,6 @@ export async function checkSaleCompliance(
       );
     } else if (CONTROLLED_SCHEDULES.includes(schedule) && !hasRx) {
       warnings.push(`${name} is a Schedule ${schedule} drug — record the prescriber/Rx for this sale.`);
-    }
-
-    if (enforcing && req.needsWitness) {
-      blockers.push(`${name} is a controlled narcotic — a second authorised person must co-sign the hand-over.`);
     }
 
     // Schedule H2. Deliberately not part of the schedule cascade above: it is

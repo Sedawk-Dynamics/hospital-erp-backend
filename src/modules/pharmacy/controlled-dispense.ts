@@ -74,6 +74,12 @@ export interface ControlledDispenseContext {
   witnessedById?: string | null;
   /** That person's OWN password, proving they were present to co-sign. */
   witnessPassword?: string | null;
+  /**
+   * Pharmacy supply/sale is prescription-backed and written to the controlled
+   * register, but does not require a second staff member. Clinical custody and
+   * administration paths leave this true (the default).
+   */
+  requireWitness?: boolean;
   /** True when the line draws from ordinary shelf/ward batch stock. */
   fromBatchStock?: boolean;
 }
@@ -123,8 +129,11 @@ export async function checkControlledDispense(
 
   // ── inline mode ──
   if (requirements.needsRx && !ctx.prescriptionId && !ctx.externalPrescriptionId) {
+    const reason = requirements.needsWitness && ctx.requireWitness === false
+      ? `${drug.drugName} is a controlled narcotic. It needs a prescription and an NDPS register entry.`
+      : requirements.reason;
     throw AppError.badRequest(
-      `${requirements.reason} Attach the prescription — either select the patient's ` +
+      `${reason} Attach the prescription — either select the patient's ` +
         'prescription or record the outside prescription they presented.',
     );
   }
@@ -144,7 +153,7 @@ export async function checkControlledDispense(
 
   let witnessedById: string | null = null;
   let witnessedAt: Date | null = null;
-  if (requirements.needsWitness) {
+  if (requirements.needsWitness && ctx.requireWitness !== false) {
     if (!ctx.witnessedById) {
       throw AppError.badRequest(
         `${drug.drugName} needs a second authorised person to witness the hand-over. ` +

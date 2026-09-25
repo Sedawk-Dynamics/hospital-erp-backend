@@ -129,6 +129,34 @@ export async function recordPatientDeath(
       data: { status: 'cancelled', cancellationReason: 'Patient deceased', cancelledBy: userId },
     });
 
+    // Deceased-patient protocol: payer processing is fast-tracked but can
+    // never hold mortal remains. The claim/pre-auth stays open for staff to
+    // complete after immediate physical release.
+    const payerCases = await tx.insuranceCase.findMany({
+      where: { tenantId, patientId, status: { notIn: ['closed', 'cancelled'] } },
+      select: { id: true },
+    });
+    if (payerCases.length) {
+      await tx.insuranceCase.updateMany({
+        where: { id: { in: payerCases.map((item) => item.id) } },
+        data: {
+          priority: 'deceased',
+          deceasedProtocol: true,
+          physicalReleaseAt: deceasedAt,
+          releaseUndertaking: 'Immediate mortal remains release under deceased-patient protocol',
+        },
+      });
+      await tx.insuranceAuditEvent.createMany({
+        data: payerCases.map((item) => ({
+          tenantId,
+          actorId: userId,
+          insuranceCaseId: item.id,
+          eventType: 'deceased.protocol_activated',
+          details: { deceasedAt, physicalReleaseNotBlockedByPayer: true },
+        })),
+      });
+    }
+
     logger.info(
       {
         tenantId,

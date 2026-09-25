@@ -50,6 +50,27 @@ export const disposalSchema = z.object({
   }),
 });
 
+export const patientResidualQuerySchema = z.object({
+  query: z.object({
+    status: z.enum(['quarantined', 'destroyed', 'fully_administered', 'all']).optional(),
+    patientId: z.string().uuid().optional(),
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
+  }),
+});
+
+export const destroyPatientResidualSchema = z.object({
+  params: z.object({ id: z.string().uuid('Invalid patient residual id') }),
+  body: z.object({
+    disposalMethod: z.string().trim().min(1, 'Destruction method is required').max(160),
+    referenceNumber: z.string().trim().min(1, 'Destruction memo/reference is required').max(120),
+    witnessedById: z.string().uuid('Select an authorised witness'),
+    witnessPassword: z.string().min(1, 'Witness password is required').max(200),
+    attachmentUrl: z.string().max(500).optional(),
+    notes: z.string().max(1000).optional(),
+  }),
+});
+
 export const dailyCloseSchema = z.object({
   body: z.object({ date: z.string().optional() }),
 });

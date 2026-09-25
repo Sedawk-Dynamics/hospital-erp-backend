@@ -420,6 +420,13 @@ describe('Pharmacy — feature coverage (G1–G17 + credit gate + GRN gaps)', ()
       } as any)).rejects.toThrow('Purchase rate cannot exceed MRP');
     });
 
+    it('allows an editable discount but blocks selling above MRP', async () => {
+      (prisma.drugFormulary.findFirst as any).mockResolvedValue({ id: 'd1', tenantId: TENANT_ID, drugName: 'Amox' });
+      await expect(createBatch(TENANT_ID, USER_ID, ADMIN_ROLES, {
+        drugId: 'd1', batchNumber: 'B1', expiryDate: '2027-12-31', quantityReceived: 10, mrp: 50, sellingPrice: 51,
+      } as any)).rejects.toThrow('Selling price cannot exceed MRP');
+    });
+
     it('folds quantity into the existing batch when addToExisting is set', async () => {
       (prisma.drugFormulary.findFirst as any).mockResolvedValue({ id: 'd1', tenantId: TENANT_ID, drugName: 'Amox' });
       (prisma.drugBatch.findFirst as any).mockResolvedValue({ id: 'batch-1', quantityInStock: 100, mrp: 50, purchasePrice: 30, sellingPrice: 45, freeQuantity: 0 });

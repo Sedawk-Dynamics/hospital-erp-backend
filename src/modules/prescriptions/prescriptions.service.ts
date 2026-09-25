@@ -280,7 +280,7 @@ export async function getPrescriptions(tenantId: string, query: GetPrescriptions
             drug: {
               select: {
                 packSize: true, looseUnitLabel: true, dosageForm: true, price: true,
-                schedule: true, controlledClass: true, vaultControlled: true,
+                schedule: true, controlledClass: true, vaultControlled: true, isNarcotic: true,
               },
             },
           },
@@ -363,7 +363,7 @@ export async function getPrescriptionById(tenantId: string, id: string) {
           drug: {
             select: {
               packSize: true, looseUnitLabel: true, dosageForm: true,
-              schedule: true, controlledClass: true, vaultControlled: true,
+              schedule: true, controlledClass: true, vaultControlled: true, isNarcotic: true,
             },
           },
         },

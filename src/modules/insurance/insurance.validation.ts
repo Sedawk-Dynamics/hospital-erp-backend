@@ -177,13 +177,25 @@ export const patientIdParamSchema = z.object({
 
 export const createClaimSchema = z.object({
   body: z.object({
-    policyId: z.string().uuid('Invalid policy ID'),
+    policyId: z.string().uuid('Invalid policy ID').optional(),
+    insuranceCaseId: z.string().uuid('Invalid insurance / payer case ID').optional(),
+    preAuthId: z.string().uuid('Invalid pre-authorization ID').optional(),
     patientId: z.string().uuid('Invalid patient ID'),
     billId: z.string().uuid('Invalid bill ID'),
     claimAmount: z.number().positive('Claim amount must be positive'),
+    tier: z.enum(['primary', 'secondary', 'supplementary']).default('primary'),
+    sequence: z.number().int().min(1).max(10).optional(),
+    settlementMode: z.enum(['cashless', 'reimbursement', 'credit']).optional(),
+    submissionChannel: z.enum(['portal', 'email', 'nhcx', 'api', 'manual']).optional(),
+    payerClaimReference: z.string().trim().max(100).optional(),
+    submissionReference: z.string().trim().max(100).optional(),
+    nhcxTransactionId: z.string().trim().max(100).optional(),
     notes: z.string().optional(),
     documentsUrl: z.any().optional(),
     expiryDays: z.number().int().positive().optional(),
+  }).refine((value) => value.policyId || value.insuranceCaseId, {
+    path: ['insuranceCaseId'],
+    message: 'A policy or insurance / payer case is required',
   }),
 });
 
@@ -202,10 +214,13 @@ export const getClaimsQuerySchema = z.object({
   query: paginationSchema.extend({
     patientId: z.string().uuid().optional(),
     policyId: z.string().uuid().optional(),
+    insuranceCaseId: z.string().uuid().optional(),
     status: z
       .enum([
         'submitted',
         'under_review',
+        'query_raised',
+        'response_submitted',
         'approved',
         'partially_approved',
         'rejected',
@@ -290,13 +305,24 @@ export const cancelClaimSchema = z.object({
 
 export const createPreAuthSchema = z.object({
   body: z.object({
-    policyId: z.string().uuid('Invalid policy ID'),
+    policyId: z.string().uuid('Invalid policy ID').optional(),
+    insuranceCaseId: z.string().uuid('Invalid insurance / payer case ID').optional(),
+    admissionId: z.string().uuid('Invalid admission ID').optional(),
+    visitId: z.string().uuid('Invalid visit ID').optional(),
+    doctorId: z.string().uuid('Invalid doctor ID').optional(),
+    diagnosisCode: z.string().trim().max(50).optional(),
+    procedureCode: z.string().trim().max(50).optional(),
+    submissionChannel: z.enum(['portal', 'email', 'nhcx', 'api', 'manual']).optional(),
+    submissionReference: z.string().trim().max(100).optional(),
     patientId: z.string().uuid('Invalid patient ID'),
     procedureDescription: z.string().min(1, 'Procedure description is required'),
     estimatedCost: z.number().positive('Estimated cost must be positive').optional(),
     validFrom: z.string().optional(),
     validTo: z.string().optional(),
     notes: z.string().optional(),
+  }).refine((value) => value.policyId || value.insuranceCaseId, {
+    path: ['insuranceCaseId'],
+    message: 'A policy or insurance / payer case is required',
   }),
 });
 
@@ -323,7 +349,8 @@ export const getPreAuthsQuerySchema = z.object({
 
 export const approvePreAuthSchema = z.object({
   body: z.object({
-    approvalNumber: z.string().max(100).optional(),
+    // Payer-issued only. The hospital's internal identifier is requestNumber.
+    approvalNumber: z.string().trim().max(100).optional(),
     approvedAmount: z.number().positive('Approved amount must be positive').optional(),
     validFrom: z.string().optional(),
     validTo: z.string().optional(),

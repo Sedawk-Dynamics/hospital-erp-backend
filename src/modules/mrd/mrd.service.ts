@@ -156,7 +156,17 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
   const admission = await prisma.admission.findFirst({
     where: { id: admissionId, tenantId },
     include: {
-      visit: true,
+      visit: {
+        include: {
+          doctor: {
+            select: {
+              id: true,
+              user: { select: { firstName: true, lastName: true } },
+              specialization: true,
+            },
+          },
+        },
+      },
       patient: {
         select: {
           id: true,
@@ -201,7 +211,13 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
       },
       orderBy: { createdAt: 'asc' },
       include: {
-        doctor: { select: { user: { select: { firstName: true, lastName: true } } } },
+        doctor: {
+          select: {
+            id: true,
+            user: { select: { firstName: true, lastName: true } },
+            specialization: true,
+          },
+        },
       },
     }),
     // New per-section pins via ProgressNotePin. Each pin carries
@@ -248,6 +264,13 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
     prisma.prescription.findMany({
       where: { visitId, tenantId, status: 'active' },
       include: {
+        doctor: {
+          select: {
+            id: true,
+            user: { select: { firstName: true, lastName: true } },
+            specialization: true,
+          },
+        },
         prescriptionItems: {
           select: {
             drugName: true,
@@ -262,6 +285,32 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
       orderBy: { createdAt: 'desc' },
     }),
   ]);
+
+  // Emergency admissions may be opened before a consultant is formally put on
+  // the Admission/Visit. Once a doctor has actually treated the patient, their
+  // authored clinical work is stronger evidence than leaving discharge blocked:
+  // use the most recent progress note or prescription author as the treating
+  // doctor for this summary. We deliberately do not rewrite the admission's
+  // consultant assignment here; generating a document must not perform an
+  // administrative handover as a side effect.
+  const latestClinicalAuthor = [
+    ...allNotes.map((note) => ({
+      doctorId: note.doctorId,
+      doctor: note.doctor,
+      at: note.createdAt,
+    })),
+    ...prescriptions.map((prescription) => ({
+      doctorId: prescription.doctorId,
+      doctor: prescription.doctor,
+      at: prescription.createdAt,
+    })),
+  ]
+    .filter((entry) => !!entry.doctorId && !!entry.doctor)
+    .sort((a, b) => b.at.getTime() - a.at.getTime())[0];
+  const treatingDoctor =
+    admission.doctor ?? admission.visit?.doctor ?? latestClinicalAuthor?.doctor ?? null;
+  const summaryDoctorId =
+    admission.doctorId ?? admission.visit?.doctorId ?? latestClinicalAuthor?.doctorId ?? null;
 
   // Group section pins by discharge section — O(n) single pass.
   const pinBuckets: Record<string, Array<{ content: string; createdAt: Date; doctor: string }>> =
@@ -289,8 +338,8 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
   const age = p.dateOfBirth
     ? Math.floor((Date.now() - new Date(p.dateOfBirth).getTime()) / (365.25 * 24 * 60 * 60 * 1000))
     : null;
-  const doctorFullName = admission.doctor?.user
-    ? `Dr. ${fullName(admission.doctor.user)}`
+  const doctorFullName = treatingDoctor?.user
+    ? `Dr. ${fullName(treatingDoctor.user)}`
     : 'Attending Physician';
   const headerLines = [
     `Patient: ${fullName(p)} (MRN: ${p.mrn})`,
@@ -298,7 +347,7 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
     p.phone ? `Phone: ${p.phone}` : '',
     `Admitted: ${admission.admissionDate ? new Date(admission.admissionDate).toLocaleDateString('en-IN') : '—'}`,
     `Discharged: ${admission.dischargeDate ? new Date(admission.dischargeDate).toLocaleDateString('en-IN') : '—'}`,
-    `Attending: ${doctorFullName}${admission.doctor?.specialization ? ` (${admission.doctor.specialization})` : ''}`,
+    `Attending: ${doctorFullName}${treatingDoctor?.specialization ? ` (${treatingDoctor.specialization})` : ''}`,
   ].filter(Boolean);
   const headerSummary = headerLines.join('\n');
 
@@ -403,6 +452,7 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
 
   return {
     admission,
+    summaryDoctorId,
     visitId,
     patientId,
     headerSummary: headerSummaryWithGeneral,
@@ -566,9 +616,10 @@ export async function generateDischargeSummary(
     return updated;
   }
 
-  // G6 (2.3): an admission's doctor is now nullable (ER pending-placement). A
-  // discharge summary requires the treating doctor, so guard the edge case.
-  const summaryDoctorId = built.admission.doctorId;
+  // An admission's doctor is nullable during ER pending-placement. Prefer the
+  // resolved clinical author above, but keep a clear guard for truly untreated
+  // admissions.
+  const summaryDoctorId = built.summaryDoctorId;
   if (!summaryDoctorId) {
     throw AppError.badRequest('Cannot generate a discharge summary: no treating doctor is assigned to this admission yet.');
   }

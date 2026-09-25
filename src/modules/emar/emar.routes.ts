@@ -21,6 +21,7 @@ import {
   catchUpDoseSchema,
   regenerateSchedulesSchema,
   auditQuerySchema,
+  prescriptionItemIdParamSchema,
 } from './emar.validation';
 
 export const emarRoutes = Router();
@@ -158,6 +159,20 @@ emarRoutes.get(
   requirePermission('prescriptions', 'read'),
   validate(scheduleIdParamSchema),
   ctrl.getSchedule,
+);
+emarRoutes.get(
+  '/doses/:id/ndps-context',
+  authenticate,
+  requirePermission('prescriptions', 'read'),
+  validate(scheduleIdParamSchema),
+  ctrl.getNdpsDoseContext,
+);
+emarRoutes.get(
+  '/prescription-items/:id/ndps-context',
+  authenticate,
+  requirePermission('prescriptions', 'read'),
+  validate(prescriptionItemIdParamSchema),
+  ctrl.getNdpsPrescriptionItemContext,
 );
 emarRoutes.post(
   '/doses/:id/give',

@@ -525,6 +525,7 @@ const commitInwardLineSchema = inwardMatchLineSchema
     // Product-definition fields carried onto a newly-created product (medicine or
     // item) — full "New Item" parity so one flow defines AND receives stock.
     packSize: z.number().int().positive().optional(),
+    unitOfMeasurement: z.string().max(20).optional(),
     looseUnitLabel: z.string().max(40).optional(),
     hsnCode: z.string().max(20).optional(),
     manufacturerCode: z.string().max(100).optional(),
@@ -548,6 +549,10 @@ const commitInwardLineSchema = inwardMatchLineSchema
     purchaseDiscountPercent: z.number().min(0).max(100).optional(),
     gstPercent: z.number().min(0).max(100).optional(),
     sellingPrice: z.number().nonnegative().optional(),
+    // Supplier invoices commonly price a whole strip/box while stock + billing
+    // use the smallest sellable unit. The service normalises package prices with
+    // the resolved pack size before persistence. Omitted = legacy per-unit input.
+    priceBasis: z.enum(['package', 'smallest_unit']).optional(),
     // Per-line overrides for the header values.
     supplierId: z.string().uuid('Invalid supplier ID').optional(),
     invoiceNumber: z.string().max(100).optional(),

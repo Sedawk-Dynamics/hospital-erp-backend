@@ -12,6 +12,9 @@ import {
   updatePolicy,
   createClaim,
   getClaims,
+  getClaimById,
+  applyBillSplit,
+  splitBill,
   approveClaim,
   rejectClaim,
   createPreAuth,
@@ -22,12 +25,21 @@ import {
   createTpaLog,
   getTpaLogs,
   recordTpaCommunication,
+  calculateDelayLiability,
 } from '../../../../src/modules/insurance/insurance.service';
 
 // ─── Shared test fixtures ───
 
 const TENANT_ID = 'tenant-1';
 const USER_ID = 'user-1';
+
+describe('final authorization delay liability', () => {
+  it('prorates the daily room rate only for time beyond the authorization deadline', () => {
+    const dueAt = new Date('2026-09-20T09:00:00.000Z');
+    expect(calculateDelayLiability(dueAt, new Date('2026-09-20T12:00:00.000Z'), 2400)).toEqual({ lateMinutes: 180, amount: 300 });
+    expect(calculateDelayLiability(dueAt, new Date('2026-09-20T08:59:00.000Z'), 2400)).toEqual({ lateMinutes: 0, amount: 0 });
+  });
+});
 
 const mockInsurer = {
   id: 'insurer-1',
@@ -416,7 +428,13 @@ describe('Insurance Service', () => {
       // to make a second, re-checking that number for the tenant, which could
       // never fire; queueing a value for a call that no longer happens leaves it
       // in the mock's queue for whatever test runs next.
-      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValueOnce(null);
+      vi.mocked(prisma.insuranceClaim.findFirst)
+        .mockResolvedValueOnce(null)
+        // The new document-completeness gate immediately builds a checklist
+        // for the claim it just created, and therefore reads it back three times.
+        .mockResolvedValueOnce(mockClaim as any)
+        .mockResolvedValueOnce({ ...mockClaim, insuranceCase: null } as any)
+        .mockResolvedValueOnce(mockClaim as any);
       vi.mocked(prisma.insuranceClaim.create).mockResolvedValue(mockClaim as any);
 
       const result = await createClaim(TENANT_ID, USER_ID, claimInput);
@@ -478,6 +496,130 @@ describe('Insurance Service', () => {
         page: 1,
         limit: 20,
       });
+    });
+  });
+
+  describe('getClaimById', () => {
+    it('returns the complete source bill for TPA review', async () => {
+      const detailedClaim = {
+        ...mockClaim,
+        bill: {
+          ...mockClaim.bill,
+          subtotal: 24000,
+          discountAmount: 1000,
+          taxAmount: 2000,
+          insuranceCoveredAmount: 18000,
+          patientPayableAmount: 7000,
+          amountPaid: 2000,
+          balanceDue: 5000,
+          billItems: [
+            {
+              id: 'item-1',
+              description: 'Room charges',
+              category: 'room',
+              quantity: 2,
+              unitPrice: 10000,
+              totalAmount: 20000,
+              isReimbursable: true,
+            },
+          ],
+          payments: [
+            {
+              id: 'payment-1',
+              paymentDate: new Date('2024-03-15'),
+              amount: 2000,
+              paymentMethod: 'cash',
+              status: 'completed',
+            },
+          ],
+        },
+      };
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue(detailedClaim as any);
+
+      const result = await getClaimById(TENANT_ID, 'claim-1');
+
+      expect(prisma.insuranceClaim.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+        where: { id: 'claim-1', tenantId: TENANT_ID },
+        include: expect.objectContaining({
+          bill: expect.objectContaining({
+            select: expect.objectContaining({
+              subtotal: true,
+              discountAmount: true,
+              insuranceCoveredAmount: true,
+              patientPayableAmount: true,
+              billItems: expect.objectContaining({ orderBy: { createdAt: 'asc' } }),
+              payments: expect.objectContaining({ orderBy: { paymentDate: 'asc' } }),
+            }),
+          }),
+        }),
+      }));
+      expect(result.bill.billItems).toHaveLength(1);
+      expect(result.bill.payments).toHaveLength(1);
+    });
+  });
+
+  describe('bill responsibility split', () => {
+    it('keeps non-claim bill lines in the patient share', async () => {
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue({
+        id: 'bill-1',
+        totalAmount: 11000,
+        amountPaid: 500,
+      } as any);
+      vi.mocked(prisma.bill.update).mockResolvedValue({ id: 'bill-1' } as any);
+
+      const result = await applyBillSplit(TENANT_ID, 'bill-1', 9000, 0);
+
+      expect(prisma.bill.update).toHaveBeenCalledWith({
+        where: { id: 'bill-1' },
+        data: {
+          insuranceCoveredAmount: 9000,
+          patientPayableAmount: 2000,
+          balanceDue: 1500,
+        },
+      });
+      expect(result).toEqual({
+        insurancePortion: 9000,
+        patientPortion: 2000,
+        claimPatientPortion: 0,
+        balanceDue: 1500,
+      });
+    });
+
+    it('recalculates against a policy belonging to the billed patient', async () => {
+      vi.mocked(prisma.bill.findFirst)
+        .mockResolvedValueOnce({
+          id: 'bill-1',
+          patientId: 'patient-1',
+          totalAmount: 11000,
+          amountPaid: 500,
+        } as any)
+        .mockResolvedValueOnce({
+          id: 'bill-1',
+          patientId: 'patient-1',
+          totalAmount: 11000,
+          amountPaid: 500,
+        } as any);
+      vi.mocked(prisma.insurancePolicy.findFirst).mockResolvedValue({
+        ...mockPolicy,
+        coPayPercent: 0,
+        deductibleAmount: 0,
+        coverageAmount: null,
+      } as any);
+      vi.mocked(prisma.bill.update).mockResolvedValue({ id: 'bill-1' } as any);
+
+      const result = await splitBill(TENANT_ID, 'bill-1', {
+        policyId: 'policy-1',
+        claimAmount: 9000,
+      });
+
+      expect(prisma.insurancePolicy.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+        where: { id: 'policy-1', tenantId: TENANT_ID, patientId: 'patient-1' },
+      }));
+      expect(result.billSplit).toEqual(expect.objectContaining({
+        insurancePortion: 9000,
+        patientPortion: 2000,
+        balanceDue: 1500,
+      }));
     });
   });
 

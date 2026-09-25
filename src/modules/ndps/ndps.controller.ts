@@ -50,6 +50,29 @@ export async function logDisposal(req: AuthenticatedRequest, res: Response, next
   } catch (err) { next(err); }
 }
 
+export async function listPatientResiduals(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const patientDose = await import('./ndps-patient-dose.service');
+    const data = await patientDose.listPatientResiduals(req.user!.tenantId, req.query as any);
+    sendResponse({ res, message: 'Patient NDPS residuals', data });
+  } catch (err) { next(err); }
+}
+
+export async function destroyPatientResidual(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const { tenantId, userId, roles } = ctx(req);
+    const patientDose = await import('./ndps-patient-dose.service');
+    const data = await patientDose.destroyQuarantinedResidual(
+      tenantId,
+      userId,
+      roles,
+      String(req.params.id),
+      req.body,
+    );
+    sendResponse({ res, message: 'Patient NDPS residual destroyed under witness', data });
+  } catch (err) { next(err); }
+}
+
 /** Upload a broken/spoiled-vial evidence photo; returns the stored file URL. */
 export async function uploadEvidence(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
