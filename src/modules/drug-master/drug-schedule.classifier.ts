@@ -59,8 +59,11 @@
  * 7 — a drug whose label says prescription only is Schedule H, not OTC, while a
  *     molecule in it has no schedule decided (or it has no composition). A
  *     decided molecule is never overruled by the label.
+ * 8 — therapeutic-class rules are resolved per molecule. A named Schedule G
+ *     ingredient can no longer hide a different ingredient covered by a
+ *     Schedule H class (for example sulphacetamide + chlorpheniramine drops).
  */
-export const CLASSIFIER_VERSION = 7;
+export const CLASSIFIER_VERSION = 8;
 
 export type ScheduleCode = 'X' | 'H1' | 'H' | 'G' | 'H2' | 'OTC';
 export type ControlledClass = 'narcotic' | 'psychotropic';
@@ -419,13 +422,17 @@ export function classify(
   // ── 1-6. Salt cascade ──
   const hits = new Map<string, { salt: ParsedSalt; rule: ScheduleRuleLike }>();
   for (const salt of salts) {
-    for (const rule of lookupSalt(salt, index)) {
+    const namedRules = lookupSalt(salt, index);
+    for (const rule of namedRules) {
       if (!hits.has(rule.scheduleCode)) hits.set(rule.scheduleCode, { salt, rule });
     }
-  }
-  // Therapeutic-class entries ("Antibiotics", "Corticosteroids") only apply when
-  // no named molecule matched — a specific listing always beats a family.
-  if (hits.size === 0) {
+
+    // A specific listing beats a family entry for THIS molecule. The old code
+    // made that decision for the whole product, so a named Schedule G molecule
+    // (chlorpheniramine) suppressed a Schedule H class match on a different
+    // molecule (sulphacetamide). Resolve the class fallback per molecule, then
+    // let the normal product-level precedence choose the strictest ingredient.
+    if (namedRules.length) continue;
     for (const rule of index.classes) {
       if (!rule.pattern) continue;
       let re: RegExp;
@@ -434,8 +441,9 @@ export function classify(
       } catch {
         continue; // a malformed pattern must never break a classification
       }
-      const salt = salts.find((s) => re.test(s.norm));
-      if (salt && !hits.has(rule.scheduleCode)) hits.set(rule.scheduleCode, { salt, rule });
+      if (re.test(salt.norm) && !hits.has(rule.scheduleCode)) {
+        hits.set(rule.scheduleCode, { salt, rule });
+      }
     }
   }
 

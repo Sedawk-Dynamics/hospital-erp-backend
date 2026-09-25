@@ -105,6 +105,32 @@ export function resolveDoseClinicalContext(
     || 'Prescribed medication administration';
 }
 
+const SIMPLE_CONTAINER_CONTENT = /^(?:(?:ampou?le|vial|bottle|syringe|injection|inj\.?)\s*(?:of\s*)?)?(\d+(?:\.\d+)?)\s*(mcg|µg|ug|mg|g|ml|l|iu|units?)(?:\s*(?:ampou?le|vial|bottle|syringe|injection|inj\.?))?$/i;
+
+/**
+ * Derive container contents only from an unambiguous, single quantity stored
+ * on the drug (for example "10ml" or "2 mL vial"). Concentrations such as
+ * "10 mg/mL" deliberately return null and must be verified from the label.
+ */
+export function inferLabelledContentsFromStrength(strength?: string | null) {
+  if (!strength?.trim()) return null;
+  const match = strength.trim().match(SIMPLE_CONTAINER_CONTENT);
+  if (!match) return null;
+
+  const quantity = Number(match[1]);
+  if (!Number.isFinite(quantity) || quantity <= 0) return null;
+
+  const rawUnit = match[2].toLowerCase();
+  const unit = rawUnit === 'ml' ? 'mL'
+    : rawUnit === 'l' ? 'L'
+      : rawUnit === 'iu' ? 'IU'
+        : rawUnit === 'µg' || rawUnit === 'ug' ? 'mcg'
+          : rawUnit.startsWith('unit') ? 'units'
+            : rawUnit;
+
+  return { quantity, unit };
+}
+
 function isNdpsDrug(drug: {
   isNarcotic: boolean;
   vaultControlled: boolean;
@@ -210,6 +236,7 @@ export async function getPatientDoseContext(tenantId: string, scheduleId: string
           select: { id: true, drugBatchId: true, quantityDispensed: true, billId: true },
         }),
   ]);
+  const labelledContents = inferLabelledContentsFromStrength(drug.strength);
 
   return {
     isNdps: true,
@@ -218,6 +245,9 @@ export async function getPatientDoseContext(tenantId: string, scheduleId: string
       name: drug.drugName,
       strength: drug.strength,
     },
+    labelledContents: labelledContents
+      ? { ...labelledContents, source: 'drug_strength' as const, sourceText: drug.strength! }
+      : null,
     linkedBatchId: dispensing?.drugBatchId ?? schedule.drugBatchId,
     dispensingRecordId: dispensing?.id ?? null,
     requiresEmergencyReason: !dispensing,
@@ -316,10 +346,14 @@ export async function getPrescriptionItemDoseContext(tenantId: string, prescript
     });
     if (issuedBatch) batches.unshift(issuedBatch);
   }
+  const labelledContents = inferLabelledContentsFromStrength(drug.strength);
 
   return {
     isNdps: true,
     drug: { id: drug.id, name: drug.drugName, strength: drug.strength },
+    labelledContents: labelledContents
+      ? { ...labelledContents, source: 'drug_strength' as const, sourceText: drug.strength! }
+      : null,
     linkedBatchId: dispensing?.drugBatchId ?? null,
     dispensingRecordId: dispensing?.id ?? null,
     requiresEmergencyReason: !dispensing,

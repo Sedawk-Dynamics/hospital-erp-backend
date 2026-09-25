@@ -27,6 +27,7 @@ interface Rule {
   maxConcentrationPercent?: number;
   fallbackSchedule?: string;
   topicalExempt?: boolean;
+  notes?: string;
 }
 
 const rules = RULES as Rule[];
@@ -82,7 +83,7 @@ describe('drug schedule rules fixture — statutory content', () => {
   it('carries the published entry counts', () => {
     // Schedule H publishes 552 serials, 30 of which are repealed placeholders.
     expect(bySchedule('X')).toHaveLength(15);
-    expect(bySchedule('H1')).toHaveLength(50);
+    expect(bySchedule('H1')).toHaveLength(51);
     expect(bySchedule('H2')).toHaveLength(300);
     expect(bySchedule('H').length).toBeGreaterThanOrEqual(515);
     expect(bySchedule('G').length).toBeGreaterThanOrEqual(60);
@@ -106,6 +107,12 @@ describe('drug schedule rules fixture — statutory content', () => {
                      'chlordiazepoxide', 'diphenoxylate']) {
       expect(find('H1', n), `Schedule H1 missing ${n}`).toBeDefined();
     }
+  });
+
+  it('includes the 2026 Pregabalin Schedule H1 amendment', () => {
+    const pregabalin = find('H1', 'pregabalin');
+    expect(pregabalin).toBeDefined();
+    expect(pregabalin?.notes).toMatch(/G\.S\.R\. 377\(E\).*13 May 2026/);
   });
 
   it('resolves multi-salt Schedule H entries down to the plain molecule', () => {

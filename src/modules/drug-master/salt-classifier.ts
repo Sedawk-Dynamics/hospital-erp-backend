@@ -12,18 +12,17 @@
  * exemptions written into the schedules themselves, and the NDPS overlay.
  *
  * ── Where this differs from the string classifier ─────────────────────────
- * It was written as a port, and across all 253,987 catalog products the two
- * agree on 253,984. The three that differ are all the same case, and the salt
- * path is the correct one:
+ * It was written as a port. The original full-catalog comparison exposed one
+ * product-level fallback bug in the string path:
  *
  *   Sulphacetamide + Chlorpheniramine eye drops.  Chlorpheniramine is named in
  *   Schedule G; sulphacetamide is covered by Schedule H's "Para-Amino Benzene
  *   Sulphonamide, its Salts & Derivatives" entry. The string classifier only
  *   consulted the class entries when NOTHING ELSE in the product had matched —
  *   a product-level test — so the Schedule G hit suppressed the Schedule H one
- *   and the drops came out as G. Here every molecule carries its own schedule,
- *   the class included, so the strictest genuinely wins. A sulphacetamide eye
- *   drop is a prescription drug; G was under-restrictive.
+ *   and the drops came out as G. Both paths now resolve classes per molecule,
+ *   so the stricter ingredient genuinely wins. A sulphacetamide eye drop is a
+ *   prescription drug; G was under-restrictive.
  *
  * The other honest difference: a molecule nobody has scheduled contributes
  * nothing to the cascade, so a product made only of unscheduled molecules is

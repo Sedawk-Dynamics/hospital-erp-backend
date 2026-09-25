@@ -1,11 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import {
+  inferLabelledContentsFromStrength,
   reconcilePatientDoseQuantities,
   resolveDoseClinicalContext,
 } from '../../../../src/modules/ndps/ndps-patient-dose.service';
 import { ndpsPatientDoseSchema } from '../../../../src/modules/emar/emar.validation';
 
 describe('NDPS patient dose reconciliation', () => {
+  it('derives labelled contents from an unambiguous drug strength', () => {
+    expect(inferLabelledContentsFromStrength('10ml')).toEqual({ quantity: 10, unit: 'mL' });
+    expect(inferLabelledContentsFromStrength('2 mL vial')).toEqual({ quantity: 2, unit: 'mL' });
+  });
+
+  it('does not treat a concentration as the container contents', () => {
+    expect(inferLabelledContentsFromStrength('10 mg/mL')).toBeNull();
+    expect(inferLabelledContentsFromStrength('50 mcg/hr')).toBeNull();
+  });
+
   it('closes a fully administered container with no residual disposition', () => {
     const result = reconcilePatientDoseQuantities(50, 50);
 

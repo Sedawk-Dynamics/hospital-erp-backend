@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { prisma } from '../../../src/config/database';
-import { saltFactsChanged, markSaltProductsStale } from '../../../src/seeds/salt-master';
+import {
+  saltFactsChanged,
+  markSaltProductsStale,
+  preferStricterScheduleRule,
+} from '../../../src/seeds/salt-master';
 
 /**
  * The boot seed rewrites every molecule no person has decided. When it changes
@@ -17,6 +21,29 @@ const facts = (over: Record<string, unknown> = {}) => ({
 });
 
 beforeEach(() => vi.clearAllMocks());
+
+describe('cross-schedule molecule resolution', () => {
+  const rule = (scheduleCode: string, matchValue = 'Medicine') => ({
+    scheduleCode, matchType: 'salt', matchValue,
+    matchNorm: matchValue.toLowerCase(), aliases: [],
+  });
+
+  it('keeps Schedule H when a later Schedule G row names the same molecule', () => {
+    const h = rule('H', 'Bleomycin');
+    const g = rule('G', 'Bleomycin');
+    expect(preferStricterScheduleRule(h, g)).toBe(h);
+  });
+
+  it('chooses the strictest rule independently of input order', () => {
+    for (const [loose, strict] of [
+      [rule('H', 'Cefotaxime'), rule('H1', 'Cefotaxime')],
+      [rule('H', 'Methylphenidate'), rule('X', 'Methylphenidate')],
+    ]) {
+      expect(preferStricterScheduleRule(loose, strict)).toBe(strict);
+      expect(preferStricterScheduleRule(strict, loose)).toBe(strict);
+    }
+  });
+});
 
 describe('saltFactsChanged', () => {
   it('spots a schedule the seed filled in', () => {
