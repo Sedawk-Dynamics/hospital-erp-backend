@@ -97,6 +97,11 @@ describe('cascade — first match wins', () => {
     expect(run('Cefdinir (300mg)').schedule).toBe('H1');
   });
 
+  it('puts Pregabalin and its formulations in H1 under the 2026 amendment', () => {
+    expect(run('Pregabalin (75mg)').schedule).toBe('H1');
+    expect(run('Pregabalin (75mg) + Methylcobalamin (750mcg)').schedule).toBe('H1');
+  });
+
   it('puts a plain Schedule H drug in H', () => {
     expect(run('Atorvastatin (10mg)').schedule).toBe('H');
     expect(run('Metoprolol Succinate (50mg)').schedule).toBe('H');
@@ -188,6 +193,26 @@ describe('therapeutic-class entries', () => {
     const r = run('Cefixime (200mg)');
     expect(r.schedule).toBe('H1');
     expect(r.matchedRule).not.toBe('Antibiotics');
+  });
+
+  it('does not let a named ingredient hide a stricter class match on another ingredient', () => {
+    // Chlorpheniramine is named in G. Sulphacetamide is covered by the H
+    // sulphonamide class. The old product-level fallback stopped after seeing
+    // the G hit and incorrectly returned G for these eye drops.
+    const r = run('Sulphacetamide (15% w/v) + Chlorpheniramine Maleate (0.01% w/v)', {
+      dosageForm: 'drops',
+    });
+    expect(r.schedule).toBe('H');
+    expect(r.matchedRule).toMatch(/Para-Amino Benzene Sulphonamide/);
+  });
+});
+
+describe('molecules published in more than one schedule', () => {
+  it('always applies the strictest published schedule', () => {
+    // Each molecule has duplicate entries in the real fixture.
+    expect(run('Bleomycin (15IU)').schedule).toBe('H');
+    expect(run('Doxorubicin (50mg)').schedule).toBe('H');
+    expect(run('Cefotaxime (1000mg)').schedule).toBe('H1');
   });
 });
 

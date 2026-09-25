@@ -361,6 +361,13 @@
  {
   "scheduleCode": "H1",
   "matchType": "salt",
+  "matchValue": "Pregabalin",
+  "matchNorm": "pregabalin",
+  "notes": "Added to Schedule H1 with its formulations by G.S.R. 377(E), 13 May 2026"
+ },
+ {
+  "scheduleCode": "H1",
+  "matchType": "salt",
   "matchValue": "Pyrazinamide",
   "matchNorm": "pyrazinamide"
  },

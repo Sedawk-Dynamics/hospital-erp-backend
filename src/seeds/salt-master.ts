@@ -63,6 +63,27 @@ function ndpsFieldsFrom(rule: ScheduleRuleLike) {
   };
 }
 
+const SCHEDULE_PRECEDENCE = ['X', 'H1', 'H', 'G'];
+
+/**
+ * A molecule may be published in more than one schedule. Keep the strictest
+ * rule regardless of fixture/database row order: X > H1 > H > G.
+ *
+ * Bleomycin is in both H and G. The old seed overwrote H with the later G row,
+ * which downgraded every Bleomycin product in the catalogue. Cefotaxime and
+ * doxorubicin also have cross-schedule entries, so order must never decide this.
+ */
+export function preferStricterScheduleRule(
+  current: ScheduleRuleLike | null | undefined,
+  candidate: ScheduleRuleLike,
+): ScheduleRuleLike {
+  if (!current) return candidate;
+  const currentRank = SCHEDULE_PRECEDENCE.indexOf(current.scheduleCode);
+  const candidateRank = SCHEDULE_PRECEDENCE.indexOf(candidate.scheduleCode);
+  if (candidateRank >= 0 && (currentRank < 0 || candidateRank < currentRank)) return candidate;
+  return current;
+}
+
 export async function seedSaltMaster(prisma: PrismaClient): Promise<SaltSeedTotals> {
   const totals: SaltSeedTotals = {
     classes: 0, saltsCreated: 0, saltsUpdated: 0, synonyms: 0, classLinks: 0, undecided: 0,
@@ -102,7 +123,12 @@ export async function seedSaltMaster(prisma: PrismaClient): Promise<SaltSeedTota
     if (r.matchType !== 'salt') continue;
     const target = r.scheduleCode === 'NDPS' ? ndpsByNorm : cdscoByNorm;
     for (const key of [r.matchNorm, ...(r.aliases ?? [])]) {
-      if (key && !target.has(key)) target.set(key, r);
+      if (!key) continue;
+      const current = target.get(key);
+      target.set(
+        key,
+        r.scheduleCode === 'NDPS' ? (current ?? r) : preferStricterScheduleRule(current, r),
+      );
     }
   }
 
@@ -147,7 +173,7 @@ export async function seedSaltMaster(prisma: PrismaClient): Promise<SaltSeedTota
     const canon = cdscoHit ? cdscoHit.matchNorm : r.matchNorm;
     const d = draftFor(canon, cdscoHit ? cdscoHit.matchValue : r.matchValue);
     if (isNdps) d.ndps = r;
-    else d.cdsco = r;
+    else d.cdsco = preferStricterScheduleRule(d.cdsco, r);
     for (const a of r.aliases ?? []) if (a && a !== canon) d.spellings.set(a, a);
   }
 

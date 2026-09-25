@@ -3,9 +3,7 @@
  *
  * This is the gate for switching classification from string matching to the salt
  * join. The new path is a PORT, so the only acceptable result is agreement — a
- * diff is a bug in the new path, not an improvement to accept quietly. The three
- * exceptions that survived review are listed in ACCEPTED below; anything else
- * exits non-zero.
+ * diff is a bug in one of the paths, not an improvement to accept quietly.
  *
  *   npm run db:diff-salt-classifier
  *   npm run db:diff-salt-classifier -- --limit 5000     sample instead of all
@@ -32,22 +30,10 @@ const SHOW = numArg('--show', 15);
 const CHUNK = 2000;
 
 /**
- * Differences that have been looked at and accepted, so this stays a gate that
- * only fires on something NEW.
- *
- * All three are sulphacetamide + chlorpheniramine eye drops. Chlorpheniramine is
- * named in Schedule G; sulphacetamide is covered by Schedule H's "Para-Amino
- * Benzene Sulphonamide" class entry. The string classifier consulted the class
- * entries only when nothing else in the product had matched, so the Schedule G
- * hit suppressed the Schedule H one. The salt path gives every molecule its own
- * schedule, so the stricter one wins — which is right: a sulphacetamide eye drop
- * needs a prescription.
+ * Differences that have been explicitly reviewed can be listed here. Keep this
+ * empty by default: both implementations must agree across the full catalogue.
  */
-const ACCEPTED = new Set([
-  'Zinbro-S Eye Drop|schedule|"G"|"H"',
-  'Takmide Eye Drop|schedule|"G"|"H"',
-  'Trachol Eye Drop|schedule|"G"|"H"',
-]);
+const ACCEPTED = new Set<string>();
 
 interface Mismatch {
   name: string;
@@ -189,8 +175,8 @@ async function main() {
     console.log('\n  UNREVIEWED difference. The salt path is a port, so anything not in');
     console.log('  ACCEPTED is a bug in it, not an improvement to wave through.');
   } else {
-    console.log('\n  No unreviewed disagreements — the salt join reproduces the string');
-    console.log('  classifier everywhere except the accepted cases documented above.');
+    console.log('\n  No disagreements — the salt join reproduces the string classifier');
+    console.log('  across the entire catalogue.');
   }
 
   await prisma.$disconnect();
