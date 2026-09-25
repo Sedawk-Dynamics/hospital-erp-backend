@@ -65,7 +65,7 @@ services:
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
-      CORS_ORIGINS: ${CORS_ORIGINS:-https://trms.webelio.org}
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://dev.cenaps.in}
       BCRYPT_SALT_ROUNDS: 12
       PACS_PROVIDER: ${PACS_PROVIDER:-none}
       ORTHANC_URL: ${ORTHANC_URL:-http://orthanc:8042}

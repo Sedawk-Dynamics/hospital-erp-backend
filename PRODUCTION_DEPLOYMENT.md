@@ -35,7 +35,7 @@ Copy from [`.env.production.example`](./.env.production.example). The essentials
 | `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` | two long random strings (different) |
 | `FRONTEND_URL` | `https://dev.cenaps.in` |
 | `CORS_ORIGINS` | empty = allow all origins (current policy); set to lock down |
-| `RAZORPAY_KEY_ID` / `_SECRET` / `_WEBHOOK_SECRET` | **live** keys |
+| `RAZORPAY_KEY_ID` / `_SECRET` / `_WEBHOOK_SECRET` | optional; **live** keys enable payments |
 | `AUTO_SEED` | `true` (default in production) |
 
 Generate secrets:
@@ -103,8 +103,9 @@ To disable auto-seed: `AUTO_SEED=false`. To seed manually instead:
 `npm run db:seed:all` (or individual `npm run db:seed:*` scripts).
 
 ### CORS
-Handled entirely by the API. Default = allow any origin (with credentials
-reflected). To restrict to the SPA only, set
+Handled entirely by the API. The Cenaps first-party origins are always allowed.
+Default = allow any origin (with credentials reflected). To restrict additional
+origins, set
 `CORS_ORIGINS=https://dev.cenaps.in` and redeploy.
 
 ### DICOM viewer (only if `PACS_PROVIDER=orthanc`)

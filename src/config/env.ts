@@ -20,8 +20,17 @@ const envSchema = z.object({
   FRONTEND_URL: z.string().default('http://localhost:5173'),
   CORS_ORIGINS: z.string().default(''),
   BCRYPT_SALT_ROUNDS: z.coerce.number().default(12),
-  RAZORPAY_KEY_ID: z.string().min(1),
-  RAZORPAY_KEY_SECRET: z.string().min(1),
+  // Payments are optional at process-start time. Placeholder values keep
+  // health, authentication and the rest of the ERP available when a deployment
+  // has missing or blank Razorpay variables; payment calls still fail closed.
+  RAZORPAY_KEY_ID: z
+    .string()
+    .default('')
+    .transform((v) => v.trim() || 'your_key_id_not_configured'),
+  RAZORPAY_KEY_SECRET: z
+    .string()
+    .default('')
+    .transform((v) => v.trim() || 'your_key_secret_not_configured'),
   RAZORPAY_WEBHOOK_SECRET: z.string().default(''),
 
   // ── AI / LLM integration (Gemini-first, provider-swappable) ─────────────

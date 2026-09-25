@@ -10,6 +10,10 @@ process.env.JWT_REFRESH_EXPIRY = '7d';
 process.env.PORT = '4000';
 process.env.NODE_ENV = 'test';
 process.env.FRONTEND_URL = 'http://localhost:3000';
+// Exercise the restricted production branch of the CORS policy. The legacy
+// origin simulates a stale deployment variable; first-party Cenaps origins
+// must still be admitted.
+process.env.CORS_ORIGINS = 'https://trms.webelio.org';
 process.env.BCRYPT_SALT_ROUNDS = '4';
 // Required by src/config/env.ts with no default — without them the schema fails
 // and env.ts calls process.exit(1), which kills the whole test FILE before a

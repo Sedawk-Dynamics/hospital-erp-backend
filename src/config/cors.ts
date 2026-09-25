@@ -13,11 +13,24 @@ import { env } from './env';
 // (e.g. "https://cenaps.in,https://www.cenaps.in") to restrict the API to
 // those origins only. Leave it empty to allow every origin (current prod
 // default per product decision). FRONTEND_URL is always allowed when set.
+const normalizeOrigin = (origin: string) => origin.trim().replace(/\/+$/, '');
+
+// These are the first-party browser origins for the hosted product. Keep them
+// available even when a deployment still has an older CORS_ORIGINS value (for
+// example the legacy trms.webelio.org origin from docker-compose). Environment
+// values can add more origins, but cannot accidentally lock the live SPA out.
+const firstPartyOrigins = [
+  'https://dev.cenaps.in',
+  'https://cenaps.in',
+  'https://www.cenaps.in',
+];
+
 const allowlist = [
+  ...firstPartyOrigins,
   ...env.CORS_ORIGINS.split(',').map((s) => s.trim()),
   env.FRONTEND_URL,
 ]
-  .map((s) => s.trim())
+  .map(normalizeOrigin)
   .filter(Boolean);
 
 const useAllowlist = env.CORS_ORIGINS.trim().length > 0;
@@ -32,7 +45,7 @@ export const corsOptions: CorsOptions = {
         // simply omitting the CORS headers (cb(null, false)) rather than raising
         // an error, so the request still returns normally and the browser blocks
         // it — no 500s in the logs.
-        if (!origin || allowlist.includes(origin)) return cb(null, true);
+        if (!origin || allowlist.includes(normalizeOrigin(origin))) return cb(null, true);
         return cb(null, false);
       }
     : true,
@@ -41,4 +54,5 @@ export const corsOptions: CorsOptions = {
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Tenant-Id', 'X-Tenant-Slug'],
   exposedHeaders: ['X-Total-Count', 'Content-Disposition'],
   maxAge: 86400,
+  optionsSuccessStatus: 204,
 };
