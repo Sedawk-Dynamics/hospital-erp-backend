@@ -199,15 +199,16 @@ describe('API Integration Tests', () => {
       expect(res.headers['access-control-allow-credentials']).toBe('true');
     });
 
-    it('should allow the live Cenaps frontend even with a stale configured allowlist', async () => {
+    it('should allow a preflight from any browser origin', async () => {
+      const origin = 'https://arbitrary-client.example';
       const res = await request(app)
         .options('/api/v1/auth/login')
-        .set('Origin', 'https://dev.cenaps.in')
+        .set('Origin', origin)
         .set('Access-Control-Request-Method', 'POST')
         .set('Access-Control-Request-Headers', 'content-type');
 
       expect(res.status).toBe(204);
-      expect(res.headers['access-control-allow-origin']).toBe('https://dev.cenaps.in');
+      expect(res.headers['access-control-allow-origin']).toBe(origin);
       expect(res.headers['access-control-allow-credentials']).toBe('true');
       expect(res.headers['access-control-allow-methods']).toContain('POST');
     });
