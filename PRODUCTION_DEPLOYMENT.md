@@ -34,7 +34,6 @@ Copy from [`.env.production.example`](./.env.production.example). The essentials
 | `REDIS_URL` | your managed Redis URL — **required** (rate limiting + login lockout) |
 | `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` | two long random strings (different) |
 | `FRONTEND_URL` | `https://dev.cenaps.in` |
-| `CORS_ORIGINS` | empty = allow all origins (current policy); set to lock down |
 | `RAZORPAY_KEY_ID` / `_SECRET` / `_WEBHOOK_SECRET` | optional; **live** keys enable payments |
 | `AUTO_SEED` | `true` (default in production) |
 
@@ -103,10 +102,9 @@ To disable auto-seed: `AUTO_SEED=false`. To seed manually instead:
 `npm run db:seed:all` (or individual `npm run db:seed:*` scripts).
 
 ### CORS
-Handled entirely by the API. The Cenaps first-party origins are always allowed.
-Default = allow any origin (with credentials reflected). To restrict additional
-origins, set
-`CORS_ORIGINS=https://dev.cenaps.in` and redeploy.
+Handled entirely by the API. Every browser origin is allowed, with the caller's
+origin reflected so credentialed requests remain valid. Postman and other
+non-browser HTTP clients are not subject to browser CORS enforcement.
 
 ### DICOM viewer (only if `PACS_PROVIDER=orthanc`)
 The OHIF viewer iframe is served from api.cenaps.in but embedded in dev.cenaps.in

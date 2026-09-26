@@ -18,7 +18,6 @@ const envSchema = z.object({
   PORT: z.coerce.number().default(4000),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   FRONTEND_URL: z.string().default('http://localhost:5173'),
-  CORS_ORIGINS: z.string().default(''),
   BCRYPT_SALT_ROUNDS: z.coerce.number().default(12),
   // Payments are optional at process-start time. Placeholder values keep
   // health, authentication and the rest of the ERP available when a deployment
