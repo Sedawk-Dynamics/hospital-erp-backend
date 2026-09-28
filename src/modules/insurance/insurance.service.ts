@@ -721,7 +721,6 @@ export async function createClaim(tenantId: string, userId: string, data: Create
       submissionReference: data.submissionReference,
       nhcxTransactionId: data.nhcxTransactionId,
       submissionDate: now,
-      documentsUrl: data.documentsUrl ?? undefined,
       notes: data.notes,
       submittedBy: userId,
     },
@@ -996,8 +995,6 @@ export async function getClaimById(tenantId: string, id: string) {
         orderBy: { createdAt: 'desc' },
         take: 10,
       },
-      documents: { orderBy: [{ name: 'asc' }, { version: 'desc' }] },
-      checklistItems: { orderBy: { createdAt: 'asc' } },
       queries: { orderBy: { raisedAt: 'desc' } },
       settlements: { orderBy: { settlementDate: 'desc' } },
       writeOffs: { orderBy: { createdAt: 'desc' } },
@@ -1022,14 +1019,13 @@ export async function updateClaim(tenantId: string, id: string, data: UpdateClai
     throw AppError.notFound('Insurance claim not found');
   }
 
-  if (existing.status !== 'submitted' && existing.status !== 'resubmitted') {
-    throw AppError.badRequest('Can only update claims in submitted or resubmitted status');
+  if (existing.status !== 'submitted') {
+    throw AppError.badRequest('Can only update a claim before it enters review');
   }
 
   const updateData: any = {};
   if (data.claimAmount !== undefined) updateData.claimAmount = data.claimAmount;
   if (data.notes !== undefined) updateData.rejectionReason = data.notes;
-  if (data.documentsUrl !== undefined) updateData.documentsUrl = data.documentsUrl;
 
   const claim = await prisma.insuranceClaim.update({
     where: { id },
@@ -1051,8 +1047,8 @@ export async function updateClaim(tenantId: string, id: string, data: UpdateClai
 /**
  * Re-sync a claim's amount + co-pay/deductible/coverage split from its policy as
  * the underlying bill grows (used by the auto-TPA link for IP admissions, so the
- * running claim tracks charges). Only touches PRE-processing claims (submitted /
- * resubmitted) — once the TPA/insurance team picks it up (under_review+) it is
+ * running claim tracks charges). Only touches PRE-processing claims (submitted)
+ * — once the TPA/insurance team picks it up (under_review+) it is
  * left untouched.
  */
 export async function resyncClaimAmount(tenantId: string, claimId: string, newClaimAmount: number) {
@@ -1061,7 +1057,7 @@ export async function resyncClaimAmount(tenantId: string, claimId: string, newCl
     include: { policy: true },
   });
   if (!claim) return null;
-  if (claim.status !== 'submitted' && claim.status !== 'resubmitted') return claim;
+  if (claim.status !== 'submitted') return claim;
   if (!claim.policy) return claim;
 
   const split = computeResponsibility(
@@ -1096,13 +1092,12 @@ export async function submitClaim(tenantId: string, id: string, userId?: string)
     throw AppError.notFound('Insurance claim not found');
   }
 
-  if (claim.status !== 'submitted' && claim.status !== 'resubmitted') {
+  if (claim.status !== 'submitted') {
     throw AppError.badRequest('Claim is not in a submittable status');
   }
 
-  // Supporting documents are optional for this workflow. The financial source
-  // of truth is the issued hospital bill: staff may proceed as soon as that
-  // bill is finalized, without uploading a discharge summary or claim form.
+  // The issued hospital bill is the single progression gate. Once finalized,
+  // the claim can move into payer review.
   if (!['pending', 'partially_paid', 'paid'].includes(claim.bill.status)) {
     throw AppError.badRequest('Finalize the hospital bill before proceeding with this TPA claim');
   }
@@ -1150,8 +1145,8 @@ export async function approveClaim(
     throw AppError.notFound('Insurance claim not found');
   }
 
-  if (claim.status !== 'under_review' && claim.status !== 'submitted' && claim.status !== 'resubmitted') {
-    throw AppError.badRequest('Claim must be under review or submitted to approve');
+  if (claim.status !== 'under_review') {
+    throw AppError.badRequest('Claim must be under review to approve');
   }
 
   const claimAmount = decNum(claim.claimAmount);
@@ -1217,12 +1212,8 @@ export async function partialApproveClaim(
   const claim = await prisma.insuranceClaim.findFirst({ where: { id, tenantId } });
   if (!claim) throw AppError.notFound('Insurance claim not found');
 
-  if (
-    claim.status !== 'under_review' &&
-    claim.status !== 'submitted' &&
-    claim.status !== 'resubmitted'
-  ) {
-    throw AppError.badRequest('Claim must be under review, submitted, or resubmitted to partially approve');
+  if (claim.status !== 'under_review') {
+    throw AppError.badRequest('Claim must be under review to partially approve');
   }
 
   const claimAmount = decNum(claim.claimAmount);
@@ -1373,9 +1364,6 @@ export async function resubmitClaim(
   const expiryDays = data.expiryDays ?? DEFAULT_CLAIM_EXPIRY_DAYS;
   const expiryDate = new Date(now.getTime() + expiryDays * 24 * 60 * 60 * 1000);
 
-  // Merge documents
-  const mergedDocs = mergeDocuments(original.documentsUrl, data.additionalDocumentsUrl);
-
   const claimNumber = await generateClaimNumber(tenantId);
 
   const resubmitted = await prisma.$transaction(async (tx) => {
@@ -1401,7 +1389,6 @@ export async function resubmitClaim(
         expiryDate,
         status: 'submitted',
         submissionDate: now,
-        documentsUrl: mergedDocs ?? undefined,
         notes: data.notes,
         previousClaimId: original.id,
         resubmissionCount: (original.resubmissionCount ?? 0) + 1,
@@ -1431,17 +1418,6 @@ export async function resubmitClaim(
     'Insurance claim resubmitted',
   );
   return resubmitted;
-}
-
-function mergeDocuments(existing: Prisma.JsonValue | null, additional: unknown): Prisma.InputJsonValue | null {
-  const left = Array.isArray(existing) ? (existing as unknown[]) : existing ? [existing as unknown] : [];
-  const right = Array.isArray(additional)
-    ? (additional as unknown[])
-    : additional !== undefined && additional !== null
-      ? [additional]
-      : [];
-  const merged = [...left, ...right];
-  return merged.length ? (merged as Prisma.InputJsonValue) : null;
 }
 
 export async function cancelClaim(
@@ -1563,12 +1539,8 @@ export async function rejectClaim(
     throw AppError.notFound('Insurance claim not found');
   }
 
-  if (
-    claim.status !== 'under_review' &&
-    claim.status !== 'submitted' &&
-    claim.status !== 'resubmitted'
-  ) {
-    throw AppError.badRequest('Claim must be under review, submitted, or resubmitted to reject');
+  if (claim.status !== 'under_review') {
+    throw AppError.badRequest('Claim must be under review to reject');
   }
 
   const updated = await prisma.insuranceClaim.update({
@@ -1651,7 +1623,6 @@ export async function exportClaimForTpa(tenantId: string, id: string) {
     status: claim.status,
     submissionDate: claim.submissionDate,
     expiryDate: claim.expiryDate,
-    documents: claim.documentsUrl ?? [],
     patient: {
       id: claim.patient.id,
       firstName: claim.patient.firstName,

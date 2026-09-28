@@ -40,7 +40,6 @@ import * as controller from './insurance.controller';
 import * as workflowController from './insurance.workflow.controller';
 import {
   addCasePolicySchema,
-  addClaimDocumentSchema,
   bankMatchQuerySchema,
   bulkSettlementSchema,
   caseIdParamSchema,
@@ -69,7 +68,6 @@ import {
   respondClaimQuerySchema,
   updateInsuranceCaseStatusSchema,
   updatePayerContractSchema,
-  verifyClaimDocumentSchema,
   workflowReportQuerySchema,
 } from './insurance.workflow.validation';
 
@@ -89,7 +87,7 @@ insuranceRoutes.get('/corporate-payers', authenticate, requirePermission('insura
 insuranceRoutes.post('/government-schemes', authenticate, requirePermission('insurance', 'create'), validate(createGovernmentSchemeSchema), workflowController.createGovernmentScheme);
 insuranceRoutes.get('/government-schemes', authenticate, requirePermission('insurance', 'read'), validate(payerListQuerySchema), workflowController.listGovernmentSchemes);
 
-// Payer contracts, negotiated tariffs, packages, checklists and non-payables.
+// Payer contracts, negotiated tariffs, packages and non-payables.
 insuranceRoutes.post('/contracts', authenticate, requirePermission('insurance', 'create'), validate(createPayerContractSchema), workflowController.createContract);
 insuranceRoutes.get('/contracts', authenticate, requirePermission('insurance', 'read'), validate(contractQuerySchema), workflowController.listContracts);
 insuranceRoutes.get('/contracts/:id', authenticate, requirePermission('insurance', 'read'), validate(caseIdParamSchema), workflowController.getContract);
@@ -160,9 +158,6 @@ insuranceRoutes.get('/claims/settlements/bank-match', authenticate, requirePermi
 insuranceRoutes.get('/claims/:id', authenticate, requirePermission('insurance', 'read'), validate(idParamSchema), controller.getClaimById);
 insuranceRoutes.get('/claims/:id/export', authenticate, requirePermission('insurance', 'export'), validate(idParamSchema), controller.exportClaim);
 insuranceRoutes.get('/claims/:id/dossier', authenticate, requirePermission('insurance', 'export'), validate(claimIdParamSchema), workflowController.getClaimDossier);
-insuranceRoutes.get('/claims/:id/checklist', authenticate, requirePermission('insurance', 'read'), validate(claimIdParamSchema), workflowController.getClaimChecklist);
-insuranceRoutes.post('/claims/:id/checklist/sync', authenticate, requirePermission('insurance', 'update'), validate(claimIdParamSchema), workflowController.syncClaimChecklist);
-insuranceRoutes.post('/claims/:id/documents', authenticate, requirePermission('insurance', 'create'), validate(addClaimDocumentSchema), workflowController.addClaimDocument);
 insuranceRoutes.post('/claims/:id/queries', authenticate, requirePermission('insurance', 'update'), validate(raiseClaimQuerySchema), workflowController.raiseClaimQuery);
 insuranceRoutes.post('/claims/:id/settlements', authenticate, requirePermission('insurance', 'approve'), validate(recordSettlementSchema), workflowController.recordSettlement);
 insuranceRoutes.post('/claims/:id/write-offs', authenticate, requirePermission('insurance', 'update'), validate(requestWriteOffSchema), workflowController.requestWriteOff);
@@ -175,7 +170,6 @@ insuranceRoutes.patch('/claims/:id/reject', authenticate, requirePermission('ins
 insuranceRoutes.patch('/claims/:id/settle', authenticate, requirePermission('insurance', 'approve'), validate(settleClaimSchema), controller.settleClaim);
 insuranceRoutes.post('/claims/:id/resubmit', authenticate, requirePermission('insurance', 'create'), validate(resubmitClaimSchema), controller.resubmitClaim);
 insuranceRoutes.patch('/claims/:id/cancel', authenticate, requirePermission('insurance', 'update'), validate(cancelClaimSchema), controller.cancelClaim);
-insuranceRoutes.patch('/claim-documents/:documentId/verify', authenticate, requirePermission('insurance', 'approve'), validate(verifyClaimDocumentSchema), workflowController.verifyClaimDocument);
 insuranceRoutes.patch('/claim-queries/:queryId/respond', authenticate, requirePermission('insurance', 'update'), validate(respondClaimQuerySchema), workflowController.respondClaimQuery);
 insuranceRoutes.patch('/claim-queries/:queryId/resolve', authenticate, requirePermission('insurance', 'approve'), validate(resolveClaimQuerySchema), workflowController.resolveClaimQuery);
 insuranceRoutes.patch('/claim-write-offs/:writeOffId/decision', authenticate, requirePermission('insurance', 'approve'), validate(decideWriteOffSchema), workflowController.decideWriteOff);

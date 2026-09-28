@@ -191,7 +191,6 @@ export const createClaimSchema = z.object({
     submissionReference: z.string().trim().max(100).optional(),
     nhcxTransactionId: z.string().trim().max(100).optional(),
     notes: z.string().optional(),
-    documentsUrl: z.any().optional(),
     expiryDays: z.number().int().positive().optional(),
   }).refine((value) => value.policyId || value.insuranceCaseId, {
     path: ['insuranceCaseId'],
@@ -203,7 +202,6 @@ export const updateClaimSchema = z.object({
   body: z.object({
     claimAmount: z.number().positive('Claim amount must be positive').optional(),
     notes: z.string().optional().nullable(),
-    documentsUrl: z.any().optional(),
   }),
   params: z.object({
     id: z.string().uuid('Invalid claim ID'),
@@ -281,7 +279,6 @@ export const settleClaimSchema = z.object({
 export const resubmitClaimSchema = z.object({
   body: z.object({
     claimAmount: z.number().positive('Claim amount must be positive').optional(),
-    additionalDocumentsUrl: z.any().optional(),
     notes: z.string().min(1, 'Resubmission notes are required'),
     expiryDays: z.number().int().positive().optional(),
   }),

@@ -171,11 +171,6 @@ const contractBody = z.object({
     agreedAmount: amount, inclusions: z.unknown().optional(), exclusions: z.unknown().optional(),
     effectiveFrom: z.coerce.date(), effectiveTo: z.coerce.date().optional(),
   })).default([]),
-  documentRequirements: z.array(z.object({
-    code: z.string().trim().min(1).max(100), name: z.string().trim().min(1).max(255),
-    category: z.enum(['identity', 'eligibility', 'clinical', 'diagnostic', 'billing', 'authorization', 'settlement', 'correspondence', 'other']),
-    isRequired: z.boolean().default(true), appliesTo: settlementMode.optional(), sortOrder: z.coerce.number().int().default(0),
-  })).default([]),
   nonPayableRules: z.array(z.object({
     itemCode: z.string().trim().max(100).optional(), itemPattern: z.string().trim().max(255).optional(),
     reason: z.string().trim().min(1), patientPayable: z.boolean().default(true), isActive: z.boolean().default(true),
@@ -215,24 +210,6 @@ export const requestFinalAuthorizationSchema = z.object({
     submissionChannel: z.enum(['portal', 'email', 'nhcx', 'api', 'manual']).optional(),
     submissionReference: z.string().trim().max(100).optional(), notes: optionalText,
   }),
-});
-
-export const addClaimDocumentSchema = z.object({
-  params: z.object({ id: uuid }),
-  body: z.object({
-    code: z.string().trim().max(100).optional(), name: z.string().trim().min(1).max(255),
-    category: z.enum(['identity', 'eligibility', 'clinical', 'diagnostic', 'billing', 'authorization', 'settlement', 'correspondence', 'other']),
-    fileUrl: z.string().url(), mimeType: z.string().trim().max(100).optional(), fileHash: z.string().trim().max(128).optional(),
-  }),
-});
-
-export const verifyClaimDocumentSchema = z.object({
-  params: z.object({ documentId: uuid }),
-  body: z.object({ status: z.enum(['verified', 'rejected']), rejectionReason: optionalText }),
-}).superRefine((value, ctx) => {
-  if (value.body.status === 'rejected' && !value.body.rejectionReason) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['body', 'rejectionReason'], message: 'Rejection reason is required' });
-  }
 });
 
 export const raiseClaimQuerySchema = z.object({

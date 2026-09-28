@@ -38,8 +38,6 @@ const CLAIM_WORKFLOW_INCLUDE = {
   insuranceCase: { include: { insurer: true, tpa: true, corporatePayer: true, governmentSchemePayer: true, policies: { include: { policy: true }, orderBy: { sequence: 'asc' as const } } } },
   preAuth: true,
   bill: { include: { billItems: true } },
-  documents: { orderBy: [{ name: 'asc' as const }, { version: 'desc' as const }] },
-  checklistItems: { orderBy: { createdAt: 'asc' as const } },
   queries: { orderBy: { raisedAt: 'desc' as const } },
   settlements: { orderBy: { settlementDate: 'desc' as const } },
   writeOffs: { orderBy: { createdAt: 'desc' as const } },
@@ -371,17 +369,16 @@ async function contractNestedData(data: ContractInput) {
   return {
     serviceRates: { create: data.serviceRates.map((item) => ({ ...item })) },
     packageRates: { create: data.packageRates.map((item) => ({ ...item, inclusions: item.inclusions === undefined ? undefined : asJson(item.inclusions), exclusions: item.exclusions === undefined ? undefined : asJson(item.exclusions) })) },
-    documentRequirements: { create: data.documentRequirements },
     nonPayableRules: { create: data.nonPayableRules },
   };
 }
 
 export async function createContract(tenantId: string, data: ContractInput) {
   await verifyPayer(tenantId, data.payerType, data.payerId);
-  const { serviceRates, packageRates, documentRequirements, nonPayableRules, terms, ...base } = data;
+  const { serviceRates, packageRates, nonPayableRules, terms, ...base } = data;
   return prisma.payerContract.create({
     data: { tenantId, ...base, terms: terms === undefined ? undefined : asJson(terms), ...(await contractNestedData(data)) },
-    include: { serviceRates: true, packageRates: true, documentRequirements: true, nonPayableRules: true },
+    include: { serviceRates: true, packageRates: true, nonPayableRules: true },
   });
 }
 
@@ -389,7 +386,7 @@ export async function updateContract(tenantId: string, id: string, data: Contrac
   const existing = await prisma.payerContract.findFirst({ where: { id, tenantId } });
   if (!existing) throw AppError.notFound('Payer contract not found');
   await verifyPayer(tenantId, data.payerType, data.payerId);
-  const { serviceRates, packageRates, documentRequirements, nonPayableRules, terms, ...base } = data;
+  const { serviceRates, packageRates, nonPayableRules, terms, ...base } = data;
   await prisma.$transaction(async (tx) => {
     await Promise.all([
       tx.payerServiceRate.deleteMany({ where: { contractId: id } }),
@@ -404,7 +401,6 @@ export async function updateContract(tenantId: string, id: string, data: Contrac
         terms: terms === undefined ? undefined : asJson(terms),
         serviceRates: { create: serviceRates },
         packageRates: { create: packageRates.map((item) => ({ ...item, inclusions: item.inclusions === undefined ? undefined : asJson(item.inclusions), exclusions: item.exclusions === undefined ? undefined : asJson(item.exclusions) })) },
-        documentRequirements: { create: documentRequirements },
         nonPayableRules: { create: nonPayableRules },
       },
     });
@@ -417,11 +413,11 @@ export async function listContracts(tenantId: string, query: any) {
   if (query.payerType) where.payerType = query.payerType;
   if (query.payerId) where.payerId = query.payerId;
   if (query.activeOn) where.AND = [{ validFrom: { lte: query.activeOn } }, { validTo: { gte: query.activeOn } }, { isActive: true }];
-  return prisma.payerContract.findMany({ where, include: { serviceRates: true, packageRates: true, documentRequirements: { orderBy: { sortOrder: 'asc' } }, nonPayableRules: true }, orderBy: { validFrom: 'desc' } });
+  return prisma.payerContract.findMany({ where, include: { serviceRates: true, packageRates: true, nonPayableRules: true }, orderBy: { validFrom: 'desc' } });
 }
 
 export async function getContract(tenantId: string, id: string) {
-  const result = await prisma.payerContract.findFirst({ where: { id, tenantId }, include: { serviceRates: true, packageRates: true, documentRequirements: { orderBy: { sortOrder: 'asc' } }, nonPayableRules: true } });
+  const result = await prisma.payerContract.findFirst({ where: { id, tenantId }, include: { serviceRates: true, packageRates: true, nonPayableRules: true } });
   if (!result) throw AppError.notFound('Payer contract not found');
   return result;
 }
@@ -632,79 +628,14 @@ export async function getSlaQueue(tenantId: string) {
 }
 
 // ---------------------------------------------------------------------------
-// Claim documents, checklist, queries and dossier
+// Claim queries and dossier
 // ---------------------------------------------------------------------------
-
-async function activeRequirementsForClaim(tenantId: string, claimId: string) {
-  const claim = await prisma.insuranceClaim.findFirst({ where: { id: claimId, tenantId }, include: { insuranceCase: true, policy: true } });
-  if (!claim) throw AppError.notFound('Insurance claim not found');
-  const payerType = claim.insuranceCase?.paymentResponsibleType ?? 'insurer';
-  const payerId = claim.insuranceCase?.paymentResponsibleId ?? claim.policy?.insurerId;
-  if (!payerId) return [];
-  const today = new Date();
-  const contract = await prisma.payerContract.findFirst({
-    where: { tenantId, payerType, payerId, isActive: true, validFrom: { lte: today }, validTo: { gte: today } },
-    include: { documentRequirements: { where: { OR: [{ appliesTo: null }, { appliesTo: claim.settlementMode }] }, orderBy: { sortOrder: 'asc' } } },
-    orderBy: { validFrom: 'desc' },
-  });
-  return contract?.documentRequirements ?? [];
-}
-
-export async function syncClaimChecklist(tenantId: string, claimId: string) {
-  await requireClaim(tenantId, claimId);
-  const requirements = await activeRequirementsForClaim(tenantId, claimId);
-  // Do not invent document requirements when the payer contract has none.
-  // Claim progression is controlled by bill finalization, not by uploads.
-  if (!requirements.length) {
-    await prisma.claimChecklistItem.deleteMany({
-      where: {
-        claimId,
-        requirementCode: { in: ['FINAL_BILL', 'DISCHARGE_SUMMARY', 'CLAIM_FORM'] },
-      },
-    });
-    return getClaimChecklist(tenantId, claimId);
-  }
-  await prisma.$transaction(requirements.map((item) => prisma.claimChecklistItem.upsert({
-    where: { claimId_requirementCode: { claimId, requirementCode: item.code } },
-    create: { claimId, requirementCode: item.code, label: item.name, isRequired: item.isRequired },
-    update: { label: item.name, isRequired: item.isRequired },
-  })));
-  return getClaimChecklist(tenantId, claimId);
-}
-
-export async function getClaimChecklist(tenantId: string, claimId: string) {
-  await requireClaim(tenantId, claimId);
-  const items = await prisma.claimChecklistItem.findMany({ where: { claimId }, orderBy: { createdAt: 'asc' } });
-  const required = items.filter((item) => item.isRequired);
-  return { items, complete: required.every((item) => item.isComplete), missing: required.filter((item) => !item.isComplete).map((item) => item.label) };
-}
-
-export async function addClaimDocument(tenantId: string, userId: string, claimId: string, data: any) {
-  await requireClaim(tenantId, claimId);
-  const latest = await prisma.claimDocument.findFirst({ where: { claimId, name: data.name }, orderBy: { version: 'desc' }, select: { version: true } });
-  return prisma.$transaction(async (tx) => {
-    const document = await tx.claimDocument.create({ data: { tenantId, claimId, ...data, version: (latest?.version ?? 0) + 1, uploadedBy: userId } });
-    if (data.code) {
-      await tx.claimChecklistItem.updateMany({ where: { claimId, requirementCode: data.code }, data: { isComplete: true, documentId: document.id } });
-    }
-    await audit({ tenantId, actorId: userId, claimId, eventType: 'claim.document_uploaded', details: { documentId: document.id, code: data.code, name: data.name, version: document.version } }, tx);
-    return document;
-  });
-}
-
-export async function verifyClaimDocument(tenantId: string, userId: string, documentId: string, data: any) {
-  const existing = await prisma.claimDocument.findFirst({ where: { id: documentId, tenantId } });
-  if (!existing) throw AppError.notFound('Claim document not found');
-  return prisma.$transaction(async (tx) => {
-    const document = await tx.claimDocument.update({ where: { id: documentId }, data: { status: data.status, rejectionReason: data.rejectionReason, verifiedBy: userId, verifiedAt: new Date() } });
-    if (existing.code) await tx.claimChecklistItem.updateMany({ where: { claimId: existing.claimId, requirementCode: existing.code }, data: { isComplete: data.status === 'verified', documentId: data.status === 'verified' ? documentId : null, notes: data.rejectionReason } });
-    await audit({ tenantId, actorId: userId, claimId: existing.claimId, eventType: `claim.document_${data.status}`, details: { documentId, reason: data.rejectionReason } }, tx);
-    return document;
-  });
-}
 
 export async function raiseClaimQuery(tenantId: string, userId: string, claimId: string, data: any) {
   const claim = await requireClaim(tenantId, claimId);
+  if (claim.status !== 'under_review') {
+    throw AppError.badRequest('A payer query can only be raised while the claim is under review');
+  }
   const due = data.responseDueAt ?? new Date(Date.now() + (data.responseHours ?? 24) * 60 * 60 * 1000);
   const query = await prisma.$transaction(async (tx) => {
     const query = await tx.claimQuery.create({ data: { tenantId, claimId, queryReference: data.queryReference, subject: data.subject, queryText: data.queryText, responseDueAt: due, raisedBy: userId } });
@@ -755,12 +686,10 @@ export async function resolveClaimQuery(tenantId: string, userId: string, queryI
 export async function getClaimDossier(tenantId: string, claimId: string) {
   const claim = await prisma.insuranceClaim.findFirst({ where: { id: claimId, tenantId }, include: CLAIM_WORKFLOW_INCLUDE });
   if (!claim) throw AppError.notFound('Insurance claim not found');
-  const checklist = await getClaimChecklist(tenantId, claimId);
   return {
     generatedAt: new Date(),
     formatVersion: '1.0',
     claim,
-    checklist,
     financialSummary: {
       claimAmount: money(claim.claimAmount), approvedAmount: money(claim.approvedAmount),
       grossPaidAmount: claim.settlements.reduce((sum, item) => sum + money(item.grossPaidAmount), 0),

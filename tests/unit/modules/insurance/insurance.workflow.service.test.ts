@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { prisma } from '../../../../src/config/database';
 import {
+  raiseClaimQuery,
   recordSettlement,
-  syncClaimChecklist,
 } from '../../../../src/modules/insurance/insurance.workflow.service';
 
 const settlement = {
@@ -43,27 +43,20 @@ describe('insurance workflow settlement invariants', () => {
   });
 });
 
-describe('insurance claim document checklist', () => {
+describe('insurance claim query lifecycle', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('does not create default discharge-summary or signed-claim-form requirements', async () => {
+  it('requires the claim to enter review before a payer query can be raised', async () => {
     vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue({
       id: 'claim-1',
       tenantId: 'tenant-1',
-      insuranceCase: null,
-      policy: null,
+      status: 'submitted',
     } as never);
-    vi.mocked(prisma.claimChecklistItem.findMany).mockResolvedValue([] as never);
 
-    const result = await syncClaimChecklist('tenant-1', 'claim-1');
-
-    expect(prisma.claimChecklistItem.upsert).not.toHaveBeenCalled();
-    expect(prisma.claimChecklistItem.deleteMany).toHaveBeenCalledWith({
-      where: {
-        claimId: 'claim-1',
-        requirementCode: { in: ['FINAL_BILL', 'DISCHARGE_SUMMARY', 'CLAIM_FORM'] },
-      },
-    });
-    expect(result).toEqual({ items: [], complete: true, missing: [] });
+    await expect(raiseClaimQuery('tenant-1', 'user-1', 'claim-1', {
+      subject: 'Clarification',
+      queryText: 'Please clarify the billed amount',
+    })).rejects.toThrow('only be raised while the claim is under review');
+    expect(prisma.claimQuery.create).not.toHaveBeenCalled();
   });
 });
