@@ -735,11 +735,6 @@ export async function createClaim(tenantId: string, userId: string, data: Create
   if (insuranceCase) {
     await prisma.insuranceCase.update({ where: { id: insuranceCase.id }, data: { status: 'claimSubmitted' } });
   }
-  // Build payer-specific requirements immediately so submission has a real
-  // completeness gate instead of a free-form attachment list.
-  const workflow = await import('./insurance.workflow.service');
-  await workflow.syncClaimChecklist(tenantId, claim.id);
-
   logger.info({ tenantId, claimId: claim.id, claimNumber }, 'Insurance claim created');
   return claim;
 }
@@ -1092,6 +1087,9 @@ export async function resyncClaimAmount(tenantId: string, claimId: string, newCl
 export async function submitClaim(tenantId: string, id: string, userId?: string) {
   const claim = await prisma.insuranceClaim.findFirst({
     where: { id, tenantId },
+    include: {
+      bill: { select: { status: true } },
+    },
   });
 
   if (!claim) {
@@ -1102,10 +1100,11 @@ export async function submitClaim(tenantId: string, id: string, userId?: string)
     throw AppError.badRequest('Claim is not in a submittable status');
   }
 
-  const checklist = await prisma.claimChecklistItem.findMany({ where: { claimId: id, isRequired: true } });
-  if (checklist.length && checklist.some((item) => !item.isComplete)) {
-    const missing = checklist.filter((item) => !item.isComplete).map((item) => item.label);
-    throw AppError.badRequest(`Claim dossier is incomplete: ${missing.join(', ')}`);
+  // Supporting documents are optional for this workflow. The financial source
+  // of truth is the issued hospital bill: staff may proceed as soon as that
+  // bill is finalized, without uploading a discharge summary or claim form.
+  if (!['pending', 'partially_paid', 'paid'].includes(claim.bill.status)) {
+    throw AppError.badRequest('Finalize the hospital bill before proceeding with this TPA claim');
   }
 
   const updated = await prisma.insuranceClaim.update({

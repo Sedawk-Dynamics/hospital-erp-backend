@@ -653,12 +653,18 @@ async function activeRequirementsForClaim(tenantId: string, claimId: string) {
 export async function syncClaimChecklist(tenantId: string, claimId: string) {
   await requireClaim(tenantId, claimId);
   const requirements = await activeRequirementsForClaim(tenantId, claimId);
-  const defaults = requirements.length ? requirements : [
-    { code: 'FINAL_BILL', name: 'Final itemised bill', isRequired: true },
-    { code: 'DISCHARGE_SUMMARY', name: 'Discharge summary', isRequired: true },
-    { code: 'CLAIM_FORM', name: 'Signed claim form', isRequired: true },
-  ];
-  await prisma.$transaction(defaults.map((item) => prisma.claimChecklistItem.upsert({
+  // Do not invent document requirements when the payer contract has none.
+  // Claim progression is controlled by bill finalization, not by uploads.
+  if (!requirements.length) {
+    await prisma.claimChecklistItem.deleteMany({
+      where: {
+        claimId,
+        requirementCode: { in: ['FINAL_BILL', 'DISCHARGE_SUMMARY', 'CLAIM_FORM'] },
+      },
+    });
+    return getClaimChecklist(tenantId, claimId);
+  }
+  await prisma.$transaction(requirements.map((item) => prisma.claimChecklistItem.upsert({
     where: { claimId_requirementCode: { claimId, requirementCode: item.code } },
     create: { claimId, requirementCode: item.code, label: item.name, isRequired: item.isRequired },
     update: { label: item.name, isRequired: item.isRequired },

@@ -15,6 +15,7 @@ import {
   getClaimById,
   applyBillSplit,
   splitBill,
+  submitClaim,
   approveClaim,
   rejectClaim,
   createPreAuth,
@@ -428,13 +429,7 @@ describe('Insurance Service', () => {
       // to make a second, re-checking that number for the tenant, which could
       // never fire; queueing a value for a call that no longer happens leaves it
       // in the mock's queue for whatever test runs next.
-      vi.mocked(prisma.insuranceClaim.findFirst)
-        .mockResolvedValueOnce(null)
-        // The new document-completeness gate immediately builds a checklist
-        // for the claim it just created, and therefore reads it back three times.
-        .mockResolvedValueOnce(mockClaim as any)
-        .mockResolvedValueOnce({ ...mockClaim, insuranceCase: null } as any)
-        .mockResolvedValueOnce(mockClaim as any);
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValueOnce(null);
       vi.mocked(prisma.insuranceClaim.create).mockResolvedValue(mockClaim as any);
 
       const result = await createClaim(TENANT_ID, USER_ID, claimInput);
@@ -480,6 +475,40 @@ describe('Insurance Service', () => {
       await expect(
         createClaim(TENANT_ID, USER_ID, claimInput),
       ).rejects.toThrow('Bill not found');
+    });
+  });
+
+  describe('submitClaim', () => {
+    it('proceeds from a finalized bill even when no claim documents are complete', async () => {
+      vi.mocked(prisma.insuranceClaim.findFirst)
+        .mockResolvedValueOnce({ ...mockClaim, bill: { status: 'pending' } } as any)
+        .mockResolvedValueOnce({ policy: { tpaId: 'tpa-1' } } as any);
+      vi.mocked(prisma.insuranceClaim.update).mockResolvedValue({
+        ...mockClaim,
+        status: 'under_review',
+      } as any);
+      vi.mocked(prisma.tpaCommunicationLog.create).mockResolvedValue({ id: 'log-1' } as any);
+
+      const result = await submitClaim(TENANT_ID, 'claim-1', USER_ID);
+
+      expect(result.status).toBe('under_review');
+      expect(prisma.claimChecklistItem.findMany).not.toHaveBeenCalled();
+      expect(prisma.insuranceClaim.update).toHaveBeenCalledWith(expect.objectContaining({
+        where: { id: 'claim-1' },
+        data: expect.objectContaining({ status: 'under_review' }),
+      }));
+    });
+
+    it('requires the hospital bill to be finalized before proceeding', async () => {
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue({
+        ...mockClaim,
+        bill: { status: 'draft' },
+      } as any);
+
+      await expect(submitClaim(TENANT_ID, 'claim-1', USER_ID)).rejects.toThrow(
+        'Finalize the hospital bill before proceeding with this TPA claim',
+      );
+      expect(prisma.insuranceClaim.update).not.toHaveBeenCalled();
     });
   });
 

@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { prisma } from '../../../../src/config/database';
-import { recordSettlement } from '../../../../src/modules/insurance/insurance.workflow.service';
+import {
+  recordSettlement,
+  syncClaimChecklist,
+} from '../../../../src/modules/insurance/insurance.workflow.service';
 
 const settlement = {
   grossApprovedAmount: 10_000,
@@ -37,5 +40,30 @@ describe('insurance workflow settlement invariants', () => {
       message: 'Settlement approved amount must match the claim approved amount',
     });
     expect(prisma.claimSettlement.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('insurance claim document checklist', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('does not create default discharge-summary or signed-claim-form requirements', async () => {
+    vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue({
+      id: 'claim-1',
+      tenantId: 'tenant-1',
+      insuranceCase: null,
+      policy: null,
+    } as never);
+    vi.mocked(prisma.claimChecklistItem.findMany).mockResolvedValue([] as never);
+
+    const result = await syncClaimChecklist('tenant-1', 'claim-1');
+
+    expect(prisma.claimChecklistItem.upsert).not.toHaveBeenCalled();
+    expect(prisma.claimChecklistItem.deleteMany).toHaveBeenCalledWith({
+      where: {
+        claimId: 'claim-1',
+        requirementCode: { in: ['FINAL_BILL', 'DISCHARGE_SUMMARY', 'CLAIM_FORM'] },
+      },
+    });
+    expect(result).toEqual({ items: [], complete: true, missing: [] });
   });
 });
