@@ -1739,6 +1739,10 @@ model User {
   firstName            String    @map("first_name") @db.VarChar(100)
   lastName             String?   @map("last_name") @db.VarChar(100)
   avatarUrl            String?   @map("avatar_url")
+  // ABDM Healthcare Professional Registry ID — applies to any clinical
+  // professional (doctor, nurse, pharmacist, lab tech…). Null until the person
+  // registers on the HPR portal; used as the FHIR Practitioner identifier.
+  hprId                String?   @map("hpr_id") @db.VarChar(50)
   isActive             Boolean   @default(true) @map("is_active")
   is2faEnabled         Boolean   @default(false) @map("is_2fa_enabled")
   twoFaSecret          String?   @map("two_fa_secret") @db.VarChar(255)
@@ -2507,10 +2511,6 @@ model DoctorProfile {
   specialization   String?  @db.VarChar(255)
   qualifications   String?
   licenseNumber    String?  @map("license_number") @db.VarChar(100)
-  // ABDM Healthcare Professional Registry ID. Null until the doctor registers
-  // on the HPR portal; used as the Practitioner identifier in FHIR (falls back
-  // to licenseNumber when absent).
-  hprId            String?  @map("hpr_id") @db.VarChar(50)
   experienceYears  Int?     @map("experience_years")
   consultationFee  Decimal? @map("consultation_fee") @db.Decimal(10, 2)
   // Days after a paid consultation with THIS doctor during which a return

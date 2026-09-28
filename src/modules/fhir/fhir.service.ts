@@ -271,10 +271,9 @@ export const practitionerData=async(practitionerId:string)=>{
   return {
     resourceType: "Practitioner",
     id: user.id,
-    // Prefer the ABDM HPR ID; fall back to the internal license number.
     identifier: [
-      doctorProfile?.hprId
-        ? { system: "https://hpr.abdm.gov.in", value: doctorProfile.hprId }
+      user.hprId
+        ? { system: "https://hpr.abdm.gov.in", value: user.hprId }
         : { system: "https://cenaps/license", value: doctorProfile?.licenseNumber },
     ],
     name: [

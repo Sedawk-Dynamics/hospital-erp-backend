@@ -87,6 +87,7 @@ export const usersService = {
           firstName: data.firstName,
           lastName: data.lastName,
           phone: data.phone,
+          hprId: data.hprId,
           tenantId,
           isActive: true,
           userRoles: {
@@ -123,7 +124,6 @@ export const usersService = {
             qualifications: dp.qualifications,
             licenseNumber: dp.licenseNumber,
             experienceYears: dp.experienceYears,
-            hprId: dp.hprId,
           },
         });
       }
@@ -199,6 +199,7 @@ export const usersService = {
           firstName: true,
           lastName: true,
           phone: true,
+          hprId: true,
           isActive: true,
           is2faEnabled: true,
           createdAt: true,
@@ -217,7 +218,6 @@ export const usersService = {
               qualifications: true,
               licenseNumber: true,
               experienceYears: true,
-              hprId: true,
             },
           },
         },
@@ -422,6 +422,7 @@ export const usersService = {
         ...(data.phone !== undefined && { phone: data.phone }),
         ...(data.email !== undefined && { email: data.email }),
         ...(data.isActive !== undefined && { isActive: data.isActive }),
+        ...(data.hprId !== undefined && { hprId: data.hprId }),
       },
       select: {
         id: true,
@@ -472,7 +473,6 @@ export const usersService = {
             ...(dp.qualifications !== undefined && { qualifications: dp.qualifications }),
             ...(dp.licenseNumber !== undefined && { licenseNumber: dp.licenseNumber }),
             ...(dp.experienceYears !== undefined && { experienceYears: dp.experienceYears }),
-            ...(dp.hprId !== undefined && { hprId: dp.hprId }),
           },
         });
       } else {
@@ -488,7 +488,6 @@ export const usersService = {
             qualifications: dp.qualifications,
             licenseNumber: dp.licenseNumber,
             experienceYears: dp.experienceYears,
-            hprId: dp.hprId,
           },
         });
       }
