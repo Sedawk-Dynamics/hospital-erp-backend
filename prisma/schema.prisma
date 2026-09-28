@@ -1349,6 +1349,10 @@ model Tenant {
   email                        String?   @db.VarChar(255)
   website                      String?   @db.VarChar(255)
   licenseNumber                String?   @map("license_number") @db.VarChar(100)
+  // ABDM Health Facility Registry ID. Null until the hospital registers on the
+  // HFR portal; used as the Organization identifier in FHIR (falls back to
+  // licenseNumber when absent).
+  hfrId                        String?   @map("hfr_id") @db.VarChar(50)
   accreditationInfo            String?   @map("accreditation_info")
   hospitalCode                 String?   @unique @map("hospital_code") @db.VarChar(6)
   allowDirectPatientConnection Boolean   @default(false) @map("allow_direct_patient_connection")
@@ -2503,6 +2507,10 @@ model DoctorProfile {
   specialization   String?  @db.VarChar(255)
   qualifications   String?
   licenseNumber    String?  @map("license_number") @db.VarChar(100)
+  // ABDM Healthcare Professional Registry ID. Null until the doctor registers
+  // on the HPR portal; used as the Practitioner identifier in FHIR (falls back
+  // to licenseNumber when absent).
+  hprId            String?  @map("hpr_id") @db.VarChar(50)
   experienceYears  Int?     @map("experience_years")
   consultationFee  Decimal? @map("consultation_fee") @db.Decimal(10, 2)
   // Days after a paid consultation with THIS doctor during which a return

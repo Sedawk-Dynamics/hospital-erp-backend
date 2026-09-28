@@ -271,8 +271,11 @@ export const practitionerData=async(practitionerId:string)=>{
   return {
     resourceType: "Practitioner",
     id: user.id,
+    // Prefer the ABDM HPR ID; fall back to the internal license number.
     identifier: [
-      { system: "https://cenapse/license", value: doctorProfile?.licenseNumber }
+      doctorProfile?.hprId
+        ? { system: "https://hpr.abdm.gov.in", value: doctorProfile.hprId }
+        : { system: "https://cenaps/license", value: doctorProfile?.licenseNumber },
     ],
     name: [
       {
@@ -302,8 +305,11 @@ export const organizationData=async(organizationId:string)=>{
   return {
   resourceType: "Organization",
   id: tenant.id,
+  // Prefer the ABDM HFR ID; fall back to the internal license number.
   identifier: [
-    { system: "https://cenapse/license", value: tenant.licenseNumber }
+    tenant.hfrId
+      ? { system: "https://facility.abdm.gov.in", value: tenant.hfrId }
+      : { system: "https://cenaps/license", value: tenant.licenseNumber },
   ],
   name: tenant.name,
   telecom: [
