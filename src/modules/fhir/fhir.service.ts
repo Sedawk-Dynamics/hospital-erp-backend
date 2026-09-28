@@ -11,7 +11,7 @@ export const detailsPatient=async(id:string)=>{
     resourceType: "Patient",
     id: patient.id,
     identifier: [
-      { system: "https://trms/mrn", value: patient.mrn },
+      { system: "https://cenaps/mrn", value: patient.mrn },
       ...(patient.abhaNumber ? [{ system: "https://healthid.abdm.gov.in", value: patient.abhaNumber }] : []),
     ],
     name: [{
