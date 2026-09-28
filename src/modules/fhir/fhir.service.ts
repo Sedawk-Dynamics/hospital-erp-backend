@@ -1,5 +1,6 @@
 import { prisma } from "../../config/database";
 import { AppError } from "../../shared/appError";
+import { approveRefund } from "../billing/billing.service";
 import { VITAL_LOINC_MAP, VITAL_UCUM_MAP } from "../loinc/vital.loinc.map";
 import { buildBundle } from "./fhir.util";
 
@@ -35,6 +36,10 @@ export const patientConditionDetails=async(patientId:string)=>{
     resourceType: "Condition",
     id: diagnosis.id,
     subject: { reference: `Patient/${patient.id}` },
+    encounter: { reference: `Encounter/${diagnosis.visitId}` },
+    ...(diagnosis.diagnosedBy
+      ? { recorder: { reference: `Practitioner/${diagnosis.diagnosedBy}` } }
+      : {}),
     code: {
       coding: [
         { system: "http://hl7.org/fhir/sid/icd-10", code: diagnosis.icdCode },
@@ -64,6 +69,7 @@ export const patientObservationsDetails = async (patientId: string) => {
           test: { select: { loincCode: true, loincDisplayName: true,parameters:true } },
         },
       },
+      labOrder: { select: { visitId: true } },
     },
     orderBy: { enteredAt: "desc" },
   });
@@ -95,6 +101,9 @@ export const patientObservationsDetails = async (patientId: string) => {
       resourceType: "Observation",
       id: `lab-${r.id}`,
       status: r.verifiedAt ? "final" : "preliminary",
+      ...(r.labOrder?.visitId
+        ? { encounter: { reference: `Encounter/${r.labOrder.visitId}` } }
+        : {}),
       category: [{
         coding: [{
           system: "http://terminology.hl7.org/CodeSystem/observation-category",
@@ -148,6 +157,9 @@ export const patientObservationsDetails = async (patientId: string) => {
         resourceType: "Observation",
         id: `${row.id}-${key}`,
         status: "final",
+        ...(row.visitId
+          ? { encounter: { reference: `Encounter/${row.visitId}` } }
+          : {}),
         code: {
           coding: [{ system: "http://loinc.org", code: VITAL_LOINC_MAP[key] }],
         },
@@ -177,7 +189,7 @@ export const patientDiagnosisReport = async (patientId: string) => {
     include: {
       test: { select: { testName: true, loincCode: true } },
       labResults: { select: { id: true, verifiedAt: true, enteredAt: true } },
-      labOrder: { select: { createdAt: true } },
+      labOrder: { select: { createdAt: true, visitId: true, tenantId: true } },
     },
     orderBy: { labOrder: { createdAt: "desc" } },
   });
@@ -214,6 +226,12 @@ export const patientDiagnosisReport = async (patientId: string) => {
         text: item.test.testName,
       },
       subject: { reference: `Patient/${patient.id}` },
+      ...(item.labOrder.visitId
+        ? { encounter: { reference: `Encounter/${item.labOrder.visitId}` } }
+        : {}),
+      ...(item.labOrder.tenantId
+        ? { performer: [{ reference: `Organization/${item.labOrder.tenantId}` }] }
+        : {}),
       effectiveDateTime: effective.toISOString(),
       result: results.map((r) => ({ reference: `Observation/lab-${r.id}` })),
     };
@@ -238,3 +256,109 @@ export const fhirDataMeta=()=>{
   }]
 }
 }
+
+
+export const practitionerData=async(practitionerId:string)=>{
+  const user=await prisma.user.findUnique({where:{id:practitionerId},
+  include:{doctorProfile:true}});
+
+  if(!user)throw new AppError("practitioner not found",404);
+
+  const { doctorProfile } = user;
+  const firstName = user.firstName ?? "";
+  const lastName = user.lastName ?? "";
+
+  return {
+    resourceType: "Practitioner",
+    id: user.id,
+    identifier: [
+      { system: "https://cenapse/license", value: doctorProfile?.licenseNumber }
+    ],
+    name: [
+      {
+        text: user.firstName + " " + user.lastName,
+        family: user.lastName,
+        given: [user.firstName],
+        prefix: ["Dr"]
+      }
+    ],
+    telecom: [
+      { system: "phone", value: user.phone },
+      { system: "email", value: user.email }
+    ],
+    qualification: [
+      { code: { text: doctorProfile?.qualifications } }  // e.g. "MBBS, MD"
+    ]
+  };
+}
+
+export const organizationData=async(organizationId:string)=>{
+  const tenant=await prisma.tenant.findUnique({where
+    :{id:organizationId}
+  })
+
+  if(!tenant)throw new AppError("organization not found",404)
+
+  return {
+  resourceType: "Organization",
+  id: tenant.id,
+  identifier: [
+    { system: "https://cenapse/license", value: tenant.licenseNumber }
+  ],
+  name: tenant.name,
+  telecom: [
+    { system: "phone", value: tenant.phone },
+    { system: "email", value: tenant.email },
+    { system: "url",   value: tenant.website }
+  ],
+  address: [
+    {
+      text: tenant.address,
+      city: tenant.city,
+      state: tenant.state,
+      country: tenant.country
+    }
+  ]
+}
+}
+
+export const encounterData = async (encounterId: string) => {
+  const visit = await prisma.visit.findUnique({
+    where: { id: encounterId },
+    include: { doctor: { select: { userId: true } } },
+  });
+  if (!visit) throw new AppError("encounter not found", 404);
+
+  const cls = visit.visitType === "ip"
+    ? { code: "IMP", display: "inpatient encounter" }
+    : { code: "AMB", display: "ambulatory" };
+
+  // status → FHIR encounter status
+  const statusMap: Record<string, string> = {
+    active: "in-progress",
+    completed: "finished",
+    discharged: "finished",
+    transferred: "in-progress",
+  };
+
+  return {
+    resourceType: "Encounter",
+    id: visit.id,
+    status: statusMap[visit.status] ?? "unknown",
+    class: {
+      system: "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+      code: cls.code,
+      display: cls.display,
+    },
+    subject: { reference: `Patient/${visit.patientId}` },
+    participant: visit.doctor?.userId
+      ? [{ individual: { reference: `Practitioner/${visit.doctor.userId}` } }]
+      : [],
+    period: { start: visit.visitDate.toISOString() },
+    reasonCode: visit.chiefComplaint ? [{ text: visit.chiefComplaint }] : [],
+    serviceProvider: { reference: `Organization/${visit.tenantId}` },
+  };
+};
+
+
+
