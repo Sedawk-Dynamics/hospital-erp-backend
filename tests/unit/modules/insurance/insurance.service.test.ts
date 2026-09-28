@@ -15,6 +15,7 @@ import {
   getClaimById,
   applyBillSplit,
   splitBill,
+  resyncClaimAmount,
   submitClaim,
   approveClaim,
   partialApproveClaim,
@@ -661,6 +662,94 @@ describe('Insurance Service', () => {
         patientPortion: 2000,
         balanceDue: 1500,
       }));
+    });
+
+    it('stores an exact manual TPA and patient split for front-desk collection', async () => {
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue({
+        id: 'bill-1',
+        patientId: 'patient-1',
+        status: 'pending',
+        totalAmount: 17900,
+        amountPaid: 1000,
+      } as any);
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue({
+        ...mockClaim,
+        status: 'under_review',
+        deductibleAmount: 0,
+        copayAmount: 0,
+      } as any);
+      vi.mocked(prisma.bill.update).mockResolvedValue({ id: 'bill-1' } as any);
+      vi.mocked(prisma.insuranceClaim.update).mockResolvedValue({ id: 'claim-1' } as any);
+      vi.mocked(prisma.$transaction).mockResolvedValue([] as any);
+
+      const result = await splitBill(TENANT_ID, 'bill-1', {
+        claimId: 'claim-1',
+        insuranceAmount: 12000,
+        patientAmount: 5900,
+      });
+
+      expect(prisma.bill.update).toHaveBeenCalledWith({
+        where: { id: 'bill-1' },
+        data: {
+          insuranceCoveredAmount: 12000,
+          patientPayableAmount: 5900,
+          balanceDue: 4900,
+        },
+      });
+      expect(prisma.insuranceClaim.update).toHaveBeenCalledWith({
+        where: { id: 'claim-1' },
+        data: {
+          claimAmount: 12000,
+          coveredAmount: 12000,
+          patientShare: 5900,
+          outstandingAmount: 12000,
+        },
+      });
+      expect(result.billSplit).toEqual({
+        insurancePortion: 12000,
+        patientPortion: 5900,
+        claimPatientPortion: 5900,
+        balanceDue: 4900,
+      });
+    });
+
+    it('rejects a manual split that does not equal the finalized bill total', async () => {
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue({
+        id: 'bill-1',
+        status: 'pending',
+        totalAmount: 17900,
+        amountPaid: 0,
+      } as any);
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue({
+        ...mockClaim,
+        status: 'under_review',
+      } as any);
+
+      await expect(splitBill(TENANT_ID, 'bill-1', {
+        claimId: 'claim-1',
+        insuranceAmount: 12000,
+        patientAmount: 5000,
+      })).rejects.toThrow('TPA and patient amounts must total 17900.00');
+
+      expect(prisma.bill.update).not.toHaveBeenCalled();
+      expect(prisma.insuranceClaim.update).not.toHaveBeenCalled();
+    });
+
+    it('does not overwrite a finalized bill split during automatic claim synchronization', async () => {
+      const finalizedClaim = {
+        ...mockClaim,
+        status: 'submitted',
+        coveredAmount: 12000,
+        patientShare: 5900,
+        policy: mockPolicy,
+        bill: { status: 'pending' },
+      };
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue(finalizedClaim as any);
+
+      const result = await resyncClaimAmount(TENANT_ID, 'claim-1', 19000);
+
+      expect(result).toBe(finalizedClaim);
+      expect(prisma.insuranceClaim.update).not.toHaveBeenCalled();
     });
   });
 

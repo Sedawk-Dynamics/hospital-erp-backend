@@ -1054,10 +1054,13 @@ export async function updateClaim(tenantId: string, id: string, data: UpdateClai
 export async function resyncClaimAmount(tenantId: string, claimId: string, newClaimAmount: number) {
   const claim = await prisma.insuranceClaim.findFirst({
     where: { id: claimId, tenantId },
-    include: { policy: true },
+    include: { policy: true, bill: { select: { status: true } } },
   });
   if (!claim) return null;
   if (claim.status !== 'submitted') return claim;
+  // A finalized bill is stable. This also preserves any exact TPA/patient
+  // allocation entered by the insurance desk after finalization.
+  if (claim.bill.status !== 'draft') return claim;
   if (!claim.policy) return claim;
 
   const split = computeResponsibility(
@@ -1499,6 +1502,93 @@ export async function applyBillSplit(
 export async function splitBill(tenantId: string, billId: string, data: SplitBillInput) {
   const bill = await prisma.bill.findFirst({ where: { id: billId, tenantId } });
   if (!bill) throw AppError.notFound('Bill not found');
+
+  const isManual = data.insuranceAmount !== undefined || data.patientAmount !== undefined;
+  if (isManual) {
+    if (data.insuranceAmount === undefined || data.patientAmount === undefined || !data.claimId) {
+      throw AppError.badRequest('TPA amount, patient amount and claim ID are required for a manual split');
+    }
+    if (!['pending', 'partially_paid', 'paid'].includes(bill.status)) {
+      throw AppError.badRequest('Finalize the hospital bill before setting the TPA / patient split');
+    }
+
+    const claim = await prisma.insuranceClaim.findFirst({
+      where: { id: data.claimId, tenantId, billId },
+    });
+    if (!claim) throw AppError.notFound('Insurance claim not found for this bill');
+    if (!['submitted', 'under_review', 'query_raised', 'response_submitted', 'resubmitted'].includes(claim.status)) {
+      throw AppError.badRequest('TPA / patient share cannot be changed after a payer decision is recorded');
+    }
+
+    const billTotal = round2(Math.max(0, decNum(bill.totalAmount)));
+    const insuranceAmount = round2(data.insuranceAmount);
+    const requestedPatientAmount = round2(data.patientAmount);
+    if (insuranceAmount <= 0) {
+      throw AppError.badRequest('TPA amount must be greater than zero; reject the claim if the payer covers nothing');
+    }
+    if (insuranceAmount > billTotal || requestedPatientAmount > billTotal) {
+      throw AppError.badRequest('TPA and patient amounts cannot exceed the bill total');
+    }
+    if (Math.abs(round2(insuranceAmount + requestedPatientAmount) - billTotal) > 0.01) {
+      throw AppError.badRequest(`TPA and patient amounts must total ${billTotal.toFixed(2)}`);
+    }
+
+    // Derive the stored patient value from the bill total after validating both
+    // operator-entered values. This guarantees an exact two-decimal split.
+    const patientAmount = round2(billTotal - insuranceAmount);
+    const balanceDue = round2(Math.max(0, patientAmount - decNum(bill.amountPaid)));
+    const billSplit = {
+      insurancePortion: insuranceAmount,
+      patientPortion: patientAmount,
+      claimPatientPortion: patientAmount,
+      balanceDue,
+    };
+
+    await prisma.$transaction([
+      prisma.bill.update({
+        where: { id: billId },
+        data: {
+          insuranceCoveredAmount: insuranceAmount,
+          patientPayableAmount: patientAmount,
+          balanceDue,
+        },
+      }),
+      prisma.insuranceClaim.update({
+        where: { id: claim.id },
+        data: {
+          claimAmount: insuranceAmount,
+          coveredAmount: insuranceAmount,
+          patientShare: patientAmount,
+          outstandingAmount: insuranceAmount,
+        },
+      }),
+    ]);
+
+    logger.info(
+      { tenantId, billId, claimId: claim.id, insuranceAmount, patientAmount, balanceDue },
+      'Manual TPA / patient bill split applied',
+    );
+    return {
+      billId,
+      claimId: claim.id,
+      policy: null,
+      split: {
+        claimAmount: insuranceAmount,
+        coPayPercent: 0,
+        deductibleAmount: decNum(claim.deductibleAmount),
+        coverageLimit: 0,
+        coveredAmount: insuranceAmount,
+        copayAmount: decNum(claim.copayAmount),
+        patientResponsibility: patientAmount,
+        insurancePortion: insuranceAmount,
+      },
+      billSplit,
+    };
+  }
+
+  if (!data.policyId) {
+    throw AppError.badRequest('Policy ID is required to calculate the split');
+  }
 
   const policy = await prisma.insurancePolicy.findFirst({
     where: { id: data.policyId, tenantId, patientId: bill.patientId },
