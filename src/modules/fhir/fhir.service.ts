@@ -366,4 +366,57 @@ export const encounterData = async (encounterId: string) => {
 };
 
 
+export const reportOP=async(visitId:string)=>{
+  const visit=await prisma.visit.findUnique({where:{id:visitId},
+    include: { doctor: { select: { userId: true } } },
+  });
+  if(!visit)throw new AppError("visit not found",404);
+
+  const patient      = await detailsPatient(visit.patientId);
+  const practitioner = visit.doctor?.userId ? await practitionerData(visit.doctor.userId) : null;
+  const organization = await organizationData(visit.tenantId);
+  const encounter    = await encounterData(visit.id);
+  const encRef = `Encounter/${visit.id}`;
+  const conditions = (await patientConditionDetails(visit.patientId)).entry
+    .map((e) => e.resource as any)
+    .filter((c) => c.encounter?.reference === encRef);
+  const observations = (await patientObservationsDetails(visit.patientId)).entry
+    .map((e) => e.resource as any)
+    .filter((o) => o.encounter?.reference === encRef);
+
+  const composition = {
+  resourceType: "Composition",
+  id: `op-${visit.id}`,
+  status: "final",
+  type: { coding: [{ system: "http://snomed.info/sct", code: "371530004", display: "Clinical consultation report" }] },
+  subject:   { reference: `Patient/${visit.patientId}` },
+  encounter: { reference: `Encounter/${visit.id}` },
+  date: visit.visitDate.toISOString(),
+  author: practitioner ? [{ reference: `Practitioner/${visit.doctor!.userId}` }] : [],
+  title: "OP Consultation",
+  custodian: { reference: `Organization/${visit.tenantId}` },
+  section: [
+    { title: "Chief Complaint", text: { status: "generated", div: `<div>${visit.chiefComplaint ?? "-"}</div>` } },
+    { title: "Diagnosis",  entry: conditions.map(c => ({ reference: `Condition/${c.id}` })) },
+    { title: "Investigations", entry: observations.map(o => ({ reference: `Observation/${o.id}` })) },
+  ],
+};
+
+return {
+  resourceType: "Bundle",
+  type: "document",
+  timestamp: new Date().toISOString(),
+  entry: [
+    { resource: composition },
+    { resource: patient },
+    ...(practitioner ? [{ resource: practitioner }] : []),
+    { resource: organization },
+    { resource: encounter },
+    ...conditions.map(c => ({ resource: c })),
+    ...observations.map(o => ({ resource: o })),
+  ],
+};
+}
+
+
 
