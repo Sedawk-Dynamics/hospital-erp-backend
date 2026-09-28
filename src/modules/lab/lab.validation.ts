@@ -18,32 +18,20 @@ export const parameterSpecSchema = z.object({
   name: z.string().min(1).max(150),
   code: z.string().max(50).optional().nullable(),
   unit: z.string().max(50).optional().nullable(),
-  // Unit group code (e.g. "concentration_mass", "hematology_counts"). Lets
-  // the parameter builder filter the unit picker to the relevant units and
-  // — eventually — enables unit conversion. Optional for backwards-compat
-  // with templates seeded before the unit-groups migration.
   unitGroupCode: z.string().max(80).optional().nullable(),
-  // Numeric reference range — used to flag abnormals when present.
   refLow: z.number().optional().nullable(),
   refHigh: z.number().optional().nullable(),
-  // Free-text reference range for non-numeric results (e.g. "Negative",
-  // "A/B/AB/O", "Titre <1:80").
   refRangeText: z.string().max(200).optional().nullable(),
-  // Display precision for numeric results (decimals).
   decimals: z.number().int().min(0).max(4).optional().nullable(),
-  // Section label — parameters with the same group render together on the
-  // report (e.g. RBC indices, WBC differential).
   group: z.string().max(100).optional().nullable(),
-  // Input control. `number` is the default for biochem/hematology; `text`
-  // is used for descriptive results (morphology); `select` is used for
-  // categorical results with a fixed option list.
   inputType: z.enum(['number', 'text', 'select']).default('number'),
   options: z
     .array(z.object({ value: z.string().min(1).max(100), label: z.string().min(1).max(150) }))
     .optional()
     .nullable(),
-  // Per-parameter helper text shown under the input (e.g. "Reflex only").
   notes: z.string().max(500).optional().nullable(),
+  loincCode:z.string().max(50).optional().nullable(),
+  loincDisplayName:z.string().max(255).optional().nullable(),
 });
 
 export type ParameterSpec = z.infer<typeof parameterSpecSchema>;
@@ -52,12 +40,7 @@ export const parametersArraySchema = z
   .array(parameterSpecSchema)
   .max(100, 'A test cannot have more than 100 parameters');
 
-// ============================================================
-// Lab Test Templates (super-admin only writes; everyone reads)
-// ============================================================
-
-// Aliases / tags — capped so the searchTokens column stays a sane size.
-// Both arrays are deduplicated + lowercased by the service before persist.
+  
 const aliasesField = z.array(z.string().min(1).max(120)).max(25).default([]);
 const tagsField = z.array(z.string().min(1).max(60)).max(40).default([]);
 

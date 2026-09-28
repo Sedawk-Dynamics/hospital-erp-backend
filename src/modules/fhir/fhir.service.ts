@@ -1,6 +1,7 @@
 import { prisma } from "../../config/database";
 import { AppError } from "../../shared/appError";
 import { VITAL_LOINC_MAP, VITAL_UCUM_MAP } from "../loinc/vital.loinc.map";
+import { buildBundle } from "./fhir.util";
 
 export const detailsPatient=async(id:string)=>{
     const patient=await prisma.patient.findUnique({where:{id}});
@@ -30,7 +31,7 @@ export const patientConditionDetails=async(patientId:string)=>{
   const diagnosis=await prisma.diagnosis.findMany({where:{patientId}});
   if(!diagnosis)throw new AppError("diagnosis not found",404);
 
-  return diagnosis.map((diagnosis) => ({
+  return buildBundle(diagnosis.map((diagnosis) => ({
     resourceType: "Condition",
     id: diagnosis.id,
     subject: { reference: `Patient/${patient.id}` },
@@ -43,7 +44,7 @@ export const patientConditionDetails=async(patientId:string)=>{
       ],
       text: diagnosis.diagnosisName,
     },
-  }));
+  })));
 }
 
 export const patientObservationsDetails = async (patientId: string) => {
@@ -60,20 +61,33 @@ export const patientObservationsDetails = async (patientId: string) => {
     include: {
       labOrderItem: {
         include: {
-          test: { select: { loincCode: true, loincDisplayName: true } },
+          test: { select: { loincCode: true, loincDisplayName: true,parameters:true } },
         },
       },
     },
     orderBy: { enteredAt: "desc" },
   });
 
+  const units = await prisma.labUnit.findMany({ select: { symbol: true, ucumCode: true } });
+  const ucumBySymbol = new Map(units.map((u) => [u.symbol, u.ucumCode]));
   const observations = [];
 
 
   for (const r of labResults) {
     if (r.value === null || r.value === undefined) continue;
 
-    const loinc = r.labOrderItem?.test?.loincCode ?? null;
+    const params = (r.labOrderItem?.test?.parameters as
+      | { name?: string; loincCode?: string | null; loincDisplayName?: string | null }[]
+      | null) ?? [];
+    const param = params.find(
+      (p) => p?.name?.trim().toLowerCase() === r.parameterName.trim().toLowerCase(),
+    );
+    const loinc = param?.loincCode ?? r.labOrderItem?.test?.loincCode ?? null;
+    const loincDisplay = param?.loincCode
+      ? param?.loincDisplayName ?? null
+      : r.labOrderItem?.test?.loincDisplayName ?? null;
+
+    const ucum = r.unit ? ucumBySymbol.get(r.unit) ?? null : null;
     const numeric = Number(r.value);
     const isNumeric = r.value.trim() !== "" && !Number.isNaN(numeric);
 
@@ -88,13 +102,27 @@ export const patientObservationsDetails = async (patientId: string) => {
         }],
       }],
       code: {
-        coding: loinc ? [{ system: "http://loinc.org", code: loinc }] : [],
+        coding: loinc
+          ? [{
+              system: "http://loinc.org",
+              code: loinc,
+              ...(loincDisplay ? { display: loincDisplay } : {}),
+            }]
+          : [],
         text: r.parameterName,
       },
       subject: { reference: `Patient/${patient.id}` },
       effectiveDateTime: r.enteredAt.toISOString(),
       ...(isNumeric
-        ? { valueQuantity: { value: numeric, unit: r.unit ?? undefined } }
+        ? {
+            valueQuantity: {
+              value: numeric,
+              unit: r.unit ?? undefined,
+              ...(ucum
+                ? { system: "http://unitsofmeasure.org", code: ucum }
+                : {}),
+            },
+          }
         : { valueString: r.value }),
       ...(r.normalRange ? { referenceRange: [{ text: r.normalRange }] } : {}),
       ...(r.isAbnormal
@@ -135,7 +163,7 @@ export const patientObservationsDetails = async (patientId: string) => {
     }
   }
 
-  return observations;
+  return buildBundle(observations);
 };
 
 
@@ -154,7 +182,7 @@ export const patientDiagnosisReport = async (patientId: string) => {
     orderBy: { labOrder: { createdAt: "desc" } },
   });
 
-  return items.map((item) => {
+  return buildBundle(items.map((item) => {
     const results = item.labResults;
     const status =
       results.length === 0
@@ -189,7 +217,7 @@ export const patientDiagnosisReport = async (patientId: string) => {
       effectiveDateTime: effective.toISOString(),
       result: results.map((r) => ({ reference: `Observation/lab-${r.id}` })),
     };
-  });
+  }));
 };
 
 

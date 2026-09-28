@@ -3945,11 +3945,7 @@ model LabUnit {
   unitGroupId      String   @map("unit_group_id")
   symbol           String   @db.VarChar(60)
   name             String?  @db.VarChar(120)
-  // conversionFactor + isBase prepare for future unit-conversion logic
-  // (deferred per the meeting). isBase = true for the canonical unit of the
-  // group (e.g. mg/dL for concentration_mass); conversionFactor = ratio
-  // to that base unit. Nullable today because we ship factors only for
-  // simple linear pairs.
+  ucumCode         String?  @map("ucum_code") @db.VarChar(60)
   conversionFactor Decimal? @map("conversion_factor") @db.Decimal(20, 10)
   isBase           Boolean  @default(false) @map("is_base")
   isSystem         Boolean  @default(false) @map("is_system")
