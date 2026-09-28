@@ -477,6 +477,7 @@ export const hospitalsService = {
         ...(data.country !== undefined && { country: data.country }),
         ...(data.phone !== undefined && { phone: data.phone }),
         ...(data.email !== undefined && { email: data.email }),
+        ...(data.hfrId !== undefined && { hfrId: data.hfrId }),
       },
       include: {
         featureToggles: true,

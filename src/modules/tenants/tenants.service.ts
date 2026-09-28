@@ -47,6 +47,7 @@ export const tenantsService = {
         country: data.country,
         phone: data.phone,
         email: data.email,
+        hfrId:data.hfrId,
         isActive: true,
         featureToggles: {
           create: DEFAULT_FEATURE_TOGGLES,
@@ -173,6 +174,7 @@ export const tenantsService = {
         ...(data.country !== undefined && { country: data.country }),
         ...(data.phone !== undefined && { phone: data.phone }),
         ...(data.email !== undefined && { email: data.email }),
+        ...(data.hfrId !== undefined && { hfrId: data.hfrId }),
       },
       include: {
         featureToggles: true,
