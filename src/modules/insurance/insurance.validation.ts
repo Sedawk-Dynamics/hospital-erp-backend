@@ -191,7 +191,6 @@ export const createClaimSchema = z.object({
     submissionReference: z.string().trim().max(100).optional(),
     nhcxTransactionId: z.string().trim().max(100).optional(),
     notes: z.string().optional(),
-    documentsUrl: z.any().optional(),
     expiryDays: z.number().int().positive().optional(),
   }).refine((value) => value.policyId || value.insuranceCaseId, {
     path: ['insuranceCaseId'],
@@ -203,7 +202,6 @@ export const updateClaimSchema = z.object({
   body: z.object({
     claimAmount: z.number().positive('Claim amount must be positive').optional(),
     notes: z.string().optional().nullable(),
-    documentsUrl: z.any().optional(),
   }),
   params: z.object({
     id: z.string().uuid('Invalid claim ID'),
@@ -281,7 +279,6 @@ export const settleClaimSchema = z.object({
 export const resubmitClaimSchema = z.object({
   body: z.object({
     claimAmount: z.number().positive('Claim amount must be positive').optional(),
-    additionalDocumentsUrl: z.any().optional(),
     notes: z.string().min(1, 'Resubmission notes are required'),
     expiryDays: z.number().int().positive().optional(),
   }),
@@ -392,8 +389,30 @@ export const calcResponsibilitySchema = z.object({
 
 export const splitBillSchema = z.object({
   body: z.object({
-    policyId: z.string().uuid('Invalid policy ID'),
+    policyId: z.string().uuid('Invalid policy ID').optional(),
+    claimId: z.string().uuid('Invalid claim ID').optional(),
     claimAmount: z.number().positive().optional(),
+    insuranceAmount: z.number().min(0, 'TPA amount cannot be negative').optional(),
+    patientAmount: z.number().min(0, 'Patient amount cannot be negative').optional(),
+  }).superRefine((body, ctx) => {
+    const isManual = body.insuranceAmount !== undefined || body.patientAmount !== undefined;
+
+    if (isManual) {
+      if (body.insuranceAmount === undefined) {
+        ctx.addIssue({ code: 'custom', path: ['insuranceAmount'], message: 'TPA amount is required' });
+      }
+      if (body.patientAmount === undefined) {
+        ctx.addIssue({ code: 'custom', path: ['patientAmount'], message: 'Patient amount is required' });
+      }
+      if (!body.claimId) {
+        ctx.addIssue({ code: 'custom', path: ['claimId'], message: 'Claim ID is required for a manual split' });
+      }
+      return;
+    }
+
+    if (!body.policyId) {
+      ctx.addIssue({ code: 'custom', path: ['policyId'], message: 'Policy ID is required to calculate the split' });
+    }
   }),
   params: z.object({
     billId: z.string().uuid('Invalid bill ID'),

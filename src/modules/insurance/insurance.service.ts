@@ -29,6 +29,7 @@ import type {
   CreateTpaLogInput,
 } from './insurance.validation';
 import { notifyPatientInsuranceMilestone } from './insurance.notifications';
+import { recordSettlement as recordWorkflowSettlement } from './insurance.workflow.service';
 
 // ============================================================
 // Defaults
@@ -721,7 +722,6 @@ export async function createClaim(tenantId: string, userId: string, data: Create
       submissionReference: data.submissionReference,
       nhcxTransactionId: data.nhcxTransactionId,
       submissionDate: now,
-      documentsUrl: data.documentsUrl ?? undefined,
       notes: data.notes,
       submittedBy: userId,
     },
@@ -735,11 +735,6 @@ export async function createClaim(tenantId: string, userId: string, data: Create
   if (insuranceCase) {
     await prisma.insuranceCase.update({ where: { id: insuranceCase.id }, data: { status: 'claimSubmitted' } });
   }
-  // Build payer-specific requirements immediately so submission has a real
-  // completeness gate instead of a free-form attachment list.
-  const workflow = await import('./insurance.workflow.service');
-  await workflow.syncClaimChecklist(tenantId, claim.id);
-
   logger.info({ tenantId, claimId: claim.id, claimNumber }, 'Insurance claim created');
   return claim;
 }
@@ -1001,8 +996,6 @@ export async function getClaimById(tenantId: string, id: string) {
         orderBy: { createdAt: 'desc' },
         take: 10,
       },
-      documents: { orderBy: [{ name: 'asc' }, { version: 'desc' }] },
-      checklistItems: { orderBy: { createdAt: 'asc' } },
       queries: { orderBy: { raisedAt: 'desc' } },
       settlements: { orderBy: { settlementDate: 'desc' } },
       writeOffs: { orderBy: { createdAt: 'desc' } },
@@ -1027,14 +1020,13 @@ export async function updateClaim(tenantId: string, id: string, data: UpdateClai
     throw AppError.notFound('Insurance claim not found');
   }
 
-  if (existing.status !== 'submitted' && existing.status !== 'resubmitted') {
-    throw AppError.badRequest('Can only update claims in submitted or resubmitted status');
+  if (existing.status !== 'submitted') {
+    throw AppError.badRequest('Can only update a claim before it enters review');
   }
 
   const updateData: any = {};
   if (data.claimAmount !== undefined) updateData.claimAmount = data.claimAmount;
   if (data.notes !== undefined) updateData.rejectionReason = data.notes;
-  if (data.documentsUrl !== undefined) updateData.documentsUrl = data.documentsUrl;
 
   const claim = await prisma.insuranceClaim.update({
     where: { id },
@@ -1056,17 +1048,20 @@ export async function updateClaim(tenantId: string, id: string, data: UpdateClai
 /**
  * Re-sync a claim's amount + co-pay/deductible/coverage split from its policy as
  * the underlying bill grows (used by the auto-TPA link for IP admissions, so the
- * running claim tracks charges). Only touches PRE-processing claims (submitted /
- * resubmitted) — once the TPA/insurance team picks it up (under_review+) it is
+ * running claim tracks charges). Only touches PRE-processing claims (submitted)
+ * — once the TPA/insurance team picks it up (under_review+) it is
  * left untouched.
  */
 export async function resyncClaimAmount(tenantId: string, claimId: string, newClaimAmount: number) {
   const claim = await prisma.insuranceClaim.findFirst({
     where: { id: claimId, tenantId },
-    include: { policy: true },
+    include: { policy: true, bill: { select: { status: true } } },
   });
   if (!claim) return null;
-  if (claim.status !== 'submitted' && claim.status !== 'resubmitted') return claim;
+  if (claim.status !== 'submitted') return claim;
+  // A finalized bill is stable. This also preserves any exact TPA/patient
+  // allocation entered by the insurance desk after finalization.
+  if (claim.bill.status !== 'draft') return claim;
   if (!claim.policy) return claim;
 
   const split = computeResponsibility(
@@ -1092,20 +1087,23 @@ export async function resyncClaimAmount(tenantId: string, claimId: string, newCl
 export async function submitClaim(tenantId: string, id: string, userId?: string) {
   const claim = await prisma.insuranceClaim.findFirst({
     where: { id, tenantId },
+    include: {
+      bill: { select: { status: true } },
+    },
   });
 
   if (!claim) {
     throw AppError.notFound('Insurance claim not found');
   }
 
-  if (claim.status !== 'submitted' && claim.status !== 'resubmitted') {
+  if (claim.status !== 'submitted') {
     throw AppError.badRequest('Claim is not in a submittable status');
   }
 
-  const checklist = await prisma.claimChecklistItem.findMany({ where: { claimId: id, isRequired: true } });
-  if (checklist.length && checklist.some((item) => !item.isComplete)) {
-    const missing = checklist.filter((item) => !item.isComplete).map((item) => item.label);
-    throw AppError.badRequest(`Claim dossier is incomplete: ${missing.join(', ')}`);
+  // The issued hospital bill is the single progression gate. Once finalized,
+  // the claim can move into payer review.
+  if (!['pending', 'partially_paid', 'paid'].includes(claim.bill.status)) {
+    throw AppError.badRequest('Finalize the hospital bill before proceeding with this TPA claim');
   }
 
   const updated = await prisma.insuranceClaim.update({
@@ -1151,8 +1149,8 @@ export async function approveClaim(
     throw AppError.notFound('Insurance claim not found');
   }
 
-  if (claim.status !== 'under_review' && claim.status !== 'submitted' && claim.status !== 'resubmitted') {
-    throw AppError.badRequest('Claim must be under review or submitted to approve');
+  if (claim.status !== 'under_review') {
+    throw AppError.badRequest('Claim must be under review to approve');
   }
 
   const claimAmount = decNum(claim.claimAmount);
@@ -1218,12 +1216,8 @@ export async function partialApproveClaim(
   const claim = await prisma.insuranceClaim.findFirst({ where: { id, tenantId } });
   if (!claim) throw AppError.notFound('Insurance claim not found');
 
-  if (
-    claim.status !== 'under_review' &&
-    claim.status !== 'submitted' &&
-    claim.status !== 'resubmitted'
-  ) {
-    throw AppError.badRequest('Claim must be under review, submitted, or resubmitted to partially approve');
+  if (claim.status !== 'under_review') {
+    throw AppError.badRequest('Claim must be under review to partially approve');
   }
 
   const claimAmount = decNum(claim.claimAmount);
@@ -1295,31 +1289,28 @@ export async function settleClaim(
   }
 
   const approved = decNum(claim.approvedAmount ?? claim.claimAmount);
-  const alreadyPaid = decNum(claim.paidAmount);
-  const newPaid = round2(alreadyPaid + data.paidAmount);
+  await recordWorkflowSettlement(tenantId, userId, id, {
+    grossApprovedAmount: approved,
+    grossPaidAmount: data.paidAmount,
+    tdsAmount: 0,
+    disallowedAmount: 0,
+    netPaidAmount: data.paidAmount,
+    settlementDate: new Date(data.settlementDate ?? new Date()),
+    notes: data.notes,
+  });
 
-  if (newPaid > approved + 0.01) {
-    throw AppError.badRequest('Total paid cannot exceed approved amount');
-  }
-
-  const outstanding = Math.max(0, round2(approved - newPaid));
-  const fullySettled = outstanding <= 0.01;
-
-  const updated = await prisma.insuranceClaim.update({
-    where: { id },
-    data: {
-      paidAmount: newPaid,
-      outstandingAmount: outstanding,
-      settlementDate: fullySettled ? new Date(data.settlementDate ?? new Date()) : claim.settlementDate,
-      status: fullySettled ? 'settled' : 'partially_settled',
-      notes: data.notes ?? claim.notes,
-      reviewedBy: userId,
-    },
+  const updated = await prisma.insuranceClaim.findFirst({
+    where: { id, tenantId },
     include: {
       patient: { select: { id: true, firstName: true, lastName: true } },
       policy: { select: { id: true, policyNumber: true } },
     },
   });
+  if (!updated) throw AppError.notFound('Insurance claim not found');
+
+  const newPaid = decNum(updated.paidAmount);
+  const outstanding = decNum(updated.outstandingAmount);
+  const fullySettled = updated.status === 'settled';
 
   await recordTpaCommunication({
     tenantId,
@@ -1330,15 +1321,6 @@ export async function settleClaim(
     content:
       `Received ${data.paidAmount.toFixed(2)}. Paid to date ${newPaid.toFixed(2)} ` +
       `of ${approved.toFixed(2)} approved; outstanding ${outstanding.toFixed(2)}.`,
-  });
-
-  await notifyPatientInsuranceMilestone({
-    tenantId,
-    patientId: claim.patientId,
-    title: fullySettled ? 'Insurance claim settled' : 'Insurance claim part-settled',
-    message: `The payer has settled ${newPaid.toFixed(2)} of ${approved.toFixed(2)}. Payer outstanding is ${outstanding.toFixed(2)}.`,
-    referenceType: 'insurance_claim',
-    referenceId: id,
   });
 
   logger.info({ tenantId, claimId: id, paid: data.paidAmount, status: updated.status }, 'Insurance claim settled (partial or full)');
@@ -1374,9 +1356,6 @@ export async function resubmitClaim(
   const expiryDays = data.expiryDays ?? DEFAULT_CLAIM_EXPIRY_DAYS;
   const expiryDate = new Date(now.getTime() + expiryDays * 24 * 60 * 60 * 1000);
 
-  // Merge documents
-  const mergedDocs = mergeDocuments(original.documentsUrl, data.additionalDocumentsUrl);
-
   const claimNumber = await generateClaimNumber(tenantId);
 
   const resubmitted = await prisma.$transaction(async (tx) => {
@@ -1402,7 +1381,6 @@ export async function resubmitClaim(
         expiryDate,
         status: 'submitted',
         submissionDate: now,
-        documentsUrl: mergedDocs ?? undefined,
         notes: data.notes,
         previousClaimId: original.id,
         resubmissionCount: (original.resubmissionCount ?? 0) + 1,
@@ -1432,17 +1410,6 @@ export async function resubmitClaim(
     'Insurance claim resubmitted',
   );
   return resubmitted;
-}
-
-function mergeDocuments(existing: Prisma.JsonValue | null, additional: unknown): Prisma.InputJsonValue | null {
-  const left = Array.isArray(existing) ? (existing as unknown[]) : existing ? [existing as unknown] : [];
-  const right = Array.isArray(additional)
-    ? (additional as unknown[])
-    : additional !== undefined && additional !== null
-      ? [additional]
-      : [];
-  const merged = [...left, ...right];
-  return merged.length ? (merged as Prisma.InputJsonValue) : null;
 }
 
 export async function cancelClaim(
@@ -1525,6 +1492,93 @@ export async function splitBill(tenantId: string, billId: string, data: SplitBil
   const bill = await prisma.bill.findFirst({ where: { id: billId, tenantId } });
   if (!bill) throw AppError.notFound('Bill not found');
 
+  const isManual = data.insuranceAmount !== undefined || data.patientAmount !== undefined;
+  if (isManual) {
+    if (data.insuranceAmount === undefined || data.patientAmount === undefined || !data.claimId) {
+      throw AppError.badRequest('TPA amount, patient amount and claim ID are required for a manual split');
+    }
+    if (!['pending', 'partially_paid', 'paid'].includes(bill.status)) {
+      throw AppError.badRequest('Finalize the hospital bill before setting the TPA / patient split');
+    }
+
+    const claim = await prisma.insuranceClaim.findFirst({
+      where: { id: data.claimId, tenantId, billId },
+    });
+    if (!claim) throw AppError.notFound('Insurance claim not found for this bill');
+    if (!['submitted', 'under_review', 'query_raised', 'response_submitted', 'resubmitted'].includes(claim.status)) {
+      throw AppError.badRequest('TPA / patient share cannot be changed after a payer decision is recorded');
+    }
+
+    const billTotal = round2(Math.max(0, decNum(bill.totalAmount)));
+    const insuranceAmount = round2(data.insuranceAmount);
+    const requestedPatientAmount = round2(data.patientAmount);
+    if (insuranceAmount <= 0) {
+      throw AppError.badRequest('TPA amount must be greater than zero; reject the claim if the payer covers nothing');
+    }
+    if (insuranceAmount > billTotal || requestedPatientAmount > billTotal) {
+      throw AppError.badRequest('TPA and patient amounts cannot exceed the bill total');
+    }
+    if (Math.abs(round2(insuranceAmount + requestedPatientAmount) - billTotal) > 0.01) {
+      throw AppError.badRequest(`TPA and patient amounts must total ${billTotal.toFixed(2)}`);
+    }
+
+    // Derive the stored patient value from the bill total after validating both
+    // operator-entered values. This guarantees an exact two-decimal split.
+    const patientAmount = round2(billTotal - insuranceAmount);
+    const balanceDue = round2(Math.max(0, patientAmount - decNum(bill.amountPaid)));
+    const billSplit = {
+      insurancePortion: insuranceAmount,
+      patientPortion: patientAmount,
+      claimPatientPortion: patientAmount,
+      balanceDue,
+    };
+
+    await prisma.$transaction([
+      prisma.bill.update({
+        where: { id: billId },
+        data: {
+          insuranceCoveredAmount: insuranceAmount,
+          patientPayableAmount: patientAmount,
+          balanceDue,
+        },
+      }),
+      prisma.insuranceClaim.update({
+        where: { id: claim.id },
+        data: {
+          claimAmount: insuranceAmount,
+          coveredAmount: insuranceAmount,
+          patientShare: patientAmount,
+          outstandingAmount: insuranceAmount,
+        },
+      }),
+    ]);
+
+    logger.info(
+      { tenantId, billId, claimId: claim.id, insuranceAmount, patientAmount, balanceDue },
+      'Manual TPA / patient bill split applied',
+    );
+    return {
+      billId,
+      claimId: claim.id,
+      policy: null,
+      split: {
+        claimAmount: insuranceAmount,
+        coPayPercent: 0,
+        deductibleAmount: decNum(claim.deductibleAmount),
+        coverageLimit: 0,
+        coveredAmount: insuranceAmount,
+        copayAmount: decNum(claim.copayAmount),
+        patientResponsibility: patientAmount,
+        insurancePortion: insuranceAmount,
+      },
+      billSplit,
+    };
+  }
+
+  if (!data.policyId) {
+    throw AppError.badRequest('Policy ID is required to calculate the split');
+  }
+
   const policy = await prisma.insurancePolicy.findFirst({
     where: { id: data.policyId, tenantId, patientId: bill.patientId },
     include: { insurer: { select: { id: true, name: true } } },
@@ -1564,12 +1618,8 @@ export async function rejectClaim(
     throw AppError.notFound('Insurance claim not found');
   }
 
-  if (
-    claim.status !== 'under_review' &&
-    claim.status !== 'submitted' &&
-    claim.status !== 'resubmitted'
-  ) {
-    throw AppError.badRequest('Claim must be under review, submitted, or resubmitted to reject');
+  if (claim.status !== 'under_review') {
+    throw AppError.badRequest('Claim must be under review to reject');
   }
 
   const updated = await prisma.insuranceClaim.update({
@@ -1652,7 +1702,6 @@ export async function exportClaimForTpa(tenantId: string, id: string) {
     status: claim.status,
     submissionDate: claim.submissionDate,
     expiryDate: claim.expiryDate,
-    documents: claim.documentsUrl ?? [],
     patient: {
       id: claim.patient.id,
       firstName: claim.patient.firstName,

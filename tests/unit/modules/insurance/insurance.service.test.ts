@@ -15,7 +15,10 @@ import {
   getClaimById,
   applyBillSplit,
   splitBill,
+  resyncClaimAmount,
+  submitClaim,
   approveClaim,
+  partialApproveClaim,
   rejectClaim,
   createPreAuth,
   getPreAuths,
@@ -120,7 +123,6 @@ const mockClaim = {
   submissionDate: new Date('2024-03-15'),
   approvalDate: null,
   rejectionReason: null,
-  documentsUrl: null,
   submittedBy: USER_ID,
   reviewedBy: null,
   createdAt: new Date('2024-03-15'),
@@ -428,13 +430,7 @@ describe('Insurance Service', () => {
       // to make a second, re-checking that number for the tenant, which could
       // never fire; queueing a value for a call that no longer happens leaves it
       // in the mock's queue for whatever test runs next.
-      vi.mocked(prisma.insuranceClaim.findFirst)
-        .mockResolvedValueOnce(null)
-        // The new document-completeness gate immediately builds a checklist
-        // for the claim it just created, and therefore reads it back three times.
-        .mockResolvedValueOnce(mockClaim as any)
-        .mockResolvedValueOnce({ ...mockClaim, insuranceCase: null } as any)
-        .mockResolvedValueOnce(mockClaim as any);
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValueOnce(null);
       vi.mocked(prisma.insuranceClaim.create).mockResolvedValue(mockClaim as any);
 
       const result = await createClaim(TENANT_ID, USER_ID, claimInput);
@@ -480,6 +476,52 @@ describe('Insurance Service', () => {
       await expect(
         createClaim(TENANT_ID, USER_ID, claimInput),
       ).rejects.toThrow('Bill not found');
+    });
+  });
+
+  describe('submitClaim', () => {
+    it('proceeds as soon as the hospital bill is finalized', async () => {
+      vi.mocked(prisma.insuranceClaim.findFirst)
+        .mockResolvedValueOnce({ ...mockClaim, bill: { status: 'pending' } } as any)
+        .mockResolvedValueOnce({ policy: { tpaId: 'tpa-1' } } as any);
+      vi.mocked(prisma.insuranceClaim.update).mockResolvedValue({
+        ...mockClaim,
+        status: 'under_review',
+      } as any);
+      vi.mocked(prisma.tpaCommunicationLog.create).mockResolvedValue({ id: 'log-1' } as any);
+
+      const result = await submitClaim(TENANT_ID, 'claim-1', USER_ID);
+
+      expect(result.status).toBe('under_review');
+      expect(prisma.insuranceClaim.update).toHaveBeenCalledWith(expect.objectContaining({
+        where: { id: 'claim-1' },
+        data: expect.objectContaining({ status: 'under_review' }),
+      }));
+    });
+
+    it('requires the hospital bill to be finalized before proceeding', async () => {
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue({
+        ...mockClaim,
+        bill: { status: 'draft' },
+      } as any);
+
+      await expect(submitClaim(TENANT_ID, 'claim-1', USER_ID)).rejects.toThrow(
+        'Finalize the hospital bill before proceeding with this TPA claim',
+      );
+      expect(prisma.insuranceClaim.update).not.toHaveBeenCalled();
+    });
+
+    it('keeps the superseded claim frozen after a resubmission', async () => {
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue({
+        ...mockClaim,
+        status: 'resubmitted',
+        bill: { status: 'pending' },
+      } as any);
+
+      await expect(submitClaim(TENANT_ID, 'claim-1', USER_ID)).rejects.toThrow(
+        'Claim is not in a submittable status',
+      );
+      expect(prisma.insuranceClaim.update).not.toHaveBeenCalled();
     });
   });
 
@@ -621,10 +663,98 @@ describe('Insurance Service', () => {
         balanceDue: 1500,
       }));
     });
+
+    it('stores an exact manual TPA and patient split for front-desk collection', async () => {
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue({
+        id: 'bill-1',
+        patientId: 'patient-1',
+        status: 'pending',
+        totalAmount: 17900,
+        amountPaid: 1000,
+      } as any);
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue({
+        ...mockClaim,
+        status: 'under_review',
+        deductibleAmount: 0,
+        copayAmount: 0,
+      } as any);
+      vi.mocked(prisma.bill.update).mockResolvedValue({ id: 'bill-1' } as any);
+      vi.mocked(prisma.insuranceClaim.update).mockResolvedValue({ id: 'claim-1' } as any);
+      vi.mocked(prisma.$transaction).mockResolvedValue([] as any);
+
+      const result = await splitBill(TENANT_ID, 'bill-1', {
+        claimId: 'claim-1',
+        insuranceAmount: 12000,
+        patientAmount: 5900,
+      });
+
+      expect(prisma.bill.update).toHaveBeenCalledWith({
+        where: { id: 'bill-1' },
+        data: {
+          insuranceCoveredAmount: 12000,
+          patientPayableAmount: 5900,
+          balanceDue: 4900,
+        },
+      });
+      expect(prisma.insuranceClaim.update).toHaveBeenCalledWith({
+        where: { id: 'claim-1' },
+        data: {
+          claimAmount: 12000,
+          coveredAmount: 12000,
+          patientShare: 5900,
+          outstandingAmount: 12000,
+        },
+      });
+      expect(result.billSplit).toEqual({
+        insurancePortion: 12000,
+        patientPortion: 5900,
+        claimPatientPortion: 5900,
+        balanceDue: 4900,
+      });
+    });
+
+    it('rejects a manual split that does not equal the finalized bill total', async () => {
+      vi.mocked(prisma.bill.findFirst).mockResolvedValue({
+        id: 'bill-1',
+        status: 'pending',
+        totalAmount: 17900,
+        amountPaid: 0,
+      } as any);
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue({
+        ...mockClaim,
+        status: 'under_review',
+      } as any);
+
+      await expect(splitBill(TENANT_ID, 'bill-1', {
+        claimId: 'claim-1',
+        insuranceAmount: 12000,
+        patientAmount: 5000,
+      })).rejects.toThrow('TPA and patient amounts must total 17900.00');
+
+      expect(prisma.bill.update).not.toHaveBeenCalled();
+      expect(prisma.insuranceClaim.update).not.toHaveBeenCalled();
+    });
+
+    it('does not overwrite a finalized bill split during automatic claim synchronization', async () => {
+      const finalizedClaim = {
+        ...mockClaim,
+        status: 'submitted',
+        coveredAmount: 12000,
+        patientShare: 5900,
+        policy: mockPolicy,
+        bill: { status: 'pending' },
+      };
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue(finalizedClaim as any);
+
+      const result = await resyncClaimAmount(TENANT_ID, 'claim-1', 19000);
+
+      expect(result).toBe(finalizedClaim);
+      expect(prisma.insuranceClaim.update).not.toHaveBeenCalled();
+    });
   });
 
   describe('approveClaim', () => {
-    it('should approve a submitted claim', async () => {
+    it('should approve a claim that is under review', async () => {
       const approvedClaim = {
         ...mockClaim,
         status: 'approved',
@@ -632,7 +762,7 @@ describe('Insurance Service', () => {
         approvalDate: new Date(),
         reviewedBy: USER_ID,
       };
-      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue(mockClaim as any);
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue({ ...mockClaim, status: 'under_review' } as any);
       vi.mocked(prisma.insuranceClaim.update).mockResolvedValue(approvedClaim as any);
 
       const result = await approveClaim(TENANT_ID, 'claim-1', USER_ID, {
@@ -661,10 +791,7 @@ describe('Insurance Service', () => {
     });
 
     it('should throw badRequest if claim is not in reviewable status', async () => {
-      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue({
-        ...mockClaim,
-        status: 'approved',
-      } as any);
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue(mockClaim as any);
 
       try {
         await approveClaim(TENANT_ID, 'claim-1', USER_ID, { approvedAmount: 18000 });
@@ -673,21 +800,21 @@ describe('Insurance Service', () => {
         expect(err).toBeInstanceOf(AppError);
         expect((err as AppError).statusCode).toBe(400);
         expect((err as AppError).message).toBe(
-          'Claim must be under review or submitted to approve',
+          'Claim must be under review to approve',
         );
       }
     });
   });
 
   describe('rejectClaim', () => {
-    it('should reject a submitted claim', async () => {
+    it('should reject a claim that is under review', async () => {
       const rejectedClaim = {
         ...mockClaim,
         status: 'rejected',
         rejectionReason: 'Insufficient documentation',
         reviewedBy: USER_ID,
       };
-      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue(mockClaim as any);
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue({ ...mockClaim, status: 'under_review' } as any);
       vi.mocked(prisma.insuranceClaim.update).mockResolvedValue(rejectedClaim as any);
 
       const result = await rejectClaim(TENANT_ID, 'claim-1', USER_ID, {
@@ -708,10 +835,7 @@ describe('Insurance Service', () => {
     });
 
     it('should throw badRequest if claim is not in reviewable status', async () => {
-      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue({
-        ...mockClaim,
-        status: 'rejected',
-      } as any);
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue(mockClaim as any);
 
       try {
         await rejectClaim(TENANT_ID, 'claim-1', USER_ID, {
@@ -722,6 +846,17 @@ describe('Insurance Service', () => {
         expect(err).toBeInstanceOf(AppError);
         expect((err as AppError).statusCode).toBe(400);
       }
+    });
+  });
+
+  describe('partialApproveClaim', () => {
+    it('does not allow a partial decision before the claim enters review', async () => {
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue(mockClaim as any);
+
+      await expect(partialApproveClaim(TENANT_ID, 'claim-1', USER_ID, {
+        approvedAmount: 10_000,
+      })).rejects.toThrow('Claim must be under review to partially approve');
+      expect(prisma.insuranceClaim.update).not.toHaveBeenCalled();
     });
   });
 
@@ -1116,7 +1251,7 @@ describe('TPA communication logs', () => {
 
   describe('a failed log never undoes the action it describes', () => {
     it('approves the claim even when the log write fails', async () => {
-      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue(mockClaim as any);
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue({ ...mockClaim, status: 'under_review' } as any);
       vi.mocked(prisma.insuranceClaim.update).mockResolvedValue({
         ...mockClaim,
         status: 'approved',
@@ -1131,7 +1266,7 @@ describe('TPA communication logs', () => {
     });
 
     it('rejects the claim even when the log write fails', async () => {
-      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue(mockClaim as any);
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue({ ...mockClaim, status: 'under_review' } as any);
       vi.mocked(prisma.insuranceClaim.update).mockResolvedValue({
         ...mockClaim,
         status: 'rejected',

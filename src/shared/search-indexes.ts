@@ -68,6 +68,9 @@ const SEARCH_COLUMNS: Record<string, string[]> = {
   // become a single bitmap OR. One un-indexed branch sends the whole thing back
   // to a sequential scan, so leaving it out would waste the other two.
   icd_codes: ['title', 'search_tokens', 'code'],
+  // SNOMED RF2 contains several descriptions per concept and grows into the
+  // hundreds of thousands; autocomplete searches the normalized token column.
+  snomed_descriptions: ['search_tokens'],
   // The disorder pick-list a patient and a clinician both search, ~7,200 rows.
   disorders: ['name', 'search_tokens'],
 };

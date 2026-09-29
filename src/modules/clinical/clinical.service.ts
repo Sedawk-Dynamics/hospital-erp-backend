@@ -1209,12 +1209,15 @@ export async function dischargePatient(
 
     const billing = await import('../billing/billing.service');
     const outstanding = await billing.getAdmissionOutstanding(tenantId, id);
-    if (!outstanding.isCleared && !data?.payerCaseId) {
+    // A linked payer case may keep the insurer settlement open after physical
+    // discharge, but it can never waive the patient's co-pay/deductible. The
+    // patient-facing share must be collected first.
+    if (!outstanding.isCleared) {
       throw AppError.badRequest(
-        `The final bill is not cleared — ₹${outstanding.balanceAfterDeposit.toFixed(2)} is still outstanding. Collect or settle the balance before discharging this patient.`,
+        `The patient share is not cleared — ₹${outstanding.balanceAfterDeposit.toFixed(2)} is still payable by the patient. Collect it before discharging this patient.`,
       );
     }
-    if (!outstanding.isCleared && data?.payerCaseId) {
+    if (data?.payerCaseId) {
       const payerCase = await prisma.insuranceCase.findFirst({
         where: { id: data.payerCaseId, tenantId, admissionId: id, patientId: admission.patientId },
       });

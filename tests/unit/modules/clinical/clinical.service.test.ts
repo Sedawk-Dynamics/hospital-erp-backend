@@ -642,6 +642,7 @@ describe('ClinicalService', () => {
       } as any);
       vi.mocked(prisma.bill.findMany).mockResolvedValue([
         {
+          id: 'bill-1',
           amountPaid: 1000,
           discountAmount: 0,
           insuranceCoveredAmount: 0,
@@ -663,14 +664,47 @@ describe('ClinicalService', () => {
       } as any);
       vi.mocked(prisma.bill.findMany).mockResolvedValue([
         {
+          id: 'bill-1',
           amountPaid: 1000,
           discountAmount: 0,
           insuranceCoveredAmount: 0,
           billItems: [{ totalAmount: 5000, referenceType: null, referenceId: null }],
         },
       ] as any);
+      vi.mocked(prisma.payment.aggregate).mockResolvedValue({ _sum: { amount: 1000 } } as any);
+      vi.mocked(prisma.refund.aggregate).mockResolvedValue({ _sum: { amount: 0 } } as any);
 
       await expect(dischargePatient(TENANT_ID, 'admission-1', USER_ID)).rejects.toThrow('4000.00');
+    });
+
+    it('should not let a payer case waive an unpaid patient share', async () => {
+      mockPublishedDischargeSummary();
+      vi.mocked(prisma.admission.findFirst).mockResolvedValue({
+        ...mockAdmission,
+        status: 'ready_to_discharge',
+        depositAmount: 0,
+      } as any);
+      vi.mocked(prisma.bill.findMany).mockResolvedValue([
+        {
+          id: 'bill-1',
+          amountPaid: 12000,
+          discountAmount: 0,
+          insuranceCoveredAmount: 12000,
+          billItems: [{ totalAmount: 17900, referenceType: null, referenceId: null }],
+        },
+      ] as any);
+      // The ₹12,000 in amountPaid is the TPA remittance. No patient/front-desk
+      // collection exists, so the ₹5,900 patient share remains payable.
+      vi.mocked(prisma.payment.aggregate).mockResolvedValue({ _sum: { amount: 0 } } as any);
+      vi.mocked(prisma.refund.aggregate).mockResolvedValue({ _sum: { amount: 0 } } as any);
+
+      await expect(
+        dischargePatient(TENANT_ID, 'admission-1', USER_ID, {
+          payerCaseId: 'payer-case-1',
+          releaseUndertaking: 'Payer processing will continue after discharge.',
+        }),
+      ).rejects.toThrow(/5900\.00.*payable by the patient/i);
+      expect(prisma.insuranceCase.findFirst).not.toHaveBeenCalled();
     });
 
     // The deposit already on file counts as money collected.

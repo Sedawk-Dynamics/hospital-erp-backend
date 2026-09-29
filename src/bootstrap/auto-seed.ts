@@ -36,6 +36,7 @@ import { seedPhysicalObservations } from '../seeds/physical-observations';
 import { seedIcdCodes } from '../seeds/icd-codes';
 import { seedIcdFromClaml } from '../seeds/icd-claml';
 import { retireDemoIcdCodes } from '../seeds/icd-retire-demo-codes';
+import { seedSnomed } from '../seeds/snomed';
 import { seedDisorders } from '../seeds/disorders';
 import { ensureIcdTrgmReady } from '../modules/icd/icd-fuzzy';
 import { ensureTrgmReady as ensureMedicineTrgmReady } from '../shared/medicine-fuzzy';
@@ -126,6 +127,10 @@ export async function runSeeds(db: PrismaClient): Promise<void> {
   //    that already has them, because the curated seed only creates and updates
   //    and is guarded on an empty catalogue. No-op once done.
   await step('icd-retire-demo', () => retireDemoIcdCodes(db));
+  // SNOMED powers the diagnosis-name picker and maps the selected concept back
+  // to ICD-10. The bundled sample is deliberately small and idempotent; a full
+  // licensed RF2 import can update the same rows later.
+  await step('snomed', () => seedSnomed(db));
   //    The disorder pick-list, seeded from the ICD disease chapters (A-N, Q).
   //    Runs after them because it reads that table. Only ever ADDS names it has
   //    not seen — never updates and never reactivates, so a disorder the super

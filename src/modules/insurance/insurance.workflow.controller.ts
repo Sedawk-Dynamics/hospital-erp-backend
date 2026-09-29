@@ -75,18 +75,6 @@ export async function getSlaQueue(req: AuthenticatedRequest, res: Response, next
   try { sendResponse({ res, message: 'Insurance SLA queue retrieved', data: await service.getSlaQueue(req.user!.tenantId) }); } catch (error) { next(error); }
 }
 
-export async function syncClaimChecklist(req: AuthenticatedRequest, res: Response, next: NextFunction) {
-  try { sendResponse({ res, message: 'Claim checklist synchronized', data: await service.syncClaimChecklist(req.user!.tenantId, req.params.id as string) }); } catch (error) { next(error); }
-}
-export async function getClaimChecklist(req: AuthenticatedRequest, res: Response, next: NextFunction) {
-  try { sendResponse({ res, message: 'Claim checklist retrieved', data: await service.getClaimChecklist(req.user!.tenantId, req.params.id as string) }); } catch (error) { next(error); }
-}
-export async function addClaimDocument(req: AuthenticatedRequest, res: Response, next: NextFunction) {
-  try { const { tenantId, userId } = ids(req); sendResponse({ res, statusCode: 201, message: 'Claim document added', data: await service.addClaimDocument(tenantId, userId, req.params.id as string, req.body) }); } catch (error) { next(error); }
-}
-export async function verifyClaimDocument(req: AuthenticatedRequest, res: Response, next: NextFunction) {
-  try { const { tenantId, userId } = ids(req); sendResponse({ res, message: 'Claim document reviewed', data: await service.verifyClaimDocument(tenantId, userId, req.params.documentId as string, req.body) }); } catch (error) { next(error); }
-}
 export async function raiseClaimQuery(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try { const { tenantId, userId } = ids(req); sendResponse({ res, statusCode: 201, message: 'Claim query recorded', data: await service.raiseClaimQuery(tenantId, userId, req.params.id as string, req.body) }); } catch (error) { next(error); }
 }

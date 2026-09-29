@@ -1,3 +1,47 @@
+import { prisma } from '../../config/database';
+import {
+  PatientMapContext,
+  SnomedMapCandidate,
+  SnomedMapResult,
+  SnomedSearchResult,
+} from './snomed.types';
+import { labelFromAdvice, ruleSatisfied } from './snomed.utils';
+
+const FSN = '900000000000003001';
+
+export async function searchSnomedConcepts(q: string, limit = 20): Promise<SnomedSearchResult[]> {
+  const search = q.trim().toLowerCase();
+  if (!search) return [];
+
+  const rows = await prisma.snomedDescription.findMany({
+    where: {
+      active: true,
+      OR: [
+        { searchTokens: { contains: search } },
+        { conceptId: { startsWith: search } },
+      ],
+    },
+    // A concept can have several matching synonyms. Read a wider window before
+    // deduplicating so a synonym-heavy concept cannot crowd out every result.
+    take: Math.min(limit * 4, 200),
+    orderBy: [{ conceptId: 'asc' }, { typeId: 'asc' }],
+    select: { conceptId: true, term: true, typeId: true },
+  });
+
+  const result = new Map<string, SnomedSearchResult>();
+  for (const row of rows) {
+    const existing = result.get(row.conceptId);
+
+    if (!existing) {
+      result.set(row.conceptId, { conceptId: row.conceptId, term: row.term });
+    } else if (row.typeId === FSN) {
+      // A concept-id search can match every synonym. Prefer the canonical FSN
+      // in that case so the same concept always has a stable display name.
+      existing.term = row.term;
+    }
+  }
+
+  return Array.from(result.values()).slice(0, limit);
 import { prisma } from "../../config/database";
 import { kStringMaxLength } from "buffer";
 import { map } from "zod";
@@ -42,6 +86,10 @@ const NOT_POSSIBLE = 'MAPPING NOT POSSIBLE';
 const NEEDS_SPEC = 'REQUIRES SPECIFICATION';
 
 
+export async function selectedSnomed(
+  snomedCode: string,
+  ctx?: PatientMapContext,
+): Promise<SnomedMapResult> {
 export const selectedSnomed = async (snomedCode: string,ctx?: PatientMapContext): Promise<SnomedMapResult> => {
   const rows = await prisma.snomedIcdMap.findMany({
     where: { referencedComponentId: snomedCode, active: true },
@@ -61,6 +109,7 @@ export const selectedSnomed = async (snomedCode: string,ctx?: PatientMapContext)
   }
 
   const icdCodes: string[] = [];
+  const candidates: SnomedMapCandidate[] = [];
   let candidates: SnomedMapCandidate[] | undefined;
   let needsDetail = false;
 
@@ -68,6 +117,13 @@ export const selectedSnomed = async (snomedCode: string,ctx?: PatientMapContext)
     const specRows = group.filter((r) => (r.mapAdvice ?? '').toUpperCase().includes(NEEDS_SPEC));
     if (specRows.length) {
       needsDetail = true;
+      candidates.push(...specRows
+        .filter((r) => r.mapTarget)
+        .map((r) => ({
+          icdCode: r.mapTarget as string,
+          label: labelFromAdvice(r.mapAdvice),
+          advice: r.mapAdvice ?? '',
+        })));
       candidates = specRows
         .filter((r) => r.mapTarget)
         .map((r) => ({ icdCode: r.mapTarget as string, label: labelFromAdvice(r.mapAdvice), advice: r.mapAdvice ?? '' }));
@@ -89,5 +145,12 @@ export const selectedSnomed = async (snomedCode: string,ctx?: PatientMapContext)
   const status: SnomedMapResult['status'] =
     needsDetail ? 'needs_detail' : icdCodes.length ? 'resolved' : 'unmapped';
 
+  return {
+    snomedCode,
+    status,
+    icdCodes: [...new Set(icdCodes)],
+    ...(candidates.length > 0 ? { candidates } : {}),
+  };
+}
   return { snomedCode: snomedCode, status, icdCodes, candidates };
 };

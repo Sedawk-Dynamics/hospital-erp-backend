@@ -12,6 +12,7 @@ import { runInventoryAlertsJob } from './jobs/inventory-alerts';
 import { runNdpsDailyCloseJob } from './jobs/ndps-daily-close';
 import { archiveStaleOpProgressNotes } from './modules/progress-notes/progress-notes.service';
 import { tickLifecycle as emarTickLifecycle } from './modules/emar/emar.service';
+import { reconcileInsuranceSettlementLedger } from './jobs/insurance-settlement-ledger';
 
 const server = app.listen(env.PORT, () => {
   logger.info(`Server running on port ${env.PORT} in ${env.NODE_ENV} mode`);
@@ -19,6 +20,15 @@ const server = app.listen(env.PORT, () => {
   // accepting traffic (so health checks pass immediately) and never throws.
   void runAutoSeed();
 });
+
+// Older settlement paths updated only the insurance claim, leaving Hospital
+// Billing with a stale paid/due figure. This idempotent repair links those
+// historical remittances into the payment ledger after every deployment.
+setTimeout(() => {
+  reconcileInsuranceSettlementLedger().catch((err) =>
+    logger.error({ err }, 'Insurance settlement ledger reconciliation failed on startup'),
+  );
+}, 5_000);
 
 // Subscription maintenance: expiry checks + renewal reminders (every 6 hours)
 const SIX_HOURS = 6 * 60 * 60 * 1000;
