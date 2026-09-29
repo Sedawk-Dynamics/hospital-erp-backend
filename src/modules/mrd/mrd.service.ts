@@ -152,7 +152,11 @@ function mergeSections(parts: Array<string | null | undefined>): string | null {
   return cleaned.length > 0 ? cleaned.join('\n\n') : null;
 }
 
-async function buildSummaryFields(tenantId: string, admissionId: string) {
+async function buildSummaryFields(
+  tenantId: string,
+  admissionId: string,
+  opts: { onlyPatientVisible?: boolean } = {},
+) {
   const admission = await prisma.admission.findFirst({
     where: { id: admissionId, tenantId },
     include: {
@@ -201,9 +205,7 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
       where: { visitId },
       orderBy: { diagnosedAt: 'asc' },
     }),
-    // ALL of the admission's progress notes (the running IP log). Every note now
-    // flows into the discharge summary's hospital course automatically — the
-    // doctor no longer pins per note. Oldest → newest for a readable course.
+
     prisma.progressNote.findMany({
       where: {
         visitId,
@@ -220,9 +222,7 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
         },
       },
     }),
-    // New per-section pins via ProgressNotePin. Each pin carries
-    // explicit {dischargeSection, content}; we route the content into
-    // the matching DischargeSummary column below.
+
     prisma.progressNotePin.findMany({
       where: {
         note: {
@@ -243,11 +243,6 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
         },
       },
     }),
-    // Only results the lab supervisor has RELEASED. A discharge summary is a
-    // legal record the patient leaves with — it must not quote a value that is
-    // still inside the lab's review loop and could yet be corrected or
-    // re-run. Mirrors the gate on the doctor's investigation history and the
-    // patient portal.
     prisma.labResult.findMany({
       where: {
         labOrder: {
@@ -316,6 +311,7 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
   const pinBuckets: Record<string, Array<{ content: string; createdAt: Date; doctor: string }>> =
     {};
   for (const p of sectionPins) {
+    if (opts.onlyPatientVisible && !(p as any).showToPatient) continue;
     const bucket = pinBuckets[p.dischargeSection] ?? (pinBuckets[p.dischargeSection] = []);
     const doctor = p.note?.doctor?.user
       ? `Dr. ${p.note.doctor.user.firstName}${p.note.doctor.user.lastName ? ' ' + p.note.doctor.user.lastName : ''}`
@@ -360,11 +356,7 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
   const diagnosisPins = renderBucket('diagnosis');
   const diagnosesSummary = mergeSections([diagnosesBase, diagnosisPins]);
 
-  // ── Hospital course & procedures ──
-  // Legacy whole-note pins + new "procedure" and "hospital_course" section
-  // pins all roll up into proceduresSummary, with labelled sub-sections so
-  // the doctor can tell them apart when reviewing.
-  const allNotesBlock = allNotes.length > 0
+  const allNotesBlock = !opts.onlyPatientVisible && allNotes.length > 0
     ? allNotes
         .map((n) => {
           const when = new Date(n.createdAt).toLocaleDateString('en-IN');
@@ -1203,5 +1195,28 @@ export async function getPublishedDischargeSummaryForPatient(patientIds: string[
     },
   });
   if (!summary) throw AppError.notFound('Discharge summary not found');
+
+  // The stored columns are the DOCTOR's version — every pin is baked into the
+  // prose regardless of visibility. Rebuild the patient-facing columns from the
+  // same source data but with ONLY the pins the doctor flagged "show to patient".
+  // Source-derived content (diagnoses, labs, meds, procedures) is unchanged;
+  // only hidden pinned notes are stripped.
+  const tenantId = summary.patient?.tenant?.id;
+  if (tenantId) {
+    const built = await buildSummaryFields(tenantId, summary.admissionId, {
+      onlyPatientVisible: true,
+    });
+    return {
+      ...summary,
+      headerSummary: built.headerSummary,
+      diagnosesSummary: built.diagnosesSummary,
+      proceduresSummary: built.proceduresSummary,
+      labResultsSummary: built.labResultsSummary,
+      keyLabsSummary: built.keyLabsSummary,
+      medicationReconciliation: built.medicationReconciliation,
+      dischargeInstructions: built.dischargeInstructions,
+      followUpInstructions: built.followUpInstructions,
+    };
+  }
   return summary;
 }
