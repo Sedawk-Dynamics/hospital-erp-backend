@@ -10,8 +10,10 @@ function money(value: Prisma.Decimal | number | string | null | undefined): numb
 
 /**
  * Calculate the net amount collected against a bill from its immutable ledger.
- * Refund and advance rows are excluded from collections; approved/processed
- * refunds reduce the amount paid.
+ * An advance row on a real bill is an admission deposit that has actually been
+ * applied to that bill, so it is a collection. Advance receipts themselves sit
+ * on the separate ADV-* holding bill and therefore never enter this billId.
+ * Approved/processed refunds reduce the amount paid.
  */
 export async function computeBillPaid(
   db: BillingLedgerClient,
@@ -22,7 +24,7 @@ export async function computeBillPaid(
       where: {
         billId,
         status: 'completed',
-        paymentType: { notIn: ['refund', 'advance'] as any },
+        paymentType: { not: 'refund' as any },
       },
       _sum: { amount: true },
     }),
@@ -36,23 +38,28 @@ export async function computeBillPaid(
 }
 
 /** Net patient/front-desk collections, excluding insurer remittances. */
-async function computePatientPaid(
+export async function computePatientPaidForBills(
   db: BillingLedgerClient,
-  billId: string,
+  billIds: string[],
 ): Promise<number> {
+  if (billIds.length === 0) return 0;
+
   const [collected, refunded] = await Promise.all([
     db.payment.aggregate({
       where: {
-        billId,
+        billId: { in: billIds },
         status: 'completed',
         paymentMethod: { not: 'insurance' },
-        paymentType: { notIn: ['refund', 'advance'] as any },
+        // An applied admission deposit is paymentType=advance on the real bill
+        // and is still money paid by the patient. Only payout/refund rows are
+        // excluded here.
+        paymentType: { not: 'refund' as any },
       },
       _sum: { amount: true },
     }),
     db.refund.aggregate({
       where: {
-        billId,
+        billId: { in: billIds },
         status: { in: ['approved', 'processed'] as any },
         payment: { paymentMethod: { not: 'insurance' } },
       },
@@ -61,6 +68,14 @@ async function computePatientPaid(
   ]);
 
   return money(collected._sum.amount) - money(refunded._sum.amount);
+}
+
+/** Net patient/front-desk collections for one bill. */
+export async function computePatientPaid(
+  db: BillingLedgerClient,
+  billId: string,
+): Promise<number> {
+  return computePatientPaidForBills(db, [billId]);
 }
 
 /** Recalculate the stored bill balance and status from the payment ledger. */
@@ -110,12 +125,15 @@ export async function applyPaymentToBill(
   const balance = hasInsuranceSplit
     ? patientPayable - patientPaid
     : total - paid;
+  const totalBalance = total - paid;
 
   // Payments must not move a bill out of these terminal/manual states.
   const preservedStatuses: string[] = ['draft', 'cancelled', 'refunded'];
   const status = preservedStatuses.includes(bill.status)
     ? bill.status
-    : balance <= 0 && total > 0
+    // A zero PATIENT balance does not mean a split bill is fully paid: the TPA
+    // may still owe its share. Only the complete immutable ledger can close it.
+    : totalBalance <= 0 && total > 0
       ? 'paid'
       : paid > 0
         ? 'partially_paid'

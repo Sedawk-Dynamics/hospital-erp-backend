@@ -57,7 +57,11 @@ import type {
   GetBillsQuery,
   GetPaymentsQuery,
 } from './billing.validation';
-import { applyPaymentToBill, computeBillPaid } from './bill-payment-ledger';
+import {
+  applyPaymentToBill,
+  computeBillPaid,
+  computePatientPaidForBills,
+} from './bill-payment-ledger';
 
 /**
  * Map validation category values to ServiceTariffCategory enum values.
@@ -5256,15 +5260,19 @@ export async function getAdmissionOutstanding(tenantId: string, admissionId: str
   }
 
   const paid = r2(bills.reduce((s, b) => s + Number(b.amountPaid), 0));
+  const patientPaid = r2(await computePatientPaidForBills(prisma, bills.map((b) => b.id)));
   const insuranceCovered = r2(bills.reduce((s, b) => s + Number(b.insuranceCoveredAmount ?? 0), 0));
   const billDiscount = r2(bills.reduce((s, b) => s + Number(b.discountAmount ?? 0), 0));
   const grandTotal = r2(Math.max(0, totalPosted + totalPending - billDiscount));
 
   const dep = await getAdmissionDepositState(tenantId, admissionId);
   // Reported for display; the balance is not derived from it.
-  const cashPaid = r2(Math.max(0, paid - dep.applied));
+  const cashPaid = r2(Math.max(0, patientPaid - dep.applied));
   const netPatientObligation = r2(Math.max(0, grandTotal - insuranceCovered));
-  const moneyFromPatient = moneyHeldFromPatient(paid, dep.onFile, dep.applied);
+  // Insurer remittances are part of `paid`, but they must never satisfy the
+  // patient's co-pay/deductible. Only patient/front-desk tender plus money
+  // still held on deposit can clear the patient-share discharge gate.
+  const moneyFromPatient = moneyHeldFromPatient(patientPaid, dep.onFile, dep.applied);
   const balanceAfterDeposit = r2(Math.max(0, netPatientObligation - moneyFromPatient));
 
   return {
@@ -5416,6 +5424,7 @@ export async function getAdmissionLedger(tenantId: string, admissionId: string, 
   const totalPosted = r2(posted.reduce((s, l) => s + l.totalAmount, 0));
   const totalPending = r2(pending.reduce((s, l) => s + l.totalAmount, 0));
   const paid = r2(bills.reduce((s, b) => s + Number(b.amountPaid), 0));
+  const patientPaid = r2(await computePatientPaidForBills(prisma, bills.map((b) => b.id)));
   const insuranceCovered = r2(bills.reduce((s, b) => s + Number(b.insuranceCoveredAmount ?? 0), 0));
 
   // A concession granted at the counter (PATCH /billing/:id/discount) is recorded
@@ -5450,10 +5459,10 @@ export async function getAdmissionLedger(tenantId: string, admissionId: string, 
   const deposit = r2(depositOnFile + advanceOnFile);
   // Real cash the patient paid at the counter (excludes deposit moved onto the
   // bill). Reported as `cashPaid`; not what the balance is derived from.
-  const cashPaid = r2(Math.max(0, paid - dep.applied));
+  const cashPaid = r2(Math.max(0, patientPaid - dep.applied));
   // What the patient must ultimately pay = charges minus the insurer-covered part.
   const netPatientObligation = r2(Math.max(0, grandTotal - insuranceCovered));
-  const moneyFromPatient = moneyHeldFromPatient(paid, deposit, dep.applied);
+  const moneyFromPatient = moneyHeldFromPatient(patientPaid, deposit, dep.applied);
   // Deposit-adjusted balance still owed by the patient.
   const balanceAfterDeposit = r2(Math.max(0, netPatientObligation - moneyFromPatient));
   // Surplus the patient overpaid (e.g. insurance covered the charges) —
@@ -6016,6 +6025,7 @@ export async function getIpAdmissionsForBilling(
     const claim = bills.map((b) => b.insuranceClaims?.[0]).find(Boolean) ?? null;
     const totalAmount = r2(bills.reduce((s, b) => s + Number(b.totalAmount), 0));
     const amountPaid = r2(bills.reduce((s, b) => s + Number(b.amountPaid), 0));
+    const patientPaid = r2(await computePatientPaidForBills(prisma, bills.map((b) => b.id)));
     const balanceDue = r2(bills.reduce((s, b) => s + Number(b.balanceDue), 0));
     const insuranceCovered = r2(bills.reduce((s, b) => s + Number(b.insuranceCoveredAmount ?? 0), 0));
     const patientPayable = r2(bills.reduce((s, b) => s + Number(b.patientPayableAmount ?? 0), 0));
@@ -6027,7 +6037,9 @@ export async function getIpAdmissionsForBilling(
     const dep = await getAdmissionDepositState(tenantId, a.id);
     const deposit = r2(dep.onFile + (advanceByPatient.get(a.patientId) ?? 0));
     const netPatientObligation = r2(Math.max(0, totalAmount - insuranceCovered));
-    const moneyFromPatient = moneyHeldFromPatient(amountPaid, deposit, dep.applied);
+    // TPA settlement can reduce the claim outstanding, but only patient tender
+    // can reduce this patient-facing balance.
+    const moneyFromPatient = moneyHeldFromPatient(patientPaid, deposit, dep.applied);
     const balanceAfterDeposit = r2(Math.max(0, netPatientObligation - moneyFromPatient));
     const refundable = r2(Math.min(Math.max(0, moneyFromPatient - netPatientObligation), Math.max(0, deposit - dep.refunded)));
 
@@ -6038,6 +6050,9 @@ export async function getIpAdmissionsForBilling(
       admissionId: a.id,
       totalAmount,
       amountPaid,
+      // Separate from total ledger paid: TPA remittances must not be displayed
+      // as money collected from the patient.
+      patientPaidAmount: patientPaid,
       balanceDue,
       // What the counter can actually collect against the bill this row NAMES.
       //

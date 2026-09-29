@@ -115,4 +115,35 @@ describe('bill payment ledger', () => {
       },
     });
   });
+
+  it('keeps the bill partially paid when the patient share is paid but TPA is still outstanding', async () => {
+    vi.mocked(prisma.bill.findUnique).mockResolvedValue({
+      totalAmount: 17_900,
+      insuranceCoveredAmount: 12_000,
+      patientPayableAmount: 5_900,
+      status: 'pending',
+    } as never);
+    vi.mocked(prisma.payment.aggregate)
+      // Complete ledger: only the patient's ₹5,900 has arrived.
+      .mockResolvedValueOnce({ _sum: { amount: 5_900 } } as never)
+      // Patient-only ledger: the same ₹5,900.
+      .mockResolvedValueOnce({ _sum: { amount: 5_900 } } as never);
+    vi.mocked(prisma.refund.aggregate)
+      .mockResolvedValueOnce({ _sum: { amount: 0 } } as never)
+      .mockResolvedValueOnce({ _sum: { amount: 0 } } as never);
+    vi.mocked(prisma.bill.update).mockResolvedValue({ id: 'bill-1' } as never);
+
+    await applyPaymentToBill(prisma as never, 'bill-1');
+
+    expect(prisma.bill.update).toHaveBeenCalledWith({
+      where: { id: 'bill-1' },
+      data: {
+        amountPaid: 5_900,
+        // Nothing more may be collected from the patient, but the document is
+        // not closed as paid until the insurer's ₹12,000 also arrives.
+        balanceDue: 0,
+        status: 'partially_paid',
+      },
+    });
+  });
 });
