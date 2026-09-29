@@ -68,8 +68,6 @@ export const createAdmissionSchema = z.object({
     patientId: z.string().uuid('Invalid patient ID'),
     // Consultation doctor is optional now — can be assigned later.
     doctorId: z.string().uuid('Invalid doctor ID').optional(),
-    // Bed & ward are NOT set at registration — front desk assigns/changes them
-    // later from the IP ledger (beds move around during a stay).
     wardId: z.string().uuid('Invalid ward ID').optional(),
     bedId: z.string().uuid('Invalid bed ID').optional(),
     admissionDate: z.string().refine((val) => !isNaN(Date.parse(val)), {

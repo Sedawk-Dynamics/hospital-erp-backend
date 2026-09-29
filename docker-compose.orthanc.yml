@@ -1,0 +1,26 @@
+services:
+  orthanc:
+    image: orthancteam/orthanc:latest
+    container_name: hospital-erp-orthanc
+    restart: unless-stopped
+    environment:
+      ORTHANC__NAME: HospitalERP-PACS
+      ORTHANC__STORAGE_DIRECTORY: /var/lib/orthanc/db
+      ORTHANC__INDEX_DIRECTORY: /var/lib/orthanc/db
+      ORTHANC__REMOTE_ACCESS_ALLOWED: "true"
+      ORTHANC__AUTHENTICATION_ENABLED: "true"
+      ORTHANC__REGISTERED_USERS: '{"${ORTHANC_USERNAME:-hospital}": "${ORTHANC_PASSWORD:-change-me}"}'
+      DICOM_WEB_PLUGIN_ENABLED: "true"
+      OHIF_PLUGIN_ENABLED: "true"
+      ORTHANC__OHIF__ROUTER_BASENAME: "/api/v1/pacs/o/ohif/"
+    volumes:
+      - orthanc_data:/var/lib/orthanc/db
+    networks:
+      - dokploy-network
+
+networks:
+  dokploy-network:
+    external: true
+
+volumes:
+  orthanc_data:

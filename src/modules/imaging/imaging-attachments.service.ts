@@ -181,13 +181,29 @@ export async function createImagingAttachment(
   // When a real PACS is configured, archive DICOM uploads to it and mirror the
   // study/series/instance records. Best-effort: a PACS outage must not fail the
   // upload — the file already lives in /uploads and the in-house viewer reads it.
+  // TEMP DEBUG — search logs for "PACS_SYNC_DEBUG" to see why (or whether) a
+  // DICOM upload is pushed to Orthanc.
+  logger.info(
+    {
+      attachmentId: attachment.id,
+      category,
+      pacsSupportsArchive: pacsSupportsArchive(),
+      willSync: category === 'dicom' && pacsSupportsArchive(),
+    },
+    'PACS_SYNC_DEBUG upload decision',
+  );
+
   if (category === 'dicom' && pacsSupportsArchive()) {
     try {
-      await syncAttachmentToPacs(tenantId, attachment.id);
+      const syncResult = await syncAttachmentToPacs(tenantId, attachment.id);
+      logger.info(
+        { attachmentId: attachment.id, syncResult },
+        'PACS_SYNC_DEBUG synced to Orthanc',
+      );
     } catch (err) {
       logger.warn(
         { err, attachmentId: attachment.id },
-        'PACS sync failed; file kept in /uploads as fallback',
+        'PACS_SYNC_DEBUG PACS sync failed; file kept in /uploads as fallback',
       );
     }
   }

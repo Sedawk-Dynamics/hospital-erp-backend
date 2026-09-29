@@ -42,6 +42,43 @@ export async function searchSnomedConcepts(q: string, limit = 20): Promise<Snome
   }
 
   return Array.from(result.values()).slice(0, limit);
+import { prisma } from "../../config/database";
+import { kStringMaxLength } from "buffer";
+import { map } from "zod";
+import { SnomedSearchResult,PatientMapContext,SnomedMapCandidate,SnomedMapResult } from "./snomed.types";
+import { ruleSatisfied,labelFromAdvice } from "./snomed.utils";
+
+const FSN = '900000000000003001'
+
+export const searchSnomedConcepts = async (q: string, limit?: string) => {
+    const search = q.trim().toLowerCase();
+    if (!search) return [];
+
+    const rows = await prisma.snomedDescription.findMany({
+        where: {
+            active: true,
+            OR: [
+                { searchTokens: { contains: search } },
+                { conceptId: { startsWith: search } },
+            ],
+        },
+        take: 70,
+        select: { conceptId: true, term: true, typeId: true },
+    })
+
+    const result = new Map<string, SnomedSearchResult>()
+    for (const r of rows) {
+        const existing = result.get(r.conceptId);
+
+        if (!existing) {
+            result.set(r.conceptId, { conceptId: r.conceptId, term: r.term });
+
+        } else if (r.typeId === FSN) {
+            existing.term = r.term;
+        }
+    }
+
+    return Array.from(result.values()).slice(0, limit ? parseInt(limit, 10) : undefined);  // unique concepts, capped
 }
 
 
@@ -53,6 +90,7 @@ export async function selectedSnomed(
   snomedCode: string,
   ctx?: PatientMapContext,
 ): Promise<SnomedMapResult> {
+export const selectedSnomed = async (snomedCode: string,ctx?: PatientMapContext): Promise<SnomedMapResult> => {
   const rows = await prisma.snomedIcdMap.findMany({
     where: { referencedComponentId: snomedCode, active: true },
     orderBy: [{ mapGroup: 'asc' }, { mapPriority: 'asc' }],
@@ -72,6 +110,7 @@ export async function selectedSnomed(
 
   const icdCodes: string[] = [];
   const candidates: SnomedMapCandidate[] = [];
+  let candidates: SnomedMapCandidate[] | undefined;
   let needsDetail = false;
 
   for (const group of groups.values()) {
@@ -85,6 +124,9 @@ export async function selectedSnomed(
           label: labelFromAdvice(r.mapAdvice),
           advice: r.mapAdvice ?? '',
         })));
+      candidates = specRows
+        .filter((r) => r.mapTarget)
+        .map((r) => ({ icdCode: r.mapTarget as string, label: labelFromAdvice(r.mapAdvice), advice: r.mapAdvice ?? '' }));
       const fallback = group.find((r) => (r.mapRule ?? '').toUpperCase().includes('OTHERWISE TRUE'));
       if (fallback?.mapTarget) icdCodes.push(fallback.mapTarget);
       continue;
@@ -110,3 +152,5 @@ export async function selectedSnomed(
     ...(candidates.length > 0 ? { candidates } : {}),
   };
 }
+  return { snomedCode: snomedCode, status, icdCodes, candidates };
+};
