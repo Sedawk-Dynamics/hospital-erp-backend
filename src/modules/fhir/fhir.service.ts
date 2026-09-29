@@ -4,11 +4,11 @@ import { approveRefund } from "../billing/billing.service";
 import { VITAL_LOINC_MAP, VITAL_UCUM_MAP } from "../loinc/vital.loinc.map";
 import { buildBundle } from "./fhir.util";
 
-export const detailsPatient=async(id:string)=>{
-    const patient=await prisma.patient.findUnique({where:{id}});
-    if(!patient)throw new AppError("patient not found",404);
+export const detailsPatient = async (id: string) => {
+  const patient = await prisma.patient.findUnique({ where: { id } });
+  if (!patient) throw new AppError("patient not found", 404);
 
-    return {
+  return {
     resourceType: "Patient",
     id: patient.id,
     identifier: [
@@ -25,12 +25,12 @@ export const detailsPatient=async(id:string)=>{
   };
 }
 
-export const patientConditionDetails=async(patientId:string)=>{
-  const patient=await prisma.patient.findUnique({where:{id:patientId}});
-  if(!patient)throw new AppError("patient not found",404);
+export const patientConditionDetails = async (patientId: string) => {
+  const patient = await prisma.patient.findUnique({ where: { id: patientId } });
+  if (!patient) throw new AppError("patient not found", 404);
 
-  const diagnosis=await prisma.diagnosis.findMany({where:{patientId}});
-  if(!diagnosis)throw new AppError("diagnosis not found",404);
+  const diagnosis = await prisma.diagnosis.findMany({ where: { patientId } });
+  if (!diagnosis) throw new AppError("diagnosis not found", 404);
 
   return buildBundle(diagnosis.map((diagnosis) => ({
     resourceType: "Condition",
@@ -66,7 +66,7 @@ export const patientObservationsDetails = async (patientId: string) => {
     include: {
       labOrderItem: {
         include: {
-          test: { select: { loincCode: true, loincDisplayName: true,parameters:true } },
+          test: { select: { loincCode: true, loincDisplayName: true, parameters: true } },
         },
       },
       labOrder: { select: { visitId: true } },
@@ -113,10 +113,10 @@ export const patientObservationsDetails = async (patientId: string) => {
       code: {
         coding: loinc
           ? [{
-              system: "http://loinc.org",
-              code: loinc,
-              ...(loincDisplay ? { display: loincDisplay } : {}),
-            }]
+            system: "http://loinc.org",
+            code: loinc,
+            ...(loincDisplay ? { display: loincDisplay } : {}),
+          }]
           : [],
         text: r.parameterName,
       },
@@ -124,26 +124,26 @@ export const patientObservationsDetails = async (patientId: string) => {
       effectiveDateTime: r.enteredAt.toISOString(),
       ...(isNumeric
         ? {
-            valueQuantity: {
-              value: numeric,
-              unit: r.unit ?? undefined,
-              ...(ucum
-                ? { system: "http://unitsofmeasure.org", code: ucum }
-                : {}),
-            },
-          }
+          valueQuantity: {
+            value: numeric,
+            unit: r.unit ?? undefined,
+            ...(ucum
+              ? { system: "http://unitsofmeasure.org", code: ucum }
+              : {}),
+          },
+        }
         : { valueString: r.value }),
       ...(r.normalRange ? { referenceRange: [{ text: r.normalRange }] } : {}),
       ...(r.isAbnormal
         ? {
-            interpretation: [{
-              coding: [{
-                system: "http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation",
-                code: "A",
-                display: "Abnormal",
-              }],
+          interpretation: [{
+            coding: [{
+              system: "http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation",
+              code: "A",
+              display: "Abnormal",
             }],
-          }
+          }],
+        }
         : {}),
     });
   }
@@ -239,30 +239,32 @@ export const patientDiagnosisReport = async (patientId: string) => {
 };
 
 
-export const fhirDataMeta=()=>{
+export const fhirDataMeta = () => {
   return {
-  "resourceType": "CapabilityStatement",
-  "status": "active",
-  "fhirVersion": "4.0.1",
-  "format": ["json"],
-  "rest": [{
-    "mode": "server",
-    "resource": [
-      { "type": "Patient",          "interaction": [{ "code": "read" }] },
-      { "type": "Condition",        "interaction": [{ "code": "search-type" }] },
-      { "type": "Observation",      "interaction": [{ "code": "search-type" }] },
-      { "type": "DiagnosticReport", "interaction": [{ "code": "search-type" }] }
-    ]
-  }]
+    "resourceType": "CapabilityStatement",
+    "status": "active",
+    "fhirVersion": "4.0.1",
+    "format": ["json"],
+    "rest": [{
+      "mode": "server",
+      "resource": [
+        { "type": "Patient", "interaction": [{ "code": "read" }] },
+        { "type": "Condition", "interaction": [{ "code": "search-type" }] },
+        { "type": "Observation", "interaction": [{ "code": "search-type" }] },
+        { "type": "DiagnosticReport", "interaction": [{ "code": "search-type" }] }
+      ]
+    }]
+  }
 }
-}
 
 
-export const practitionerData=async(practitionerId:string)=>{
-  const user=await prisma.user.findUnique({where:{id:practitionerId},
-  include:{doctorProfile:true}});
+export const practitionerData = async (practitionerId: string) => {
+  const user = await prisma.user.findUnique({
+    where: { id: practitionerId },
+    include: { doctorProfile: true }
+  });
 
-  if(!user)throw new AppError("practitioner not found",404);
+  if (!user) throw new AppError("practitioner not found", 404);
 
   const { doctorProfile } = user;
   const firstName = user.firstName ?? "";
@@ -294,37 +296,38 @@ export const practitionerData=async(practitionerId:string)=>{
   };
 }
 
-export const organizationData=async(organizationId:string)=>{
-  const tenant=await prisma.tenant.findUnique({where
-    :{id:organizationId}
+export const organizationData = async (organizationId: string) => {
+  const tenant = await prisma.tenant.findUnique({
+    where
+      : { id: organizationId }
   })
 
-  if(!tenant)throw new AppError("organization not found",404)
+  if (!tenant) throw new AppError("organization not found", 404)
 
   return {
-  resourceType: "Organization",
-  id: tenant.id,
-  // Prefer the ABDM HFR ID; fall back to the internal license number.
-  identifier: [
-    tenant.hfrId
-      ? { system: "https://facility.abdm.gov.in", value: tenant.hfrId }
-      : { system: "https://cenaps/license", value: tenant.licenseNumber },
-  ],
-  name: tenant.name,
-  telecom: [
-    { system: "phone", value: tenant.phone },
-    { system: "email", value: tenant.email },
-    { system: "url",   value: tenant.website }
-  ],
-  address: [
-    {
-      text: tenant.address,
-      city: tenant.city,
-      state: tenant.state,
-      country: tenant.country
-    }
-  ]
-}
+    resourceType: "Organization",
+    id: tenant.id,
+    // Prefer the ABDM HFR ID; fall back to the internal license number.
+    identifier: [
+      tenant.hfrId
+        ? { system: "https://facility.abdm.gov.in", value: tenant.hfrId }
+        : { system: "https://cenaps/license", value: tenant.licenseNumber },
+    ],
+    name: tenant.name,
+    telecom: [
+      { system: "phone", value: tenant.phone },
+      { system: "email", value: tenant.email },
+      { system: "url", value: tenant.website }
+    ],
+    address: [
+      {
+        text: tenant.address,
+        city: tenant.city,
+        state: tenant.state,
+        country: tenant.country
+      }
+    ]
+  }
 }
 
 export const encounterData = async (encounterId: string) => {
@@ -366,16 +369,17 @@ export const encounterData = async (encounterId: string) => {
 };
 
 
-export const reportOP=async(visitId:string)=>{
-  const visit=await prisma.visit.findUnique({where:{id:visitId},
+export const reportOP = async (visitId: string) => {
+  const visit = await prisma.visit.findUnique({
+    where: { id: visitId },
     include: { doctor: { select: { userId: true } } },
   });
-  if(!visit)throw new AppError("visit not found",404);
+  if (!visit) throw new AppError("visit not found", 404);
 
-  const patient      = await detailsPatient(visit.patientId);
+  const patient = await detailsPatient(visit.patientId);
   const practitioner = visit.doctor?.userId ? await practitionerData(visit.doctor.userId) : null;
   const organization = await organizationData(visit.tenantId);
-  const encounter    = await encounterData(visit.id);
+  const encounter = await encounterData(visit.id);
   const encRef = `Encounter/${visit.id}`;
   const conditions = (await patientConditionDetails(visit.patientId)).entry
     .map((e) => e.resource as any)
@@ -385,38 +389,131 @@ export const reportOP=async(visitId:string)=>{
     .filter((o) => o.encounter?.reference === encRef);
 
   const composition = {
-  resourceType: "Composition",
-  id: `op-${visit.id}`,
-  status: "final",
-  type: { coding: [{ system: "http://snomed.info/sct", code: "371530004", display: "Clinical consultation report" }] },
-  subject:   { reference: `Patient/${visit.patientId}` },
-  encounter: { reference: `Encounter/${visit.id}` },
-  date: visit.visitDate.toISOString(),
-  author: practitioner ? [{ reference: `Practitioner/${visit.doctor!.userId}` }] : [],
-  title: "OP Consultation",
-  custodian: { reference: `Organization/${visit.tenantId}` },
-  section: [
-    { title: "Chief Complaint", text: { status: "generated", div: `<div>${visit.chiefComplaint ?? "-"}</div>` } },
-    { title: "Diagnosis",  entry: conditions.map(c => ({ reference: `Condition/${c.id}` })) },
-    { title: "Investigations", entry: observations.map(o => ({ reference: `Observation/${o.id}` })) },
-  ],
-};
+    resourceType: "Composition",
+    id: `op-${visit.id}`,
+    status: "final",
+    type: { coding: [{ system: "http://snomed.info/sct", code: "371530004", display: "Clinical consultation report" }] },
+    subject: { reference: `Patient/${visit.patientId}` },
+    encounter: { reference: `Encounter/${visit.id}` },
+    date: visit.visitDate.toISOString(),
+    author: practitioner ? [{ reference: `Practitioner/${visit.doctor!.userId}` }] : [],
+    title: "OP Consultation",
+    custodian: { reference: `Organization/${visit.tenantId}` },
+    section: [
+      { title: "Chief Complaint", text: { status: "generated", div: `<div>${visit.chiefComplaint ?? "-"}</div>` } },
+      { title: "Diagnosis", entry: conditions.map(c => ({ reference: `Condition/${c.id}` })) },
+      { title: "Investigations", entry: observations.map(o => ({ reference: `Observation/${o.id}` })) },
+    ],
+  };
 
-return {
-  resourceType: "Bundle",
-  type: "document",
-  timestamp: new Date().toISOString(),
-  entry: [
-    { resource: composition },
-    { resource: patient },
-    ...(practitioner ? [{ resource: practitioner }] : []),
-    { resource: organization },
-    { resource: encounter },
-    ...conditions.map(c => ({ resource: c })),
-    ...observations.map(o => ({ resource: o })),
-  ],
-};
+  return {
+    resourceType: "Bundle",
+    type: "document",
+    timestamp: new Date().toISOString(),
+    entry: [
+      { resource: composition },
+      { resource: patient },
+      ...(practitioner ? [{ resource: practitioner }] : []),
+      { resource: organization },
+      { resource: encounter },
+      ...conditions.map(c => ({ resource: c })),
+      ...observations.map(o => ({ resource: o })),
+    ],
+  };
 }
 
 
+export const reportIP = async (visitId: string) => {
+  const visit = await prisma.visit.findUnique({
+    where: { id: visitId },
+    include: { doctor: { select: { userId: true } } },
+  });
+  if (!visit) throw new AppError("visit not found", 404);
 
+  const admission = await prisma.admission.findUnique({
+    where
+      : { visitId }, include: { dischargeSummary: true, ward: true, bed: true }
+  })
+  if (!admission) throw new AppError('admission not found', 404);
+
+  const dischargeSummary = admission.dischargeSummary;
+
+  const patient = await detailsPatient(visit.patientId);
+  const practitioner = visit.doctor?.userId ? await practitionerData(visit.doctor.userId) : null;
+  const organization = await organizationData(visit.tenantId);
+  const encounter = await encounterData(visit.id);
+  const encRef = `Encounter/${visit.id}`;
+  const conditions = (await patientConditionDetails(visit.patientId)).entry
+    .map((e) => e.resource as any)
+    .filter((c) => c.encounter?.reference === encRef);
+  const observations = (await patientObservationsDetails(visit.patientId)).entry
+    .map((e) => e.resource as any)
+    .filter((o) => o.encounter?.reference === encRef);
+
+  const composition = {
+    resourceType: "Composition",
+    id: `ip-${visit.id}`,
+    status: "final",
+    type: { coding: [{ system: "http://snomed.info/sct", code: "373942005", display: "Discharge summary" }] },
+    subject: { reference: `Patient/${visit.patientId}` },
+    encounter: { reference: `Encounter/${visit.id}` },
+    date: (admission.dischargeDate ?? new Date()).toISOString(),
+    author: practitioner ? [{ reference: `Practitioner/${visit.doctor!.userId}` }] : [],
+    title: "Discharge Summary",
+    custodian: { reference: `Organization/${visit.tenantId}` },
+    section: [
+      {
+        title: "Admission Details", text: {
+          status: "generated", div:
+            `<div>Admitted: ${admission.admissionDate.toISOString().slice(0, 10)}` +
+            `${admission.dischargeDate ? ", Discharged: " + admission.dischargeDate.toISOString().slice(0, 10) : ""}` +
+            `${admission.ward ? ", Ward: " + admission.ward.name : ""}` +
+            `${admission.bed ? ", Bed: " + admission.bed.bedNumber : ""}` +
+            `${admission.admissionReason ? ", Reason: " + admission.admissionReason : ""}</div>`
+        }
+      },
+
+      {
+        title: "Diagnosis",
+        text: { status: "generated", div: `<div>${dischargeSummary?.diagnosesSummary ?? "-"}</div>` },
+        entry: conditions.map(c => ({ reference: `Condition/${c.id}` }))
+      },
+
+      { title: "Hospital Course", text: { status: "generated", div: `<div>${dischargeSummary?.headerSummary ?? "-"}</div>` } },
+
+      { title: "Procedures", text: { status: "generated", div: `<div>${dischargeSummary?.proceduresSummary ?? "-"}</div>` } },
+
+      {
+        title: "Investigations",
+        text: { status: "generated", div: `<div>${dischargeSummary?.keyLabsSummary ?? dischargeSummary?.labResultsSummary ?? "-"}</div>` },
+        entry: observations.map(o => ({ reference: `Observation/${o.id}` }))
+      },
+
+      { title: "Discharge Medications", text: { status: "generated", div: `<div>${dischargeSummary?.medicationReconciliation ?? "-"}</div>` } },
+
+      {
+        title: "Discharge Instructions", text: {
+          status: "generated", div:
+            `<div>${dischargeSummary?.dischargeInstructions ?? "-"}` +
+            `${dischargeSummary?.followUpDate ? " Follow-up on " + dischargeSummary.followUpDate.toISOString().slice(0, 10) : ""}` +
+            `${dischargeSummary?.followUpAfterValue ? " Follow-up after " + dischargeSummary.followUpAfterValue + " " + (dischargeSummary.followUpAfterUnit ?? "") : ""}</div>`
+        }
+      },
+    ],
+  };
+
+  return {
+    resourceType: "Bundle",
+    type: "document",
+    timestamp: new Date().toISOString(),
+    entry: [
+      { resource: composition },
+      { resource: patient },
+      ...(practitioner ? [{ resource: practitioner }] : []),
+      { resource: organization },
+      { resource: encounter },
+      ...conditions.map(c => ({ resource: c })),
+      ...observations.map(o => ({ resource: o })),
+    ],
+  };
+}
