@@ -57,7 +57,8 @@ import { hospitalBrandingRoutes } from './hospital-branding/hospital-branding.ro
 import { hospitalSettingsRoutes } from './hospital-settings/hospital-settings.routes';
 import { gstRoutes } from './gst/gst.routes';
 
-//snomed modules
+// Platform SNOMED CT descriptions and the SNOMED → ICD-10 cross-map used by
+// the diagnosis autocomplete.
 import { snomedRoutes } from './snomed/snomed.routes';
 
 const apiRouter = Router();
@@ -169,7 +170,7 @@ apiRouter.use('/hospitals', authenticate, userTierLimiter, hospitalsRoutes);
 // --- Demo Requests (public submit + super_admin management) ---
 apiRouter.use('/demo-requests', demoRequestRoutes);
 
-// --- snomed requests --- //
+// --- SNOMED CT reference data ---
 apiRouter.use('/snomed', authenticate, userTierLimiter, snomedRoutes);
 
 export { apiRouter };

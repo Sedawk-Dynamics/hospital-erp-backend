@@ -1,4 +1,4 @@
-import { PatientMapContext } from "./snomed.types";
+import { PatientMapContext } from './snomed.types';
 
 const SNOMED_FEMALE = '248152002';
 const SNOMED_MALE = '248153007';

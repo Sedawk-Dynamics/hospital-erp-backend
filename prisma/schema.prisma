@@ -1676,7 +1676,6 @@ model IcdCode {
   @@map("icd_codes")
 }
 
-
 model SnomedDescription {
   id                 String   @id @default(uuid())
   descriptionId      String   @unique @map("description_id") @db.VarChar(32)
@@ -1696,7 +1695,6 @@ model SnomedDescription {
   @@index([active])
   @@map("snomed_descriptions")
 }
-
 
 model SnomedIcdMap {
   id                    String   @id @default(uuid())
