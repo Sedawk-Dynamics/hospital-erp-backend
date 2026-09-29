@@ -1,5 +1,5 @@
 import express from "express";
-import { patientDetails,patientCondition,patientObservations,patientDiagnosticReport,fhirMetaData,fhirPractitionerData,fhirOrganizationData,fhirEncounterData,fhirOpReport,fhirIpReport} from "./fhir.controller";
+import { patientDetails,fhirDiagnosticReport,patientCondition,patientObservations,patientDiagnosticReport,fhirMetaData,fhirPractitionerData,fhirPrescriptionReport,fhirOrganizationData,fhirEncounterData,fhirOpReport,fhirIpReport} from "./fhir.controller";
 
 export const fhirRoutes = express.Router();
 
@@ -18,6 +18,9 @@ fhirRoutes.get('/Encounter/:id',fhirEncounterData);
 
 // --- final documents to be shared OP --- // 
 fhirRoutes.get('/Composition/op-consultation',fhirOpReport);
-
 // --- final documents to be shared IP --- // 
 fhirRoutes.get('/Composition/ip-consultation',fhirIpReport);
+
+// --- PRESCRIPTION, DIAGNOSTIC REPORT DATA --- //
+fhirRoutes.get('/Composition/prescription',fhirPrescriptionReport);
+fhirRoutes.get('/Composition/diagnostic-report',fhirDiagnosticReport);

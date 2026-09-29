@@ -517,3 +517,128 @@ export const reportIP = async (visitId: string) => {
     ],
   };
 }
+
+export const reportPrescription=async(visitId:string)=>{
+  const prescriptions = await prisma.prescription.findMany({
+  where: { visitId },
+  include: { prescriptionItems: true, doctor: { select: { userId: true } } },
+  });
+  if (!prescriptions.length) throw new AppError("prescription not found", 404);
+
+  const visit = await prisma.visit.findUnique({ where: { id: visitId } });
+  if (!visit) throw new AppError("visit not found", 404);
+
+  const doctorUserId = prescriptions.find((p) => p.doctor?.userId)?.doctor?.userId ?? null;
+
+  const patient      = await detailsPatient(visit.patientId);
+  const practitioner = doctorUserId ? await practitionerData(doctorUserId) : null;
+  const organization = await organizationData(visit.tenantId);
+  const encounter    = await encounterData(visit.id);
+
+  // one MedicationRequest per prescribed item (flattened across all prescriptions)
+  const medicationRequests = prescriptions.flatMap((p) =>
+    p.prescriptionItems.map((item) => ({
+      resourceType: "MedicationRequest",
+      id: item.id,
+      status: "active",
+      intent: "order",
+      medicationCodeableConcept: { text: item.drugName },
+      subject:   { reference: `Patient/${visit.patientId}` },
+      encounter: { reference: `Encounter/${visit.id}` },
+      ...(practitioner ? { requester: { reference: `Practitioner/${doctorUserId}` } } : {}),
+      dosageInstruction: [{
+        text: `${item.dosage} ${item.frequency}${item.duration ? " for " + item.duration : ""}`,
+        route: { text: item.route },
+        asNeededBoolean: item.isPrn,
+        ...(item.instructions ? { additionalInstruction: [{ text: item.instructions }] } : {}),
+      }],
+    })),
+  );
+
+  const composition = {
+    resourceType: "Composition",
+    id: `rx-${visit.id}`,
+    status: "final",
+    type: { coding: [{ system: "http://snomed.info/sct", code: "440545006", display: "Prescription record" }] },
+    subject:   { reference: `Patient/${visit.patientId}` },
+    encounter: { reference: `Encounter/${visit.id}` },
+    date: new Date().toISOString(),
+    author: practitioner ? [{ reference: `Practitioner/${doctorUserId}` }] : [],
+    title: "Prescription",
+    custodian: { reference: `Organization/${visit.tenantId}` },
+    section: [
+      { title: "Medications", entry: medicationRequests.map((m) => ({ reference: `MedicationRequest/${m.id}` })) },
+    ],
+  };
+
+  return {
+    resourceType: "Bundle",
+    type: "document",
+    timestamp: new Date().toISOString(),
+    entry: [
+      { resource: composition },
+      { resource: patient },
+      ...(practitioner ? [{ resource: practitioner }] : []),
+      { resource: organization },
+      { resource: encounter },
+      ...medicationRequests.map((m) => ({ resource: m })),
+    ],
+  };
+}
+
+
+
+export const reportDiagnosticReport=async(visitId:string)=>{
+  const visit = await prisma.visit.findUnique({
+    where: { id: visitId },
+    include: { doctor: { select: { userId: true } } },
+  });
+  if (!visit) throw new AppError("visit not found", 404);
+
+  const patient      = await detailsPatient(visit.patientId);
+  const practitioner = visit.doctor?.userId ? await practitionerData(visit.doctor.userId) : null;
+  const organization = await organizationData(visit.tenantId);
+  const encounter    = await encounterData(visit.id);
+  const encRef = `Encounter/${visit.id}`;
+
+  const reports = (await patientDiagnosisReport(visit.patientId)).entry
+    .map((e) => e.resource as any)
+    .filter((r) => r.encounter?.reference === encRef);
+  const observations = (await patientObservationsDetails(visit.patientId)).entry
+    .map((e) => e.resource as any)
+    .filter((o) => o.encounter?.reference === encRef);
+
+  if (!reports.length) throw new AppError("no diagnostic report found for this visit", 404);
+
+  const composition = {
+    resourceType: "Composition",
+    id: `dr-${visit.id}`,
+    status: "final",
+    type: { coding: [{ system: "http://loinc.org", code: "11502-2", display: "Laboratory report" }] },
+    subject:   { reference: `Patient/${visit.patientId}` },
+    encounter: { reference: `Encounter/${visit.id}` },
+    date: new Date().toISOString(),
+    author: practitioner ? [{ reference: `Practitioner/${visit.doctor!.userId}` }] : [],
+    title: "Diagnostic Report",
+    custodian: { reference: `Organization/${visit.tenantId}` },
+    section: [
+      { title: "Diagnostic Reports", entry: reports.map((r) => ({ reference: `DiagnosticReport/${r.id}` })) },
+      { title: "Results", entry: observations.map((o) => ({ reference: `Observation/${o.id}` })) },
+    ],
+  };
+
+  return {
+    resourceType: "Bundle",
+    type: "document",
+    timestamp: new Date().toISOString(),
+    entry: [
+      { resource: composition },
+      { resource: patient },
+      ...(practitioner ? [{ resource: practitioner }] : []),
+      { resource: organization },
+      { resource: encounter },
+      ...reports.map((r) => ({ resource: r })),
+      ...observations.map((o) => ({ resource: o })),
+    ],
+  };
+}

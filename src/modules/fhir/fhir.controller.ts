@@ -1,5 +1,5 @@
 import { Request,Response,NextFunction } from "express";
-import { detailsPatient,patientConditionDetails,patientObservationsDetails,patientDiagnosisReport,fhirDataMeta,practitionerData,encounterData,organizationData,reportOP,reportIP} from "./fhir.service";
+import { detailsPatient,patientConditionDetails,reportDiagnosticReport,patientObservationsDetails,patientDiagnosisReport,fhirDataMeta,practitionerData,encounterData,organizationData,reportOP,reportIP,reportPrescription} from "./fhir.service";
 
 export const patientDetails=async(req:Request,res:Response,next:NextFunction)=>{
     try {
@@ -97,6 +97,27 @@ export const fhirIpReport=async(req:Request,res:Response,next:NextFunction)=>{
     try {
         const visitId=req.query.visitId as string;
         const results = await reportIP(visitId);
+        res.json(results);
+    } catch (error) {
+        next(error)
+    }
+}
+
+
+export const fhirPrescriptionReport=async(req:Request,res:Response,next:NextFunction)=>{
+    try {
+        const visitId=req.query.visitId as string;
+        const results = await reportPrescription(visitId);
+        res.json(results);
+    } catch (error) {
+        next(error)
+    }
+}
+
+export const fhirDiagnosticReport=async(req:Request,res:Response,next:NextFunction)=>{
+    try {
+        const visitId=req.query.visitId as string;
+        const results = await reportDiagnosticReport(visitId);
         res.json(results);
     } catch (error) {
         next(error)
