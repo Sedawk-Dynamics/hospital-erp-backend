@@ -223,6 +223,55 @@ async function main() {
       String(capped.data?.split?.patientResponsibility),
     );
 
+    // -- Exact operator-entered split ----------------------------------------
+    section('Exact TPA / patient split reaches the front desk');
+    const manualBill = await makeBill(17900);
+    const manualClaim = await api('admin', 'POST', '/insurance/claims', {
+      policyId: policy,
+      patientId: patient.id,
+      billId: manualBill,
+      claimAmount: 17900,
+    });
+    ck('a claim exists for the final bill', manualClaim.status === 201, `HTTP ${manualClaim.status} ${manualClaim.message}`);
+
+    const manualSplit = await api('admin', 'PATCH', `/insurance/bills/${manualBill}/split`, {
+      claimId: manualClaim.data.id,
+      insuranceAmount: 12000,
+      patientAmount: 5900,
+    });
+    ck('the insurance desk can enter the exact split', manualSplit.status === 200, `HTTP ${manualSplit.status} ${manualSplit.message}`);
+    ck(
+      'the API returns the entered shares and patient due',
+      money(manualSplit.data?.billSplit?.insurancePortion) === 12000 &&
+        money(manualSplit.data?.billSplit?.patientPortion) === 5900 &&
+        money(manualSplit.data?.billSplit?.balanceDue) === 5900,
+      JSON.stringify(manualSplit.data?.billSplit),
+    );
+
+    const frontDeskBill = await api('admin', 'GET', `/billing/${manualBill}`);
+    ck('front desk can load the updated bill', frontDeskBill.status === 200, `HTTP ${frontDeskBill.status} ${frontDeskBill.message}`);
+    ck(
+      'front desk sees exactly the patient amount to collect',
+      money(frontDeskBill.data?.insuranceCoveredAmount) === 12000 &&
+        money(frontDeskBill.data?.patientPayableAmount) === 5900 &&
+        money(frontDeskBill.data?.balanceDue) === 5900,
+      `TPA ${money(frontDeskBill.data?.insuranceCoveredAmount)}, patient ${money(frontDeskBill.data?.patientPayableAmount)}, due ${money(frontDeskBill.data?.balanceDue)}`,
+    );
+
+    const manualReview = await api('admin', 'PATCH', `/insurance/claims/${manualClaim.data.id}/submit`);
+    ck('the manually split claim enters review without documents', manualReview.status === 200, `HTTP ${manualReview.status} ${manualReview.message}`);
+    const manualApproval = await api('admin', 'PATCH', `/insurance/claims/${manualClaim.data.id}/approve`, {
+      approvedAmount: 12000,
+    });
+    ck('the entered TPA share can be approved in full', manualApproval.status === 200, `HTTP ${manualApproval.status} ${manualApproval.message}`);
+    const approvedManualBill = await p.bill.findUnique({ where: { id: manualBill } });
+    ck(
+      'approval preserves the front-desk patient share',
+      money(approvedManualBill?.insuranceCoveredAmount) === 12000 &&
+        money(approvedManualBill?.patientPayableAmount) === 5900,
+      `TPA ${money(approvedManualBill?.insuranceCoveredAmount)}, patient ${money(approvedManualBill?.patientPayableAmount)}`,
+    );
+
     // -- Partial approval -----------------------------------------------------
     section('An insurer approving less than was claimed');
     const partialBill = await makeBill(10000);
@@ -284,7 +333,7 @@ async function main() {
     });
     await api('admin', 'PATCH', `/insurance/claims/${original.data.id}/submit`);
     const rejected = await api('admin', 'PATCH', `/insurance/claims/${original.data.id}/reject`, {
-      rejectionReason: 'Discharge summary missing',
+      rejectionReason: 'Payer requested billing clarification',
     });
     ck('the claim is rejected', rejected.status === 200, `HTTP ${rejected.status}`);
     const rejectedBillState = await p.bill.findUnique({ where: { id: resubBill } });
@@ -296,7 +345,7 @@ async function main() {
     );
 
     const resub = await api('admin', 'POST', `/insurance/claims/${original.data.id}/resubmit`, {
-      notes: 'Discharge summary attached',
+      notes: 'Billing clarification provided',
     });
     ck('it can be sent again', resub.status === 201, `HTTP ${resub.status} ${resub.message}`);
     ck('as a NEW claim with its own number', resub.data?.claimNumber !== original.data?.claimNumber,
@@ -321,6 +370,14 @@ async function main() {
       'the same claim cannot be resubmitted twice',
       resubTwice.status === 400,
       `HTTP ${resubTwice.status} ${resubTwice.message}`,
+    );
+
+    // A resubmission is a fresh claim and must follow the same review gate.
+    const resubReview = await api('admin', 'PATCH', `/insurance/claims/${resub.data.id}/submit`);
+    ck(
+      'the new resubmission enters payer review before a decision',
+      resubReview.status === 200 && resubReview.data?.status === 'under_review',
+      `HTTP ${resubReview.status} ${resubReview.message}`,
     );
 
     // A settled claim is the end of the road.
