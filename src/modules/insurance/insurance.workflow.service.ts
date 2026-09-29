@@ -13,6 +13,7 @@ import type {
   SettlementInput,
 } from './insurance.workflow.validation';
 import { notifyPatientInsuranceMilestone } from './insurance.notifications';
+import { applyPaymentToBill } from '../billing/bill-payment-ledger';
 
 const CASE_INCLUDE = {
   patient: { select: { id: true, mrn: true, firstName: true, lastName: true, phone: true, abhaNumber: true, deceasedAt: true } },
@@ -728,11 +729,35 @@ async function recordSettlementWithClient(tx: Prisma.TransactionClient, tenantId
   }
 
   const settlement = await tx.claimSettlement.create({ data: { tenantId, claimId, ...data, recordedBy: userId } });
+
+  // A TPA settlement is also a completed payment against the hospital bill.
+  // Keeping the payment and claim settlement in this transaction prevents the
+  // Insurance and Hospital Billing screens from ever committing different
+  // balances. Gross paid is applied because tax deducted at source remains a
+  // receivable and still extinguishes that part of the payer's liability.
+  await tx.payment.create({
+    data: {
+      tenantId,
+      billId: claim.billId,
+      patientId: claim.patientId,
+      paymentDate: data.settlementDate,
+      amount: data.grossPaidAmount,
+      paymentMethod: 'insurance',
+      paymentType: 'regular',
+      transactionId: data.paymentReference ?? data.bankReference ?? null,
+      idempotencyKey: `insurance-claim-settlement:${settlement.id}`,
+      status: 'completed',
+      processedBy: userId,
+      notes: data.notes ?? `TPA settlement for claim ${claim.claimNumber ?? claim.id}`,
+    },
+  });
+
   const totals = await tx.claimSettlement.aggregate({ where: { claimId }, _sum: { grossPaidAmount: true, tdsAmount: true, disallowedAmount: true } });
   const grossPaid = money(totals._sum.grossPaidAmount);
   const outstanding = Math.max(0, approved - grossPaid);
   const status = outstanding <= 0.009 ? 'settled' : 'partially_settled';
-  await tx.insuranceClaim.update({ where: { id: claimId }, data: { paidAmount: grossPaid, tdsReceivableAmount: money(totals._sum.tdsAmount), disallowedAmount: money(totals._sum.disallowedAmount), outstandingAmount: outstanding, settlementDate: data.settlementDate, status } });
+  await tx.insuranceClaim.update({ where: { id: claimId }, data: { paidAmount: grossPaid, tdsReceivableAmount: money(totals._sum.tdsAmount), disallowedAmount: money(totals._sum.disallowedAmount), outstandingAmount: outstanding, settlementDate: data.settlementDate, status, notes: data.notes ?? claim.notes, reviewedBy: userId } });
+  await applyPaymentToBill(tx, claim.billId);
   if (claim.insuranceCaseId && status === 'settled') await tx.insuranceCase.update({ where: { id: claim.insuranceCaseId }, data: { status: 'settled' } });
   await audit({ tenantId, actorId: userId, claimId, insuranceCaseId: claim.insuranceCaseId, eventType: 'claim.settlement_recorded', fromStatus: claim.status, toStatus: status, details: { settlementId: settlement.id, grossPaid: data.grossPaidAmount, netPaid: data.netPaidAmount, tdsReceivable: data.tdsAmount, disallowed: data.disallowedAmount } }, tx);
   return settlement;

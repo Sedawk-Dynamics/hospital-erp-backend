@@ -57,6 +57,7 @@ import type {
   GetBillsQuery,
   GetPaymentsQuery,
 } from './billing.validation';
+import { applyPaymentToBill, computeBillPaid } from './bill-payment-ledger';
 
 /**
  * Map validation category values to ServiceTariffCategory enum values.
@@ -359,88 +360,6 @@ export async function recalculateBillTotalsPublic(billId: string): Promise<void>
 const NOT_ADVANCE_BUCKET = {
   billNumber: { not: { startsWith: 'ADV-' } },
 } as const;
-
-/**
- * What a bill has actually been paid, read from its own ledger.
- *
- * Collected = completed payments, EXCLUDING `refund`-type rows (those record
- * cash leaving the drawer, not money coming in) and `advance`-type rows (those
- * belong to the patient's advance bucket, not to a bill). Minus refunds that
- * have been approved, which is money handed back.
- *
- * Deriving this instead of incrementing a stored figure is what makes
- * settlement safe under concurrency — see {@link applyPaymentToBill}.
- */
-async function computeBillPaid(
-  db: Prisma.TransactionClient | typeof prisma,
-  billId: string,
-): Promise<number> {
-  const [collected, refunded] = await Promise.all([
-    db.payment.aggregate({
-      where: {
-        billId,
-        status: 'completed',
-        paymentType: { notIn: ['refund', 'advance'] as any },
-      },
-      _sum: { amount: true },
-    }),
-    db.refund.aggregate({
-      where: { billId, status: { in: ['approved', 'processed'] as any } },
-      _sum: { amount: true },
-    }),
-  ]);
-
-  return toNumber(collected._sum.amount) - toNumber(refunded._sum.amount);
-}
-
-/**
- * Re-settle a bill from its own payment ledger, inside a transaction.
- *
- * Every caller used to compute `amountPaid = <figure read before the
- * transaction opened> + amount`. Two cashiers collecting against the same bill
- * in the same moment both read the same starting figure, and the second write
- * silently discarded the first — a receipt went across the counter for money
- * the bill never recorded. A double-clicked Collect button did the same thing.
- *
- * Summing the ledger *inside* the transaction is self-correcting: whatever
- * payment rows exist at commit time are exactly what the bill reflects, however
- * the requests interleaved.
- *
- * Not for the `ADV-` advance bucket, whose `amountPaid` is a running balance
- * that `adjustAdvanceToBill` draws down on purpose rather than a sum of its
- * payments.
- */
-async function applyPaymentToBill(tx: Prisma.TransactionClient, billId: string) {
-  const bill = await tx.bill.findUnique({
-    where: { id: billId },
-    select: { totalAmount: true, status: true },
-  });
-  if (!bill) throw AppError.notFound('Bill not found');
-
-  const paid = await computeBillPaid(tx, billId);
-  const total = toNumber(bill.totalAmount);
-  const balance = total - paid;
-
-  // draft / cancelled / refunded are states a payment does not move a bill out
-  // of — leave them exactly as they are.
-  const settled: string[] = ['draft', 'cancelled', 'refunded'];
-  const status = settled.includes(bill.status)
-    ? bill.status
-    : balance <= 0 && total > 0
-      ? 'paid'
-      : paid > 0
-        ? 'partially_paid'
-        : 'pending';
-
-  return tx.bill.update({
-    where: { id: billId },
-    data: {
-      amountPaid: paid,
-      balanceDue: Math.max(0, balance),
-      status: status as any,
-    },
-  });
-}
 
 /**
  * Issue the receipt for a payment, inside the caller's transaction.

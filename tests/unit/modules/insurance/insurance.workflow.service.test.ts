@@ -41,6 +41,58 @@ describe('insurance workflow settlement invariants', () => {
     });
     expect(prisma.claimSettlement.create).not.toHaveBeenCalled();
   });
+
+  it('posts the TPA remittance to the bill ledger and clears a fully covered bill', async () => {
+    vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue({
+      id: 'claim-1',
+      tenantId: 'tenant-1',
+      patientId: 'patient-1',
+      billId: 'bill-1',
+      claimNumber: 'CLM-001',
+      insuranceCaseId: null,
+      status: 'approved',
+      approvedAmount: 10_000,
+      notes: null,
+    } as never);
+    vi.mocked(prisma.claimSettlement.aggregate)
+      .mockResolvedValueOnce({ _sum: { grossPaidAmount: 0 } } as never)
+      .mockResolvedValueOnce({
+        _sum: { grossPaidAmount: 10_000, tdsAmount: 0, disallowedAmount: 0 },
+      } as never);
+    vi.mocked(prisma.claimSettlement.create).mockResolvedValue({ id: 'settlement-1' } as never);
+    vi.mocked(prisma.payment.create).mockResolvedValue({ id: 'payment-1' } as never);
+    vi.mocked(prisma.payment.aggregate).mockResolvedValue({ _sum: { amount: 10_000 } } as never);
+    vi.mocked(prisma.refund.aggregate).mockResolvedValue({ _sum: { amount: 0 } } as never);
+    vi.mocked(prisma.bill.findUnique).mockResolvedValue({ totalAmount: 10_000, status: 'finalized' } as never);
+    vi.mocked(prisma.bill.update).mockResolvedValue({ id: 'bill-1', status: 'paid', balanceDue: 0 } as never);
+
+    await recordSettlement('tenant-1', 'user-1', 'claim-1', {
+      ...settlement,
+      grossPaidAmount: 10_000,
+      netPaidAmount: 10_000,
+    });
+
+    expect(prisma.payment.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        tenantId: 'tenant-1',
+        billId: 'bill-1',
+        patientId: 'patient-1',
+        amount: 10_000,
+        paymentMethod: 'insurance',
+        paymentType: 'regular',
+        status: 'completed',
+        idempotencyKey: 'insurance-claim-settlement:settlement-1',
+      }),
+    });
+    expect(prisma.bill.update).toHaveBeenCalledWith({
+      where: { id: 'bill-1' },
+      data: { amountPaid: 10_000, balanceDue: 0, status: 'paid' },
+    });
+    expect(prisma.insuranceClaim.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'claim-1' },
+      data: expect.objectContaining({ paidAmount: 10_000, outstandingAmount: 0, status: 'settled' }),
+    }));
+  });
 });
 
 describe('insurance claim query lifecycle', () => {

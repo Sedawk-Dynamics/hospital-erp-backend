@@ -272,6 +272,45 @@ async function main() {
       `TPA ${money(approvedManualBill?.insuranceCoveredAmount)}, patient ${money(approvedManualBill?.patientPayableAmount)}`,
     );
 
+    const manualSettlement = await api('admin', 'PATCH', `/insurance/claims/${manualClaim.data.id}/settle`, {
+      paidAmount: 12000,
+      notes: 'TPA remittance received',
+    });
+    ck('the TPA payment settles its approved share', manualSettlement.status === 200, `HTTP ${manualSettlement.status} ${manualSettlement.message}`);
+
+    const afterTpaSettlement = await api('admin', 'GET', `/billing/${manualBill}`);
+    ck(
+      'hospital billing immediately includes the TPA payment',
+      money(afterTpaSettlement.data?.amountPaid) === 12000 &&
+        money(afterTpaSettlement.data?.balanceDue) === 5900 &&
+        afterTpaSettlement.data?.status === 'partially_paid',
+      `paid ${money(afterTpaSettlement.data?.amountPaid)}, due ${money(afterTpaSettlement.data?.balanceDue)}, status ${afterTpaSettlement.data?.status}`,
+    );
+    const tpaPayment = await p.payment.findFirst({
+      where: { billId: manualBill, paymentMethod: 'insurance', status: 'completed' },
+    });
+    ck(
+      'the settlement has a completed insurance payment in the bill ledger',
+      money(tpaPayment?.amount) === 12000,
+      `ledger amount ${money(tpaPayment?.amount)}`,
+    );
+
+    const patientPayment = await api('admin', 'POST', '/billing/payments', {
+      billId: manualBill,
+      amount: 5900,
+      paymentMethod: 'cash',
+      notes: 'Patient share collected after TPA settlement',
+    });
+    ck('front desk can collect the remaining patient share', patientPayment.status === 201, `HTTP ${patientPayment.status} ${patientPayment.message}`);
+    const fullyPaidManualBill = await api('admin', 'GET', `/billing/${manualBill}`);
+    ck(
+      'the combined TPA and patient payments remove the due amount',
+      money(fullyPaidManualBill.data?.amountPaid) === 17900 &&
+        money(fullyPaidManualBill.data?.balanceDue) === 0 &&
+        fullyPaidManualBill.data?.status === 'paid',
+      `paid ${money(fullyPaidManualBill.data?.amountPaid)}, due ${money(fullyPaidManualBill.data?.balanceDue)}, status ${fullyPaidManualBill.data?.status}`,
+    );
+
     // -- Partial approval -----------------------------------------------------
     section('An insurer approving less than was claimed');
     const partialBill = await makeBill(10000);
@@ -547,6 +586,8 @@ async function main() {
     await p.insuranceClaim.deleteMany({ where: { id: { in: claimIds } } });
     // A voided or cancelled bill now carries a credit note that references it.
     await p.creditNote.deleteMany({ where: { billId: { in: billIds } } }).catch(() => {});
+    await p.receipt.deleteMany({ where: { payment: { billId: { in: billIds } } } });
+    await p.payment.deleteMany({ where: { billId: { in: billIds } } });
     await p.billItem.deleteMany({ where: { billId: { in: billIds } } });
     await p.bill.deleteMany({ where: { id: { in: billIds } } });
     await p.insurancePolicy.deleteMany({ where: { policyNumber: { startsWith: TAG } } });

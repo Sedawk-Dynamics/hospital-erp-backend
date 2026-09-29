@@ -29,6 +29,7 @@ import type {
   CreateTpaLogInput,
 } from './insurance.validation';
 import { notifyPatientInsuranceMilestone } from './insurance.notifications';
+import { recordSettlement as recordWorkflowSettlement } from './insurance.workflow.service';
 
 // ============================================================
 // Defaults
@@ -1288,31 +1289,28 @@ export async function settleClaim(
   }
 
   const approved = decNum(claim.approvedAmount ?? claim.claimAmount);
-  const alreadyPaid = decNum(claim.paidAmount);
-  const newPaid = round2(alreadyPaid + data.paidAmount);
+  await recordWorkflowSettlement(tenantId, userId, id, {
+    grossApprovedAmount: approved,
+    grossPaidAmount: data.paidAmount,
+    tdsAmount: 0,
+    disallowedAmount: 0,
+    netPaidAmount: data.paidAmount,
+    settlementDate: new Date(data.settlementDate ?? new Date()),
+    notes: data.notes,
+  });
 
-  if (newPaid > approved + 0.01) {
-    throw AppError.badRequest('Total paid cannot exceed approved amount');
-  }
-
-  const outstanding = Math.max(0, round2(approved - newPaid));
-  const fullySettled = outstanding <= 0.01;
-
-  const updated = await prisma.insuranceClaim.update({
-    where: { id },
-    data: {
-      paidAmount: newPaid,
-      outstandingAmount: outstanding,
-      settlementDate: fullySettled ? new Date(data.settlementDate ?? new Date()) : claim.settlementDate,
-      status: fullySettled ? 'settled' : 'partially_settled',
-      notes: data.notes ?? claim.notes,
-      reviewedBy: userId,
-    },
+  const updated = await prisma.insuranceClaim.findFirst({
+    where: { id, tenantId },
     include: {
       patient: { select: { id: true, firstName: true, lastName: true } },
       policy: { select: { id: true, policyNumber: true } },
     },
   });
+  if (!updated) throw AppError.notFound('Insurance claim not found');
+
+  const newPaid = decNum(updated.paidAmount);
+  const outstanding = decNum(updated.outstandingAmount);
+  const fullySettled = updated.status === 'settled';
 
   await recordTpaCommunication({
     tenantId,
@@ -1323,15 +1321,6 @@ export async function settleClaim(
     content:
       `Received ${data.paidAmount.toFixed(2)}. Paid to date ${newPaid.toFixed(2)} ` +
       `of ${approved.toFixed(2)} approved; outstanding ${outstanding.toFixed(2)}.`,
-  });
-
-  await notifyPatientInsuranceMilestone({
-    tenantId,
-    patientId: claim.patientId,
-    title: fullySettled ? 'Insurance claim settled' : 'Insurance claim part-settled',
-    message: `The payer has settled ${newPaid.toFixed(2)} of ${approved.toFixed(2)}. Payer outstanding is ${outstanding.toFixed(2)}.`,
-    referenceType: 'insurance_claim',
-    referenceId: id,
   });
 
   logger.info({ tenantId, claimId: id, paid: data.paidAmount, status: updated.status }, 'Insurance claim settled (partial or full)');
