@@ -181,6 +181,7 @@ export async function createProgressNote(
             create: data.pins.map((p) => ({
               dischargeSection: p.dischargeSection as any,
               content: p.content,
+              showToPatient:p.showToPatient ?? false
             })),
           }
         : undefined,
@@ -434,7 +435,6 @@ export async function updateProgressNote(
   }
 
   const note = await prisma.$transaction(async (tx) => {
-    // Pin replacement — delete-all + recreate (simplest; handful of rows max).
     if (pinsChanged) {
       await tx.progressNotePin.deleteMany({ where: { noteId: id } });
       if (data.pins && data.pins.length > 0) {
@@ -443,6 +443,7 @@ export async function updateProgressNote(
             noteId: id,
             dischargeSection: p.dischargeSection as any,
             content: p.content,
+            showToPatient:p.showToPatient ?? false
           })),
         });
       }

@@ -3089,6 +3089,7 @@ model ProgressNotePin {
   noteId           String           @map("note_id")
   dischargeSection DischargeSection @map("discharge_section")
   content          String
+  showToPatient Boolean @default(false) 
   createdAt        DateTime         @default(now()) @map("created_at")
 
   note ProgressNote @relation(fields: [noteId], references: [id], onDelete: Cascade)

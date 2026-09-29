@@ -385,17 +385,12 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
         })
         .join('\n')
     : null;
-  // Explicit "procedure" / "hospital_course" section pins from the consultation
-  // page still add to the course (in addition to the auto-included notes above).
+
   const procedurePins = renderBucket('procedure');
   const hospitalCoursePins = renderBucket('hospital_course');
   const hospitalCourseBlock = hospitalCoursePins ? `Additional hospital-course notes:\n${hospitalCoursePins}` : null;
-  const proceduresSummary = mergeSections([allNotesBlock, procedurePins, hospitalCourseBlock]);
+  const proceduresSummary = mergeSections([procedurePins, hospitalCourseBlock]);
 
-  // ── Labs, grouped by the day they were taken ──
-  // A stay produces the same panel over and over, so an undated flat list reads
-  // as noise — the clinically useful thing is the trend, which needs the dates
-  // to be the structure. Newest day first, tests grouped within each day.
   const labLine = (r: (typeof labResults)[number], withFlag: boolean) => {
     const testName = r.labOrderItem?.test?.testName || 'Unknown Test';
     const flag = withFlag && r.isAbnormal ? ' [ABNORMAL]' : '';
@@ -406,9 +401,7 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
     if (rows.length === 0) return null;
     const byDay = new Map<string, string[]>();
     for (const r of rows) {
-      // Group on the IST calendar day — a 01:00 draw belongs to that night's
-      // date on the ward, not the previous UTC day. dd/MM/yyyy is both the key
-      // and the heading the summary prints.
+
       const day = formatDateIST(r.enteredAt);
       const bucket = byDay.get(day) ?? [];
       bucket.push(labLine(r, withFlag));
@@ -496,16 +489,6 @@ const PIN_SECTION_TO_COLUMN: Record<string, string> = {
   follow_up: 'followUpInstructions',
   general: 'headerSummary',
 };
-
-/**
- * Fold pins added since the summary was generated into a DRAFT, without
- * touching anything the doctor typed.
- *
- * The full `refresh` path rebuilds the source-derived columns from scratch,
- * which is why the editor never calls it — doing so would discard direct
- * entries. This is the additive half: a pin whose text is not already present
- * gets appended to its column, and nothing is ever removed or rewritten.
- */
 async function mergeNewPinsIntoDraft(
   tenantId: string,
   admissionId: string,
@@ -525,9 +508,6 @@ async function mergeNewPinsIntoDraft(
     const column = PIN_SECTION_TO_COLUMN[p.dischargeSection];
     if (!column) continue;
     const current: string = existing[column] ?? '';
-    // Match on the pin's own words rather than the rendered line: the doctor
-    // may have reworded the surrounding text, and re-adding the same content
-    // under a slightly different prefix would duplicate it on every open.
     if (current.includes(p.content.trim())) continue;
 
     const doctor = p.note?.doctor?.user

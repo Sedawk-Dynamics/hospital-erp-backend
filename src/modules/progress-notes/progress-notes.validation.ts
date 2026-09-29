@@ -42,6 +42,7 @@ const dischargeSectionEnum = z.enum([
 const pinInputSchema = z.object({
   dischargeSection: dischargeSectionEnum,
   content: z.string().min(1).max(10000),
+  showToPatient: z.boolean().optional().default(false),
 });
 
 export const createProgressNoteSchema = z.object({
@@ -49,17 +50,12 @@ export const createProgressNoteSchema = z.object({
     visitId: z.string().uuid('Invalid visit ID'),
     admissionId: z.string().uuid('Invalid admission ID').optional().nullable(),
     patientId: z.string().uuid('Invalid patient ID'),
-    // Optional: link this note to a prescription so prescription viewers see it.
     prescriptionId: z.string().uuid('Invalid prescription ID').optional().nullable(),
     noteType: progressNoteTypeEnum.optional(),
     content: z.string().min(1, 'Content is required').max(10000),
     impressions: z.string().max(10000).optional().nullable(),
     discussions: z.string().max(10000).optional().nullable(),
     conclusions: z.string().max(10000).optional().nullable(),
-    // How the patient is doing on this round. On its own it is enough to
-    // record a routine ward round — a prescription plus "stable" — without
-    // prose. Same four values nursing uses, including `deteriorating`, which a
-    // reader needs more than any of the others.
     generalCondition: z
       .enum(['stable', 'critical', 'improving', 'deteriorating', 'unchanged'])
       .optional()

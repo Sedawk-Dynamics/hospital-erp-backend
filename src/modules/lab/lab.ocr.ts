@@ -7,26 +7,8 @@ import {
   type GeminiVisionFile,
 } from '../../services/gemini-vision';
 
-// ============================================================
-// Reading an uploaded lab report into structured values.
-//
-// The lab's day-to-day flow is to upload the analyser's PDF (or a photo of the
-// printout) and mark the test done — nobody retypes the numbers into the entry
-// grid. That leaves the order with attachments but ZERO LabResult rows, and
-// every downstream reader works off LabResult: the doctor's investigation
-// panel, the discharge summary, CDSS, and the AI assistant. So the doctor asks
-// the AI about a report that is sitting right there and is told there is
-// nothing to analyse.
-//
-// This turns the uploaded file into the same LabResult rows a technician would
-// have typed, flagged `source = 'ocr'` so the lab can see they were machine-read
-// and verify them. They stay invisible to clinicians until the supervisor
-// publishes the report (see isLabReportReleased), so a misread number cannot
-// reach a doctor unchecked.
-// ============================================================
 
 export interface OcrLabParameter {
-  /** The panel/test this parameter belongs to, if the report groups them. */
   testName: string | null;
   parameterName: string;
   value: string | null;
@@ -89,12 +71,6 @@ export function canOcrLabFile(mimeType: string): boolean {
   return isOcrConfigured() && OCR_SUPPORTED_MIME.has(mimeType);
 }
 
-/**
- * Read an uploaded lab report file into structured parameters. Throws a mapped
- * AppError when OCR is unconfigured, the file type is unsupported, or the AI
- * provider fails — callers that run this in the background should swallow it,
- * since the upload itself must never fail because OCR did.
- */
 export async function parseLabReportFile(file: GeminiVisionFile): Promise<OcrLabReportResult> {
   const { text, model } = await callGeminiVision({
     prompt: buildPrompt(),
