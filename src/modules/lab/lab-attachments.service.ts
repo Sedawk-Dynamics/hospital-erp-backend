@@ -111,15 +111,8 @@ export async function createLabAttachment(
 
   logger.info({ tenantId, attachmentId: attachment.id, labOrderId }, 'Lab attachment uploaded');
 
-  // Read the report into structured values in the background. This is what
-  // makes an uploaded PDF/scan visible to everything that works off LabResult —
-  // the doctor's investigation panel, the discharge summary, CDSS and the AI
-  // assistant — instead of the file being the only record of the numbers.
-  //
-  // Deliberately fire-and-forget: OCR needs a third-party AI call that can be
-  // unconfigured, rate-limited or simply wrong, and none of that may stop a
-  // technician attaching a file. The lab can re-run it from the order screen.
-  if (canOcrLabFile(file.mimetype)) {
+
+ /*  if (canOcrLabFile(file.mimetype)) {
     void (async () => {
       try {
         const { extractResultsFromAttachment } = await import('./lab.service');
@@ -131,7 +124,7 @@ export async function createLabAttachment(
         );
       }
     })();
-  }
+  } */
 
   return attachment;
 }
