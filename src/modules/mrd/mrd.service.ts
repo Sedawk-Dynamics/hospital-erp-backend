@@ -152,7 +152,11 @@ function mergeSections(parts: Array<string | null | undefined>): string | null {
   return cleaned.length > 0 ? cleaned.join('\n\n') : null;
 }
 
-async function buildSummaryFields(tenantId: string, admissionId: string) {
+async function buildSummaryFields(
+  tenantId: string,
+  admissionId: string,
+  opts: { onlyPatientVisible?: boolean } = {},
+) {
   const admission = await prisma.admission.findFirst({
     where: { id: admissionId, tenantId },
     include: {
@@ -201,9 +205,7 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
       where: { visitId },
       orderBy: { diagnosedAt: 'asc' },
     }),
-    // ALL of the admission's progress notes (the running IP log). Every note now
-    // flows into the discharge summary's hospital course automatically — the
-    // doctor no longer pins per note. Oldest → newest for a readable course.
+
     prisma.progressNote.findMany({
       where: {
         visitId,
@@ -220,9 +222,7 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
         },
       },
     }),
-    // New per-section pins via ProgressNotePin. Each pin carries
-    // explicit {dischargeSection, content}; we route the content into
-    // the matching DischargeSummary column below.
+
     prisma.progressNotePin.findMany({
       where: {
         note: {
@@ -243,11 +243,6 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
         },
       },
     }),
-    // Only results the lab supervisor has RELEASED. A discharge summary is a
-    // legal record the patient leaves with — it must not quote a value that is
-    // still inside the lab's review loop and could yet be corrected or
-    // re-run. Mirrors the gate on the doctor's investigation history and the
-    // patient portal.
     prisma.labResult.findMany({
       where: {
         labOrder: {
@@ -316,6 +311,7 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
   const pinBuckets: Record<string, Array<{ content: string; createdAt: Date; doctor: string }>> =
     {};
   for (const p of sectionPins) {
+    if (opts.onlyPatientVisible && !(p as any).showToPatient) continue;
     const bucket = pinBuckets[p.dischargeSection] ?? (pinBuckets[p.dischargeSection] = []);
     const doctor = p.note?.doctor?.user
       ? `Dr. ${p.note.doctor.user.firstName}${p.note.doctor.user.lastName ? ' ' + p.note.doctor.user.lastName : ''}`
@@ -360,11 +356,7 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
   const diagnosisPins = renderBucket('diagnosis');
   const diagnosesSummary = mergeSections([diagnosesBase, diagnosisPins]);
 
-  // ── Hospital course & procedures ──
-  // Legacy whole-note pins + new "procedure" and "hospital_course" section
-  // pins all roll up into proceduresSummary, with labelled sub-sections so
-  // the doctor can tell them apart when reviewing.
-  const allNotesBlock = allNotes.length > 0
+  const allNotesBlock = !opts.onlyPatientVisible && allNotes.length > 0
     ? allNotes
         .map((n) => {
           const when = new Date(n.createdAt).toLocaleDateString('en-IN');
@@ -385,17 +377,12 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
         })
         .join('\n')
     : null;
-  // Explicit "procedure" / "hospital_course" section pins from the consultation
-  // page still add to the course (in addition to the auto-included notes above).
+
   const procedurePins = renderBucket('procedure');
   const hospitalCoursePins = renderBucket('hospital_course');
   const hospitalCourseBlock = hospitalCoursePins ? `Additional hospital-course notes:\n${hospitalCoursePins}` : null;
-  const proceduresSummary = mergeSections([allNotesBlock, procedurePins, hospitalCourseBlock]);
+  const proceduresSummary = mergeSections([procedurePins, hospitalCourseBlock]);
 
-  // ── Labs, grouped by the day they were taken ──
-  // A stay produces the same panel over and over, so an undated flat list reads
-  // as noise — the clinically useful thing is the trend, which needs the dates
-  // to be the structure. Newest day first, tests grouped within each day.
   const labLine = (r: (typeof labResults)[number], withFlag: boolean) => {
     const testName = r.labOrderItem?.test?.testName || 'Unknown Test';
     const flag = withFlag && r.isAbnormal ? ' [ABNORMAL]' : '';
@@ -406,9 +393,7 @@ async function buildSummaryFields(tenantId: string, admissionId: string) {
     if (rows.length === 0) return null;
     const byDay = new Map<string, string[]>();
     for (const r of rows) {
-      // Group on the IST calendar day — a 01:00 draw belongs to that night's
-      // date on the ward, not the previous UTC day. dd/MM/yyyy is both the key
-      // and the heading the summary prints.
+
       const day = formatDateIST(r.enteredAt);
       const bucket = byDay.get(day) ?? [];
       bucket.push(labLine(r, withFlag));
@@ -496,16 +481,6 @@ const PIN_SECTION_TO_COLUMN: Record<string, string> = {
   follow_up: 'followUpInstructions',
   general: 'headerSummary',
 };
-
-/**
- * Fold pins added since the summary was generated into a DRAFT, without
- * touching anything the doctor typed.
- *
- * The full `refresh` path rebuilds the source-derived columns from scratch,
- * which is why the editor never calls it — doing so would discard direct
- * entries. This is the additive half: a pin whose text is not already present
- * gets appended to its column, and nothing is ever removed or rewritten.
- */
 async function mergeNewPinsIntoDraft(
   tenantId: string,
   admissionId: string,
@@ -525,9 +500,6 @@ async function mergeNewPinsIntoDraft(
     const column = PIN_SECTION_TO_COLUMN[p.dischargeSection];
     if (!column) continue;
     const current: string = existing[column] ?? '';
-    // Match on the pin's own words rather than the rendered line: the doctor
-    // may have reworded the surrounding text, and re-adding the same content
-    // under a slightly different prefix would duplicate it on every open.
     if (current.includes(p.content.trim())) continue;
 
     const doctor = p.note?.doctor?.user
@@ -1223,5 +1195,28 @@ export async function getPublishedDischargeSummaryForPatient(patientIds: string[
     },
   });
   if (!summary) throw AppError.notFound('Discharge summary not found');
+
+  // The stored columns are the DOCTOR's version — every pin is baked into the
+  // prose regardless of visibility. Rebuild the patient-facing columns from the
+  // same source data but with ONLY the pins the doctor flagged "show to patient".
+  // Source-derived content (diagnoses, labs, meds, procedures) is unchanged;
+  // only hidden pinned notes are stripped.
+  const tenantId = summary.patient?.tenant?.id;
+  if (tenantId) {
+    const built = await buildSummaryFields(tenantId, summary.admissionId, {
+      onlyPatientVisible: true,
+    });
+    return {
+      ...summary,
+      headerSummary: built.headerSummary,
+      diagnosesSummary: built.diagnosesSummary,
+      proceduresSummary: built.proceduresSummary,
+      labResultsSummary: built.labResultsSummary,
+      keyLabsSummary: built.keyLabsSummary,
+      medicationReconciliation: built.medicationReconciliation,
+      dischargeInstructions: built.dischargeInstructions,
+      followUpInstructions: built.followUpInstructions,
+    };
+  }
   return summary;
 }

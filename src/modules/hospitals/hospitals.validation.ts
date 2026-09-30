@@ -20,6 +20,7 @@ export const createHospitalSchema = z.object({
     email: z.string().email('Invalid email address').optional(),
     website: z.string().optional(),
     licenseNumber: z.string().optional(),
+    hfrId: z.string().max(50).optional(),
   }),
 });
 
@@ -34,6 +35,7 @@ export const updateHospitalSchema = z.object({
     email: z.string().email('Invalid email address').optional(),
     website: z.string().optional(),
     licenseNumber: z.string().optional(),
+    hfrId: z.string().max(50).optional(),
   }),
   params: z.object({
     id: z.string().uuid('Invalid hospital ID'),

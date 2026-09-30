@@ -180,6 +180,8 @@ export async function createLabTemplate(
     data: {
       name: data.name,
       code: data.code ?? null,
+      loincCode: data.loincCode ?? null,
+      loincDisplayName: data.loincDisplayName ?? null,
       sampleType: data.sampleType ?? null,
       specimen: data.specimen ?? null,
       instructions: data.instructions ?? null,
@@ -248,6 +250,8 @@ export async function updateLabTemplate(
     data: {
       name: data.name,
       code: data.code,
+      loincCode: data.loincCode,
+      loincDisplayName: data.loincDisplayName,
       sampleType: data.sampleType,
       specimen: data.specimen,
       instructions: data.instructions,
@@ -302,10 +306,9 @@ function buildCatalogDataFromTemplate(
     templateId: template.id,
     testName: template.name,
     testCode: template.code,
+    loincCode: template.loincCode,
+    loincDisplayName: template.loincDisplayName,
     description: template.description,
-    // Keep the legacy "normalRange" column as a short summary so the existing
-    // list/search column has something readable; per-parameter ranges live in
-    // parameters[].
     normalRange: null,
     unit: null,
     price: overridePrice ?? template.defaultPrice,
@@ -435,6 +438,8 @@ export async function cloneTemplatesIntoTenant(
           // Re-snapshot the template's schema but leave price untouched —
           // hospitals frequently customise pricing locally and a re-clone
           // shouldn't reset it.
+          loincCode: tpl.loincCode,
+          loincDisplayName: tpl.loincDisplayName,
           sampleType: tpl.sampleType,
           specimen: tpl.specimen,
           instructions: tpl.instructions,

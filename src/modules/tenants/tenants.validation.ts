@@ -17,6 +17,7 @@ export const createTenantSchema = z.object({
     zipCode: z.string().optional(),
     phone: z.string().optional(),
     email: z.string().email().optional(),
+    hfrId: z.string().max(50).optional(),
     settings: z.record(z.unknown()).optional(),
   }),
 });
@@ -33,6 +34,7 @@ export const updateTenantSchema = z.object({
     zipCode: z.string().optional(),
     phone: z.string().optional(),
     email: z.string().email().optional(),
+    hfrId: z.string().max(50).optional(),
     settings: z.record(z.unknown()).optional(),
   }),
   params: z.object({

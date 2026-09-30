@@ -18,7 +18,6 @@ export const usersService = {
   // ─── USER CRUD ───────────────────────────────────────────────────────
 
   async create(tenantId: string, data: CreateUserInput) {
-    // Check subscription maxUsers limit (subscription may live on platform tenant)
     const { getEffectiveSubscription } = await import('../../shared/subscription-utils');
     const subscription = await getEffectiveSubscription(tenantId);
 
@@ -45,7 +44,6 @@ export const usersService = {
       throw AppError.conflict('User with this email already exists in this tenant');
     }
 
-    // Validate that all role IDs belong to this tenant
     const roles = await prisma.role.findMany({
       where: {
         id: { in: data.roleIds },
@@ -59,36 +57,78 @@ export const usersService = {
 
     const hashedPassword = await bcrypt.hash(data.password, env.BCRYPT_SALT_ROUNDS);
 
-    const user = await prisma.user.create({
-      data: {
-        email: data.email,
-        passwordHash: hashedPassword,
-        firstName: data.firstName,
-        lastName: data.lastName,
-        phone: data.phone,
-        tenantId,
-        isActive: true,
-        userRoles: {
-          create: data.roleIds.map((roleId) => ({ roleId })),
+    // Detect the doctor role + validate the department (required on DoctorProfile)
+    // when any doctor profile detail is supplied.
+    const isDoctor = roles.some((r) => r.name === 'doctor');
+    const dp = data.doctorProfile;
+    const hasDoctorDetails =
+      isDoctor &&
+      !!dp &&
+      Object.values(dp).some((v) => v !== undefined && v !== '');
+
+    if (hasDoctorDetails) {
+      if (!dp?.departmentId) {
+        throw AppError.badRequest('Department is required to save doctor profile details');
+      }
+      const department = await prisma.department.findFirst({
+        where: { id: dp.departmentId, tenantId },
+        select: { id: true },
+      });
+      if (!department) {
+        throw AppError.badRequest('Invalid department for this tenant');
+      }
+    }
+
+    const user = await prisma.$transaction(async (tx) => {
+      const created = await tx.user.create({
+        data: {
+          email: data.email,
+          passwordHash: hashedPassword,
+          firstName: data.firstName,
+          lastName: data.lastName,
+          phone: data.phone,
+          hprId: data.hprId,
+          tenantId,
+          isActive: true,
+          userRoles: {
+            create: data.roleIds.map((roleId) => ({ roleId })),
+          },
         },
-      },
-      select: {
-        id: true,
-        email: true,
-        firstName: true,
-        lastName: true,
-        phone: true,
-        tenantId: true,
-        isActive: true,
-        createdAt: true,
-        userRoles: {
-          select: {
-            role: {
-              select: { id: true, name: true },
+        select: {
+          id: true,
+          email: true,
+          firstName: true,
+          lastName: true,
+          phone: true,
+          tenantId: true,
+          isActive: true,
+          createdAt: true,
+          userRoles: {
+            select: {
+              role: {
+                select: { id: true, name: true },
+              },
             },
           },
         },
-      },
+      });
+
+      // Create the DoctorProfile only when doctor details were provided.
+      if (hasDoctorDetails && dp) {
+        await tx.doctorProfile.create({
+          data: {
+            userId: created.id,
+            tenantId,
+            departmentId: dp.departmentId!,
+            specialization: dp.specialization,
+            qualifications: dp.qualifications,
+            licenseNumber: dp.licenseNumber,
+            experienceYears: dp.experienceYears,
+          },
+        });
+      }
+
+      return created;
     });
 
     logger.info({ userId: user.id, tenantId }, 'User created');
@@ -159,6 +199,7 @@ export const usersService = {
           firstName: true,
           lastName: true,
           phone: true,
+          hprId: true,
           isActive: true,
           is2faEnabled: true,
           createdAt: true,
@@ -168,6 +209,15 @@ export const usersService = {
               role: {
                 select: { id: true, name: true },
               },
+            },
+          },
+          doctorProfile: {
+            select: {
+              departmentId: true,
+              specialization: true,
+              qualifications: true,
+              licenseNumber: true,
+              experienceYears: true,
             },
           },
         },
@@ -372,6 +422,7 @@ export const usersService = {
         ...(data.phone !== undefined && { phone: data.phone }),
         ...(data.email !== undefined && { email: data.email }),
         ...(data.isActive !== undefined && { isActive: data.isActive }),
+        ...(data.hprId !== undefined && { hprId: data.hprId }),
       },
       select: {
         id: true,
@@ -390,6 +441,57 @@ export const usersService = {
         },
       },
     });
+
+    // Upsert doctor profile details when provided. Partial update if a profile
+    // already exists; create requires a department.
+    const dp = data.doctorProfile;
+    const hasDoctorDetails =
+      !!dp && Object.values(dp).some((v) => v !== undefined && v !== '');
+
+    if (hasDoctorDetails && dp) {
+      if (dp.departmentId) {
+        const department = await prisma.department.findFirst({
+          where: { id: dp.departmentId, tenantId },
+          select: { id: true },
+        });
+        if (!department) {
+          throw AppError.badRequest('Invalid department for this tenant');
+        }
+      }
+
+      const existingProfile = await prisma.doctorProfile.findUnique({
+        where: { userId },
+        select: { id: true },
+      });
+
+      if (existingProfile) {
+        await prisma.doctorProfile.update({
+          where: { userId },
+          data: {
+            ...(dp.departmentId !== undefined && { departmentId: dp.departmentId }),
+            ...(dp.specialization !== undefined && { specialization: dp.specialization }),
+            ...(dp.qualifications !== undefined && { qualifications: dp.qualifications }),
+            ...(dp.licenseNumber !== undefined && { licenseNumber: dp.licenseNumber }),
+            ...(dp.experienceYears !== undefined && { experienceYears: dp.experienceYears }),
+          },
+        });
+      } else {
+        if (!dp.departmentId) {
+          throw AppError.badRequest('Department is required to create doctor profile details');
+        }
+        await prisma.doctorProfile.create({
+          data: {
+            userId,
+            tenantId,
+            departmentId: dp.departmentId,
+            specialization: dp.specialization,
+            qualifications: dp.qualifications,
+            licenseNumber: dp.licenseNumber,
+            experienceYears: dp.experienceYears,
+          },
+        });
+      }
+    }
 
     logger.info({ userId, tenantId }, 'User updated');
 

@@ -2715,7 +2715,10 @@ async function getConsultationCharges(
       const doctorName = v.doctor?.user
         ? `Dr. ${fullName(v.doctor.user)}`
         : 'Doctor';
-      const billed = billedIndex.get(`visit:${v.id}`);
+      const billed =
+      billedIndex.get(`visit:${v.id}`) ??
+      (v.appointmentId ? billedIndex.get(`appointment:${v.appointmentId}`) : undefined);
+
       return {
         source: 'consultation' as const,
         referenceType: 'visit',
