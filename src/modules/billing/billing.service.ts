@@ -5859,8 +5859,24 @@ export async function getIpAdmissionsForBilling(
   for (const a of admissions) {
     // Every ACTIVE admission gets a running bill so it appears here from day one
     // and charges have somewhere to post. Discharged keeps whatever bills it has.
+    //
+    // Exception: once the doctor has signed off (ready_to_discharge) do NOT mint a
+    // fresh running bill. After the stay is settled its IP bill is `paid`, and
+    // getOrCreateRunningIpBill deliberately won't reuse a paid bill — so it would
+    // create an empty draft, that draft would become the row's primary, and the
+    // row would flip back to `status: draft`, hiding Clear & Discharge / Collect
+    // Payment. By this point the stay already has its bill; only create one if it
+    // somehow has none (a genuine late charge still spins up its own bill on the
+    // charge-posting path).
     if (isActiveAdmission(a.status)) {
-      try { await getOrCreateRunningIpBill(tenantId, a.id, userId); } catch { /* non-fatal */ }
+      const needsBill =
+        a.status !== 'ready_to_discharge' ||
+        (await prisma.bill.count({
+          where: { tenantId, admissionId: a.id, billNumber: { startsWith: 'IPW-' }, status: { not: 'cancelled' } },
+        })) === 0;
+      if (needsBill) {
+        try { await getOrCreateRunningIpBill(tenantId, a.id, userId); } catch { /* non-fatal */ }
+      }
     }
     // Insurance/corporate patients auto-connect to the TPA (no manual transfer) —
     // link the policy and raise/keep the claim in sync as charges accrue.
