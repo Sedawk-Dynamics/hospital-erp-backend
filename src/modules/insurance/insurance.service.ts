@@ -30,6 +30,7 @@ import type {
 } from './insurance.validation';
 import { notifyPatientInsuranceMilestone } from './insurance.notifications';
 import { recordSettlement as recordWorkflowSettlement } from './insurance.workflow.service';
+import { computePatientPaid } from '../billing/bill-payment-ledger';
 
 // ============================================================
 // Defaults
@@ -1008,7 +1009,14 @@ export async function getClaimById(tenantId: string, id: string) {
     throw AppError.notFound('Insurance claim not found');
   }
 
-  return claim;
+  const patientPaidAmount = claim.bill
+    ? round2(Math.max(0, await computePatientPaid(prisma, claim.bill.id)))
+    : 0;
+
+  return {
+    ...claim,
+    bill: claim.bill ? { ...claim.bill, patientPaidAmount } : claim.bill,
+  };
 }
 
 export async function updateClaim(tenantId: string, id: string, data: UpdateClaimInput) {
@@ -1460,32 +1468,38 @@ export async function applyBillSplit(
   insurancePortion: number,
   claimPatientPortion: number,
 ) {
-  const bill = await prisma.bill.findFirst({ where: { id: billId, tenantId } });
-  if (!bill) return null;
+  return prisma.$transaction(async (tx) => {
+    const bill = await tx.bill.findFirst({ where: { id: billId, tenantId } });
+    if (!bill) return null;
 
-  // Claim responsibility only covers the amount submitted to insurance. The
-  // bill can also contain explicitly patient-only lines, so the bill-level
-  // patient share must always be the full bill total minus the payer share.
-  const billTotal = round2(Math.max(0, decNum(bill.totalAmount)));
-  const normalizedInsurance = round2(Math.min(Math.max(0, insurancePortion), billTotal));
-  const normalizedPatient = round2(Math.max(0, billTotal - normalizedInsurance));
-  const balanceDue = round2(Math.max(0, normalizedPatient - decNum(bill.amountPaid)));
+    // Claim responsibility only covers the amount submitted to insurance. The
+    // bill can also contain explicitly patient-only lines, so the bill-level
+    // patient share must always be the full bill total minus the payer share.
+    const billTotal = round2(Math.max(0, decNum(bill.totalAmount)));
+    const normalizedInsurance = round2(Math.min(Math.max(0, insurancePortion), billTotal));
+    const normalizedPatient = round2(Math.max(0, billTotal - normalizedInsurance));
+    // `bill.amountPaid` includes both patient collections and TPA settlements.
+    // A payer remittance must never reduce what the front desk still needs to
+    // collect from the patient, so derive this balance from the patient ledger.
+    const patientPaid = round2(Math.max(0, await computePatientPaid(tx, billId)));
+    const balanceDue = round2(Math.max(0, normalizedPatient - patientPaid));
 
-  await prisma.bill.update({
-    where: { id: billId },
-    data: {
-      insuranceCoveredAmount: normalizedInsurance,
-      patientPayableAmount: normalizedPatient,
+    await tx.bill.update({
+      where: { id: billId },
+      data: {
+        insuranceCoveredAmount: normalizedInsurance,
+        patientPayableAmount: normalizedPatient,
+        balanceDue,
+      },
+    });
+
+    return {
+      insurancePortion: normalizedInsurance,
+      patientPortion: normalizedPatient,
+      claimPatientPortion: round2(Math.max(0, claimPatientPortion)),
       balanceDue,
-    },
+    };
   });
-
-  return {
-    insurancePortion: normalizedInsurance,
-    patientPortion: normalizedPatient,
-    claimPatientPortion: round2(Math.max(0, claimPatientPortion)),
-    balanceDue,
-  };
 }
 
 export async function splitBill(tenantId: string, billId: string, data: SplitBillInput) {
@@ -1525,24 +1539,19 @@ export async function splitBill(tenantId: string, billId: string, data: SplitBil
     // Derive the stored patient value from the bill total after validating both
     // operator-entered values. This guarantees an exact two-decimal split.
     const patientAmount = round2(billTotal - insuranceAmount);
-    const balanceDue = round2(Math.max(0, patientAmount - decNum(bill.amountPaid)));
-    const billSplit = {
-      insurancePortion: insuranceAmount,
-      patientPortion: patientAmount,
-      claimPatientPortion: patientAmount,
-      balanceDue,
-    };
+    const billSplit = await prisma.$transaction(async (tx) => {
+      const patientPaid = round2(Math.max(0, await computePatientPaid(tx, billId)));
+      const balanceDue = round2(Math.max(0, patientAmount - patientPaid));
 
-    await prisma.$transaction([
-      prisma.bill.update({
+      await tx.bill.update({
         where: { id: billId },
         data: {
           insuranceCoveredAmount: insuranceAmount,
           patientPayableAmount: patientAmount,
           balanceDue,
         },
-      }),
-      prisma.insuranceClaim.update({
+      });
+      await tx.insuranceClaim.update({
         where: { id: claim.id },
         data: {
           claimAmount: insuranceAmount,
@@ -1550,11 +1559,18 @@ export async function splitBill(tenantId: string, billId: string, data: SplitBil
           patientShare: patientAmount,
           outstandingAmount: insuranceAmount,
         },
-      }),
-    ]);
+      });
+
+      return {
+        insurancePortion: insuranceAmount,
+        patientPortion: patientAmount,
+        claimPatientPortion: patientAmount,
+        balanceDue,
+      };
+    });
 
     logger.info(
-      { tenantId, billId, claimId: claim.id, insuranceAmount, patientAmount, balanceDue },
+      { tenantId, billId, claimId: claim.id, insuranceAmount, patientAmount, balanceDue: billSplit.balanceDue },
       'Manual TPA / patient bill split applied',
     );
     return {
