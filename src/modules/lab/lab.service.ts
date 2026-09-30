@@ -1484,6 +1484,40 @@ export function evaluateAbnormal(value: string | undefined, normalRange: string 
   return null;
 }
 
+// Turn ONE catalog parameter spec into a range string `evaluateAbnormal` can
+// read. Prefer the numeric refLow/refHigh (always clean) over the free-text
+// refRangeText, which may read "Male 13-17, Female 12-15" and not parse.
+function catalogParamRange(p: any): string | null {
+  if (p == null) return null;
+  const lo = typeof p.refLow === 'number' ? p.refLow : null;
+  const hi = typeof p.refHigh === 'number' ? p.refHigh : null;
+  if (lo != null && hi != null) return `${lo}-${hi}`;
+  if (hi != null) return `<${hi}`; // upper-bound-only test (e.g. cholesterol)
+  if (lo != null) return `>${lo}`; // lower-bound-only test
+  const text = typeof p.refRangeText === 'string' ? p.refRangeText.trim() : '';
+  // Keep the printed text only if it is actually parseable on its own.
+  if (text && evaluateAbnormal('0', text) !== null) return text;
+  return null;
+}
+
+// Build a { parameterName|code (lowercased) -> range string } lookup from a
+// catalog test's structured `parameters` spec. This is the fallback range used
+// when a report read off a PDF carries a value but no printed reference range —
+// abnormal highlighting could not fire without one, so we borrow the hospital's
+// configured interval for that parameter. The lab report's own range still wins;
+// this only fills the gap.
+function buildCatalogRangeLookup(parameters: unknown): Map<string, string> {
+  const map = new Map<string, string>();
+  if (!Array.isArray(parameters)) return map;
+  for (const p of parameters as any[]) {
+    const range = catalogParamRange(p);
+    if (!range) continue;
+    if (typeof p?.name === 'string' && p.name.trim()) map.set(p.name.trim().toLowerCase(), range);
+    if (typeof p?.code === 'string' && p.code.trim()) map.set(p.code.trim().toLowerCase(), range);
+  }
+  return map;
+}
+
 // A report a lab supervisor has finalized (signed/approved/published, or
 // corrected) is locked: its underlying results and attachments may no longer
 // be edited in place. Amendments must go through the explicit correction flow
@@ -2568,7 +2602,11 @@ export async function extractResultsFromAttachment(
           id: true,
           patientId: true,
           labOrderItems: {
-            select: { id: true, testId: true, test: { select: { testName: true } } },
+            select: {
+              id: true,
+              testId: true,
+              test: { select: { testName: true, parameters: true, normalRange: true } },
+            },
           },
         },
       },
@@ -2640,6 +2678,18 @@ export async function extractResultsFromAttachment(
   );
   const staleOcrIds = existing.filter((r) => r.source === 'ocr').map((r) => r.id);
 
+  // Reference ranges for THIS test, straight from the catalog row the order
+  // item points at (labOrderItem.testId → LabTestCatalog). Used only to fill in
+  // a range the uploaded report itself did not print — see the bug where a
+  // PDF-read value never got flagged because analyser printouts often omit the
+  // reference interval, leaving `evaluateAbnormal` with nothing to compare to.
+  const targetItem = order.labOrderItems.find((i) => i.id === targetItemId);
+  const catalogRanges = buildCatalogRangeLookup(targetItem?.test?.parameters);
+  const testLevelRange =
+    typeof targetItem?.test?.normalRange === 'string' && targetItem.test.normalRange.trim()
+      ? targetItem.test.normalRange.trim()
+      : null;
+
   let created = 0;
   let skipped = 0;
 
@@ -2652,6 +2702,16 @@ export async function extractResultsFromAttachment(
         skipped += 1;
         continue;
       }
+      // The lab report's own range is first preference; the catalog's configured
+      // range (matched by parameter name or code) is the fallback when the report
+      // printed none, so abnormal highlighting works either way.
+      const pdfRange =
+        typeof p.normalRange === 'string' && p.normalRange.trim() ? p.normalRange.trim() : null;
+      const resolvedRange =
+        pdfRange ??
+        catalogRanges.get(p.parameterName.trim().toLowerCase()) ??
+        testLevelRange ??
+        null;
       await tx.labResult.create({
         data: {
           labOrderItemId: targetItemId,
@@ -2660,8 +2720,8 @@ export async function extractResultsFromAttachment(
           parameterName: p.parameterName,
           value: p.value,
           unit: p.unit,
-          normalRange: p.normalRange,
-          isAbnormal: evaluateAbnormal(p.value ?? undefined, p.normalRange ?? undefined) ?? false,
+          normalRange: resolvedRange,
+          isAbnormal: evaluateAbnormal(p.value ?? undefined, resolvedRange ?? undefined) ?? false,
           status: 'entered',
           source: 'ocr',
           enteredBy: userId,

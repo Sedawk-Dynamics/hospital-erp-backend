@@ -1991,8 +1991,6 @@ export async function createRefund(
       amount: data.amount,
       reason: data.reason,
       status: 'requested',
-      // Populates the Refunds tab's requester column, which was permanently
-      // blank because nothing ever wrote this.
       requestedBy: userId,
     },
   });
@@ -5989,8 +5987,24 @@ export async function getIpAdmissionsForBilling(
   for (const a of admissions) {
     // Every ACTIVE admission gets a running bill so it appears here from day one
     // and charges have somewhere to post. Discharged keeps whatever bills it has.
+    //
+    // Exception: once the doctor has signed off (ready_to_discharge) do NOT mint a
+    // fresh running bill. After the stay is settled its IP bill is `paid`, and
+    // getOrCreateRunningIpBill deliberately won't reuse a paid bill — so it would
+    // create an empty draft, that draft would become the row's primary, and the
+    // row would flip back to `status: draft`, hiding Clear & Discharge / Collect
+    // Payment. By this point the stay already has its bill; only create one if it
+    // somehow has none (a genuine late charge still spins up its own bill on the
+    // charge-posting path).
     if (isActiveAdmission(a.status)) {
-      try { await getOrCreateRunningIpBill(tenantId, a.id, userId); } catch { /* non-fatal */ }
+      const needsBill =
+        a.status !== 'ready_to_discharge' ||
+        (await prisma.bill.count({
+          where: { tenantId, admissionId: a.id, billNumber: { startsWith: 'IPW-' }, status: { not: 'cancelled' } },
+        })) === 0;
+      if (needsBill) {
+        try { await getOrCreateRunningIpBill(tenantId, a.id, userId); } catch { /* non-fatal */ }
+      }
     }
     // Insurance/corporate patients auto-connect to the TPA (no manual transfer) —
     // link the policy and raise/keep the claim in sync as charges accrue.
@@ -6757,18 +6771,30 @@ export async function adjustAdvanceToBill(
   data: { patientId: string; billId: string; amount: number },
 ) {
   if (data.amount <= 0) throw AppError.badRequest('Amount must be > 0');
-  const bill = await prisma.bill.findFirst({
+  let bill = await prisma.bill.findFirst({
     where: { id: data.billId, tenantId, patientId: data.patientId },
   });
   if (!bill) throw AppError.notFound('Bill not found');
   if (bill.status === 'draft') {
-    // The running IP bill is a draft for the whole stay while charges accrue —
-    // it has to be consolidated and finalized before money can be set against
-    // it. "Bill cannot accept payment (status: draft)" told the desk nothing
-    // they could act on, and this is the 400 QA hit on every "From advance".
-    throw AppError.badRequest(
-      'This bill is still open for charges. Generate / refresh the bill first — that pulls the pending charges on and finalizes it for payment.',
-    );
+    // The running IP bill is a draft for the whole stay while charges accrue,
+    // and a draft cannot accept money — this was the 400 QA hit on every
+    // "From advance". Rather than send the desk away to press "Generate /
+    // refresh bill" first, finalize it here (draft → pending) and carry on.
+    // finalizeBill only closes the bill — it does NOT auto-apply any held money,
+    // so it neither changes the balance the desk is settling nor recurses back
+    // into this function via applyHeldMoneyToBill.
+    try {
+      await finalizeBill(tenantId, userId, data.billId);
+    } catch (err) {
+      logger.warn({ tenantId, billId: data.billId, err }, 'Could not finalize draft bill before advance adjustment');
+      throw AppError.badRequest(
+        'This bill is still open for charges. Generate / refresh the bill first — that pulls the pending charges on and finalizes it for payment.',
+      );
+    }
+    bill = await prisma.bill.findFirst({
+      where: { id: data.billId, tenantId, patientId: data.patientId },
+    });
+    if (!bill) throw AppError.notFound('Bill not found');
   }
   if (bill.status === 'cancelled' || bill.status === 'paid') {
     throw AppError.badRequest(`Bill cannot accept payment (status: ${bill.status})`);
@@ -7040,11 +7066,12 @@ export async function reversePayment(
  * consultation demonstrably never happened and the money cannot be earned:
  *
  *   - nothing collected → cancel the bill. There is no charge to answer for.
- *   - money collected  → reverse the payment off the bill and put the same sum
- *     on the patient's advance, then cancel the bill. No cash moves (the two
- *     rows net to zero in the drawer) and the patient keeps their money as a
- *     credit, which the counter's existing "From advance" option settles the
- *     rebooked consultation from.
+ *   - money collected  → refund it. Each collected payment gets a refund
+ *     request that is immediately approved, which mints a `paymentType:'refund'`
+ *     payout (money out of the drawer), issues a receipt, reverses the GST and
+ *     drives the bill to `refunded`. This is what the Cash Counter's "Refunded"
+ *     total and "Net in drawer" read from, so the money is recorded as handed
+ *     back rather than silently kept in the drawer.
  *
  * Best-effort by design — the caller treats a failure as non-fatal. A booking
  * that cannot be cancelled because its money could not be tidied up would be a
@@ -7055,7 +7082,7 @@ export async function settleCancelledAppointmentCharge(
   userId: string,
   appointmentId: string,
   reason: string,
-): Promise<{ cancelledBillId: string | null; creditedToAdvance: number }> {
+): Promise<{ cancelledBillId: string | null; refundedAmount: number }> {
   const bill = await prisma.bill.findFirst({
     where: {
       tenantId,
@@ -7064,42 +7091,36 @@ export async function settleCancelledAppointmentCharge(
     },
     include: { payments: { where: { status: 'completed' } } },
   });
-  if (!bill) return { cancelledBillId: null, creditedToAdvance: 0 };
+  if (!bill) return { cancelledBillId: null, refundedAmount: 0 };
 
-  // Only rows that actually brought money in. A refund payout or an advance
-  // adjustment is not something to hand back again.
+  // Only rows that actually brought money in. A refund payout is not something
+  // to hand back again.
   const collected = bill.payments.filter((p) => p.paymentType !== 'refund');
   const collectedTotal = r2(collected.reduce((sum, p) => sum + toNumber(p.amount), 0));
 
+  // Refund every collected payment. createRefund logs the request (who/why) and
+  // approveRefund mints the `paymentType:'refund'` payout, issues a receipt,
+  // reverses the GST and moves the bill to `refunded`. The full payment amount
+  // is refunded — the consultation never happened, so nothing was earned.
   for (const payment of collected) {
-    await reversePayment(tenantId, userId, {
+    const refund = await createRefund(tenantId, userId, {
       paymentId: payment.id,
+      amount: toNumber(payment.amount),
+      reason: `Appointment cancelled — ${reason}`,
+    });
+    await approveRefund(tenantId, refund.id, userId);
+  }
+  if (collectedTotal <= 0) {
+    await cancelBill(tenantId, userId, bill.id, {
       reason: `Appointment cancelled — ${reason}`,
     });
   }
 
-  if (collectedTotal > 0) {
-    await createAdvancePayment(tenantId, userId, {
-      patientId: bill.patientId,
-      amount: collectedTotal,
-      // Not a fresh collection — the money is already in the drawer. Mirrors
-      // the method so the day-end split is not distorted.
-      paymentMethod: collected[0]?.paymentMethod ?? 'cash',
-      notes:
-        `Consultation fee carried forward from cancelled appointment ` +
-        `(bill ${bill.billNumber}) — available against the next booking`,
-    });
-  }
-
-  await cancelBill(tenantId, userId, bill.id, {
-    reason: `Appointment cancelled — ${reason}`,
-  });
-
   logger.info(
-    { tenantId, appointmentId, billId: bill.id, creditedToAdvance: collectedTotal },
+    { tenantId, appointmentId, billId: bill.id, refundedAmount: collectedTotal },
     'Cancelled appointment charge settled',
   );
-  return { cancelledBillId: bill.id, creditedToAdvance: collectedTotal };
+  return { cancelledBillId: bill.id, refundedAmount: collectedTotal };
 }
 
 export async function cancelBill(

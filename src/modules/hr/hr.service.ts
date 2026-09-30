@@ -434,12 +434,28 @@ async function resolveStaffForRoster(
   return { staffId: created.id, departmentId: created.departmentId };
 }
 
+const NURSING_ROLE_NAMES = ['nurse', 'nurse_admin'];
+async function deriveStaffRosterRole(
+  tenantId: string,
+  staffId: string,
+): Promise<string | null> {
+  const staff = await prisma.staffProfile.findFirst({
+    where: { id: staffId, tenantId },
+    select: {
+      user: { select: { userRoles: { select: { role: { select: { name: true } } } } } },
+    },
+  });
+  const names = staff?.user?.userRoles?.map((ur) => ur.role.name) ?? [];
+  return names.find((n) => NURSING_ROLE_NAMES.includes(n)) ?? names[0] ?? null;
+}
+
 export async function createDutyRoster(
   tenantId: string,
   data: CreateDutyRosterInput,
   createdBy?: string,
 ) {
   const { staffId, departmentId } = await resolveStaffForRoster(tenantId, data);
+  const role = data.role ?? (await deriveStaffRosterRole(tenantId, staffId));
 
   // Reject duplicate same-staff / same-date / same-shift entries; allow different
   // shifts on the same day (morning + night is legitimate for split shifts).
@@ -465,7 +481,7 @@ export async function createDutyRoster(
       staffId,
       departmentId,
       wardId: data.wardId ?? null,
-      role: data.role ?? null,
+      role,
       shiftDate: new Date(data.shiftDate),
       shiftType: data.shiftType as any,
       startTime: new Date(`1970-01-01T${data.startTime}`),
