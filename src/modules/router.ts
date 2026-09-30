@@ -60,10 +60,8 @@ import { gstRoutes } from './gst/gst.routes';
 // Platform SNOMED CT descriptions and the SNOMED → ICD-10 cross-map used by
 // the diagnosis autocomplete.
 import { snomedRoutes } from './snomed/snomed.routes';
-//snomed modules
-import { snomedRoutes } from './snomed/snomed.routes';
 import { loincRoutes } from './loinc/loinc.routes';
-import {  fhirRoutes } from './fhir/fhir.routes';
+import { fhirRoutes } from './fhir/fhir.routes';
 
 const apiRouter = Router();
 
@@ -177,12 +175,9 @@ apiRouter.use('/demo-requests', demoRequestRoutes);
 // --- SNOMED CT reference data ---
 apiRouter.use('/snomed', authenticate, userTierLimiter, snomedRoutes);
 
-// --- snomed requests --- //
-apiRouter.use('/snomed', authenticate, userTierLimiter, snomedRoutes);
-
 // --- loinc requests --- //
-apiRouter.use("/loinc",authenticate,userTierLimiter,loincRoutes)
+apiRouter.use('/loinc', authenticate, userTierLimiter, loincRoutes);
 
 // --- fhir requests --- //
-apiRouter.use("/fhir",authenticate,userTierLimiter,fhirRoutes)
+apiRouter.use('/fhir', authenticate, userTierLimiter, fhirRoutes);
 export { apiRouter };

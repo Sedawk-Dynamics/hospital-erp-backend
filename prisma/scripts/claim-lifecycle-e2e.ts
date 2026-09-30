@@ -294,6 +294,14 @@ async function main() {
       money(tpaPayment?.amount) === 12000,
       `ledger amount ${money(tpaPayment?.amount)}`,
     );
+    const claimAfterTpaSettlement = await api('admin', 'GET', `/insurance/claims/${manualClaim.data.id}`);
+    ck(
+      'the TPA desk keeps payer and patient collections separate',
+      money(claimAfterTpaSettlement.data?.bill?.amountPaid) === 12000 &&
+        money(claimAfterTpaSettlement.data?.bill?.patientPaidAmount) === 0 &&
+        money(claimAfterTpaSettlement.data?.bill?.balanceDue) === 5900,
+      `total paid ${money(claimAfterTpaSettlement.data?.bill?.amountPaid)}, patient paid ${money(claimAfterTpaSettlement.data?.bill?.patientPaidAmount)}, patient due ${money(claimAfterTpaSettlement.data?.bill?.balanceDue)}`,
+    );
 
     const patientPayment = await api('admin', 'POST', '/billing/payments', {
       billId: manualBill,
@@ -309,6 +317,13 @@ async function main() {
         money(fullyPaidManualBill.data?.balanceDue) === 0 &&
         fullyPaidManualBill.data?.status === 'paid',
       `paid ${money(fullyPaidManualBill.data?.amountPaid)}, due ${money(fullyPaidManualBill.data?.balanceDue)}, status ${fullyPaidManualBill.data?.status}`,
+    );
+    const claimAfterPatientPayment = await api('admin', 'GET', `/insurance/claims/${manualClaim.data.id}`);
+    ck(
+      'the patient payment clears the patient due shown to TPA and front desk',
+      money(claimAfterPatientPayment.data?.bill?.patientPaidAmount) === 5900 &&
+        money(claimAfterPatientPayment.data?.bill?.balanceDue) === 0,
+      `patient paid ${money(claimAfterPatientPayment.data?.bill?.patientPaidAmount)}, patient due ${money(claimAfterPatientPayment.data?.bill?.balanceDue)}`,
     );
 
     // -- Partial approval -----------------------------------------------------

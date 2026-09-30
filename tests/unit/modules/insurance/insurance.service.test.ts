@@ -577,6 +577,8 @@ describe('Insurance Service', () => {
         },
       };
       vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue(detailedClaim as any);
+      vi.mocked(prisma.payment.aggregate).mockResolvedValueOnce({ _sum: { amount: 2000 } } as any);
+      vi.mocked(prisma.refund.aggregate).mockResolvedValueOnce({ _sum: { amount: 0 } } as any);
 
       const result = await getClaimById(TENANT_ID, 'claim-1');
 
@@ -597,6 +599,16 @@ describe('Insurance Service', () => {
       }));
       expect(result.bill.billItems).toHaveLength(1);
       expect(result.bill.payments).toHaveLength(1);
+      expect(result.bill.patientPaidAmount).toBe(2000);
+      expect(prisma.payment.aggregate).toHaveBeenCalledWith({
+        where: {
+          billId: { in: ['bill-1'] },
+          status: 'completed',
+          paymentMethod: { not: 'insurance' },
+          paymentType: { not: 'refund' },
+        },
+        _sum: { amount: true },
+      });
     });
   });
 
@@ -607,6 +619,8 @@ describe('Insurance Service', () => {
         totalAmount: 11000,
         amountPaid: 500,
       } as any);
+      vi.mocked(prisma.payment.aggregate).mockResolvedValueOnce({ _sum: { amount: 500 } } as any);
+      vi.mocked(prisma.refund.aggregate).mockResolvedValueOnce({ _sum: { amount: 0 } } as any);
       vi.mocked(prisma.bill.update).mockResolvedValue({ id: 'bill-1' } as any);
 
       const result = await applyBillSplit(TENANT_ID, 'bill-1', 9000, 0);
@@ -647,6 +661,8 @@ describe('Insurance Service', () => {
         deductibleAmount: 0,
         coverageAmount: null,
       } as any);
+      vi.mocked(prisma.payment.aggregate).mockResolvedValueOnce({ _sum: { amount: 500 } } as any);
+      vi.mocked(prisma.refund.aggregate).mockResolvedValueOnce({ _sum: { amount: 0 } } as any);
       vi.mocked(prisma.bill.update).mockResolvedValue({ id: 'bill-1' } as any);
 
       const result = await splitBill(TENANT_ID, 'bill-1', {
@@ -664,13 +680,14 @@ describe('Insurance Service', () => {
       }));
     });
 
-    it('stores an exact manual TPA and patient split for front-desk collection', async () => {
+    it('uses only patient payments when storing the front-desk balance', async () => {
       vi.mocked(prisma.bill.findFirst).mockResolvedValue({
         id: 'bill-1',
         patientId: 'patient-1',
         status: 'pending',
         totalAmount: 17900,
-        amountPaid: 1000,
+        // Includes a 12,000 TPA remittance and 1,000 paid by the patient.
+        amountPaid: 13000,
       } as any);
       vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue({
         ...mockClaim,
@@ -678,9 +695,10 @@ describe('Insurance Service', () => {
         deductibleAmount: 0,
         copayAmount: 0,
       } as any);
+      vi.mocked(prisma.payment.aggregate).mockResolvedValueOnce({ _sum: { amount: 1000 } } as any);
+      vi.mocked(prisma.refund.aggregate).mockResolvedValueOnce({ _sum: { amount: 0 } } as any);
       vi.mocked(prisma.bill.update).mockResolvedValue({ id: 'bill-1' } as any);
       vi.mocked(prisma.insuranceClaim.update).mockResolvedValue({ id: 'claim-1' } as any);
-      vi.mocked(prisma.$transaction).mockResolvedValue([] as any);
 
       const result = await splitBill(TENANT_ID, 'bill-1', {
         claimId: 'claim-1',
@@ -711,6 +729,9 @@ describe('Insurance Service', () => {
         claimPatientPortion: 5900,
         balanceDue: 4900,
       });
+      expect(prisma.payment.aggregate).toHaveBeenCalledWith(expect.objectContaining({
+        where: expect.objectContaining({ paymentMethod: { not: 'insurance' } }),
+      }));
     });
 
     it('rejects a manual split that does not equal the finalized bill total', async () => {

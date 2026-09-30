@@ -1,18 +1,17 @@
 import { PatientMapContext } from './snomed.types';
-import { PatientMapContext } from "./snomed.types";
 
 const SNOMED_FEMALE = '248152002';
 const SNOMED_MALE = '248153007';
 
 export function ruleSatisfied(rule: string | null, ctx?: PatientMapContext): boolean {
   if (!rule) return false;
-  const r = rule.toUpperCase();
-  if (r.includes('OTHERWISE TRUE')) return true;
-  if (r === 'TRUE') return true;
-  if (rule.includes(SNOMED_FEMALE) || r.includes('FEMALE')) {
+  const normalizedRule = rule.toUpperCase();
+  if (normalizedRule.includes('OTHERWISE TRUE')) return true;
+  if (normalizedRule === 'TRUE') return true;
+  if (rule.includes(SNOMED_FEMALE) || normalizedRule.includes('FEMALE')) {
     return ctx?.gender?.toLowerCase() === 'female';
   }
-  if (rule.includes(SNOMED_MALE) || r.includes('MALE')) {
+  if (rule.includes(SNOMED_MALE) || normalizedRule.includes('MALE')) {
     return ctx?.gender?.toLowerCase() === 'male';
   }
   return false;
@@ -20,7 +19,6 @@ export function ruleSatisfied(rule: string | null, ctx?: PatientMapContext): boo
 
 export function labelFromAdvice(advice: string | null): string {
   if (!advice) return '';
-  const parts = advice.split('|').map((s) => s.trim());
+  const parts = advice.split('|').map((part) => part.trim());
   return parts[parts.length - 1] || '';
-}
 }
