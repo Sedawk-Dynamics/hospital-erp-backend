@@ -1,4 +1,5 @@
 import { PatientMapContext } from './snomed.types';
+import { PatientMapContext } from "./snomed.types";
 
 const SNOMED_FEMALE = '248152002';
 const SNOMED_MALE = '248153007';
@@ -21,4 +22,5 @@ export function labelFromAdvice(advice: string | null): string {
   if (!advice) return '';
   const parts = advice.split('|').map((s) => s.trim());
   return parts[parts.length - 1] || '';
+}
 }
