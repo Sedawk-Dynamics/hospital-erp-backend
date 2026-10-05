@@ -4,14 +4,13 @@ import { paginationSchema } from '../../shared/pagination';
 // --- Progress Note Schemas ---
 
 const progressNoteTypeEnum = z.enum([
-  'complaint',
-  'vitals',
-  'investigation',
-  'discussion',
-  'impression',
-  'advice',
-  'general',
+  'daily_soap_round',
+  'post_op_note',
+  'procedure_note',
+  'consultation_note',
+  'op_clinic_visit',
 ]);
+
 
 const customFieldSchema = z.object({
   label: z.string().min(1).max(120),
@@ -52,6 +51,7 @@ export const createProgressNoteSchema = z.object({
     patientId: z.string().uuid('Invalid patient ID'),
     prescriptionId: z.string().uuid('Invalid prescription ID').optional().nullable(),
     noteType: progressNoteTypeEnum.optional(),
+    noteTitle: z.string().max(200).optional().nullable(),
     content: z.string().min(1, 'Content is required').max(10000),
     impressions: z.string().max(10000).optional().nullable(),
     discussions: z.string().max(10000).optional().nullable(),
@@ -76,6 +76,7 @@ export const createProgressNoteSchema = z.object({
 export const updateProgressNoteSchema = z.object({
   body: z.object({
     noteType: progressNoteTypeEnum.optional(),
+    noteTitle: z.string().max(200).optional().nullable(),
     content: z.string().min(1).max(10000).optional(),
     impressions: z.string().max(10000).optional().nullable(),
     discussions: z.string().max(10000).optional().nullable(),

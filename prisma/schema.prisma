@@ -299,13 +299,11 @@ enum DiagnosisType {
 }
 
 enum ProgressNoteType {
-  complaint     @map("complaint")
-  vitals        @map("vitals")
-  investigation @map("investigation")
-  discussion    @map("discussion")
-  impression    @map("impression")
-  advice        @map("advice")
-  general       @map("general")
+  daily_soap_round  @map("daily_soap_round")
+  post_op_note      @map("post_op_note")
+  procedure_note    @map("procedure_note")
+  consultation_note @map("consultation_note")
+  op_clinic_visit   @map("op_clinic_visit")
 }
 
 enum ProgressNoteStatus {
@@ -2999,6 +2997,12 @@ model ProgressNote {
   // prescription so anyone who can view the prescription also sees this note.
   prescriptionId        String?            @map("prescription_id")
   noteType              ProgressNoteType?  @map("note_type")
+  // Free-text title for the note (shown in the visit-note list/header).
+  noteTitle             String?            @map("note_title") @db.VarChar(200)
+  // Snapshot of the hospital day this note belongs to, computed on create as
+  // (noteDate - admission.admissionDate) + 1. The time of day comes from
+  // `createdAt`. Null for OP notes with no admission.
+  hospitalDay           Int?               @map("hospital_day")
   content               String
   impressions           String?
   discussions           String?

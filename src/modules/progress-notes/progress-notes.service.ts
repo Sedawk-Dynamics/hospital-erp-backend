@@ -29,6 +29,7 @@ import type {
 // so the audit row carries a deterministic snapshot.
 const AUDITED_FIELDS = [
   'noteType',
+  'noteTitle',
   'content',
   'impressions',
   'discussions',
@@ -111,24 +112,36 @@ export async function createProgressNote(
   }
 
   // Infer admissionId from the visit when not supplied — needed for IP timeline.
+  // Also capture admissionDate so we can stamp the hospital day on the note.
   let admissionId = data.admissionId ?? null;
+  let admissionDate: Date | null = null;
   if (!admissionId) {
     const admission = await prisma.admission.findFirst({
       where: { visitId: data.visitId, tenantId },
-      select: { id: true },
+      select: { id: true, admissionDate: true },
     });
     admissionId = admission?.id ?? null;
+    admissionDate = admission?.admissionDate ?? null;
   } else {
     // Validate admission belongs to the same visit/tenant when explicitly passed.
     const adm = await prisma.admission.findFirst({
       where: { id: admissionId, tenantId },
-      select: { id: true, visitId: true },
+      select: { id: true, visitId: true, admissionDate: true },
     });
     if (!adm) throw AppError.badRequest('Admission not found for this tenant');
     if (adm.visitId !== data.visitId) {
       throw AppError.badRequest('Admission does not belong to the supplied visit');
     }
+    admissionDate = adm.admissionDate ?? null;
   }
+
+  // Hospital day = calendar days since admission + 1 (admission day = Day 1).
+  // Null for OP notes with no admission. The time of day lives in `createdAt`.
+  const hospitalDay = admissionDate
+    ? Math.floor(
+        (Date.now() - new Date(admissionDate).setHours(0, 0, 0, 0)) / 86400000,
+      ) + 1
+    : null;
 
   // Optional prescription link — must belong to the same patient + tenant so a
   // note can't be attached to an unrelated patient's prescription.
@@ -164,6 +177,8 @@ export async function createProgressNote(
       doctorId: doctorProfile.id,
       prescriptionId,
       noteType: data.noteType as any,
+      noteTitle: data.noteTitle ?? null,
+      hospitalDay,
       content: data.content,
       impressions: data.impressions ?? null,
       discussions: data.discussions ?? null,
