@@ -324,7 +324,7 @@ async function buildSummaryFields(
     return b
       .map((x) => {
         const when = x.createdAt.toLocaleDateString('en-IN');
-        return `- [${when} · ${x.doctor}] ${x.content}`;
+        return `${x.content}`;
       })
       .join('\n');
   };
@@ -685,6 +685,11 @@ interface UpdateDischargeSummaryInput {
   medicationReconciliation?: string;
   dischargeInstructions?: string;
   followUpDate?: string;
+    chiefComplaint?: string;
+  examination?: string;
+  investigation?: string;
+  impression?: string;
+
   /** "After 3 months" — an interval with no fixed day. */
   followUpAfterValue?: number | null;
   followUpAfterUnit?: string | null;
@@ -1072,6 +1077,11 @@ export async function buildDischargeDocument(tenantId: string, id: string): Prom
       labResults: summary.labResultsSummary ?? null,
       medicationsText: summary.medicationReconciliation ?? null,
       dischargeInstructions: summary.dischargeInstructions ?? null,
+      chiefComplaint: summary.chiefComplaint ?? null,
+      examination: summary.examination ?? null,
+      investigation: summary.investigation ?? null,
+      impression: summary.impression ?? null,
+
       followUpDate: summary.followUpDate ? summary.followUpDate.toISOString() : null,
       // Rendered in place of a date when the doctor meant an interval.
       followUpAfterValue: summary.followUpAfterValue ?? null,

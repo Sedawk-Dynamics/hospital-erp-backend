@@ -34,6 +34,11 @@ export const updateDischargeSummarySchema = z.object({
     labResultsSummary: z.string().optional(),
     medicationReconciliation: z.string().optional(),
     dischargeInstructions: z.string().optional(),
+      chiefComplaint: z.string().optional(),
+  examination: z.string().optional(),
+  investigation: z.string().optional(),
+  impression: z.string().optional(),
+
     followUpDate: z
       .string()
       .refine((val) => !isNaN(Date.parse(val)), { message: 'Invalid follow-up date' })

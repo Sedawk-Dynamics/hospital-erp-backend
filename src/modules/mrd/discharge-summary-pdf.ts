@@ -65,7 +65,11 @@ export interface DischargeDocument {
   sections: {
     /** Free text the doctor added to the header column (incl. "general" pins). */
     headerNotes: string | null;
+    chiefComplaint: string | null;
+    examination: string | null;
+    investigation: string | null;
     diagnosesText: string | null;
+    impression: string | null;
     hospitalCourse: string | null;
     keyLabs: string | null;
     labResults: string | null;
@@ -79,14 +83,35 @@ export interface DischargeDocument {
   medications: Array<{ drug: string; dosage: string; frequency: string; duration: string | null; route: string; instructions: string | null }>;
 }
 
-// ---------------------------------------------------------------------------
-// Formatting helpers
-// ---------------------------------------------------------------------------
-
 const INK = '#1a2332';
 const MUTED = '#5b6472';
 const LINE = '#c9ced6';
 const LIGHT = '#eef2f5';
+
+// Any text before the first day header is the overview; each day is a header
+// line `Day <n> | <title> | <type>` followed by that day's summary lines.
+function parseDayBlocks(text: string): {
+  preamble: string;
+  blocks: Array<{ day: string; title: string; type: string; body: string }>;
+} {
+  const blocks: Array<{ day: string; title: string; type: string; body: string }> = [];
+  const preambleLines: string[] = [];
+  let current: { day: string; title: string; type: string; body: string[] } | null = null;
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    const m = /^Day\b\s*([^|]*)\|([^|]*)\|(.*)$/i.exec(line);
+    if (m) {
+      if (current) blocks.push({ ...current, body: current.body.join('\n').trim() });
+      current = { day: `Day ${m[1].trim()}`.replace(/\s+/g, ' ').trim(), title: m[2].trim(), type: m[3].trim(), body: [] };
+    } else if (current) {
+      current.body.push(raw);
+    } else {
+      preambleLines.push(raw);
+    }
+  }
+  if (current) blocks.push({ ...current, body: current.body.join('\n').trim() });
+  return { preamble: preambleLines.join('\n').trim(), blocks };
+}
 
 const fmtDate = (v?: string | null) => (v ? new Date(v).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—');
 const fmtDateTime = (v?: string | null) => (v ? new Date(v).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—');
@@ -212,24 +237,20 @@ export function streamDischargeSummaryPdf(
     paragraph(doc.sections.headerNotes);
   }
 
-  // ---- Diagnoses ----
-  heading('Diagnosis');
-  if (doc.sections.diagnosesText && doc.sections.diagnosesText.trim()) {
-    paragraph(doc.sections.diagnosesText);
-  } else if (doc.diagnoses.length) {
-    table(['Diagnosis', 'Type', 'ICD-10'], doc.diagnoses.map((d) => [d.name, d.type, d.icdCode ?? '—']), [6, 2, 2]);
-  } else emptyNote('No diagnoses recorded.');
-
-  // ---- Allergies ----
-  if (doc.allergies.length) {
-    heading('Allergies');
-    table(['Allergen', 'Reaction'], doc.allergies.map((a) => [a.allergen, a.reaction ?? '—']), [1, 1]);
+  // ---- Chief Complaint ---- (pinned/AI section + the visit's admission reason)
+  if (doc.sections.chiefComplaint?.trim() || doc.admission.chiefComplaint || doc.admission.reason) {
+    heading('Chief Complaint');
+    paragraph(
+      [doc.sections.chiefComplaint, doc.admission.chiefComplaint, doc.admission.reason]
+        .filter(Boolean)
+        .join('\n'),
+    );
   }
 
-  // ---- Presenting complaint / reason ----
-  if (doc.admission.chiefComplaint || doc.admission.reason) {
-    heading('Presenting Complaint / Reason for Admission');
-    paragraph([doc.admission.chiefComplaint, doc.admission.reason].filter(Boolean).join('\n'));
+  // ---- Examination ----
+  if (doc.sections.examination?.trim()) {
+    heading('Examination');
+    paragraph(doc.sections.examination);
   }
 
   // ---- Vitals ----
@@ -249,6 +270,32 @@ export function streamDischargeSummaryPdf(
       [2.2, 1.4, 1, 1, 0.8, 1, 1.2]);
   }
 
+  // ---- Allergies ----
+  if (doc.allergies.length) {
+    heading('Allergies');
+    table(['Allergen', 'Reaction'], doc.allergies.map((a) => [a.allergen, a.reaction ?? '—']), [1, 1]);
+  }
+
+  // ---- Investigation ---- (narrative; the labs table prints below)
+  if (doc.sections.investigation?.trim()) {
+    heading('Investigation');
+    paragraph(doc.sections.investigation);
+  }
+
+  // ---- Diagnoses ----
+  heading('Diagnosis');
+  if (doc.sections.diagnosesText && doc.sections.diagnosesText.trim()) {
+    paragraph(doc.sections.diagnosesText);
+  } else if (doc.diagnoses.length) {
+    table(['Diagnosis', 'Type', 'ICD-10'], doc.diagnoses.map((d) => [d.name, d.type, d.icdCode ?? '—']), [6, 2, 2]);
+  } else emptyNote('No diagnoses recorded.');
+
+  // ---- Impression ----
+  if (doc.sections.impression?.trim()) {
+    heading('Impression');
+    paragraph(doc.sections.impression);
+  }
+
   // ---- Procedures / surgeries ----
   if (doc.procedures.length) {
     heading('Procedures / Surgeries');
@@ -260,12 +307,28 @@ export function streamDischargeSummaryPdf(
   // ---- Hospital course ----
   if (doc.sections.hospitalCourse) {
     heading('Hospital Course & Treatment');
-    paragraph(doc.sections.hospitalCourse);
+    const { preamble, blocks: dayBlocks } = parseDayBlocks(doc.sections.hospitalCourse);
+    if (dayBlocks.length === 0) {
+      paragraph(doc.sections.hospitalCourse);
+    } else {
+      const clean = (v: string) => (v && v !== '-' ? v : '');
+      if (preamble) paragraph(preamble);
+      for (const b of dayBlocks) {
+        ensure(28);
+        const header = [b.day, clean(b.title) && `· ${b.title}`, clean(b.type) && `· ${b.type}`]
+          .filter(Boolean)
+          .join('  ');
+        pdf.font(theme.font.bold).fontSize(9).fillColor(accent).text(header, left, pdf.y, { width: CONTENT_W });
+        pdf.moveDown(0.1);
+        if (b.body) paragraph(b.body);
+        else pdf.moveDown(0.2);
+      }
+    }
   }
 
-  // ---- Investigations ----
+  // ---- Lab Results ----
   if (doc.sections.keyLabs || doc.sections.labResults || doc.imaging.length) {
-    heading('Investigations');
+    heading('Lab Results');
     if (doc.sections.keyLabs) {
       pdf.font(theme.font.bold).fontSize(8.5).fillColor(accent).text('Significant / Abnormal Labs', left, pdf.y, { width: CONTENT_W });
       pdf.moveDown(0.1);
