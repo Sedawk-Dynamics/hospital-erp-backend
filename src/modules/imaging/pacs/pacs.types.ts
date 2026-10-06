@@ -64,6 +64,9 @@ export interface PacsProvider {
   /** Build the browser-facing viewer URL for a study, or null if unsupported. */
   buildViewerUrl(studyInstanceUid: string): string | null;
 
+  /** Render a single-frame PNG preview for an instance (by SOP UID), or null. */
+  getInstancePreview?(sopInstanceUid: string): Promise<Buffer | null>;
+
   /** Optional liveness check (used by the config endpoint). */
   ping?(): Promise<boolean>;
 }

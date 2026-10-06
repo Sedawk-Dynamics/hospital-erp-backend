@@ -130,4 +130,48 @@ export const orthancProvider: PacsProvider = {
       : `/${env.ORTHANC_OHIF_PATH}`;
     return `${publicBase()}${path}?StudyInstanceUIDs=${encodeURIComponent(studyInstanceUid)}`;
   },
+  
+
+  async getInstancePreview(sopInstanceUid: string): Promise<Buffer | null> {
+    const found = await fetch(`${base()}/tools/lookup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain', ...authHeader() },
+      body: sopInstanceUid,
+    });
+    if (!found.ok) return null;
+    const hits = (await found.json()) as Array<{ Type: string; ID: string }>;
+    const instance = hits.find((h) => h.Type === 'Instance');
+    if (!instance) return null;
+
+    const png = await fetch(`${base()}/instances/${instance.ID}/preview`, {
+      headers: { Accept: 'image/png', ...authHeader() },
+    });
+    if (!png.ok) return null;
+    return Buffer.from(await png.arrayBuffer());
+  },
 };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

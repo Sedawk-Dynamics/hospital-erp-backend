@@ -698,3 +698,27 @@ export async function resolveAttachmentViewer(
 
   return { viewerUrl: null, reason: 'archive-unsupported' };
 }
+
+
+export async function resolvePreview(tenantId: string, attachmentId: string): Promise<Buffer | null> {
+  const provider = getPacsProvider();
+  if (!provider || !provider.isConfigured() || !provider.embeddable) {
+    return null;
+  }
+
+  const att = await prisma.imagingAttachment.findFirst({
+    where: { id: attachmentId, tenantId, deletedAt: null },
+    select: { id: true, category: true, fileUrl: true },
+  });
+  if (!att) throw AppError.notFound('Attachment not found');
+  if (att.category !== 'dicom') return null;
+
+  const inst = await prisma.dicomInstance.findFirst({
+    where: { tenantId, fileUrl: att.fileUrl },
+    select: { sopInstanceUid: true, study: { select: { studyInstanceUid: true } } },
+  });
+  if (!inst?.sopInstanceUid) return null;
+
+  if (!provider.getInstancePreview) return null;
+  return provider.getInstancePreview(inst.sopInstanceUid);
+}

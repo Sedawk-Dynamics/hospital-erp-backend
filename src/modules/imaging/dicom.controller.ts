@@ -94,3 +94,29 @@ export async function resolveAttachmentViewer(
     sendResponse({ res, message: 'Viewer resolved', data });
   } catch (err) { next(err); }
 }
+
+export async function resolveAttachmentPreview(
+  req: AuthenticatedRequest, res: Response, next: NextFunction,
+) {
+  try {
+    const png = await service.resolvePreview(
+      req.user!.tenantId,
+      req.params.attachmentId as string,
+    );
+    if (!png) { res.status(404).end(); return; }
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    res.send(png);
+  } catch (err) { next(err); }
+}
+
+
+
+
+
+
+
+
+
+
+

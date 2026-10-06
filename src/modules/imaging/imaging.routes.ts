@@ -225,6 +225,7 @@ imagingRoutes.delete(
 // --- PACS / DICOM ---
 imagingRoutes.get('/dicom/config', authenticate, requirePermission('imaging', 'read'), dicomController.getPacsConfig);
 imagingRoutes.get('/dicom/attachment/:attachmentId/viewer', authenticate, requirePermission('imaging', 'read'), validate(syncAttachmentParamSchema), dicomController.resolveAttachmentViewer);
+imagingRoutes.get('/dicom/attachment/:attachmentId/preview', authenticate, requirePermission('imaging', 'read'), validate(syncAttachmentParamSchema), dicomController.resolveAttachmentPreview);
 imagingRoutes.post('/dicom/sync-attachment/:attachmentId', authenticate, requirePermission('imaging', 'create'), validate(syncAttachmentParamSchema), dicomController.syncAttachment);
 imagingRoutes.get('/dicom/worklist', authenticate, requirePermission('imaging', 'read'), validate(worklistQuerySchema), dicomController.getWorklist);
 imagingRoutes.get('/dicom/studies', authenticate, requirePermission('imaging', 'read'), validate(getStudiesQuerySchema), dicomController.getStudies);
