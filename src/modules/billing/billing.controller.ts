@@ -266,6 +266,7 @@ export async function getAdmissionBillDocument(
       req.user!.tenantId,
       req.params.admissionId as string,
       { userId: req.user!.userId, roles: req.user!.roles ?? [] },
+      req.query.summary === 'true',
     );
     sendResponse({ res, message: 'Admission bill document', data });
   } catch (err) {
@@ -287,7 +288,7 @@ export async function getAdmissionBillPdf(
     const doc = await buildAdmissionBillDocument(tenantId, req.params.admissionId as string, {
       userId: req.user!.userId,
       roles: req.user!.roles ?? [],
-    });
+    },req.query.summary === 'true');
     const { streamAdmissionBillPdf } = await import('./billing.ip-bill-pdf');
     streamAdmissionBillPdf(res, doc, doc.hospital, doc.template);
   } catch (err) {

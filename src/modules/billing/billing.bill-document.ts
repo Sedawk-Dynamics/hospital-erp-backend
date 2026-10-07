@@ -184,6 +184,7 @@ export async function buildAdmissionBillDocument(
   tenantId: string,
   admissionId: string,
   actor: { userId: string; roles: string[] },
+  summary?: boolean,
 ): Promise<AdmissionBillDocument> {
   const { getAdmissionLedger } = await import('./billing.service');
   const { getHospitalBranding, resolvePdfTemplate } = await import(
@@ -193,11 +194,7 @@ export async function buildAdmissionBillDocument(
   const [ledger, branding, template, gstProfile] = await Promise.all([
     getAdmissionLedger(tenantId, admissionId, actor),
     getHospitalBranding(tenantId),
-    // Same template the PDF route resolves, so the print view and the PDF are
-    // two renderings of one definition rather than two sets of styling.
     resolvePdfTemplate(tenantId, 'ip_bill'),
-    // Decides whether this document shows tax at all. An unregistered hospital
-    // prints exactly what it printed before any of this existed.
     getGstProfile(tenantId),
   ]);
 
@@ -240,10 +237,6 @@ export async function buildAdmissionBillDocument(
         },
       })
     : [];
-
-  // Discount / tax live on the bill headers, not on the ledger lines. The GST
-  // identity does too — the document type and its number are allotted to the
-  // BILL at finalisation, never to a line.
   const billHeaders = billIds.length
     ? await prisma.bill.findMany({
         where: { id: { in: billIds } },
@@ -253,9 +246,6 @@ export async function buildAdmissionBillDocument(
           gstDocumentType: true, invoiceNumber: true, billOfSupplyNumber: true, financialYear: true,
           supplierGstin: true, supplierStateCode: true, recipientGstin: true,
           placeOfSupplyStateCode: true, isInterState: true,
-          // Section 10: the IRN and the signed QR belong on the face of the
-          // document once e-invoicing applies. Selected here or the layout
-          // would have the fields and never the values.
           irn: true, irnAckNo: true, irnAckDate: true, irnQrPayload: true,
         },
       })
@@ -355,6 +345,13 @@ export async function buildAdmissionBillDocument(
   const refundable = r2(Math.min(surplus, r2(Math.max(0, t.deposit - t.depositRefunded))));
   const isPaid = balanceDue <= 0;
 
+  const summarisedBill=summary ? groups.map((g) => ({
+    category: g.category,
+    label: g.label,
+    total: g.total,
+    lines:[]
+  })) : groups;
+
   return {
     hospital: branding,
     template,
@@ -418,7 +415,7 @@ export async function buildAdmissionBillDocument(
       };
     }),
     gst,
-    groups,
+    groups:summarisedBill,
     payments: payments.map((pay) => ({
       date: pay.paymentDate.toISOString(),
       amount: Number(pay.amount),
