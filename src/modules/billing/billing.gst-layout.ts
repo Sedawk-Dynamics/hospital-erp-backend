@@ -495,6 +495,18 @@ export function gstGroupTotalCells(
   return [label, '', '', '', gstMoney(sum((l) => taxableValueOf(l) ?? 0)), ...tax, gstMoney(total)];
 }
 
+
+export function gstSummaryGroupCells(
+  gst: BillDocumentGst,
+  label: string,
+  total: number,
+): string[] {
+  const columns = gstChargeColumns(gst);
+  return columns.map((_, i) =>
+    i === 0 ? label : i === columns.length - 1 ? gstMoney(total) : DASH,
+  );
+}
+
 /** The identity fields that go on the face of the document, Rule 46. */
 export function gstIdentityFields(gst: BillDocumentGst): Array<[string, string]> {
   // Only for a registered hospital: an unregistered one has no GSTIN, issues no

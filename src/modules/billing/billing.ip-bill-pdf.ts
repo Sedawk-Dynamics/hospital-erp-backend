@@ -21,6 +21,7 @@ import {
   gstChargeCells,
   gstChargeColumns,
   gstGroupTotalCells,
+  gstSummaryGroupCells,
   gstIdentityFields,
   NO_GST,
   type BillDocumentGst,
@@ -173,6 +174,13 @@ export function streamAdmissionBillPdf(
   } else {
     const rows: TableRow[] = [];
     for (const g of doc.groups) {
+      // Summarised bill: a category carries no line detail, so print ONE row —
+      // label + dashes + total — exactly as the screen does, and skip both the
+      // heading row and the separate total row.
+      if (g.lines.length === 0) {
+        rows.push({ cells: gstSummaryGroupCells(gst, g.label, g.total), kind: 'total' });
+        continue;
+      }
       rows.push({ cells: [g.label], kind: 'group' });
       g.lines.forEach((l, i) => {
         // Striped within the group, as on screen — not down the whole table.
