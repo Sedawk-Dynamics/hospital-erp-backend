@@ -304,6 +304,16 @@ enum ProgressNoteType {
   procedure_note    @map("procedure_note")
   consultation_note @map("consultation_note")
   op_clinic_visit   @map("op_clinic_visit")
+  // Legacy values retained for backward compatibility. The IP progress-note
+  // composer only offers the five values above; these remain valid so existing
+  // rows and the OP consultation flow (which writes `general`) keep working.
+  complaint         @map("complaint")
+  vitals            @map("vitals")
+  investigation     @map("investigation")
+  discussion        @map("discussion")
+  impression        @map("impression")
+  advice            @map("advice")
+  general           @map("general")
 }
 
 enum ProgressNoteStatus {

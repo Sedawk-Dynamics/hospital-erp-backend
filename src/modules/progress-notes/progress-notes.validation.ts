@@ -9,6 +9,16 @@ const progressNoteTypeEnum = z.enum([
   'procedure_note',
   'consultation_note',
   'op_clinic_visit',
+  // Legacy values kept valid so the OP consultation flow (which writes
+  // `general`) and any existing rows keep working. The IP composer only
+  // offers the five values above.
+  'complaint',
+  'vitals',
+  'investigation',
+  'discussion',
+  'impression',
+  'advice',
+  'general',
 ]);
 
 
