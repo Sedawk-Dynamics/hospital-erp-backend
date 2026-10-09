@@ -4168,8 +4168,6 @@ export async function createPharmacySale(
     // Cap the bill's settled amount at the total — extra cash tendered is change,
     // not a credit balance.
     const applied = round2(Math.min(rawPaid, totalAmount));
-    // Trim any change off the last tender (usually cash) so the recorded payment
-    // rows sum exactly to `applied` rather than to the raw cash handed over.
     let excess = round2(rawPaid - applied);
     for (let i = paymentLines.length - 1; i >= 0 && excess > 0; i--) {
       const cut = Math.min(paymentLines[i].amount, excess);

@@ -304,6 +304,8 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'pharmacy', action: 'read' }, { module: 'pharmacy', action: 'create' }, { module: 'pharmacy', action: 'update' },
       { module: 'prescriptions', action: 'read' }, { module: 'prescriptions', action: 'update' },
       { module: 'inventory', action: 'read' }, { module: 'patients', action: 'read' },
+      // Settle a generated OP pharmacy bill at the counter (POST /billing/payments).
+      { module: 'payments', action: 'read' }, { module: 'payments', action: 'create' },
       // OT kit issue is raised against a scheduled surgery.
       { module: 'ot_requests', action: 'read' },
     ],
@@ -318,6 +320,8 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       // transfer source / destination.
       { module: 'departments', action: 'read' }, { module: 'wards', action: 'read' },
       { module: 'patients', action: 'read' }, { module: 'reports', action: 'read' }, { module: 'reports', action: 'export' },
+      // Settle a generated OP pharmacy bill at the counter (POST /billing/payments).
+      { module: 'payments', action: 'read' }, { module: 'payments', action: 'create' },
       // OT kit issue is raised against a scheduled surgery.
       { module: 'ot_requests', action: 'read' },
     ],
