@@ -224,4 +224,9 @@ export async function fileExists(filename: string): Promise<boolean> {
   }
 }
 
+export function uploadImagingArray(fieldName: string, maxCount = 1000) {
+  return imagingUpload.array(fieldName, maxCount);
+}
+
+
 export { UPLOAD_DIR, MAX_FILE_SIZE, ALLOWED_TYPES, ALLOWED_EXTENSIONS };

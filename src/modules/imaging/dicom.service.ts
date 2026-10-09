@@ -722,3 +722,47 @@ export async function resolvePreview(tenantId: string, attachmentId: string): Pr
   if (!provider.getInstancePreview) return null;
   return provider.getInstancePreview(inst.sopInstanceUid);
 }
+
+export async function dicomFolderUpload(
+  tenantId: string,
+   userId: string, 
+  requestId: string,
+  files: Express.Multer.File[],
+) {
+  const provider = getPacsProvider();
+  if (!provider || !provider.isConfigured() || !pacsSupportsArchive()) {
+    throw AppError.badRequest('PACS archive not configured');
+  }
+
+  const req = await prisma.imagingRequest.findFirst({
+    where: { id: requestId, tenantId },
+    include: { patient: true },
+  });
+  if (!req) throw AppError.notFound('Imaging request not found');
+
+  if (!files || files.length === 0) throw AppError.badRequest('No files uploaded');
+
+  const results: SyncAttachmentResult[] = [];
+  for (const file of files) {
+    // Create a temporary attachment record to track the file.
+    const att = await prisma.imagingAttachment.create({
+      data: {
+        tenantId,
+        imagingRequestId: req.id,
+        category: 'dicom',
+        fileUrl: `/uploads/${file.filename}`,
+        fileName: file.originalname,
+        sizeBytes: file.size,
+        mimeType: file.mimetype,
+        uploadedBy: '', // Add required uploadedBy field
+      },
+    });
+    
+    // Sync to PACS (idempotent).
+    const syncResult = await syncAttachmentToPacs(tenantId, att.id);
+    results.push(syncResult);
+
+    return { count: results.length, results };
+
+  }
+}

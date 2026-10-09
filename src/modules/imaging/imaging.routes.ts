@@ -6,7 +6,7 @@ import { validate } from '../../middleware/validate';
 import * as controller from './imaging.controller';
 import * as dicomController from './dicom.controller';
 import * as attachmentService from './imaging-attachments.service';
-import { uploadImagingSingle } from '../../services/upload.service';
+import { uploadImagingArray, uploadImagingSingle } from '../../services/upload.service';
 import type { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse } from '../../shared/apiResponse';
 import {
@@ -233,3 +233,8 @@ imagingRoutes.get('/dicom/studies/:id', authenticate, requirePermission('imaging
 imagingRoutes.get('/dicom/patient/:patientId/studies', authenticate, requirePermission('imaging', 'read'), dicomController.getStudiesByPatient);
 imagingRoutes.post('/dicom/studies', authenticate, requirePermission('imaging', 'create'), validate(createStudySchema), dicomController.createStudy);
 imagingRoutes.post('/dicom/studies/:id/instances', authenticate, requirePermission('imaging', 'create'), validate(addInstanceSchema), dicomController.addInstance);
+
+
+// dicom folder upload
+imagingRoutes.post('/requests/:requestId/attachments/dicom-folder',authenticate,requirePermission('imaging', 'create'),(req: AuthenticatedRequest, res: Response, next: NextFunction) =>
+    uploadImagingArray('files')(req as any, res, next as any), dicomController.uploadDicomFolder);
