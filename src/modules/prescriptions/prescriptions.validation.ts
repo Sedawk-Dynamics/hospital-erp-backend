@@ -24,7 +24,7 @@ export const createPrescriptionSchema = z.object({
           frequency: z.string().min(1, 'Frequency is required').max(100),
           duration: z.string().max(100).optional(),
           route: z
-            .enum(['oral', 'iv', 'im', 'topical', 'sublingual', 'inhalation', 'other'])
+            .enum(['oral', 'iv', 'im', 'intravenous', 'intramuscular', 'topical', 'sublingual', 'inhalation', 'buccal', 'rectal', 'vaginal', 'ophthalmic', 'otic', 'intranasal', 'intradermal', 'intrathecal', 'epidural', 'intra_articular', 'intraperitoneal', 'enteral_tube', 'transdermal', 'intravenous_infusion', 'intraosseous', 'intravitreal', 'other'])
             .default('oral'),
           instructions: z.string().max(1000).optional(),
           doseQuantity: z.number().positive().max(9999).optional(),
@@ -45,7 +45,7 @@ const prescriptionItemReplaceSchema = z.object({
   frequency: z.string().min(1).max(100),
   duration: z.string().max(100).optional(),
   route: z
-    .enum(['oral', 'iv', 'im', 'topical', 'sublingual', 'inhalation', 'other'])
+    .enum(['oral', 'iv', 'im', 'intravenous', 'intramuscular', 'topical', 'sublingual', 'inhalation', 'buccal', 'rectal', 'vaginal', 'ophthalmic', 'otic', 'intranasal', 'intradermal', 'intrathecal', 'epidural', 'intra_articular', 'intraperitoneal', 'enteral_tube', 'transdermal', 'intravenous_infusion', 'intraosseous', 'intravitreal', 'other'])
     .default('oral'),
   instructions: z.string().max(1000).optional(),
   doseQuantity: z.number().positive().max(9999).optional(),
@@ -129,7 +129,7 @@ export const addPrescriptionItemSchema = z.object({
     frequency: z.string().min(1, 'Frequency is required').max(100),
     duration: z.string().max(100).optional(),
     route: z
-      .enum(['oral', 'iv', 'im', 'topical', 'sublingual', 'inhalation', 'other'])
+      .enum(['oral', 'iv', 'im', 'intravenous', 'intramuscular', 'topical', 'sublingual', 'inhalation', 'buccal', 'rectal', 'vaginal', 'ophthalmic', 'otic', 'intranasal', 'intradermal', 'intrathecal', 'epidural', 'intra_articular', 'intraperitoneal', 'enteral_tube', 'transdermal', 'intravenous_infusion', 'intraosseous', 'intravitreal', 'other'])
       .default('oral'),
     instructions: z.string().max(1000).optional(),
     doseQuantity: z.number().positive().max(9999).optional(),
@@ -150,7 +150,7 @@ export const updatePrescriptionItemSchema = z.object({
     frequency: z.string().min(1).max(100).optional(),
     duration: z.string().max(100).optional().nullable(),
     route: z
-      .enum(['oral', 'iv', 'im', 'topical', 'sublingual', 'inhalation', 'other'])
+      .enum(['oral', 'iv', 'im', 'intravenous', 'intramuscular', 'topical', 'sublingual', 'inhalation', 'buccal', 'rectal', 'vaginal', 'ophthalmic', 'otic', 'intranasal', 'intradermal', 'intrathecal', 'epidural', 'intra_articular', 'intraperitoneal', 'enteral_tube', 'transdermal', 'intravenous_infusion', 'intraosseous', 'intravitreal', 'other'])
       .optional(),
     instructions: z.string().max(1000).optional().nullable(),
     doseQuantity: z.number().positive().max(9999).optional().nullable(),
