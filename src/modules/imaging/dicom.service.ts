@@ -725,7 +725,7 @@ export async function resolvePreview(tenantId: string, attachmentId: string): Pr
 
 export async function dicomFolderUpload(
   tenantId: string,
-   userId: string, 
+  userId: string,
   requestId: string,
   files: Express.Multer.File[],
 ) {
@@ -742,27 +742,76 @@ export async function dicomFolderUpload(
 
   if (!files || files.length === 0) throw AppError.badRequest('No files uploaded');
 
-  const results: SyncAttachmentResult[] = [];
+  const patientName = req.patient
+    ? `${req.patient.firstName} ${req.patient.lastName ?? ''}`.trim()
+    : undefined;
+
+  // Step 1: push every slice in the folder to the PACS server (Orthanc).
+  // Orthanc groups them into one study/series by their shared DICOM UIDs.
+  const stored = [];
   for (const file of files) {
-    // Create a temporary attachment record to track the file.
-    const att = await prisma.imagingAttachment.create({
-      data: {
-        tenantId,
-        imagingRequestId: req.id,
-        category: 'dicom',
-        fileUrl: `/uploads/${file.filename}`,
-        fileName: file.originalname,
-        sizeBytes: file.size,
-        mimeType: file.mimetype,
-        uploadedBy: '', // Add required uploadedBy field
-      },
+    const buffer = await fs.promises.readFile(file.path);
+    const result = await provider.storeInstance({
+      buffer,
+      fileName: file.originalname,
+      patientMrn: req.patient?.mrn,
+      patientName,
     });
-    
-    // Sync to PACS (idempotent).
-    const syncResult = await syncAttachmentToPacs(tenantId, att.id);
-    results.push(syncResult);
-
-    return { count: results.length, results };
-
+    stored.push(result);
   }
+
+  // Step 2: create ONE attachment row for the whole study (not one per slice),
+  // so the UI shows a single DICOM entry with one preview + one full-screen
+  // viewer instead of N separate ones.
+  const firstFile = files[0];
+  const totalSize = files.reduce((sum, f) => sum + f.size, 0);
+  const attachment = await prisma.imagingAttachment.create({
+    data: {
+      tenantId,
+      imagingRequestId: req.id,
+      category: 'dicom',
+      fileUrl: `/uploads/${firstFile.filename}`,
+      fileName: `DICOM study (${files.length} images)`,
+      sizeBytes: totalSize,
+      mimeType: firstFile.mimetype || 'application/dicom',
+      uploadedBy: userId,
+    },
+  });
+
+  const head = stored[0];
+  const viewerUrl = provider.buildViewerUrl(head.studyInstanceUid) ?? undefined;
+  const study = await createStudy(tenantId, {
+    patientId: req.patientId,
+    imagingRequestId: attachment.imagingRequestId,
+    imagingResultId: attachment.imagingResultId ?? undefined,
+    studyInstanceUid: head.studyInstanceUid,
+    accessionNumber: head.accessionNumber,
+    studyDate: head.studyDate,
+    studyDescription: head.studyDescription,
+    modality: head.modality,
+    patientName: head.patientName,
+    patientDicomId: head.patientDicomId,
+    referringPhysician: head.referringPhysician,
+    viewerUrl,
+  });
+
+  for (let i = 0; i < stored.length; i++) {
+    const s = stored[i];
+    await addInstance(tenantId, study.id, {
+      seriesInstanceUid: s.seriesInstanceUid,
+      seriesDescription: s.seriesDescription,
+      seriesNumber: s.seriesNumber,
+      seriesModality: s.modality,
+      bodyPart: s.bodyPart ?? req.bodyPart ?? undefined,
+      sopInstanceUid: s.sopInstanceUid,
+      instanceNumber: s.instanceNumber,
+      fileUrl: `/uploads/${files[i].filename}`,
+      fileSizeBytes: files[i].size,
+      mimeType: files[i].mimetype ?? 'application/dicom',
+      rows: s.rows,
+      columns: s.columns,
+    });
+  }
+
+  return { attachmentId: attachment.id, studyId: study.id, count: stored.length, stored };
 }

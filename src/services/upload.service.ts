@@ -143,6 +143,22 @@ const imagingUpload = multer({
   fileFilter: imagingFileFilter,
 });
 
+// Lenient filter for DICOM folder uploads: a folder carries junk (.DS_Store,
+// DICOMDIR, etc.) alongside the slices. Instead of throwing on the first
+// non-DICOM file (which aborts the whole batch), silently skip it with
+// cb(null, false) and keep only real .dcm/.dicom files.
+function dicomFolderFilter(_req: Request, file: Express.Multer.File, cb: FileFilterCallback) {
+  const ext = path.extname(file.originalname).toLowerCase();
+  const isDicom = ext === '.dcm' || ext === '.dicom';
+  cb(null, isDicom);
+}
+
+const dicomFolderUpload = multer({
+  storage,
+  limits: { fileSize: MAX_IMAGING_FILE_SIZE },
+  fileFilter: dicomFolderFilter,
+});
+
 export function uploadImagingSingle(fieldName: string) {
   return imagingUpload.single(fieldName);
 }
@@ -227,6 +243,11 @@ export async function fileExists(filename: string): Promise<boolean> {
 export function uploadImagingArray(fieldName: string, maxCount = 1000) {
   return imagingUpload.array(fieldName, maxCount);
 }
+
+export function uploadDicomFolderArray(fieldName: string, maxCount = 1000) {
+  return dicomFolderUpload.array(fieldName, maxCount);
+}
+
 
 
 export { UPLOAD_DIR, MAX_FILE_SIZE, ALLOWED_TYPES, ALLOWED_EXTENSIONS };
