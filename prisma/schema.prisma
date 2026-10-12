@@ -2967,6 +2967,16 @@ model Vital {
   notes                  String?
   recordedBy             String?  @map("recorded_by")
   recordedAt             DateTime @default(now()) @map("recorded_at")
+  // Optional link to the progress note this reading was recorded with. Null for
+  // standalone readings (nurse rounds, triage). Set when a doctor records vitals
+  // alongside an IP progress note, so "this note's vitals" can be fetched back.
+  progressNoteId         String?  @map("progress_note_id")
+  // Doctor-set flags when vitals are recorded with a progress note. The pinned
+  // discharge section (same vocabulary as progress-note pins; null = not pinned)
+  // and whether the reading is visible to the patient. Null/false by default, so
+  // every other vitals entry point is unaffected.
+  pinnedDischargeSection String?  @map("pinned_discharge_section")
+  showToPatient          Boolean  @default(false) @map("show_to_patient")
 
   // Append-only correction chain. When a doctor (or an out-of-grace-window nurse)
   // corrects a vital, insert a new row with supersedesVitalId pointing to the
@@ -2978,15 +2988,17 @@ model Vital {
   correctedById     String? @map("corrected_by_id")
   isCorrection      Boolean @default(false) @map("is_correction")
 
-  visit       Visit   @relation(fields: [visitId], references: [id])
-  patient     Patient @relation(fields: [patientId], references: [id])
-  recorder    User?   @relation(fields: [recordedBy], references: [id])
-  supersedes  Vital?  @relation("VitalCorrection", fields: [supersedesVitalId], references: [id])
-  correctedBy Vital[] @relation("VitalCorrection")
-  corrector   User?   @relation("VitalCorrector", fields: [correctedById], references: [id])
+  visit        Visit         @relation(fields: [visitId], references: [id])
+  patient      Patient       @relation(fields: [patientId], references: [id])
+  recorder     User?         @relation(fields: [recordedBy], references: [id])
+  supersedes   Vital?        @relation("VitalCorrection", fields: [supersedesVitalId], references: [id])
+  correctedBy  Vital[]       @relation("VitalCorrection")
+  corrector    User?         @relation("VitalCorrector", fields: [correctedById], references: [id])
+  progressNote ProgressNote? @relation(fields: [progressNoteId], references: [id])
 
   @@index([visitId, recordedAt])
   @@index([supersedesVitalId])
+  @@index([progressNoteId])
   @@map("vitals")
 }
 
@@ -3025,11 +3037,12 @@ model ProgressNote {
   // prescription so anyone who can view the prescription also sees this note.
   prescriptionId        String?            @map("prescription_id")
   noteType              ProgressNoteType?  @map("note_type")
-  // Free-text title for the note (shown in the visit-note list/header).
   noteTitle             String?            @map("note_title") @db.VarChar(200)
-  // Snapshot of the hospital day this note belongs to, computed on create as
-  // (noteDate - admission.admissionDate) + 1. The time of day comes from
-  // `createdAt`. Null for OP notes with no admission.
+  // Doctor-chosen hospital day this note is for (Day 1 = admission day) and the
+  // doctor-entered date + time of the note. Independent of createdAt so a note
+  // written later can still be dated to when the patient was actually seen.
+  noteDay               Int?               @map("note_day")
+  noteAt                DateTime?          @map("note_at")
   hospitalDay           Int?               @map("hospital_day")
   content               String
   impressions           String?
@@ -3069,6 +3082,7 @@ model ProgressNote {
   signer       User?                   @relation("ProgressNoteSigner", fields: [signedById], references: [id])
   amendments   ProgressNoteAmendment[]
   pins         ProgressNotePin[]
+  vitals       Vital[]
 
   @@index([status, createdAt])
   @@index([admissionId, createdAt])

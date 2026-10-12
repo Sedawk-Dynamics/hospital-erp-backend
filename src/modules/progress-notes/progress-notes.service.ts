@@ -178,6 +178,8 @@ export async function createProgressNote(
       prescriptionId,
       noteType: data.noteType as any,
       noteTitle: data.noteTitle ?? null,
+      noteDay: data.noteDay ?? null,
+      noteAt: data.noteAt ? new Date(data.noteAt) : null,
       hospitalDay,
       content: data.content,
       impressions: data.impressions ?? null,

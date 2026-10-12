@@ -1774,6 +1774,9 @@ export async function recordVitals(
       bloodSugar: clamp(data.bloodSugar, 9999.99),         // Decimal(6,2)
       notes: data.notes,
       recordedBy: userId,
+      progressNoteId: data.progressNoteId ?? null,
+      pinnedDischargeSection: data.pinnedDischargeSection ?? null,
+      showToPatient: data.showToPatient ?? false,
     },
     include: {
       recorder: { select: { id: true, firstName: true, lastName: true } },

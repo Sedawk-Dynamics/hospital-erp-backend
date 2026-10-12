@@ -62,6 +62,10 @@ export const createProgressNoteSchema = z.object({
     prescriptionId: z.string().uuid('Invalid prescription ID').optional().nullable(),
     noteType: progressNoteTypeEnum.optional(),
     noteTitle: z.string().max(200).optional().nullable(),
+    // Hospital day this note is for (Day 1 = admission day).
+    noteDay: z.number().int().min(1).max(3650).optional().nullable(),
+    // Doctor-entered date + time ("YYYY-MM-DDTHH:MM" from datetime-local, or ISO).
+    noteAt: z.string().min(1).max(40).optional().nullable(),
     content: z.string().min(1, 'Content is required').max(10000),
     impressions: z.string().max(10000).optional().nullable(),
     discussions: z.string().max(10000).optional().nullable(),
