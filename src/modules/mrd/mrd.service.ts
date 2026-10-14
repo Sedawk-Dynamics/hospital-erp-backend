@@ -201,7 +201,7 @@ async function buildSummaryFields(
   const visitId = admission.visitId;
   const patientId = admission.patientId;
 
-  const [diagnoses, allNotes, sectionPins, labResults, prescriptions, pinnedVitals] = await Promise.all([
+  const [diagnoses, allNotes, sectionPins, labResults, prescriptions, pinnedVitals, imagingStudies] = await Promise.all([
     prisma.diagnosis.findMany({
       where: { visitId },
       orderBy: { diagnosedAt: 'asc' },
@@ -290,6 +290,19 @@ async function buildSummaryFields(
         correctedBy: { none: {} },
       },
       orderBy: { recordedAt: 'asc' },
+    }),
+    // Radiology/imaging studies for the visit. Completed studies (or any with a
+    // reported impression) — one block per study in the discharge summary.
+    prisma.imagingRequest.findMany({
+      where: { visitId, tenantId },
+      select: {
+        imagingType: true,
+        bodyPart: true,
+        clinicalIndication: true,
+        completedAt: true,
+        imagingResult: { select: { impression: true } },
+      },
+      orderBy: { completedAt: 'asc' },
     }),
   ]);
 
@@ -427,39 +440,35 @@ async function buildSummaryFields(
   // factual count line (derived only from the uploaded results, never AI) and
   // lists only its abnormal values. Normal parameters are summarised as a count,
   // not dumped, so the section stays readable.
+  // No per-line [ABNORMAL] tag: these lines only ever appear under the
+  // "Abnormal:" heading, so the flag would just be redundant.
   const paramLine = (r: (typeof labResults)[number]) =>
-    `  - ${r.parameterName} = ${r.value ?? 'N/A'} ${r.unit ?? ''} (Ref: ${r.normalRange ?? 'N/A'})${r.isAbnormal ? ' [ABNORMAL]' : ''}`;
+    `  - ${r.parameterName} = ${r.value ?? 'N/A'} ${r.unit ?? ''} (Ref: ${r.normalRange ?? 'N/A'})`;
 
+  // Grouped by TEST then date — one block per test/day, header `Test Name (date)`
+  // (same shape as the radiology section).
   const buildLabResultsSummary = (rows: typeof labResults): string | null => {
     if (rows.length === 0) return null;
-    const byDay = new Map<string, typeof labResults>();
+    const byTestDay = new Map<string, typeof labResults>();
     for (const r of rows) {
+      const testName = r.labOrderItem?.test?.testName || 'Unknown Test';
       const day = formatDateIST(r.enteredAt);
-      const bucket = byDay.get(day) ?? [];
+      const key = `${testName}||${day}`;
+      const bucket = byTestDay.get(key) ?? [];
       bucket.push(r);
-      byDay.set(day, bucket);
+      byTestDay.set(key, bucket);
     }
-    const dayBlocks: string[] = [];
-    for (const [day, dayRows] of byDay) {
-      const byTest = new Map<string, typeof labResults>();
-      for (const r of dayRows) {
-        const testName = r.labOrderItem?.test?.testName || 'Unknown Test';
-        const bucket = byTest.get(testName) ?? [];
-        bucket.push(r);
-        byTest.set(testName, bucket);
-      }
-      const testBlocks: string[] = [];
-      for (const [testName, testRows] of byTest) {
-        const abnormal = testRows.filter((r) => r.isAbnormal);
-        const summaryLine = `Summary: ${testRows.length} parameter${testRows.length === 1 ? '' : 's'} resulted, ${abnormal.length} abnormal.`;
-        const abnormalBlock = abnormal.length > 0
-          ? `Abnormal:\n${abnormal.map(paramLine).join('\n')}`
-          : 'All values within normal limits.';
-        testBlocks.push(`${testName}\n${summaryLine}\n${abnormalBlock}`);
-      }
-      dayBlocks.push(`${day}\n\n${testBlocks.join('\n\n')}`);
+    const blocks: string[] = [];
+    for (const [key, testRows] of byTestDay) {
+      const [testName, day] = key.split('||');
+      const abnormal = testRows.filter((r) => r.isAbnormal);
+      const summaryLine = `Summary: ${testRows.length} parameter${testRows.length === 1 ? '' : 's'} resulted, ${abnormal.length} abnormal.`;
+      const abnormalBlock = abnormal.length > 0
+        ? `Abnormal:\n${abnormal.map(paramLine).join('\n')}`
+        : 'All values within normal limits.';
+      blocks.push(`${testName} (${day})\n${summaryLine}\n${abnormalBlock}`);
     }
-    return dayBlocks.join('\n\n');
+    return blocks.join('\n\n');
   };
 
   const labResultsSummary = buildLabResultsSummary(labResults);
@@ -502,6 +511,32 @@ async function buildSummaryFields(
   const vitalsReadingBlock = vitalsLines.length > 0 ? vitalsLines.join('\n') : null;
   const vitalsSummary = mergeSections([vitalsReadingBlock, renderBucket('vitals')]);
 
+  // ── Radiology/imaging → own radiologySummary column ──
+  // One block per study: name — date / Indication / Impression. Only studies
+  // that are completed or carry a reported impression are shown.
+  const IMAGING_TYPE_LABEL: Record<string, string> = {
+    xray: 'X-Ray',
+    mri: 'MRI',
+    ct_scan: 'CT Scan',
+    ultrasound: 'Ultrasound',
+    ecg: 'ECG',
+    echo: 'Echo',
+    other: 'Imaging',
+  };
+  const radiologyBlocks = imagingStudies
+    .filter((im) => im.imagingResult?.impression || im.completedAt)
+    .map((im) => {
+      // Study name = the modality (CT Scan, MRI…) plus the body part when set.
+      const typeLabel = IMAGING_TYPE_LABEL[im.imagingType] || 'Imaging';
+      const study = im.bodyPart ? `${typeLabel} — ${im.bodyPart}` : typeLabel;
+      const date = im.completedAt ? ` (${formatDateIST(im.completedAt)})` : '';
+      const lines = [`${study}${date}`];
+      if (im.clinicalIndication) lines.push(`Indication: ${im.clinicalIndication}`);
+      lines.push(`Impression: ${im.imagingResult?.impression?.trim() || '—'}`);
+      return lines.join('\n');
+    });
+  const radiologySummary = radiologyBlocks.length > 0 ? radiologyBlocks.join('\n\n') : null;
+
   return {
     admission,
     summaryDoctorId,
@@ -517,6 +552,7 @@ async function buildSummaryFields(
     labResultsSummary,
     keyLabsSummary,
     vitalsSummary,
+    radiologySummary,
     medicationReconciliation,
     dischargeInstructions,
     followUpInstructions,
@@ -686,6 +722,7 @@ export async function generateDischargeSummary(
       labResultsSummary: built.labResultsSummary,
       keyLabsSummary: built.keyLabsSummary,
       vitalsSummary: built.vitalsSummary,
+      radiologySummary: built.radiologySummary,
       medicationReconciliation: built.medicationReconciliation,
     };
     if (!existing.dischargeInstructions || existing.dischargeInstructions.trim() === '') {
@@ -728,6 +765,7 @@ export async function generateDischargeSummary(
       labResultsSummary: built.labResultsSummary,
       keyLabsSummary: built.keyLabsSummary,
       vitalsSummary: built.vitalsSummary,
+      radiologySummary: built.radiologySummary,
       medicationReconciliation: built.medicationReconciliation,
       dischargeInstructions: built.dischargeInstructions,
       followUpInstructions: built.followUpInstructions,
@@ -803,6 +841,7 @@ interface UpdateDischargeSummaryInput {
   proceduresSummary?: string;
   labResultsSummary?: string;
   vitalsSummary?: string;
+  radiologySummary?: string;
   medicationReconciliation?: string;
   dischargeInstructions?: string;
   followUpDate?: string;
@@ -1121,6 +1160,13 @@ export async function buildDischargeDocument(tenantId: string, id: string): Prom
         }
       : null;
 
+  // Vitals the doctor pinned to the discharge summary — one dated row each,
+  // oldest first (vitals is already ordered by recordedAt asc).
+  const pinnedVitalRows = vitals
+    .filter((v) => v.pinnedDischargeSection)
+    .map((v) => toVitalRow(v))
+    .filter((r): r is DischargeVitalRow => !!r);
+
   const admissionDate = summary.admission?.admissionDate ?? null;
   const dischargeDate = summary.admission?.dischargeDate ?? null;
   const los = admissionDate && dischargeDate
@@ -1165,7 +1211,7 @@ export async function buildDischargeDocument(tenantId: string, id: string): Prom
     },
     allergies: allergies.map((a) => ({ allergen: a.allergen, reaction: a.reaction ?? null })),
     diagnoses: diagnoses.map((d) => ({ name: d.diagnosisName, type: String(d.diagnosisType), icdCode: d.icdCode ?? null })),
-    vitals: { admission: toVitalRow(vitals[0]), discharge: toVitalRow(vitals[vitals.length - 1]) },
+    vitals: pinnedVitalRows,
     procedures: otRequests.map((o) => ({
       name: o.procedureName,
       type: o.surgeryType ?? null,
@@ -1185,6 +1231,9 @@ export async function buildDischargeDocument(tenantId: string, id: string): Prom
       hospitalCourse: summary.proceduresSummary ?? null,
       keyLabs: summary.keyLabsSummary ?? null,
       labResults: summary.labResultsSummary ?? null,
+      // The stored, doctor-reviewed radiology text. Printed instead of a live
+      // imaging re-query so what prints equals what was signed (no duplicate).
+      radiologyText: summary.radiologySummary ?? null,
       medicationsText: summary.medicationReconciliation ?? null,
       dischargeInstructions: summary.dischargeInstructions ?? null,
       chiefComplaint: summary.chiefComplaint ?? null,
@@ -1334,6 +1383,7 @@ export async function getPublishedDischargeSummaryForPatient(patientIds: string[
       labResultsSummary: built.labResultsSummary,
       keyLabsSummary: built.keyLabsSummary,
       vitalsSummary: built.vitalsSummary,
+      radiologySummary: built.radiologySummary,
       medicationReconciliation: built.medicationReconciliation,
       dischargeInstructions: built.dischargeInstructions,
       followUpInstructions: built.followUpInstructions,

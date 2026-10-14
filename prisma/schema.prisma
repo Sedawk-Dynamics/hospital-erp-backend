@@ -3542,20 +3542,11 @@ model DischargeSummary {
   proceduresSummary        String?                @map("procedures_summary")
   labResultsSummary        String?                @map("lab_results_summary")
   keyLabsSummary           String?                @map("key_labs_summary")
-  // Vitals pinned to the discharge summary from progress-note readings. Each
-  // canonical pinned Vital row renders as one `Vitals: …` line; multiple pinned
-  // readings stack as additional lines. Held in its own column so vitals read as
-  // a distinct section rather than being mixed into examination prose.
   vitalsSummary            String?                @map("vitals_summary")
+  radiologySummary         String?                @map("radiology_summary")
   medicationReconciliation String?                @map("medication_reconciliation")
   dischargeInstructions    String?                @map("discharge_instructions")
   followUpDate             DateTime?              @map("follow_up_date") @db.Date
-  // "Come back in about three months" — an interval with no fixed day, which
-  // is what a discharging doctor usually means. Resolving it to a calendar date
-  // at the moment of signing invents a precision nobody intended, and the
-  // patient then reads a specific day as an appointment they have missed.
-  // Held ALONGSIDE followUpDate, not instead of it: a review that genuinely is
-  // on the 14th should still say the 14th.
   followUpAfterValue       Int?                   @map("follow_up_after_value")
   followUpAfterUnit        String?                @map("follow_up_after_unit") @db.VarChar(10)
   followUpInstructions     String?                @map("follow_up_instructions")
@@ -4035,12 +4026,6 @@ model LabOrder {
   assignedToId          String?        @map("assigned_to_id")
   acceptedAt            DateTime?      @map("accepted_at")
   acceptedBy            String?        @map("accepted_by")
-  // Payment gate, mirroring ImagingRequest so both diagnostic modules run the
-  // one flow. The lab admin accepts the order at their own counter: an OP
-  // patient pays there and then, an admitted patient's charge goes straight to
-  // the IP ledger (which counts as cleared — it settles at discharge). An order
-  // may still be accepted unpaid for a TPA / credit patient, in which case the
-  // reason is recorded and the order carries an Unpaid badge until it is settled.
   paymentVerified       Boolean        @default(false) @map("payment_verified")
   paymentVerifiedBy     String?        @map("payment_verified_by")
   paymentVerifiedAt     DateTime?      @map("payment_verified_at")
@@ -4050,10 +4035,7 @@ model LabOrder {
   isThirdParty          Boolean        @default(false) @map("is_third_party")
   thirdPartyLabName     String?        @map("third_party_lab_name") @db.VarChar(255)
   notes                 String?
-  // Patient marked this order done from outside (got tested elsewhere).
-  // When set, the lab worklist hides the order (status flips to completed)
-  // and the doctor / nurse views show a "Marked done by patient" badge
-  // linking to the uploaded report.
+
   completedExternallyAt DateTime?      @map("completed_externally_at")
   completedExternallyBy String?        @map("completed_externally_by")
   externalReportUrl     String?        @map("external_report_url")

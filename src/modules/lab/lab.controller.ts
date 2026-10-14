@@ -198,8 +198,10 @@ export async function cancelLabOrder(
 ) {
   try {
     const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
     const order = await labService.cancelLabOrder(
       tenantId,
+      userId,
       req.params.id as string,
       (req.body?.reason as string | undefined) ?? undefined,
     );

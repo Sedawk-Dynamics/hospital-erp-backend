@@ -7123,6 +7123,56 @@ export async function settleCancelledAppointmentCharge(
   return { cancelledBillId: bill.id, refundedAmount: collectedTotal };
 }
 
+
+export async function settleCancelledLabOrderCharge(
+  tenantId: string,
+  userId: string,
+  labOrderItemIds: string[],
+  reason: string,
+): Promise<{ cancelledBillId: string | null; refundedAmount: number }> {
+  if (labOrderItemIds.length === 0) return { cancelledBillId: null, refundedAmount: 0 };
+
+  const billItem = await prisma.billItem.findFirst({
+    where: {
+      referenceType: 'lab_order_item',
+      referenceId: { in: labOrderItemIds },
+      bill: { tenantId, status: { notIn: ['cancelled', 'refunded'] } },
+    },
+    select: { billId: true },
+  });
+  if (!billItem) return { cancelledBillId: null, refundedAmount: 0 };
+
+  const bill = await prisma.bill.findFirst({
+    where: { id: billItem.billId, tenantId, status: { notIn: ['cancelled', 'refunded'] } },
+    include: { payments: { where: { status: 'completed' } } },
+  });
+  if (!bill) return { cancelledBillId: null, refundedAmount: 0 };
+
+  // Only rows that actually brought money in — a refund payout is not handed back again.
+  const collected = bill.payments.filter((p) => p.paymentType !== 'refund');
+  const collectedTotal = r2(collected.reduce((sum, p) => sum + toNumber(p.amount), 0));
+
+  for (const payment of collected) {
+    const refund = await createRefund(tenantId, userId, {
+      paymentId: payment.id,
+      amount: toNumber(payment.amount),
+      reason: `Lab order cancelled — ${reason}`,
+    });
+    await approveRefund(tenantId, refund.id, userId);
+  }
+  if (collectedTotal <= 0) {
+    await cancelBill(tenantId, userId, bill.id, {
+      reason: `Lab order cancelled — ${reason}`,
+    });
+  }
+
+  logger.info(
+    { tenantId, billId: bill.id, refundedAmount: collectedTotal },
+    'Cancelled lab order charge settled',
+  );
+  return { cancelledBillId: bill.id, refundedAmount: collectedTotal };
+}
+
 export async function cancelBill(
   tenantId: string,
   userId: string,

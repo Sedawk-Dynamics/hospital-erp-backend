@@ -59,7 +59,7 @@ export interface DischargeDocument {
   };
   allergies: Array<{ allergen: string; reaction: string | null }>;
   diagnoses: Array<{ name: string; type: string; icdCode: string | null }>;
-  vitals: { admission: DischargeVitalRow | null; discharge: DischargeVitalRow | null };
+  vitals: DischargeVitalRow[];
   procedures: Array<{ name: string; type: string | null; date: string | null; status: string; surgeon: string | null }>;
   imaging: Array<{ study: string; indication: string | null; impression: string | null; date: string | null }>;
   sections: {
@@ -73,6 +73,7 @@ export interface DischargeDocument {
     hospitalCourse: string | null;
     keyLabs: string | null;
     labResults: string | null;
+    radiologyText: string | null;
     medicationsText: string | null;
     dischargeInstructions: string | null;
     followUpDate: string | null;
@@ -253,21 +254,24 @@ export function streamDischargeSummaryPdf(
     paragraph(doc.sections.examination);
   }
 
-  // ---- Vitals ----
-  if (doc.vitals.admission || doc.vitals.discharge) {
+  // ---- Vitals ---- one dated row per pinned reading, all 9 vitals.
+  if (doc.vitals.length) {
     heading('Vital Signs');
-    const vr = (v: DischargeVitalRow | null, label: string): string[] => [
-      label,
-      v?.bp ?? '—',
-      dash(v?.pulse),
-      v?.temp != null ? `${v.temp}°C` : '—',
-      dash(v?.rr),
-      v?.spo2 != null ? `${v.spo2}%` : '—',
-      v?.weight != null ? `${v.weight} kg` : '—',
+    const vr = (v: DischargeVitalRow): string[] => [
+      fmtDateTime(v.at),
+      v.bp ?? '—',
+      dash(v.pulse),
+      v.temp != null ? `${v.temp}°C` : '—',
+      dash(v.rr),
+      v.spo2 != null ? `${v.spo2}%` : '—',
+      v.weight != null ? `${v.weight} kg` : '—',
+      v.height != null ? `${v.height} cm` : '—',
+      dash(v.bmi),
+      v.sugar != null ? `${v.sugar}` : '—',
     ];
-    table(['At', 'BP', 'Pulse', 'Temp', 'RR', 'SpO₂', 'Weight'],
-      [vr(doc.vitals.admission, 'On admission'), vr(doc.vitals.discharge, 'At discharge')],
-      [2.2, 1.4, 1, 1, 0.8, 1, 1.2]);
+    table(['Date/Time', 'BP', 'Pulse', 'Temp', 'RR', 'SpO₂', 'Weight', 'Height', 'BMI', 'Sugar'],
+      doc.vitals.map(vr),
+      [2.2, 1.2, 1, 1, 0.8, 1, 1.1, 1.1, 0.9, 1]);
   }
 
   // ---- Allergies ----
@@ -329,18 +333,17 @@ export function streamDischargeSummaryPdf(
   // ---- Lab Results ----
   // The grouped lab summary (labResults) already lists each test's count and its
   // abnormal values, so the separate "Significant / Abnormal" block is redundant.
-  if (doc.sections.labResults || doc.imaging.length) {
+  if (doc.sections.labResults) {
     heading('Lab Results');
-    if (doc.sections.labResults) {
-      paragraph(doc.sections.labResults);
-    }
-    if (doc.imaging.length) {
-      pdf.font(theme.font.bold).fontSize(8.5).fillColor(accent).text('Imaging', left, pdf.y, { width: CONTENT_W });
-      pdf.moveDown(0.1);
-      table(['Study', 'Indication', 'Impression', 'Date'],
-        doc.imaging.map((im) => [im.study, im.indication ?? '—', im.impression ?? '—', fmtDate(im.date)]),
-        [1.6, 2, 3, 1.4]);
-    }
+    paragraph(doc.sections.labResults);
+  }
+
+  // ---- Radiology / Imaging ----
+  // The stored, doctor-reviewed radiology text (not a live imaging re-query), so
+  // the printout equals what was signed.
+  if (doc.sections.radiologyText) {
+    heading('Radiology / Imaging');
+    paragraph(doc.sections.radiologyText);
   }
 
   // ---- Medications on discharge ----

@@ -33,6 +33,7 @@ export const updateDischargeSummarySchema = z.object({
     proceduresSummary: z.string().optional(),
     labResultsSummary: z.string().optional(),
     vitalsSummary: z.string().optional(),
+    radiologySummary: z.string().optional(),
     medicationReconciliation: z.string().optional(),
     dischargeInstructions: z.string().optional(),
       chiefComplaint: z.string().optional(),
