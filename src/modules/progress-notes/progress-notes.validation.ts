@@ -46,6 +46,7 @@ const dischargeSectionEnum = z.enum([
   'examination',
   'investigation',
   'impression',
+  'vitals',
 ]);
 
 const pinInputSchema = z.object({

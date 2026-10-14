@@ -327,16 +327,11 @@ export function streamDischargeSummaryPdf(
   }
 
   // ---- Lab Results ----
-  if (doc.sections.keyLabs || doc.sections.labResults || doc.imaging.length) {
+  // The grouped lab summary (labResults) already lists each test's count and its
+  // abnormal values, so the separate "Significant / Abnormal" block is redundant.
+  if (doc.sections.labResults || doc.imaging.length) {
     heading('Lab Results');
-    if (doc.sections.keyLabs) {
-      pdf.font(theme.font.bold).fontSize(8.5).fillColor(accent).text('Significant / Abnormal Labs', left, pdf.y, { width: CONTENT_W });
-      pdf.moveDown(0.1);
-      paragraph(doc.sections.keyLabs);
-    }
     if (doc.sections.labResults) {
-      pdf.font(theme.font.bold).fontSize(8.5).fillColor(accent).text('All Lab Results', left, pdf.y, { width: CONTENT_W });
-      pdf.moveDown(0.1);
       paragraph(doc.sections.labResults);
     }
     if (doc.imaging.length) {

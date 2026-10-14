@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
@@ -200,7 +201,7 @@ async function buildSummaryFields(
   const visitId = admission.visitId;
   const patientId = admission.patientId;
 
-  const [diagnoses, allNotes, sectionPins, labResults, prescriptions] = await Promise.all([
+  const [diagnoses, allNotes, sectionPins, labResults, prescriptions, pinnedVitals] = await Promise.all([
     prisma.diagnosis.findMany({
       where: { visitId },
       orderBy: { diagnosedAt: 'asc' },
@@ -279,6 +280,17 @@ async function buildSummaryFields(
       },
       orderBy: { createdAt: 'desc' },
     }),
+    // Vitals the doctor pinned to the discharge summary. `correctedBy: none`
+    // keeps only canonical (non-superseded) readings per the Vital correction
+    // chain. Ordered oldest-first so stacked lines read in chronological order.
+    prisma.vital.findMany({
+      where: {
+        visitId,
+        pinnedDischargeSection: { not: null },
+        correctedBy: { none: {} },
+      },
+      orderBy: { recordedAt: 'asc' },
+    }),
   ]);
 
   // Emergency admissions may be opened before a consultant is formally put on
@@ -355,6 +367,10 @@ async function buildSummaryFields(
     : null;
   const diagnosisPins = renderBucket('diagnosis');
   const diagnosesSummary = mergeSections([diagnosesBase, diagnosisPins]);
+  const chiefComplaint = renderBucket('chief_complaint');
+  const examination   = renderBucket('examination');
+  const investigation = renderBucket('investigation');
+  const impression    = renderBucket('impression');
 
   const allNotesBlock = !opts.onlyPatientVisible && allNotes.length > 0
     ? allNotes
@@ -378,6 +394,7 @@ async function buildSummaryFields(
         .join('\n')
     : null;
 
+  
   const procedurePins = renderBucket('procedure');
   const hospitalCoursePins = renderBucket('hospital_course');
   const hospitalCourseBlock = hospitalCoursePins ? `Additional hospital-course notes:\n${hospitalCoursePins}` : null;
@@ -406,7 +423,46 @@ async function buildSummaryFields(
       .join('\n\n');
   };
 
-  const labResultsSummary = groupByDay(labResults, true);
+  // Lab Results Summary — grouped by DAY, then by TEST. Each test shows a
+  // factual count line (derived only from the uploaded results, never AI) and
+  // lists only its abnormal values. Normal parameters are summarised as a count,
+  // not dumped, so the section stays readable.
+  const paramLine = (r: (typeof labResults)[number]) =>
+    `  - ${r.parameterName} = ${r.value ?? 'N/A'} ${r.unit ?? ''} (Ref: ${r.normalRange ?? 'N/A'})${r.isAbnormal ? ' [ABNORMAL]' : ''}`;
+
+  const buildLabResultsSummary = (rows: typeof labResults): string | null => {
+    if (rows.length === 0) return null;
+    const byDay = new Map<string, typeof labResults>();
+    for (const r of rows) {
+      const day = formatDateIST(r.enteredAt);
+      const bucket = byDay.get(day) ?? [];
+      bucket.push(r);
+      byDay.set(day, bucket);
+    }
+    const dayBlocks: string[] = [];
+    for (const [day, dayRows] of byDay) {
+      const byTest = new Map<string, typeof labResults>();
+      for (const r of dayRows) {
+        const testName = r.labOrderItem?.test?.testName || 'Unknown Test';
+        const bucket = byTest.get(testName) ?? [];
+        bucket.push(r);
+        byTest.set(testName, bucket);
+      }
+      const testBlocks: string[] = [];
+      for (const [testName, testRows] of byTest) {
+        const abnormal = testRows.filter((r) => r.isAbnormal);
+        const summaryLine = `Summary: ${testRows.length} parameter${testRows.length === 1 ? '' : 's'} resulted, ${abnormal.length} abnormal.`;
+        const abnormalBlock = abnormal.length > 0
+          ? `Abnormal:\n${abnormal.map(paramLine).join('\n')}`
+          : 'All values within normal limits.';
+        testBlocks.push(`${testName}\n${summaryLine}\n${abnormalBlock}`);
+      }
+      dayBlocks.push(`${day}\n\n${testBlocks.join('\n\n')}`);
+    }
+    return dayBlocks.join('\n\n');
+  };
+
+  const labResultsSummary = buildLabResultsSummary(labResults);
   const keyLabsSummary = groupByDay(labResults.filter((r) => r.isAbnormal), false);
 
   // ── Meds ── (source-derived prescriptions + "medication" section pins)
@@ -435,16 +491,32 @@ async function buildSummaryFields(
     ? `${headerSummary}\n\n${generalPins}`
     : headerSummary;
 
+  // ── Pinned vitals → own vitalsSummary column ──
+  // Each canonical pinned reading becomes one `Vitals: …` line; multiples stack.
+  const visibleVitals = opts.onlyPatientVisible
+    ? pinnedVitals.filter((v) => v.showToPatient)
+    : pinnedVitals;
+  const vitalsLines = visibleVitals.map(formatVitalLine).filter(Boolean) as string[];
+  // Vitals column = structured pinned readings (Vital table) + any text pinned to
+  // the `vitals` section from a progress note.
+  const vitalsReadingBlock = vitalsLines.length > 0 ? vitalsLines.join('\n') : null;
+  const vitalsSummary = mergeSections([vitalsReadingBlock, renderBucket('vitals')]);
+
   return {
     admission,
     summaryDoctorId,
     visitId,
     patientId,
     headerSummary: headerSummaryWithGeneral,
+    chiefComplaint,
+    examination,
+    investigation,
+    impression,
     diagnosesSummary,
     proceduresSummary,
     labResultsSummary,
     keyLabsSummary,
+    vitalsSummary,
     medicationReconciliation,
     dischargeInstructions,
     followUpInstructions,
@@ -452,20 +524,40 @@ async function buildSummaryFields(
 }
 
 /**
- * The notes part of `headerSummary`, without the generated demographic block.
- *
- * The column holds an auto-built "Patient: … / Admitted: … / Attending: …"
- * header, and anything extra — general pins, or text the doctor typed — is
- * appended after a blank line. The printed document renders demographics in its
- * own info card, so only the extra part belongs in the body; printing the whole
- * column would repeat the patient's details twice on the page.
+ * Render a single Vital row as one discharge-summary line: `Vitals: BP … · HR …`.
+ * Only the parameters actually recorded are included. Returns null if the row
+ * has no usable readings. Shared by first-generate and the post-generate fold
+ * so both paths produce identical text.
  */
+function formatVitalLine(v: {
+  bloodPressureSystolic: number | null;
+  bloodPressureDiastolic: number | null;
+  pulseRate: number | null;
+  temperature: Prisma.Decimal | null;
+  respiratoryRate: number | null;
+  oxygenSaturation: Prisma.Decimal | null;
+  bloodSugar: Prisma.Decimal | null;
+  weightKg: Prisma.Decimal | null;
+  bmi: Prisma.Decimal | null;
+}): string | null {
+  const parts: string[] = [];
+  if (v.bloodPressureSystolic != null || v.bloodPressureDiastolic != null) {
+    parts.push(`BP ${v.bloodPressureSystolic ?? '–'}/${v.bloodPressureDiastolic ?? '–'} mmHg`);
+  }
+  if (v.pulseRate != null) parts.push(`HR ${v.pulseRate}/min`);
+  if (v.temperature != null) parts.push(`Temp ${v.temperature}°C`);
+  if (v.oxygenSaturation != null) parts.push(`SpO₂ ${v.oxygenSaturation}%`);
+  if (v.respiratoryRate != null) parts.push(`RR ${v.respiratoryRate}/min`);
+  if (v.bloodSugar != null) parts.push(`Sugar ${v.bloodSugar} mg/dL`);
+  if (v.weightKg != null) parts.push(`Wt ${v.weightKg} kg`);
+  if (v.bmi != null) parts.push(`BMI ${v.bmi}`);
+  return parts.length > 0 ? `Vitals: ${parts.join(' · ')}` : null;
+}
+
+
 function stripGeneratedHeader(headerSummary?: string | null): string | null {
   if (!headerSummary?.trim()) return null;
   const blocks = headerSummary.split(/\n{2,}/);
-  // `Patient:` is the first line the generator writes. If the doctor replaced
-  // the header wholesale it won't match, and we keep everything rather than
-  // silently dropping their text.
   const rest = blocks[0]?.startsWith('Patient:') ? blocks.slice(1) : blocks;
   const text = rest.join('\n\n').trim();
   return text || null;
@@ -473,6 +565,11 @@ function stripGeneratedHeader(headerSummary?: string | null): string | null {
 
 /** Which DischargeSummary column each pin section feeds. */
 const PIN_SECTION_TO_COLUMN: Record<string, string> = {
+  chief_complaint: 'chiefComplaint',
+  examination: 'examination',
+  investigation: 'investigation',
+  impression: 'impression',
+  vitals: 'vitalsSummary',
   diagnosis: 'diagnosesSummary',
   procedure: 'proceduresSummary',
   hospital_course: 'proceduresSummary',
@@ -493,7 +590,6 @@ async function mergeNewPinsIntoDraft(
       note: { select: { createdAt: true, doctor: { select: { user: { select: { firstName: true, lastName: true } } } } } },
     },
   });
-  if (pins.length === 0) return existing;
 
   const additions: Record<string, string[]> = {};
   for (const p of pins) {
@@ -502,12 +598,31 @@ async function mergeNewPinsIntoDraft(
     const current: string = existing[column] ?? '';
     if (current.includes(p.content.trim())) continue;
 
-    const doctor = p.note?.doctor?.user
-      ? `Dr. ${p.note.doctor.user.firstName}${p.note.doctor.user.lastName ? ' ' + p.note.doctor.user.lastName : ''}`
-      : 'Attending';
-    const when = formatDateIST(p.createdAt);
-    const line = `- [${when} · ${doctor}] ${p.content}`;
-    (additions[column] ??= []).push(line);
+    // Match the first-generate format (renderBucket): bare pin content, no
+    // `[date · doctor]` timeline prefix, so folded pins read like the others.
+    (additions[column] ??= []).push(p.content);
+  }
+
+  // Fold vitals pinned after the summary was first generated, into vitalsSummary.
+  const adm = await prisma.admission.findUnique({
+    where: { id: admissionId },
+    select: { visitId: true },
+  });
+  if (adm) {
+    const pinnedVitals = await prisma.vital.findMany({
+      where: {
+        visitId: adm.visitId,
+        pinnedDischargeSection: { not: null },
+        correctedBy: { none: {} },
+      },
+      orderBy: { recordedAt: 'asc' },
+    });
+    const currentVitals: string = existing.vitalsSummary ?? '';
+    for (const v of pinnedVitals) {
+      const line = formatVitalLine(v);
+      if (!line || currentVitals.includes(line)) continue;
+      (additions.vitalsSummary ??= []).push(line);
+    }
   }
 
   const entries = Object.entries(additions);
@@ -558,19 +673,19 @@ export async function generateDischargeSummary(
   const built = await buildSummaryFields(tenantId, admissionId);
 
   if (existing) {
-    // Source-derived columns (diagnoses, procedures, meds, labs, header)
-    // are always rebuilt on refresh. Manual-edit columns (instructions /
-    // follow-up) are preserved unless the user left them empty — that's
-    // the "edit in discharge summary shouldn't affect progress notes"
-    // contract from the spec.
     const updateData: any = {
       admissionDate: built.admission.admissionDate,
       dischargeDate: built.admission.dischargeDate,
       headerSummary: built.headerSummary,
+      chiefComplaint: built.chiefComplaint,
+      examination: built.examination,
+      investigation: built.investigation,
+      impression: built.impression,
       diagnosesSummary: built.diagnosesSummary,
       proceduresSummary: built.proceduresSummary,
       labResultsSummary: built.labResultsSummary,
       keyLabsSummary: built.keyLabsSummary,
+      vitalsSummary: built.vitalsSummary,
       medicationReconciliation: built.medicationReconciliation,
     };
     if (!existing.dischargeInstructions || existing.dischargeInstructions.trim() === '') {
@@ -604,10 +719,15 @@ export async function generateDischargeSummary(
       admissionDate: built.admission.admissionDate,
       dischargeDate: built.admission.dischargeDate,
       headerSummary: built.headerSummary,
+      chiefComplaint: built.chiefComplaint,
+      examination: built.examination,
+      investigation: built.investigation,
+      impression: built.impression,
       diagnosesSummary: built.diagnosesSummary,
       proceduresSummary: built.proceduresSummary,
       labResultsSummary: built.labResultsSummary,
       keyLabsSummary: built.keyLabsSummary,
+      vitalsSummary: built.vitalsSummary,
       medicationReconciliation: built.medicationReconciliation,
       dischargeInstructions: built.dischargeInstructions,
       followUpInstructions: built.followUpInstructions,
@@ -682,6 +802,7 @@ interface UpdateDischargeSummaryInput {
   diagnosesSummary?: string;
   proceduresSummary?: string;
   labResultsSummary?: string;
+  vitalsSummary?: string;
   medicationReconciliation?: string;
   dischargeInstructions?: string;
   followUpDate?: string;
@@ -735,9 +856,7 @@ export async function signDischargeSummary(
     throw AppError.badRequest('Only draft discharge summaries can be signed');
   }
 
-  // Capture the typed attestation (e-signature text) alongside signer identity.
-  // Stored in eSignatureUrl prefixed with "typed:" so downstream readers can tell
-  // it is a typed signature vs a URL to an image.
+
   const eSignatureUrl = signatureName ? `typed:${signatureName.trim()}` : null;
 
   const signed = await prisma.dischargeSummary.update({
@@ -785,12 +904,6 @@ export async function publishDischargeSummary(tenantId: string, id: string, user
     );
   }
 
-  // Publishing is the doctor's CLINICAL sign-off — it no longer discharges the
-  // patient. Marking someone discharged here dropped them off every active-IP
-  // worklist (which filter status='admitted') while money was still outstanding,
-  // so the balance was effectively written off. The patient now stays admitted,
-  // holding their bed, until Front Desk / Billing clears the final bill and
-  // calls PATCH /clinical/admissions/:id/discharge.
   let discharged = false;
   let dischargeReady = false;
   try {
@@ -800,10 +913,7 @@ export async function publishDischargeSummary(tenantId: string, id: string, user
     });
     discharged = admission?.status === 'discharged';
     if (admission && !discharged) {
-      // Move the stay into `ready_to_discharge`. This is still an ACTIVE
-      // admission (see shared/admission-status.ts) — the bed stays occupied and
-      // charges keep accruing — it just stops reading as an ordinary
-      // in-patient on the ward and billing screens.
+
       if (admission.status === 'admitted') {
         await prisma.admission.update({
           where: { id: published.admissionId },
@@ -1223,6 +1333,7 @@ export async function getPublishedDischargeSummaryForPatient(patientIds: string[
       proceduresSummary: built.proceduresSummary,
       labResultsSummary: built.labResultsSummary,
       keyLabsSummary: built.keyLabsSummary,
+      vitalsSummary: built.vitalsSummary,
       medicationReconciliation: built.medicationReconciliation,
       dischargeInstructions: built.dischargeInstructions,
       followUpInstructions: built.followUpInstructions,

@@ -338,6 +338,7 @@ enum DischargeSection {
   examination     @map("examination")
   investigation   @map("investigation")
   impression      @map("impression")
+  vitals          @map("vitals")
 }
 
 enum PhysicalObservationSystem {
@@ -3541,6 +3542,11 @@ model DischargeSummary {
   proceduresSummary        String?                @map("procedures_summary")
   labResultsSummary        String?                @map("lab_results_summary")
   keyLabsSummary           String?                @map("key_labs_summary")
+  // Vitals pinned to the discharge summary from progress-note readings. Each
+  // canonical pinned Vital row renders as one `Vitals: …` line; multiple pinned
+  // readings stack as additional lines. Held in its own column so vitals read as
+  // a distinct section rather than being mixed into examination prose.
+  vitalsSummary            String?                @map("vitals_summary")
   medicationReconciliation String?                @map("medication_reconciliation")
   dischargeInstructions    String?                @map("discharge_instructions")
   followUpDate             DateTime?              @map("follow_up_date") @db.Date
