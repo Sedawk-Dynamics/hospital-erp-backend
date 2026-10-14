@@ -272,12 +272,10 @@ export async function getPatientVisitStatus(
         select: { admissionDate: true },
       }),
       prisma.admission.count({ where: { tenantId, patientId } }),
-      // Was the fee already taken? Found by reference, so a renamed label or a
-      // changed amount cannot make it look uncharged.
       prisma.billItem.findFirst({
         where: {
           referenceType: REGISTRATION_FEE_REFERENCE_TYPE,
-          bill: { tenantId, patientId, status: { not: 'cancelled' } },
+          bill: { tenantId, patientId, status: { notIn: ['cancelled', 'refunded'] } },
         },
         orderBy: { createdAt: 'desc' },
         select: { createdAt: true },
