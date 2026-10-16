@@ -141,50 +141,70 @@ export async function createTemporaryPatient(
     relationship = existingForUser === 0 ? 'self' : 'other';
   }
 
-  const patient = await prisma.patient.create({
-    data: {
-      tenantId,
-      mrn,
-      firstName: data.firstName?.trim() || fallbackName,
-      lastName: data.lastName?.trim() || null,
-      phone: data.phone?.trim() || null,
-      gender: (data.gender as any) || undefined,
-      dateOfBirth: data.dateOfBirth ? new Date(data.dateOfBirth) : dobFromAge(data.age),
-      email: data.email?.trim() || null,
-      bloodGroup: data.bloodGroup || undefined,
-      addressLine1: data.address?.trim() || null,
-      city: data.city?.trim() || null,
-      state: data.state?.trim() || null,
-      postalCode: data.zipCode?.trim() || null,
-      registrationSource: 'front_desk',
-      notes: data.notes?.trim() || 'Temporary patient — register or connect later',
-      isNew: false,
-      // The attender linkage. Without these the record was an island: it did
-      // not appear under the account of the person who brought the patient in,
-      // which is what QA reported.
-      ...(accountHolderId ? { userId: accountHolderId } : {}),
-      ...(relationship ? { relationship: relationship as never } : {}),
-      ...(relationship ? { isSelf: relationship === 'self' } : {}),
-    },
-    select: {
-      id: true, mrn: true, firstName: true, lastName: true, phone: true,
-      gender: true, dateOfBirth: true, email: true,
-      userId: true, relationship: true,
-    },
+  const { patient, emergencyId } = await prisma.$transaction(async (tx) => {
+    const created = await tx.patient.create({
+      data: {
+        tenantId,
+        mrn,
+        firstName: data.firstName?.trim() || fallbackName,
+        lastName: data.lastName?.trim() || null,
+        phone: data.phone?.trim() || null,
+        gender: (data.gender as any) || undefined,
+        dateOfBirth: data.dateOfBirth ? new Date(data.dateOfBirth) : dobFromAge(data.age),
+        email: data.email?.trim() || null,
+        bloodGroup: data.bloodGroup || undefined,
+        addressLine1: data.address?.trim() || null,
+        city: data.city?.trim() || null,
+        state: data.state?.trim() || null,
+        postalCode: data.zipCode?.trim() || null,
+        registrationSource: 'front_desk',
+        notes: data.notes?.trim() || 'Temporary patient — register or connect later',
+        isNew: false,
+        ...(accountHolderId ? { userId: accountHolderId } : {}),
+        ...(relationship ? { relationship: relationship as never } : {}),
+        ...(relationship ? { isSelf: relationship === 'self' } : {}),
+      },
+      select: {
+        id: true, mrn: true, firstName: true, lastName: true, phone: true,
+        gender: true, dateOfBirth: true, email: true,
+        userId: true, relationship: true,
+      },
+    });
+
+    let emergencyId: string | null = null;
+    if (data.emergency) {
+      const er = await tx.emergencyRegistration.create({
+        data: {
+          tenantId,
+          patientId: created.id,
+          visitId: null, // linked after the visit is opened, below
+          priority: data.emergency.priority,
+          chiefComplaint: data.emergency.chiefComplaint ?? '',
+          broughtBy: data.emergency.broughtBy,
+          informantName: data.emergency.informantName,
+          contactPhone: data.emergency.contactPhone,
+          relationship: data.emergency.relationship || null,
+          ambulanceNumber: data.emergency.ambulanceNumber || null,
+          policeBadgeStation: data.emergency.policeBadgeStation || null,
+          createdBy: userId,
+        },
+        select: { id: true },
+      });
+      emergencyId = er.id;
+    }
+
+    return { patient: created, emergencyId };
   });
 
-  // Open the encounter that makes them workable. Deliberately NOT fatal: an
-  // emergency registration must complete even if this fails — a patient at the
-  // door with a half-made record still beats a registration that refused. The
-  // caller gets visitId: null and can retry.
+
   let visitId: string | null = null;
   try {
     const clinical = await import('../clinical/clinical.service');
     const visit = await clinical.createVisit(tenantId, {
       patientId: patient.id,
-      visitType: 'op',
+      visitType: data.emergency?'ip':'op',
       visitDate: new Date().toISOString(),
-      chiefComplaint: data.notes?.trim() || undefined,
+      chiefComplaint: data.emergency?.chiefComplaint ?? data.notes?.trim() ?? undefined,
     } as never);
     visitId = (visit as { id?: string })?.id ?? null;
   } catch (err) {
@@ -193,6 +213,38 @@ export async function createTemporaryPatient(
       'Temporary patient created but its visit could not be opened',
     );
   }
+
+  if (emergencyId && visitId) {
+    try {
+      await prisma.emergencyRegistration.update({
+        where: { id: emergencyId },
+        data: { visitId },
+      });
+    } catch (err) {
+      logger.warn(
+        { tenantId, patientId: patient.id, emergencyId, err },
+        'Emergency registration stored but its visit link could not be set',
+      );
+    }
+  }
+
+  if (data.emergency && visitId) {
+  try {
+    const clinical = await import('../clinical/clinical.service');
+    await clinical.createAdmission(tenantId, userId, {
+      visitId,
+      patientId: patient.id,
+      admissionDate: new Date().toISOString(),
+      admissionReason: data.emergency.chiefComplaint || undefined,
+      admissionType: 'emergency',
+    } as never);
+  } catch (err) {
+    logger.warn(
+      { tenantId, patientId: patient.id, visitId, err },
+      'Temporary emergency patient created but auto-admission failed',
+    );
+  }
+}
 
   void safeAudit({
     tenantId, userId, action: 'create', entityType: 'temporary_patient', entityId: patient.id,

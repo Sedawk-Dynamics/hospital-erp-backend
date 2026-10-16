@@ -2346,6 +2346,7 @@ model Patient {
   admissionRequests         AdmissionRequest[]
   emarSchedules             EmarSchedule[]
   formSubmissions           HospitalFormSubmission[]
+  emergencyRegistrations    EmergencyRegistration[]
 
   @@unique([tenantId, mrn])
   @@map("patients")
@@ -2364,6 +2365,54 @@ model PatientEmergencyContact {
   patient Patient @relation(fields: [patientId], references: [id])
 
   @@map("patient_emergency_contacts")
+}
+
+// Emergency / casualty intake captured at the front desk when a temporary
+// patient is registered. One row per emergency registration, linked to the
+// patient (and the visit opened for them). Holds triage + provenance details
+// that describe the EPISODE, not the person — so they live here, not on Patient.
+enum EsiTriagePriority {
+  red    @map("red") // Priority 1 – Resuscitation
+  orange @map("orange") // Priority 2 – Emergent (<15 min)
+  yellow @map("yellow") // Priority 3 – Urgent (<60 min)
+  green  @map("green") // Priority 4 – Non-urgent
+}
+
+enum EmergencyBroughtBy {
+  cat_108           @map("cat_108") // CAT 108 Emergency Ambulance
+  private_ambulance @map("private_ambulance") // Private ALS/BLS Ambulance
+  police            @map("police") // Police Escort / PCR Van
+  good_samaritan    @map("good_samaritan") // Good Samaritan (Bystander)
+  relative          @map("relative") // Relative / Family Member
+  self              @map("self") // Self Walk-in
+}
+
+model EmergencyRegistration {
+  id        String @id @default(uuid())
+  tenantId  String @map("tenant_id")
+  patientId String @map("patient_id")
+  visitId   String? @map("visit_id")
+
+  priority       EsiTriagePriority
+  chiefComplaint String            @map("chief_complaint")
+
+  // Section 2 — Brought-By Provenance & Transport Registry
+  broughtBy          EmergencyBroughtBy @map("brought_by")
+  informantName      String             @map("informant_name") @db.VarChar(150)
+  contactPhone       String             @map("contact_phone") @db.VarChar(20)
+  relationship       String?            @db.VarChar(100)
+  ambulanceNumber    String?            @map("ambulance_number") @db.VarChar(50)
+  policeBadgeStation String?            @map("police_badge_station") @db.VarChar(100)
+
+  createdBy String?  @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  patient Patient @relation(fields: [patientId], references: [id])
+
+  @@index([tenantId])
+  @@index([patientId])
+  @@map("emergency_registrations")
 }
 
 model PatientPersonalHistory {

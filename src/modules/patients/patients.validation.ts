@@ -135,13 +135,22 @@ export const createTemporaryPatientSchema = z.object({
     state: z.string().max(100).optional(),
     zipCode: z.string().max(20).optional(),
     notes: z.string().max(1000).optional(),
-    /**
-     * The account this patient belongs under — the attender who brought them
-     * in. Pass it explicitly, or leave it out and let the phone resolve to an
-     * existing account holder.
-     */
     userId: z.string().uuid('Invalid account holder ID').optional(),
-    /** How the patient relates to that account holder. */
+    emergency: z
+    .object({
+      priority: z.enum(['red', 'orange', 'yellow', 'green']),
+      chiefComplaint: z.string().trim().max(2000).optional(),
+      broughtBy: z.enum([
+        'cat_108', 'private_ambulance', 'police',
+        'good_samaritan', 'relative', 'self',
+      ]),
+      informantName: z.string().trim().min(1).max(150),
+      contactPhone: z.string().trim().min(7).max(20),
+      relationship: z.string().trim().max(100).optional(),
+      ambulanceNumber: z.string().trim().max(50).optional(),
+      policeBadgeStation: z.string().trim().max(100).optional(),
+    })
+    .optional(),
     relationship: z
       .enum(['self', 'spouse', 'child', 'parent', 'sibling', 'guardian', 'other'])
       .optional(),
