@@ -3596,7 +3596,7 @@ export async function resolveDiagnosticPayer(
   let admissionType: AdmissionType = 'ip';
   try {
     const rows = await prisma.$queryRaw<Array<{ admission_type: string | null }>>`
-      SELECT admission_type FROM admissions WHERE id = ${admission.id}::uuid LIMIT 1
+      SELECT admission_type FROM admissions WHERE id = ${admission.id}::text LIMIT 1
     `;
     admissionType = normalizeAdmissionType(rows[0]?.admission_type);
   } catch (err) {
@@ -3638,7 +3638,7 @@ export async function resolveDiagnosticPayers(
   try {
     const rows = await prisma.$queryRaw<Array<{ id: string; admission_type: string | null }>>`
       SELECT id, admission_type FROM admissions
-       WHERE id = ANY(${admissions.map((a) => a.id)}::uuid[])
+       WHERE id = ANY(${admissions.map((a) => a.id)}::text[])
     `;
     typeById = new Map(rows.map((r) => [r.id, normalizeAdmissionType(r.admission_type)]));
   } catch (err) {

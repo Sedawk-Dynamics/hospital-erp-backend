@@ -629,14 +629,14 @@ enum PrescriptionStatus {
 }
 
 enum MedicationRoute {
-  oral       @map("oral")
-  iv         @map("iv")
-  im         @map("im")
+  oral                 @map("oral")
+  iv                   @map("iv")
+  im                   @map("im")
   intravenous          @map("intravenous")
   intramuscular        @map("intramuscular")
-  topical    @map("topical")
-  sublingual @map("sublingual")
-  inhalation @map("inhalation")
+  topical              @map("topical")
+  sublingual           @map("sublingual")
+  inhalation           @map("inhalation")
   buccal               @map("buccal")
   rectal               @map("rectal")
   vaginal              @map("vaginal")
@@ -653,7 +653,7 @@ enum MedicationRoute {
   intravenous_infusion @map("intravenous_infusion")
   intraosseous         @map("intraosseous")
   intravitreal         @map("intravitreal")
-  other      @map("other")
+  other                @map("other")
 }
 
 enum MedAdminStatus {
@@ -1707,7 +1707,6 @@ model IcdCode {
   @@map("icd_codes")
 }
 
-
 model SnomedDescription {
   id                 String   @id @default(uuid())
   descriptionId      String   @unique @map("description_id") @db.VarChar(32)
@@ -1727,7 +1726,6 @@ model SnomedDescription {
   @@index([active])
   @@map("snomed_descriptions")
 }
-
 
 model SnomedIcdMap {
   id                    String   @id @default(uuid())
@@ -2348,6 +2346,7 @@ model Patient {
   formSubmissions           HospitalFormSubmission[]
   emergencyRegistrations    EmergencyRegistration[]
   fastTrackCodes            FastTrackCode[]
+  medicoLegalRecords        MedicoLegalRecord[]
 
   @@unique([tenantId, mrn])
   @@map("patients")
@@ -2389,9 +2388,9 @@ enum EmergencyBroughtBy {
 }
 
 model EmergencyRegistration {
-  id        String @id @default(uuid())
-  tenantId  String @map("tenant_id")
-  patientId String @map("patient_id")
+  id        String  @id @default(uuid())
+  tenantId  String  @map("tenant_id")
+  patientId String  @map("patient_id")
   visitId   String? @map("visit_id")
 
   priority       EsiTriagePriority
@@ -2428,21 +2427,69 @@ enum FastTrackCodeType {
 }
 
 model FastTrackCode {
-  id          String @id @default(uuid())
-  tenantId    String @map("tenant_id")
-  patientId   String @map("patient_id")
-  admissionId String @map("admission_id")
-  visitId     String? @map("visit_id")
-  code    FastTrackCodeType
-  details Json
-  activatedBy String?  @map("activated_by")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
-  patient Patient @relation(fields: [patientId], references: [id])
+  id          String            @id @default(uuid())
+  tenantId    String            @map("tenant_id")
+  patientId   String            @map("patient_id")
+  admissionId String            @map("admission_id")
+  visitId     String?           @map("visit_id")
+  code        FastTrackCodeType
+  details     Json
+  activatedBy String?           @map("activated_by")
+  createdAt   DateTime          @default(now()) @map("created_at")
+  updatedAt   DateTime          @default(now()) @updatedAt @map("updated_at")
+  patient     Patient           @relation(fields: [patientId], references: [id])
 
   @@index([tenantId, admissionId])
   @@index([patientId])
   @@map("fast_track_codes")
+}
+
+// Medico-legal (MLC) record for an IP episode. The MLC flag + police intimation
+// fields are typed columns (queryable); belongings are a JSON string list; each
+// documented injury is its own row (queryable/forensic) in MedicoLegalInjury.
+model MedicoLegalRecord {
+  id          String  @id @default(uuid())
+  tenantId    String  @map("tenant_id")
+  patientId   String  @map("patient_id")
+  admissionId String  @map("admission_id")
+  visitId     String? @map("visit_id")
+  isMlc                Boolean   @default(false) @map("is_mlc")
+  mlcSerialNumber      String?   @map("mlc_serial_number")
+  policeStation        String?   @map("police_station")
+  investigatingOfficer String?   @map("investigating_officer")
+  policeIntimationAt   DateTime? @map("police_intimation_at")
+  ioArrivalAt          DateTime? @map("io_arrival_at")
+  receiptAckNo         String?   @map("receipt_ack_no")
+
+  // Belongings / items — simple string list, never queried individually.
+  items Json
+
+  createdBy String?  @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  patient  Patient             @relation(fields: [patientId], references: [id])
+  injuries MedicoLegalInjury[]
+
+  @@index([tenantId, admissionId])
+  @@index([patientId])
+  @@map("medico_legal_records")
+}
+
+model MedicoLegalInjury {
+  id       String   @id @default(uuid())
+  recordId String   @map("record_id")
+  bodySite String   @map("body_site")
+  nature   String?
+  lengthCm Decimal? @map("length_cm") @db.Decimal(5, 1)
+  widthCm  Decimal? @map("width_cm") @db.Decimal(5, 1)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  record MedicoLegalRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+
+  @@index([recordId])
+  @@map("medico_legal_injuries")
 }
 
 model PatientPersonalHistory {
@@ -3215,7 +3262,7 @@ model ProgressNotePin {
   noteId           String           @map("note_id")
   dischargeSection DischargeSection @map("discharge_section")
   content          String
-  showToPatient Boolean @default(false) 
+  showToPatient    Boolean          @default(false)
   createdAt        DateTime         @default(now()) @map("created_at")
 
   note ProgressNote @relation(fields: [noteId], references: [id], onDelete: Cascade)
@@ -3919,49 +3966,49 @@ model EmarAuditLog {
 // link. `parameters` is a snapshot so later template edits never silently
 // mutate a hospital's existing test sheet.
 model LabTestCatalog {
-  id              String   @id @default(uuid())
-  tenantId        String   @map("tenant_id")
-  templateId      String?  @map("template_id")
-  testName        String   @map("test_name") @db.VarChar(255)
-  testCode        String?  @map("test_code") @db.VarChar(50)
-  description     String?
-  normalRange     String?  @map("normal_range")
-  unit            String?  @db.VarChar(50)
-  price           Decimal? @db.Decimal(10, 2)
+  id          String   @id @default(uuid())
+  tenantId    String   @map("tenant_id")
+  templateId  String?  @map("template_id")
+  testName    String   @map("test_name") @db.VarChar(255)
+  testCode    String?  @map("test_code") @db.VarChar(50)
+  description String?
+  normalRange String?  @map("normal_range")
+  unit        String?  @db.VarChar(50)
+  price       Decimal? @db.Decimal(10, 2)
 
   loincCode        String?  @map("loinc_code") @db.VarChar(50)
   loincDisplayName String?  @map("loinc_display_name") @db.VarChar(255)
-  sacCode         String?  @map("sac_code") @db.VarChar(20)
-  gstTreatment    String?  @map("gst_treatment") @db.VarChar(20)
-  turnaroundHours Int?     @map("turnaround_hours")
-  sampleType      String?  @map("sample_type") @db.VarChar(50)
-  specimen        String?  @db.VarChar(255)
-  instructions    String?
+  sacCode          String?  @map("sac_code") @db.VarChar(20)
+  gstTreatment     String?  @map("gst_treatment") @db.VarChar(20)
+  turnaroundHours  Int?     @map("turnaround_hours")
+  sampleType       String?  @map("sample_type") @db.VarChar(50)
+  specimen         String?  @db.VarChar(255)
+  instructions     String?
   // Structured ParameterSpec[] — see seed-lab-test-templates.ts for the
   // canonical shape. Validated by lab.validation.parametersSchema.
-  parameters      Json?
+  parameters       Json?
   // Free-text interpretation / clinical-significance notes printed at the
   // bottom of the branded report.
-  interpretation  String?
+  interpretation   String?
   // Synonyms (e.g. "FBC", "Hemogram", "Full Body Blood Count") + tags
   // (e.g. "hemoglobin", "wbc"). Power the dynamic-search layer so a doctor
   // typing "hemoglobin" surfaces CBC even though that string is not in the
   // canonical test name. Hospital admins can edit both freely without
   // touching the platform template.
-  aliases         String[] @default([])
-  tags            String[] @default([])
+  aliases          String[] @default([])
+  tags             String[] @default([])
   // Denormalised lowercase index of name + code + aliases + tags + parameter
   // names — used for fast substring match (illike) in the dynamic-search
   // endpoint. Recomputed by the service on every create/update.
-  searchTokens    String?  @map("search_tokens")
+  searchTokens     String?  @map("search_tokens")
   // `true` when this row was authored locally (no platform template) — the
   // hospital admin built it from scratch via the Create Custom Test surface.
   // Custom rows live independently of master data; a future re-clone-all
   // never touches them because templateId is null.
-  isCustom        Boolean  @default(false) @map("is_custom")
-  isActive        Boolean  @default(true) @map("is_active")
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
+  isCustom         Boolean  @default(false) @map("is_custom")
+  isActive         Boolean  @default(true) @map("is_active")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at")
 
   tenant        Tenant           @relation(fields: [tenantId], references: [id])
   template      LabTestTemplate? @relation(fields: [templateId], references: [id])
@@ -3978,17 +4025,17 @@ model LabTestCatalog {
 // snapshot — edits to a template never retroactively mutate existing
 // catalogs.
 model LabTestTemplate {
-  id              String   @id @default(uuid())
-  name            String   @unique @db.VarChar(255)
-  code            String?  @db.VarChar(50)
-  sampleType      String?  @map("sample_type") @db.VarChar(50)
-  specimen        String?  @db.VarChar(255)
-  instructions    String?
-  description     String?
-  defaultPrice    Decimal? @map("default_price") @db.Decimal(10, 2)
-  turnaroundHours Int?     @map("turnaround_hours")
-  parameters      Json // ParameterSpec[]
-  interpretation  String?
+  id               String   @id @default(uuid())
+  name             String   @unique @db.VarChar(255)
+  code             String?  @db.VarChar(50)
+  sampleType       String?  @map("sample_type") @db.VarChar(50)
+  specimen         String?  @db.VarChar(255)
+  instructions     String?
+  description      String?
+  defaultPrice     Decimal? @map("default_price") @db.Decimal(10, 2)
+  turnaroundHours  Int?     @map("turnaround_hours")
+  parameters       Json // ParameterSpec[]
+  interpretation   String?
   loincCode        String?  @map("loinc_code") @db.VarChar(50)
   loincDisplayName String?  @map("loinc_display_name") @db.VarChar(255)
   // Synonyms + tags drive the dynamic-search layer. Aliases are alternative
@@ -3996,23 +4043,22 @@ model LabTestTemplate {
   // (parameter names, anatomy, indication keywords) that surface the test
   // when searched. Hospitals can extend both on their cloned catalog row
   // without touching the master template.
-  aliases         String[] @default([])
-  tags            String[] @default([])
+  aliases          String[] @default([])
+  tags             String[] @default([])
   // Denormalised lowercase index of name + code + aliases + tags + parameter
   // names — recomputed by the service on every create/update.
-  searchTokens    String?  @map("search_tokens")
-  isPublished     Boolean  @default(true) @map("is_published")
-  version         Int      @default(1)
-  createdById     String   @map("created_by_id")
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
+  searchTokens     String?  @map("search_tokens")
+  isPublished      Boolean  @default(true) @map("is_published")
+  version          Int      @default(1)
+  createdById      String   @map("created_by_id")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at")
 
   createdBy User             @relation("LabTestTemplateCreator", fields: [createdById], references: [id])
   catalogs  LabTestCatalog[]
 
   @@map("lab_test_templates")
 }
-
 
 model LoincCatalog {
   id          String   @id @default(uuid())
@@ -4036,7 +4082,6 @@ model LoincCatalog {
   @@index([status])
   @@map("loinc_catalog")
 }
-
 
 // ─────────────────────────────────────────────────────────────
 // Lab Unit Groups + Units
@@ -4115,12 +4160,12 @@ model LabOrder {
   thirdPartyLabName     String?        @map("third_party_lab_name") @db.VarChar(255)
   notes                 String?
 
-  completedExternallyAt DateTime?      @map("completed_externally_at")
-  completedExternallyBy String?        @map("completed_externally_by")
-  externalReportUrl     String?        @map("external_report_url")
-  externalNotes         String?        @map("external_notes")
-  createdAt             DateTime       @default(now()) @map("created_at")
-  updatedAt             DateTime       @default(now()) @updatedAt @map("updated_at")
+  completedExternallyAt DateTime? @map("completed_externally_at")
+  completedExternallyBy String?   @map("completed_externally_by")
+  externalReportUrl     String?   @map("external_report_url")
+  externalNotes         String?   @map("external_notes")
+  createdAt             DateTime  @default(now()) @map("created_at")
+  updatedAt             DateTime  @default(now()) @updatedAt @map("updated_at")
 
   tenant            Tenant          @relation(fields: [tenantId], references: [id])
   patient           Patient         @relation(fields: [patientId], references: [id])

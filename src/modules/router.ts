@@ -63,6 +63,7 @@ import { snomedRoutes } from './snomed/snomed.routes';
 import { loincRoutes } from './loinc/loinc.routes';
 import { fhirRoutes } from './fhir/fhir.routes';
 import fastTrackRoute from './fast-track-codes/fast-track.route';
+import medicoLegalRoute from './medico-legal/medico-legal.routes';
 
 const apiRouter = Router();
 
@@ -183,4 +184,5 @@ apiRouter.use('/loinc', authenticate, userTierLimiter, loincRoutes);
 apiRouter.use('/fhir', authenticate, userTierLimiter, fhirRoutes);
 
 apiRouter.use('/fast-track-codes',authenticate,userTierLimiter,fastTrackRoute);
+apiRouter.use('/medico-legal',authenticate,userTierLimiter,medicoLegalRoute);
 export { apiRouter };
