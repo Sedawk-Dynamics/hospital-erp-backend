@@ -2,6 +2,7 @@ import { Router, Response, NextFunction } from 'express';
 import { authenticate } from '../../middleware/authenticate';
 import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse } from '../../shared/apiResponse';
+import { AppError } from '../../shared/appError';
 import * as patientPortalService from './patient-portal.service';
 import { uploadSingle } from '../../services/upload.service';
 import { validate } from '../../middleware/validate';
@@ -479,13 +480,23 @@ router.get('/discharge-summaries/:id', async (req: AuthenticatedRequest, res: Re
 // GET /patient-portal/discharge-summaries/:id/pdf
 router.get('/discharge-summaries/:id/pdf', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
+    // Ownership + published check (throws 404 if this summary isn't the patient's).
     const summary = await patientPortalService.getPatientDischargeSummaryById(
       req.user!.userId,
       req.user!.email,
       req.params.id as string,
     );
+    const tenantId = (summary as any).patient?.tenant?.id as string | undefined;
+    if (!tenantId) throw AppError.notFound('Discharge summary not found');
+
+    // Build the full PDF document, patient-visible only (strips doctor-hidden pins).
+    const { buildDischargeDocument } = await import('../mrd/mrd.service');
+    const document = await buildDischargeDocument(tenantId, req.params.id as string, {
+      onlyPatientVisible: true,
+    });
+
     const { streamDischargeSummaryPdf } = await import('../mrd/discharge-summary-pdf');
-    streamDischargeSummaryPdf(res, summary as any);
+    streamDischargeSummaryPdf(res, document);
   } catch (err) {
     next(err);
   }

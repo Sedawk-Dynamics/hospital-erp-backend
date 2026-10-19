@@ -2347,6 +2347,7 @@ model Patient {
   emarSchedules             EmarSchedule[]
   formSubmissions           HospitalFormSubmission[]
   emergencyRegistrations    EmergencyRegistration[]
+  fastTrackCodes            FastTrackCode[]
 
   @@unique([tenantId, mrn])
   @@map("patients")
@@ -2413,6 +2414,35 @@ model EmergencyRegistration {
   @@index([tenantId])
   @@index([patientId])
   @@map("emergency_registrations")
+}
+
+// Fast-track rapid-response protocol code activated for an IP patient from the
+// shared IP workspace. One row per activation. Common columns are typed; the
+// code-specific fields live in `details` (JSON) because each code has a
+// different shape — this maps 1:1 to the discriminated form on the frontend.
+enum FastTrackCodeType {
+  code_red_trauma @map("code_red_trauma")
+  code_stemi      @map("code_stemi")
+  code_stroke     @map("code_stroke")
+  code_sepsis     @map("code_sepsis")
+}
+
+model FastTrackCode {
+  id          String @id @default(uuid())
+  tenantId    String @map("tenant_id")
+  patientId   String @map("patient_id")
+  admissionId String @map("admission_id")
+  visitId     String? @map("visit_id")
+  code    FastTrackCodeType
+  details Json
+  activatedBy String?  @map("activated_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+  patient Patient @relation(fields: [patientId], references: [id])
+
+  @@index([tenantId, admissionId])
+  @@index([patientId])
+  @@map("fast_track_codes")
 }
 
 model PatientPersonalHistory {
@@ -4382,7 +4412,7 @@ model DicomStudy {
   imagingResultId    String?   @map("imaging_result_id")
   imagingRequestId   String?   @map("imaging_request_id")
   patientId          String    @map("patient_id")
-  studyInstanceUid   String    @unique @map("study_instance_uid") @db.VarChar(255)
+  studyInstanceUid   String    @map("study_instance_uid") @db.VarChar(255)
   accessionNumber    String?   @map("accession_number") @db.VarChar(64)
   studyDate          DateTime? @map("study_date")
   studyDescription   String?   @map("study_description") @db.VarChar(255)
@@ -4402,6 +4432,7 @@ model DicomStudy {
   series        DicomSeries[]
   instances     DicomInstance[]
 
+  @@unique([tenantId, studyInstanceUid])
   @@index([tenantId, patientId, studyDate])
   @@map("dicom_studies")
 }
@@ -4410,7 +4441,7 @@ model DicomSeries {
   id                String   @id @default(uuid())
   tenantId          String   @map("tenant_id")
   studyId           String   @map("study_id")
-  seriesInstanceUid String   @unique @map("series_instance_uid") @db.VarChar(255)
+  seriesInstanceUid String   @map("series_instance_uid") @db.VarChar(255)
   seriesNumber      Int?     @map("series_number")
   seriesDescription String?  @map("series_description") @db.VarChar(255)
   modality          String?  @db.VarChar(20)
@@ -4422,6 +4453,7 @@ model DicomSeries {
   study     DicomStudy      @relation(fields: [studyId], references: [id], onDelete: Cascade)
   instances DicomInstance[]
 
+  @@unique([tenantId, seriesInstanceUid])
   @@index([tenantId, studyId])
   @@map("dicom_series")
 }
@@ -4431,7 +4463,7 @@ model DicomInstance {
   tenantId       String   @map("tenant_id")
   studyId        String   @map("study_id")
   seriesId       String?  @map("series_id")
-  sopInstanceUid String   @unique @map("sop_instance_uid") @db.VarChar(255)
+  sopInstanceUid String   @map("sop_instance_uid") @db.VarChar(255)
   sopClassUid    String?  @map("sop_class_uid") @db.VarChar(255)
   instanceNumber Int?     @map("instance_number")
   fileUrl        String   @map("file_url")
@@ -4445,6 +4477,7 @@ model DicomInstance {
   study  DicomStudy   @relation(fields: [studyId], references: [id], onDelete: Cascade)
   series DicomSeries? @relation(fields: [seriesId], references: [id])
 
+  @@unique([tenantId, sopInstanceUid])
   @@index([tenantId, studyId])
   @@map("dicom_instances")
 }

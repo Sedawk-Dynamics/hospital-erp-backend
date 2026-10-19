@@ -128,7 +128,7 @@ export async function createStudy(tenantId: string, data: CreateStudyInput) {
 
   // Upsert by studyInstanceUid so re-receiving the same study is idempotent.
   const study = await prisma.dicomStudy.upsert({
-    where: { studyInstanceUid: data.studyInstanceUid },
+    where: { tenantId_studyInstanceUid: { tenantId, studyInstanceUid: data.studyInstanceUid } },
     update: {
       imagingRequestId: data.imagingRequestId,
       imagingResultId: data.imagingResultId,
@@ -182,7 +182,7 @@ export async function addInstance(tenantId: string, studyId: string, data: AddIn
   let seriesId: string | null = null;
   if (data.seriesInstanceUid) {
     const series = await prisma.dicomSeries.upsert({
-      where: { seriesInstanceUid: data.seriesInstanceUid },
+      where: { tenantId_seriesInstanceUid: { tenantId, seriesInstanceUid: data.seriesInstanceUid } },
       update: {
         seriesDescription: data.seriesDescription,
         seriesNumber: data.seriesNumber,
@@ -204,7 +204,7 @@ export async function addInstance(tenantId: string, studyId: string, data: AddIn
   }
 
   const instance = await prisma.dicomInstance.upsert({
-    where: { sopInstanceUid: data.sopInstanceUid },
+    where: { tenantId_sopInstanceUid: { tenantId, sopInstanceUid: data.sopInstanceUid } },
     update: {
       seriesId,
       sopClassUid: data.sopClassUid,

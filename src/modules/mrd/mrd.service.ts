@@ -1100,8 +1100,35 @@ export async function getDischargeSummaryForPdf(tenantId: string, id: string) {
  * admission & discharge, procedures, imaging, structured discharge meds). Used
  * for both the PDF and the on-screen print view so they render identically.
  */
-export async function buildDischargeDocument(tenantId: string, id: string): Promise<DischargeDocument> {
+export async function buildDischargeDocument(
+  tenantId: string,
+  id: string,
+  opts: { onlyPatientVisible?: boolean } = {},
+): Promise<DischargeDocument> {
   const summary = await getDischargeSummaryById(tenantId, id);
+
+  // Patient-facing export: the stored narrative columns are the DOCTOR's version
+  // with every pin baked in. Rebuild them from the same source data but carrying
+  // ONLY the pins the doctor flagged "show to patient", then overlay — so the PDF
+  // matches the patient's on-screen view (getPublishedDischargeSummaryForPatient).
+  if (opts.onlyPatientVisible) {
+    const built = await buildSummaryFields(tenantId, summary.admissionId, { onlyPatientVisible: true });
+    summary.headerSummary = built.headerSummary;
+    summary.diagnosesSummary = built.diagnosesSummary;
+    summary.proceduresSummary = built.proceduresSummary;
+    summary.labResultsSummary = built.labResultsSummary;
+    summary.keyLabsSummary = built.keyLabsSummary;
+    summary.vitalsSummary = built.vitalsSummary;
+    summary.radiologySummary = built.radiologySummary;
+    summary.medicationReconciliation = built.medicationReconciliation;
+    summary.dischargeInstructions = built.dischargeInstructions;
+    summary.followUpInstructions = built.followUpInstructions;
+    summary.chiefComplaint = built.chiefComplaint;
+    summary.examination = built.examination;
+    summary.investigation = built.investigation;
+    summary.impression = built.impression;
+  }
+
   const { visitId, patientId } = summary;
   const num = (v: unknown) => (v === null || v === undefined ? null : Number(v));
 
@@ -1387,6 +1414,10 @@ export async function getPublishedDischargeSummaryForPatient(patientIds: string[
       medicationReconciliation: built.medicationReconciliation,
       dischargeInstructions: built.dischargeInstructions,
       followUpInstructions: built.followUpInstructions,
+      chiefComplaint: built.chiefComplaint,
+      examination: built.examination,
+      investigation: built.investigation,
+      impression: built.impression,
     };
   }
   return summary;
