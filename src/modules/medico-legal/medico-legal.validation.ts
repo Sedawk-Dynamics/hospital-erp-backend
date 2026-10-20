@@ -18,7 +18,6 @@ export const addMedicoLegalSchema = z.object({
     patientId: z.string().min(1),
     admissionId: z.string().min(1),
     visitId: z.string().optional(),
-
     isMlc: z.boolean(),
     mlcSerialNumber: z.string().trim().optional(),
     policeStation: z.string().trim().optional(),

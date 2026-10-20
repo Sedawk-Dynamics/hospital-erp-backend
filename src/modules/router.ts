@@ -64,6 +64,7 @@ import { loincRoutes } from './loinc/loinc.routes';
 import { fhirRoutes } from './fhir/fhir.routes';
 import fastTrackRoute from './fast-track-codes/fast-track.route';
 import medicoLegalRoute from './medico-legal/medico-legal.routes';
+import intoxicationExamRoute from './intoxication-exam/intoxication.route';
 
 const apiRouter = Router();
 
@@ -185,4 +186,5 @@ apiRouter.use('/fhir', authenticate, userTierLimiter, fhirRoutes);
 
 apiRouter.use('/fast-track-codes',authenticate,userTierLimiter,fastTrackRoute);
 apiRouter.use('/medico-legal',authenticate,userTierLimiter,medicoLegalRoute);
+apiRouter.use('/intoxication-examination',authenticate,userTierLimiter,intoxicationExamRoute);
 export { apiRouter };

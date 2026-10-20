@@ -2347,6 +2347,7 @@ model Patient {
   emergencyRegistrations    EmergencyRegistration[]
   fastTrackCodes            FastTrackCode[]
   medicoLegalRecords        MedicoLegalRecord[]
+  intoxicationExams         IntoxicationExam[]
 
   @@unique([tenantId, mrn])
   @@map("patients")
@@ -2490,6 +2491,42 @@ model MedicoLegalInjury {
 
   @@index([recordId])
   @@map("medico_legal_injuries")
+}
+
+model IntoxicationExam {
+  id          String  @id @default(uuid())
+  tenantId    String  @map("tenant_id")
+  patientId   String  @map("patient_id")
+  admissionId String  @map("admission_id")
+  visitId     String? @map("visit_id")
+
+  alcoholSmell      String? @map("alcohol_smell")       // Strong | Mild | Absent
+  speech            String? @map("speech")              // Slurred | Incoherent | Normal
+  pupilsConjunctiva String? @map("pupils_conjunctiva")  // Dilated-Sluggish | Pinpoint | Normal
+  gaitBalance       String? @map("gait_balance")        // Staggering | Unable-to-stand | Steady
+  rombergSign       String? @map("romberg_sign")        // Positive | Negative
+  fingerToNose      String? @map("finger_to_nose")      // Inaccurate | Past-pointing | Normal
+
+  recordedBac Decimal? @map("recorded_bac") @db.Decimal(6, 2) // mg/dL
+
+  opinion String? // consumed_under_influence | consumed_not_under_influence | no_evidence
+
+  examinerName  String?   @map("examiner_name")
+  examinerNmcNo String?   @map("examiner_nmc_no")
+  examinedAt    DateTime? @map("examined_at")
+  witnessName          String? @map("witness_name")
+  witnessBuckleNo      String? @map("witness_buckle_no")
+  witnessPoliceStation String? @map("witness_police_station")
+
+  createdBy String?  @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  patient Patient @relation(fields: [patientId], references: [id])
+
+  @@index([tenantId, admissionId])
+  @@index([patientId])
+  @@map("intoxication_exams")
 }
 
 model PatientPersonalHistory {
