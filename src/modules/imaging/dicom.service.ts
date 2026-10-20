@@ -773,7 +773,11 @@ export async function dicomFolderUpload(
       fileUrl: `/uploads/${firstFile.filename}`,
       fileName: `DICOM study (${files.length} images)`,
       sizeBytes: totalSize,
-      mimeType: firstFile.mimetype || 'application/dicom',
+      // These are DICOM by definition here — never trust the browser MIME.
+      // Windows tags extensionless DICOM as application/octet-stream, which
+      // the viewer's type-detector rejects; force the correct type so the
+      // study previews regardless of the uploading OS.
+      mimeType: 'application/dicom',
       uploadedBy: userId,
     },
   });
@@ -807,7 +811,7 @@ export async function dicomFolderUpload(
       instanceNumber: s.instanceNumber,
       fileUrl: `/uploads/${files[i].filename}`,
       fileSizeBytes: files[i].size,
-      mimeType: files[i].mimetype ?? 'application/dicom',
+      mimeType: 'application/dicom',
       rows: s.rows,
       columns: s.columns,
     });
