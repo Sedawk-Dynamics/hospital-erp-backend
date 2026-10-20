@@ -1,8 +1,7 @@
-import { AuthenticatedRequest } from "@/shared/types"
-import { Request,Response,NextFunction } from "express"
-import medicoLegalRoute from "./medico-legal.routes";
+import { AuthenticatedRequest } from "../../shared/types"
+import { Response,NextFunction } from "express"
 import * as medicoLegalService from './medico-legal.service';
-import { sendResponse } from "@/shared/apiResponse";
+import { sendResponse } from "../../shared/apiResponse";
 
 export const addMedical=async(req:AuthenticatedRequest,res:Response,next:NextFunction)=>{
     try {
