@@ -1,5 +1,6 @@
 import path from 'path';
 import fs from 'fs';
+import unzipper from 'unzipper';
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { env } from '../../config/env';
@@ -19,6 +20,7 @@ import type {
   GetStudiesQuery,
   WorklistQuery,
 } from './dicom.validation';
+import { file } from 'pdfkit';
 
 // ============================================================
 // Imaging-attachment → study bridge
@@ -91,13 +93,13 @@ function buildSynthesizedStudy(req: any, instanceCount: number) {
     synthesized: true as const,
     patient: req.patient
       ? {
-          id: req.patient.id,
-          mrn: req.patient.mrn,
-          firstName: req.patient.firstName,
-          lastName: req.patient.lastName,
-          dateOfBirth: req.patient.dateOfBirth,
-          gender: req.patient.gender,
-        }
+        id: req.patient.id,
+        mrn: req.patient.mrn,
+        firstName: req.patient.firstName,
+        lastName: req.patient.lastName,
+        dateOfBirth: req.patient.dateOfBirth,
+        gender: req.patient.gender,
+      }
       : undefined,
   };
 }
@@ -475,8 +477,8 @@ export async function getWorklist(tenantId: string, query: WorklistQuery) {
     },
     referringPhysician: r.orderer
       ? // DICOM PersonName is caret-separated, so the shared name helper's space
-        // is wrong here — a missing surname just leaves the component empty.
-        `${r.orderer.firstName}^${r.orderer.lastName ?? ''}`
+      // is wrong here — a missing surname just leaves the component empty.
+      `${r.orderer.firstName}^${r.orderer.lastName ?? ''}`
       : null,
   }));
 }
@@ -507,13 +509,7 @@ export interface SyncAttachmentResult {
   viewerUrl?: string;
 }
 
-/**
- * Push a DICOM attachment to the active PACS provider, then mirror the
- * archive's Study/Series/Instance UIDs into our tables and stamp the viewer
- * URL. Idempotent: createStudy/addInstance upsert by UID, so re-syncing the
- * same file is safe. Best-effort by design — the caller treats failures as
- * non-fatal because the file already lives in /uploads as a fallback.
- */
+
 export async function syncAttachmentToPacs(
   tenantId: string,
   attachmentId: string,
@@ -542,12 +538,13 @@ export async function syncAttachmentToPacs(
     return { synced: false, reason: 'not-dicom' };
   }
   if (!provider.embeddable || !pacsSupportsArchive()) {
-    // Embed-only providers (PostDICOM) don't archive server-side.
     return { synced: false, reason: 'archive-unsupported' };
   }
 
   const filePath = resolveUploadPath(attachment.fileUrl);
-  if (!filePath) return { synced: false, reason: 'file-missing' };
+  if (!filePath) return { synced: false, reason: 'file-missing' }
+
+  let isZipFile = path.extname(attachment.fileName).toLowerCase() === '.zip';
 
   const req = attachment.imagingRequest;
   const patientName = req?.patient
@@ -555,97 +552,194 @@ export async function syncAttachmentToPacs(
     : undefined;
 
   let stored;
-  try {
-    const buffer = await fs.promises.readFile(filePath);
-    stored = await provider.storeInstance({
-      buffer,
-      fileName: attachment.fileName,
-      patientMrn: req?.patient?.mrn,
-      patientName,
-    });
-  } catch (err) {
-    if (err instanceof PacsArchiveUnsupportedError) {
-      return { synced: false, reason: 'archive-unsupported' };
-    }
-    logger.error({ err, attachmentId }, 'PACS storeInstance failed');
-    throw err;
-  }
 
-  const viewerUrl = provider.buildViewerUrl(stored.studyInstanceUid) ?? undefined;
-
-  // Mirror into our PACS tables (idempotent upserts by UID).
-  const study = await createStudy(tenantId, {
-    patientId: req!.patientId,
-    imagingRequestId: attachment.imagingRequestId,
-    imagingResultId: attachment.imagingResultId ?? undefined,
-    studyInstanceUid: stored.studyInstanceUid,
-    accessionNumber: stored.accessionNumber,
-    studyDate: stored.studyDate,
-    studyDescription: stored.studyDescription,
-    modality: stored.modality,
-    patientName: stored.patientName,
-    patientDicomId: stored.patientDicomId,
-    referringPhysician: stored.referringPhysician,
-    viewerUrl,
-  });
-
-  // Stamp the archive's internal study id for traceability.
-  if (stored.externalStudyId && study.storagePath !== stored.externalStudyId) {
-    await prisma.dicomStudy.update({
-      where: { id: study.id },
-      data: { storagePath: stored.externalStudyId },
-    });
-  }
-
-  await addInstance(tenantId, study.id, {
-    seriesInstanceUid: stored.seriesInstanceUid,
-    seriesDescription: stored.seriesDescription,
-    seriesNumber: stored.seriesNumber,
-    seriesModality: stored.modality,
-    bodyPart: stored.bodyPart ?? req?.bodyPart ?? undefined,
-    sopInstanceUid: stored.sopInstanceUid,
-    instanceNumber: stored.instanceNumber,
-    // Keep the local /uploads URL so the in-house viewer remains a fallback;
-    // OHIF reads pixels from the archive via DICOMweb using the study UID.
-    fileUrl: attachment.fileUrl,
-    fileSizeBytes: attachment.sizeBytes ?? undefined,
-    mimeType: attachment.mimeType ?? 'application/dicom',
-    rows: stored.rows,
-    columns: stored.columns,
-  });
-
-  // Single source of truth: once the bytes are safely in the PACS (S3), drop
-  // the local /uploads copy and repoint download/fallback to an authenticated
-  // retrieve endpoint that streams from Orthanc.
-  if (env.PACS_DROP_LOCAL && filePath) {
-    const retrieveUrl = buildRetrieveUrl(stored.sopInstanceUid);
-    await prisma.imagingAttachment.update({
-      where: { id: attachmentId },
-      data: { fileUrl: retrieveUrl },
-    });
-    await prisma.dicomInstance.updateMany({
-      where: { tenantId, sopInstanceUid: stored.sopInstanceUid },
-      data: { fileUrl: retrieveUrl },
-    });
+  if (isZipFile) {
+    let storedlist = [];
     try {
-      await fs.promises.unlink(filePath);
+      const buffer = await fs.promises.readFile(filePath);
+      const directory = await unzipper.Open.buffer(buffer);
+
+      const dicomEntries = directory.files.filter((f) => {
+        if (f.type !== 'File') return false;
+        if (f.path.includes('__MACOSX')) return false;
+        const base = path.basename(f.path);
+        if (base.startsWith('.') || base === 'DICOMDIR') return false;
+        const ext = path.extname(f.path).toLowerCase();
+        return ext === '.dcm' || ext === '.dicom';
+      });
+
+      if (dicomEntries.length === 0) {
+        return { synced: false, reason: 'no-dicom-in-zip' };
+      }
+
+      for (const files of dicomEntries) {
+        const fileBuffer = await files.buffer();
+        stored = await provider.storeInstance({
+          buffer: fileBuffer,
+          fileName: path.basename(files.path),
+          patientMrn: req?.patient?.mrn,
+          patientName,
+        })
+        storedlist.push(stored)
+      }
     } catch (err) {
-      logger.warn({ err, filePath }, 'PACS_DROP_LOCAL: failed to delete local DICOM copy');
+      if (err instanceof PacsArchiveUnsupportedError) {
+        return { synced: false, reason: 'archive-unsupported' };
+      }
+      logger.error({ err, attachmentId }, 'PACS zip store failed');
+      throw err;
     }
+    const zipViewerUrl = provider.buildViewerUrl(storedlist[0].studyInstanceUid) ?? undefined;
+    const study = await createStudy(tenantId, {
+      patientId: req!.patientId,
+      imagingRequestId: attachment.imagingRequestId,
+      imagingResultId: attachment.imagingResultId ?? undefined,
+      studyInstanceUid: storedlist[0].studyInstanceUid,
+      accessionNumber: storedlist[0].accessionNumber,
+      studyDate: storedlist[0].studyDate,
+      studyDescription: storedlist[0].studyDescription,
+      modality: storedlist[0].modality,
+      patientName: storedlist[0].patientName,
+      patientDicomId: storedlist[0].patientDicomId,
+      referringPhysician: storedlist[0].referringPhysician,
+      viewerUrl: zipViewerUrl,
+    })
+
+    for (const entries of storedlist) {
+      await addInstance(tenantId, study.id, {
+        seriesInstanceUid: entries.seriesInstanceUid,
+        seriesDescription: entries.seriesDescription,
+        seriesNumber: entries.seriesNumber,
+        seriesModality: entries.modality,
+        bodyPart: entries.bodyPart ?? req?.bodyPart ?? undefined,
+        sopInstanceUid: entries.sopInstanceUid,
+        instanceNumber: entries.instanceNumber,
+        fileUrl: attachment.fileUrl,
+        fileSizeBytes: attachment.sizeBytes ?? undefined,
+        mimeType: attachment.mimeType ?? 'application/dicom',
+        rows: entries.rows,
+        columns: entries.columns,
+      });
+    }
+    if (env.PACS_DROP_LOCAL && filePath) {
+      for (const a of storedlist) {
+        await prisma.dicomInstance.updateMany({
+          where: { tenantId, sopInstanceUid: a.sopInstanceUid },
+          data: { fileUrl: buildRetrieveUrl(a.sopInstanceUid) },
+        });
+      }
+      await prisma.imagingAttachment.update({
+        where: { id: attachmentId },
+        data: { fileUrl: buildRetrieveUrl(storedlist[0].sopInstanceUid) },
+      });
+      try {
+        await fs.promises.unlink(filePath);
+      } catch (err) {
+        logger.warn({ err, filePath }, 'PACS_DROP_LOCAL: failed to delete local DICOM copy');
+      }
+    }
+    logger.info(
+      { tenantId, attachmentId, studyInstanceUid: storedlist[0].studyInstanceUid, provider: provider.name },
+      'DICOM attachment synced to PACS',
+    );
+    return {
+      synced: true,
+      studyId: study.id,
+      studyInstanceUid: storedlist[0].studyInstanceUid,
+      viewerUrl: zipViewerUrl,
+    };
   }
 
-  logger.info(
-    { tenantId, attachmentId, studyInstanceUid: stored.studyInstanceUid, provider: provider.name },
-    'DICOM attachment synced to PACS',
-  );
+  else {
+    try {
+      const buffer = await fs.promises.readFile(filePath);
+      stored = await provider.storeInstance({
+        buffer,
+        fileName: attachment.fileName,
+        patientMrn: req?.patient?.mrn,
+        patientName,
+      });
+    } catch (err) {
+      if (err instanceof PacsArchiveUnsupportedError) {
+        return { synced: false, reason: 'archive-unsupported' };
+      }
+      logger.error({ err, attachmentId }, 'PACS storeInstance failed');
+      throw err;
+    }
+    const viewerUrl = provider.buildViewerUrl(stored.studyInstanceUid) ?? undefined;
 
-  return {
-    synced: true,
-    studyId: study.id,
-    studyInstanceUid: stored.studyInstanceUid,
-    viewerUrl,
-  };
+
+    const study = await createStudy(tenantId, {
+      patientId: req!.patientId,
+      imagingRequestId: attachment.imagingRequestId,
+      imagingResultId: attachment.imagingResultId ?? undefined,
+      studyInstanceUid: stored.studyInstanceUid,
+      accessionNumber: stored.accessionNumber,
+      studyDate: stored.studyDate,
+      studyDescription: stored.studyDescription,
+      modality: stored.modality,
+      patientName: stored.patientName,
+      patientDicomId: stored.patientDicomId,
+      referringPhysician: stored.referringPhysician,
+      viewerUrl,
+    });
+
+    // Stamp the archive's internal study id for traceability.
+    if (stored.externalStudyId && study.storagePath !== stored.externalStudyId) {
+      await prisma.dicomStudy.update({
+        where: { id: study.id },
+        data: { storagePath: stored.externalStudyId },
+      });
+    }
+
+    await addInstance(tenantId, study.id, {
+      seriesInstanceUid: stored.seriesInstanceUid,
+      seriesDescription: stored.seriesDescription,
+      seriesNumber: stored.seriesNumber,
+      seriesModality: stored.modality,
+      bodyPart: stored.bodyPart ?? req?.bodyPart ?? undefined,
+      sopInstanceUid: stored.sopInstanceUid,
+      instanceNumber: stored.instanceNumber,
+      fileUrl: attachment.fileUrl,
+      fileSizeBytes: attachment.sizeBytes ?? undefined,
+      mimeType: attachment.mimeType ?? 'application/dicom',
+      rows: stored.rows,
+      columns: stored.columns,
+    });
+
+    if (env.PACS_DROP_LOCAL && filePath) {
+      const retrieveUrl = buildRetrieveUrl(stored.sopInstanceUid);
+      await prisma.imagingAttachment.update({
+        where: { id: attachmentId },
+        data: { fileUrl: retrieveUrl },
+      });
+      await prisma.dicomInstance.updateMany({
+        where: { tenantId, sopInstanceUid: stored.sopInstanceUid },
+        data: { fileUrl: retrieveUrl },
+      });
+      try {
+        await fs.promises.unlink(filePath);
+      } catch (err) {
+        logger.warn({ err, filePath }, 'PACS_DROP_LOCAL: failed to delete local DICOM copy');
+      }
+    }
+
+    logger.info(
+      { tenantId, attachmentId, studyInstanceUid: stored.studyInstanceUid, provider: provider.name },
+      'DICOM attachment synced to PACS',
+    );
+    return {
+      synced: true,
+      studyId: study.id,
+      studyInstanceUid: stored.studyInstanceUid,
+      viewerUrl,
+    };
+  }
 }
+
+
+
+
 
 export interface ResolveViewerResult {
   viewerUrl: string | null;
@@ -653,15 +747,7 @@ export interface ResolveViewerResult {
   reason?: string;
 }
 
-/**
- * Resolve the embeddable viewer URL for a DICOM attachment — used by the
- * "detailed view" (fullscreen) on clinical surfaces. Returns the existing
- * archived study's viewer URL when the file is already in the PACS; otherwise,
- * for archive-capable providers (Orthanc), lazily pushes it first (covers files
- * uploaded before PACS was enabled). Returns `{ viewerUrl: null }` when the
- * file can't be served from a PACS, so the caller falls back to the in-house
- * viewer.
- */
+
 export async function resolveAttachmentViewer(
   tenantId: string,
   attachmentId: string,

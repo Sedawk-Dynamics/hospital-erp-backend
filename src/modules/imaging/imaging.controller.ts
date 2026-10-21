@@ -2,6 +2,7 @@ import { Response, NextFunction } from 'express';
 import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse, sendPaginatedResponse } from '../../shared/apiResponse';
 import * as imagingService from './imaging.service';
+import * as attachmentService from './imaging-attachments.service';
 
 // ============================================================
 // Imaging Requests
@@ -280,6 +281,25 @@ export async function getImagingBillingSummary(req: AuthenticatedRequest, res: R
       toDate: req.query.toDate as string | undefined,
     });
     sendResponse({ res, message: 'Imaging billing summary retrieved successfully', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function uploadImagingAttachment(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const file = (req as any).file as Express.Multer.File | undefined;
+    if (!file) throw new Error('No file uploaded');
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const requestId = req.params.requestId as string;
+    const { imagingResultId, category, description } = (req.body ?? {}) as Record<string, string>;
+    const data = await attachmentService.createImagingAttachment(tenantId, userId, requestId, file, {
+      imagingResultId: imagingResultId || undefined,
+      category: category as any,
+      description: description || undefined,
+    });
+    sendResponse({ res, statusCode: 201, message: 'Attachment uploaded', data });
   } catch (err) {
     next(err);
   }
