@@ -157,11 +157,24 @@ export const usersService = {
         tenantId: true,
         tenant: { select: { id: true, name: true, slug: true } },
         _count: { select: { patients: true } },
+        patients: {
+          select: {
+            id: true,
+            tenantId: true,     // to check "registered here?"
+            mrn: true,
+            dateOfBirth: true,
+            gender: true,
+            addressLine1: true,
+            addressLine2:true
+          },
+        },
       },
       take: 10,
       orderBy: { createdAt: 'desc' },
     });
   },
+
+
 
   async findAll(
     tenantId: string,
