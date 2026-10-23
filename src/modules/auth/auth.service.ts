@@ -13,6 +13,7 @@ import {
   canonicalPhone,
   isPlaceholderAccountEmail,
   normalizeAccountPhone,
+  phoneLast10,
   phoneMatchFilter,
   placeholderAccountEmail,
 } from '../../shared/account-holder';
@@ -545,7 +546,11 @@ export const authService = {
           passwordHash,
           firstName: data.firstName?.trim() || firstOrphan?.firstName || 'Patient',
           lastName: data.lastName?.trim() || firstOrphan?.lastName || null,
-          phone,
+          // Store the bare 10-digit national number (not the +91 canonical form)
+          // so account phones match the format used in the patients table.
+          // Matching still works regardless of format (phoneMatchFilter compares
+          // by last-10 digits); `phone` stays canonical for the lookups above.
+          phone: phoneLast10(phone),
           tenantId: tenant.id,
           isActive: true,
           userRoles: { create: { roleId: patientRole.id } },

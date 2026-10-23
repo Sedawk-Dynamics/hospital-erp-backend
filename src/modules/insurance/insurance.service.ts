@@ -1162,6 +1162,12 @@ export async function approveClaim(
   }
 
   const claimAmount = decNum(claim.claimAmount);
+  const coveredExpected = decNum(claim.coveredAmount);
+  if (data.approvedAmount > coveredExpected) {
+    throw AppError.badRequest(
+      `Approved amount cannot exceed the covered amount (${coveredExpected.toFixed(2)}); the deductible and co-pay remain the patient's responsibility`,
+    );
+  }
   const approvedAmount = data.approvedAmount;
   const patientShare = Math.max(0, round2(claimAmount - approvedAmount));
 
@@ -1229,8 +1235,13 @@ export async function partialApproveClaim(
   }
 
   const claimAmount = decNum(claim.claimAmount);
-  if (data.approvedAmount > claimAmount) {
-    throw AppError.badRequest('Approved amount cannot exceed claim amount');
+  // Same ceiling as a full approval: the payer's sanction can never exceed the
+  // covered amount, so the patient always keeps the deductible + co-pay.
+  const coveredExpected = decNum(claim.coveredAmount);
+  if (data.approvedAmount > coveredExpected) {
+    throw AppError.badRequest(
+      `Approved amount cannot exceed the covered amount (${coveredExpected.toFixed(2)}); the deductible and co-pay remain the patient's responsibility`,
+    );
   }
 
   const approvedAmount = data.approvedAmount;

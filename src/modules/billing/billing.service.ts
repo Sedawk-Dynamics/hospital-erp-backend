@@ -5846,8 +5846,13 @@ export async function ensureAdmissionTpaLink(
     },
   });
 
+  // Look at the LATEST claim of ANY status — including cancelled/rejected. A
+  // cancelled claim is terminal (the bill was withdrawn from the TPA; the
+  // patient owes it in full) and a rejected one is re-filed only through the
+  // deliberate resubmit flow. Neither must trigger a silent auto re-raise here,
+  // so they count as an existing claim and block creation below.
   const existingClaim = await prisma.insuranceClaim.findFirst({
-    where: { tenantId, bill: { admissionId }, status: { notIn: ['cancelled', 'rejected'] } },
+    where: { tenantId, bill: { admissionId } },
     orderBy: { createdAt: 'desc' },
     select: { id: true, billId: true, status: true, claimAmount: true, coveredAmount: true },
   });
