@@ -3509,26 +3509,6 @@ export async function billOtRequest(
   };
 }
 
-// ============================================================
-// Diagnostic order billing — lab + radiology, one rule for both
-// ============================================================
-//
-// A lab order and an imaging request are the same commercial event: the doctor
-// asks for something, the department admits it, and the money is settled one of
-// two ways depending on where the patient is.
-//
-//   OP  — the department is its own counter. A dedicated, finalized bill holding
-//         only this order's lines, collected and receipted at the lab/radiology
-//         desk, and printed from there.
-//   IP / Emergency / Day Care — there is no counter. The charge is posted to the
-//         admission's running IP ledger and settles once, on the consolidated
-//         bill at discharge.
-//
-// This used to fire the moment the DOCTOR placed the order, which put a charge
-// on the patient before anybody had agreed to do the work — an order the lab
-// then declined still left a line on the bill. It now runs when the department
-// ACCEPTS, which is also the point the patient is standing at the counter.
-
 export interface DiagnosticChargeInput {
   referenceType: 'lab_order_item' | 'imaging_request';
   referenceId: string;

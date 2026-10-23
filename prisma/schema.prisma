@@ -2373,10 +2373,10 @@ model PatientEmergencyContact {
 // patient (and the visit opened for them). Holds triage + provenance details
 // that describe the EPISODE, not the person — so they live here, not on Patient.
 enum EsiTriagePriority {
-  red    @map("red") // Priority 1 – Resuscitation
-  orange @map("orange") // Priority 2 – Emergent (<15 min)
-  yellow @map("yellow") // Priority 3 – Urgent (<60 min)
-  green  @map("green") // Priority 4 – Non-urgent
+  resuscitation @map("resuscitation") // Priority 1 – Resuscitation (red)
+  emergent      @map("emergent") // Priority 2 – Emergent, <15 min (orange)
+  urgent        @map("urgent") // Priority 3 – Urgent, <60 min (yellow)
+  non_urgent    @map("non_urgent") // Priority 4 – Non-urgent (green)
 }
 
 enum EmergencyBroughtBy {

@@ -138,7 +138,7 @@ export const createTemporaryPatientSchema = z.object({
     userId: z.string().uuid('Invalid account holder ID').optional(),
     emergency: z
     .object({
-      priority: z.enum(['red', 'orange', 'yellow', 'green']),
+      priority: z.enum(['resuscitation', 'emergent', 'urgent', 'non_urgent']),
       chiefComplaint: z.string().trim().max(2000).optional(),
       broughtBy: z.enum([
         'cat_108', 'private_ambulance', 'police',

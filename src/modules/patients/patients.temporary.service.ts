@@ -475,3 +475,20 @@ async function safeAudit(entry: {
     logger.warn({ err, entry: entry.entityType }, 'Temporary-patient audit write skipped');
   }
 }
+
+export const emergencyDetails=async(patientId:string,tenantId:string)=>{
+  const patient=await prisma.patient.findUnique({where
+    :{id:patientId}
+  });
+  if(!patient)throw new AppError('Patient not found',404);
+
+  const tenant=await prisma.tenant.findUnique({where
+    :{id:tenantId}
+  });
+  if(!tenant)throw new AppError('Tenant not found',404);
+
+  return await prisma.emergencyRegistration.findFirst({where:{patientId:patient.id,tenantId:tenant.id},orderBy:{createdAt:'desc'}});
+
+}
+
+

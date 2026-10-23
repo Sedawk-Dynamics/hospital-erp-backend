@@ -406,3 +406,15 @@ export async function clearDeath(req: AuthenticatedRequest, res: Response, next:
     next(err);
   }
 }
+
+
+export const getEmergencyDetails=async(req:AuthenticatedRequest,res:Response,next:NextFunction)=>{
+  try {
+    const patientId=req.params.id as string;
+    const tenantId=req.user!.tenantId as string;
+    const result=await tempService.emergencyDetails(patientId,tenantId);
+     sendResponse({ res, message: 'Patient Emergency Records fetched successfully', data: result });
+  } catch (error) {
+    next(error)
+  }
+}
