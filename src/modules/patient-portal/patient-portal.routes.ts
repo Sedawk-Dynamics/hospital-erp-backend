@@ -126,7 +126,7 @@ router.post('/profiles', async (req: AuthenticatedRequest, res: Response, next: 
 // GET /patient-portal/all-hospitals — List all active hospitals for booking (paginated)
 router.get('/all-hospitals', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    const result = await patientPortalService.getAllHospitalsForBooking({
+    const result = await patientPortalService.getAllHospitalsForBooking(req.user!.userId,{
       search: req.query.search as string | undefined,
       page: req.query.page ? parseInt(req.query.page as string, 10) : undefined,
       limit: req.query.limit ? parseInt(req.query.limit as string, 10) : undefined,

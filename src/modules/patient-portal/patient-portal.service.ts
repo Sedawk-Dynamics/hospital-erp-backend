@@ -351,7 +351,7 @@ export async function lookupHospital(userId: string, query: { code?: string; sea
   }
 
   const hospitals = await prisma.tenant.findMany({
-    where,
+    where:{...where,patients:{some:{userId}}},
     take: 10,
     select: {
       id: true,
@@ -1840,15 +1840,9 @@ function timeToDate(time: string): Date {
   return new Date(`1970-01-01T${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:00.000Z`);
 }
 
-// ────────────────────────────────────────────────────────────
-// Appointment Booking (Patient Side)
-// ────────────────────────────────────────────────────────────
 
-/**
- * List all active hospitals for patient to book appointments.
- */
 export async function getAllHospitalsForBooking(
-  query: { search?: string; page?: number; limit?: number } = {},
+  userId:string,query: { search?: string; page?: number; limit?: number } = {},
 ) {
   const limit = query.limit || 10;
   const page = query.page || 1;
@@ -1870,7 +1864,7 @@ export async function getAllHospitalsForBooking(
 
   const [hospitals, total] = await Promise.all([
     prisma.tenant.findMany({
-      where,
+      where:{...where,patients:{some:{userId}}},
       skip,
       take: limit,
       select: {
@@ -1893,14 +1887,6 @@ export async function getAllHospitalsForBooking(
   return { data: hospitals, meta: { total, page, limit, totalPages: Math.ceil(total / limit) } };
 }
 
-/**
- * List doctors available in a hospital for the patient to book with.
- * No connection required — open booking.
- *
- * If users with the "doctor" role exist but lack a DoctorProfile row,
- * a profile is auto-created so they appear in booking and downstream
- * slot / appointment flows work (Appointment.doctorId → DoctorProfile).
- */
 export async function getDoctorsForBooking(
   userId: string,
   tenantId: string,
