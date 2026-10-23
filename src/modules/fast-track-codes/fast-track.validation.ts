@@ -5,7 +5,7 @@ export const addFastTrackCodeSchema = z.object({
     patientId: z.string().min(1),
     admissionId: z.string().min(1),
     visitId: z.string().optional(),
-    code: z.enum(['code_red_trauma', 'code_stemi', 'code_stroke', 'code_sepsis']),
+    code: z.enum(['code_red_trauma', 'code_stemi', 'code_stroke', 'code_sepsis', 'red', 'orange', 'yellow', 'green', 'black']),
     details: z.record(z.string(), z.any()),
   }),
 });

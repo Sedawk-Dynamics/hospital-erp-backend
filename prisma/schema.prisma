@@ -2425,6 +2425,11 @@ enum FastTrackCodeType {
   code_stemi      @map("code_stemi")
   code_stroke     @map("code_stroke")
   code_sepsis     @map("code_sepsis")
+  red             @map("red")
+  orange          @map("orange")
+  yellow          @map("yellow")
+  green           @map("green")
+  black           @map("black")
 }
 
 model FastTrackCode {
