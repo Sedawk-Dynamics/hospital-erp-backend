@@ -597,7 +597,7 @@ export async function dispenseIpPrescription(
   roles: string[],
   prescriptionId: string,
   data: {
-    batches?: Array<{ itemId: string; drugBatchId: string }>;
+    batches?: Array<{ itemId: string; drugBatchId: string; quantity:number }>;
   } = {},
 ) {
   assertPharmacyOperator(roles, 'dispense an IP prescription');
@@ -613,11 +613,8 @@ export async function dispenseIpPrescription(
   const already = await prisma.dispensingRecord.findFirst({ where: { tenantId, prescriptionId, cancelledAt: null }, select: { id: true } });
   if (already) throw AppError.badRequest('This prescription has already been dispensed.');
 
-  // PRN lines still have to leave pharmacy stock before a nurse/doctor can
-  // administer a dose. Excluding them here made a PRN-only prescription
-  // impossible to issue, and therefore impossible to link to the eMAR/NDPS
-  // patient-dose record that accounts for the used and residual quantities.
-  const dispensable = rx.prescriptionItems.filter((i) => i.drugId && Number(i.quantity ?? 0) > 0);
+  const sentQty = new Map((data.batches ?? []).map((b) => [b.itemId, b.quantity]));
+  const dispensable = rx.prescriptionItems.filter((i,index) => i.drugId && Number(i.quantity ?? sentQty.get(i.id)) > 0);
   if (dispensable.length === 0) {
     throw AppError.badRequest('No stocked medicine with a quantity to dispense on this prescription.');
   }
@@ -652,7 +649,7 @@ export async function dispenseIpPrescription(
     let addedTax = 0;
 
     for (const it of dispensable) {
-      const baseQty = Math.max(1, Math.trunc(Number(it.quantity ?? 1)));
+      const baseQty = Math.max(1, Math.trunc(Number(it.quantity ?? sentQty.get(it.id) ?? 1)));
       const drug = await tx.drugFormulary.findFirst({
         where: { id: it.drugId as string, tenantId },
         select: {
