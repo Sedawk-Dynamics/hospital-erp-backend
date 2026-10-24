@@ -1682,10 +1682,6 @@ export async function recordVitals(
 ) {
   assertCanWriteVitals(roles);
 
-  // Resolve to a visitId. Nurses on OPD see confirmed appointments before the
-  // doctor opens consultation, so a Visit row may not exist yet — auto-create
-  // one from the appointment in that case (parallels
-  // nursing-forms.resolveVisitContext).
   let resolvedVisitId: string | null = data.visitId ?? null;
 
   if (!resolvedVisitId && data.admissionId) {
@@ -1732,7 +1728,6 @@ export async function recordVitals(
     throw AppError.badRequest('Either visitId, admissionId, or appointmentId is required');
   }
 
-  // Verify visit belongs to tenant
   const visit = await prisma.visit.findFirst({
     where: { id: resolvedVisitId, tenantId },
   });
@@ -1740,9 +1735,19 @@ export async function recordVitals(
     throw AppError.notFound('Visit not found');
   }
 
-  // Verify patient matches the visit
   if (visit.patientId !== data.patientId) {
     throw AppError.badRequest('Patient does not match the visit');
+  }
+
+  if (data.nurseChiefComplaint && data.nurseChiefComplaint.trim()) {
+    await prisma.visit.update({
+      where: { id: resolvedVisitId },
+      data: {
+        nurseChiefComplaint: data.nurseChiefComplaint.trim(),
+        nurseChiefComplaintById: userId,
+        nurseChiefComplaintAt: new Date(),
+      },
+    });
   }
 
   // Calculate BMI if weight and height provided

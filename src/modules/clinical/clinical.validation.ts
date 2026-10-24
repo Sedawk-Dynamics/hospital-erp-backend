@@ -288,10 +288,8 @@ export const recordVitalsSchema = z.object({
       heightCm: z.number().min(0).max(300).optional(),
       bloodSugar: z.number().min(0).max(2000).optional(),
       notes: z.string().max(2000).optional(),
-      // Optional link to the progress note this reading was recorded with.
+      nurseChiefComplaint: z.string().max(2000).optional(),
       progressNoteId: z.string().uuid('Invalid progress note ID').optional(),
-      // Doctor flags when recording vitals with a progress note. The pinned
-      // discharge section key (null/absent = not pinned) and patient visibility.
       pinnedDischargeSection: z.string().max(50).optional().nullable(),
       showToPatient: z.boolean().optional(),
     })

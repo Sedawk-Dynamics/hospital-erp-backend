@@ -316,7 +316,7 @@ function parseProgressNoteContent(content: string | null | undefined): {
   followUpNotes: string;
   referralNotes: string;
   impression: string;
-} {
+} { 
   const empty = {
     chiefComplaint: '',
     generalExamination: '',
