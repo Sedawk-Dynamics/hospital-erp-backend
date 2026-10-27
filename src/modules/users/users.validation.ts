@@ -4,9 +4,37 @@ import { z } from 'zod';
 // optional; the service creates/updates the DoctorProfile when present.
 // NOTE: hprId is NOT here — it lives on the User (applies to all clinical
 // professionals, not just doctors).
+// Keep in sync with the Prisma enum `DoctorSpecialty` and the frontend
+// DOCTOR_SPECIALTIES list.
+export const DOCTOR_SPECIALTIES = [
+  'general_internal_medicine',
+  'emergency_casualty',
+  'intensive_care_unit',
+  'pediatrics_neonatology',
+  'obstetrics_gynecology',
+  'general_surgery_laparoscopy',
+  'orthopedics_traumatology',
+  'anesthesiology_perioperative',
+  'cardiology_cath_lab',
+  'nephrology_dialysis',
+  'pulmonology_sleep',
+  'gastroenterology_liver',
+  'neurology_neurosurgery',
+  'urology_andrology',
+  'diabetology_endocrinology',
+  'oncology',
+  'ophthalmology',
+  'ent_otolaryngology',
+  'dermatology_cosmetology',
+  'psychiatry_mental_health',
+  'dental_surgery',
+  'ultrasound_diagnostic_radiology',
+] as const;
+
 export const doctorProfileSchema = z.object({
   departmentId: z.string().uuid().optional(),
   specialization: z.string().max(255).optional(),
+  specialty: z.enum(DOCTOR_SPECIALTIES).optional(),
   qualifications: z.string().max(1000).optional(),
   licenseNumber: z.string().max(100).optional(),
   experienceYears: z.number().int().min(0).max(80).optional(),

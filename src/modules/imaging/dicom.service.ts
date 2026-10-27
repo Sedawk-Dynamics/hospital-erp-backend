@@ -589,38 +589,55 @@ export async function syncAttachmentToPacs(
       logger.error({ err, attachmentId }, 'PACS zip store failed');
       throw err;
     }
-    const zipViewerUrl = provider.buildViewerUrl(storedlist[0].studyInstanceUid) ?? undefined;
-    const study = await createStudy(tenantId, {
-      patientId: req!.patientId,
-      imagingRequestId: attachment.imagingRequestId,
-      imagingResultId: attachment.imagingResultId ?? undefined,
-      studyInstanceUid: storedlist[0].studyInstanceUid,
-      accessionNumber: storedlist[0].accessionNumber,
-      studyDate: storedlist[0].studyDate,
-      studyDescription: storedlist[0].studyDescription,
-      modality: storedlist[0].modality,
-      patientName: storedlist[0].patientName,
-      patientDicomId: storedlist[0].patientDicomId,
-      referringPhysician: storedlist[0].referringPhysician,
-      viewerUrl: zipViewerUrl,
-    })
-
-    for (const entries of storedlist) {
-      await addInstance(tenantId, study.id, {
-        seriesInstanceUid: entries.seriesInstanceUid,
-        seriesDescription: entries.seriesDescription,
-        seriesNumber: entries.seriesNumber,
-        seriesModality: entries.modality,
-        bodyPart: entries.bodyPart ?? req?.bodyPart ?? undefined,
-        sopInstanceUid: entries.sopInstanceUid,
-        instanceNumber: entries.instanceNumber,
-        fileUrl: attachment.fileUrl,
-        fileSizeBytes: attachment.sizeBytes ?? undefined,
-        mimeType: attachment.mimeType ?? 'application/dicom',
-        rows: entries.rows,
-        columns: entries.columns,
-      });
+    // A single archive may contain MULTIPLE studies (e.g. a parent folder of
+    // per-study subfolders). Group the stored instances by their own
+    // StudyInstanceUID and create one DicomStudy per group — otherwise every
+    // study collapses onto the first one's UID and opening any folder shows all.
+    const byStudy = new Map<string, typeof storedlist>();
+    for (const s of storedlist) {
+      const arr = byStudy.get(s.studyInstanceUid) ?? [];
+      arr.push(s);
+      byStudy.set(s.studyInstanceUid, arr);
     }
+
+    const createdStudies: Array<{ id: string; studyInstanceUid: string; viewerUrl?: string }> = [];
+    for (const [studyInstanceUid, group] of byStudy) {
+      const head = group[0];
+      const viewerUrl = provider.buildViewerUrl(studyInstanceUid) ?? undefined;
+      const study = await createStudy(tenantId, {
+        patientId: req!.patientId,
+        imagingRequestId: attachment.imagingRequestId,
+        imagingResultId: attachment.imagingResultId ?? undefined,
+        studyInstanceUid,
+        accessionNumber: head.accessionNumber,
+        studyDate: head.studyDate,
+        studyDescription: head.studyDescription,
+        modality: head.modality,
+        patientName: head.patientName,
+        patientDicomId: head.patientDicomId,
+        referringPhysician: head.referringPhysician,
+        viewerUrl,
+      });
+
+      for (const entries of group) {
+        await addInstance(tenantId, study.id, {
+          seriesInstanceUid: entries.seriesInstanceUid,
+          seriesDescription: entries.seriesDescription,
+          seriesNumber: entries.seriesNumber,
+          seriesModality: entries.modality,
+          bodyPart: entries.bodyPart ?? req?.bodyPart ?? undefined,
+          sopInstanceUid: entries.sopInstanceUid,
+          instanceNumber: entries.instanceNumber,
+          fileUrl: attachment.fileUrl,
+          fileSizeBytes: attachment.sizeBytes ?? undefined,
+          mimeType: attachment.mimeType ?? 'application/dicom',
+          rows: entries.rows,
+          columns: entries.columns,
+        });
+      }
+      createdStudies.push({ id: study.id, studyInstanceUid, viewerUrl });
+    }
+
     if (env.PACS_DROP_LOCAL && filePath) {
       for (const a of storedlist) {
         await prisma.dicomInstance.updateMany({
@@ -638,15 +655,17 @@ export async function syncAttachmentToPacs(
         logger.warn({ err, filePath }, 'PACS_DROP_LOCAL: failed to delete local DICOM copy');
       }
     }
+    // The attachment's primary viewer points at the first study in the archive.
+    const primary = createdStudies[0];
     logger.info(
-      { tenantId, attachmentId, studyInstanceUid: storedlist[0].studyInstanceUid, provider: provider.name },
+      { tenantId, attachmentId, studyCount: createdStudies.length, studyInstanceUid: primary.studyInstanceUid, provider: provider.name },
       'DICOM attachment synced to PACS',
     );
     return {
       synced: true,
-      studyId: study.id,
-      studyInstanceUid: storedlist[0].studyInstanceUid,
-      viewerUrl: zipViewerUrl,
+      studyId: primary.id,
+      studyInstanceUid: primary.studyInstanceUid,
+      viewerUrl: primary.viewerUrl,
     };
   }
 
@@ -846,9 +865,7 @@ export async function dicomFolderUpload(
     stored.push(result);
   }
 
-  // Step 2: create ONE attachment row for the whole study (not one per slice),
-  // so the UI shows a single DICOM entry with one preview + one full-screen
-  // viewer instead of N separate ones.
+
   const firstFile = files[0];
   const totalSize = files.reduce((sum, f) => sum + f.size, 0);
   const attachment = await prisma.imagingAttachment.create({
@@ -859,49 +876,66 @@ export async function dicomFolderUpload(
       fileUrl: `/uploads/${firstFile.filename}`,
       fileName: `DICOM study (${files.length} images)`,
       sizeBytes: totalSize,
-      // These are DICOM by definition here — never trust the browser MIME.
-      // Windows tags extensionless DICOM as application/octet-stream, which
-      // the viewer's type-detector rejects; force the correct type so the
-      // study previews regardless of the uploading OS.
       mimeType: 'application/dicom',
       uploadedBy: userId,
     },
   });
 
-  const head = stored[0];
-  const viewerUrl = provider.buildViewerUrl(head.studyInstanceUid) ?? undefined;
-  const study = await createStudy(tenantId, {
-    patientId: req.patientId,
-    imagingRequestId: attachment.imagingRequestId,
-    imagingResultId: attachment.imagingResultId ?? undefined,
-    studyInstanceUid: head.studyInstanceUid,
-    accessionNumber: head.accessionNumber,
-    studyDate: head.studyDate,
-    studyDescription: head.studyDescription,
-    modality: head.modality,
-    patientName: head.patientName,
-    patientDicomId: head.patientDicomId,
-    referringPhysician: head.referringPhysician,
-    viewerUrl,
+  // A folder may hold MULTIPLE studies (per-study subfolders). Group the stored
+  // slices by their own StudyInstanceUID — one DicomStudy per group — so studies
+  // stay separate instead of collapsing onto the first slice's UID. Keep each
+  // slice's original index so its local fileUrl still maps to the right file.
+  const byStudy = new Map<string, number[]>();
+  stored.forEach((s, i) => {
+    const arr = byStudy.get(s.studyInstanceUid) ?? [];
+    arr.push(i);
+    byStudy.set(s.studyInstanceUid, arr);
   });
 
-  for (let i = 0; i < stored.length; i++) {
-    const s = stored[i];
-    await addInstance(tenantId, study.id, {
-      seriesInstanceUid: s.seriesInstanceUid,
-      seriesDescription: s.seriesDescription,
-      seriesNumber: s.seriesNumber,
-      seriesModality: s.modality,
-      bodyPart: s.bodyPart ?? req.bodyPart ?? undefined,
-      sopInstanceUid: s.sopInstanceUid,
-      instanceNumber: s.instanceNumber,
-      fileUrl: `/uploads/${files[i].filename}`,
-      fileSizeBytes: files[i].size,
-      mimeType: 'application/dicom',
-      rows: s.rows,
-      columns: s.columns,
+  const createdStudies: Array<{ id: string; studyInstanceUid: string }> = [];
+  for (const [studyInstanceUid, indices] of byStudy) {
+    const head = stored[indices[0]];
+    const viewerUrl = provider.buildViewerUrl(studyInstanceUid) ?? undefined;
+    const study = await createStudy(tenantId, {
+      patientId: req.patientId,
+      imagingRequestId: attachment.imagingRequestId,
+      imagingResultId: attachment.imagingResultId ?? undefined,
+      studyInstanceUid,
+      accessionNumber: head.accessionNumber,
+      studyDate: head.studyDate,
+      studyDescription: head.studyDescription,
+      modality: head.modality,
+      patientName: head.patientName,
+      patientDicomId: head.patientDicomId,
+      referringPhysician: head.referringPhysician,
+      viewerUrl,
     });
+
+    for (const i of indices) {
+      const s = stored[i];
+      await addInstance(tenantId, study.id, {
+        seriesInstanceUid: s.seriesInstanceUid,
+        seriesDescription: s.seriesDescription,
+        seriesNumber: s.seriesNumber,
+        seriesModality: s.modality,
+        bodyPart: s.bodyPart ?? req.bodyPart ?? undefined,
+        sopInstanceUid: s.sopInstanceUid,
+        instanceNumber: s.instanceNumber,
+        fileUrl: `/uploads/${files[i].filename}`,
+        fileSizeBytes: files[i].size,
+        mimeType: 'application/dicom',
+        rows: s.rows,
+        columns: s.columns,
+      });
+    }
+    createdStudies.push({ id: study.id, studyInstanceUid });
   }
 
-  return { attachmentId: attachment.id, studyId: study.id, count: stored.length, stored };
+  return {
+    attachmentId: attachment.id,
+    studyId: createdStudies[0].id,
+    studyCount: createdStudies.length,
+    count: stored.length,
+    stored,
+  };
 }

@@ -121,6 +121,7 @@ export const usersService = {
             tenantId,
             departmentId: dp.departmentId!,
             specialization: dp.specialization,
+            specialty: dp.specialty,
             qualifications: dp.qualifications,
             licenseNumber: dp.licenseNumber,
             experienceYears: dp.experienceYears,
@@ -228,6 +229,7 @@ export const usersService = {
             select: {
               departmentId: true,
               specialization: true,
+              specialty: true,
               qualifications: true,
               licenseNumber: true,
               experienceYears: true,
@@ -483,6 +485,7 @@ export const usersService = {
           data: {
             ...(dp.departmentId !== undefined && { departmentId: dp.departmentId }),
             ...(dp.specialization !== undefined && { specialization: dp.specialization }),
+            ...(dp.specialty !== undefined && { specialty: dp.specialty }),
             ...(dp.qualifications !== undefined && { qualifications: dp.qualifications }),
             ...(dp.licenseNumber !== undefined && { licenseNumber: dp.licenseNumber }),
             ...(dp.experienceYears !== undefined && { experienceYears: dp.experienceYears }),
@@ -498,6 +501,7 @@ export const usersService = {
             tenantId,
             departmentId: dp.departmentId,
             specialization: dp.specialization,
+            specialty: dp.specialty,
             qualifications: dp.qualifications,
             licenseNumber: dp.licenseNumber,
             experienceYears: dp.experienceYears,

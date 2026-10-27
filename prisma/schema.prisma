@@ -11,6 +11,34 @@ datasource db {
 // ENUMS
 // ============================================================
 
+// Clinical specialties a doctor can belong to. Drives the specialty dropdown
+// on the add-doctor form, calculator mapping, and specialty-specific
+// consultation fields. Values are stable codes; labels live on the frontend.
+enum DoctorSpecialty {
+  general_internal_medicine
+  emergency_casualty
+  intensive_care_unit
+  pediatrics_neonatology
+  obstetrics_gynecology
+  general_surgery_laparoscopy
+  orthopedics_traumatology
+  anesthesiology_perioperative
+  cardiology_cath_lab
+  nephrology_dialysis
+  pulmonology_sleep
+  gastroenterology_liver
+  neurology_neurosurgery
+  urology_andrology
+  diabetology_endocrinology
+  oncology
+  ophthalmology
+  ent_otolaryngology
+  dermatology_cosmetology
+  psychiatry_mental_health
+  dental_surgery
+  ultrasound_diagnostic_radiology
+}
+
 enum SubscriptionStatus {
   active    @map("active")
   expired   @map("expired")
@@ -1514,6 +1542,7 @@ model Tenant {
   creditNotes                CreditNote[]
   gstFiledPeriods            GstFiledPeriod[]
   gstr2bImports              Gstr2bImport[]
+  calculators                Calculator[]
 
   @@map("tenants")
 }
@@ -1935,6 +1964,7 @@ model User {
   gstPeriodsFiled                GstFiledPeriod[]             @relation("GstPeriodFiler")
   gstPeriodsLocked               GstFiledPeriod[]             @relation("GstPeriodLocker")
   gstr2bImports                  Gstr2bImport[]
+  calculators                    Calculator[]
 
   @@unique([tenantId, email])
   @@map("users")
@@ -2704,6 +2734,7 @@ model DoctorProfile {
   tenantId         String   @map("tenant_id")
   departmentId     String   @map("department_id")
   specialization   String?  @db.VarChar(255)
+  specialty        DoctorSpecialty? @map("specialty")
   qualifications   String?
   licenseNumber    String?  @map("license_number") @db.VarChar(100)
   experienceYears  Int?     @map("experience_years")
@@ -3225,6 +3256,10 @@ model ProgressNote {
   assessment            Json?
   plan                  Json?
   customFields          Json?              @map("custom_fields")
+  // Specialty-specific consultation answers — a flat map of fieldId → value,
+  // driven by the doctor's specialty (frontend SPECIALTY_FIELDS + any custom
+  // fields). One blob per consultation note.
+  specialtyData         Json?              @map("specialty_data")
   weightKgAtEntry       Decimal?           @map("weight_kg_at_entry") @db.Decimal(5, 2)
   // How the patient is doing, as the doctor judges it on this round. Lets a
   // routine ward round be recorded as "prescription written, patient stable"
@@ -8670,4 +8705,45 @@ model HospitalFormSubmission {
   @@index([formId, createdAt])
   @@index([tenantId, patientId])
   @@map("hospital_form_submissions")
+}
+
+enum CalculatorScope {
+  personal // created by a doctor, visible only to them
+  shared   // hospital-wide, visible to all doctors of the mapped specialties
+}
+
+model Calculator {
+  id                 String          @id @default(uuid())
+  tenantId           String          @map("tenant_id")
+
+  name               String          @db.VarChar(255)
+  description        String?
+
+  // The math using variable IDs, e.g. "wt / (ht*ht)"
+  expression         String
+  resultUnit         String?         @map("result_unit") @db.VarChar(50)
+  resultDecimals     Int             @default(2) @map("result_decimals") @db.SmallInt
+
+  // Which specialties a SHARED calculator shows for. Empty = all specialties.
+  // Ignored for personal calculators (those are keyed to the creator).
+  specialties        String[]        @default([])
+
+  // The dynamic input fields and interpretation bands. Shapes match the
+  // frontend zod schema (calculatorVariableSchema / calculatorBandSchema).
+  variables          Json            @default("[]")
+  bands              Json            @default("[]")
+
+  scope              CalculatorScope @default(personal)
+  createdById        String          @map("created_by_id")
+  isActive           Boolean         @default(true) @map("is_active")
+
+  createdAt          DateTime        @default(now()) @map("created_at")
+  updatedAt          DateTime        @default(now()) @updatedAt @map("updated_at")
+
+  tenant             Tenant          @relation(fields: [tenantId], references: [id])
+  createdBy          User            @relation(fields: [createdById], references: [id])
+
+  @@index([tenantId, scope])
+  @@index([createdById])
+  @@map("calculators")
 }
