@@ -865,6 +865,31 @@ export async function dicomFolderUpload(
     stored.push(result);
   }
 
+  let resolvedResultId =
+    (await prisma.imagingResult.findUnique({
+      where: { imagingRequestId: req.id },
+      select: { id: true },
+    }))?.id ?? null;
+  if (!resolvedResultId) {
+    try {
+      const createdResult = await prisma.imagingResult.create({
+        data: {
+          imagingRequestId: req.id,
+          patientId: req.patientId,
+          radiologistId: userId,
+          status: 'draft',
+        },
+        select: { id: true },
+      });
+      resolvedResultId = createdResult.id;
+    } catch {
+      resolvedResultId =
+        (await prisma.imagingResult.findUnique({
+          where: { imagingRequestId: req.id },
+          select: { id: true },
+        }))?.id ?? null;
+    }
+  }
 
   const firstFile = files[0];
   const totalSize = files.reduce((sum, f) => sum + f.size, 0);
@@ -872,6 +897,7 @@ export async function dicomFolderUpload(
     data: {
       tenantId,
       imagingRequestId: req.id,
+      imagingResultId: resolvedResultId ?? undefined,
       category: 'dicom',
       fileUrl: `/uploads/${firstFile.filename}`,
       fileName: `DICOM study (${files.length} images)`,
