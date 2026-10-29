@@ -29,7 +29,6 @@ const calculatorFields = {
   expression: z.string().trim().min(1, 'Expression is required'),
   resultUnit: z.string().trim().max(50).optional(),
   resultDecimals: z.number().int().min(0).max(6).default(2),
-  specialties: z.array(z.string().trim().min(1)).default([]),
   scope: z.enum(['personal', 'shared']).default('personal'),
   variables: z.array(calculatorVariableSchema).min(1, 'Add at least one variable'),
   bands: z.array(calculatorBandSchema).default([]),

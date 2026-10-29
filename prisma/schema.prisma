@@ -8724,10 +8724,6 @@ model Calculator {
   resultUnit         String?         @map("result_unit") @db.VarChar(50)
   resultDecimals     Int             @default(2) @map("result_decimals") @db.SmallInt
 
-  // Which specialties a SHARED calculator shows for. Empty = all specialties.
-  // Ignored for personal calculators (those are keyed to the creator).
-  specialties        String[]        @default([])
-
   // The dynamic input fields and interpretation bands. Shapes match the
   // frontend zod schema (calculatorVariableSchema / calculatorBandSchema).
   variables          Json            @default("[]")
