@@ -105,12 +105,10 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'appointments', action: 'read' }, { module: 'appointments', action: 'update' },
       { module: 'visits', action: 'read' }, { module: 'visits', action: 'update' },
       { module: 'admissions', action: 'read' }, { module: 'admissions', action: 'update' },
-      // Ward-to-ward and bed-to-bed moves. The service refuses a
-      // doctor_to_doctor transfer from here — reassigning the consultant is a
-      // clinical decision, not a nursing one.
       { module: 'patient_transfers', action: 'create' }, { module: 'patient_transfers', action: 'approve' },
       { module: 'vitals', action: 'read' }, { module: 'vitals', action: 'create' }, { module: 'vitals', action: 'update' },
       { module: 'diagnoses', action: 'read' },
+      {module:'wards',action:'read'},
       // Read-through on OT bookings so the theatre list is visible here.
       { module: 'ot_requests', action: 'read' },
       { module: 'nursing_notes', action: 'read' }, { module: 'nursing_notes', action: 'create' }, { module: 'nursing_notes', action: 'update' },
