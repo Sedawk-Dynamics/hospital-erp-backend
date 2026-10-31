@@ -17,7 +17,8 @@ import { commissionService } from '../commission/commission.service';
 import { settleGatewayPayment } from '../billing/billing.service';
 import { getAvailableSlots } from '../appointments/appointments.service';
 import { fullName } from '../../shared/person-name';
-import { REGISTRATION_FEE_REFERENCE_TYPE, registrationFeeTotals } from '@/shared/registration-fee';
+import { REGISTRATION_FEE_REFERENCE_TYPE, registrationFeeTotals } from '../../shared/registration-fee';
+
 import { getRegistrationFeeSettings } from '../hospital-settings/hospital-settings.service';
 
 // ────────────────────────────────────────────────────────────
