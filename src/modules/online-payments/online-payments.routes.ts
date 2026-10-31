@@ -34,6 +34,9 @@ router.post(
   verifyOnlinePayment
 );
 
+
+
 router.get('/bank-status', authenticate, getBankStatus);
+
 
 export { router as onlinePaymentsRoutes };

@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { prisma } from '../../config/database';
 import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
-import { issueDocumentForExistingBill } from '../billing/billing.service';
+import { createBill, finalizeBill, issueDocumentForExistingBill } from '../billing/billing.service';
 
 /** Medical and dental services — an OPD consultation, exempt. */
 const PORTAL_CONSULTATION_SAC = '999312';
@@ -17,6 +17,8 @@ import { commissionService } from '../commission/commission.service';
 import { settleGatewayPayment } from '../billing/billing.service';
 import { getAvailableSlots } from '../appointments/appointments.service';
 import { fullName } from '../../shared/person-name';
+import { REGISTRATION_FEE_REFERENCE_TYPE, registrationFeeTotals } from '@/shared/registration-fee';
+import { getRegistrationFeeSettings } from '../hospital-settings/hospital-settings.service';
 
 // ────────────────────────────────────────────────────────────
 // MRN Generation (mirrors patients.service.ts)
@@ -2740,3 +2742,61 @@ export async function confirmFrontdeskPayment(
 
   return { billId: bill.id, status: 'pending' };
 }
+
+
+export const registrationFees=async(tenantId:string,userId:string)=>{
+  const tenant=await prisma.tenant.findUnique({where:{id:tenantId}});
+  if(!tenant)throw new AppError('Tenant not found',404);
+
+  const user=await prisma.user.findUnique({where:{id:userId}});
+  if(!user)throw new AppError('User not found',404);
+
+  const patient=await prisma.patient.findFirst({where:{userId,tenantId}});
+  if(!patient)throw new AppError('patient not found',404);
+
+  const registrationFee = await getRegistrationFeeSettings(tenantId);
+  if (!registrationFee.enabled || registrationFee.amount <= 0) {
+    return { billId: null as string | null, status: 'not_required' as const };
+  }
+
+  const existing = await prisma.billItem.findFirst({
+    where: {
+      referenceType: REGISTRATION_FEE_REFERENCE_TYPE,
+      bill: { tenantId, patientId: patient.id, status: { notIn: ['cancelled', 'refunded'] } },
+    },
+  });
+  if (existing) {
+    return  createPatientBillPaymentOrder(userId,user.email,{billId:existing.billId});
+  }
+
+  const newBill = await createBill(tenantId, userId, { patientId: patient.id });
+  const totals = registrationFeeTotals(registrationFee);
+  const resolver = await taxResolverFor(tenantId);
+  const tax = resolver.price(
+    {
+      kind: 'registration',
+      itemRatePercent: registrationFee.gstRatePercent,
+      itemTreatment: registrationFee.gstRatePercent > 0 ? 'taxable' : 'exempt',
+      itemApproved: true,
+    },
+    { unitPrice: totals.unitPrice, quantity: 1 },
+  );
+
+  await prisma.billItem.create({
+    data: {
+      billId: newBill.id,
+      description: registrationFee.label,
+      category: 'registration',
+      quantity: 1,
+      unitPrice: totals.unitPrice,
+      discountPercent: 0,
+      discountAmount: 0,
+      ...billItemTaxFields(tax),
+      referenceType: REGISTRATION_FEE_REFERENCE_TYPE,
+      referenceId: patient.id,
+    },
+  });
+
+  await finalizeBill(tenantId, userId, newBill.id);
+  return createPatientBillPaymentOrder(userId,user.email,{billId:newBill.id});
+};

@@ -109,3 +109,29 @@ export function shouldChargeRegistrationFee(params: {
   if (deskChoice === true) return true;
   return isFirstVisit;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

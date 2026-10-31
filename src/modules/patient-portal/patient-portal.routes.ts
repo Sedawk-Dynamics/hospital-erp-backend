@@ -6,6 +6,8 @@ import { AppError } from '../../shared/appError';
 import * as patientPortalService from './patient-portal.service';
 import { uploadSingle } from '../../services/upload.service';
 import { validate } from '../../middleware/validate';
+import * as patientportalController from './patient-portal.controller';
+
 // Patient and clinician write the SAME medical-history rows, so the portal
 // validates against the same schemas the clinical routes use — otherwise a
 // patient could push a value the enum columns reject and get a 500.
@@ -657,5 +659,8 @@ router.post('/confirm-frontdesk-payment', async (req: AuthenticatedRequest, res:
     sendResponse({ res, statusCode: 201, message: 'Front desk payment confirmed', data: result });
   } catch (err) { next(err); }
 });
+
+
+router.post('/registration-fee',authenticate,patientportalController.getRegistrationFees)
 
 export { router as patientPortalRoutes };

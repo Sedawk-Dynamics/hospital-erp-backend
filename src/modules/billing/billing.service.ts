@@ -1095,9 +1095,6 @@ export async function createBill(tenantId: string, userId: string, data: CreateB
       admissionId: data.admissionId,
       billDate: new Date(),
       status: 'draft',
-      // The IP running bill already stamped this; the OP counter bill did not,
-      // so "who raised this bill" was unanswerable for most of the bills in the
-      // system.
       generatedBy: userId,
       subtotal: 0,
       taxAmount: 0,
