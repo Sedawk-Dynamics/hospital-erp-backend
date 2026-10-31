@@ -74,7 +74,6 @@ export const authService = {
     let tenant;
 
     if (data.tenantSlug) {
-      // Register under a specific hospital tenant
       tenant = await prisma.tenant.findUnique({
         where: { slug: data.tenantSlug },
       });
@@ -164,12 +163,12 @@ export const authService = {
       const normalizedPhone = canonicalPhone(data.phone);
       const placeholder = normalizedPhone
         ? await prisma.user.findFirst({
-            where: {
-              tenantId: tenant.id,
-              phone: phoneMatchFilter(data.phone),
-            },
-            orderBy: { createdAt: 'asc' },
-          })
+          where: {
+            tenantId: tenant.id,
+            phone: phoneMatchFilter(data.phone),
+          },
+          orderBy: { createdAt: 'asc' },
+        })
         : null;
 
       if (placeholder && isPlaceholderAccountEmail(placeholder.email)) {
@@ -470,33 +469,22 @@ export const authService = {
     return patient?.userId ?? null;
   },
 
-  /**
-   * Verify a phone OTP and log the patient in. If the number has no account
-   * yet, one is created on the platform tenant (patient role); if it maps to an
-   * unclaimed placeholder created by the front desk, the owner's name is
-   * captured on first login. Then a normal session is issued.
-   */
+  
   async loginWithPhoneOtp(data: VerifyOtpInput) {
     if (data.otp !== HARDCODED_OTP) {
       throw AppError.unauthorized('Invalid or expired code');
     }
     const phone = canonicalPhone(data.phone);
     if (!phone) throw AppError.badRequest('Enter a valid phone number');
-
-    // Resolve the existing account for this number: a User carrying the phone,
-    // or a Patient already linked to a User. Legacy standalone patients (a
-    // Patient row with the number but userId=null — e.g. registered at the front
-    // desk before phone accounts existed) have no account yet; detect those so
-    // we can adopt them on login/signup instead of reporting "no account".
     let userId = await this.findAccountUserIdByPhone(phone, data.phone);
 
     const orphanPatients = userId
       ? []
       : await prisma.patient.findMany({
-          where: { phone: phoneMatchFilter(data.phone), userId: null, isActive: true },
-          select: { id: true, firstName: true, lastName: true },
-          orderBy: { createdAt: 'asc' },
-        });
+        where: { phone: phoneMatchFilter(data.phone), userId: null, isActive: true },
+        select: { id: true, firstName: true, lastName: true },
+        orderBy: { createdAt: 'asc' },
+      });
     const hasExisting = !!userId || orphanPatients.length > 0;
 
     // Enforce the separate patient flows.
@@ -508,10 +496,12 @@ export const authService = {
     }
 
     if (!userId) {
-      // Create the account holder on the platform tenant.
-      const tenant = await prisma.tenant.findFirst({ where: { slug: '__platform__' } });
-      if (!tenant) throw AppError.internal('Platform tenant not found');
-
+      const tenant = data.tenantSlug ? await prisma.tenant.findFirst({ where: { slug: data.tenantSlug } }) : await prisma.tenant.findFirst({ where: { slug: '__platform__' } });
+      if (!tenant) {
+        throw data.tenantSlug
+          ? AppError.badRequest('Hospital not found')
+          : AppError.internal('Platform tenant not found');
+      }
       let patientRole = await prisma.role.findFirst({
         where: { tenantId: tenant.id, name: 'patient' },
       });

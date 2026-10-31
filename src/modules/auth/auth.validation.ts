@@ -47,6 +47,7 @@ export const verifyOtpSchema = z.object({
     lastName: z.string().max(100).optional(),
     gender: z.enum(['male', 'female', 'other']).optional(),
     dateOfBirth: z.string().optional(),
+    tenantSlug:z.string().optional()
   }),
 });
 
