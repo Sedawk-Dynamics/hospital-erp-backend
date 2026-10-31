@@ -573,7 +573,7 @@ export const authService = {
         // brand-new account correctly has none until then.
         logger.info({ userId }, 'Patient account created via phone OTP');
       }
-      if (data.tenantSlug) {
+      if (data.tenantSlug && data.tenantSlug !== '__platform__') {
         await createPatientInTenant(userId, email, tenant.id);
       }
 
