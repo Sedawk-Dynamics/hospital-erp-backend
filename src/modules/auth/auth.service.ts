@@ -28,6 +28,7 @@ import type {
   ResetPasswordInput,
   Verify2FAInput,
 } from './auth.validation';
+import { createPatientInTenant } from '../patient-portal/patient-portal.service';
 
 /**
  * Fixed one-time code accepted for patient phone login while SMS delivery is not
@@ -150,15 +151,6 @@ export const authService = {
       },
     } as const;
 
-    // Claim an unclaimed placeholder account holder that the front desk
-    // auto-created earlier for this phone number. Doing so attaches every
-    // patient already linked to it (the owner plus any relatives the desk
-    // registered under the number) to the real login being created now, instead
-    // of spawning a duplicate account and orphaning those records. Guardrails:
-    // only patient self-signup (platform tenant) claims, and only a *placeholder*
-    // account (synthetic email) is ever claimed — a real, already-claimed
-    // account is never taken over. (Phone ownership is trusted for now; OTP
-    // verification is a planned hardening step.)
     if (!data.tenantSlug && data.phone) {
       const normalizedPhone = canonicalPhone(data.phone);
       const placeholder = normalizedPhone
@@ -581,6 +573,10 @@ export const authService = {
         // brand-new account correctly has none until then.
         logger.info({ userId }, 'Patient account created via phone OTP');
       }
+      if (data.tenantSlug) {
+        await createPatientInTenant(userId, email, tenant.id);
+      }
+
     } else {
       // Existing account. Backfill the phone if it was only on the patient
       // record (so future lookups are direct), and capture the owner's name on
@@ -982,3 +978,35 @@ export const authService = {
     };
   },
 };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

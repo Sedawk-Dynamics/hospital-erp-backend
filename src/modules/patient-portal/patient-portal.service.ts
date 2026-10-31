@@ -572,7 +572,7 @@ export async function rejectConnection(
 // Internal: Create patient record in a hospital tenant
 // ────────────────────────────────────────────────────────────
 
-async function createPatientInTenant(userId: string, email: string, tenantId: string): Promise<string> {
+export async function createPatientInTenant(userId: string, email: string, tenantId: string): Promise<string> {
   // Check if patient already exists in this tenant by email
   const existingPatient = await prisma.patient.findFirst({
     where: { tenantId, email: { equals: email, mode: 'insensitive' } },
