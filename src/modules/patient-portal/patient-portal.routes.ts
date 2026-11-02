@@ -16,6 +16,7 @@ import {
   familyHistorySchema,
   allergySchema,
 } from '../medical-history/medical-history.validation';
+import { updateProfileSchema } from './patient-portal.validation';
 
 const router = Router();
 
@@ -92,6 +93,8 @@ router.get('/profile', async (req: AuthenticatedRequest, res: Response, next: Ne
     next(err);
   }
 });
+
+router.put('/profile/:id',authenticate,validate(updateProfileSchema),patientportalController.profileUpdate) ;
 
 // GET /patient-portal/profiles — list every family-member patient profile under this user
 router.get('/profiles', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {

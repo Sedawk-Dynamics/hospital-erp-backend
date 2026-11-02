@@ -13,3 +13,15 @@ export const getRegistrationFees=async(req:AuthenticatedRequest,res:Response,nex
     next(error)
   }
 }
+
+export const profileUpdate=async(req:AuthenticatedRequest,res:Response,next:NextFunction)=>{
+  try {
+    const tenantId=req.user!.tenantId as string;
+    const userId=req.user!.userId as string;
+    const patientId=req.params.id as string;
+    const result=await patientPortalService.updateProfile(tenantId,userId,patientId,req.body);
+    sendResponse({res,message:"Profile updated successfully",data:result})
+  } catch (error) {
+    next(error)
+  }
+}

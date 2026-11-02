@@ -55,12 +55,6 @@ export async function patientChat(
   await assertFeatureEnabled('patientChat', tenantId);
 
   const context = await buildPatientContext(tenantId, input.patientId);
-
-  // A question that names a medicine gets the catalogue's own facts for it —
-  // composition, interactions, the safety verdicts — so the answer comes from
-  // the label this hospital dispenses rather than the model's recollection of
-  // one. The patient's own medicines are already in the context above, which
-  // is what makes "can she take this with what she is on?" answerable.
   const medicine = await buildMedicineContext(input.message, roles);
 
   const system = [
@@ -102,10 +96,6 @@ interface BloodReportResult {
   recommendations: string[];
 }
 
-// Use Case 2.2 — blood report (lab) analysis with a score. Works off the
-// stored LabResult values, including the ones read off an uploaded report PDF
-// or scan — the lab's real workflow is to upload the analyser's printout, not
-// to retype every number.
 export async function bloodReportAnalysis(
   tenantId: string,
   userId: string,

@@ -2801,3 +2801,29 @@ export const registrationFees=async(tenantId:string,userId:string)=>{
   await finalizeBill(tenantId, userId, newBill.id);
   return createPatientBillPaymentOrder(userId,user.email,{billId:newBill.id});
 };
+
+export const updateProfile=async(tenantId:string,userId:string,patientId:string,data:{firstName?:string,lastName?:string,phone?:string,email?:string})=>{
+  const tenant=await prisma.tenant.findUnique({where:{id:tenantId}});
+  if(!tenant)throw new AppError('Tenant not found',404);
+
+  const user=await prisma.user.findUnique({where:{id:userId}});
+  if(!user)throw new AppError('User not found',404);
+
+  const patient=await prisma.patient.findFirst({where:{id:patientId,tenantId}});
+  if(!patient)throw new AppError('patient not found',404);  
+
+  const allowed = await resolvePatientIds(userId, user.email, tenantId, patientId);
+  if (!allowed.includes(patientId)) throw new AppError('Profile not found', 404);
+
+  const updatedUser=await prisma.patient.update({
+    where:{id:patientId},
+    data:{
+      firstName:data.firstName,
+      lastName:data.lastName,
+      phone:data.phone,
+      email:data.email,
+    }
+  });
+
+  return updatedUser;
+};
