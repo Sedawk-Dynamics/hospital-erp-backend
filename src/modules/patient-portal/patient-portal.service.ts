@@ -20,6 +20,7 @@ import { fullName } from '../../shared/person-name';
 import { REGISTRATION_FEE_REFERENCE_TYPE, registrationFeeTotals } from '../../shared/registration-fee';
 
 import { getRegistrationFeeSettings } from '../hospital-settings/hospital-settings.service';
+import { profile } from 'console';
 
 // ────────────────────────────────────────────────────────────
 // MRN Generation (mirrors patients.service.ts)
@@ -644,20 +645,27 @@ export async function createPatientInTenant(userId: string, email: string, tenan
 // Patient Portal Data Queries (updated to use connections)
 // ────────────────────────────────────────────────────────────
 
-export async function getPatientProfile(userId: string, email: string) {
+export async function getPatientProfile(userId: string, email: string, profileId?: string) {
+  const include = {
+    emergencyContacts: true,
+    allergies: true,
+    tenant: { select: { id: true, name: true, slug: true } },
+  };
+
+  if (profileId) {
+    const allowed = await resolvePatientIds(userId, email, undefined, profileId);
+    if (!allowed.includes(profileId)) return null;
+    return prisma.patient.findUnique({ where: { id: profileId }, include });
+  }
+
   const patients = await prisma.patient.findMany({
     where: { email: { equals: email, mode: 'insensitive' } },
-    include: {
-      emergencyContacts: true,
-      allergies: true,
-      tenant: { select: { id: true, name: true, slug: true } },
-    },
+    include,
     orderBy: { createdAt: 'desc' },
   });
-
-  if (patients.length === 0) return null;
-  return patients[0];
+  return patients[0] ?? null;
 }
+
 
 export async function getPatientAppointments(
   userId: string,
@@ -1109,9 +1117,11 @@ export async function markPatientOrderDoneExternally(
 
 // ── Patient-uploaded miscellaneous documents ────────────────
 
-export async function listMyDocuments(userId: string, email: string, tenantId?: string) {
-  const ids = await resolvePatientIds(userId, email, tenantId);
+export async function listMyDocuments(userId: string, email: string, tenantId?: string, profileId?: string) {
+  const ids = await resolvePatientIds(userId, email, tenantId, profileId);
   if (ids.length === 0) return [];
+
+
   return prisma.patientDocument.findMany({
     where: { patientId: { in: ids } },
     orderBy: { createdAt: 'desc' },
@@ -1124,8 +1134,9 @@ export async function createMyDocument(
   file: Express.Multer.File,
   data: { title?: string; documentType?: string; notes?: string },
   tenantId?: string,
+  profileId?: string
 ) {
-  const patientId = await resolvePrimaryPatientId(userId, email, tenantId);
+  const patientId = await resolvePrimaryPatientId(userId, email, tenantId, profileId);
   if (!patientId) throw new Error('No patient record found');
   const fileUrl = `/uploads/${file.filename}`;
   return prisma.patientDocument.create({
@@ -1142,16 +1153,16 @@ export async function createMyDocument(
   });
 }
 
-export async function deleteMyDocument(userId: string, email: string, id: string) {
-  const ids = await resolvePatientIds(userId, email);
+export async function deleteMyDocument(userId: string, email: string, id: string,tenantId?: string, profileId?: string) {
+  const ids = await resolvePatientIds(userId, email, tenantId, profileId);
   const doc = await prisma.patientDocument.findFirst({ where: { id, patientId: { in: ids } } });
   if (!doc) throw new Error('Document not found');
   await prisma.patientDocument.delete({ where: { id } });
 }
 
 // Current medications — patient view (read-only, combined derived + manual)
-export async function listMyCurrentMedications(userId: string, email: string, tenantId?: string) {
-  const patientId = await resolvePrimaryPatientId(userId, email, tenantId);
+export async function listMyCurrentMedications(userId: string, email: string, tenantId?: string, profileId?: string) {
+  const patientId = await resolvePrimaryPatientId(userId, email, tenantId, profileId);
   if (!patientId) return { derived: [], manual: [] };
   const { getAllCurrentMedications } = await import('../medical-history/medical-history.service');
   return getAllCurrentMedications(patientId, tenantId);
@@ -1174,8 +1185,8 @@ export async function listMyCurrentMedications(userId: string, email: string, te
  * Deterministic order: the record that already carries personal history wins,
  * then the most recently updated, then the oldest by id as a stable tiebreak.
  */
-async function resolvePrimaryPatientId(userId: string, email: string, tenantId?: string) {
-  const ids = await resolvePatientIds(userId, email, tenantId);
+async function resolvePrimaryPatientId(userId: string, email: string, tenantId?: string, profileId?: string) {
+  const ids = await resolvePatientIds(userId, email, tenantId, profileId);
   if (ids.length === 0) return null;
   if (ids.length === 1) return ids[0];
 
@@ -1208,8 +1219,8 @@ async function resolveMyPersonPatientIds(userId: string, email: string) {
   return Array.from(new Set(sets.flat()));
 }
 
-export async function getMyPersonalHistory(userId: string, email: string, tenantId?: string) {
-  const patientId = await resolvePrimaryPatientId(userId, email, tenantId);
+export async function getMyPersonalHistory(userId: string, email: string, tenantId?: string, profileId?: string) {
+  const patientId = await resolvePrimaryPatientId(userId, email, tenantId, profileId);
   if (!patientId) return null;
   // Delegate to the clinical service so the portal and the doctor resolve the
   // SAME person and read the SAME record — the two must never disagree.
@@ -1217,8 +1228,8 @@ export async function getMyPersonalHistory(userId: string, email: string, tenant
   return getPersonalHistory(patientId);
 }
 
-export async function upsertMyPersonalHistory(userId: string, email: string, data: any, tenantId?: string) {
-  const patientId = await resolvePrimaryPatientId(userId, email, tenantId);
+export async function upsertMyPersonalHistory(userId: string, email: string, data: any, tenantId?: string, profileId?: string) {
+  const patientId = await resolvePrimaryPatientId(userId, email, tenantId, profileId);
   if (!patientId) throw new Error('No patient record found');
   const { upsertPersonalHistory } = await import('../medical-history/medical-history.service');
   return upsertPersonalHistory(patientId, userId, data);
@@ -1286,8 +1297,8 @@ export async function deleteMyAllergy(userId: string, email: string, id: string)
   return deleteAllergy(entry.patientId, id);
 }
 
-export async function getPatientDischargeSummaries(userId: string, email: string) {
-  const patientIds = await resolvePatientIds(userId, email);
+export async function getPatientDischargeSummaries(userId: string, email: string,profileId?: string) {
+  const patientIds = await resolvePatientIds(userId, email, undefined, profileId);
   const { getPublishedDischargeSummariesForPatients } = await import('../mrd/mrd.service');
   return getPublishedDischargeSummariesForPatients(patientIds);
 }
@@ -1807,21 +1818,12 @@ export async function getPatientBills(
     take: query.limit || 30,
     include: {
       patient: { select: { id: true, mrn: true, firstName: true, lastName: true, tenant: { select: { id: true, name: true } } } },
-      // The tax the patient was actually charged, per line. A bill that shows a
-      // total and no GST leaves them unable to check what they paid — and for a
-      // hospital most lines are EXEMPT, which is worth them seeing rather than
-      // assuming tax is hidden somewhere in the figure.
       billItems: {
         select: {
           id: true, description: true, quantity: true, unitPrice: true, totalAmount: true,
           hsnSacCode: true, gstTreatment: true, taxPercent: true,
           taxableValue: true, taxAmount: true,
           cgstAmount: true, sgstAmount: true, igstAmount: true,
-          // The engine's own words for why this line was taxed as it was.
-          // Section 15's control for "a patient questions the GST on their
-          // bill": every line carries the reason, so the counter can answer
-          // without calling accounts — and so can the patient, on their own
-          // screen, without calling the counter.
           taxReason: true,
         },
       },
@@ -2821,7 +2823,7 @@ export const updateProfile=async(tenantId:string,userId:string,patientId:string,
     data:{
       firstName:data.firstName,
       lastName:data.lastName,
-      phone:data.phone,
+      // phone is the login identity — not editable here; changing it needs an OTP-verified flow.
       email:data.email,
     }
   });

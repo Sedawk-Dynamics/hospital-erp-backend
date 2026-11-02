@@ -33,7 +33,7 @@ async function auditAi(
   }
 }
 
-const PATIENT_CHAT_SYSTEM = [
+export const PATIENT_CHAT_SYSTEM = [
   'You are a clinical decision-support assistant embedded in a hospital EMR, helping a licensed doctor reason about ONE patient.',
   'You are given the patient\'s structured record (diagnoses, consultation history, medications, lab results, imaging metadata, allergies, vitals, history) as context.',
   '',

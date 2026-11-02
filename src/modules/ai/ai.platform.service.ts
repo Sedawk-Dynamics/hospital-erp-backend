@@ -13,6 +13,8 @@ import {
 } from './ai.roles';
 import type { PlatformChatInput } from './ai.validation';
 import { buildMedicineContext } from './ai.drug-context';
+import { buildPatientContext } from './ai.context';
+import { PATIENT_CHAT_SYSTEM } from './ai.chat.service';
 
 // ============================================================================
 // Use Case 3 (Level 1): Platform-wide AI support chatbot — READ-ONLY + ROLE-AWARE.
@@ -283,8 +285,8 @@ export async function platformChat(
         '- You are READ-ONLY: you explain how to do things, you never perform actions or change data.',
         ...(medicine
           ? [
-              '- This question names a medicine. Answer it from the MEDICINE FACTS below rather than from the documentation, in the detail this role needs, and name the product you describe.',
-            ]
+            '- This question names a medicine. Answer it from the MEDICINE FACTS below rather than from the documentation, in the detail this role needs, and name the product you describe.',
+          ]
           : []),
         '',
         '=== DOCUMENTATION ===',
@@ -317,3 +319,67 @@ export async function platformChat(
     provider,
   };
 }
+
+export const getPatientSummary = async (tenantId: string, userId: string, patientId: string) => {
+  await assertFeatureEnabled('patientChat', tenantId);
+  const context = await buildPatientContext(tenantId, patientId);
+  
+  const system = [
+    PATIENT_CHAT_SYSTEM,
+    '',
+    '=== PATIENT CONTEXT ===',
+    context.text,
+  ].join('\n');
+
+  const { text, model, provider } = await generateText({
+    system,
+    messages: [{ role: 'user', content:
+      'Give a concise clinical briefing of this patient as short headed sections:\n' +
+      '1. Snapshot — age/sex, active diagnoses (with ICD codes), current medications.\n' +
+      '2. Alerts — allergies and any abnormal labs/vitals, called out clearly.\n' +
+      '3. Suggested next steps — investigations, monitoring, follow-up.\n' +
+      '\n' +
+      'STRICT: Use ONLY the data present in the patient record above. Do NOT invent, infer, ' +
+      'assume, or self-generate any value, diagnosis, medication, allergy, lab, vital or history. ' +
+      'If a section has no data in the record, state clearly that it is "Not recorded" rather than ' +
+      'guessing or filling it in.' }],
+  }, { tenantId });
+
+  return {
+    summary: text,
+    counts: context.counts,
+    patient: context.patient,
+    model,
+    provider,
+  };
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

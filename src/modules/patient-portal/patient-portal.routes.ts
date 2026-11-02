@@ -87,7 +87,7 @@ router.delete('/connections/:id', async (req: AuthenticatedRequest, res: Respons
 // GET /patient-portal/profile
 router.get('/profile', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    const profile = await patientPortalService.getPatientProfile(req.user!.userId, req.user!.email);
+    const profile = await patientPortalService.getPatientProfile(req.user!.userId, req.user!.email,req.query.profileId as string | undefined,req.query.tenantId as string | undefined);
     sendResponse({ res, statusCode: 200, message: 'Patient profile', data: profile });
   } catch (err) {
     next(err);
@@ -311,7 +311,7 @@ router.get('/prescriptions', async (req: AuthenticatedRequest, res: Response, ne
 // ── Miscellaneous Records (patient-uploaded documents) ──────
 router.get('/documents', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    const data = await patientPortalService.listMyDocuments(req.user!.userId, req.user!.email, req.query.tenantId as string | undefined);
+    const data = await patientPortalService.listMyDocuments(req.user!.userId, req.user!.email, req.query.tenantId as string | undefined, req.query.profileId as string | undefined);
     sendResponse({ res, message: 'Documents', data });
   } catch (err) { next(err); }
 });
@@ -330,6 +330,7 @@ router.post(
         file,
         { title, documentType, notes },
         req.query.tenantId as string | undefined,
+         req.query.profileId as string | undefined,
       );
       sendResponse({ res, statusCode: 201, message: 'Document uploaded', data });
     } catch (err) { next(err); }
@@ -338,7 +339,7 @@ router.post(
 
 router.delete('/documents/:id', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    await patientPortalService.deleteMyDocument(req.user!.userId, req.user!.email, req.params.id as string);
+    await patientPortalService.deleteMyDocument(req.user!.userId, req.user!.email, req.params.id as string, req.query.tenantId as string | undefined, req.query.profileId as string | undefined);
     sendResponse({ res, message: 'Document deleted' });
   } catch (err) { next(err); }
 });
@@ -346,7 +347,7 @@ router.delete('/documents/:id', async (req: AuthenticatedRequest, res: Response,
 // ── Current Medications (patient read-only, combined) ───────
 router.get('/current-medications', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    const data = await patientPortalService.listMyCurrentMedications(req.user!.userId, req.user!.email, req.query.tenantId as string | undefined);
+    const data = await patientPortalService.listMyCurrentMedications(req.user!.userId, req.user!.email, req.query.tenantId as string | undefined, req.query.profileId as string | undefined);
     sendResponse({ res, message: 'Current medications', data });
   } catch (err) { next(err); }
 });
@@ -354,14 +355,14 @@ router.get('/current-medications', async (req: AuthenticatedRequest, res: Respon
 // ── Medical History (patient self-service) ──────────────────
 router.get('/medical-history/personal', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    const data = await patientPortalService.getMyPersonalHistory(req.user!.userId, req.user!.email, req.query.tenantId as string | undefined);
+    const data = await patientPortalService.getMyPersonalHistory(req.user!.userId, req.user!.email, req.query.tenantId as string | undefined, req.query.profileId as string | undefined);
     sendResponse({ res, message: 'Personal history', data });
   } catch (err) { next(err); }
 });
 
 router.put('/medical-history/personal', validate(upsertPersonalHistorySchema), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    const data = await patientPortalService.upsertMyPersonalHistory(req.user!.userId, req.user!.email, req.body, req.query.tenantId as string | undefined);
+    const data = await patientPortalService.upsertMyPersonalHistory(req.user!.userId, req.user!.email, req.body, req.query.tenantId as string | undefined,req.query.profileId as string | undefined);
     sendResponse({ res, message: 'Personal history saved', data });
   } catch (err) { next(err); }
 });
@@ -461,7 +462,7 @@ router.get(
 // GET /patient-portal/discharge-summaries
 router.get('/discharge-summaries', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    const data = await patientPortalService.getPatientDischargeSummaries(req.user!.userId, req.user!.email);
+    const data = await patientPortalService.getPatientDischargeSummaries(req.user!.userId, req.user!.email,req.query.profileId as string | undefined);
     sendResponse({ res, statusCode: 200, message: 'Discharge summaries', data });
   } catch (err) {
     next(err);
@@ -667,3 +668,10 @@ router.post('/confirm-frontdesk-payment', async (req: AuthenticatedRequest, res:
 router.post('/registration-fee',authenticate,patientportalController.getRegistrationFees)
 
 export { router as patientPortalRoutes };
+
+
+
+
+
+
+

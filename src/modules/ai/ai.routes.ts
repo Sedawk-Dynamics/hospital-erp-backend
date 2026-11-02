@@ -68,3 +68,7 @@ aiRoutes.delete(
   validate(aiConfigResetSchema),
   controller.resetConfig,
 );
+
+aiRoutes.get('/patient/:patientId/summary',
+  requirePermission('patients','read'),
+  controller.patientSummary);
