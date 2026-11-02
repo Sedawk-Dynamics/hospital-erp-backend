@@ -5,9 +5,9 @@ import * as patientPortalService from './patient-portal.service';
 
 export const getRegistrationFees=async(req:AuthenticatedRequest,res:Response,next:NextFunction)=>{
   try {
-    const tenantId=req.user!.tenantId as string;
     const userId=req.user!.userId as string
-    const result=await patientPortalService.registrationFees(tenantId,userId);
+    const tenantSlug=req.body!.tenantSlug as string;
+    const result=await patientPortalService.registrationFees(userId,tenantSlug);
     sendResponse({res,message:"Bill Id generated for the registration fees",data:result})
   } catch (error) {
     next(error)

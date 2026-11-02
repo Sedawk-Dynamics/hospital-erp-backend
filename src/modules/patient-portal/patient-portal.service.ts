@@ -2745,17 +2745,24 @@ export async function confirmFrontdeskPayment(
 }
 
 
-export const registrationFees=async(tenantId:string,userId:string)=>{
-  const tenant=await prisma.tenant.findUnique({where:{id:tenantId}});
+export const registrationFees=async(userId:string,tenantSlug:string)=>{
+  const tenant=await prisma.tenant.findUnique({where:{slug:tenantSlug}});
   if(!tenant)throw new AppError('Tenant not found',404);
 
   const user=await prisma.user.findUnique({where:{id:userId}});
   if(!user)throw new AppError('User not found',404);
 
-  const patient=await prisma.patient.findFirst({where:{userId,tenantId}});
-  if(!patient)throw new AppError('patient not found',404);
+  let patient=await prisma.patient.findFirst({where:{userId, tenantId:tenant.id}});
+  if (!patient) {
+  if (!tenantSlug || tenantSlug === '__platform__') {
+    throw new AppError('patient not found', 404);
+  }
+  await createPatientInTenant(userId, user.email, tenant.id);
+  patient = await prisma.patient.findFirst({ where: { userId, tenantId: tenant.id } });
+}
+  if (!patient) throw new AppError('patient not found', 404);
 
-  const registrationFee = await getRegistrationFeeSettings(tenantId);
+  const registrationFee = await getRegistrationFeeSettings(tenant.id);
   if (!registrationFee.enabled || registrationFee.amount <= 0) {
     return { billId: null as string | null, status: 'not_required' as const };
   }
@@ -2763,16 +2770,16 @@ export const registrationFees=async(tenantId:string,userId:string)=>{
   const existing = await prisma.billItem.findFirst({
     where: {
       referenceType: REGISTRATION_FEE_REFERENCE_TYPE,
-      bill: { tenantId, patientId: patient.id, status: { notIn: ['cancelled', 'refunded'] } },
+      bill: { tenantId: tenant.id, patientId: patient?.id, status: { notIn: ['cancelled', 'refunded'] } },
     },
   });
   if (existing) {
     return  createPatientBillPaymentOrder(userId,user.email,{billId:existing.billId});
   }
 
-  const newBill = await createBill(tenantId, userId, { patientId: patient.id });
+  const newBill = await createBill(tenant.id, userId, { patientId: patient.id });
   const totals = registrationFeeTotals(registrationFee);
-  const resolver = await taxResolverFor(tenantId);
+  const resolver = await taxResolverFor(tenant.id);
   const tax = resolver.price(
     {
       kind: 'registration',
@@ -2794,25 +2801,19 @@ export const registrationFees=async(tenantId:string,userId:string)=>{
       discountAmount: 0,
       ...billItemTaxFields(tax),
       referenceType: REGISTRATION_FEE_REFERENCE_TYPE,
-      referenceId: patient.id,
+      referenceId: patient?.id,
     },
   });
 
-  await finalizeBill(tenantId, userId, newBill.id);
+  await finalizeBill(tenant.id, userId, newBill.id);
   return createPatientBillPaymentOrder(userId,user.email,{billId:newBill.id});
 };
 
 export const updateProfile=async(tenantId:string,userId:string,patientId:string,data:{firstName?:string,lastName?:string,phone?:string,email?:string})=>{
-  const tenant=await prisma.tenant.findUnique({where:{id:tenantId}});
-  if(!tenant)throw new AppError('Tenant not found',404);
-
   const user=await prisma.user.findUnique({where:{id:userId}});
   if(!user)throw new AppError('User not found',404);
 
-  const patient=await prisma.patient.findFirst({where:{id:patientId,tenantId}});
-  if(!patient)throw new AppError('patient not found',404);  
-
-  const allowed = await resolvePatientIds(userId, user.email, tenantId, patientId);
+  const allowed = await resolvePatientIds(userId, user.email, undefined, patientId);
   if (!allowed.includes(patientId)) throw new AppError('Profile not found', 404);
 
   const updatedUser=await prisma.patient.update({
