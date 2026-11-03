@@ -87,7 +87,7 @@ router.delete('/connections/:id', async (req: AuthenticatedRequest, res: Respons
 // GET /patient-portal/profile
 router.get('/profile', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    const profile = await patientPortalService.getPatientProfile(req.user!.userId, req.user!.email,req.query.profileId as string | undefined,req.query.tenantId as string | undefined);
+    const profile = await patientPortalService.getPatientProfile(req.user!.userId, req.user!.email, req.query.profileId as string | undefined);
     sendResponse({ res, statusCode: 200, message: 'Patient profile', data: profile });
   } catch (err) {
     next(err);
