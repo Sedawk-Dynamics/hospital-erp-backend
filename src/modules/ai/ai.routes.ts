@@ -72,3 +72,6 @@ aiRoutes.delete(
 aiRoutes.get('/patient/:patientId/summary',
   requirePermission('patients','read'),
   controller.patientSummary);
+
+
+aiRoutes.get('/patient/:patientId/context-version',authenticate, requirePermission('patients','read'), controller.getContextVersion);

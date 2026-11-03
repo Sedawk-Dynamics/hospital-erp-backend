@@ -125,3 +125,13 @@ export const patientSummary = async (req: AuthenticatedRequest, res: Response, n
     next(err);
   }
 };
+
+export const getContextVersion=async(req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const patientId = req.params.patientId as string;
+    const version = await platformService.contextVersion(req.user!.tenantId as string, patientId);
+    sendResponse({ res, message: 'Patient context version', data: { version } });
+  } catch (err) {
+    next(err);
+  }
+};

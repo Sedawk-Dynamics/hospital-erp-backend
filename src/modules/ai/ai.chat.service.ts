@@ -4,11 +4,11 @@ import { AppError } from '../../shared/appError';
 import { generateText, generateJson } from '../../services/ai';
 import type { AiMessage } from '../../services/ai';
 import { assertFeatureEnabled } from './ai.config.service';
-import { buildPatientContext } from './ai.context';
 import { backfillResultsFromAttachments } from '../lab/lab.service';
 import { Prisma } from '@prisma/client';
 import type { PatientChatInput, BloodReportAnalysisInput } from './ai.validation';
 import { buildMedicineContext } from './ai.drug-context';
+import { getOrBuildContext } from './ai.context-version';
 
 // Best-effort audit of AI usage. Never blocks the response.
 async function auditAi(
@@ -54,7 +54,7 @@ export async function patientChat(
 ) {
   await assertFeatureEnabled('patientChat', tenantId);
 
-  const context = await buildPatientContext(tenantId, input.patientId);
+  const context = await getOrBuildContext(tenantId, input.patientId);
   const medicine = await buildMedicineContext(input.message, roles);
 
   const system = [

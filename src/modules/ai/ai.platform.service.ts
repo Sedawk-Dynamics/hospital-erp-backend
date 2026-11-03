@@ -13,8 +13,8 @@ import {
 } from './ai.roles';
 import type { PlatformChatInput } from './ai.validation';
 import { buildMedicineContext } from './ai.drug-context';
-import { buildPatientContext } from './ai.context';
 import { PATIENT_CHAT_SYSTEM } from './ai.chat.service';
+import { getClinicalVersion, getOrBuildContext } from './ai.context-version';
 
 // ============================================================================
 // Use Case 3 (Level 1): Platform-wide AI support chatbot — READ-ONLY + ROLE-AWARE.
@@ -322,7 +322,7 @@ export async function platformChat(
 
 export const getPatientSummary = async (tenantId: string, userId: string, patientId: string) => {
   await assertFeatureEnabled('patientChat', tenantId);
-  const context = await buildPatientContext(tenantId, patientId);
+  const context = await getOrBuildContext(tenantId, patientId);
   
   const system = [
     PATIENT_CHAT_SYSTEM,
@@ -334,14 +334,14 @@ export const getPatientSummary = async (tenantId: string, userId: string, patien
   const { text, model, provider } = await generateText({
     system,
     messages: [{ role: 'user', content:
-      'Give a concise clinical briefing of this patient as short headed sections:\n' +
-      '1. Snapshot — age/sex, active diagnoses (with ICD codes), current medications.\n' +
-      '2. Alerts — allergies and any abnormal labs/vitals, called out clearly.\n' +
-      '3. Suggested next steps — investigations, monitoring, follow-up.\n' +
+      "Summarise this patient's history and current clinical status. Cover demographics, " +
+      'known diagnoses (with ICD codes), allergies, social and family history, the current ' +
+      'visit and vitals, current medications, and recent labs — highlighting any allergies or ' +
+      'abnormal values. End with suggested next steps (investigations, monitoring, follow-up).\n' +
       '\n' +
       'STRICT: Use ONLY the data present in the patient record above. Do NOT invent, infer, ' +
       'assume, or self-generate any value, diagnosis, medication, allergy, lab, vital or history. ' +
-      'If a section has no data in the record, state clearly that it is "Not recorded" rather than ' +
+      'If something is not in the record, state clearly that it is "Not recorded" rather than ' +
       'guessing or filling it in.' }],
   }, { tenantId });
 
@@ -349,17 +349,17 @@ export const getPatientSummary = async (tenantId: string, userId: string, patien
     summary: text,
     counts: context.counts,
     patient: context.patient,
+    alerts: context.alerts,
     model,
     provider,
   };
 }
 
 
-
-
-
-
-
+export const contextVersion=async(tenantId:string,patientId:string)=>{
+  const version = await getClinicalVersion(tenantId, patientId);
+  return { version };
+};
 
 
 

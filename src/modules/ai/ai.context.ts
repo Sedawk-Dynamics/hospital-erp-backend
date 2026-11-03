@@ -31,6 +31,15 @@ export interface BuiltPatientContext {
   text: string;
   /** Counts so the UI can show "context: 3 diagnoses, 12 labs…". */
   counts: Record<string, number>;
+  /**
+   * Critical items a clinician must not miss, pulled as structured data (not
+   * left to the model's prose) so the UI can render them as fixed red badges.
+   */
+  alerts: {
+    allergies: string[];
+    abnormalLabs: string[];
+    abnormalVitals: string[];
+  };
 }
 
 export async function buildPatientContext(
@@ -305,6 +314,45 @@ export async function buildPatientContext(
     );
   }
 
+  // --- Structured alerts (data, not prose) for the UI's red badge row. ---
+  const allergyAlerts = patient.allergies.map(
+    (a) =>
+      `${a.allergen} (${a.allergyType}${a.severity ? `, ${a.severity}` : ''})${a.reaction ? ` — ${a.reaction}` : ''}`,
+  );
+
+  const abnormalLabAlerts = labResults
+    .filter((r) => r.isAbnormal)
+    .map((r) => {
+      const test = r.labOrderItem?.test?.testName ?? 'Lab';
+      return `${test} — ${r.parameterName}: ${r.value ?? '?'} ${r.unit ?? ''}`.trim() +
+        (r.normalRange ? ` (ref ${r.normalRange})` : '');
+    });
+
+  // Vitals carry no isAbnormal flag, so flag the latest reading with
+  // conservative, widely-accepted thresholds. Temperature is accepted in either
+  // scale (°F readings are ≥ 50 numerically, °C are not).
+  const abnormalVitalAlerts: string[] = [];
+  const latestVital = vitals[0];
+  if (latestVital) {
+    const num = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v));
+    const sys = num(latestVital.bloodPressureSystolic);
+    const dia = num(latestVital.bloodPressureDiastolic);
+    if (sys && dia) {
+      if (sys >= 140 || dia >= 90) abnormalVitalAlerts.push(`BP ${sys}/${dia} mmHg (elevated)`);
+      else if (sys < 90 || dia < 60) abnormalVitalAlerts.push(`BP ${sys}/${dia} mmHg (low)`);
+    }
+    const spo2 = num(latestVital.oxygenSaturation);
+    if (spo2 && spo2 < 94) abnormalVitalAlerts.push(`SpO2 ${spo2}% (low)`);
+    const hr = num(latestVital.pulseRate);
+    if (hr && hr > 100) abnormalVitalAlerts.push(`HR ${hr} bpm (tachycardia)`);
+    else if (hr && hr < 60) abnormalVitalAlerts.push(`HR ${hr} bpm (bradycardia)`);
+    const temp = num(latestVital.temperature);
+    if (temp) {
+      const fever = temp >= 50 ? temp >= 100.4 : temp >= 38;
+      if (fever) abnormalVitalAlerts.push(`Temp ${temp}° (fever)`);
+    }
+  }
+
   return {
     patient: {
       id: patient.id,
@@ -313,6 +361,11 @@ export async function buildPatientContext(
       age,
       gender: patient.gender,
       bloodGroup: patient.bloodGroup,
+    },
+    alerts: {
+      allergies: allergyAlerts,
+      abnormalLabs: abnormalLabAlerts,
+      abnormalVitals: abnormalVitalAlerts,
     },
     text: sections.filter(Boolean).join('\n\n'),
     counts: {
@@ -326,3 +379,22 @@ export async function buildPatientContext(
     },
   };
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
