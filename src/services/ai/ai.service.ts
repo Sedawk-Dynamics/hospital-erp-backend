@@ -48,12 +48,6 @@ function mostInformative<T extends { err: unknown }>(failures: T[]): T | undefin
   return best;
 }
 
-/**
- * Low-level text generation. Resolves the active provider/model/key for the
- * hospital and dispatches, trying the primary model then each fallback model on
- * retriable failures (rate limits, overload, model unavailable). Throws a clear
- * badRequest when AI is not configured so callers/UI can degrade gracefully.
- */
 export async function generateText(
   opts: AiGenerateOptions,
   ctx: AiCallContext = {},
@@ -74,6 +68,21 @@ export async function generateText(
     temperature: opts.temperature ?? cfg.temperature,
     maxOutputTokens: opts.maxOutputTokens ?? cfg.maxOutputTokens,
   };
+
+  logger.info({ system: merged.system, messages: merged.messages });
+
+  // TEMP (MedGemma comparison) — writes full prompt (incl. PHI) to a file so it's
+  // easy to grab from the noisy console. Remove after testing; never deploy.
+  try {
+    const dump =
+      '===== SYSTEM =====\n' +
+      (merged.system ?? '(none)') +
+      '\n\n===== MESSAGES =====\n' +
+      merged.messages.map((m) => `[${m.role}]\n${m.content}`).join('\n\n');
+    require('fs').writeFileSync(require('path').join(process.cwd(), 'ai-prompt.txt'), dump);
+  } catch (e) {
+    logger.warn({ e }, 'failed to dump AI prompt');
+  }
 
   const failures: Array<{ model: string; err: unknown }> = [];
   for (let i = 0; i < attempts.length; i++) {
@@ -117,18 +126,6 @@ export async function generateText(
   throw AppError.internal('AI request failed');
 }
 
-/**
- * Structured output needs far more room than a chat reply, and the shared
- * `AiConfig.maxOutputTokens` defaults to 1024 — a limit chosen for
- * conversational answers. A blood-report analysis returning a per-parameter
- * note for a full panel blows through that easily, and the reply comes back
- * cut off mid-object. `JSON.parse` then fails and the doctor was told the model
- * "returned an unexpected format", which is true but useless: the model was
- * fine, it was simply not given enough room to finish.
- *
- * So JSON calls get their own floor. A hospital that has deliberately raised
- * the configured limit still wins.
- */
 const JSON_OUTPUT_TOKEN_FLOOR = 4096;
 
 /** Looks like a JSON object the model never got to close. */

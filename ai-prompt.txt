@@ -1,0 +1,76 @@
+===== SYSTEM =====
+You are a clinical decision-support assistant embedded in a hospital EMR, helping a licensed doctor reason about ONE patient.
+You are given the patient's structured record (diagnoses, consultation history, medications, lab results, imaging metadata, allergies, vitals, history) as context.
+
+Rules:
+- Answer the doctor's question conversationally and concisely, grounded ONLY in the provided context. If the context lacks the information, say so plainly.
+- When you mention a diagnosis, include its ICD code if it is present in the context.
+- You receive imaging only as metadata + radiologist impression text — you do NOT see the images. Never claim to have analysed a scan; defer image interpretation to the radiologist.
+- Be specific and actionable (suggested investigations, treatment considerations, monitoring, follow-up), but frame them as suggestions for the clinician to confirm.
+- Do not invent lab values, medications, or history that are not in the context.
+- Keep answers focused; use short paragraphs or bullets. This is decision support, not a final order.
+
+=== PATIENT CONTEXT ===
+## PATIENT
+Name: test 113
+MRN: MRN-20261106-0001
+Gender: male
+
+## ALLERGIES
+- Penicillin (drug, mild)
+
+## CURRENT VISIT
+- 2026-11-06 op
+
+## PAST VISIT HISTORY (most recent first)
+- 2026-11-06 op — Fever, burning urination (dysuria), lower abdominal pain for 3 days
+
+## LAB RESULTS (recent; OCR/structured values)
+- Complete Blood Count (CBC) — Peripheral Smear Comment: normal  (ref Normocytic normochromic, adequate platelets, no atypical cells)
+- Complete Blood Count (CBC) — PCT: 0.18 % (ref 0.17–0.35)
+- Complete Blood Count (CBC) — PDW: 11 % (ref 9–17)
+- Complete Blood Count (CBC) — MPV: 4.8 fL (ref 7.5–11.5) **ABNORMAL**
+- Complete Blood Count (CBC) — Platelet Count: 100 10^3/µL (ref 150–410) **ABNORMAL**
+- Complete Blood Count (CBC) — Basophils (absolute): 0.1 10^3/µL (ref 0.01–0.1)
+- Complete Blood Count (CBC) — Eosinophils (absolute): 0.1 10^3/µL (ref 0.04–0.4)
+- Complete Blood Count (CBC) — Monocytes (absolute): 0.1 10^3/µL (ref 0.2–0.8) **ABNORMAL**
+- Complete Blood Count (CBC) — Lymphocytes (absolute): 2 10^3/µL (ref 1–3)
+- Complete Blood Count (CBC) — Neutrophils (absolute): 7 10^3/µL (ref 2–7)
+- Complete Blood Count (CBC) — Basophils: 1 % (ref 0–2)
+- Complete Blood Count (CBC) — Eosinophils: 4 % (ref 1–6)
+- Complete Blood Count (CBC) — Monocytes: 9 % (ref 2–10)
+- Complete Blood Count (CBC) — Lymphocytes: 33 % (ref 20–45)
+- Complete Blood Count (CBC) — Neutrophils: 50 % (ref 40–75)
+- Complete Blood Count (CBC) — WBC / Total Leucocyte Count: 6 10^3/µL (ref 4–11)
+- Complete Blood Count (CBC) — RDW-CV: 11.7 % (ref 11.5–14.5)
+- Complete Blood Count (CBC) — MCHC: 20 g/dL (ref 32–36) **ABNORMAL**
+- Complete Blood Count (CBC) — MCH: 20 pg (ref 27–33) **ABNORMAL**
+- Complete Blood Count (CBC) — MCV: 90 fL (ref 80–100)
+- Complete Blood Count (CBC) — RBC Count: 4.9 10^6/µL (ref 4.5–5.9)
+- Complete Blood Count (CBC) — Hematocrit / PCV: 44 % (ref 40–50)
+- Complete Blood Count (CBC) — Hemoglobin: 18 g/dL (ref 13–17) **ABNORMAL**
+- Hemoglobin — Hemoglobin: 20 g/dL (ref 13–17) **ABNORMAL**
+- Blood Grouping & Rh Typing — Rh Typing: positive  (ref n/a)
+- Blood Grouping & Rh Typing — ABO Group: A  (ref n/a)
+
+## LAB REPORTS ON FILE BUT NOT TRANSCRIBED
+These reports exist as uploaded files whose values were never captured. You cannot see their contents. Do not guess at them — say the report is on file and ask the lab to capture its values.
+- 2026-11-06 Activated Partial Thromboplastin Time (APTT) — MR. ARJUN.R  1225 Report.pdf
+
+## IMAGING (metadata + impression; images not analysed)
+- 2026-11-06 ct_scan [completed]
+- 2026-11-06 ct_scan [completed]
+
+## MEDICAL HISTORY
+- Smoking: current
+- Alcohol: heavy
+- Family (maternal/Father): Diabetes Type 2
+
+## VITALS (latest)
+- 2026-11-06: BP 158/96, HR 104, Temp 37.2, SpO2 97%, RR 16
+
+===== MESSAGES =====
+[user]
+Summarise this patient's history and current clinical status. Cover demographics, known diagnoses (with ICD codes), allergies, social and family history, the current visit and vitals, current medications, and recent labs — highlighting any allergies or abnormal values. End with suggested next steps (investigations, monitoring, follow-up).
+
+STRICT: Use ONLY the data present in the patient record above. Do NOT invent, infer, assume, or self-generate any value, diagnosis, medication, allergy, lab, vital or history. If something is not in the record, state clearly that it is "Not recorded" rather than guessing or filling it in.

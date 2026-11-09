@@ -1136,8 +1136,25 @@ export async function createMyDocument(
   tenantId?: string,
   profileId?: string
 ) {
-  const patientId = await resolvePrimaryPatientId(userId, email, tenantId, profileId);
-  if (!patientId) throw new Error('No patient record found');
+
+  const user=await prisma.user.findUnique({where:{id:userId}});
+  if(!user) throw new Error('User not found');
+  let patientId = await resolvePrimaryPatientId(userId, email, tenantId, profileId);
+  if (!patientId){
+    const patient = await prisma.patient.create({
+      data: {
+        tenantId: user!.tenantId,
+        userId,                            
+        isSelf: true,
+        relationship: 'self',
+        firstName: user?.firstName || 'Patient',   
+        lastName: user?.lastName ?? null,
+        phone: user?.phone ?? null,
+        mrn: await generateMRN(),
+      },
+    });
+    patientId=patient.id;
+  }
   const fileUrl = `/uploads/${file.filename}`;
   return prisma.patientDocument.create({
     data: {
@@ -1229,8 +1246,24 @@ export async function getMyPersonalHistory(userId: string, email: string, tenant
 }
 
 export async function upsertMyPersonalHistory(userId: string, email: string, data: any, tenantId?: string, profileId?: string) {
-  const patientId = await resolvePrimaryPatientId(userId, email, tenantId, profileId);
-  if (!patientId) throw new Error('No patient record found');
+  const user=await prisma.user.findUnique({where:{id:userId}});
+  if(!user) throw new Error('User not found');
+  let patientId = await resolvePrimaryPatientId(userId, email, tenantId, profileId);
+  if (!patientId) {
+   const patient = await prisma.patient.create({
+    data: {
+      tenantId: user!.tenantId,
+      userId,                            
+      isSelf: true,
+      relationship: 'self',
+      firstName: user?.firstName || 'Patient',   
+      lastName: user?.lastName ?? null,
+      phone: user?.phone ?? null,
+      mrn: await generateMRN(),
+    },
+  });
+    patientId=patient.id;
+  }
   const { upsertPersonalHistory } = await import('../medical-history/medical-history.service');
   return upsertPersonalHistory(patientId, userId, data);
 }

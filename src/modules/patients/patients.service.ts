@@ -417,6 +417,50 @@ export async function create(tenantId: string, data: CreatePatientInput) {
     }
   }
 
+
+  if(data.userId){
+    const platformSelf=await prisma.patient.findFirst({
+    where:{
+      userId:data.userId,
+      isSelf  :true,
+      tenant:{slug:'__platform__'}
+    }
+  });
+
+  if(platformSelf){
+    return prisma.patient.update({
+    where: { id: platformSelf.id },
+    data: { 
+      tenantId, 
+      mrn, 
+      firstName: data.firstName, 
+      lastName: data.lastName,
+      dateOfBirth: data.dateOfBirth ? new Date(data.dateOfBirth) : undefined,
+      gender: mapGender(data.gender) as any,
+      bloodGroup: data.bloodGroup,
+      phone: data.phone,
+      email: data.email || undefined,
+      addressLine1: data.address,
+      city: data.city,
+      state: data.state,
+      country: data.country,
+      postalCode: data.zipCode,
+      maritalStatus: data.maritalStatus,
+      nationality: data.nationality,
+      occupation: data.occupation,
+      religion: data.religion,
+      preferredLanguage: data.preferredLanguage,
+      referredBy: data.referredBy,
+      notes: data.notes,
+      abhaNumber: data.abhaNumber || undefined,
+      idProofNumber: data.nationalId,
+      isActive: true,
+    },
+  });
+  }
+  }
+
+  
   const patient = await prisma.patient.create({
     data: {
       mrn,
@@ -456,10 +500,6 @@ export async function create(tenantId: string, data: CreatePatientInput) {
   return patient;
 }
 
-/**
- * List all patient profiles linked to a given user account.
- * Optionally scope to a single tenant.
- */
 export async function findByUser(userId: string, tenantId?: string) {
   return prisma.patient.findMany({
     where: { userId, ...(tenantId ? { tenantId } : {}) },

@@ -2,6 +2,10 @@ import { prisma } from '../../config/database';
 import { AppError } from '../../shared/appError';
 import { buildDrugHistory } from '../prescriptions/drug-history.service';
 import { resolvePersonPatientIds } from '../../shared/patient-identity';
+import { UPLOAD_DIR } from '../../services/upload.service';
+import path from 'path';
+import { PDFParse } from 'pdf-parse';
+import fs from 'fs/promises';
 
 // Aggregates a patient's clinical record into a compact text block for the
 // patient AI chatbot (Use Case 2, Level 1 — text only, no radiology image
@@ -62,6 +66,7 @@ export async function buildPatientContext(
     personalHistory,
     familyHistory,
     vitals,
+    imagingFiles,
   ] =
     await Promise.all([
       prisma.visit.findMany({
@@ -88,10 +93,6 @@ export async function buildPatientContext(
         take: 40,
         include: { labOrderItem: { include: { test: { select: { testName: true } } } } },
       }),
-      // Released reports the lab uploaded as a file that never became values.
-      // Uploads are read into LabResult rows now, but older ones are file-only
-      // and the model cannot see a file — so name them rather than let it
-      // conclude the patient has no labs.
       prisma.labAttachment.findMany({
         where: {
           tenantId,
@@ -108,6 +109,7 @@ export async function buildPatientContext(
         select: {
           fileName: true,
           createdAt: true,
+          fileUrl: true,
           labOrder: {
             select: { labOrderItems: { select: { test: { select: { testName: true } } } } },
           },
@@ -135,6 +137,26 @@ export async function buildPatientContext(
         where: { patientId, visit: { tenantId } },
         orderBy: { recordedAt: 'desc' },
         take: 3,
+      }),
+
+      prisma.imagingAttachment.findMany({
+        where: {
+          tenantId,
+          deletedAt: null,
+          category:'report_pdf',
+          imagingRequest: { patientId, tenantId},
+          imagingResult:{is:null}
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+        select: {
+          fileName: true,
+          createdAt: true,
+          fileUrl: true,
+          imagingRequest: {
+            select: { imagingType: true, bodyPart: true },
+          },
+        },
       }),
     ]);
 
@@ -207,6 +229,25 @@ export async function buildPatientContext(
           priorVisits.map(describeVisit).join('\n'),
       );
     }
+
+
+    if(imagingFiles.length){
+      const fileLinks = await Promise.all(imagingFiles.map(async (a) => {
+        const filePath = path.join(UPLOAD_DIR, a.fileUrl.replace(/^\/uploads\//, ''));
+        let text=''
+        try {
+          const buffer = await fs.readFile(filePath);
+          const parser = new PDFParse({ data: buffer });
+          const result = await parser.getText();
+          text = result.text?.trim() ?? '';
+        } catch (err) {
+          text = '(could not read file)';
+        }
+        return `- ${new Date(a.createdAt).toISOString().slice(0, 10)} ${a.imagingRequest.imagingType}${a.imagingRequest.bodyPart ? ` ${a.imagingRequest.bodyPart}` : ''} — ${a.fileName} (file: ${text})`;
+      }
+      ));
+      sections.push('## IMAGING REPORTS ON FILE (extracted from uploaded files)\n' + fileLinks.join('\n\n'));
+    }
   }
 
   // Medications split the same way the doctor's Drug History panel splits them,
@@ -252,19 +293,24 @@ export async function buildPatientContext(
   }
 
   if (unreadLabFiles.length) {
-    sections.push(
-      '## LAB REPORTS ON FILE BUT NOT TRANSCRIBED\n' +
-        'These reports exist as uploaded files whose values were never captured. You cannot see their contents. Do not guess at them — say the report is on file and ask the lab to capture its values.\n' +
-        unreadLabFiles
-          .map((a) => {
-            const tests = a.labOrder.labOrderItems
-              .map((it) => it.test?.testName)
-              .filter(Boolean)
-              .join(', ');
-            return `- ${new Date(a.createdAt).toISOString().slice(0, 10)} ${tests || 'Lab order'} — ${a.fileName}`;
-          })
-          .join('\n'),
-    );
+    const fileLinks = await Promise.all(unreadLabFiles.map(async (a) => {
+      const filePath = path.join(UPLOAD_DIR, a.fileUrl.replace(/^\/uploads\//, ''));
+      let text=''
+      try {
+        const buffer = await fs.readFile(filePath);
+        const parser = new PDFParse({ data: buffer });
+        const result = await parser.getText();
+        text = result.text?.trim() ?? '';
+      } catch (err) {
+        text = '(could not read file)';
+      }
+
+      return `- ${new Date(a.createdAt).toISOString().slice(0, 10)} ${a.labOrder.labOrderItems
+        .map((it) => it.test?.testName)
+        .filter(Boolean)
+        .join(', ') || 'Lab order'} — ${a.fileName} (file: ${text})`;
+    }));
+      sections.push('## LAB REPORTS ON FILE (extracted from uploaded files)\n' + fileLinks.join('\n\n'));
   }
 
   if (imaging.length) {
