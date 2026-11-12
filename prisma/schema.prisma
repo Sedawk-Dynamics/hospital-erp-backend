@@ -8747,3 +8747,79 @@ model Calculator {
   @@index([createdById])
   @@map("calculators")
 }
+
+
+model CdssPage {
+  id         String   @id @default(uuid())
+  sourceId   String   @map("source_id")
+  collection String
+  category   String?
+  specialty  String?
+  fileName   String   @map("file_name")
+  sourcePath String?  @map("source_path")
+  page       Int
+  text       String
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  chunks CdssChunk[]
+
+  @@index([sourceId])
+  @@index([specialty])
+  @@map("cdss_pages")
+}
+
+model CdssChunk {
+  id         String   @id @default(uuid())
+
+  pageId     String   @map("page_id")
+  page       CdssPage @relation(fields: [pageId], references: [id], onDelete: Cascade)
+
+  chunkIndex Int      @map("chunk_index")
+  chunkText  String   @map("chunk_text")
+
+  embedding  Unsupported("vector(768)")?
+
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([pageId])
+  @@map("cdss_chunks")
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

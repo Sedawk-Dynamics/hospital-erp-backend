@@ -109,10 +109,7 @@ export async function buildDrugHistory({ patientIds, tenantId, limit = 100 }: Dr
   const current: any[] = [];
   const past: any[] = [];
 
-  // Re-prescribing a drug replaces the earlier course. Without this the same
-  // drug shows up twice under "current" (once per script), which is a large
-  // part of why the drug history read as inaccurate. `prescriptions` is
-  // newest-first, so the first sighting of a drug is its live course.
+
   const seenDrugs = new Set<string>();
 
   for (const rx of prescriptions) {
@@ -141,8 +138,7 @@ export async function buildDrugHistory({ patientIds, tenantId, limit = 100 }: Dr
       };
       const key = drugKey(item);
       const superseded = seenDrugs.has(key);
-      // Only a LIVE (non-cancelled) script replaces an earlier course. A newer
-      // cancelled script must not bury an older, still-running course into past.
+
       if (rx.status !== 'cancelled') seenDrugs.add(key);
 
       if (!superseded && isItemCurrent(rx, item.duration)) {

@@ -62,7 +62,9 @@ export const patientChatSchema = z.object({
       .array(
         z.object({
           role: z.enum(['user', 'assistant']),
-          content: z.string().max(4000),
+          // A prior turn can be a full patient briefing (summary) with inline
+          // source links, so this must be well above a short chat reply.
+          content: z.string().max(16000),
         }),
       )
       .max(20)

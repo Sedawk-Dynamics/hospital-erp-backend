@@ -1,7 +1,9 @@
 import { prisma } from '../../config/database';
+import { logger } from '../../config/logger';
 import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
 import { generateJson, generateText } from '../../services/ai';
 import { assertFeatureEnabled } from './ai.config.service';
+import { embedText } from './cdss.embed';
 import { retrieveDocs } from './ai.knowledge';
 import {
   describeCaller,
@@ -323,13 +325,65 @@ export async function platformChat(
 export const getPatientSummary = async (tenantId: string, userId: string, patientId: string) => {
   await assertFeatureEnabled('patientChat', tenantId);
   const context = await getOrBuildContext(tenantId, patientId);
-  
+
+  // Guideline RAG is optional: it needs the embedding service (Ollama) and the
+  // ingested cdss_chunks. If either is unavailable (e.g. an environment where
+  // Ollama isn't hosted yet), skip it and still return the summary, rather than
+  // failing. Set CDSS_RAG_ENABLED=false to disable it explicitly.
+  let guidelines = '';
+  let sources: { n: number; label: string; url: string }[] = [];
+  if (process.env.CDSS_RAG_ENABLED !== 'false') {
+    try {
+      const queryVector = await embedText(context.text);
+      const guidelineRows = await prisma.$queryRaw<
+        { sourceId: string; collection: string; category: string | null; specialty: string | null; fileName: string; page: number; chunkText: string }[]
+      >`
+      SELECT p.source_id AS "sourceId", p.collection, p.category, p.specialty, p.file_name AS "fileName", p.page, c.chunk_text AS "chunkText"
+      FROM cdss_chunks c JOIN cdss_pages p ON p.id = c.page_id
+      WHERE c.embedding IS NOT NULL
+      ORDER BY c.embedding <=> ${`[${queryVector.join(',')}]`}::vector
+      LIMIT 5`;
+
+      const clean = (s?: string | null) => (s ?? '').replace(/^\d+\.\s*/, '').replace(/\.pdf$/i, '').trim();
+      const label = (r: (typeof guidelineRows)[number]) => {
+        const programme = clean(r.specialty) || clean(r.category) || r.collection;
+        return `${programme} — ${clean(r.fileName)}, p.${r.page}`;
+      };
+
+      guidelines = guidelineRows.map((r, i) => `[[${i + 1}]] ${label(r)}\n${r.chunkText}`).join('\n\n');
+      sources = guidelineRows.map((r, i) => ({
+        n: i + 1,
+        label: label(r),
+        url: `/api/v1/ai/cdss/source/${r.sourceId}#page=${r.page}`,
+      }));
+    } catch (err) {
+      logger.warn({ err }, 'Guideline RAG unavailable — continuing without guidelines');
+    }
+  }
+
   const system = [
     PATIENT_CHAT_SYSTEM,
     '',
     '=== PATIENT CONTEXT ===',
     context.text,
+    ...(guidelines
+      ? [
+          '',
+          '=== CLINICAL GUIDELINES (use ONLY these for next-step suggestions; cite inline using the number in double brackets, e.g. [[1]]) ===',
+          guidelines,
+        ]
+      : []),
   ].join('\n');
+
+  // When guidelines are present we force guideline-cited next steps; without
+  // them (RAG disabled/unavailable) we still give next steps from the record.
+  const nextStepsInstruction = guidelines
+    ? 'End with suggested next steps (investigations, monitoring, follow-up). For EACH next step, ' +
+      'use ONLY the CLINICAL GUIDELINES above and cite the source inline using its number in double ' +
+      'brackets, e.g. [[1]]. If the guidelines do not cover it, say "Not addressed in the provided ' +
+      'guidelines." Do NOT use outside medical knowledge for next steps.'
+    : 'End with suggested next steps (investigations, monitoring, follow-up) based on the patient ' +
+      'record, framed as suggestions for the clinician to confirm.';
 
   const { text, model, provider } = await generateText({
     system,
@@ -337,7 +391,8 @@ export const getPatientSummary = async (tenantId: string, userId: string, patien
       "Summarise this patient's history and current clinical status. Cover demographics, " +
       'known diagnoses (with ICD codes), allergies, social and family history, the current ' +
       'visit and vitals, current medications, and recent labs — highlighting any allergies or ' +
-      'abnormal values. End with suggested next steps (investigations, monitoring, follow-up).\n' +
+      'abnormal values. ' +
+      nextStepsInstruction + '\n' +
       '\n' +
       'STRICT: Use ONLY the data present in the patient record above. Do NOT invent, infer, ' +
       'assume, or self-generate any value, diagnosis, medication, allergy, lab, vital or history. ' +
@@ -350,6 +405,7 @@ export const getPatientSummary = async (tenantId: string, userId: string, patien
     counts: context.counts,
     patient: context.patient,
     alerts: context.alerts,
+    sources,
     model,
     provider,
   };
@@ -360,6 +416,25 @@ export const contextVersion=async(tenantId:string,patientId:string)=>{
   const version = await getClinicalVersion(tenantId, patientId);
   return { version };
 };
+
+
+
+export const getCdssSourcePath = async (sourceId: string) => {
+  const page = await prisma.cdssPage.findFirst({
+    where: { sourceId, sourcePath: { not: null } },
+    select: { sourcePath: true },
+  });
+  return page?.sourcePath ?? null;  // relative path
+};
+
+
+
+
+
+
+
+
+
 
 
 

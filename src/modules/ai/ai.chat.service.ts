@@ -9,6 +9,7 @@ import { Prisma } from '@prisma/client';
 import type { PatientChatInput, BloodReportAnalysisInput } from './ai.validation';
 import { buildMedicineContext } from './ai.drug-context';
 import { getOrBuildContext } from './ai.context-version';
+import { embedText } from './cdss.embed';
 
 // Best-effort audit of AI usage. Never blocks the response.
 async function auditAi(
@@ -38,7 +39,11 @@ export const PATIENT_CHAT_SYSTEM = [
   'You are given the patient\'s structured record (diagnoses, consultation history, medications, lab results, imaging metadata, allergies, vitals, history) as context.',
   '',
   'Rules:',
+
   '- Answer the doctor\'s question conversationally and concisely, grounded ONLY in the provided context. If the context lacks the information, say so plainly.',
+  '- Medications are split into "Current" and "Past". Use only what is listed — do not assume a drug is taken unless it appears, and do not invent drugs or doses. You may point out when the SAME drug appears multiple times (possible duplicate) and suggest the doctor reconcile/confirm the current medication list. Flag a suitability concern ONLY when a condition that warrants it is present in the context (e.g. a drug with a known caution in a diagnosis already recorded for this patient); otherwise do not speculate.',
+  '- Lab results are labelled "Current encounter" vs "Previous (historical)". Treat only current-encounter labs as newly obtained. If the context says "No lab results from the current encounter", state that and do not present old results as new; cite a previous abnormal lab only when relevant to the current presentation, always with its date.',
+  '- Vitals are labelled "Current encounter" vs "Previous (historical)". Treat only current-encounter vitals as present findings; cite previous vitals only with their date and as historical. If the context says "Current encounter vital signs not recorded", state that plainly and never substitute previous vitals as current.',
   '- When you mention a diagnosis, include its ICD code if it is present in the context.',
   '- You receive imaging only as metadata + radiologist impression text — you do NOT see the images. Never claim to have analysed a scan; defer image interpretation to the radiologist.',
   '- Be specific and actionable (suggested investigations, treatment considerations, monitoring, follow-up), but frame them as suggestions for the clinician to confirm.',
@@ -57,8 +62,44 @@ export async function patientChat(
   const context = await getOrBuildContext(tenantId, input.patientId);
   const medicine = await buildMedicineContext(input.message, roles);
 
+  // Guideline RAG is optional: it needs the embedding service (Ollama) and the
+  // ingested cdss_chunks. If either is missing (e.g. in an environment where
+  // Ollama isn't hosted yet), we skip it and answer from patient context alone,
+  // rather than failing the whole request. Set CDSS_RAG_ENABLED=false to turn it
+  // off explicitly and avoid a failing network call per request.
+  let guidelines = '';
+  let sources: { n: number; label: string; url: string }[] = [];
+  if (process.env.CDSS_RAG_ENABLED !== 'false') {
+    try {
+      const queryVector = await embedText(input.message);
+      const guidelineRows = await prisma.$queryRaw<
+        { sourceId: string; fileName: string; specialty: string | null; page: number; chunkText: string }[]
+      >`
+      SELECT p.source_id as "sourceId", p.file_name AS "fileName", p.specialty, p.page, c.chunk_text AS "chunkText"
+      FROM cdss_chunks c JOIN cdss_pages p ON p.id = c.page_id
+      WHERE c.embedding IS NOT NULL
+      ORDER BY c.embedding <=> ${`[${queryVector.join(',')}]`}::vector LIMIT 5`;
+
+      guidelines = guidelineRows.map((r, i) => `[[${i + 1}]][${r.specialty ?? 'Guideline'} — ${r.fileName}, p.${r.page}]\n${r.chunkText}`).join('\n\n');
+      sources = guidelineRows.map((r, i) => ({
+        n: i + 1,
+        label: `${r.specialty ?? 'Guideline'} — ${r.fileName}, p.${r.page}`,
+        url: `/api/v1/ai/cdss/source/${r.sourceId}#page=${r.page}`,
+      }));
+    } catch (err) {
+      logger.warn({ err }, 'Guideline RAG unavailable — continuing without guidelines');
+    }
+  }
+
   const system = [
     PATIENT_CHAT_SYSTEM,
+    ...(guidelines
+      ? [
+          '',
+          '=== CLINICAL GUIDELINES (prefer these; cite inline using the number in double brackets, e.g. [[1]]. Use only the numbers shown.) ===',
+          guidelines,
+        ]
+      : []),
     '',
     '=== PATIENT CONTEXT ===',
     context.text,
@@ -79,10 +120,10 @@ export async function patientChat(
     reply: text,
     model,
     provider,
+    sources,
     context: {
       patient: context.patient,
       counts: context.counts,
-      // What the answer was allowed to draw on, so the screen can show it.
       medicines: medicine?.products ?? [],
     },
   };
@@ -170,3 +211,67 @@ export async function bloodReportAnalysis(
   const score = Math.max(0, Math.min(100, Number(result.score) || 0));
   return { ...result, score, resultCount: results.length };
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

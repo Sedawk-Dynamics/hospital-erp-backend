@@ -4,6 +4,8 @@ import { sendResponse } from '../../shared/apiResponse';
 import * as configService from './ai.config.service';
 import * as chatService from './ai.chat.service';
 import * as platformService from './ai.platform.service';
+import { AppError } from '@/shared/appError';
+import path from 'path';
 
 // --- Super-admin: LLM provider configuration ("Configure LLM Options") ---
 // tenantId (query for GET, body for PUT) selects the scope: omitted = platform
@@ -135,3 +137,12 @@ export const getContextVersion=async(req: AuthenticatedRequest, res: Response, n
     next(err);
   }
 };
+
+export async function downloadCdssSource(req:AuthenticatedRequest, res:Response, next:NextFunction) {
+  try {
+    const result = await platformService.getCdssSourcePath(req.params.sourceId as string);
+    if (!result) throw new AppError('Source not found', 404);
+    const abs = path.join(process.env.CDSS_ROOT ?? path.resolve(process.cwd(), '../cdss'), result);
+    res.sendFile(abs);
+  } catch (err) { next(err); }
+}

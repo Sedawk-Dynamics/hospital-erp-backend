@@ -133,6 +133,7 @@ export async function buildPatientContext(
         })
         .then((r) => r[0] ?? null),
       prisma.patientFamilyHistory.findMany({ where: { patientId }, take: 10 }),
+
       prisma.vital.findMany({
         where: { patientId, visit: { tenantId } },
         orderBy: { recordedAt: 'desc' },
@@ -143,9 +144,9 @@ export async function buildPatientContext(
         where: {
           tenantId,
           deletedAt: null,
-          category:'report_pdf',
-          imagingRequest: { patientId, tenantId},
-          imagingResult:{is:null}
+          category: 'report_pdf',
+          imagingRequest: { patientId, tenantId },
+          imagingResult: { is: null }
         },
         orderBy: { createdAt: 'desc' },
         take: 10,
@@ -182,12 +183,12 @@ export async function buildPatientContext(
   if (patient.allergies.length) {
     sections.push(
       '## ALLERGIES\n' +
-        patient.allergies
-          .map(
-            (a) =>
-              `- ${a.allergen} (${a.allergyType}${a.severity ? `, ${a.severity}` : ''})${a.reaction ? ` — ${a.reaction}` : ''}`,
-          )
-          .join('\n'),
+      patient.allergies
+        .map(
+          (a) =>
+            `- ${a.allergen} (${a.allergyType}${a.severity ? `, ${a.severity}` : ''})${a.reaction ? ` — ${a.reaction}` : ''}`,
+        )
+        .join('\n'),
     );
   }
 
@@ -195,20 +196,17 @@ export async function buildPatientContext(
   if (allDiagnoses.length) {
     sections.push(
       '## DIAGNOSES\n' +
-        allDiagnoses
-          .slice(0, 20)
-          .map(
-            (d) =>
-              `- ${d.diagnosisName}${d.icdCode ? ` [${d.icdCode}]` : ''} (${d.diagnosisType})${d.notes ? ` — ${d.notes}` : ''}`,
-          )
-          .join('\n'),
+      allDiagnoses
+        .slice(0, 20)
+        .map(
+          (d) =>
+            `- ${d.diagnosisName}${d.icdCode ? ` [${d.icdCode}]` : ''} (${d.diagnosisType})${d.notes ? ` — ${d.notes}` : ''}`,
+        )
+        .join('\n'),
     );
   }
 
   if (visits.length) {
-    // The newest visit is the encounter in progress; label it so the model
-    // reasons about *this* visit against the ones before it instead of
-    // treating the whole list as undifferentiated history.
     const [currentVisit, ...priorVisits] = visits;
 
     const describeVisit = (v: (typeof visits)[number]) => {
@@ -226,15 +224,15 @@ export async function buildPatientContext(
     if (priorVisits.length) {
       sections.push(
         '## PAST VISIT HISTORY (most recent first)\n' +
-          priorVisits.map(describeVisit).join('\n'),
+        priorVisits.map(describeVisit).join('\n'),
       );
     }
 
 
-    if(imagingFiles.length){
+    if (imagingFiles.length) {
       const fileLinks = await Promise.all(imagingFiles.map(async (a) => {
         const filePath = path.join(UPLOAD_DIR, a.fileUrl.replace(/^\/uploads\//, ''));
-        let text=''
+        let text = ''
         try {
           const buffer = await fs.readFile(filePath);
           const parser = new PDFParse({ data: buffer });
@@ -268,34 +266,43 @@ export async function buildPatientContext(
   if (drugHistory.current.length) {
     sections.push(
       '## CURRENT MEDICATIONS (patient is still on these)\n' +
-        drugHistory.current.slice(0, 25).map(formatMed).join('\n'),
+      drugHistory.current.slice(0, 25).map(formatMed).join('\n'),
     );
   }
 
   if (drugHistory.past.length) {
     sections.push(
       '## PAST MEDICATIONS (course finished or replaced by a newer script)\n' +
-        drugHistory.past.slice(0, 25).map(formatMed).join('\n'),
+      drugHistory.past.slice(0, 25).map(formatMed).join('\n'),
     );
   }
 
   if (labResults.length) {
-    sections.push(
-      '## LAB RESULTS (recent; OCR/structured values)\n' +
-        labResults
-          .map((r) => {
-            const test = r.labOrderItem?.test?.testName ?? 'Lab';
-            const flag = r.isAbnormal ? ' **ABNORMAL**' : '';
-            return `- ${test} — ${r.parameterName}: ${r.value ?? '?'} ${r.unit ?? ''} (ref ${r.normalRange ?? 'n/a'})${flag}`;
-          })
-          .join('\n'),
-    );
+    const today = new Date().toISOString().slice(0, 10);
+    const dateOf = (r: (typeof labResults)[number]) =>
+      new Date(r.enteredAt).toISOString().slice(0, 10);
+
+    const line = (r: (typeof labResults)[number]) => {
+      const test = r.labOrderItem?.test?.testName ?? 'Lab';
+      const flag = r.isAbnormal ? ' **ABNORMAL**' : '';
+      return `- ${dateOf(r)} ${test} — ${r.parameterName}: ${r.value ?? '?'} ${r.unit ?? ''} (ref ${r.normalRange ?? 'n/a'})${flag}`;
+    };
+
+    const current = labResults.filter((r) => dateOf(r) === today);
+    const previous = labResults.filter((r) => dateOf(r) !== today);
+    let text = '## LAB RESULTS\n';
+    text += current.length
+      ? `Current encounter:\n${current.map(line).join('\n')}\n`
+      : 'No lab results from the current encounter.\n';
+    if (previous.length) text += `Previous (historical):\n${previous.map(line).join('\n')}`;
+
+    sections.push(text.trim());
   }
 
   if (unreadLabFiles.length) {
     const fileLinks = await Promise.all(unreadLabFiles.map(async (a) => {
       const filePath = path.join(UPLOAD_DIR, a.fileUrl.replace(/^\/uploads\//, ''));
-      let text=''
+      let text = ''
       try {
         const buffer = await fs.readFile(filePath);
         const parser = new PDFParse({ data: buffer });
@@ -310,18 +317,18 @@ export async function buildPatientContext(
         .filter(Boolean)
         .join(', ') || 'Lab order'} — ${a.fileName} (file: ${text})`;
     }));
-      sections.push('## LAB REPORTS ON FILE (extracted from uploaded files)\n' + fileLinks.join('\n\n'));
+    sections.push('## LAB REPORTS ON FILE (extracted from uploaded files)\n' + fileLinks.join('\n\n'));
   }
 
   if (imaging.length) {
     sections.push(
       '## IMAGING (metadata + impression; images not analysed)\n' +
-        imaging
-          .map(
-            (im) =>
-              `- ${new Date(im.createdAt).toISOString().slice(0, 10)} ${im.imagingType}${im.bodyPart ? ` ${im.bodyPart}` : ''} [${im.status}]${im.imagingResult?.impression ? ` — Impression: ${im.imagingResult.impression}` : ''}`,
-          )
-          .join('\n'),
+      imaging
+        .map(
+          (im) =>
+            `- ${new Date(im.createdAt).toISOString().slice(0, 10)} ${im.imagingType}${im.bodyPart ? ` ${im.bodyPart}` : ''} [${im.status}]${im.imagingResult?.impression ? ` — Impression: ${im.imagingResult.impression}` : ''}`,
+        )
+        .join('\n'),
     );
   }
 
@@ -339,26 +346,37 @@ export async function buildPatientContext(
   }
 
   if (vitals.length) {
-    sections.push(
-      '## VITALS (latest)\n' +
-        vitals
-          .map((v) => {
-            const bp =
-              v.bloodPressureSystolic && v.bloodPressureDiastolic
-                ? `BP ${v.bloodPressureSystolic}/${v.bloodPressureDiastolic}`
-                : '';
-            const parts = [
-              bp,
-              v.pulseRate ? `HR ${v.pulseRate}` : '',
-              v.temperature ? `Temp ${v.temperature}` : '',
-              v.oxygenSaturation ? `SpO2 ${v.oxygenSaturation}%` : '',
-              v.respiratoryRate ? `RR ${v.respiratoryRate}` : '',
-            ].filter(Boolean);
-            return `- ${new Date(v.recordedAt).toISOString().slice(0, 10)}: ${parts.join(', ')}`;
-          })
-          .join('\n'),
-    );
+    const today = new Date().toISOString().slice(0, 10);
+    const dateOf = (v: (typeof vitals)[number]) =>
+      new Date(v.recordedAt).toISOString().slice(0, 10);
+
+    const line = (v: (typeof vitals)[number]) => {
+      const bp =
+        v.bloodPressureSystolic && v.bloodPressureDiastolic
+          ? `BP ${v.bloodPressureSystolic}/${v.bloodPressureDiastolic}`
+          : '';
+      const parts = [
+        bp,
+        v.pulseRate ? `HR ${v.pulseRate}` : '',
+        v.temperature ? `Temp ${v.temperature}` : '',
+        v.oxygenSaturation ? `SpO2 ${v.oxygenSaturation}%` : '',
+        v.respiratoryRate ? `RR ${v.respiratoryRate}` : '',
+      ].filter(Boolean);
+      return `- ${dateOf(v)}: ${parts.join(', ')}`;
+    };
+
+    const current = vitals.filter((v) => dateOf(v) === today);
+    const previous = vitals.filter((v) => dateOf(v) !== today);
+
+    let text = '## VITALS\n';
+    text += current.length
+      ? `Current encounter:\n${current.map(line).join('\n')}\n`
+      : 'Current encounter vital signs not recorded.\n';
+    if (previous.length) text += `Previous (historical):\n${previous.map(line).join('\n')}`;
+
+    sections.push(text.trim());
   }
+
 
   // --- Structured alerts (data, not prose) for the UI's red badge row. ---
   const allergyAlerts = patient.allergies.map(
@@ -366,19 +384,21 @@ export async function buildPatientContext(
       `${a.allergen} (${a.allergyType}${a.severity ? `, ${a.severity}` : ''})${a.reaction ? ` — ${a.reaction}` : ''}`,
   );
 
+  const labtoday=new Date().toISOString().slice(0,10);
   const abnormalLabAlerts = labResults
-    .filter((r) => r.isAbnormal)
+    .filter((r) => r.isAbnormal && new Date(r.enteredAt).toISOString().slice(0, 10) === labtoday)
     .map((r) => {
       const test = r.labOrderItem?.test?.testName ?? 'Lab';
       return `${test} — ${r.parameterName}: ${r.value ?? '?'} ${r.unit ?? ''}`.trim() +
         (r.normalRange ? ` (ref ${r.normalRange})` : '');
     });
 
-  // Vitals carry no isAbnormal flag, so flag the latest reading with
-  // conservative, widely-accepted thresholds. Temperature is accepted in either
-  // scale (°F readings are ≥ 50 numerically, °C are not).
+
   const abnormalVitalAlerts: string[] = [];
-  const latestVital = vitals[0];
+  const today = new Date().toISOString().slice(0, 10);
+  const latestVital = vitals.find(
+    (v) => new Date(v.recordedAt).toISOString().slice(0, 10) === today,
+  );
   if (latestVital) {
     const num = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v));
     const sys = num(latestVital.bloodPressureSystolic);

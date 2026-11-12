@@ -12,65 +12,65 @@ Rules:
 
 === PATIENT CONTEXT ===
 ## PATIENT
-Name: test 113
-MRN: MRN-20261106-0001
+Name: test 145
+MRN: MRN-20261109-0004
 Gender: male
 
 ## ALLERGIES
-- Penicillin (drug, mild)
+- penicillin (drug, mild)
+
+## DIAGNOSES
+- Diabetes mellitus type 2 (disorder) [E11] (primary)
+- Essential hypertension (disorder) [I10] (secondary)
 
 ## CURRENT VISIT
-- 2026-11-06 op
+- 2026-11-09 op
 
 ## PAST VISIT HISTORY (most recent first)
-- 2026-11-06 op — Fever, burning urination (dysuria), lower abdominal pain for 3 days
+- 2026-11-09 op — "Headache and dizziness for 1 week"
+
+  Dx: Diabetes mellitus type 2 (disorder) [E11], Essential hypertension (disorder) [I10]
+
+## CURRENT MEDICATIONS (patient is still on these)
+- AL 1 Capsule 1 cap 1-0-0 - After Breakfast x10 days (oral)
+- AL 27 Tablet 1 tab 1-0-0 - Before Breakfast x20 days (oral)
 
 ## LAB RESULTS (recent; OCR/structured values)
-- Complete Blood Count (CBC) — Peripheral Smear Comment: normal  (ref Normocytic normochromic, adequate platelets, no atypical cells)
-- Complete Blood Count (CBC) — PCT: 0.18 % (ref 0.17–0.35)
-- Complete Blood Count (CBC) — PDW: 11 % (ref 9–17)
-- Complete Blood Count (CBC) — MPV: 4.8 fL (ref 7.5–11.5) **ABNORMAL**
-- Complete Blood Count (CBC) — Platelet Count: 100 10^3/µL (ref 150–410) **ABNORMAL**
-- Complete Blood Count (CBC) — Basophils (absolute): 0.1 10^3/µL (ref 0.01–0.1)
-- Complete Blood Count (CBC) — Eosinophils (absolute): 0.1 10^3/µL (ref 0.04–0.4)
-- Complete Blood Count (CBC) — Monocytes (absolute): 0.1 10^3/µL (ref 0.2–0.8) **ABNORMAL**
-- Complete Blood Count (CBC) — Lymphocytes (absolute): 2 10^3/µL (ref 1–3)
-- Complete Blood Count (CBC) — Neutrophils (absolute): 7 10^3/µL (ref 2–7)
-- Complete Blood Count (CBC) — Basophils: 1 % (ref 0–2)
-- Complete Blood Count (CBC) — Eosinophils: 4 % (ref 1–6)
-- Complete Blood Count (CBC) — Monocytes: 9 % (ref 2–10)
-- Complete Blood Count (CBC) — Lymphocytes: 33 % (ref 20–45)
-- Complete Blood Count (CBC) — Neutrophils: 50 % (ref 40–75)
-- Complete Blood Count (CBC) — WBC / Total Leucocyte Count: 6 10^3/µL (ref 4–11)
-- Complete Blood Count (CBC) — RDW-CV: 11.7 % (ref 11.5–14.5)
-- Complete Blood Count (CBC) — MCHC: 20 g/dL (ref 32–36) **ABNORMAL**
-- Complete Blood Count (CBC) — MCH: 20 pg (ref 27–33) **ABNORMAL**
-- Complete Blood Count (CBC) — MCV: 90 fL (ref 80–100)
-- Complete Blood Count (CBC) — RBC Count: 4.9 10^6/µL (ref 4.5–5.9)
-- Complete Blood Count (CBC) — Hematocrit / PCV: 44 % (ref 40–50)
-- Complete Blood Count (CBC) — Hemoglobin: 18 g/dL (ref 13–17) **ABNORMAL**
-- Hemoglobin — Hemoglobin: 20 g/dL (ref 13–17) **ABNORMAL**
+- Blood Grouping & Rh Typing — Rh Typing: negative  (ref n/a)
+- Blood Grouping & Rh Typing — ABO Group: A  (ref n/a)
+- Activated Partial Thromboplastin Time (APTT) — Ratio: 1  (ref 0.8–1.2)
+- Activated Partial Thromboplastin Time (APTT) — APTT (Control): 22 seconds (ref 25–35) **ABNORMAL**
+- Activated Partial Thromboplastin Time (APTT) — APTT (Test): 20 seconds (ref 25–35) **ABNORMAL**
 - Blood Grouping & Rh Typing — Rh Typing: positive  (ref n/a)
 - Blood Grouping & Rh Typing — ABO Group: A  (ref n/a)
 
-## LAB REPORTS ON FILE BUT NOT TRANSCRIBED
-These reports exist as uploaded files whose values were never captured. You cannot see their contents. Do not guess at them — say the report is on file and ask the lab to capture its values.
-- 2026-11-06 Activated Partial Thromboplastin Time (APTT) — MR. ARJUN.R  1225 Report.pdf
-
-## IMAGING (metadata + impression; images not analysed)
-- 2026-11-06 ct_scan [completed]
-- 2026-11-06 ct_scan [completed]
-
 ## MEDICAL HISTORY
-- Smoking: current
-- Alcohol: heavy
-- Family (maternal/Father): Diabetes Type 2
+- Family (maternal/father): diabetes type 2
+- Family (maternal/mother): hypertension
 
 ## VITALS (latest)
-- 2026-11-06: BP 158/96, HR 104, Temp 37.2, SpO2 97%, RR 16
+- 2026-11-10: BP 190/70
+- 2026-11-10: BP 120/80
+- 2026-11-09: BP 157/96, HR 100, Temp 37.2, SpO2 16%, RR 88
+
+=== CLINICAL GUIDELINES (use ONLY these for next-step suggestions; cite inline using the number in double brackets, e.g. [[1]]) ===
+[[1]] Guidelines for Hypertension — Full Document, p.95
+95 Screening, Diagnosis, Assessment, and Management of Primary Hypertension- Full Document Background: Patients with hypertension often have associated conditions like diabetes, clinical cardiovascular disease with ischemic heart disease or cerebrovascular disease, or chronic kidney disease. Some classes of antihypertensive drugs have special roles in the presence of such conditions, some drugs are best avoided in the presence of conditions like chronic kidney disease, while in other conditions like acute stroke, reduction of elevated BP in general by any class of drugs, should be cautious. Implementation: The evaluation of these clinical conditions would be best done at the CHC level, where in addition to the history and physical examination, the patient could be subjected to Investigations like X-ray chest (cardiomegaly in case of heart failure), ECG (reveal changes suggestive of ischemic heart disease), renal function tests (abnormal in patients with chronic kidney disease) and urinalysis. Patients with chronic kidney disease and heart disease may require monitoring and follow up at the CHC level, while patients with diabetes and previous cerebrovascular disease may be followed up at the PHC level with periodic review at the CHC. The group recommends that the doctors at the PHC level need to be empowered to deal with hypertension and diabetes, and the patients should get access to investigations like serum creatinine, lipids and ECG through a referral arrangement with the
+
+[[2]] Guidelines for Hypertension — Full Document, p.67
+67 Screening, Diagnosis, Assessment, and Management of Primary Hypertension- Full Document no longer considered the first choice drugs in hypertension, but they are preferred drugs in the presence of angina or past history of infarction. These associated conditions can be assessed by eliciting history as shown in table. On examination, significant pallor in the presence of hypertension may indicate presence of chronic kidney disease. ECG may show signs of ischemia, infarction, and conduction system disturbances. Urinalysis may be abnormal and creatinine may be elevated in kidney disease. Table 4: Assessment ofassociated clinical conditions Table 5: Assessment of clues to presence of secondary hypertension Assess clues to presence of secondary hypertension History:Abrupt onset of hypertension below the age of 30 years and above the age of 60 years (renovascular hypertension) Paroxysms of palpitations, pain(headache), perspiration( pheochromocytoma)(1) Snoring at night, breathing pauses reported by partner, daytime sleepiness (sleep apnoea) Drug intake: NSAIDs, Steroids, Oral contraceptive pill Examination: mooning of facies, striae: Cushing syndrome Unequal pulses: diminished/absent radial pulses- Takayasu’s arteritis Diminished & delayed in lower limb: Coarctation of aorta. Tachycardia and postural hypotension (pheochromocytoma) Bruit over renal arteries: renal artery stenosis (renovascularhypertension) Laboratory investigations: Abnormal urinalysis (proteinuria, haematuria),
+
+[[3]] National Programme for Prevention and Control of Cancer, Diabetes, Cardiovascular Disease and Stroke (NPCDCS) — A Manual for Medical Officer, p.22
+22 Table-5.1.2 Initial Assessment of Diabetic Patients History (Ask for) Physical Examination (Look for) Symptoms of hyperglycemia Weight Duration since onset of symptoms Body Mass Index Precipitating factors such as recent infections, Waist circumference, Waist-hip ratio stress, change in dietary habits or physical activity levels Symptoms of Micro- and Macro-vascular Acanthosis nigricans * Complications: visual disturbances, edema, breathlessness, angina, intermittent claudication, numbness, paraesthesiae Hypertension, pre-existing cardiovascular Blood pressure diseases Drug history Peripheral pulses Diet Feet: calluses, ulcers, prominent veins, edema, injuries Physical Activity: type, frequency Fundus examination # Family History Cardiovascular system -Diabetes and complications Peripheral nervous system -Age at onset Thyroid -Cardiovascular disease *Acanthosis nigricans is a brown to black, poorly defined, velvety hyperpigmentation of the skin, usually present in the posterior and lateral folds of the neck, the axilla, groin, umbilicus, and other areas. This occurs due to insulin spillover (from excessive production due to obesity or insulin resistance) into the skin which results in its abnormal growth, and the stimulation of color producing cells. The most common cause would be insulin resistance, usually from type-2 diabetes mellitus. #Details of Fundus examination are provided in a later section
+
+[[4]] Guidelines for Hypertension — Full Document, p.142
+142 Screening, Diagnosis, Assessment, and Management of Primary Hypertension- Full Document 75. Baigent C, Blackwell L, Collins R, Emberson J, Godwin J, Peto R, et al. Aspirin in the primary and secondary prevention of vascular disease: collaborative meta-analysis of individual participant data from randomised trials. Lancet. 2009 May 30;373(9678):1849-60. 76. Hennekens CH, Dalen JE. Aspirin in the primary prevention of cardiovascular disease: current knowledge and future research needs. Trends Cardiovasc Med. 2014 Nov;24(8):360-6. 77. Bartolucci AA, Tendera M, Howard G. Meta-analysis of multiple primary prevention trials of cardiovascular events using aspirin. Am J Cardiol. 2011 Jun 15;107(12):1796-801. 78. Desai CS, Martin SS, Blumenthal RS. Non-cardiovascular effects associated with statins. BMJ. 2014;349:g3743. 79. Teo KK, Ounpuu S, Hawken S, Pandey MR, Valentin V, Hunt D, et al. Tobacco use and risk of myocardial infarction in 52 countries in the INTERHEART study: a case-control study. Lancet. 2006 Aug 19;368(9536):647-58. 80. Rastogi T, Jha P, Reddy KS, Prabhakaran D, Spiegelman D, Stampfer MJ, et al. Bidi and cigarette smoking and risk of acute myocardial infarction among males in urban India. Tob Control. 2005 Oct;14(5):356-8. 81. Stead LF, Buitrago D, Preciado N, Sanchez G, Hartmann-Boyce J, Lancaster T. Physician advice for smoking cessation. Cochrane Database Syst Rev. 2013;5:CD000165. 82. World Health Organization. Adherence to long-term therapies: evidence for ac
+
+[[5]] Guidelines for Hypertension — Quick Reference Guide, p.35
+stolic blood pressure, TOD :target organ damage, DM: diabetes mellitus, CAD: coronary artery disease,CHF: Congestive heart failure, CKD: Chronic kidney disease. Drug abbreviations: A : Angiotensin converting enzyme(ACE) inhibitors (e.g. enalapril) or Angiotensin II receptor blockers(ARBs)(e.g. losartan) only if intolerance to ACE inhibitors, C: Calcium channel blocker(e.g. amlodipine), D: Thiazide diuretics(e.g. hydrochorothiazide), B: Beta-blockers(e.g. atenolol), MRA : Mineralocorticoid receptor antagonist (e.g. spironolactone). Footnotes :! Other Risk factors(apart from hypertension) : age ( > 55 years in men, 65 years in women), male gender, diabetes mellitus,smoking,obesity(including abdominal obesity), dyslipidemia, impaired glucose tolerance, family history of premature coronary artery disease. * calcium channel blockers are antihypertensives of choice in the elderly (> 60 years).# Patients with CAD and history of myocardial infarction should receive both beta-blockers and ACE inhibitors.§ Patients with CKD may require loop diuretics if the Glomerular filtration rate is low. Those patients who are started on ACE inhibitorswill require monitoring of serum creatinine and potassium after initiation of treatment.Based on references(24, 49) Lifestyle modifications (Dietary change-salt restriction,low fat diet, reduce weight, Stop smoking) in all patients. Trial of lifestyle modifications in uncomplicated Grade 1 HT for 3 months before initiation of drug therapy. CHF: D+ A+
 
 ===== MESSAGES =====
 [user]
-Summarise this patient's history and current clinical status. Cover demographics, known diagnoses (with ICD codes), allergies, social and family history, the current visit and vitals, current medications, and recent labs — highlighting any allergies or abnormal values. End with suggested next steps (investigations, monitoring, follow-up).
+Summarise this patient's history and current clinical status. Cover demographics, known diagnoses (with ICD codes), allergies, social and family history, the current visit and vitals, current medications, and recent labs — highlighting any allergies or abnormal values. End with suggested next steps (investigations, monitoring, follow-up). For EACH next step, use ONLY the CLINICAL GUIDELINES above and cite the source inline using its number in double brackets, e.g. [[1]]. If the guidelines do not cover it, say "Not addressed in the provided guidelines." Do NOT use outside medical knowledge for next steps.
 
 STRICT: Use ONLY the data present in the patient record above. Do NOT invent, infer, assume, or self-generate any value, diagnosis, medication, allergy, lab, vital or history. If something is not in the record, state clearly that it is "Not recorded" rather than guessing or filling it in.

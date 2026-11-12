@@ -75,3 +75,8 @@ aiRoutes.get('/patient/:patientId/summary',
 
 
 aiRoutes.get('/patient/:patientId/context-version',authenticate, requirePermission('patients','read'), controller.getContextVersion);
+
+aiRoutes.get('/cdss/source/:sourceId',
+  authenticate,
+  requirePermission('patients', 'read'),
+  controller.downloadCdssSource);
