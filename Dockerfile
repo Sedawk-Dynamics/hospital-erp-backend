@@ -31,6 +31,7 @@ COPY assets ./assets
 COPY package.json ./
 COPY tsconfig.json ./
 COPY scripts ./scripts
+COPY src ./src
 RUN mkdir -p /app/uploads
 VOLUME ["/app/uploads"]
 EXPOSE 4000
