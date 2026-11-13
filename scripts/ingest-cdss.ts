@@ -2,6 +2,8 @@ import fs from "fs";
 import path from 'path';
 import {PDFParse} from 'pdf-parse';
 import { prisma } from "../src/config/database";
+import dotenv from 'dotenv';
+dotenv.config();
 
 export const ROOT = process.env.CDSS_ROOT ?? path.resolve(process.cwd(), '../cdss');
 

@@ -65,7 +65,7 @@ async function embedImage(png: Buffer, attempt = 1): Promise<number[]> {
 async function main() {
   const pdfFiles = (await listAllPdfs(ROOT)).filter((f) =>
     path.relative(ROOT, f).toLowerCase().replace(/\\/g, '/')
-      .includes('standard treatment workflows (stws)/stws volume iii/endocrinology')
+      .includes('standard treatment workflows (stws)/stws volume iii/gastroenterology')
   );
 
 
