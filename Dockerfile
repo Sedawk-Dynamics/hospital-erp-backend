@@ -29,7 +29,8 @@ COPY prisma ./prisma
 # have no glyph for the rupee sign and print amounts with a hole in them.
 COPY assets ./assets
 COPY package.json ./
-COPY scripts/docker-entrypoint.sh ./scripts/docker-entrypoint.sh
+COPY tsconfig.json ./
+COPY scripts ./scripts
 RUN mkdir -p /app/uploads
 VOLUME ["/app/uploads"]
 EXPOSE 4000
