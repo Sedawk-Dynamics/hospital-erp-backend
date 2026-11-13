@@ -3,7 +3,7 @@ import path from 'path';
 import {PDFParse} from 'pdf-parse';
 import { prisma } from "../src/config/database";
 
-export const ROOT = path.resolve(process.cwd(), '../cdss');
+export const ROOT = process.env.CDSS_ROOT ?? path.resolve(process.cwd(), '../cdss');
 
 export const listAllPdfs=async(dirPath:string):Promise<string[]>=>{
   const files=await fs.promises.readdir(dirPath);
