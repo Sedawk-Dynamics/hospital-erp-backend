@@ -8787,6 +8787,28 @@ model CdssChunk {
 
 
 
+model CdssPageImage {
+  id         String   @id @default(uuid())
+  sourceId   String   @map("source_id")
+  collection String
+  category   String?
+  specialty  String?
+  fileName   String   @map("file_name")
+  sourcePath String?  @map("source_path")
+  page       Int
+
+  // Optional: where the rendered page image is stored (for debugging / serving).
+  imagePath  String?  @map("image_path")
+
+  // Multimodal page-image embedding (voyage-multimodal-3 = 1024 dims).
+  embedding  Unsupported("vector(1024)")?
+
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([sourceId])
+  @@index([specialty])
+  @@map("cdss_page_images")
+}
 
 
 

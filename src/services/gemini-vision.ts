@@ -151,3 +151,89 @@ export function parseModelJson<T>(text: string): T {
     .trim();
   return JSON.parse(cleaned) as T;
 }
+
+
+export async function callGeminiVisionImages(params: {
+  prompt: string;
+  images: { data: Buffer; mimetype: string }[];
+  feature: string;
+  fallbackHint: string;
+  maxOutputTokens?: number;
+}): Promise<{ text: string; model: string }> {
+  const { prompt, images, feature, fallbackHint } = params;
+
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw AppError.badRequest(
+      `${feature} is not configured on this server (set GEMINI_API_KEY). ${fallbackHint}`,
+    );
+  }
+  if (!images.length) {
+    throw AppError.badRequest(`${feature}: no images to analyse.`);
+  }
+
+  const model = process.env.GEMINI_MODEL || DEFAULT_MODEL;
+  const url = `${API_BASE}/${encodeURIComponent(model)}:generateContent`;
+
+  const parts = [
+    { text: prompt },
+    ...images.map((img) => ({
+      inlineData: { mimeType: img.mimetype, data: img.data.toString('base64') },
+    })),
+  ];
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts }],
+        generationConfig: {
+          maxOutputTokens: params.maxOutputTokens ?? 2048,
+          temperature: 0.2,
+          // No responseMimeType → plain text/markdown, not JSON.
+        },
+      }),
+    });
+  } catch (err) {
+    logger.error({ err, feature }, 'Gemini vision request failed');
+    throw AppError.internal('AI vision service unreachable');
+  }
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    logger.error({ status: res.status, feature, body: errText.slice(0, 500) }, 'Gemini vision error');
+    if (res.status === 429) {
+      throw new AppError(
+        `${feature} is temporarily unavailable — the AI provider quota/credits are exhausted. ${fallbackHint}`,
+        503,
+        'AI_QUOTA_EXHAUSTED',
+      );
+    }
+    if (res.status === 401 || res.status === 403) {
+      throw new AppError(
+        `${feature} is misconfigured — the AI API key was rejected. Check GEMINI_API_KEY. ${fallbackHint}`,
+        503,
+        'AI_AUTH_ERROR',
+      );
+    }
+    throw new AppError(
+      `The AI vision service returned an error. Please try again. ${fallbackHint}`,
+      502,
+      'AI_UPSTREAM_ERROR',
+    );
+  }
+
+  const data = (await res.json()) as {
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    promptFeedback?: { blockReason?: string };
+  };
+  if (data.promptFeedback?.blockReason) {
+    logger.warn({ blockReason: data.promptFeedback.blockReason, feature }, 'Gemini blocked prompt');
+    throw AppError.internal('AI vision service blocked the request');
+  }
+
+  const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? '').join('') ?? '';
+  return { text, model };
+}

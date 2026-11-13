@@ -9,7 +9,7 @@ import { Prisma } from '@prisma/client';
 import type { PatientChatInput, BloodReportAnalysisInput } from './ai.validation';
 import { buildMedicineContext } from './ai.drug-context';
 import { getOrBuildContext } from './ai.context-version';
-import { embedText } from './cdss.embed';
+import { buildGuidelineContext } from './cdss.multimodal';
 
 // Best-effort audit of AI usage. Never blocks the response.
 async function auditAi(
@@ -47,6 +47,7 @@ export const PATIENT_CHAT_SYSTEM = [
   '- When you mention a diagnosis, include its ICD code if it is present in the context.',
   '- You receive imaging only as metadata + radiologist impression text — you do NOT see the images. Never claim to have analysed a scan; defer image interpretation to the radiologist.',
   '- Be specific and actionable (suggested investigations, treatment considerations, monitoring, follow-up), but frame them as suggestions for the clinician to confirm.',
+  '- Prefer the provided CLINICAL GUIDELINES and cite them with [[n]]. You may add further suggestions beyond them, but base those on Indian national clinical guidelines/protocols (e.g. ICMR, MoHFW, national health programmes). Make clear which points come from the cited guidelines [[n]] and which are general recommendations.',
   '- Do not invent lab values, medications, or history that are not in the context.',
   '- Keep answers focused; use short paragraphs or bullets. This is decision support, not a final order.',
 ].join('\n');
@@ -62,30 +63,15 @@ export async function patientChat(
   const context = await getOrBuildContext(tenantId, input.patientId);
   const medicine = await buildMedicineContext(input.message, roles);
 
-  // Guideline RAG is optional: it needs the embedding service (Ollama) and the
-  // ingested cdss_chunks. If either is missing (e.g. in an environment where
-  // Ollama isn't hosted yet), we skip it and answer from patient context alone,
-  // rather than failing the whole request. Set CDSS_RAG_ENABLED=false to turn it
-  // off explicitly and avoid a failing network call per request.
   let guidelines = '';
   let sources: { n: number; label: string; url: string }[] = [];
   if (process.env.CDSS_RAG_ENABLED !== 'false') {
     try {
-      const queryVector = await embedText(input.message);
-      const guidelineRows = await prisma.$queryRaw<
-        { sourceId: string; fileName: string; specialty: string | null; page: number; chunkText: string }[]
-      >`
-      SELECT p.source_id as "sourceId", p.file_name AS "fileName", p.specialty, p.page, c.chunk_text AS "chunkText"
-      FROM cdss_chunks c JOIN cdss_pages p ON p.id = c.page_id
-      WHERE c.embedding IS NOT NULL
-      ORDER BY c.embedding <=> ${`[${queryVector.join(',')}]`}::vector LIMIT 5`;
-
-      guidelines = guidelineRows.map((r, i) => `[[${i + 1}]][${r.specialty ?? 'Guideline'} — ${r.fileName}, p.${r.page}]\n${r.chunkText}`).join('\n\n');
-      sources = guidelineRows.map((r, i) => ({
-        n: i + 1,
-        label: `${r.specialty ?? 'Guideline'} — ${r.fileName}, p.${r.page}`,
-        url: `/api/v1/ai/cdss/source/${r.sourceId}#page=${r.page}`,
-      }));
+      const g = await buildGuidelineContext(`${input.message}\n\n${context.text}`);
+      if (g) {
+        guidelines = g.guidelines;
+        sources = g.sources;
+      }
     } catch (err) {
       logger.warn({ err }, 'Guideline RAG unavailable — continuing without guidelines');
     }
@@ -144,8 +130,7 @@ export async function bloodReportAnalysis(
 ) {
   await assertFeatureEnabled('bloodReport', tenantId);
 
-  // Released reports only — an analysis is written as if the numbers are final,
-  // so it must not be built on values still inside the lab's review loop.
+
   const where: Prisma.LabResultWhereInput = {
     patientId: input.patientId,
     labOrder: { tenantId, labReport: { status: { in: ['published', 'corrected'] } } },

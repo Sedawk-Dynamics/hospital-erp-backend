@@ -4,7 +4,7 @@ import { sendResponse } from '../../shared/apiResponse';
 import * as configService from './ai.config.service';
 import * as chatService from './ai.chat.service';
 import * as platformService from './ai.platform.service';
-import { AppError } from '@/shared/appError';
+import { AppError } from '../../shared/appError';
 import path from 'path';
 
 // --- Super-admin: LLM provider configuration ("Configure LLM Options") ---
