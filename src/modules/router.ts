@@ -67,6 +67,7 @@ import medicoLegalRoute from './medico-legal/medico-legal.routes';
 import intoxicationExamRoute from './intoxication-exam/intoxication.route';
 import { addPrescriptionItem } from './prescriptions/prescriptions.service';
 import { calculatorRoute } from './calculator/calculator.route';
+import { transcribeRoutes } from './transcribe/transcribe.route';
 
 const apiRouter = Router();
 
@@ -191,6 +192,9 @@ apiRouter.use('/medico-legal',authenticate,userTierLimiter,medicoLegalRoute);
 apiRouter.use('/intoxication-examination',authenticate,userTierLimiter,intoxicationExamRoute);
 
 apiRouter.use('/calculator',authenticate,userTierLimiter,calculatorRoute);
+
+// --- Audio → text transcription for consultation voice recording ---
+apiRouter.use('/transcribe', authenticate, userTierLimiter, transcribeRoutes);
 
 export { apiRouter };
 
