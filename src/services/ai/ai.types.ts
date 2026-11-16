@@ -12,9 +12,7 @@ export interface AiMessage {
 }
 
 export interface AiGenerateOptions {
-  /** System / behaviour instruction prepended to the conversation. */
   system?: string;
-  /** Conversation turns (most recent last). A single prompt = one user turn. */
   messages: AiMessage[];
   temperature?: number;
   maxOutputTokens?: number;

@@ -56,11 +56,6 @@ function shapeConfig(
   };
 }
 
-/**
- * Get the editable config for a scope. `tenantId=null` → platform default.
- * For a hospital with no override, returns the platform default flagged
- * `inherited: true` so the UI can offer "create an override".
- */
 export async function getAiConfigForAdmin(tenantId: string | null) {
   if (!tenantId) {
     const row = await getOrCreatePlatformDefault();
