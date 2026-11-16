@@ -1,6 +1,6 @@
-import { AppError } from "@/shared/appError";
+import { AppError } from "../../shared/appError";
 import { audioToText } from "./transcribe.ai"
-import { generateJson } from "@/services/ai";
+import { generateJson } from "../../services/ai";
 
 export interface TranscriptSections {
     chiefComplaint: string;
