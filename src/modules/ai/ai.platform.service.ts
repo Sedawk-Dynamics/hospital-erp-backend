@@ -402,7 +402,7 @@ export const contextVersion=async(tenantId:string,patientId:string)=>{
 
 
 export const getCdssSourcePath = async (sourceId: string) => {
-  const page = await prisma.cdssPage.findFirst({
+  const page = await prisma.cdssPageImage.findFirst({
     where: { sourceId, sourcePath: { not: null } },
     select: { sourcePath: true },
   });
