@@ -80,3 +80,27 @@ aiRoutes.get('/cdss/source/:sourceId',
   authenticate,
   requirePermission('patients', 'read'),
   controller.downloadCdssSource);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  

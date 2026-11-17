@@ -3,6 +3,8 @@ import { prisma } from '../../config/database';
 import { redis } from '../../config/redis';
 import { logger } from '../../config/logger';
 import { buildPatientContext, BuiltPatientContext } from './ai.context';
+import { buildGuidelineContext } from './cdss.multimodal';
+import { GuidelineSource } from './cdss.multimodal';
 
 const CONTEXT_TTL_SECONDS = 60 * 60;
 
@@ -127,7 +129,9 @@ export async function getClinicalVersion(
     familyHistory._count +
     vital._count;
 
-  return `${maxTs ? maxTs.toISOString() : '0'}:${total}`;
+  const version = `${maxTs ? maxTs.toISOString() : '0'}:${total}`;
+
+  return version;
 }
 
 export async function getOrBuildContext(
@@ -157,3 +161,36 @@ export async function getOrBuildContext(
 
   return context;
 }
+
+
+type GuidelineContext = { guidelines: string; sources: GuidelineSource[] } | null;
+
+
+export async function getOrBuildGuidelineContext(
+  tenantId: string,
+  patientId: string,
+  patientContext:string,
+  cacheVersion:string,
+): Promise<GuidelineContext> {
+  const key = `ai:guideline:${tenantId}:${patientId}:${patientId}:${cacheVersion}`;
+
+  try {
+    const cached = await redis.get(key);
+    if (cached) {
+      return JSON.parse(cached) as GuidelineContext;
+    }
+  } catch (err) {
+    logger.warn({ err, patientId }, 'AI guideline cache read failed');
+  }
+
+  const guideline = await buildGuidelineContext(patientContext);
+
+  try {
+    await redis.set(key, JSON.stringify(guideline), 'EX', CONTEXT_TTL_SECONDS);
+  } catch (err) {
+    logger.warn({ err, patientId }, 'AI guideline cache write failed');
+  }
+
+  return guideline;
+}
+

@@ -16,7 +16,7 @@ import {
 import type { PlatformChatInput } from './ai.validation';
 import { buildMedicineContext } from './ai.drug-context';
 import { PATIENT_CHAT_SYSTEM } from './ai.chat.service';
-import { getClinicalVersion, getOrBuildContext } from './ai.context-version';
+import { getClinicalVersion, getOrBuildContext, getOrBuildGuidelineContext } from './ai.context-version';
 
 // ============================================================================
 // Use Case 3 (Level 1): Platform-wide AI support chatbot — READ-ONLY + ROLE-AWARE.
@@ -326,15 +326,12 @@ export const getPatientSummary = async (tenantId: string, userId: string, patien
   await assertFeatureEnabled('patientChat', tenantId);
   const context = await getOrBuildContext(tenantId, patientId);
 
-  // Guideline RAG (multimodal): embed the patient context with Voyage, match
-  // guideline PAGES, and have Gemini-vision read those pages into cited guidance.
-  // Optional — needs Voyage + Gemini + embedded cdss_page_images. If anything is
-  // missing, skip it and still return the summary. CDSS_RAG_ENABLED=false disables.
   let guidelines = '';
   let sources: { n: number; label: string; url: string }[] = [];
+  const version = await getClinicalVersion(tenantId, patientId);
   if (process.env.CDSS_RAG_ENABLED !== 'false') {
     try {
-      const g = await buildGuidelineContext(context.text);
+      const g = await getOrBuildGuidelineContext(tenantId,patientId,context.text,version);
       if (g) {
         guidelines = g.guidelines;
         sources = g.sources;

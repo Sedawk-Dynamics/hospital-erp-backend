@@ -16,17 +16,12 @@ Rules:
 
 === PATIENT CONTEXT ===
 ## PATIENT
-Name: test 132
-MRN: MRN-20261116-0001
+Name: test 134
+MRN: MRN-20261117-0001
 Gender: male
 
 ## CURRENT VISIT
-- 2026-11-16 op
-
-## IMAGING (metadata + impression; images not analysed)
-- 2026-11-17 ecg [requested]
-- 2026-11-17 ct_scan [requested]
-- 2026-11-17 ct_scan [requested]
+- 2026-11-17 op
 
 ===== MESSAGES =====
 [user]

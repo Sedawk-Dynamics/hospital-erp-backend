@@ -31,7 +31,6 @@ export const audioToText = async (file: Express.Multer.File) => {
 
     const result = await response.json() as TranscriptionResponse;
 
-    // Surface the real failure instead of silently returning an empty string.
     if (!response.ok || result.error || !result.text) {
         console.error('OpenRouter transcription failed', {
             status: response.status,
@@ -42,3 +41,8 @@ export const audioToText = async (file: Express.Multer.File) => {
 
     return result.text;
 }
+
+
+
+
+
