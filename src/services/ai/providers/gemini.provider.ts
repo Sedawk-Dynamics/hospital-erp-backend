@@ -63,7 +63,7 @@ export const geminiProvider: AiProviderClient = {
     }
 
     const data = (await res.json()) as {
-      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }; finishReason?: string }>;
       promptFeedback?: { blockReason?: string };
     };
 
@@ -73,6 +73,13 @@ export const geminiProvider: AiProviderClient = {
       throw new AiProviderError('gemini', 'AI service blocked the request', 400, false);
     }
 
-    return data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? '').join('') ?? '';
+    const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? '').join('') ?? '';
+    console.log('[AI] gemini', {
+      model,
+      finishReason: data.candidates?.[0]?.finishReason,
+      maxOutputTokens: opts.maxOutputTokens ?? 1024,
+      len: text.length,
+    });
+    return text;
   },
 };
