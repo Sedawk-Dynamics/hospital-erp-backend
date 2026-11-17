@@ -324,11 +324,12 @@ export async function platformChat(
 
 export const getPatientSummary = async (tenantId: string, userId: string, patientId: string) => {
   await assertFeatureEnabled('patientChat', tenantId);
-  const context = await getOrBuildContext(tenantId, patientId);
+  // Version is computed once inside getOrBuildContext and reused for the
+  // guideline cache — no separate getClinicalVersion round-trip.
+  const { context, version } = await getOrBuildContext(tenantId, patientId);
 
   let guidelines = '';
   let sources: { n: number; label: string; url: string }[] = [];
-  const version = await getClinicalVersion(tenantId, patientId);
   if (process.env.CDSS_RAG_ENABLED !== 'false') {
     try {
       const g = await getOrBuildGuidelineContext(tenantId,patientId,context.text,version);

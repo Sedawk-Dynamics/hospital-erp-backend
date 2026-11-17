@@ -137,7 +137,7 @@ export async function getClinicalVersion(
 export async function getOrBuildContext(
   tenantId: string,
   patientId: string,
-): Promise<BuiltPatientContext> {
+): Promise<{ context: BuiltPatientContext; version: string }> {
   const key = `ai:ctx:${tenantId}:${patientId}`;
   const version = await getClinicalVersion(tenantId, patientId);
 
@@ -145,7 +145,7 @@ export async function getOrBuildContext(
     const cached = await redis.get(key);
     if (cached) {
       const parsed = JSON.parse(cached) as { version: string; context: BuiltPatientContext };
-      if (parsed.version === version) return parsed.context; 
+      if (parsed.version === version) return { context: parsed.context, version };
     }
   } catch (err) {
     logger.warn({ err, patientId }, 'AI context cache read failed');
@@ -159,7 +159,7 @@ export async function getOrBuildContext(
     logger.warn({ err, patientId }, 'AI context cache write failed');
   }
 
-  return context;
+  return { context, version };
 }
 
 

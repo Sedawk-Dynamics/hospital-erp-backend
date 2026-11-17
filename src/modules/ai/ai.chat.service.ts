@@ -60,7 +60,7 @@ export async function patientChat(
 ) {
   await assertFeatureEnabled('patientChat', tenantId);
 
-  const context = await getOrBuildContext(tenantId, input.patientId);
+  const { context } = await getOrBuildContext(tenantId, input.patientId);
   const medicine = await buildMedicineContext(input.message, roles);
 
   let guidelines = '';
