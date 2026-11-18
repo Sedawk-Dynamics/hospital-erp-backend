@@ -23,6 +23,10 @@ Gender: male
 ## CURRENT VISIT
 - 2026-11-17 op
 
+## IMAGING (metadata + impression; images not analysed)
+- 2026-11-18 ultrasound [completed]
+- 2026-11-18 xray [completed]
+
 ===== MESSAGES =====
 [user]
 Summarise this patient's history and current clinical status. Cover demographics, known diagnoses (with ICD codes), allergies, social and family history, the current visit and vitals, current medications, and recent labs — highlighting any allergies or abnormal values. End with suggested next steps (investigations, monitoring, follow-up) based on the patient record and Indian national clinical guidelines, framed as suggestions for the clinician to confirm.

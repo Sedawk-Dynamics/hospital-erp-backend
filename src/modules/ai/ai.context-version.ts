@@ -24,6 +24,7 @@ export async function getClinicalVersion(
     labAttachment,
     imagingRequest,
     imagingResult,
+    dicomStudy,
     personalHistory,
     familyHistory,
     vital,
@@ -76,6 +77,11 @@ export async function getClinicalVersion(
       _max: { updatedAt: true },
       _count: true,
     }),
+    prisma.dicomStudy.aggregate({
+      where: { patientId, tenantId },
+      _max: { createdAt: true },
+      _count: true,
+    }),
     prisma.patientPersonalHistory.aggregate({
       where: { patientId: { in: personIds } },
       _max: { updatedAt: true },
@@ -105,6 +111,7 @@ export async function getClinicalVersion(
     labAttachment._max.deletedAt,
     imagingRequest._max.updatedAt,
     imagingResult._max.updatedAt,
+    dicomStudy._max.createdAt,
     personalHistory._max.updatedAt,
     familyHistory._max.updatedAt,
     vital._max.recordedAt,
@@ -125,6 +132,7 @@ export async function getClinicalVersion(
     labAttachment._count +
     imagingRequest._count +
     imagingResult._count +
+    dicomStudy._count +
     personalHistory._count +
     familyHistory._count +
     vital._count;

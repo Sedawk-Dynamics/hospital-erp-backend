@@ -82,11 +82,7 @@ aiRoutes.get('/cdss/source/:sourceId',
   controller.downloadCdssSource);
 
 
-
-
-
-
-
+aiRoutes.post('/patient/:patientId/analyse-imaging',authenticate,requirePermission('patients','read'),controller.imagingReportAnalyse);
 
 
 

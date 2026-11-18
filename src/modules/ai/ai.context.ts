@@ -3,6 +3,9 @@ import { AppError } from '../../shared/appError';
 import { buildDrugHistory } from '../prescriptions/drug-history.service';
 import { resolvePersonPatientIds } from '../../shared/patient-identity';
 import { UPLOAD_DIR } from '../../services/upload.service';
+import { getPacsProvider } from '../imaging/pacs';
+import { callGeminiVisionImages } from '../../services/gemini-vision';
+import { logger } from '../../config/logger';
 import path from 'path';
 import { PDFParse } from 'pdf-parse';
 import fs from 'fs/promises';
@@ -56,7 +59,6 @@ export async function buildPatientContext(
   });
   if (!patient) throw AppError.notFound('Patient not found');
 
-  // Pull each clinical stream in parallel, recency-bounded.
   const [
     visits,
     prescriptions,
@@ -81,9 +83,6 @@ export async function buildPatientContext(
         take: 6,
         include: { prescriptionItems: true },
       }),
-      // Released reports only. This context is narrated back to the clinician,
-      // so quoting a value the lab supervisor has not signed off would put an
-      // unapproved number in front of them with the model's authority behind it.
       prisma.labResult.findMany({
         where: {
           patientId,
@@ -248,9 +247,7 @@ export async function buildPatientContext(
     }
   }
 
-  // Medications split the same way the doctor's Drug History panel splits them,
-  // so the assistant stops presenting a finished course as "current medication"
-  // (and vice-versa) — both views now read from one source of truth.
+
   const drugHistory = await buildDrugHistory({ patientIds: [patientId], tenantId, limit: 50 });
 
   const formatMed = (i: {
@@ -330,6 +327,70 @@ export async function buildPatientContext(
         )
         .join('\n'),
     );
+  }
+
+  try {
+    const xrayStudy = await prisma.dicomStudy.findFirst({
+      where: { tenantId, patientId, modality: { in: ['CR', 'DX'] } },
+      orderBy: { studyDate: 'desc' },
+      include: {
+        instances: true,
+        imagingResult: {
+          select: {
+            impression: true,
+            imagingRequest: { select: { clinicalIndication: true, bodyPart: true, imagingType: true } },
+          },
+        },
+      },
+    });
+
+    if (xrayStudy && xrayStudy.instances.length) {
+      const provider = getPacsProvider();
+      const frames: Buffer[] = [];
+      for (const inst of xrayStudy.instances) {
+        const png = await provider?.getInstancePreview?.(inst.sopInstanceUid);
+        if (png) frames.push(png);
+      }
+
+      if (frames.length) {
+        const imagingReportResult = xrayStudy.imagingResult;
+        const req = imagingReportResult?.imagingRequest;
+        const ctxLines = [
+          req?.imagingType ? `Study type: ${String(req.imagingType).replace(/_/g, ' ')}` : null,
+          req?.bodyPart ? `Body part: ${req.bodyPart}` : null,
+          req?.clinicalIndication ? `Clinical indication (why ordered): ${req.clinicalIndication}` : null,
+          imagingReportResult?.impression ? `Radiologist's impression / findings: ${imagingReportResult.impression}` : null,
+        ].filter(Boolean) as string[];
+
+        const clinicalContext = ctxLines.length
+          ? `\n\nCLINICAL CONTEXT PROVIDED BY THE HOSPITAL (background only — do NOT assume it is correct; still base your visual findings on the image itself and explicitly note any agreement or disagreement with the radiologist's note):\n${ctxLines.map((l) => `- ${l}`).join('\n')}`
+          : '';
+
+        const xrayPrompt = `You are an experienced radiologist reviewing the X-ray image(s) provided.
+
+STRICT RULES:
+- Base your report ONLY on what is visibly present in the supplied image(s). Do not assume, infer, or invent any finding that is not clearly visible.
+- If the image quality, projection, or field of view does not allow a confident assessment, say so explicitly ("not assessable" / "limited by…").
+- Any clinical context below is background only — do not treat it as confirmed and do not simply repeat it. Form your own read of the image, then note where you agree or disagree with it.
+- If no abnormality is visible, state "No acute abnormality detected" — do not manufacture findings.
+- This is decision support only, not a final diagnosis.
+
+Produce a concise report with Findings and an Impression. If clinical context was provided, add one line on whether your read agrees with it. End with: "AI-generated from images only; correlate clinically and confirm with a radiologist."${clinicalContext}`;
+
+        const { text } = await callGeminiVisionImages({
+          prompt: xrayPrompt,
+          images: frames.map((b) => ({ data: b, mimetype: 'image/png' })),
+          feature: 'Imaging report analysis',
+          fallbackHint: 'Review the X-ray manually.',
+        });
+
+        if (text?.trim()) {
+          sections.push('## X-RAY AI ANALYSIS (latest study; decision support only)\n' + text.trim());
+        }
+      }
+    }
+  } catch (err) {
+    logger.warn({ err, patientId }, 'X-ray AI analysis skipped in context build');
   }
 
   const histLines = [

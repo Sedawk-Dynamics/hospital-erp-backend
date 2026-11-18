@@ -146,3 +146,15 @@ export async function downloadCdssSource(req:AuthenticatedRequest, res:Response,
     res.sendFile(abs);
   } catch (err) { next(err); }
 }
+
+
+export const imagingReportAnalyse=async(req:AuthenticatedRequest,res:Response,next:NextFunction)=>{
+  try {
+    const tenantId=req.user!.tenantId as string;
+    const patientId=req.params.patientId as string;
+    const result=await platformService.analyseImagingReport(tenantId,patientId);
+    sendResponse({ res, message: 'Patient imaging report analysed ', data: result });
+  } catch (error) {
+    next(error)
+  }
+}
