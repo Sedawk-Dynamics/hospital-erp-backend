@@ -11,6 +11,7 @@ const CONTEXT_TTL_SECONDS = 60 * 60;
 export async function getClinicalVersion(
   tenantId: string,
   patientId: string,
+  _visitId?: string,
 ): Promise<string> {
   const personIds = await resolvePersonPatientIds(patientId);
 
@@ -145,9 +146,10 @@ export async function getClinicalVersion(
 export async function getOrBuildContext(
   tenantId: string,
   patientId: string,
+  visitId:string,
 ): Promise<{ context: BuiltPatientContext; version: string }> {
-  const key = `ai:ctx:${tenantId}:${patientId}`;
-  const version = await getClinicalVersion(tenantId, patientId);
+  const key = `ai:ctx:${tenantId}:${patientId}:${visitId}`;
+  const version = await getClinicalVersion(tenantId, patientId,visitId);
 
   try {
     const cached = await redis.get(key);
@@ -159,7 +161,7 @@ export async function getOrBuildContext(
     logger.warn({ err, patientId }, 'AI context cache read failed');
   }
 
-  const context = await buildPatientContext(tenantId, patientId);
+  const context = await buildPatientContext(tenantId, patientId,visitId);
 
   try {
     await redis.set(key, JSON.stringify({ version, context }), 'EX', CONTEXT_TTL_SECONDS);

@@ -121,7 +121,8 @@ export async function platformChat(req: AuthenticatedRequest, res: Response, nex
 export const patientSummary = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
     const patientId = req.params.patientId as string;
-    const summary = await platformService.getPatientSummary(req.user!.tenantId, req.user!.userId, patientId);
+    const visitId = (req.query.visitId as string) || '';
+    const summary = await platformService.getPatientSummary(req.user!.tenantId, req.user!.userId, patientId, visitId);
     sendResponse({ res, message: 'Patient summary', data: summary });
   } catch (err) {
     next(err);

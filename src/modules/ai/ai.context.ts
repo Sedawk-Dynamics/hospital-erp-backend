@@ -34,14 +34,8 @@ export interface BuiltPatientContext {
     gender: string | null;
     bloodGroup: string | null;
   };
-  /** Compact, model-ready serialization of the record. */
   text: string;
-  /** Counts so the UI can show "context: 3 diagnoses, 12 labs…". */
   counts: Record<string, number>;
-  /**
-   * Critical items a clinician must not miss, pulled as structured data (not
-   * left to the model's prose) so the UI can render them as fixed red badges.
-   */
   alerts: {
     allergies: string[];
     abnormalLabs: string[];
@@ -52,6 +46,7 @@ export interface BuiltPatientContext {
 export async function buildPatientContext(
   tenantId: string,
   patientId: string,
+  visitId:string,
 ): Promise<BuiltPatientContext> {
   const patient = await prisma.patient.findFirst({
     where: { id: patientId, tenantId },
@@ -69,6 +64,7 @@ export async function buildPatientContext(
     familyHistory,
     vitals,
     imagingFiles,
+    currentVisit,
   ] =
     await Promise.all([
       prisma.visit.findMany({
@@ -120,10 +116,6 @@ export async function buildPatientContext(
         take: 6,
         include: { imagingResult: { select: { impression: true, status: true } } },
       }),
-      // Across the person's rows, matching where upsertPersonalHistory writes.
-      // A findUnique on this row alone hands the model an empty history for a
-      // patient who has one, which is worse than no context: it reads as
-      // "no risk factors recorded" rather than "not looked up".
       prisma.patientPersonalHistory
         .findMany({
           where: { patientId: { in: await resolvePersonPatientIds(patientId) } },
@@ -158,6 +150,19 @@ export async function buildPatientContext(
           },
         },
       }),
+
+      // The current visit — the reason the patient is here TODAY. Fetched on its
+      // own by visitId so the context can foreground this complaint/vitals/dx as
+      // the focus, with everything above kept as background history.
+      visitId
+        ? prisma.visit.findFirst({
+            where: { id: visitId, patientId, tenantId },
+            include: {
+              diagnoses: true,
+              vitals: { orderBy: { recordedAt: 'desc' } },
+            },
+          })
+        : Promise.resolve(null),
     ]);
 
   const age = ageFromDob(patient.dateOfBirth);
@@ -178,6 +183,42 @@ export async function buildPatientContext(
       .filter(Boolean)
       .join('\n'),
   );
+
+  // CURRENT VISIT — today's reason for the encounter. Placed near the top and
+  // clearly marked as the FOCUS so the model answers the present complaint
+  // instead of re-summarising the whole record. Everything below is background.
+  if (currentVisit) {
+    const complaint = currentVisit.chiefComplaint || currentVisit.nurseChiefComplaint || null;
+    const v = currentVisit.vitals[0];
+    const vitalStr = v
+      ? [
+          v.bloodPressureSystolic && v.bloodPressureDiastolic
+            ? `BP ${v.bloodPressureSystolic}/${v.bloodPressureDiastolic}`
+            : '',
+          v.pulseRate ? `HR ${v.pulseRate}` : '',
+          v.temperature ? `Temp ${v.temperature}` : '',
+          v.oxygenSaturation ? `SpO2 ${v.oxygenSaturation}%` : '',
+          v.respiratoryRate ? `RR ${v.respiratoryRate}` : '',
+        ]
+          .filter(Boolean)
+          .join(', ')
+      : '';
+    const dx = currentVisit.diagnoses.map((d) => d.diagnosisName).filter(Boolean);
+
+    const currentLines = [
+      '## CURRENT VISIT (today — FOCUS the response on this)',
+      line('Date', new Date(currentVisit.visitDate).toISOString().slice(0, 10)),
+      line('Type', currentVisit.visitType),
+      line('Chief complaint', complaint),
+      line("Today's vitals", vitalStr),
+      dx.length ? `Working diagnosis (this visit): ${dx.join(', ')}` : '',
+    ].filter(Boolean);
+
+    // Only emit the section if there's something beyond the date/type scaffold.
+    if (complaint || vitalStr || dx.length) {
+      sections.push(currentLines.join('\n'));
+    }
+  }
 
   if (patient.allergies.length) {
     sections.push(
@@ -517,6 +558,26 @@ Produce a concise report with Findings and an Impression. If clinical context wa
     },
   };
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

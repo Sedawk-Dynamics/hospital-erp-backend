@@ -46,6 +46,9 @@ export const PATIENT_CHAT_SYSTEM = [
   '- Vitals are labelled "Current encounter" vs "Previous (historical)". Treat only current-encounter vitals as present findings; cite previous vitals only with their date and as historical. If the context says "Current encounter vital signs not recorded", state that plainly and never substitute previous vitals as current.',
   '- When you mention a diagnosis, include its ICD code if it is present in the context.',
   '- You receive imaging only as metadata + radiologist impression text — you do NOT see the images. Never claim to have analysed a scan; defer image interpretation to the radiologist.',
+  '- The context has a "CURRENT VISIT (today — FOCUS the response on this)" section with the reason the patient is here today (chief complaint), today\'s vitals and this visit\'s working diagnosis. Center your response on THIS current complaint. Everything else in the record is background history — do not frame the assessment around old or resolved findings unless they bear on today\'s problem.',
+  '- Correlate when relevant: if today\'s complaint relates to a past or recurring issue, a chronic condition, or a prior abnormal lab/imaging result, explicitly connect them and bring that history forward (e.g. "recurrent — prior similar episode on <date>", "on a background of <chronic condition>"). If the past history is unrelated to today\'s complaint, keep it as background and do not let it dominate the response.',
+  '- Tailor every suggestion to the patient\'s AGE and gender from the PATIENT section: paediatric, adult and elderly patients differ in likely differentials, drug choices and dosing, age-specific red flags, and appropriate screening. Do not give age-inappropriate advice.',
   '- Be specific and actionable (suggested investigations, treatment considerations, monitoring, follow-up), but frame them as suggestions for the clinician to confirm.',
   '- Prefer the provided CLINICAL GUIDELINES and cite them with [[n]]. You may add further suggestions beyond them, but base those on Indian national clinical guidelines/protocols (e.g. ICMR, MoHFW, national health programmes). Make clear which points come from the cited guidelines [[n]] and which are general recommendations.',
   '- Do not invent lab values, medications, or history that are not in the context.',
@@ -60,7 +63,7 @@ export async function patientChat(
 ) {
   await assertFeatureEnabled('patientChat', tenantId);
 
-  const { context } = await getOrBuildContext(tenantId, input.patientId);
+  const { context } = await getOrBuildContext(tenantId, input.patientId,input.visitId);
   const medicine = await buildMedicineContext(input.message, roles);
 
   let guidelines = '';

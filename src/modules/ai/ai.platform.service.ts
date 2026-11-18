@@ -326,11 +326,9 @@ export async function platformChat(
   };
 }
 
-export const getPatientSummary = async (tenantId: string, userId: string, patientId: string) => {
+export const getPatientSummary = async (tenantId: string, userId: string, patientId: string,visitId:string) => {
   await assertFeatureEnabled('patientChat', tenantId);
-  // Version is computed once inside getOrBuildContext and reused for the
-  // guideline cache — no separate getClinicalVersion round-trip.
-  const { context, version } = await getOrBuildContext(tenantId, patientId);
+  const { context, version } = await getOrBuildContext(tenantId, patientId,visitId);
 
   let guidelines = '';
   let sources: { n: number; label: string; url: string }[] = [];
@@ -374,10 +372,13 @@ export const getPatientSummary = async (tenantId: string, userId: string, patien
   const { text, model, provider } = await generateText({
     system,
     messages: [{ role: 'user', content:
-      "Summarise this patient's history and current clinical status. Cover demographics, " +
+      "Summarise this patient's history and current clinical status. " +
+      'LEAD WITH the CURRENT VISIT: state today\'s presenting complaint first and center the ' +
+      'assessment on it, explicitly connecting any past history (diagnoses, labs, imaging, ' +
+      'medications) that is relevant to today\'s problem. Then cover demographics, ' +
       'known diagnoses (with ICD codes), allergies, social and family history, the current ' +
       'visit and vitals, current medications, and recent labs — highlighting any allergies or ' +
-      'abnormal values. ' +
+      'abnormal values. Keep unrelated history as brief background. ' +
       nextStepsInstruction + '\n' +
       '\n' +
       'STRICT: Use ONLY the data present in the patient record above. Do NOT invent, infer, ' +
