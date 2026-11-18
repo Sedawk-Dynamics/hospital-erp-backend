@@ -384,9 +384,20 @@ export async function buildPatientContext(
       `${a.allergen} (${a.allergyType}${a.severity ? `, ${a.severity}` : ''})${a.reaction ? ` — ${a.reaction}` : ''}`,
   );
 
-  const labtoday=new Date().toISOString().slice(0,10);
+  // Abnormal labs from the MOST RECENT lab session — not only today's. An
+  // abnormal HbA1c/SGPT stays clinically relevant after the day it was entered,
+  // so the alert must not vanish when the calendar day rolls over. labResults is
+  // ordered by enteredAt desc, so the first row is the latest session's date.
+  const latestLabDate = labResults.length
+    ? new Date(labResults[0]!.enteredAt).toISOString().slice(0, 10)
+    : null;
   const abnormalLabAlerts = labResults
-    .filter((r) => r.isAbnormal && new Date(r.enteredAt).toISOString().slice(0, 10) === labtoday)
+    .filter(
+      (r) =>
+        r.isAbnormal &&
+        latestLabDate !== null &&
+        new Date(r.enteredAt).toISOString().slice(0, 10) === latestLabDate,
+    )
     .map((r) => {
       const test = r.labOrderItem?.test?.testName ?? 'Lab';
       return `${test} — ${r.parameterName}: ${r.value ?? '?'} ${r.unit ?? ''}`.trim() +
@@ -395,10 +406,10 @@ export async function buildPatientContext(
 
 
   const abnormalVitalAlerts: string[] = [];
-  const today = new Date().toISOString().slice(0, 10);
-  const latestVital = vitals.find(
-    (v) => new Date(v.recordedAt).toISOString().slice(0, 10) === today,
-  );
+  // The most recent vital, whenever it was recorded — not only today's. An
+  // elevated BP from yesterday must still alert today. vitals is ordered by
+  // recordedAt desc, so the first row is the latest reading.
+  const latestVital = vitals[0];
   if (latestVital) {
     const num = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v));
     const sys = num(latestVital.bloodPressureSystolic);
