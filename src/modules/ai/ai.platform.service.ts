@@ -20,7 +20,7 @@ import { getClinicalVersion, getOrBuildContext, getOrBuildGuidelineContext } fro
 import { AppError } from '../../shared/appError';
 import { getPacsProvider } from '../imaging/pacs';
 import { image } from 'pdfkit';
-import { callGeminiVisionImages } from '@/services/gemini-vision';
+import { callGeminiVisionImages } from '../../services/gemini-vision';
 
 // ============================================================================
 // Use Case 3 (Level 1): Platform-wide AI support chatbot — READ-ONLY + ROLE-AWARE.
