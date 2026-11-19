@@ -247,8 +247,6 @@ export async function buildPatientContext(
   }
 
   if (visits.length) {
-    const [currentVisit, ...priorVisits] = visits;
-
     const describeVisit = (v: (typeof visits)[number]) => {
       let out = `- ${new Date(v.visitDate).toISOString().slice(0, 10)} ${v.visitType}`;
       if (v.chiefComplaint) out += ` — ${v.chiefComplaint}`;
@@ -259,7 +257,12 @@ export async function buildPatientContext(
       return out;
     };
 
-    sections.push('## CURRENT VISIT\n' + describeVisit(currentVisit));
+    // Everything here is PAST history. Today's encounter is already shown above
+    // as the CURRENT VISIT focus block, so exclude it here — otherwise it gets
+    // a second "CURRENT VISIT" heading and the model treats old visits as today.
+    const priorVisits = currentVisit
+      ? visits.filter((v) => v.id !== currentVisit.id)
+      : visits;
 
     if (priorVisits.length) {
       sections.push(
