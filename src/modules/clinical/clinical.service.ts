@@ -1695,34 +1695,15 @@ export async function recordVitals(
   }
 
   if (!resolvedVisitId && data.appointmentId) {
-    const appt = await prisma.appointment.findFirst({
-      where: { id: data.appointmentId, tenantId, patientId: data.patientId },
-      select: {
-        id: true,
-        doctorId: true,
-        appointmentDate: true,
-        visits: { orderBy: { createdAt: 'desc' }, take: 1, select: { id: true } },
-      },
-    });
-    if (!appt) throw AppError.notFound('Appointment not found');
-    const existingVisitId = appt.visits[0]?.id;
-    if (existingVisitId) {
-      resolvedVisitId = existingVisitId;
-    } else {
-      const newVisit = await prisma.visit.create({
-        data: {
-          tenantId,
-          patientId: data.patientId,
-          doctorId: appt.doctorId,
-          appointmentId: appt.id,
-          visitType: 'op',
-          visitDate: appt.appointmentDate,
-          status: 'active',
-        },
-        select: { id: true },
-      });
-      resolvedVisitId = newVisit.id;
-    }
+    // Resolve the visit through the SAME canonical path the consultation uses,
+    // so a reading recorded before the consultation opens lands on the exact
+    // same visit — not a second one. The old inline logic only looked for a
+    // visit already linked to this appointment and otherwise created a fresh
+    // one, so it missed a legacy/unclaimed active visit that the consultation's
+    // ensureVisitForAppointment would adopt — leaving vitals and the
+    // consultation on two different visits for one encounter.
+    const visit = await ensureVisitForAppointment(tenantId, data.appointmentId);
+    resolvedVisitId = visit.id;
   }
 
   if (!resolvedVisitId) {
