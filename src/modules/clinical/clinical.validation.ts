@@ -20,6 +20,7 @@ export const createVisitSchema = z.object({
 export const getVisitsQuerySchema = z.object({
   query: paginationSchema.extend({
     patientId: z.string().uuid().optional(),
+    appointmentId: z.string().uuid().optional(),
     doctorId: z.string().uuid().optional(),
     visitType: z.enum(['op', 'ip']).optional(),
     status: z.enum(['active', 'completed', 'transferred', 'discharged']).optional(),

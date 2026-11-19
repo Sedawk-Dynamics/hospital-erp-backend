@@ -282,6 +282,7 @@ export async function getVisits(tenantId: string, query: GetVisitsQuery) {
   const where: any = { tenantId };
 
   if (query.patientId) where.patientId = query.patientId;
+  if (query.appointmentId) where.appointmentId = query.appointmentId;
   if (query.doctorId) where.doctorId = query.doctorId;
   if (query.visitType) where.visitType = query.visitType;
   if (query.status) where.status = query.status;
