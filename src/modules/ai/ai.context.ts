@@ -10,11 +10,6 @@ import path from 'path';
 import { PDFParse } from 'pdf-parse';
 import fs from 'fs/promises';
 
-// Aggregates a patient's clinical record into a compact text block for the
-// patient AI chatbot (Use Case 2, Level 1 — text only, no radiology image
-// processing). Everything is tenant-scoped and recency-bounded to control token
-// cost. The same data is also returned structured for the UI's context preview.
-
 function ageFromDob(dob: Date | null): number | null {
   if (!dob) return null;
   const diff = Date.now() - new Date(dob).getTime();
@@ -46,7 +41,7 @@ export interface BuiltPatientContext {
 export async function buildPatientContext(
   tenantId: string,
   patientId: string,
-  visitId:string,
+  visitId: string,
 ): Promise<BuiltPatientContext> {
   const patient = await prisma.patient.findFirst({
     where: { id: patientId, tenantId },
@@ -86,7 +81,10 @@ export async function buildPatientContext(
         },
         orderBy: { enteredAt: 'desc' },
         take: 40,
-        include: { labOrderItem: { include: { test: { select: { testName: true } } } } },
+        include: {
+          labOrderItem: { include: { test: { select: { testName: true } } } },
+          labOrder: { select: { visitId: true } },
+        },
       }),
       prisma.labAttachment.findMany({
         where: {
@@ -156,12 +154,12 @@ export async function buildPatientContext(
       // the focus, with everything above kept as background history.
       visitId
         ? prisma.visit.findFirst({
-            where: { id: visitId, patientId, tenantId },
-            include: {
-              diagnoses: true,
-              vitals: { orderBy: { recordedAt: 'desc' } },
-            },
-          })
+          where: { id: visitId, patientId, tenantId },
+          include: {
+            diagnoses: true,
+            vitals: { orderBy: { recordedAt: 'desc' } },
+          },
+        })
         : Promise.resolve(null),
     ]);
 
@@ -192,16 +190,16 @@ export async function buildPatientContext(
     const v = currentVisit.vitals[0];
     const vitalStr = v
       ? [
-          v.bloodPressureSystolic && v.bloodPressureDiastolic
-            ? `BP ${v.bloodPressureSystolic}/${v.bloodPressureDiastolic}`
-            : '',
-          v.pulseRate ? `HR ${v.pulseRate}` : '',
-          v.temperature ? `Temp ${v.temperature}` : '',
-          v.oxygenSaturation ? `SpO2 ${v.oxygenSaturation}%` : '',
-          v.respiratoryRate ? `RR ${v.respiratoryRate}` : '',
-        ]
-          .filter(Boolean)
-          .join(', ')
+        v.bloodPressureSystolic && v.bloodPressureDiastolic
+          ? `BP ${v.bloodPressureSystolic}/${v.bloodPressureDiastolic}`
+          : '',
+        v.pulseRate ? `HR ${v.pulseRate}` : '',
+        v.temperature ? `Temp ${v.temperature}` : '',
+        v.oxygenSaturation ? `SpO2 ${v.oxygenSaturation}%` : '',
+        v.respiratoryRate ? `RR ${v.respiratoryRate}` : '',
+      ]
+        .filter(Boolean)
+        .join(', ')
       : '';
     const dx = currentVisit.diagnoses.map((d) => d.diagnosisName).filter(Boolean);
 
@@ -319,22 +317,24 @@ export async function buildPatientContext(
   }
 
   if (labResults.length) {
-    const today = new Date().toISOString().slice(0, 10);
-    const dateOf = (r: (typeof labResults)[number]) =>
-      new Date(r.enteredAt).toISOString().slice(0, 10);
+    const stamp = (d: Date | string) =>
+      new Date(d).toISOString().slice(0, 16).replace('T', ' ');
 
     const line = (r: (typeof labResults)[number]) => {
       const test = r.labOrderItem?.test?.testName ?? 'Lab';
       const flag = r.isAbnormal ? ' **ABNORMAL**' : '';
-      return `- ${dateOf(r)} ${test} — ${r.parameterName}: ${r.value ?? '?'} ${r.unit ?? ''} (ref ${r.normalRange ?? 'n/a'})${flag}`;
+      return `- ${stamp(r.enteredAt)} ${test} — ${r.parameterName}: ${r.value ?? '?'} ${r.unit ?? ''} (ref ${r.normalRange ?? 'n/a'})${flag}`;
     };
 
-    const current = labResults.filter((r) => dateOf(r) === today);
-    const previous = labResults.filter((r) => dateOf(r) !== today);
+    // "Current visit" = results tied to THIS visit, not merely the same calendar
+    // day. Several encounters can happen on one day, so day-matching would wrongly
+    // flag an earlier visit's labs (e.g. an old pneumonia CRP) as current.
+    const current = visitId ? labResults.filter((r) => r.labOrder?.visitId === visitId) : [];
+    const previous = labResults.filter((r) => !current.includes(r));
     let text = '## LAB RESULTS\n';
     text += current.length
-      ? `Current encounter:\n${current.map(line).join('\n')}\n`
-      : 'No lab results from the current encounter.\n';
+      ? `Current visit:\n${current.map(line).join('\n')}\n`
+      : 'No lab results from the current visit.\n';
     if (previous.length) text += `Previous (historical):\n${previous.map(line).join('\n')}`;
 
     sections.push(text.trim());
@@ -362,13 +362,17 @@ export async function buildPatientContext(
   }
 
   if (imaging.length) {
+    const stampDt = (d: Date | string) =>
+      new Date(d).toISOString().slice(0, 16).replace('T', ' ');
     sections.push(
       '## IMAGING (metadata + impression; images not analysed)\n' +
       imaging
-        .map(
-          (im) =>
-            `- ${new Date(im.createdAt).toISOString().slice(0, 10)} ${im.imagingType}${im.bodyPart ? ` ${im.bodyPart}` : ''} [${im.status}]${im.imagingResult?.impression ? ` — Impression: ${im.imagingResult.impression}` : ''}`,
-        )
+        .map((im) => {
+          // Tag each study by encounter so an old study (e.g. the pneumonia
+          // chest X-ray) is not read as part of today's visit.
+          const scope = visitId && im.visitId === visitId ? ' (this visit)' : ' (past study)';
+          return `- ${stampDt(im.createdAt)}${scope} ${im.imagingType}${im.bodyPart ? ` ${im.bodyPart}` : ''} [${im.status}]${im.imagingResult?.impression ? ` — Impression: ${im.imagingResult.impression}` : ''}`;
+        })
         .join('\n'),
     );
   }
@@ -451,9 +455,8 @@ Produce a concise report with Findings and an Impression. If clinical context wa
   }
 
   if (vitals.length) {
-    const today = new Date().toISOString().slice(0, 10);
-    const dateOf = (v: (typeof vitals)[number]) =>
-      new Date(v.recordedAt).toISOString().slice(0, 10);
+    const stamp = (d: Date | string) =>
+      new Date(d).toISOString().slice(0, 16).replace('T', ' ');
 
     const line = (v: (typeof vitals)[number]) => {
       const bp =
@@ -467,16 +470,18 @@ Produce a concise report with Findings and an Impression. If clinical context wa
         v.oxygenSaturation ? `SpO2 ${v.oxygenSaturation}%` : '',
         v.respiratoryRate ? `RR ${v.respiratoryRate}` : '',
       ].filter(Boolean);
-      return `- ${dateOf(v)}: ${parts.join(', ')}`;
+      return `- ${stamp(v.recordedAt)}: ${parts.join(', ')}`;
     };
 
-    const current = vitals.filter((v) => dateOf(v) === today);
-    const previous = vitals.filter((v) => dateOf(v) !== today);
+    // Scope by visit, not by calendar day — same-day readings from an earlier
+    // encounter must not be blended into the current visit's vitals.
+    const current = visitId ? vitals.filter((v) => v.visitId === visitId) : [];
+    const previous = vitals.filter((v) => !current.includes(v));
 
     let text = '## VITALS\n';
     text += current.length
-      ? `Current encounter:\n${current.map(line).join('\n')}\n`
-      : 'Current encounter vital signs not recorded.\n';
+      ? `Current visit:\n${current.map(line).join('\n')}\n`
+      : 'Current visit vital signs not recorded.\n';
     if (previous.length) text += `Previous (historical):\n${previous.map(line).join('\n')}`;
 
     sections.push(text.trim());
