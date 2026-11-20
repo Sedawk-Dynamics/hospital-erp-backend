@@ -11,6 +11,10 @@ export const hospitalBrandingRoutes = Router();
 const adminOnly = [authenticate, requireRoles('super_admin', 'admin')];
 
 hospitalBrandingRoutes.get('/', ...adminOnly, controller.getBranding);
+// Gap 374/363: read-only letterhead for every signed-in staff member, so
+// on-screen previews/prints (lab report preview, discharge summary) show the
+// hospital's own header instead of a sample. Same data every PDF already prints.
+hospitalBrandingRoutes.get('/letterhead', authenticate, controller.getBranding);
 hospitalBrandingRoutes.put('/', ...adminOnly, controller.updateBranding);
 hospitalBrandingRoutes.post('/preview.pdf', ...adminOnly, controller.previewPdf);
 

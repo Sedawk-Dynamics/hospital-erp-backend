@@ -167,6 +167,18 @@ export async function allotDocumentNumber(
   documentType: GstDocumentType,
   on: Date,
 ): Promise<{ invoiceNumber: string; financialYear: string }> {
+  // Every numbered money document — tax invoice, bill of supply, credit/debit
+  // note, receipt/refund voucher — is allotted here, so this is the one place
+  // to refuse a NEW document dated inside a filed-and-locked period (gap 281).
+  const { lockedPeriodFor, returnPeriodLabel } = await import('../../shared/gst-period-lock');
+  const locked = await lockedPeriodFor(tenantId, on);
+  if (locked) {
+    const { AppError } = await import('../../shared/appError');
+    throw AppError.conflict(
+      `${returnPeriodLabel(locked.period)} has been filed and locked, so a new ${documentType.replace(/_/g, ' ')} ` +
+        'cannot be dated inside it. Date it in the current period instead.',
+    );
+  }
   const financialYear = financialYearFor(on);
   const prefix = await seriesPrefixFor(tx, tenantId, documentType);
 

@@ -16,6 +16,8 @@ import * as reconcile from './gst-reports.reconcile';
 import * as einvoice from './gst-reports.einvoice';
 import * as amendments from './gst-reports.amendments';
 import * as masters from './gst-master.service';
+import { returnPeriodLabel } from './gst-reports.gstr1-json';
+import { gstinVerificationCaption } from '../../shared/gst-profile';
 
 export const gstRoutes = Router();
 
@@ -269,6 +271,64 @@ gstRoutes.get(
   },
 );
 
+/**
+ * Any report on screen, as a real PDF document (gap items 282 / 372).
+ *
+ * The client posts the rows it is showing, so the PDF matches the screen; the
+ * hospital name and GSTIN are added here rather than trusted from the body.
+ */
+gstRoutes.post(
+  '/reports/pdf',
+  ...gstReportAccess,
+  validate(
+    z.object({
+      body: z.object({
+        title: z.string().min(1).max(200),
+        subtitle: z.string().max(500).nullish(),
+        period: z.object({ from: z.string().max(10).nullish(), to: z.string().max(10).nullish() }).nullish(),
+        stats: z.array(z.object({ label: z.string().max(100), value: z.string().max(100) })).max(20).optional(),
+        columns: z.array(z.object({
+          label: z.string().max(100),
+          align: z.enum(['left', 'right', 'center']).optional(),
+        })).min(1).max(30),
+        rows: z.array(z.array(z.union([z.string(), z.number(), z.null()]))).max(20000),
+        notes: z.array(z.string().max(2000)).max(40).optional(),
+      }),
+    }),
+  ),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const { renderReportPdf } = await import('./gst-reports.pdf');
+      const { getGstProfile } = await import('../hospital-settings/hospital-settings.service');
+      const { prisma } = await import('../../config/database');
+      const tenantId = req.user!.tenantId;
+      const [profile, tenant, user] = await Promise.all([
+        getGstProfile(tenantId),
+        prisma.tenant.findFirst({ where: { id: tenantId }, select: { name: true } }),
+        prisma.user.findFirst({ where: { id: req.user!.userId }, select: { firstName: true, lastName: true } }),
+      ]);
+      const body = req.body as import('./gst-reports.pdf').ReportPdfInput;
+      const pdf = await renderReportPdf(
+        { ...body, runBy: user ? [user.firstName, user.lastName].filter(Boolean).join(' ') : null },
+        {
+          hospitalName: profile.legalName ?? tenant?.name ?? null,
+          gstin: profile.registered ? profile.gstin : null,
+          gstinVerified: profile.gstinVerified,
+          // Gap #311: "not verified" until the provider confirms this GSTIN,
+          // and a SANDBOX label even when the sandbox did.
+          gstinCaption: gstinVerificationCaption(profile),
+        },
+      );
+      const safe = body.title.replace(/[^A-Za-z0-9-]+/g, '_').slice(0, 60);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${safe}.pdf"`);
+      res.send(pdf);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 // ── Group B — purchases and input tax credit ──────────────────────────────
 
 const purchaseQuerySchema = z.object({
@@ -366,7 +426,7 @@ gstRoutes.post(
       sendResponse({
         res,
         statusCode: 201,
-        message: `GSTR-2B for ${data.returnPeriod} imported — ${data.documents} document(s)`,
+        message: `GSTR-2B for ${returnPeriodLabel(data.returnPeriod)} imported — ${data.documents} document(s)`,
         data,
       });
     } catch (err) {
@@ -548,7 +608,26 @@ gstRoutes.get(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const data = await archive.getFiledPeriod(req.user!.tenantId, String(req.params.id));
-      sendResponse({ res, message: `Filed period ${data.returnPeriod}`, data });
+      sendResponse({ res, message: `Filed period ${returnPeriodLabel(data.returnPeriod)}`, data });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/** Gap 281: the reopen / correction trail of one filed period. */
+gstRoutes.get(
+  '/reports/filed-periods/:id/history',
+  ...gstReportAccess,
+  validate(z.object({ params: z.object({ id: z.string().uuid() }) })),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const data = await archive.getFiledPeriod(req.user!.tenantId, String(req.params.id));
+      sendResponse({
+        res,
+        message: `History of ${returnPeriodLabel(data.returnPeriod)}`,
+        data: { id: data.id, returnPeriod: data.returnPeriod, status: data.status, versions: data.versions, history: data.history },
+      });
     } catch (err) {
       next(err);
     }
@@ -561,6 +640,10 @@ gstRoutes.get(
  * Locking is what makes section 6.10 real: every bill dated inside a locked
  * period becomes read-only, and a correction has to go through a credit note in
  * the current period. Filing on its own only archives the figures.
+ *
+ * Gap 281: REOPENING needs an amendment role (admin / billing admin — 403
+ * otherwise) and a non-empty correction reason (400 otherwise). Both are
+ * enforced in the service so no other caller can skip them.
  */
 gstRoutes.patch(
   '/reports/filed-periods/:id/lock',
@@ -568,20 +651,22 @@ gstRoutes.patch(
   validate(
     z.object({
       params: z.object({ id: z.string().uuid() }),
-      body: z.object({ locked: z.boolean() }),
+      body: z.object({ locked: z.boolean(), reason: z.string().max(1000).nullish() }),
     }),
   ),
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
+      const body = req.body as { locked: boolean; reason?: string | null };
       const data = await archive.setFiledPeriodLock(
         req.user!.tenantId,
-        req.user!.userId,
+        { userId: req.user!.userId, roles: req.user!.roles ?? [] },
         String(req.params.id),
-        Boolean((req.body as { locked: boolean }).locked),
+        Boolean(body.locked),
+        body.reason ?? null,
       );
       sendResponse({
         res,
-        message: data.lockedAt ? `Period ${data.returnPeriod} locked` : `Period ${data.returnPeriod} reopened`,
+        message: data.lockedAt ? `${returnPeriodLabel(data.returnPeriod)} locked` : `${returnPeriodLabel(data.returnPeriod)} reopened for correction`,
         data,
       });
     } catch (err) {
@@ -593,9 +678,9 @@ gstRoutes.patch(
 /**
  * Freeze a period as filed.
  *
- * Re-filing the same month replaces the copy rather than adding a second one:
- * there is only ever one answer to "what did you file for September", and a
- * revised return is still that one answer.
+ * Gap 281: re-filing a month is a CORRECTION. It needs the period reopened, an
+ * amendment role and a reason; the original snapshot is kept and the corrected
+ * figures are stored as the next version in the period's history.
  */
 gstRoutes.post(
   '/reports/filed-periods',
@@ -607,13 +692,22 @@ gstRoutes.post(
         to: z.string().regex(DATE),
         note: z.string().max(1000).nullish(),
         sixDigit: z.boolean().optional(),
+        /** Gap 281: required when correcting a period already filed. */
+        reason: z.string().max(1000).nullish(),
       }),
     }),
   ),
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
-      const data = await archive.filePeriod(req.user!.tenantId, req.user!.userId, req.body);
-      sendResponse({ res, statusCode: 201, message: `Period ${data.returnPeriod} archived as filed`, data });
+      const data = await archive.filePeriod(req.user!.tenantId, req.user!.userId, req.body, req.user!.roles ?? []);
+      sendResponse({
+        res,
+        statusCode: 201,
+        message: data.correction
+          ? `${returnPeriodLabel(data.returnPeriod)} correction filed as version ${data.version} and locked — the original filing is kept`
+          : `${returnPeriodLabel(data.returnPeriod)} filed and locked`,
+        data,
+      });
     } catch (err) {
       next(err);
     }

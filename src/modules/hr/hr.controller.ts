@@ -2,12 +2,19 @@ import { Response, NextFunction } from 'express';
 import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse, sendPaginatedResponse } from '../../shared/apiResponse';
 import * as service from './hr.service';
+import * as hospitalSettings from '../hospital-settings/hospital-settings.service';
 
 // Staff
 export async function createStaffProfile(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const data = await service.createStaffProfile(req.user!.tenantId, req.body);
     sendResponse({ res, statusCode: 201, message: 'Staff profile created', data });
+  } catch (err) { next(err); }
+}
+export async function importStaffFromUsers(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await service.importStaffFromUsers(req.user!.tenantId, req.body);
+    sendResponse({ res, statusCode: 201, message: `${data.created} staff profile(s) imported`, data });
   } catch (err) { next(err); }
 }
 export async function getStaffProfiles(req: AuthenticatedRequest, res: Response, next: NextFunction) {
@@ -203,6 +210,21 @@ export async function getSalarySlipPdf(req: AuthenticatedRequest, res: Response,
 }
 
 // Dashboard (Week 14)
+// Gap 313: tenant HR settings (roster week start day).
+export async function getHrSettings(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await hospitalSettings.getHrSettings(req.user!.tenantId);
+    sendResponse({ res, message: 'HR settings', data });
+  } catch (err) { next(err); }
+}
+
+export async function updateHrSettings(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await hospitalSettings.updateHrSettings(req.user!.tenantId, req.body ?? {});
+    sendResponse({ res, message: 'HR settings saved', data });
+  } catch (err) { next(err); }
+}
+
 export async function getHrDashboard(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const data = await service.getHrDashboard(req.user!.tenantId);

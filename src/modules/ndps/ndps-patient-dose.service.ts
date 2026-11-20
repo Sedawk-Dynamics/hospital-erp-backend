@@ -6,6 +6,7 @@ import { taxResolverFor, type TaxResolver } from '../gst/gst-resolver.service';
 import { getControlledDrugSettings } from '../hospital-settings/hospital-settings.service';
 import { assertWitnessIdentity } from '../pharmacy/controlled-dispense';
 import { postConsumptionCharge } from './ndps.service';
+import { recordDrugStockMovement } from '../pharmacy/pharmacy.stock-movement';
 
 export type ResidualDisposition = 'none' | 'destroyed' | 'quarantined';
 export type ResidualHandling = 'pending_destruction' | 'sealed_quarantine';
@@ -565,6 +566,11 @@ async function consumePhysicalContainer(
       data: { quantityInStock: { decrement: containers } },
     });
     if (batch.count !== 1) throw AppError.conflict('Batch stock changed. Refresh and try again.');
+    // 349: a patient dose drawn straight from pharmacy batch stock.
+    await recordDrugStockMovement(tx, {
+      tenantId, drugId: drug.id, drugBatchId: input.drugBatchId, movementType: 'ndps',
+      quantity: -containers, referenceType: 'ndps_patient_dose', performedBy: userId,
+    });
   }
 
   return { containers, drug, userId };

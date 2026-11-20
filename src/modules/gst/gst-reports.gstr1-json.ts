@@ -23,7 +23,9 @@
 import { r2 } from '../../shared/gst';
 import { logger } from '../../config/logger';
 import { getSalesRegister, getHsnSummary, type SalesReportQuery, type SalesLine } from './gst-reports.sales';
-import { getCreditNoteRegister } from './gst-reports.returns';
+import {
+  getCreditNoteRegister, bucketHasValue, notesThatReduceOutward, noteExclusions,
+} from './gst-reports.returns';
 
 /** The government's date format inside the JSON. */
 const gstDate = (d: Date) => {
@@ -31,6 +33,10 @@ const gstDate = (d: Date) => {
   const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
   return `${dd}-${mm}-${d.getUTCFullYear()}`;
 };
+
+// "112026" → "Nov 2026" (gap 310). Lives with the period lock so the shared
+// lock guard can use it without importing this module; re-exported for callers.
+export { returnPeriodLabel } from '../../shared/gst-period-lock';
 
 /** The return period the file declares itself for: MMYYYY. */
 export function returnPeriod(from: string | undefined, to: string | undefined): string {
@@ -195,7 +201,19 @@ export async function buildGstr1Json(
 
   // ── 9B. Credit and debit notes. Only ones against a numbered invoice can
   //        be filed: Table 9B keys on the ORIGINAL document. ──
-  const filable = notes.rows.filter((c) => c.reportable);
+  //        Notes against exempt / nil / non-GST bills are NOT Table 9B — they
+  //        reduce Table 8 (gap item 261) — so only the taxable side is filed.
+  const taxableSideOf = (c: (typeof notes.rows)[number]) =>
+    r2(c.byTreatment.taxable.totalAmount + c.byTreatment.zero_rated.totalAmount);
+  const hasTaxableSide = (c: (typeof notes.rows)[number]) =>
+    bucketHasValue(c.byTreatment.taxable) || bucketHasValue(c.byTreatment.zero_rated);
+  //        The same note selection as GSTR-3B and the A-8 summary: a note
+  //        past the section 34 deadline, or one cancelling a voided sale that
+  //        is already out of the register, is not declared (gap item 274).
+  const declarable = notesThatReduceOutward(notes.rows);
+  const excludedNotes = noteExclusions(notes.rows);
+  const filable = declarable.filter((c) => c.reportable && hasTaxableSide(c));
+  const exemptOnlyNotes = declarable.filter((c) => c.reportable && !hasTaxableSide(c)).length;
 
   /**
    * A note's items grouped by rate, one `itm_det` per rate.
@@ -211,6 +229,7 @@ export async function buildGstr1Json(
       { txval: number; iamt: number; camt: number; samt: number; csamt: number }
     >();
     for (const it of c.items ?? []) {
+      if (it.gstTreatment !== 'taxable' && it.gstTreatment !== 'zero_rated') continue;
       const rt = Number(it.taxPercent ?? 0);
       const cur = byRate.get(rt) ?? { txval: 0, iamt: 0, camt: 0, samt: 0, csamt: 0 };
       cur.txval = r2(cur.txval + Number(it.taxableValue ?? 0));
@@ -224,12 +243,13 @@ export async function buildGstr1Json(
     // figures — leaving it out of the return would be worse than reporting it
     // under a single rate.
     if (byRate.size === 0) {
+      const t = c.byTreatment.taxable;
       byRate.set(0, {
-        txval: c.taxableValue,
-        iamt: c.igstAmount,
-        camt: c.cgstAmount,
-        samt: c.sgstAmount,
-        csamt: c.cessAmount,
+        txval: t.taxableValue,
+        iamt: t.igstAmount,
+        camt: t.cgstAmount,
+        samt: t.sgstAmount,
+        csamt: t.cessAmount,
       });
     }
     return [...byRate.entries()].map(([rt, v], i) => ({ num: i + 1, itm_det: { rt, ...v } }));
@@ -243,7 +263,7 @@ export async function buildGstr1Json(
     nt_dt: gstDate(c.issueDate),
     inum: c.againstInvoiceNumber!,
     idt: c.againstBillDate ? gstDate(c.againstBillDate) : undefined,
-    val: c.totalAmount,
+    val: taxableSideOf(c),
     pos: c.placeOfSupplyStateCode ?? profile.stateCode ?? '',
     itms: noteItems(c),
   });
@@ -380,8 +400,14 @@ export async function buildGstr1Json(
     warnings: [
       ...amendmentWarnings,
       ...(profile.registered ? [] : ['This hospital is not registered under GST — the file has no GSTIN and cannot be uploaded.']),
-      ...(notes.rows.length > filable.length
-        ? [`${notes.rows.length - filable.length} credit note(s) are against a bill that was never issued a number and cannot be reported.`]
+      ...(notes.rows.some((c) => !c.reportable)
+        ? [`${notes.rows.filter((c) => !c.reportable).length} credit note(s) are against a bill that was never issued a number and cannot be reported.`]
+        : []),
+      ...(excludedNotes.outsideTimeLimit > 0
+        ? [`${excludedNotes.outsideTimeLimit} note(s) were issued past the section 34 deadline and are not in the file — the tax on them cannot be reversed.`]
+        : []),
+      ...(exemptOnlyNotes > 0
+        ? [`${exemptOnlyNotes} credit/debit note(s) reverse only exempt, nil-rated or non-GST supplies. They are not Table 9B; they reduce Table 8 (shown in the GSTR-1 summary).`]
         : []),
       ...(hsn.unclassified.count > 0
         ? [`${hsn.unclassified.count} line(s) have no HSN or SAC and are missing from table 12. See the unmapped items report.`]

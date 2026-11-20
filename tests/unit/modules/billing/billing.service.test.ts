@@ -1172,8 +1172,9 @@ describe('BillingService', () => {
   // ═══════════════════════════════════════════
   describe('addIpCharge', () => {
     it('adds to a pending TPA bill and restores its committed insurer split', async () => {
+      // An open stay: charges are refused on a discharged one (gap item 339).
       vi.mocked(prisma.admission.findFirst).mockResolvedValue({
-        id: 'admission-1', patientId: 'patient-1',
+        id: 'admission-1', patientId: 'patient-1', status: 'admitted',
       } as any);
       vi.mocked(prisma.bill.findFirst)
         .mockResolvedValueOnce({
@@ -1738,8 +1739,9 @@ describe('BillingService', () => {
         data: expect.objectContaining({
           unitPrice: 100,
           taxPercent: 12,
-          // 100 − 100/1.12 = 10.71 of GST already inside the ₹100.
-          taxAmount: 10.71,
+          // GST already inside the ₹100: CGST = SGST = 6% of 89.28… = 5.36 each
+          // (one half-rate figure for both heads, gap item 312).
+          taxAmount: 10.72,
           totalAmount: 100,
         }),
       });
@@ -1848,7 +1850,7 @@ describe('BillingService', () => {
       ]);
 
       expect(prisma.billItem.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({ taxPercent: 12, taxAmount: 10.71, totalAmount: 100 }),
+        data: expect.objectContaining({ taxPercent: 12, taxAmount: 10.72, totalAmount: 100 }),
       });
     });
 
@@ -2276,7 +2278,9 @@ describe('BillingService', () => {
       );
     });
 
-    it('scopes a self-pay settlement to that patient, claim-free', async () => {
+    // Claim-free bills, plus the patient's own share of an insurer-split bill
+    // (gap item 287) — never a claim bill with no recorded split.
+    it('scopes a self-pay settlement to that patient: claim-free or their share of a split bill', async () => {
       vi.mocked(prisma.bill.findMany).mockResolvedValue([]);
 
       await expect(
@@ -2287,7 +2291,8 @@ describe('BillingService', () => {
         expect.objectContaining({
           where: expect.objectContaining({
             patientId: 'patient-1',
-            insuranceClaims: { none: {} },
+            balanceDue: { gt: 0 },
+            OR: [{ insuranceClaims: { none: {} } }, { insuranceCoveredAmount: { gt: 0 } }],
           }),
         }),
       );

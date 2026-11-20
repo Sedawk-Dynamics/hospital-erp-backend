@@ -2,7 +2,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
-import { formatDateTimeIST } from '../../shared/date.utils';
+import { formatDateTimeIST, istDayStart, istDayEnd } from '../../shared/date.utils';
 import { getPaginationParams } from '../../shared/pagination';
 import type {
   CreateSavedReportInput,
@@ -143,8 +143,10 @@ export async function generateReport(
     throw AppError.notFound('Saved report not found');
   }
 
-  const fromDate = body?.fromDate ? new Date(body.fromDate) : undefined;
-  const toDate = body?.toDate ? new Date(body.toDate) : undefined;
+  // IST day bounds, end date inclusive (gap 359): `new Date('2026-11-13')` is
+  // UTC midnight and cut off the whole end date.
+  const fromDate = body?.fromDate ? istDayStart(body.fromDate) : undefined;
+  const toDate = body?.toDate ? istDayEnd(body.toDate) : undefined;
 
   const dateFilter: any = {};
   if (fromDate) {

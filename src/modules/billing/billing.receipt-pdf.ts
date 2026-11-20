@@ -90,7 +90,7 @@ export function streamReceiptPdf(
     subtitle: `Bill ${receipt.payment.bill.billNumber}`,
     meta: [
       { label: 'Receipt', value: receipt.receiptNumber },
-      { label: 'Date', value: new Date(receipt.receiptDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) },
+      { label: 'Date', value: new Date(receipt.receiptDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' }) },
     ],
     filename: `receipt-${receipt.receiptNumber}.pdf`,
   });
@@ -98,7 +98,7 @@ export function streamReceiptPdf(
   drawKeyValueCard(pdf, theme, [
     ['Receipt No', receipt.receiptNumber],
     ['Bill No', receipt.payment.bill.billNumber],
-    ['Date', new Date(receipt.receiptDate).toLocaleString('en-IN')],
+    ['Date', new Date(receipt.receiptDate).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })], // gap 362
     ['Txn Ref', receipt.payment.transactionId ?? '—'],
     ['Patient', `${receipt.payment.bill.patient.firstName} ${receipt.payment.bill.patient.lastName ?? ''}`.trim()],
     ['MRN', receipt.payment.bill.patient.mrn ?? '—'],

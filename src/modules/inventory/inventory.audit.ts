@@ -25,3 +25,13 @@ export async function safeInventoryAudit(params: {
 }) {
   return writeAudit(params);
 }
+
+/**
+ * Gap 303: a stock snapshot for oldValues/newValues so the Inventory Audit Logs
+ * page can show before/after quantity and value (at purchase cost) per action.
+ */
+export function stockSnapshot(qty: number, unitCost: unknown) {
+  const cost = Number(unitCost);
+  const unit = Number.isFinite(cost) ? cost : 0;
+  return { qty, unitCost: unit, value: Math.round(qty * unit * 100) / 100 };
+}

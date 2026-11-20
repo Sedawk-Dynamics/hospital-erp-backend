@@ -5,6 +5,7 @@ import { AppError } from '../../shared/appError';
 import { findOpenChargeBill } from '../../shared/charge-bill';
 import { createBillInSeries } from '../../shared/bill-number';
 import { taxResolverFor, billItemTaxFields, type TaxResolver } from '../gst/gst-resolver.service';
+import { recordDrugStockMovement } from '../pharmacy/pharmacy.stock-movement';
 
 // ============================================================
 // NDPS Narcotic Accounting (spec — Essential Narcotic Drug lifecycle)
@@ -233,6 +234,11 @@ async function drawFromBatches(
       where: { id: b.id },
       data: { quantityInStock: { decrement: take } },
     });
+    // 349: NDPS consumption drawn from pharmacy batch stock.
+    await recordDrugStockMovement(tx, {
+      tenantId, drugId: drugFormularyId, drugBatchId: b.id, movementType: 'ndps', quantity: -take,
+      referenceType: 'ndps_consumption',
+    });
     firstUsed ??= b.id;
     remaining -= take;
   }
@@ -311,6 +317,12 @@ export async function receiveConsignment(
           },
         });
 
+    // 349: the Form 3C receipt into pharmacy batch stock.
+    await recordDrugStockMovement(tx, {
+      tenantId, drugId: data.drugFormularyId, drugBatchId: batch?.id, movementType: 'receipt',
+      quantity: data.quantity, referenceType: 'ndps_inward', referenceId: batch?.id, performedBy: userId,
+      notes: `NDPS inward ${batchNumber}`,
+    });
     await adjustBalance(tx, tenantId, data.drugFormularyId, vault.id, data.quantity);
     return tx.ndpsTransaction.create({
       data: {

@@ -23,6 +23,10 @@ export const createNotificationSchema = z.object({
     channel: z.enum(['in_app', 'sms', 'email', 'push']).default('in_app'),
     referenceType: z.string().max(50).optional(),
     referenceId: z.string().optional(),
+    // Gap 295: optional parts of the idempotency key. Without eventKey the
+    // title names the event; reminderStage gives each reminder stage its own row.
+    eventKey: z.string().trim().min(1).max(100).optional(),
+    reminderStage: z.string().trim().min(1).max(50).optional(),
   }),
 });
 

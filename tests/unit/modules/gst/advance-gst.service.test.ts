@@ -40,17 +40,19 @@ describe('computeAdvanceTax', () => {
     const t = computeAdvanceTax(REGISTERED, { amount: 10000, purpose: 'accommodation' });
     expect(t.gstTreatment).toBe('taxable');
     expect(t.taxRatePercent).toBe(5);
-    // Money in hand is tax-inclusive: the patient handed over 10,000.
-    expect(t.taxableValue).toBe(9523.81);
-    expect(t.taxAmount).toBe(476.19);
-    expect(t.cgstAmount + t.sgstAmount).toBeCloseTo(476.19, 2);
+    // Money in hand is tax-inclusive: the patient handed over 10,000. CGST and
+    // SGST are each 2.5% of the taxable value — one figure (gap item 312).
+    expect(t.taxableValue).toBe(9523.8);
+    expect(t.taxAmount).toBe(476.2);
+    expect(t.cgstAmount).toBe(t.sgstAmount);
+    expect(t.cgstAmount + t.sgstAmount).toBeCloseTo(476.2, 2);
   });
 
   it('taxes an advance against non-therapeutic work at 18%', () => {
     const t = computeAdvanceTax(REGISTERED, { amount: 20000, purpose: 'non_therapeutic' });
     expect(t.taxRatePercent).toBe(18);
-    expect(t.taxableValue).toBe(16949.15);
-    expect(t.taxAmount).toBe(3050.85);
+    expect(t.taxableValue).toBe(16949.16);
+    expect(t.taxAmount).toBe(3050.84);
   });
 
   it('honours a rate the hospital states over the default', () => {
@@ -129,7 +131,7 @@ describe('advancePaymentTaxFields', () => {
     });
     expect(f.voucherNumber).toBeNull();
     expect(f.gstTreatment).toBe('taxable');
-    expect(f.taxAmount).toBe(476.19);
+    expect(f.taxAmount).toBe(476.2);
   });
 });
 

@@ -1,4 +1,6 @@
 import { prisma } from '../../config/database';
+import { loadPaidSaleLines, marginPercent } from './pharmacy.sales-figures';
+import { getStockValuation } from '../inventory/stock-valuation.service';
 
 // ============================================================
 // Pharmacy — Detailed Analysis report (single-call deep rollup).
@@ -46,21 +48,10 @@ export async function getPharmacyDetailedReport(tenantId: string, range: Range) 
   const in60 = new Date(now.getTime() + 60 * DAY_MS);
   const in90 = new Date(now.getTime() + 90 * DAY_MS);
 
-  const [dispenses, returns, liveBatches, purchasedBatches, users] = await Promise.all([
-    prisma.dispensingRecord.findMany({
-      // A voided sale is not a sale.
-      where: { tenantId, cancelledAt: null, dispensedAt: { gte: from, lte: to } },
-      select: {
-        quantityDispensed: true, unitPrice: true, lineTotal: true, dispensedAt: true,
-        dispensedBy: true, billId: true,
-        drugBatch: {
-          select: {
-            purchasePrice: true, sellingPrice: true, mrp: true,
-            drug: { select: { id: true, drugName: true, dosageForm: true, taxPercent: true } },
-          },
-        },
-      },
-    }),
+  const [dispenses, returns, liveBatches, purchasedBatches] = await Promise.all([
+    // 346/348: paid bill lines only, priced as billed — the same query the
+    // Reports summary tiles run (see pharmacy.sales-figures).
+    loadPaidSaleLines(tenantId, from, to),
     prisma.drugReturn.findMany({
       where: { tenantId, createdAt: { gte: from, lte: to } },
       select: { returnType: true, quantity: true, refundAmount: true, creditAmount: true, status: true },
@@ -80,68 +71,76 @@ export async function getPharmacyDetailedReport(tenantId: string, range: Range) 
         supplier: { select: { name: true } },
       },
     }),
-    prisma.user.findMany({ where: { tenantId }, select: { id: true, firstName: true, lastName: true } }),
   ]);
 
-  const userName = new Map(users.map((u) => [u.id, `${u.firstName ?? ''} ${u.lastName ?? ''}`.trim() || 'Unknown']));
+  // 347: the dispenser's name comes from the user row the sale points at. The
+  // old lookup only knew users of THIS tenant, so anyone signed in from another
+  // tenant record (a group admin, a support login) printed as 'Unknown'.
+  const userName = new Map<string, string>();
+  for (const r of dispenses) {
+    const n = `${r.dispenser?.firstName ?? ''} ${r.dispenser?.lastName ?? ''}`.trim();
+    if (n) userName.set(r.dispensedBy, n);
+  }
 
-  // ---- Per-line revenue / cost from the dispensing ledger ----
-  const lineRev = (r: (typeof dispenses)[number]) => {
-    const qty = r.quantityDispensed;
-    if (r.lineTotal != null) return num(r.lineTotal);
-    const unit = r.unitPrice != null ? num(r.unitPrice) : num(r.drugBatch?.sellingPrice ?? r.drugBatch?.mrp);
-    return unit * qty;
-  };
-  const lineCost = (r: (typeof dispenses)[number]) => num(r.drugBatch?.purchasePrice) * r.quantityDispensed;
-
-  let revenue = 0, cost = 0, itemsSold = 0;
+  let revenue = 0, cost = 0, itemsSold = 0, costedRetail = 0, costMissingLines = 0;
   const bills = new Set<string>();
   const trend = new Map<string, { revenue: number; profit: number; lines: number; qty: number }>();
   const byForm = new Map<string, { qty: number; revenue: number }>();
-  const byDrug = new Map<string, { drugId: string; drugName: string; qty: number; revenue: number; cost: number }>();
+  const byDrug = new Map<string, { drugId: string; drugName: string; qty: number; revenue: number; cost: number; costedRetail: number; costMissing: boolean }>();
   const byDispenser = new Map<string, { lines: number; qty: number; revenue: number }>();
   const byRate = new Map<number, { taxable: number; tax: number; lines: number }>();
   const soldDrugIds = new Set<string>();
 
   for (const r of dispenses) {
-    const rev = lineRev(r);
-    const c = lineCost(r);
-    revenue += rev; cost += c; itemsSold += r.quantityDispensed;
+    const f = r.figures;
+    const rev = f.revenue;
+    // 348: profit is retail EXCLUDING tax less cost; a line with no cost adds
+    // to revenue but not to profit, and is counted so the screen can say so.
+    const c = f.cost ?? 0;
+    const lineProfit = f.profit ?? 0;
+    revenue += rev; itemsSold += r.quantityDispensed;
+    if (f.cost == null) costMissingLines += 1;
+    else { cost += f.cost; costedRetail += f.retailExclTax; }
     if (r.billId) bills.add(r.billId);
 
     const day = istDay(r.dispensedAt);
     const t = trend.get(day) ?? { revenue: 0, profit: 0, lines: 0, qty: 0 };
-    t.revenue += rev; t.profit += rev - c; t.lines += 1; t.qty += r.quantityDispensed;
+    t.revenue += rev; t.profit += lineProfit; t.lines += 1; t.qty += r.quantityDispensed;
     trend.set(day, t);
 
     const form = r.drugBatch?.drug?.dosageForm ?? 'other';
-    const f = byForm.get(form) ?? { qty: 0, revenue: 0 };
-    f.qty += r.quantityDispensed; f.revenue += rev; byForm.set(form, f);
+    const fm = byForm.get(form) ?? { qty: 0, revenue: 0 };
+    fm.qty += r.quantityDispensed; fm.revenue += rev; byForm.set(form, fm);
 
     const drug = r.drugBatch?.drug;
     if (drug) {
       soldDrugIds.add(drug.id);
-      const d = byDrug.get(drug.id) ?? { drugId: drug.id, drugName: drug.drugName, qty: 0, revenue: 0, cost: 0 };
-      d.qty += r.quantityDispensed; d.revenue += rev; d.cost += c; byDrug.set(drug.id, d);
+      const d = byDrug.get(drug.id) ?? { drugId: drug.id, drugName: drug.drugName, qty: 0, revenue: 0, cost: 0, costedRetail: 0, costMissing: false };
+      d.qty += r.quantityDispensed; d.revenue += rev;
+      if (f.cost == null) d.costMissing = true;
+      else { d.cost += c; d.costedRetail += f.retailExclTax; }
+      byDrug.set(drug.id, d);
     }
 
     const disp = byDispenser.get(r.dispensedBy) ?? { lines: 0, qty: 0, revenue: 0 };
     disp.lines += 1; disp.qty += r.quantityDispensed; disp.revenue += rev; byDispenser.set(r.dispensedBy, disp);
 
-    // GST (MRP is tax-inclusive in Indian pharmacy): tax = rev * rate / (100 + rate).
-    const rate = num(drug?.taxPercent);
+    // GST at the rate the line was BILLED at (stored on it), not the drug's
+    // current master rate, with the bill line's own taxable value.
+    const rate = f.taxPercent;
     const g = byRate.get(rate) ?? { taxable: 0, tax: 0, lines: 0 };
-    const tax = rate > 0 ? (rev * rate) / (100 + rate) : 0;
-    g.taxable += rev - tax; g.tax += tax; g.lines += 1; byRate.set(rate, g);
+    g.taxable += f.retailExclTax; g.tax += f.tax; g.lines += 1; byRate.set(rate, g);
   }
 
-  const grossProfit = revenue - cost;
+  const grossProfit = costedRetail - cost;
 
   const sales = {
     revenue: round2(revenue),
     cost: round2(cost),
     grossProfit: round2(grossProfit),
-    marginPct: pct(grossProfit, revenue),
+    // 348: margin on cost; null when no line in the period has a cost.
+    marginPct: marginPercent(costedRetail, cost > 0 ? cost : null),
+    costMissingLines,
     lines: dispenses.length,
     itemsSold,
     bills: bills.size,
@@ -164,7 +163,10 @@ export async function getPharmacyDetailedReport(tenantId: string, range: Range) 
 
   const drugRows = [...byDrug.values()].map((d) => ({
     drugId: d.drugId, drugName: d.drugName, qty: d.qty,
-    revenue: round2(d.revenue), profit: round2(d.revenue - d.cost), marginPct: pct(d.revenue - d.cost, d.revenue),
+    revenue: round2(d.revenue),
+    // 348: null margin = 'Cost not set' on screen, never a made-up percentage.
+    profit: d.cost > 0 ? round2(d.costedRetail - d.cost) : null,
+    marginPct: d.costMissing ? null : marginPercent(d.costedRetail, d.cost),
   }));
   const topByRevenue = [...drugRows].sort((a, b) => b.revenue - a.revenue).slice(0, 15);
   const topByQuantity = [...drugRows].sort((a, b) => b.qty - a.qty).slice(0, 15);
@@ -244,13 +246,18 @@ export async function getPharmacyDetailedReport(tenantId: string, range: Range) 
     }
   }
 
+  // Gap 301: headline stock value from the shared inventory valuation service
+  // (medicines only on this page) so it matches the Inventory screens.
+  const stock = (await getStockValuation(tenantId, { now })).drugs;
   const valuation = {
-    batchCount: liveBatches.length,
-    drugCount: stockByDrug.size,
-    costValue: round2(costValue),
-    retailValue: round2(retailValue),
-    potentialMargin: round2(retailValue - costValue),
-    marginPct: pct(retailValue - costValue, retailValue),
+    basis: 'purchase_cost' as const,
+    asOf: now.toISOString(),
+    batchCount: stock.batchCount,
+    drugCount: stock.count,
+    costValue: stock.costValue,
+    retailValue: stock.retailValue,
+    potentialMargin: round2(stock.retailValue - stock.costValue),
+    marginPct: pct(stock.retailValue - stock.costValue, stock.retailValue),
     byForm: [...valByForm.entries()]
       .map(([form, v]) => ({ form, costValue: round2(v.costValue), retailValue: round2(v.retailValue), units: v.units }))
       .sort((a, b) => b.costValue - a.costValue),

@@ -328,6 +328,10 @@ describe('Compliance Service - scheduleOT notifications', () => {
   beforeEach(() => {
     vi.mocked(prisma.otRequest.findFirst).mockResolvedValue(REQ as any);
     vi.mocked(prisma.otRequest.update).mockResolvedValue(scheduled() as any);
+    // Gap 350: scheduling needs a theatre from the master.
+    vi.mocked(prisma.operatingTheater.findFirst).mockResolvedValue({
+      id: 'ot-room-1', name: 'OT-1', status: 'available',
+    } as any);
     // `notify` is fire-and-forget and chains .catch(), so the mock has to
     // return a promise rather than the bare undefined the shared mock gives.
     (prisma.notification.create as any).mockResolvedValue({ id: 'notif-1' });

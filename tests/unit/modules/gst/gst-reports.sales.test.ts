@@ -255,3 +255,32 @@ describe('the folds of A-1', () => {
     );
   });
 });
+
+// Gap item 278: total turnover, taxable value and exempt value are three
+// different figures; the header used to call the first one "Taxable value".
+describe('turnover summary (gap item 278)', () => {
+  it('A-1 reports total turnover, taxable and exempt separately', async () => {
+    seed([bill({ billItems: [taxedItem(), item({ taxableValue: 1000, totalAmount: 1000 })] })]);
+    const r = await getSalesRegister(TENANT);
+    expect(r.summary).toMatchObject({
+      totalTurnover: 9000,
+      taxableValue: 8000,
+      exemptNilNonGst: 1000,
+      cgstAmount: 200,
+      sgstAmount: 200,
+      igstAmount: 0,
+      taxAmount: 400,
+      invoiceValue: 9400,
+    });
+  });
+
+  // Gap item 277: GSTR-9 4A/4B read these, and exempt turnover is 5D.
+  it('A-4 / A-5 keep taxable totals apart from exempt', async () => {
+    seed([bill({ billItems: [taxedItem(), item({ taxableValue: 1000, totalAmount: 1000 })] })]);
+    const b2c = await getB2cSummary(TENANT);
+    expect(b2c.taxableTotals.taxableValue).toBe(8000);
+    expect(b2c.exemptTotals.taxableValue).toBe(1000);
+    // Exempt at 0% and taxable lines are separate summary rows, each labelled.
+    expect(b2c.summary.map((x) => x.treatment).sort()).toEqual(['exempt', 'taxable']);
+  });
+});

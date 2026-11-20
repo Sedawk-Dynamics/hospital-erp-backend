@@ -674,6 +674,20 @@ export async function getCreditSettlements(
   }
 }
 
+/** Gap 287: the bills behind one Receivables headline figure. */
+export async function getReceivableLines(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await billingService.getReceivableLines(req.user!.tenantId, req.query as any);
+    sendResponse({ res, message: 'Receivable lines retrieved', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function settleCredit(
   req: AuthenticatedRequest,
   res: Response,
@@ -786,7 +800,7 @@ export async function removeBillItem(
 export async function finalizeBill(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const tenantId = req.user!.tenantId;
-    const bill = await billingService.finalizeBill(
+    const bill = await billingService.finalizeBillAtCounter(
       tenantId,
       req.user!.userId,
       req.params.id as string,
@@ -860,13 +874,28 @@ export async function removeIpCharge(req: AuthenticatedRequest, res: Response, n
 
 export async function consolidateAdmissionBill(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
+    // `finalize: false` pulls the stay's unbilled charges onto its running
+    // bill without closing it — what Generate Bill does on open (gap 338).
+    const finalize = (req.body as { finalize?: boolean } | undefined)?.finalize !== false;
     const data = await billingService.consolidateAdmissionBill(
       req.user!.tenantId,
       req.user!.userId,
       req.params.admissionId as string,
-      { finalize: true },
+      { finalize },
     );
     sendResponse({ res, message: 'IP bill consolidated', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getAdmissionAdvanceBalance(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await billingService.getAdmissionAdvanceBalance(
+      req.user!.tenantId,
+      req.params.admissionId as string,
+    );
+    sendResponse({ res, message: 'Stay advance balance', data });
   } catch (err) {
     next(err);
   }

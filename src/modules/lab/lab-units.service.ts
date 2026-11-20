@@ -32,7 +32,26 @@ function canWriteLocal(roles: string[]): boolean {
 // Unit Groups
 // ─────────────────────────────────────────────────────────────
 
-export async function listUnitGroups(tenantId: string) {
+/**
+ * Gap 314: platform QA records ("QA Units — QA STAGING ONLY - edited group")
+ * leaked into every hospital's Lab Settings → Units. There is no test-only
+ * column (and adding one needs a migration), so global rows whose code, name
+ * or description is marked as QA / staging / test-only are hidden from
+ * hospitals. Nothing is deleted; super admins still see them.
+ */
+const PLATFORM_TEST_MARKER = /\b(qa[\s_-]*(staging|units?|test)|staging[\s_-]*only|test[\s_-]*only|do[\s_-]*not[\s_-]*use)\b/i;
+
+export function isPlatformTestRecord(g: {
+  tenantId: string | null;
+  code?: string | null;
+  name?: string | null;
+  description?: string | null;
+}): boolean {
+  if (g.tenantId !== null) return false; // a hospital's own rows are never hidden
+  return [g.code, g.name, g.description].some((v) => !!v && PLATFORM_TEST_MARKER.test(v));
+}
+
+export async function listUnitGroups(tenantId: string, opts: { includeTestRecords?: boolean } = {}) {
   // Merge global (tenantId null) + tenant-local. UI shows them grouped
   // with a "Hospital" badge for local rows.
   const groups = await prisma.labUnitGroup.findMany({
@@ -44,7 +63,7 @@ export async function listUnitGroups(tenantId: string) {
     },
     orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
   });
-  return groups;
+  return opts.includeTestRecords ? groups : groups.filter((g) => !isPlatformTestRecord(g));
 }
 
 export async function getUnitGroupByCode(tenantId: string, code: string) {

@@ -888,7 +888,9 @@ describe('Lab Service', () => {
       };
       txMock.labOrder.update.mockResolvedValue(cancelledOrder);
 
-      const result = await cancelLabOrder(TENANT_ID, 'order-1');
+      // Regression: cancelLabOrder gained a userId param (e4e1190, for the bill
+      // reversal); the test still passed the order id as the user id.
+      const result = await cancelLabOrder(TENANT_ID, USER_ID, 'order-1');
 
       expect(result.status).toBe('cancelled');
       expect(txMock.labOrderItem.updateMany).toHaveBeenCalledWith({
@@ -904,7 +906,7 @@ describe('Lab Service', () => {
         status: 'cancelled',
       });
 
-      await expect(cancelLabOrder(TENANT_ID, 'order-1')).rejects.toThrow(
+      await expect(cancelLabOrder(TENANT_ID, USER_ID, 'order-1')).rejects.toThrow(
         'Order is already cancelled',
       );
     });

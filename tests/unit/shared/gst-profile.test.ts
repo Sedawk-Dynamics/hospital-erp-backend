@@ -181,3 +181,27 @@ describe('defaultPlaceOfSupply', () => {
     expect(defaultPlaceOfSupply(DEFAULT_GST_PROFILE)).toEqual({ stateCode: null, stateName: null });
   });
 });
+
+// Gap item 311: the GSTIN is checked on save beyond its check digit, and the
+// profile says plainly that passing those checks is not portal verification.
+describe('GSTIN checks (gap item 311)', () => {
+  it('records the local checks and never claims verification', async () => {
+    const { mergeGstProfile: merge, DEFAULT_GST_PROFILE: base } = await import('../../../src/shared/gst-profile');
+    const p = merge(base, { gstin: '27AAPFU0939F1ZV', registered: true });
+    expect(p.gstinVerified).toBe(false);
+    expect(p.gstinChecks).toMatchObject({ format: true, checkDigit: true, stateCode: true, panMatches: null });
+    // The GST documentation's own example number.
+    expect(p.gstinChecks?.looksLikeSample).toBe(true);
+  });
+
+  it('compares the GSTIN with a stored hospital PAN', async () => {
+    const { mergeGstProfile: merge, DEFAULT_GST_PROFILE: base } = await import('../../../src/shared/gst-profile');
+    expect(merge(base, { gstin: '27AAPFU0939F1ZV', pan: 'AAPFU0939F' }).gstinChecks?.panMatches).toBe(true);
+    expect(merge(base, { gstin: '27AAPFU0939F1ZV', pan: 'BBBPF1234K' }).gstinChecks?.panMatches).toBe(false);
+  });
+
+  it('refuses a PAN that is not a PAN', async () => {
+    const { mergeGstProfile: merge, DEFAULT_GST_PROFILE: base } = await import('../../../src/shared/gst-profile');
+    expect(() => merge(base, { pan: '12345' })).toThrow(/PAN must be/);
+  });
+});

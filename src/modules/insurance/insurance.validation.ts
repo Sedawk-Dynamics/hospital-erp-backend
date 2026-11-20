@@ -231,6 +231,8 @@ export const getClaimsQuerySchema = z.object({
     fromDate: z.string().optional(),
     toDate: z.string().optional(),
     expiringWithinDays: z.coerce.number().int().positive().optional(),
+    // Gap 296: TPA-deadline filter behind the dashboard's expiry counts.
+    expiry: z.enum(['expired', 'expiring']).optional(),
   }),
 });
 

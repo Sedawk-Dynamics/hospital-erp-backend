@@ -1,8 +1,12 @@
 /**
  * Date utilities — all display dates use dd/MM/yyyy format and IST (Asia/Kolkata) timezone.
+ *
+ * The hospital's time zone. There is no per-hospital time-zone setting, so every
+ * "today", day boundary and printed timestamp is IST. Instants are stored in UTC;
+ * convert only when deciding a calendar day or rendering for a person.
  */
 
-const IST_TIMEZONE = 'Asia/Kolkata';
+export const IST_TIMEZONE = 'Asia/Kolkata';
 
 /** Get current date/time in IST */
 export function nowIST(): Date {
@@ -150,4 +154,84 @@ export function toISTISOString(date?: Date): string {
     second: '2-digit',
     hour12: false,
   });
+}
+
+// ── Time-zone helpers (gap 329 / 330 / 342 / 359 / 362) ─────────────────────
+//
+// Anything that reads the HOST clock's calendar (getHours, setHours,
+// toLocaleString without a timeZone) is wrong on a server running in UTC: the
+// hospital's 13:30 is the host's 08:00. Use these instead.
+
+/**
+ * The IST calendar date of an instant, as `YYYY-MM-DD`. A bare `YYYY-MM-DD`
+ * string is returned as-is (it already IS a calendar date). Defaults to today.
+ */
+export function istDateStr(date?: Date | string): string {
+  if (date instanceof Date) {
+    if (isNaN(date.getTime())) return toISODateStr(undefined);
+    return date.toLocaleDateString('en-CA', { timeZone: IST_TIMEZONE });
+  }
+  return toISODateStr(date);
+}
+
+/** Minutes since IST midnight for an instant (default: now). 13:30 IST → 810. */
+export function istMinutesOfDay(date: Date = new Date()): number {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: IST_TIMEZONE,
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date);
+  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? 0);
+  return get('hour') * 60 + get('minute');
+}
+
+/**
+ * True when a calendar date (e.g. a date of birth) lies after today in IST.
+ * Today itself is not in the future — a newborn registered on the day of birth
+ * is valid. Unparseable input is not "future" (let the date validator say so).
+ */
+export function isFutureISTDate(value: string | Date, now: Date = new Date()): boolean {
+  if (typeof value === 'string' && isNaN(Date.parse(value))) return false;
+  return istDateStr(value) > istDateStr(now);
+}
+
+/**
+ * Turn a date the UI sent for an event (admission, discharge…) into the instant
+ * to store.
+ *
+ * Date pickers send a bare `YYYY-MM-DD` — or `new Date('YYYY-MM-DD').toISOString()`,
+ * which is UTC midnight. Stored as-is, that instant prints as 05:30 AM IST no
+ * matter when the action happened (gap 342). A date-only value for TODAY means
+ * "now"; for another day it means the start of that IST day. A real timestamp
+ * is kept exactly.
+ */
+export function toEventInstant(value?: string | Date | null, now: Date = new Date()): Date {
+  if (value == null || value === '') return now;
+  if (value instanceof Date) return isNaN(value.getTime()) ? now : value;
+  const dateOnly = /^(\d{4}-\d{2}-\d{2})(?:T00:00(?::00(?:\.0+)?)?(?:Z|\+00:00))?$/.exec(value);
+  if (dateOnly) {
+    const ymd = dateOnly[1];
+    if (ymd === istDateStr(now)) return now;
+    const start = new Date(`${ymd}T00:00:00.000+05:30`);
+    return isNaN(start.getTime()) ? now : start;
+  }
+  const parsed = new Date(value);
+  return isNaN(parsed.getTime()) ? now : parsed;
+}
+
+/**
+ * `toLocaleString` pinned to IST — for PDFs, receipts and messages. Same
+ * options as Intl.DateTimeFormat; `timeZone` is always Asia/Kolkata (gap 362).
+ */
+export function formatIST(
+  date: Date | string | number,
+  options: Intl.DateTimeFormatOptions = {
+    day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  },
+  locale = 'en-IN',
+): string {
+  const d = date instanceof Date ? date : new Date(date);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleString(locale, { ...options, timeZone: IST_TIMEZONE });
 }

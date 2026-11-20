@@ -97,15 +97,63 @@ hospitalSettingsRoutes.get(
   },
 );
 
-// GST registration. Written by an admin only — it is the hospital's own tax
-// identity and a wrong GSTIN invalidates every invoice printed against it.
+/**
+ * Who may change the hospital's GST registration and verify its GSTIN: the
+ * hospital admin and the finance role (billing_admin) — gap #311 asks for
+ * Finance/Admin. It is the hospital's own tax identity and a wrong GSTIN
+ * invalidates every invoice printed against it, so the counter roles
+ * (front_desk, cashier) that hold billing:approve are deliberately left out.
+ */
+export const GST_REGISTRATION_ROLES = ['super_admin', 'admin', 'billing_admin'] as const;
+const gstRegistrationAccess = [authenticate, requireRoles(...GST_REGISTRATION_ROLES)];
+
 hospitalSettingsRoutes.put(
   '/gst-profile',
-  ...adminOnly,
+  ...gstRegistrationAccess,
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
-      const data = await service.updateGstProfile(req.user!.tenantId, req.body ?? {});
+      const data = await service.updateGstProfile(req.user!.tenantId, req.body ?? {}, req.user!.userId);
       sendResponse({ res, message: 'GST registration saved', data });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// Gap #311: whether a GSTIN provider is configured, so the screen can say
+// "Provider not configured" before anyone clicks Verify.
+hospitalSettingsRoutes.get(
+  '/gst/verification-provider',
+  ...gstRegistrationAccess,
+  async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      sendResponse({ res, message: 'GSTIN verification provider', data: service.getGstinVerificationProvider() });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// Gap #311: check the saved GSTIN with the hospital's GST service provider.
+// Same right as editing the registration. 503 when no provider is configured.
+hospitalSettingsRoutes.post(
+  '/gst/verify-gstin',
+  ...gstRegistrationAccess,
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const body = (req.body ?? {}) as { gstin?: unknown };
+      const data = await service.verifyHospitalGstin(
+        req.user!.tenantId,
+        req.user!.userId,
+        typeof body.gstin === 'string' ? body.gstin : null,
+      );
+      const message =
+        data.result.status === 'verified'
+          ? data.result.sandbox
+            ? 'GSTIN verified by the SANDBOX provider — not a real government check'
+            : 'GSTIN verified'
+          : `GSTIN not verified: ${data.result.error ?? data.result.status}`;
+      sendResponse({ res, message, data });
     } catch (err) {
       next(err);
     }

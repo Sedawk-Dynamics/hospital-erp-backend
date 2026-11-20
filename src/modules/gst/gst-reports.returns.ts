@@ -24,6 +24,57 @@ import {
 const n = (v: unknown) => r2(Number(v ?? 0));
 
 /**
+ * The kind of supply a credit/debit note line reverses.
+ *
+ * A note must reduce the SAME kind of supply as the invoice it reverses. A note
+ * against an exempt bill (tax ₹0) used to be netted off TAXABLE outward supplies,
+ * which pushed GSTR-3B 3.1(a) and GSTR-1 Table 9B negative on a hospital whose
+ * sales are almost all exempt (gap item 261 / GST bug G-N1).
+ *
+ * Order of evidence: the treatment stored on the note line, then the treatment
+ * of the bill line it points at, then the tax on the line itself.
+ */
+export type NoteTreatment = 'taxable' | 'exempt' | 'nil_rated' | 'non_gst' | 'zero_rated';
+const NOTE_TREATMENTS: readonly NoteTreatment[] = ['taxable', 'exempt', 'nil_rated', 'non_gst', 'zero_rated'];
+
+function noteLineTreatment(
+  stored: string | null | undefined,
+  fromBillLine: string | null | undefined,
+  taxPercent: unknown,
+  taxAmount: unknown,
+): NoteTreatment {
+  for (const t of [stored, fromBillLine]) {
+    if (t && (NOTE_TREATMENTS as readonly string[]).includes(t)) return t as NoteTreatment;
+  }
+  return Number(taxPercent ?? 0) !== 0 || Number(taxAmount ?? 0) !== 0 ? 'taxable' : 'exempt';
+}
+
+interface NoteBucket {
+  taxableValue: number;
+  cgstAmount: number;
+  sgstAmount: number;
+  igstAmount: number;
+  cessAmount: number;
+  taxAmount: number;
+  totalAmount: number;
+}
+const emptyBucket = (): NoteBucket => ({
+  taxableValue: 0, cgstAmount: 0, sgstAmount: 0, igstAmount: 0, cessAmount: 0, taxAmount: 0, totalAmount: 0,
+});
+const BUCKET_KEYS = Object.keys(emptyBucket()) as (keyof NoteBucket)[];
+const addBucket = (a: NoteBucket, b: Partial<Record<keyof NoteBucket, unknown>>): NoteBucket => {
+  const out = { ...a };
+  for (const k of BUCKET_KEYS) out[k] = r2(out[k] + Number(b[k] ?? 0));
+  return out;
+};
+
+/** Whether a bucket carries any value at all. */
+export const bucketHasValue = (b: NoteBucket) => BUCKET_KEYS.some((k) => b[k] !== 0);
+
+/** Supplies whose notes belong in 3.1(a), Table 9B and GSTR-9 4I/4J. */
+export const isTaxableSide = (t: NoteTreatment) => t === 'taxable' || t === 'zero_rated';
+
+/**
  * A-6 — Credit and Debit Note Register.
  *
  * Every note, with the invoice it reverses. GSTR-1 Table 9B reports them
@@ -41,7 +92,7 @@ export async function getCreditNoteRegister(tenantId: string, query: SalesReport
     },
     orderBy: { issueDate: 'asc' },
     include: {
-      items: true,
+      items: { include: { billItem: { select: { gstTreatment: true } } } },
       bill: {
         select: {
           billNumber: true, invoiceNumber: true, gstDocumentType: true, billDate: true,
@@ -57,8 +108,26 @@ export async function getCreditNoteRegister(tenantId: string, query: SalesReport
     },
   });
 
-  const rows = notes.map((c) => ({
+  const rows = notes.map((c) => {
+    // Split the note's value by the kind of supply each line reverses. A legacy
+    // note with no lines is classed as a whole from its own header tax.
+    const byTreatment = Object.fromEntries(
+      NOTE_TREATMENTS.map((t) => [t, emptyBucket()]),
+    ) as Record<NoteTreatment, NoteBucket>;
+    if (c.items.length) {
+      for (const i of c.items) {
+        const t = noteLineTreatment(i.gstTreatment, i.billItem?.gstTreatment, i.taxPercent, i.taxAmount);
+        byTreatment[t] = addBucket(byTreatment[t], i);
+      }
+    } else {
+      const t = noteLineTreatment(null, null, null, c.taxAmount);
+      byTreatment[t] = addBucket(byTreatment[t], c);
+    }
+    return { c, byTreatment };
+  }).map(({ c, byTreatment }) => ({
     id: c.id,
+    /** The note's value split by the treatment of the supply it reverses. */
+    byTreatment,
     creditNoteNumber: c.creditNoteNumber,
     /**
      * 'credit' or 'debit'. This register is called the Credit AND Debit Note
@@ -105,6 +174,7 @@ export async function getCreditNoteRegister(tenantId: string, query: SalesReport
      */
     items: c.items.map((i) => ({
       description: i.description,
+      gstTreatment: noteLineTreatment(i.gstTreatment, i.billItem?.gstTreatment, i.taxPercent, i.taxAmount),
       hsnSacCode: i.hsnSacCode,
       quantity: i.quantity,
       taxPercent: n(i.taxPercent),
@@ -184,7 +254,70 @@ export async function getCreditNoteRegister(tenantId: string, query: SalesReport
         taxAmount: sum(debitRows, 'taxAmount'),
         totalAmount: sum(debitRows, 'totalAmount'),
       },
+      /**
+       * Credit and debit notes split by the kind of supply they reverse. Only
+       * the taxable side reduces taxable outward supplies (3.1(a), Table 9B,
+       * GSTR-9 4I/4J); exempt and nil-rated notes reduce Table 8 / 3.1(c) /
+       * GSTR-9 5H instead.
+       */
+      byTreatment: {
+        credit: treatmentTotals(creditRows),
+        debit: treatmentTotals(debitRows),
+      },
+      taxableSide: {
+        credit: taxableSideTotals(creditRows),
+        debit: taxableSideTotals(debitRows),
+      },
     },
+  };
+}
+
+type NoteRow = { byTreatment: Record<NoteTreatment, NoteBucket> };
+
+/** Sum each treatment's bucket across a set of note rows. */
+export function treatmentTotals(list: NoteRow[]): Record<NoteTreatment, NoteBucket> {
+  return Object.fromEntries(
+    NOTE_TREATMENTS.map((t) => [t, list.reduce((acc, r) => addBucket(acc, r.byTreatment[t]), emptyBucket())]),
+  ) as Record<NoteTreatment, NoteBucket>;
+}
+
+/** The taxable-side portion (taxable + zero-rated) of a set of note rows. */
+export function taxableSideTotals(list: NoteRow[]): NoteBucket & { count: number } {
+  const t = treatmentTotals(list);
+  const bucket = NOTE_TREATMENTS.filter(isTaxableSide).reduce((acc, k) => addBucket(acc, t[k]), emptyBucket());
+  const count = list.filter((r) =>
+    NOTE_TREATMENTS.some((k) => isTaxableSide(k) && bucketHasValue(r.byTreatment[k])),
+  ).length;
+  return { ...bucket, count };
+}
+
+/**
+ * The notes that may reduce the outward figures — ONE selection, used by
+ * GSTR-1, GSTR-3B, GSTR-9 and the C-1 liability report alike.
+ *
+ *   withinTimeLimit    — section 34: past 30 November after the year end the
+ *                        money goes back and the tax does not.
+ *   originalInRegister — a voided counter sale has already left A-1; netting
+ *                        its cancellation note off as well removes it twice.
+ *
+ * GSTR-1 used to apply neither, so it subtracted every cancelled invoice twice
+ * and disagreed with GSTR-3B (gap items 274 / 275).
+ */
+export function notesThatReduceOutward<T extends { withinTimeLimit: boolean; originalInRegister: boolean }>(
+  rows: T[],
+): T[] {
+  return rows.filter((r) => r.withinTimeLimit && r.originalInRegister);
+}
+
+/** Why each note that does NOT reduce the outward figures was left out. */
+export function noteExclusions(rows: Array<{ withinTimeLimit: boolean; originalInRegister: boolean }>) {
+  return {
+    /** Every note left out, for any reason. */
+    total: rows.filter((r) => !(r.withinTimeLimit && r.originalInRegister)).length,
+    /** Past the section 34 deadline — the only reason that is a warning. */
+    outsideTimeLimit: rows.filter((r) => !r.withinTimeLimit).length,
+    /** Cancellation of a voided sale already gone from the register — not an error. */
+    originalNotInRegister: rows.filter((r) => r.withinTimeLimit && !r.originalInRegister).length,
   };
 }
 
@@ -232,11 +365,55 @@ export async function getGstr1Summary(
 
   const table4 = totalOf(b2bRows);
   const table5and7 = totalOf(b2cRows);
+
+  // Notes split by what they reverse (gap item 261). Taxable-side notes go in
+  // Table 9B; notes against exempt / nil-rated / non-GST supplies reduce Table 8.
+  // Only the notes that may reduce the outward figures, chosen exactly as
+  // GSTR-3B chooses them (gap items 274 / 275).
+  const applied = notesThatReduceOutward(notes.rows);
+  const appliedCredit = applied.filter((r) => r.noteType !== 'debit');
+  const appliedDebit = applied.filter((r) => r.noteType === 'debit');
+  const ts = { credit: taxableSideTotals(appliedCredit), debit: taxableSideTotals(appliedDebit) };
+  const nt = { credit: treatmentTotals(appliedCredit), debit: treatmentTotals(appliedDebit) };
+  const noteOn = (t: NoteTreatment) => r2(nt.credit[t].taxableValue + nt.debit[t].taxableValue);
   const table8 = {
-    exempt: exempt.exempt.taxableValue,
-    nilRated: exempt.nilRated.taxableValue,
-    nonGst: exempt.nonGst.taxableValue,
-    total: exempt.exemptTurnover,
+    exempt: r2(exempt.exempt.taxableValue + noteOn('exempt')),
+    nilRated: r2(exempt.nilRated.taxableValue + noteOn('nil_rated')),
+    nonGst: r2(exempt.nonGst.taxableValue + noteOn('non_gst')),
+    total: r2(exempt.exemptTurnover + noteOn('exempt') + noteOn('nil_rated') + noteOn('non_gst')),
+    /** Value of credit/debit notes against these supplies, already netted above (negative = reduction). */
+    notesNetted: r2(noteOn('exempt') + noteOn('nil_rated') + noteOn('non_gst')),
+  };
+  const table9b = {
+    ...notes.summary,
+    count: ts.credit.count + ts.debit.count,
+    taxableValue: r2(ts.credit.taxableValue + ts.debit.taxableValue),
+    cgstAmount: r2(ts.credit.cgstAmount + ts.debit.cgstAmount),
+    sgstAmount: r2(ts.credit.sgstAmount + ts.debit.sgstAmount),
+    igstAmount: r2(ts.credit.igstAmount + ts.debit.igstAmount),
+    taxAmount: r2(ts.credit.taxAmount + ts.debit.taxAmount),
+    totalAmount: r2(ts.credit.totalAmount + ts.debit.totalAmount),
+    /** Notes in the register that 9B does NOT carry, and why. */
+    excluded: noteExclusions(notes.rows),
+  };
+
+  // GSTR-1 against GSTR-3B 3.1(a). Built from the GSTR-1 side — Tables 4, 5/7
+  // and the taxable part of 9B — and compared to the 3B figure computed the
+  // way 3B computes it. The two returns must declare the same outward taxable
+  // supply; when they do not, the accountant sees it here first (gap item 274).
+  const g1Taxable = r2(table4.taxableValue + table5and7.taxableValue
+    + nt.credit.taxable.taxableValue + nt.debit.taxable.taxableValue);
+  const g1Tax = r2(table4.taxAmount + table5and7.taxAmount
+    + nt.credit.taxable.taxAmount + nt.debit.taxable.taxAmount);
+  const g3b = outwardTaxableNet(exempt.taxable, applied);
+  const vs3b = {
+    gstr1TaxableValue: g1Taxable,
+    gstr1TaxAmount: g1Tax,
+    gstr3bTaxableValue: g3b.taxableValue,
+    gstr3bTaxAmount: g3b.taxAmount,
+    taxableValue: r2(g1Taxable - g3b.taxableValue),
+    taxAmount: r2(g1Tax - g3b.taxAmount),
+    agrees: Math.abs(g1Taxable - g3b.taxableValue) < 0.01 && Math.abs(g1Tax - g3b.taxAmount) < 0.01,
   };
 
   return {
@@ -248,8 +425,8 @@ export async function getGstr1Summary(
       b2c: table5and7,
       /** 8 — nil-rated, exempt and non-GST outward supplies. */
       exemptTurnover: table8,
-      /** 9B — credit and debit notes. */
-      creditNotes: notes.summary,
+      /** 9B — credit and debit notes against TAXABLE supplies only. */
+      creditNotes: table9b,
       /** 11A/11B — tax on advances received, and advances adjusted. */
       advances: {
         received: advances.summary.taxDueOnAdvances,
@@ -275,7 +452,38 @@ export async function getGstr1Summary(
         totalOf(rows),
       ),
       unclassifiedLines: exempt.unclassified.count,
+      /** GSTR-1 (4 + 5/7 + 9B) against GSTR-3B 3.1(a). */
+      gstr3b: vs3b,
     },
+    /** The notes netted into 9B / Table 8, for drill-down from those totals. */
+    creditNotesApplied: applied.map((r) => ({
+      id: r.id, creditNoteNumber: r.creditNoteNumber, noteType: r.noteType, issueDate: r.issueDate,
+      againstInvoiceNumber: r.againstInvoiceNumber, patientName: r.patientName,
+      taxableValue: r.taxableValue, taxAmount: r.taxAmount, totalAmount: r.totalAmount,
+      taxableSide: r2(r.byTreatment.taxable.taxableValue + r.byTreatment.zero_rated.taxableValue),
+    })),
+  };
+}
+
+/**
+ * GSTR-3B 3.1(a): taxable outward supplies net of the notes that reduce them.
+ *
+ * One function for 3B, the GSTR-1 tie-back and the GSTR-9 monthly check, so
+ * the three cannot compute "outward taxable" three different ways.
+ */
+export function outwardTaxableNet(
+  taxable: Pick<TaxTotals, 'taxableValue' | 'cgstAmount' | 'sgstAmount' | 'igstAmount' | 'taxAmount'>,
+  appliedNotes: NoteRow[],
+) {
+  const reversed = treatmentTotals(appliedNotes);
+  const add = (k: 'taxableValue' | 'cgstAmount' | 'sgstAmount' | 'igstAmount' | 'taxAmount') =>
+    r2(taxable[k] + reversed.taxable[k]);
+  return {
+    taxableValue: add('taxableValue'),
+    cgstAmount: add('cgstAmount'),
+    sgstAmount: add('sgstAmount'),
+    igstAmount: add('igstAmount'),
+    taxAmount: add('taxAmount'),
   };
 }
 
@@ -305,7 +513,7 @@ export async function getGstr3bSummary(tenantId: string, query: SalesReportQuery
   //                        counter sale deletes the invoice's lines, so the
   //                        supply has already left A-1; netting the note off as
   //                        well would remove it twice.
-  const reversible = notes.rows.filter((r) => r.withinTimeLimit && r.originalInRegister);
+  const reversible = notesThatReduceOutward(notes.rows);
 
   // A note's figures are stored NEGATIVE — it mirrors the bill's lines with the
   // sign flipped, which is what Table 9B and the ledger both want. So the
@@ -313,16 +521,13 @@ export async function getGstr3bSummary(tenantId: string, query: SalesReportQuery
   // the liability the wrong way by twice the value of every note: this
   // hospital's year read ₹10,790.60 taxable where ₹9,860.90 was the honest
   // figure, and the error grows with every credit note raised.
-  const add = (k: 'taxableValue' | 'cgstAmount' | 'sgstAmount' | 'igstAmount' | 'taxAmount') =>
-    r2(exempt.taxable[k] + r2(reversible.reduce((t, r) => t + r[k], 0)));
-
-  const outward = {
-    taxableValue: add('taxableValue'),
-    cgstAmount: add('cgstAmount'),
-    sgstAmount: add('sgstAmount'),
-    igstAmount: add('igstAmount'),
-    taxAmount: add('taxAmount'),
-  };
+  //
+  // Each note reduces only the KIND of supply it reverses (gap item 261): the
+  // taxable part of a note nets off 3.1(a); the part against exempt / nil-rated
+  // bills nets off 3.1(c); the non-GST part nets off 3.1(e). A note against an
+  // exempt bill used to come off 3.1(a) and drive taxable value negative.
+  const reversed = treatmentTotals(reversible);
+  const outward = outwardTaxableNet(exempt.taxable, reversible);
 
   const netItc = itc.netCreditAvailable;
 
@@ -361,9 +566,12 @@ export async function getGstr3bSummary(tenantId: string, query: SalesReportQuery
     /** 3.1(a) — outward taxable supplies, net of credit notes. */
     outwardTaxable: outward,
     /** 3.1(c) — other exempt and nil-rated outward supplies. */
-    outwardExempt: r2(exempt.exempt.taxableValue + exempt.nilRated.taxableValue),
+    outwardExempt: r2(
+      exempt.exempt.taxableValue + exempt.nilRated.taxableValue
+      + reversed.exempt.taxableValue + reversed.nil_rated.taxableValue,
+    ),
     /** 3.1(e) — non-GST outward supplies. */
-    outwardNonGst: exempt.nonGst.taxableValue,
+    outwardNonGst: r2(exempt.nonGst.taxableValue + reversed.non_gst.taxableValue),
     /** 4 — input tax credit, after the Rule 42/43 reversal. */
     inputTaxCredit: {
       available: itc.creditAvailable,
@@ -382,9 +590,22 @@ export async function getGstr3bSummary(tenantId: string, query: SalesReportQuery
     creditCarriedForwardByHead: ledger,
     netTaxPayable: cashPayable,
     creditCarriedForward: r2(ledger.igst + ledger.cgst + ledger.sgst),
-    /** Notes that did NOT reduce the liability, and why. */
+    /**
+     * Notes that did NOT reduce the liability, and why. Only the section 34
+     * count is a warning: a same-month cancellation of a voided sale is left
+     * out because the sale already left the register, not because it was late
+     * (gap item 275 — the screen used to call every exclusion "past deadline").
+     */
     creditNotesExcluded: notes.rows.length - reversible.length,
-    creditNotesOutsideTimeLimit: notes.rows.filter((r) => !r.withinTimeLimit).length,
-    creditNotesOriginalNotInRegister: notes.rows.filter((r) => !r.originalInRegister).length,
+    creditNotesOutsideTimeLimit: noteExclusions(notes.rows).outsideTimeLimit,
+    creditNotesOriginalNotInRegister: noteExclusions(notes.rows).originalNotInRegister,
+    /** The notes netted off, for drill-down from 3.1(a). */
+    creditNotesApplied: reversible.map((r) => ({
+      id: r.id, creditNoteNumber: r.creditNoteNumber, noteType: r.noteType, issueDate: r.issueDate,
+      againstInvoiceNumber: r.againstInvoiceNumber, patientName: r.patientName,
+      taxableValue: r.byTreatment.taxable.taxableValue, taxAmount: r.byTreatment.taxable.taxAmount,
+      exemptValue: r2(r.byTreatment.exempt.taxableValue + r.byTreatment.nil_rated.taxableValue
+        + r.byTreatment.non_gst.taxableValue),
+    })),
   };
 }

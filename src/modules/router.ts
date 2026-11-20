@@ -68,6 +68,7 @@ import intoxicationExamRoute from './intoxication-exam/intoxication.route';
 import { addPrescriptionItem } from './prescriptions/prescriptions.service';
 import { calculatorRoute } from './calculator/calculator.route';
 import { transcribeRoutes } from './transcribe/transcribe.route';
+import { counsellingRoutes } from './counselling/counselling.routes';
 
 const apiRouter = Router();
 
@@ -153,6 +154,10 @@ apiRouter.use('/compliance', authenticate, userTierLimiter, subCheck, requireFea
 apiRouter.use('/reports', authenticate, userTierLimiter, subCheck, requireFeature('reports'), reportsRoutes);
 apiRouter.use('/mrd', authenticate, userTierLimiter, subCheck, requireFeature('ip_management'), mrdRoutes);
 apiRouter.use('/medical-history', authenticate, userTierLimiter, subCheck, medicalHistoryRoutes);
+// Counselling sessions & referrals — Counsellor Home (gap #200/#298). No
+// feature toggle exists for it; access is the `counselling` permission, checked
+// per route inside the router.
+apiRouter.use('/counselling', authenticate, userTierLimiter, subCheck, counsellingRoutes);
 
 // --- Subscription Plans (public + super_admin) ---
 // Mixed public/private endpoints (webhook + listing are public). We rely on

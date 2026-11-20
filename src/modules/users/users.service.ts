@@ -186,6 +186,15 @@ export const usersService = {
 
     const where = {
       tenantId,
+      // Gap 305: this is the hospital's STAFF list. A patient portal account
+      // (only the `patient` role) never belongs here. Users with no role at all
+      // stay visible so an admin can fix them.
+      NOT: {
+        AND: [
+          { userRoles: { some: { role: { name: 'patient' } } } },
+          { userRoles: { none: { role: { name: { not: 'patient' } } } } },
+        ],
+      },
       ...(search && {
         OR: [
           { firstName: { contains: search, mode: 'insensitive' as const } },

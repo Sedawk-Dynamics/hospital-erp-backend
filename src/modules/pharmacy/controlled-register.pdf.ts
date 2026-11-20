@@ -10,6 +10,7 @@ import {
 import { DEFAULT_TEMPLATE, type PdfTemplate } from '../../services/pdf-template';
 import type { DrugLicenceSettings } from '../../shared/controlled-drug';
 import type { RegisterRow } from './controlled-register.service';
+import { formatDateIST, formatDateTimeIST } from '../../shared/date.utils';
 
 // ---------------------------------------------------------------------------
 // The Controlled-Drug Register, as the document an inspector is handed.
@@ -29,18 +30,17 @@ import type { RegisterRow } from './controlled-register.service';
 
 const dash = (v: unknown) => (v === null || v === undefined || v === '' ? '—' : String(v));
 
+// IST, not the host clock — a UTC server printed every entry 5½ hours early (gap 362).
 const dmy = (d: Date | string | null | undefined) => {
   if (!d) return '—';
   const dt = typeof d === 'string' ? new Date(d) : d;
-  return Number.isNaN(dt.getTime())
-    ? '—'
-    : `${String(dt.getDate()).padStart(2, '0')}/${String(dt.getMonth() + 1).padStart(2, '0')}/${dt.getFullYear()}`;
+  return Number.isNaN(dt.getTime()) ? '—' : formatDateIST(dt);
 };
 
 const dmyTime = (d: Date | string) => {
   const dt = typeof d === 'string' ? new Date(d) : d;
   if (Number.isNaN(dt.getTime())) return '—';
-  return `${dmy(dt)} ${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
+  return formatDateTimeIST(dt);
 };
 
 export interface RegisterPdfInput {

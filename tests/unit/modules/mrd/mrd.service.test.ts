@@ -43,8 +43,12 @@ describe('generateDischargeSummary — folding pins into a draft', () => {
     await generateDischargeSummary(TENANT_ID, 'adm1');
 
     const data = (vi.mocked(prisma.dischargeSummary.update).mock.calls[0][0] as any).data;
-    expect(data.dischargeInstructions).toContain('Rest for one week');
-    expect(data.dischargeInstructions).toContain('Asha Menon');
+    // Regression: since 42776ce (first generate) and 463811d (this fold path)
+    // pins are written as bare content, with no `[date · Dr. …]` timeline
+    // prefix, so a folded pin reads exactly like one present at first
+    // generate. The old expectation of the doctor's name predates that.
+    expect(data.dischargeInstructions).toBe('Rest for one week');
+    expect(data.dischargeInstructions).not.toContain('Asha Menon');
   });
 
   // The whole reason this is additive rather than a rebuild.
@@ -64,7 +68,9 @@ describe('generateDischargeSummary — folding pins into a draft', () => {
     expect(data.dischargeInstructions).toContain('Rest for one week');
   });
 
-  // Opening the editor repeatedly must not stack the same pin over and over.
+  // Opening the editor repeatedly must not stack the same pin over and over —
+  // including drafts folded by the older code, which still carry the
+  // `[date · doctor]` prefix (hence that fixture).
   it('does not re-add a pin already present in the column', async () => {
     vi.mocked(prisma.dischargeSummary.findUnique).mockResolvedValue(
       draft({ dischargeInstructions: '- [01/08/2026 · Dr. Asha Menon] Rest for one week' }) as any,

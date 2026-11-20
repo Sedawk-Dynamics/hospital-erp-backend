@@ -132,7 +132,10 @@ describe('getGstr1Amendments', () => {
       const out = await getGstr1Amendments(TENANT);
       expect(out.rows[0]).toMatchObject({ change: 'removed', currentValue: null, difference: -10_000 });
       expect(out.sections.b2ba).toEqual([]);
-      expect(out.sections.vanished).toEqual(['TI/1 (092026)']);
+      // A person reads this, so the period is a month, not the portal code (gap item 310).
+      expect(out.sections.vanished).toEqual(['TI/1 (Sep 2026)']);
+      // Gap item 281: A-13 reads the same headline and status as C-6.
+      expect(out.periods[0]).toMatchObject({ status: expect.stringMatching(/^filed_/), filed: expect.objectContaining({ outwardTax: expect.any(Number) }) });
     });
 
     // Not an amendment: there is no original row to replace, so it goes into
@@ -200,5 +203,76 @@ describe('getGstr1Amendments', () => {
     await getGstr1Amendments(TENANT, { excludePeriod: '092026' });
     const where = (prisma.gstFiledPeriod.findMany as any).mock.calls[0][0].where;
     expect(where.returnPeriod).toEqual({ not: '092026' });
+  });
+});
+
+// ── Gap 281: amendments against the ORIGINAL snapshot of a reopened period ──
+describe('a period reopened for correction (gap 281)', () => {
+  const october = (o: Record<string, unknown> = {}) =>
+    filedPeriod(
+      { b2b: [{ ctin: CTIN, inv: [inv()] }], b2cs: [], cdnr: [] },
+      {
+        id: 'oct', returnPeriod: '102026',
+        periodFrom: new Date('2026-10-01T00:00:00Z'), periodTo: new Date('2026-10-31T00:00:00Z'),
+        filedAt: new Date('2026-11-05T00:00:00Z'),
+        lockedAt: new Date('2026-11-12T00:00:00Z'),
+        history: [
+          { action: 'unlocked', version: null, reason: 'TI/1 under-billed', userId: 'u1', createdAt: new Date('2026-11-10') },
+          { action: 'locked', version: null, reason: null, userId: 'u1', createdAt: new Date('2026-11-12') },
+        ],
+        ...o,
+      },
+    );
+
+  it('shows a change made while it was open as an amendment against the original filing', async () => {
+    (prisma.gstFiledPeriod.findMany as any).mockResolvedValue([october()]);
+    (prisma.user.findMany as any).mockResolvedValue([{ id: 'u1', firstName: 'Fin', lastName: 'Ance' }]);
+    today = { b2b: [{ ctin: CTIN, inv: [inv({ val: 12_000 })] }], b2cs: [], cdnr: [] };
+    const out = await getGstr1Amendments(TENANT, { excludePeriod: '112026' });
+    expect(out.rows[0]).toMatchObject({
+      table: '9A', change: 'amended', originalPeriod: '102026', filedValue: 10_000, currentValue: 12_000,
+    });
+    expect(out.sections.b2ba[0].inv[0]).toMatchObject({ oinum: 'TI/1', val: 12_000 });
+    const p = out.periods[0];
+    expect(p.baseline).toEqual({ kind: 'original', inPeriod: null });
+    expect(p.corrections.map((c) => c.action)).toEqual(['unlocked', 'locked']);
+    expect(p.corrections[0]).toMatchObject({ reason: 'TI/1 under-billed', by: 'Fin Ance' });
+  });
+
+  // Once the next return has declared the amendment it must not be declared
+  // again — the original snapshot is kept, so the baseline moves instead.
+  it('does not declare an amendment twice once a later return has carried it', async () => {
+    const amended = { b2b: [{ ctin: CTIN, inv: [inv({ val: 12_000 })] }], b2cs: [], cdnr: [] };
+    const november = filedPeriod(
+      { b2b: [], b2cs: [], cdnr: [] },
+      {
+        id: 'nov', returnPeriod: '112026', filedAt: new Date('2026-12-05T00:00:00Z'),
+        periodFrom: new Date('2026-11-01T00:00:00Z'), periodTo: new Date('2026-11-30T00:00:00Z'),
+        snapshot: {
+          capturedAt: '2026-12-05',
+          gstr1Json: { b2b: [], b2cs: [], cdnr: [] },
+          amendmentsDeclared: { count: 1, periods: { '102026': amended } },
+        },
+      },
+    );
+    (prisma.gstFiledPeriod.findMany as any).mockResolvedValue([october(), november]);
+    today = amended;
+    const out = await getGstr1Amendments(TENANT, { excludePeriod: '122026' });
+    // (The mock rebuilds every period the same way, so only October is asserted on.)
+    expect(out.rows.filter((r) => r.originalPeriod === '102026')).toHaveLength(0);
+    expect(out.periods.find((p) => p.returnPeriod === '102026')?.baseline).toEqual({
+      kind: 'declared', inPeriod: '112026',
+    });
+
+    // Re-downloading November's own file still carries the October amendment.
+    const again = await getGstr1Amendments(TENANT, { excludePeriod: '112026' });
+    expect(again.rows.filter((r) => r.originalPeriod === '102026')).toHaveLength(1);
+  });
+
+  it('hands the filing the amended periods as they stand, so it can record them', async () => {
+    (prisma.gstFiledPeriod.findMany as any).mockResolvedValue([october()]);
+    today = { b2b: [{ ctin: CTIN, inv: [inv({ val: 12_000 })] }], b2cs: [], cdnr: [] };
+    const out = await getGstr1Amendments(TENANT, { excludePeriod: '112026', withCurrentSections: true });
+    expect(out.currentSections?.['102026'].b2b[0].inv[0].val).toBe(12_000);
   });
 });

@@ -24,7 +24,7 @@
 // ---------------------------------------------------------------------------
 
 import { prisma } from '../../config/database';
-import { r2 } from '../../shared/gst';
+import { r2, checkGstin } from '../../shared/gst';
 import { batchPurchaseEconomics } from '../pharmacy/pharmacy.service';
 import { getExemptTurnover, type SalesReportQuery } from './gst-reports.sales';
 import { financialYearFor } from './gst-document.service';
@@ -138,6 +138,26 @@ function splitInput(
   };
 }
 
+/** Just the three heads of a split, for rows that carry no state of their own. */
+function headsOnly(s: ReturnType<typeof splitInput>) {
+  return { cgstAmount: s.cgstAmount, sgstAmount: s.sgstAmount, igstAmount: s.igstAmount };
+}
+
+/**
+ * Why the credit on a purchase cannot be taken, judged from the supplier alone.
+ *
+ * Section 16(2) allows credit only on a tax invoice from a REGISTERED supplier.
+ * A purchase from a vendor with no GSTIN — or one that fails the checksum — was
+ * counted as eligible credit in B-1, B-2, B-3 and GSTR-3B (gap item 272). It is
+ * ineligible; B-4 still lists it so somebody chases the vendor.
+ */
+export function supplierGstinProblem(gstin: string | null | undefined): string | null {
+  const g = (gstin ?? '').trim();
+  if (!g) return 'Supplier has no GSTIN on file — no credit without a registered supplier\'s tax invoice (s.16(2))';
+  const check = checkGstin(g);
+  return check.valid ? null : `Supplier GSTIN is invalid (${check.reason ?? 'checksum'}) — credit cannot be claimed`;
+}
+
 /**
  * B-1 — GST Purchase Register. One row per batch received.
  *
@@ -155,6 +175,10 @@ export async function getPurchaseRegister(
   const batches = await prisma.drugBatch.findMany({
     where: {
       tenantId,
+      // Opening stock is not a purchase (gap item 270). Older opening rows carry
+      // no flag, only the OPENING batch with no supplier.
+      isOpeningStock: false,
+      NOT: { batchNumber: 'OPENING', supplierId: null },
       ...(query.supplierId ? { supplierId: query.supplierId } : {}),
       ...(window
         ? {
@@ -214,8 +238,17 @@ export async function getPurchaseRegister(
       gstRatePercent: b.gstPercent == null ? null : Number(b.gstPercent),
       taxAmount: money.taxAmount ?? 0,
       ...splitInput(money.taxAmount ?? 0, b, homeState),
-      itcEligibility: String(b.itcEligibility ?? 'eligible'),
-      itcBlockedReason: b.itcBlockedReason ?? null,
+      // A batch flagged eligible is overridden when the supplier cannot give a
+      // valid tax invoice (gap item 272). A batch already blocked keeps its own
+      // reason — 17(5) is the stronger statement.
+      ...(() => {
+        const stored = String(b.itcEligibility ?? 'eligible');
+        const problem = (money.taxAmount ?? 0) > 0 ? supplierGstinProblem(b.supplier?.gstNumber) : null;
+        if (problem && stored !== 'ineligible') {
+          return { itcEligibility: 'ineligible', itcBlockedReason: problem };
+        }
+        return { itcEligibility: stored, itcBlockedReason: b.itcBlockedReason ?? null };
+      })(),
       landingTotal,
     };
   });
@@ -241,13 +274,24 @@ export async function getItcSummary(
 ) {
   const { period, rows } = await getPurchaseRegister(tenantId, query);
 
+  // Gap 271: each fold carries the CGST / SGST / IGST split, not just the
+  // combined input tax — the credit ledgers are kept head by head.
+  type Fold = {
+    count: number; taxableValue: number; cgstAmount: number; sgstAmount: number;
+    igstAmount: number; taxAmount: number; landingTotal: number;
+  };
   const fold = <K extends string>(key: (l: PurchaseLine) => K) => {
-    const m = new Map<K, { count: number; taxableValue: number; taxAmount: number; landingTotal: number }>();
+    const m = new Map<K, Fold>();
     for (const l of rows) {
       const k = key(l);
-      const cur = m.get(k) ?? { count: 0, taxableValue: 0, taxAmount: 0, landingTotal: 0 };
+      const cur = m.get(k) ?? {
+        count: 0, taxableValue: 0, cgstAmount: 0, sgstAmount: 0, igstAmount: 0, taxAmount: 0, landingTotal: 0,
+      };
       cur.count += 1;
       cur.taxableValue = r2(cur.taxableValue + l.taxableValue);
+      cur.cgstAmount = r2(cur.cgstAmount + l.cgstAmount);
+      cur.sgstAmount = r2(cur.sgstAmount + l.sgstAmount);
+      cur.igstAmount = r2(cur.igstAmount + l.igstAmount);
       cur.taxAmount = r2(cur.taxAmount + l.taxAmount);
       cur.landingTotal = r2(cur.landingTotal + l.landingTotal);
       m.set(k, cur);
@@ -500,17 +544,25 @@ export async function getItcReversalWorking(tenantId: string, query: SalesReport
 
   // Rule 42's own names, kept so the working can be read beside the rule.
   const T = r2(register.rows.reduce((t, l) => t + l.taxAmount, 0));
+  // Credit that is not available at all: blocked under 17(5), not yet
+  // apportioned ("partly"), or from a supplier with no valid GSTIN. It is T3 —
+  // out of the common credit before any apportionment, so it is neither kept
+  // nor reversed a second time (gap item 272). It used to be counted as
+  // eligible here, which flowed straight into GSTR-3B 4(A).
+  const blockedRows = register.rows.filter((l) => l.itcEligibility === 'ineligible' || l.itcEligibility === 'partly');
+  const usable = register.rows.filter((l) => !(l.itcEligibility === 'ineligible' || l.itcEligibility === 'partly'));
+  const noGstinRows = register.rows.filter((l) => l.taxAmount > 0 && supplierGstinProblem(l.supplierGstin));
   // The same total, head by head. A reversal is applied proportionately across
   // the heads it came from, because the electronic credit ledger holds three
   // separate balances and IGST credit cannot be conjured out of CGST.
   const heads = {
-    cgst: r2(register.rows.reduce((t, l) => t + l.cgstAmount, 0)),
-    sgst: r2(register.rows.reduce((t, l) => t + l.sgstAmount, 0)),
-    igst: r2(register.rows.reduce((t, l) => t + l.igstAmount, 0)),
+    cgst: r2(usable.reduce((t, l) => t + l.cgstAmount, 0)),
+    sgst: r2(usable.reduce((t, l) => t + l.sgstAmount, 0)),
+    igst: r2(usable.reduce((t, l) => t + l.igstAmount, 0)),
   };
   const T1 = 0;
   const T2 = 0;
-  const T3 = 0;
+  const T3 = r2(blockedRows.reduce((t, l) => t + l.taxAmount, 0));
   const C1 = r2(T - (T1 + T2 + T3));
   const T4 = 0;
   const C2 = r2(C1 - T4);
@@ -613,7 +665,9 @@ export async function getItcReversalWorking(tenantId: string, query: SalesReport
     try {
       const annual = await getExemptTurnover(tenantId, { ...query, from: yearFrom, to: yearTo });
       const annualRegister = await getPurchaseRegister(tenantId, { ...query, from: yearFrom, to: yearTo });
-      const annualT = r2(annualRegister.rows.reduce((t, l) => t + l.taxAmount, 0));
+      const annualT = r2(annualRegister.rows
+        .filter((l) => !(l.itcEligibility === 'ineligible' || l.itcEligibility === 'partly'))
+        .reduce((t, l) => t + l.taxAmount, 0));
       const annualRatio = annual.totalTurnover > 0 ? annual.exemptTurnover / annual.totalTurnover : 0;
       const annualD1 = r2(annualT * annualRatio);
       return {
@@ -644,8 +698,11 @@ export async function getItcReversalWorking(tenantId: string, query: SalesReport
         source: 'Not recorded — see the note' },
       { step: 'T2', label: 'Used exclusively for exempt supplies', amount: T2,
         source: 'Not recorded — see the note' },
-      { step: 'T3', label: 'Blocked under section 17(5)', amount: T3,
-        source: 'Not recorded — see the note' },
+      { step: 'T3', label: 'Blocked — section 17(5), or supplier without a valid GSTIN', amount: T3,
+        source: blockedRows.length
+          ? `${blockedRows.length} purchase(s) marked ineligible or partly eligible` +
+            (noGstinRows.length ? `, ${noGstinRows.length} of them from a supplier with no valid GSTIN` : '')
+          : 'Nothing blocked in this period' },
       { step: 'C1', label: 'Credit credited to the electronic credit ledger', amount: C1,
         source: 'T − (T1 + T2 + T3)' },
       { step: 'T4', label: 'Used exclusively for taxable supplies', amount: T4,
@@ -665,7 +722,11 @@ export async function getItcReversalWorking(tenantId: string, query: SalesReport
     /** Steps 11 and 12 of the section 11.3 working. */
     rule43: capitalGoods,
     annualTrueUp: trueUp,
-    creditAvailable: T,
+    /** Credit that may be taken at all — T less what is blocked (T3). */
+    creditAvailable: C1,
+    /** Total input tax before anything is blocked. */
+    totalInputTax: T,
+    blockedCredit: { total: T3, purchases: blockedRows.length, fromSuppliersWithoutGstin: noGstinRows.length },
     /** The credit available, head by head. */
     creditAvailableByHead: heads,
     reversal: { total: r2(D1 + D2), d1: D1, d2: D2 },
@@ -679,11 +740,11 @@ export async function getItcReversalWorking(tenantId: string, query: SalesReport
      * claimed. Doing it any other way would leave a head negative.
      */
     netCreditByHead:
-      T > 0
+      C1 > 0
         ? {
-            cgst: r2((heads.cgst / T) * C3),
-            sgst: r2((heads.sgst / T) * C3),
-            igst: r2((heads.igst / T) * C3),
+            cgst: r2((heads.cgst / C1) * C3),
+            sgst: r2((heads.sgst / C1) * C3),
+            igst: r2((heads.igst / C1) * C3),
           }
         : { cgst: 0, sgst: 0, igst: 0 },
     notes: [
@@ -728,16 +789,31 @@ export async function getPurchaseReturns(
     select: {
       id: true, createdAt: true, quantity: true, reason: true, status: true,
       creditNoteNumber: true, creditAmount: true, batchNumber: true, expiryDate: true,
+      // Stored at return time from the purchase batch (gap item 273).
+      inputGstPercent: true, inputTaxableValue: true, inputCgst: true, inputSgst: true, inputIgst: true,
       drug: { select: { drugName: true, hsnCode: true } },
-      supplier: { select: { id: true, name: true, gstNumber: true } },
+      // stateCode so a legacy return without a stored split can be told
+      // intra- from inter-state (gap 273).
+      supplier: { select: { id: true, name: true, gstNumber: true, stateCode: true } },
       drugBatch: {
         select: {
           purchasePrice: true, purchaseDiscountPercent: true, gstPercent: true,
           invoiceNumber: true, invoiceDate: true,
+          drug: { select: { drugName: true, hsnCode: true } },
         },
       },
     },
   });
+
+  // The hospital's state, for splitting a legacy return or write-off that has
+  // no stored CGST/SGST/IGST (gap 273).
+  let homeState: string | null = null;
+  try {
+    const { getGstProfile } = await import('../hospital-settings/hospital-settings.service');
+    homeState = (await getGstProfile(tenantId)).stateCode;
+  } catch {
+    /* unreadable profile → intra-state, as the register assumes */
+  }
 
   const rows = returns.map((r) => {
     const b = r.drugBatch;
@@ -747,9 +823,19 @@ export async function getPurchaseReturns(
     const netRate = b?.purchasePrice != null
       ? r2(Number(b.purchasePrice) * (1 - Number(b.purchaseDiscountPercent ?? 0) / 100))
       : null;
-    const taxableValue = netRate != null ? r2(netRate * r.quantity) : 0;
-    const rate = b?.gstPercent == null ? null : Number(b.gstPercent);
-    const taxToReverse = rate != null ? r2(taxableValue * (rate / 100)) : 0;
+    // Prefer the figures stored on the return (gap item 273); older returns
+    // fall back to the batch's rate and net purchase price.
+    const storedTax = r.inputCgst != null || r.inputSgst != null || r.inputIgst != null
+      ? r2(Number(r.inputCgst ?? 0) + Number(r.inputSgst ?? 0) + Number(r.inputIgst ?? 0))
+      : null;
+    const taxableValue = r.inputTaxableValue != null
+      ? r2(Number(r.inputTaxableValue))
+      : netRate != null ? r2(netRate * r.quantity) : 0;
+    const rate = r.inputGstPercent != null
+      ? Number(r.inputGstPercent)
+      : b?.gstPercent == null ? null : Number(b.gstPercent);
+    const taxToReverse = storedTax ?? (rate != null ? r2(taxableValue * (rate / 100)) : 0);
+    const drug = r.drug ?? b?.drug ?? null;
     return {
       returnId: r.id,
       date: r.createdAt,
@@ -757,8 +843,8 @@ export async function getPurchaseReturns(
       supplierId: r.supplier?.id ?? null,
       supplierName: r.supplier?.name ?? null,
       supplierGstin: r.supplier?.gstNumber ?? null,
-      drugName: r.drug?.drugName ?? '',
-      hsnCode: r.drug?.hsnCode ?? null,
+      drugName: drug?.drugName ?? '',
+      hsnCode: drug?.hsnCode ?? null,
       batchNumber: r.batchNumber,
       expiryDate: r.expiryDate,
       quantity: r.quantity,
@@ -771,6 +857,9 @@ export async function getPurchaseReturns(
       taxableValue,
       gstRatePercent: rate,
       taxToReverse,
+      // Gap 273: the head-wise split stored on the return from the purchase
+      // batch; derived from the supplier's state for an older return.
+      ...headsOnly(splitInput(taxToReverse, { ...r, supplier: r.supplier }, homeState)),
     };
   });
 
@@ -802,7 +891,7 @@ export async function getPurchaseReturns(
       purchasePrice: true, purchaseDiscountPercent: true, gstPercent: true,
       invoiceNumber: true, invoiceDate: true,
       drug: { select: { drugName: true, hsnCode: true } },
-      supplier: { select: { id: true, name: true, gstNumber: true } },
+      supplier: { select: { id: true, name: true, gstNumber: true, stateCode: true } },
     },
   });
 
@@ -816,6 +905,7 @@ export async function getPurchaseReturns(
         : r2(Number(b.purchasePrice) * (1 - Number(b.purchaseDiscountPercent ?? 0) / 100));
     const taxableValue = netRate == null ? 0 : r2(netRate * b.quantityInStock);
     const rate = b.gstPercent == null ? null : Number(b.gstPercent);
+    const tax = rate == null ? 0 : r2(taxableValue * (rate / 100));
     return {
       batchId: b.id,
       date: b.expiryDate,
@@ -831,7 +921,10 @@ export async function getPurchaseReturns(
       taxableValue,
       gstRatePercent: rate,
       /** Section 17(5)(h): credit taken on goods written off has to go back. */
-      taxToReverse: rate == null ? 0 : r2(taxableValue * (rate / 100)),
+      taxToReverse: tax,
+      // Split by the supplier's state: the batch's stored heads cover the
+      // whole receipt, not the units still on the shelf (gap 273).
+      ...headsOnly(splitInput(tax, { supplier: b.supplier }, homeState)),
     };
   });
 
@@ -864,9 +957,48 @@ export async function getPurchaseReturns(
     notes: w.notes,
   }));
 
+  // Damaged / expired pharmacy stock written off (gap item 273). Each row
+  // carries the input tax that has to go back under section 17(5)(h). Expired
+  // write-offs reduce stock, so they no longer appear in expiredPharmacy above.
+  const drugWriteOffs = await prisma.drugStockWriteOff.findMany({
+    where: {
+      tenantId,
+      ...(query.supplierId ? { supplierId: query.supplierId } : {}),
+      ...(window ? { createdAt: window } : {}),
+    },
+    orderBy: { createdAt: 'asc' },
+  });
+  const pharmacyWriteOffs = drugWriteOffs.map((w) => {
+    const taxableValue = w.taxableValue == null ? 0 : r2(Number(w.taxableValue));
+    const rate = w.gstPercent == null ? null : Number(w.gstPercent);
+    const stored = w.inputCgst != null || w.inputSgst != null || w.inputIgst != null;
+    // The stored heads are the reversal; a row without them falls back to the
+    // value at the rate paid, so it is never silently zero (gap 273).
+    const taxToReverse = stored
+      ? r2(Number(w.inputCgst ?? 0) + Number(w.inputSgst ?? 0) + Number(w.inputIgst ?? 0))
+      : rate != null ? r2(taxableValue * (rate / 100)) : 0;
+    return {
+      writeOffId: w.id,
+      date: w.createdAt,
+      writeOffType: w.writeOffType,
+      drugName: w.drugName ?? '',
+      batchNumber: w.batchNumber,
+      quantity: w.quantity,
+      reason: w.reason,
+      purchaseInvoiceNumber: w.purchaseInvoiceNo,
+      taxableValue,
+      gstRatePercent: rate,
+      // Gap 273: CGST / SGST / IGST as stored on the write-off.
+      ...headsOnly(splitInput(taxToReverse, w, homeState)),
+      taxToReverse,
+    };
+  });
+  const sumOf = <T,>(list: T[], f: (x: T) => number) => r2(list.reduce((t, x) => t + f(x), 0));
+
   return {
     period: { from: query.from ?? null, to: query.to ?? null },
     returns: rows,
+    pharmacyWriteOffs,
     /**
      * Expired PHARMACY batches — the ones B-1 actually claimed credit on, and
      * the ones the previous version of this report could never see.
@@ -885,6 +1017,25 @@ export async function getPurchaseReturns(
       expiredPharmacyValue: r2(expiredPharmacy.reduce((t, x) => t + x.taxableValue, 0)),
       /** 17(5)(h) on pharmacy stock — the figure this report exists to find. */
       expiredPharmacyTaxToReverse: r2(expiredPharmacy.reduce((t, x) => t + x.taxToReverse, 0)),
+      pharmacyWriteOffs: pharmacyWriteOffs.length,
+      pharmacyWriteOffTaxToReverse: r2(pharmacyWriteOffs.reduce((t, x) => t + x.taxToReverse, 0)),
+      // Gap 273: head-wise totals for each table, and the reversal across all
+      // of them — vendor returns, write-offs and expired stock on the shelf.
+      returnCgst: sumOf(rows, (x) => x.cgstAmount),
+      returnSgst: sumOf(rows, (x) => x.sgstAmount),
+      returnIgst: sumOf(rows, (x) => x.igstAmount),
+      pharmacyWriteOffValue: sumOf(pharmacyWriteOffs, (x) => x.taxableValue),
+      pharmacyWriteOffCgst: sumOf(pharmacyWriteOffs, (x) => x.cgstAmount),
+      pharmacyWriteOffSgst: sumOf(pharmacyWriteOffs, (x) => x.sgstAmount),
+      pharmacyWriteOffIgst: sumOf(pharmacyWriteOffs, (x) => x.igstAmount),
+      expiredPharmacyCgst: sumOf(expiredPharmacy, (x) => x.cgstAmount),
+      expiredPharmacySgst: sumOf(expiredPharmacy, (x) => x.sgstAmount),
+      expiredPharmacyIgst: sumOf(expiredPharmacy, (x) => x.igstAmount),
+      totalTaxToReverse: r2(
+        sumOf(rows, (x) => x.taxToReverse) +
+          sumOf(pharmacyWriteOffs, (x) => x.taxToReverse) +
+          sumOf(expiredPharmacy, (x) => x.taxToReverse),
+      ),
     },
     notes: [
       'Tax on a return is reversed at the rate PAID on the batch it was bought on, not at today’s rate.',

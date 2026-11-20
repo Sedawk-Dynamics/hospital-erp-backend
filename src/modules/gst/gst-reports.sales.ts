@@ -118,7 +118,11 @@ function dateRange(query: SalesReportQuery) {
 export async function getSalesRegister(
   tenantId: string,
   query: SalesReportQuery = {},
-): Promise<{ period: { from: string | null; to: string | null }; rows: SalesLine[] }> {
+): Promise<{
+  period: { from: string | null; to: string | null };
+  rows: SalesLine[];
+  summary: TurnoverSummary;
+}> {
   const { from, to } = dateRange(query);
 
   const bills = await prisma.bill.findMany({
@@ -136,7 +140,7 @@ export async function getSalesRegister(
     orderBy: [{ billDate: 'asc' }, { billNumber: 'asc' }],
     select: {
       id: true, billNumber: true, invoiceNumber: true, gstDocumentType: true,
-      billDate: true, status: true, financialYear: true, admissionId: true,
+      billDate: true, status: true, financialYear: true, admissionId: true, encounterType: true,
       recipientGstin: true, placeOfSupplyStateCode: true, isInterState: true,
       patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
       generator: { select: { firstName: true, lastName: true } },
@@ -176,7 +180,9 @@ export async function getSalesRegister(
         // Never `first + ' ' + last` — a patient with no surname prints "null".
         patientName: b.patient ? fullName(b.patient) : null,
         mrn: b.patient?.mrn ?? null,
-        patientType: b.admissionId ? 'ip' : 'op',
+        // A counter sale to an admitted patient records encounterType without
+        // becoming the admission's running bill (gap item 267).
+        patientType: (b.encounterType === 'ip' || b.encounterType === 'op' ? b.encounterType : b.admissionId ? 'ip' : 'op') as 'ip' | 'op',
         recipientGstin: b.recipientGstin,
         placeOfSupplyStateCode: b.placeOfSupplyStateCode,
         isInterState: b.isInterState,
@@ -210,10 +216,56 @@ export async function getSalesRegister(
     }
   }
 
-  return { period: { from: query.from ?? null, to: query.to ?? null }, rows };
+  return { period: { from: query.from ?? null, to: query.to ?? null }, rows, summary: turnoverSummary(rows) };
 }
 
 // ── Folds of A-1 ───────────────────────────────────────────────────────────
+
+/**
+ * The headline figures of a set of lines, each under its own name.
+ *
+ * Gap item 278: A-1's header summed `taxableValue` over EVERY line and called
+ * it "Taxable value", which for a hospital is mostly exempt turnover. Total
+ * turnover, the taxable part and the exempt/nil/non-GST part are three
+ * different numbers and are reported as three.
+ */
+export interface TurnoverSummary {
+  lines: number;
+  /** Value of every supply, before tax — taxable, exempt, nil, non-GST, zero-rated, unclassified. */
+  totalTurnover: number;
+  /** Lines with treatment 'taxable' (and zero-rated) only. */
+  taxableValue: number;
+  /** Exempt + nil-rated + non-GST. */
+  exemptNilNonGst: number;
+  unclassifiedValue: number;
+  cgstAmount: number;
+  sgstAmount: number;
+  igstAmount: number;
+  cessAmount: number;
+  taxAmount: number;
+  invoiceValue: number;
+}
+
+export function turnoverSummary(lines: SalesLine[]): TurnoverSummary {
+  const s = (pick: (l: SalesLine) => number, only?: (l: SalesLine) => boolean) =>
+    r2(lines.reduce((t, l) => (only && !only(l) ? t : t + pick(l)), 0));
+  const isTaxable = (l: SalesLine) => l.gstTreatment === 'taxable' || l.gstTreatment === 'zero_rated';
+  const isExempt = (l: SalesLine) =>
+    l.gstTreatment === 'exempt' || l.gstTreatment === 'nil_rated' || l.gstTreatment === 'non_gst';
+  return {
+    lines: lines.length,
+    totalTurnover: s((l) => l.taxableValue),
+    taxableValue: s((l) => l.taxableValue, isTaxable),
+    exemptNilNonGst: s((l) => l.taxableValue, isExempt),
+    unclassifiedValue: s((l) => l.taxableValue, (l) => !l.gstTreatment),
+    cgstAmount: s((l) => l.cgstAmount),
+    sgstAmount: s((l) => l.sgstAmount),
+    igstAmount: s((l) => l.igstAmount),
+    cessAmount: s((l) => l.cessAmount),
+    taxAmount: s((l) => l.taxAmount),
+    invoiceValue: s((l) => l.totalAmount),
+  };
+}
 
 export interface TaxTotals {
   count: number;
@@ -305,6 +357,8 @@ export async function getRateWiseSummary(tenantId: string, query: SalesReportQue
     byRate,
     byDepartment,
     totals: totalOf(rows),
+    /** Total turnover vs taxable vs exempt, labelled separately (gap item 278). */
+    turnover: turnoverSummary(rows),
     /**
      * Rates in this period that the law did not recognise on the day they were
      * billed. Filing from a register that carries them gets the return
@@ -399,8 +453,23 @@ export async function getB2bRegister(tenantId: string, query: SalesReportQuery =
     };
   });
 
-  return { period, invoices, totals: totalOf(rows) };
+  return {
+    period,
+    invoices,
+    totals: totalOf(rows),
+    /**
+     * Table 4 / GSTR-9 4B is the TAXABLE part only. An exempt line to a
+     * registered recipient is Table 8 / 5D, and counting it here as well put
+     * the same supply in two tables (gap item 277).
+     */
+    taxableTotals: totalOf(rows.filter(isTaxableLine)),
+    exemptTotals: totalOf(rows.filter((l) => !isTaxableLine(l))),
+    turnover: turnoverSummary(rows),
+  };
 }
+
+/** Treatment 'taxable' — what Tables 4/5/7 and GSTR-9 4A/4B report (zero-rated is 4C/4D). */
+const isTaxableLine = (l: SalesLine) => l.gstTreatment === 'taxable';
 
 /**
  * A-5 — B2C Summary. Ordinary patients, by place of supply and rate.
@@ -428,11 +497,18 @@ export async function getB2cSummary(tenantId: string, query: SalesReportQuery = 
   const largeIds = new Set(largeInterState.map((i) => i.billId));
 
   const small = rows.filter((l) => !largeIds.has(l.billId));
-  const summary = [...groupBy(small, (l) => `${l.placeOfSupplyStateCode ?? '-'}:${l.taxRatePercent}`)]
+  // Keyed by treatment as well: an exempt line at 0% and a taxable line at 0%
+  // are different supplies, and the screen labelled both "Taxable" (gap 278).
+  const summary = [...groupBy(
+    small,
+    (l) => `${l.placeOfSupplyStateCode ?? '-'}:${l.taxRatePercent}:${l.gstTreatment ?? 'unclassified'}`,
+  )]
     .map(([, v]) => ({
       placeOfSupplyStateCode: v.lines[0].placeOfSupplyStateCode,
       ratePercent: v.lines[0].taxRatePercent,
       isInterState: v.lines[0].isInterState,
+      treatment: v.lines[0].gstTreatment ?? 'unclassified',
+      treatmentLabel: v.lines[0].treatmentLabel ?? 'Unclassified',
       ...v.totals,
     }))
     .sort((a, b) => b.ratePercent - a.ratePercent);
@@ -445,6 +521,10 @@ export async function getB2cSummary(tenantId: string, query: SalesReportQuery = 
     summary,
     threshold: B2CL_THRESHOLD,
     totals: totalOf(rows),
+    /** Tables 5 and 7 / GSTR-9 4A — taxable supplies only (gap item 277). */
+    taxableTotals: totalOf(rows.filter(isTaxableLine)),
+    exemptTotals: totalOf(rows.filter((l) => !isTaxableLine(l))),
+    turnover: turnoverSummary(rows),
   };
 }
 

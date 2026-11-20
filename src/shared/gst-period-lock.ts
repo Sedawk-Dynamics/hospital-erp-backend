@@ -22,6 +22,16 @@ import { prisma } from '../config/database';
 import { logger } from '../config/logger';
 import { AppError } from './appError';
 
+/**
+ * "112026" → "Nov 2026". The MMYYYY code belongs inside portal files only;
+ * anything a person reads uses this (gap item 310).
+ */
+export function returnPeriodLabel(code: string | null | undefined): string {
+  const m = /^(\d{2})(\d{4})$/.exec(String(code ?? ''));
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return m && months[Number(m[1]) - 1] ? `${months[Number(m[1]) - 1]} ${m[2]}` : String(code ?? '');
+}
+
 /** A short cache: the lock list changes when an accountant closes a month. */
 const TTL_MS = 30_000;
 const cache = new Map<string, { rows: Array<{ from: Date; to: Date; period: string }>; at: number }>();
@@ -86,7 +96,8 @@ export async function assertPeriodOpen(
   const locked = await lockedPeriodFor(tenantId, on);
   if (!locked) return;
   throw AppError.conflict(
-    `Return period ${locked.period} has been filed and locked, so ${what} cannot be changed. ` +
+    // Gap 310: the person reads "Oct 2026", never the portal's "102026".
+    `Return period ${returnPeriodLabel(locked.period)} has been filed and locked, so ${what} cannot be changed. ` +
       'Raise a credit note in the current period instead — that is how a correction to a filed ' +
       'month is made.',
   );

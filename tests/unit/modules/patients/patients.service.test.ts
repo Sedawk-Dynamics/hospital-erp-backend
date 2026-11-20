@@ -452,6 +452,26 @@ describe('PatientsService', () => {
       expect(out).toHaveLength(1);
     });
 
+    // Gap 332: the picker printed "MRN: <uuid>" because the local row's id was
+    // returned in the mrn field.
+    it('returns the local MRN, not the internal id', async () => {
+      const out = (await search([
+        row({ id: 'uuid-here', mrn: 'MRN-20261119-0007', firstName: 'Vikram', lastName: 'Nair', dateOfBirth: new Date('1978-04-04') }),
+      ])) as unknown as { mrn: string; localPatientId: string }[];
+      expect(out[0]!.mrn).toBe('MRN-20261119-0007');
+      expect(out[0]!.localPatientId).toBe('uuid-here');
+    });
+
+    it('prefers the most recently used local row for a person', async () => {
+      // Rows arrive updatedAt desc; the later (older) duplicate must not win.
+      const out = await search([
+        row({ id: 'recent', mrn: 'MRN-A', firstName: 'Vikram', lastName: 'Nair', dateOfBirth: new Date('1978-04-04') }),
+        row({ id: 'stale', mrn: 'MRN-B', firstName: 'Vikram', lastName: 'Nair', dateOfBirth: new Date('1978-04-04') }),
+      ]);
+      expect(out).toHaveLength(1);
+      expect(out[0]!.localPatientId).toBe('recent');
+    });
+
     it('keeps two households who share a name apart', async () => {
       const out = await search([
         row({ id: 'x', userId: 'acct-a', firstName: 'Vikram', lastName: 'Nair', dateOfBirth: new Date('1978-04-04') }),
@@ -560,6 +580,16 @@ describe('PatientsService', () => {
       expect(prisma.patient.findMany).toHaveBeenCalled();
     });
 
+    // Gap 359: the end date is a whole IST day, not UTC midnight.
+    it('bounds the registration date range by IST days, end date inclusive', async () => {
+      vi.mocked(prisma.patient.findMany).mockResolvedValue([]);
+      vi.mocked(prisma.patient.count).mockResolvedValue(0);
+      await patientsService.findAll('tenant-1', { fromDate: '2026-10-14', toDate: '2026-11-13' } as any);
+      const where = vi.mocked(prisma.patient.findMany).mock.calls[0]![0]!.where as any;
+      expect(where.createdAt.gte.toISOString()).toBe('2026-10-13T18:30:00.000Z');
+      expect(where.createdAt.lte.toISOString()).toBe('2026-11-13T18:29:59.999Z');
+    });
+
     it('should apply custom sort', async () => {
       vi.mocked(prisma.patient.findMany).mockResolvedValue([]);
       vi.mocked(prisma.patient.count).mockResolvedValue(0);
@@ -605,6 +635,18 @@ describe('PatientsService', () => {
       vi.mocked(prisma.patient.update).mockResolvedValue({ id: 'p1', firstName: 'Updated' } as any);
       const result = await patientsService.update('tenant-1', 'p1', { firstName: 'Updated' });
       expect(result.firstName).toBe('Updated');
+    });
+
+    // Gap 329: a future DOB is refused on update (and on create — see below).
+    it('rejects a date of birth in the future', async () => {
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue({ id: 'p1', phone: '111' } as any);
+      await expect(
+        patientsService.update('tenant-1', 'p1', { dateOfBirth: '2030-01-01' }),
+      ).rejects.toThrow('Date of birth cannot be in the future');
+      expect(prisma.patient.update).not.toHaveBeenCalled();
+      await expect(
+        patientsService.create('tenant-1', { firstName: 'A', lastName: 'B', gender: 'male', phone: '9999999999', dateOfBirth: '2030-01-01' } as any),
+      ).rejects.toThrow('Date of birth cannot be in the future');
     });
 
     it('should throw notFound if patient does not exist', async () => {

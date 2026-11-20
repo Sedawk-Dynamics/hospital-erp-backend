@@ -8,6 +8,7 @@ import { sendEmail } from '../../services/email.service';
 import { streamSalarySlipPdf } from './hr.salary-slip-pdf';
 import type {
   CreateStaffProfileInput,
+  ImportStaffFromUsersInput,
   UpdateStaffProfileInput,
   GetStaffProfilesQuery,
   AddLicenseInput,
@@ -30,6 +31,7 @@ import type {
   HrReportsQuery,
 } from './hr.validation';
 import { fullName } from '../../shared/person-name';
+import { getHrSettings, rosterWeekStart } from '../hospital-settings/hospital-settings.service';
 
 // ============================================================
 // Staff Profiles
@@ -62,11 +64,13 @@ export async function createStaffProfile(tenantId: string, data: CreateStaffProf
     }
   }
 
+  const departmentId = data.departmentId ?? (await resolveDefaultDepartmentId(tenantId));
+
   const profile = await prisma.staffProfile.create({
     data: {
       tenantId,
       userId: data.userId,
-      departmentId: data.departmentId,
+      departmentId,
       employeeId: data.employeeId,
       position: data.position,
       dateOfJoining: data.dateOfJoining ? new Date(data.dateOfJoining) : undefined,
@@ -86,6 +90,37 @@ export async function createStaffProfile(tenantId: string, data: CreateStaffProf
 
   logger.info({ tenantId, staffId: profile.id }, 'Staff profile created');
   return profile;
+}
+
+/**
+ * Gap 300: "Import from users" — HR saw "No staff found" while the tenant had
+ * ~20 user accounts, because profiles were only ever auto-created by rosters.
+ * Creates one minimal (draft) profile per active staff user that has none.
+ * Patient-only accounts are never staff. userId is @unique on StaffProfile, so
+ * the link stays one-to-one and a re-run skips everyone already imported.
+ */
+export async function importStaffFromUsers(tenantId: string, data: ImportStaffFromUsersInput) {
+  const users = await prisma.user.findMany({
+    where: {
+      tenantId,
+      isActive: true,
+      staffProfile: null,
+      ...(data.userIds?.length ? { id: { in: data.userIds } } : {}),
+      // At least one non-patient role.
+      userRoles: { some: { role: { name: { not: 'patient' } } } },
+    },
+    select: { id: true },
+  });
+  if (users.length === 0) return { created: 0, skipped: 0 };
+
+  const departmentId = data.departmentId ?? (await resolveDefaultDepartmentId(tenantId));
+  const result = await prisma.staffProfile.createMany({
+    data: users.map((u) => ({ tenantId, userId: u.id, departmentId })),
+    skipDuplicates: true,
+  });
+
+  logger.info({ tenantId, created: result.count }, 'Staff profiles imported from users');
+  return { created: result.count, skipped: users.length - result.count };
 }
 
 export async function getStaffProfiles(tenantId: string, query: GetStaffProfilesQuery) {
@@ -1522,8 +1557,8 @@ export async function streamSalarySlip(tenantId: string, payrollId: string, res:
 export async function getHrDashboard(tenantId: string) {
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const weekStart = new Date(today);
-  weekStart.setDate(today.getDate() - today.getDay()); // Sunday-anchored week
+  // Gap 313: "this week" starts on the hospital's roster week-start day.
+  const weekStart = rosterWeekStart(today, (await getHrSettings(tenantId)).rosterWeekStartDay);
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
   const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
   const soon = new Date(today);

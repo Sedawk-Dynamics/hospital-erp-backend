@@ -53,13 +53,14 @@ const money = (n: number) =>
 
 const dateOnly = (iso: string | null) =>
   iso
-    ? new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+    ? new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' })
     : '—';
 
 const dateTime = (iso: string | null) =>
   iso
     ? new Date(iso).toLocaleString('en-IN', {
         day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+        timeZone: 'Asia/Kolkata', // PDFs print hospital time, not the server's (gap 362)
       })
     : '—';
 
