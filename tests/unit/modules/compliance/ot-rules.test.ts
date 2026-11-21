@@ -393,21 +393,20 @@ describe('OT lifecycle — start/complete (gaps 352, 354)', () => {
     vi.mocked(prisma.serviceTariff.findFirst).mockReset();
   });
 
-  it('records the component total on the case only AFTER posting the component lines', async () => {
+  it('posts the component lines and leaves billingAmount as typed (no manual override)', async () => {
     vi.mocked(prisma.otRequest.findFirst).mockResolvedValueOnce({ ...RUNNING, serviceTariffId: 't-c' } as any);
     vi.mocked(prisma.otRequest.update).mockImplementation(
       (async (a: any) => ({ ...RUNNING, serviceTariffId: 't-c', ...a.data })) as any,
     );
     vi.mocked(prisma.serviceTariff.findFirst).mockResolvedValue({
-      id: 't-c', serviceName: 'Appendectomy', basePrice: 18000, otTheatreCharge: 5000, otSurgeonCharge: 10000,
+      id: 't-c', serviceName: 'Appendectomy', basePrice: 15000, otTheatreCharge: 5000, otSurgeonCharge: 10000,
     } as any);
     const out: any = await updateOTRequest(TENANT, 'ot-1', 'u-1', { status: 'completed' } as any);
     expect(out.billing).toMatchObject({ posted: true, amount: 15000 });
-    const updates = (prisma.otRequest.update as any).mock.invocationCallOrder as number[];
-    const billedAt = (billOtRequest as any).mock.invocationCallOrder[0];
-    const amountWrite = (prisma.otRequest.update as any).mock.calls.findIndex((c: any) => c[0].data.billingAmount === 15000);
-    expect(amountWrite).toBeGreaterThan(-1);
-    expect(updates[amountWrite]).toBeGreaterThan(billedAt);
+    expect(out.billing.message).toContain('Theatre charge ₹5,000');
+    // Writing the total back made every later read treat it as a one-line manual charge.
+    const amountWrites = (prisma.otRequest.update as any).mock.calls.filter((c: any) => 'billingAmount' in c[0].data);
+    expect(amountWrites).toHaveLength(0);
     vi.mocked(prisma.serviceTariff.findFirst).mockReset();
   });
 });

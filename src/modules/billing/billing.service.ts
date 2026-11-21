@@ -1295,6 +1295,17 @@ function otComponentData(data: Record<string, unknown>) {
   for (const f of OT_COMPONENT_FIELDS) if (data[f] !== undefined) out[f] = data[f] as number | null;
   return out;
 }
+/**
+ * Gap 352 (retest): when any component is configured, Complete bills the
+ * components and never the base price — so the base price is kept equal to
+ * their total. Otherwise the tariff list showed ₹18,000 while the case billed
+ * ₹15,000 (theatre + surgeon). Null when no component is set.
+ */
+export function otComponentTotal(components: Record<string, unknown>): number | null {
+  const set = OT_COMPONENT_FIELDS.map((f) => components[f]).filter((v) => v !== null && v !== undefined && v !== '');
+  if (!set.length) return null;
+  return Math.round(set.reduce((sum: number, v) => sum + Number(v), 0) * 100) / 100;
+}
 
 export async function createServiceTariff(tenantId: string, data: CreateServiceTariffInput) {
   assertTariffPricing(mapToServiceTariffCategory(data.category), data.basePrice, data as Record<string, unknown>);
@@ -1315,7 +1326,7 @@ export async function createServiceTariff(tenantId: string, data: CreateServiceT
       serviceName: data.name,
       serviceCode: data.code,
       category: mapToServiceTariffCategory(data.category) as any,
-      basePrice: data.basePrice,
+      basePrice: otComponentTotal(data as Record<string, unknown>) ?? data.basePrice,
       gstRatePercent: data.taxRate ?? 0,
       // The tariff's GST classification, which nothing could set. `sacCode`,
       // `gstTreatment` and `isCosmetic` are columns the resolution chain reads —
@@ -1410,6 +1421,12 @@ export async function updateServiceTariff(
     data as Record<string, unknown>,
   );
   Object.assign(updateData, otComponentData(data as Record<string, unknown>));
+  {
+    const merged: Record<string, unknown> = {};
+    for (const f of OT_COMPONENT_FIELDS) merged[f] = f in updateData ? updateData[f] : (existing as any)[f];
+    const componentTotal = otComponentTotal(merged);
+    if (componentTotal !== null) updateData.basePrice = componentTotal;
+  }
   if (data.taxRate !== undefined) updateData.gstRatePercent = data.taxRate;
   // The GST classification. Changing any of it WITHDRAWS the approval: an
   // auditor signed off the classification that was there, not whatever it
@@ -3100,7 +3117,6 @@ async function getOtCharges(
       tenantId,
       patientId,
       status: { notIn: ['cancelled'] as any },
-      billingAmount: { gt: 0 },
     },
     include: {
       surgeon: { include: { user: { select: { firstName: true, lastName: true } } } },
@@ -3118,29 +3134,40 @@ async function getOtCharges(
     take: 50,
   });
 
-  return requests.map((r) => {
-    const amount = toNumber(r.billingAmount ?? 0);
+  // Gap 352 (retest): the same resolver Complete and "Add to Ledger" use — the
+  // amount typed on the case, else the tariff's components, else its single
+  // price (₹0 = an explicit no-charge line). Reading billingAmount alone left
+  // tariff-priced surgeries out of the feed and billed components as one line.
+  const { resolveOtCharge, otChargeLineDescription } = await import('../compliance/ot-rules');
+  const quotes = await Promise.all(requests.map((r) => resolveOtCharge(tenantId, r)));
+  const rows: ChargeRow[] = [];
+  requests.forEach((r, i) => {
+    const quote = quotes[i];
+    if (!quote) return; // no configured price — nothing to bill
     const sUser = r.surgeon?.user ?? r.doctor?.user;
     const surgeon = sUser ? `Dr. ${fullName(sUser)}` : null;
-    const billed = billedIndex.get(`ot_request:${r.id}`);
-    return {
-      source: 'ot' as const,
-      referenceType: 'ot_request',
-      referenceId: r.id,
-      description: `Surgery — ${r.procedureName}${surgeon ? ` (${surgeon})` : ''}`,
-      quantity: 1,
-      unitPrice: amount,
-      totalAmount: amount,
-      ...otTaxFacts(r.serviceTariff, taxRates),
-      category: 'surgery',
-      occurredAt: formatDateTimeIST(r.scheduledDate ?? r.createdAt),
-      occurredAtISO: new Date(r.scheduledDate ?? r.createdAt).toISOString(),
-      status: r.status,
-      alreadyBilled: !!billed,
-      billItemId: billed?.billItemId,
-      billId: billed?.billId,
-    };
+    for (const line of quote.lines) {
+      const billed = billedIndex.get(`${line.referenceType}:${r.id}`);
+      rows.push({
+        source: 'ot' as const,
+        referenceType: line.referenceType,
+        referenceId: r.id,
+        description: otChargeLineDescription(line, r.procedureName, surgeon),
+        quantity: 1,
+        unitPrice: line.amount,
+        totalAmount: line.amount,
+        ...otTaxFacts(r.serviceTariff, taxRates),
+        category: 'surgery',
+        occurredAt: formatDateTimeIST(r.scheduledDate ?? r.createdAt),
+        occurredAtISO: new Date(r.scheduledDate ?? r.createdAt).toISOString(),
+        status: r.status,
+        alreadyBilled: !!billed,
+        billItemId: billed?.billItemId,
+        billId: billed?.billId,
+      });
+    }
   });
+  return rows;
 }
 
 async function getConsultationCharges(
@@ -3801,7 +3828,6 @@ export async function getPendingOrders(
           where: {
             tenantId,
             status: { notIn: ['cancelled'] as any },
-            billingAmount: { gt: 0 },
           },
           include: { patient: { select: { id: true, firstName: true, lastName: true, mrn: true } } },
           orderBy: { createdAt: 'desc' },
@@ -3872,16 +3898,25 @@ export async function getPendingOrders(
     });
   }
 
+  // Gap 352 (retest): price each surgery the way Complete will — the typed
+  // amount, else the tariff's components / single price. A ₹0 tariff is an
+  // explicit no-charge line; a surgery with no price at all is left out.
+  const { resolveOtCharge: resolveOtQuote } = await import('../compliance/ot-rules');
+  const otQuotes = new Map(
+    await Promise.all(otReqs.map(async (r) => [r.id, await resolveOtQuote(tenantId, r)] as const)),
+  );
   for (const req of otReqs) {
     if (billedKeys.has(`ot_request:${req.id}`)) continue;
+    const otQuote = otQuotes.get(req.id);
+    if (!otQuote) continue;
     const p = req.patient;
     rows.push({
       key: `ot:${req.id}`,
       source: 'ot',
       referenceType: 'ot_request',
       referenceId: req.id,
-      description: `Surgery — ${req.procedureName}`,
-      amount: toNumber(req.billingAmount),
+      description: `Surgery — ${req.procedureName}${otQuote.noCharge ? ' — ₹0 — no charge' : ''}`,
+      amount: otQuote.amount,
       taxRate: taxRates.ot ?? CHARGE_TAX_RATES.ot,
       orderedAt: formatDateTimeIST(req.createdAt),
       orderedAtISO: new Date(req.createdAt).toISOString(),
@@ -4032,6 +4067,9 @@ export async function billOtRequest(
     billNumber: finalBill?.billNumber ?? null,
     billStatus: finalBill?.status ?? null,
     totalAmount: toNumber(finalBill?.totalAmount ?? amount),
+    /** This surgery's charge — totalAmount is the whole (possibly running IP) bill. */
+    chargeAmount: amount,
+    noCharge: quote.noCharge,
     amountPaid: toNumber(finalBill?.amountPaid ?? 0),
     balanceDue: toNumber(finalBill?.balanceDue ?? 0),
     paid,

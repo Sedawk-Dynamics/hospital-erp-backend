@@ -58,6 +58,7 @@ import {
   istTodayKey,
   requireTheatre,
   resolveOtCharge,
+  type OtChargeQuote,
 } from './ot-rules';
 
 // ============================================================
@@ -948,7 +949,15 @@ export async function getOTRequests(
   ]);
 
   const meta = await getOtScheduleMeta(requests.map((r) => r.id));
-  let shaped = requests.map((r) => shapeOtRequest(attachOtScheduleMeta(r as any, meta)));
+  // Gap 352 (retest): each row carries what is actually posted to bills and,
+  // until then, what Complete will post (the typed amount, else the tariff's
+  // components or single price, ₹0 = no charge). The billing screen used to
+  // total the typed billingAmount only, so tariff-priced cases read "No price
+  // set" and a posted ₹0 no-charge case looked unbilled.
+  const billing = await otRowBilling(tenantId, requests as any[]);
+  let shaped = requests.map((r) =>
+    shapeOtRequest(attachOtScheduleMeta(r as any, meta), billing.get(r.id)),
+  );
 
   // `scheduleState` lives in a raw column, so it is filtered after the fetch.
   // Only used by the doctor's "Awaiting my approval" tab, which is a small set.
@@ -957,6 +966,35 @@ export async function getOTRequests(
   }
 
   return { requests: shaped, total, page, limit };
+}
+
+export interface OtRowBilling {
+  /** Total of the lines on (non-cancelled) bills. 0 for a posted no-charge case. */
+  postedAmount: number;
+  /** True once any line is on a bill — a ₹0 no-charge line counts. */
+  isPosted: boolean;
+  /** What Complete / Add to Ledger will post; null when no price is configured. */
+  chargePreview: OtChargeQuote | null;
+}
+
+/** Posted amount and planned charge for each OT row (gap 352). */
+export async function otRowBilling(
+  tenantId: string,
+  rows: Array<{ id: string; billingAmount?: unknown; serviceTariffId?: string | null; procedureName: string }>,
+): Promise<Map<string, OtRowBilling>> {
+  const out = new Map<string, OtRowBilling>();
+  if (!rows.length) return out;
+  const posted = await getPostedOtCharges(tenantId, rows.map((r) => r.id));
+  const quotes = await Promise.all(rows.map((r) => resolveOtCharge(tenantId, r)));
+  rows.forEach((r, i) => {
+    const p = posted.get(r.id);
+    out.set(r.id, {
+      postedAmount: Math.round((p?.amount ?? 0) * 100) / 100,
+      isPosted: !!p && p.bills.length > 0,
+      chargePreview: quotes[i],
+    });
+  });
+  return out;
 }
 
 export async function getOTRequestById(tenantId: string, id: string) {
@@ -983,6 +1021,7 @@ export async function getOTRequestById(tenantId: string, id: string) {
     chargePreviewMessage: chargeQuote ? null : NO_OT_PRICE_MESSAGE,
     postedCharges: postedRow?.bills ?? [],
     postedAmount: postedRow?.amount ?? 0,
+    isPosted: !!postedRow && postedRow.bills.length > 0,
   });
 }
 
@@ -1463,12 +1502,11 @@ async function postOtChargeOnComplete(
     }
     // Gap 352: billOtRequest resolves the same quote and posts one line per
     // component (or the single price, or a labelled ₹0 no-charge line).
+    // billingAmount is left as typed (gap 352 retest): writing the tariff
+    // total back made every later read treat it as a manual one-line charge,
+    // so the case's own breakdown and "no charge" label were lost. The lists
+    // read the posted lines instead.
     const result = await billOtRequest(tenantId, id, userId);
-    if (quote.source !== 'manual') {
-      // Record the billed total on the case for the OT lists — AFTER posting,
-      // so the components are not collapsed into one "manual" amount first.
-      await prisma.otRequest.update({ where: { id }, data: { billingAmount: quote.amount } });
-    }
     const parts = quote.lines.length > 1 ? ` — ${quote.lines.map((l) => `${l.label} ₹${l.amount.toLocaleString('en-IN')}`).join(', ')}` : '';
     return {
       posted: true,
@@ -1679,6 +1717,12 @@ export async function getOTAnalytics(tenantId: string, query: OtAnalyticsQuery) 
   // amount typed on the surgery (which read ₹0 because nothing was posted).
   const posted = await getPostedOtCharges(tenantId, requests.map((r) => r.id));
   const billedTotal = Array.from(posted.values()).reduce((sum, p) => sum + p.amount, 0);
+  // Planned charge for cases not posted yet — the resolver Complete uses, not
+  // the typed amount alone (gap 352 retest). Posted cases need no quote.
+  const unposted = requests.filter((r) => r.status !== 'cancelled' && !posted.has(r.id));
+  const plannedQuotes = new Map(
+    await Promise.all(unposted.map(async (r) => [r.id, await resolveOtCharge(tenantId, r)] as const)),
+  );
 
   return {
     avgStartDelayMin,
@@ -1718,6 +1762,12 @@ export async function getOTAnalytics(tenantId: string, query: OtAnalyticsQuery) 
       billingAmount: r.billingAmount ? Number(r.billingAmount) : null,
       billingStatus: r.billingStatus,
       billedAmount: posted.get(r.id)?.amount ?? 0,
+      /** A posted ₹0 no-charge line still counts as billed. */
+      isPosted: posted.has(r.id),
+      postedNoCharge: posted.has(r.id) && (posted.get(r.id)?.amount ?? 0) === 0,
+      /** What Complete will post, for cases not on a bill yet (null = no price). */
+      plannedAmount: plannedQuotes.get(r.id)?.amount ?? null,
+      plannedNoCharge: plannedQuotes.get(r.id)?.noCharge ?? false,
     })),
   };
 }
