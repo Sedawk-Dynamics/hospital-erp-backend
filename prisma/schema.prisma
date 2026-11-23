@@ -8409,9 +8409,11 @@ model Notification {
   // the hospital's.
   @@index([userId, isRead, createdAt(sort: Desc)])
   @@index([tenantId, referenceType, referenceId])
-  // Gap 295: one notification per (tenant, recipient, dedupe key). Concurrent
-  // writers race on this index, not on a read-then-insert.
-  @@unique([tenantId, userId, dedupeKey], map: "notifications_tenant_user_dedupe_key")
+  // Gap 295: one notification per (tenant, recipient, dedupe key). Enforced by
+  // an advisory lock in notification-writer.ts, not a UNIQUE constraint: adding
+  // one to this existing table stops `prisma db push` (run by predev and start)
+  // with a data-loss warning on every environment. Plain index for the lookup.
+  @@index([tenantId, userId, dedupeKey], map: "notifications_tenant_user_dedupe_key")
   @@map("notifications")
 }
 

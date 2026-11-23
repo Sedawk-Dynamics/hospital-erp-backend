@@ -1,8 +1,9 @@
 // Gap 295: notification writes are idempotent on (tenant, recipient,
 // event/type, reference record, reminder stage) — sequentially and under
-// concurrency. The prisma mock below behaves like the real table with its
-// unique index on (tenant_id, user_id, dedupe_key): a second insert with the
-// same key throws P2002, exactly as Postgres would.
+// concurrency. The prisma mock below behaves like the real table WITHOUT a
+// unique index (inserts never conflict), and like Postgres' advisory lock:
+// `pg_advisory_xact_lock` inside a transaction blocks other transactions on
+// the same key until the holder commits. So only the lock can keep one row.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { prisma } from '../../../../src/config/database';
 import {
@@ -10,7 +11,7 @@ import {
   getUnreadCount,
 } from '../../../../src/modules/communication/communication.service';
 import { notificationDedupeKey } from '../../../../src/modules/communication/notification-dedupe';
-import { writeNotificationOnce } from '../../../../src/modules/communication/notification-writer';
+import { notificationLockKey, writeNotificationOnce } from '../../../../src/modules/communication/notification-writer';
 
 type Row = Record<string, any> & { id: string };
 
@@ -25,14 +26,9 @@ function installTable() {
   const n = vi.mocked(prisma.notification);
   // Snapshot at call time, answer later — so simultaneous writers all miss the
   // row and are forced onto the insert race the unique index decides.
-  n.findUnique.mockImplementation((async (args: any) => {
-    const k = args.where.tenantId_userId_dedupeKey;
-    const hit = rows.find((r) => r.tenantId === k.tenantId && r.userId === k.userId && r.dedupeKey === k.dedupeKey);
-    await tick();
-    return hit ? { ...hit } : null;
-  }) as never);
   n.findFirst.mockImplementation((async (args: any) => {
     const w = args.where;
+    await tick(); // snapshot now, answer later — like a real round trip
     const hit = rows
       .filter((r) => Object.entries(w).every(([key, v]) => (v === null ? r[key] == null : r[key] === v)))
       .sort((a, b) => b.seq - a.seq)[0];
@@ -40,24 +36,49 @@ function installTable() {
   }) as never);
   n.create.mockImplementation((async (args: any) => {
     const d = args.data;
-    if (d.dedupeKey && rows.some((r) => r.tenantId === d.tenantId && r.userId === d.userId && r.dedupeKey === d.dedupeKey)) {
-      throw Object.assign(new Error('Unique constraint failed'), { code: 'P2002' });
-    }
+    await tick(); // an insert takes time: a racing writer without the lock would slip in
     const row = { id: `n-${++seq}`, seq, isRead: false, createdAt: new Date(), ...d };
     rows.push(row);
     return { ...row };
   }) as never);
   n.update.mockImplementation((async (args: any) => {
     const row = rows.find((r) => r.id === args.where.id)!;
-    if (args.data.dedupeKey && rows.some((r) => r !== row && r.tenantId === row.tenantId && r.userId === row.userId && r.dedupeKey === args.data.dedupeKey)) {
-      throw Object.assign(new Error('Unique constraint failed'), { code: 'P2002' });
-    }
     Object.assign(row, args.data);
     return { ...row };
   }) as never);
   n.findMany.mockImplementation((async (args: any) =>
     rows.filter((r) => r.userId === args.where.userId && (args.where.isRead === undefined || r.isRead === args.where.isRead))) as never);
+
+  // pg_advisory_xact_lock: one holder per key; released when its transaction ends.
+  const held = new Map<string, Promise<void>>();
+  let current: { release?: () => void } | null = null;
+  vi.mocked(prisma.$executeRaw).mockImplementation((async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    if (!String(strings.join('?')).includes('pg_advisory_xact_lock')) return 0;
+    const key = String(values[0]);
+    locksTaken.push(key);
+    const tx = current!;
+    while (held.has(key)) await held.get(key);
+    let release!: () => void;
+    held.set(key, new Promise<void>((r) => (release = () => { held.delete(key); r(); })));
+    tx.release = release;
+    return 1;
+  }) as never);
+  vi.mocked(prisma.$transaction).mockImplementation((async (fn: any) => {
+    const tx: { release?: () => void } = {};
+    // Each transaction has its own lock slot; the callback runs with it current.
+    const run = async () => {
+      current = tx;
+      return fn(prisma);
+    };
+    try {
+      return await run();
+    } finally {
+      tx.release?.();
+    }
+  }) as never);
 }
+
+let locksTaken: string[] = [];
 
 const T = 'tenant-1';
 const input = {
@@ -72,6 +93,7 @@ const input = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  locksTaken = [];
   installTable();
   vi.mocked(prisma.user.findFirst).mockResolvedValue({ id: 'user-2' } as never);
 });
@@ -152,6 +174,19 @@ describe('POST /communication/notifications is idempotent (gap 295)', () => {
     await createNotificationWithStatus(T, { ...input, referenceId: undefined, referenceType: undefined });
     await createNotificationWithStatus(T, { ...input, referenceId: undefined, referenceType: undefined });
     expect(rows).toHaveLength(2);
+  });
+});
+
+describe('the advisory lock is what keeps one row (gap 295)', () => {
+  it('locks on tenant + recipient + dedupe key before reading', async () => {
+    await writeNotificationOnce({ ...input, tenantId: T });
+    expect(locksTaken).toEqual([notificationLockKey(T, 'user-2', notificationDedupeKey(input)!)]);
+  });
+
+  it('without the lock, simultaneous writers would duplicate (the table has no unique index)', async () => {
+    vi.mocked(prisma.$executeRaw).mockResolvedValue(0 as never); // lock is a no-op
+    await Promise.all(Array.from({ length: 3 }, () => writeNotificationOnce({ ...input, tenantId: T })));
+    expect(rows.length).toBeGreaterThan(1);
   });
 });
 
