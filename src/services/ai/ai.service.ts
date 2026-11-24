@@ -52,7 +52,7 @@ export async function generateText(
   opts: AiGenerateOptions,
   ctx: AiCallContext = {},
 ): Promise<AiGenerateResult> {
-  const cfg = await resolveAiConfig(ctx.tenantId);
+  const cfg = await resolveAiConfig(ctx.tenantId,opts.model);
   if (!cfg.ready) {
     throw AppError.badRequest(
       'AI is not configured for this hospital. A super-admin must select a provider and set its API key.',

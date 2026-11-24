@@ -59,6 +59,7 @@ export const patientChatSchema = z.object({
     patientId: z.string().uuid('A valid patient is required'),
     visitId: z.string().optional().default(''),
     message: z.string().trim().min(1, 'Message is required').max(2000),
+    model:z.string(),
     history: z
       .array(
         z.object({

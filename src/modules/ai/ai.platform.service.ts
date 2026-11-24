@@ -416,9 +416,9 @@ export const getCdssSourcePath = async (sourceId: string) => {
 
 
 
-export const analyseImagingReport=async(tenantId:string,patientId:string)=>{
+export const analyseImagingReport=async(tenantId:string,patientId:string,model?:string)=>{
   const study=await prisma.dicomStudy.findFirst({
-    where:{tenantId,patientId,modality:{in:['CR','DX']}},
+    where:{tenantId,patientId,modality:{in:['CR','DX','XR']}},
     orderBy:{studyDate:'desc'},
     include:{
       instances:true,
@@ -479,6 +479,7 @@ Be concise and factual. Never state a diagnosis the image cannot support.${clini
   images: images.map(b => ({ data: b, mimetype: 'image/png' })),
   feature: 'Imaging report analysis',
   fallbackHint: 'Please review the images manually.',
+  model,
 });
 return {
   summary: text,

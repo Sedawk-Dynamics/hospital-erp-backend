@@ -148,10 +148,7 @@ export async function buildPatientContext(
           },
         },
       }),
-
-      // The current visit — the reason the patient is here TODAY. Fetched on its
-      // own by visitId so the context can foreground this complaint/vitals/dx as
-      // the focus, with everything above kept as background history.
+      
       visitId
         ? prisma.visit.findFirst({
           where: { id: visitId, patientId, tenantId },
@@ -379,7 +376,7 @@ export async function buildPatientContext(
 
   try {
     const xrayStudy = await prisma.dicomStudy.findFirst({
-      where: { tenantId, patientId, modality: { in: ['CR', 'DX'] } },
+      where: { tenantId, patientId, modality: { in: ['CR', 'DX', 'XR'] } },
       orderBy: { studyDate: 'desc' },
       include: {
         instances: true,

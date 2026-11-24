@@ -181,10 +181,6 @@ export async function ensureVisitForAppointment(
     orderBy: { createdAt: 'desc' },
   });
   if (linked) return linked;
-
-  // Fall back to any active visit for this patient with the same doctor — the
-  // legacy consultation flow created visits without backfilling appointmentId
-  // before this endpoint existed.
   const existing = await prisma.visit.findFirst({
     where: {
       tenantId,

@@ -101,7 +101,7 @@ export async function patientChat(
   }));
   const messages: AiMessage[] = [...history, { role: 'user', content: input.message }];
 
-  const { text, model, provider } = await generateText({ system, messages }, { tenantId });
+  const { text, model, provider } = await generateText({ system, messages ,model:input.model}, { tenantId });
 
   void auditAi(tenantId, userId, input.patientId, `Patient chat: ${input.message}`);
 
