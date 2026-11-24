@@ -7,10 +7,6 @@ import * as platformService from './ai.platform.service';
 import { AppError } from '../../shared/appError';
 import path from 'path';
 
-// --- Super-admin: LLM provider configuration ("Configure LLM Options") ---
-// tenantId (query for GET, body for PUT) selects the scope: omitted = platform
-// default, a uuid = that hospital's override.
-
 export async function getConfig(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const tenantId = (req.query.tenantId as string) || null;
@@ -153,7 +149,8 @@ export const imagingReportAnalyse=async(req:AuthenticatedRequest,res:Response,ne
   try {
     const tenantId=req.user!.tenantId as string;
     const patientId=req.params.patientId as string;
-    const result=await platformService.analyseImagingReport(tenantId,patientId);
+    const model=req.body?.model as string | undefined;
+    const result=await platformService.analyseImagingReport(tenantId,patientId,model);
     sendResponse({ res, message: 'Patient imaging report analysed ', data: result });
   } catch (error) {
     next(error)

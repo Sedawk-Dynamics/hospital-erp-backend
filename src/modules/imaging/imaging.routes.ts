@@ -178,7 +178,29 @@ imagingRoutes.get('/dicom/studies/:id', authenticate, requirePermission('imaging
 imagingRoutes.get('/dicom/patient/:patientId/studies', authenticate, requirePermission('imaging', 'read'), dicomController.getStudiesByPatient);
 imagingRoutes.post('/dicom/studies', authenticate, requirePermission('imaging', 'create'), validate(createStudySchema), dicomController.createStudy);
 imagingRoutes.post('/dicom/studies/:id/instances', authenticate, requirePermission('imaging', 'create'), validate(addInstanceSchema), dicomController.addInstance);
-
-
 imagingRoutes.post('/requests/:requestId/attachments/dicom-folder',authenticate,requirePermission('imaging', 'create'),(req: AuthenticatedRequest, res: Response, next: NextFunction) =>
     uploadDicomFolderArray('files')(req as any, res, next as any), dicomController.uploadDicomFolder);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

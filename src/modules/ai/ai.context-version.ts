@@ -147,6 +147,7 @@ export async function getOrBuildContext(
   tenantId: string,
   patientId: string,
   visitId:string,
+
 ): Promise<{ context: BuiltPatientContext; version: string }> {
   const key = `ai:ctx:${tenantId}:${patientId}:${visitId}`;
   const version = await getClinicalVersion(tenantId, patientId,visitId);
