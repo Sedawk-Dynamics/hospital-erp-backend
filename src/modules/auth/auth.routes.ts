@@ -18,6 +18,9 @@ import {
   resetPasswordSchema,
   verify2FASchema,
   changePasswordSchema,
+  disable2FASchema,
+  requestPhoneChangeSchema,
+  verifyPhoneChangeSchema,
 } from './auth.validation';
 
 const router = Router();
@@ -52,6 +55,24 @@ router.post('/reset-password', sensitiveAuthLimiter, validate(resetPasswordSchem
 // 2FA — same tight budget; setup requires auth anyway but limit is still useful.
 router.post('/2fa/setup', sensitiveAuthLimiter, authenticate, authController.setup2FA);
 router.post('/2fa/verify', sensitiveAuthLimiter, authenticate, validate(verify2FASchema), authController.verify2FA);
+// Turning 2FA off needs the password + a current code (gap 297).
+router.post('/2fa/disable', sensitiveAuthLimiter, authenticate, validate(disable2FASchema), authController.disable2FA);
+
+// Change own phone with a one-time code (My Account, gap 297).
+router.post(
+  '/me/phone/request',
+  sensitiveAuthLimiter,
+  authenticate,
+  validate(requestPhoneChangeSchema),
+  authController.requestPhoneChange,
+);
+router.post(
+  '/me/phone/verify',
+  sensitiveAuthLimiter,
+  authenticate,
+  validate(verifyPhoneChangeSchema),
+  authController.verifyPhoneChange,
+);
 
 // Change own password (My Account, gap 297) — tight budget, it checks a password.
 router.post(

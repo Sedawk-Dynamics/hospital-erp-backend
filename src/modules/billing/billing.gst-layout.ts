@@ -277,6 +277,9 @@ export interface GstBillHeader {
   irnAckNo?: string | null;
   irnAckDate?: Date | null;
   irnQrPayload?: string | null;
+  /** G-5 (gap #266): 'registered' | 'failed' | 'cancelled' | 'pending'. */
+  irnStatus?: string | null;
+  irnCancelledAt?: Date | null;
 }
 
 /**
@@ -335,9 +338,9 @@ export function buildGstBlock(
     // sentence.
     notes.push('Tax is not payable on reverse charge basis.');
   }
-  // G-5: there is no IRP integration, so a B2B invoice of a hospital inside the
-  // e-invoicing regime goes out without an IRN. The paper says so rather than
-  // passing for an e-invoice.
+  // G-5: a B2B invoice of a hospital inside the e-invoicing regime that has not
+  // (yet) been registered on the IRP goes out without an IRN. The paper says so
+  // rather than passing for an e-invoice.
   if (
     profile.registered &&
     profile.eInvoiceApplicable &&
@@ -348,6 +351,21 @@ export function buildGstBlock(
     notes.push(
       'E-invoicing applies, but no IRN has been generated for this invoice: it is not a registered e-invoice until it is reported on the IRP.',
     );
+  }
+  // G-5 (gap #266): an IRN from the QA sandbox, or one since cancelled on the
+  // portal, must never pass for a live e-invoice on paper.
+  const withIrn = headers.find((h) => h.irn);
+  if (withIrn && (withIrn.irnStatus === 'cancelled' || withIrn.irnCancelledAt)) {
+    notes.push(
+      `The IRN for this invoice was CANCELLED on the e-invoice portal${
+        withIrn.irnCancelledAt
+          ? ` on ${withIrn.irnCancelledAt.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })}`
+          : ''
+      }: this is no longer a valid e-invoice.`,
+    );
+  }
+  if (withIrn?.irnQrPayload?.endsWith('.SANDBOX-NOT-SIGNED')) {
+    notes.push('SANDBOX IRN — not registered with the government portal. For testing only.');
   }
   if (profile.registered && taxSummary.some((r) => r.treatment !== 'taxable')) {
     notes.push(

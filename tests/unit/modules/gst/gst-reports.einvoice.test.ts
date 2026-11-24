@@ -276,4 +276,70 @@ describe('D-3 — the e-way bill register', () => {
     await getEwayBillRegister(TENANT);
     expect((prisma.drugReturn.findMany as any).mock.calls[0][0].where.returnType).toBe('vendor_return');
   });
+
+  // G-5 (gap #266): the portal state on each row, failures listed for Retry.
+  it('shows each movement\'s e-way status, and lists a failure with the portal\'s words', async () => {
+    (prisma.drugReturn.findMany as any).mockResolvedValue([
+      vendorReturn({ id: 'ok', returnNumber: 'OK', ewayBillNumber: '123456789012', ewayBillDate: daysAgo(9), ewayBillStatus: 'generated' }),
+      vendorReturn({
+        id: 'bad', returnNumber: 'BAD', ewayBillStatus: 'failed', ewayBillError: '238: Invalid consignee GSTIN',
+        ewayBillAttemptedAt: daysAgo(1), ewayBillTransport: { transMode: '1', distanceKm: 10, vehicleNo: 'TN01AB1234' },
+      }),
+      vendorReturn({
+        id: 'gone', returnNumber: 'GONE', ewayBillNumber: '123456789013', ewayBillDate: daysAgo(3),
+        ewayBillStatus: 'cancelled', ewayBillCancelledAt: daysAgo(3), ewayBillCancelReasonCode: '2', ewayBillCancelRemark: 'Supplier refused',
+      }),
+      vendorReturn({ id: 'new', returnNumber: 'NEW' }),
+    ]);
+    const out = await getEwayBillRegister(TENANT);
+    const by = Object.fromEntries(out.rows.map((r) => [r.documentNumber, r]));
+    expect(by.OK.ewayStatus).toBe('generated');
+    expect(by.BAD).toMatchObject({ ewayStatus: 'failed', ewayError: '238: Invalid consignee GSTIN' });
+    expect(by.BAD.ewayTransport).toMatchObject({ distanceKm: 10 });
+    expect(by.GONE).toMatchObject({ ewayStatus: 'cancelled', ewayCancelReason: 'Order cancelled — Supplier refused' });
+    expect(by.NEW.ewayStatus).toBe('not_generated');
+    expect(out.summary).toMatchObject({ failed: 1, cancelled: 1, missingBill: 2 });
+    expect(out.note).toMatch(/1 refused by the portal/);
+    expect(out.integration.cancelWindowHours).toBe(24);
+  });
+
+  it('keeps a failed or cancelled movement on the register even below the threshold', async () => {
+    (prisma.drugReturn.findMany as any).mockResolvedValue([
+      vendorReturn({ id: 'small', returnNumber: 'SMALL', creditAmount: 20_000, ewayBillStatus: 'failed', ewayBillError: 'x' }),
+      vendorReturn({ id: 'quiet', returnNumber: 'QUIET', creditAmount: 20_000 }),
+    ]);
+    const out = await getEwayBillRegister(TENANT);
+    expect(out.rows.map((r) => r.documentNumber)).toEqual(['SMALL']);
+    expect(out.summary.aboveThreshold).toBe(0);
+  });
+});
+
+describe('credit / debit notes in D-1 and D-2 (gap #266)', () => {
+  const creditNote = (o: Record<string, unknown> = {}) => ({
+    id: 'cn1', creditNoteNumber: 'CN/2026-27/000001', issueDate: daysAgo(5), noteType: 'credit',
+    recipientGstin: RECIPIENT, taxableValue: -1000, taxAmount: -50, totalAmount: -1050,
+    irn: null, irnAckNo: null, irnAckDate: null, irnStatus: null,
+    irnError: null, irnAttemptedAt: null, irnCancelledAt: null,
+    patient: null,
+    ...o,
+  });
+
+  it('shows a note with a cancelled IRN as cancelled, with its cancelled-at', async () => {
+    const at = daysAgo(1);
+    (prisma.creditNote.findMany as any).mockResolvedValue([
+      creditNote({ irn: 'a'.repeat(64), irnStatus: 'cancelled', irnCancelledAt: at }),
+    ]);
+    const out = await getEInvoiceRegister(TENANT);
+    expect(out.rows[0]).toMatchObject({ kind: 'credit_note', status: 'cancelled', cancelledAt: at });
+    expect(out.summary.cancelled).toBe(1);
+    expect((prisma.creditNote.findMany as any).mock.calls[0][0].select.irnCancelledAt).toBe(true);
+  });
+
+  it('lists a failed debit note in D-2 with the portal\'s reason', async () => {
+    (prisma.creditNote.findMany as any).mockResolvedValue([
+      creditNote({ id: 'dn1', noteType: 'debit', creditNoteNumber: 'DN/1', irnStatus: 'failed', irnError: '3028: GSTIN not present' }),
+    ]);
+    const out = await getFailedIrnReport(TENANT);
+    expect(out.rows[0]).toMatchObject({ id: 'dn1', kind: 'debit_note', status: 'failed', reason: '3028: GSTIN not present' });
+  });
 });

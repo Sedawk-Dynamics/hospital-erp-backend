@@ -65,8 +65,10 @@ export async function deleteTemplate(req: AuthenticatedRequest, res: Response, n
 
 export async function listHospitalForms(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
-    const { tenantId } = ctx(req);
-    const { items, total, page, limit } = await service.listHospitalForms(tenantId, req.query as never);
+    const { tenantId, roles } = ctx(req);
+    // Roles decide visibility: nurses/doctors only get published forms and
+    // never the unpublished draft (gap 304).
+    const { items, total, page, limit } = await service.listHospitalForms(tenantId, req.query as never, roles);
     sendPaginatedResponse(res, items, total, page, limit, 'Hospital forms retrieved');
   } catch (err) {
     next(err);
@@ -75,8 +77,8 @@ export async function listHospitalForms(req: AuthenticatedRequest, res: Response
 
 export async function getHospitalForm(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
-    const { tenantId } = ctx(req);
-    const data = await service.getHospitalForm(tenantId, req.params.id as string);
+    const { tenantId, roles } = ctx(req);
+    const data = await service.getHospitalForm(tenantId, req.params.id as string, roles);
     sendResponse({ res, message: 'Form retrieved', data });
   } catch (err) {
     next(err);
@@ -95,9 +97,29 @@ export async function createHospitalForm(req: AuthenticatedRequest, res: Respons
 
 export async function updateHospitalForm(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
-    const { tenantId, roles } = ctx(req);
-    const data = await service.updateHospitalForm(tenantId, roles, req.params.id as string, req.body);
+    const { tenantId, userId, roles } = ctx(req);
+    const data = await service.updateHospitalForm(tenantId, roles, req.params.id as string, req.body, userId);
     sendResponse({ res, message: 'Form updated', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function publishHospitalForm(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const { tenantId, userId, roles } = ctx(req);
+    const data = await service.publishHospitalForm(tenantId, userId, roles, req.params.id as string);
+    sendResponse({ res, message: `Form published (v${data.version})`, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function discardHospitalFormDraft(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const { tenantId, roles } = ctx(req);
+    const data = await service.discardHospitalFormDraft(tenantId, roles, req.params.id as string);
+    sendResponse({ res, message: 'Unpublished changes discarded', data });
   } catch (err) {
     next(err);
   }

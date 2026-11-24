@@ -248,6 +248,8 @@ export async function buildAdmissionBillDocument(
           recipientLegalName: true, recipientAddress: true,
           placeOfSupplyStateCode: true, isInterState: true,
           irn: true, irnAckNo: true, irnAckDate: true, irnQrPayload: true,
+          // G-5 (gap #266): a cancelled IRN must not print as a live e-invoice.
+          irnStatus: true, irnCancelledAt: true,
         },
       })
     : [];
