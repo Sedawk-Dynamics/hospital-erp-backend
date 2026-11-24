@@ -12,6 +12,16 @@ export const stockBalanceReportSchema = z.object({
   }),
 });
 
+// Gap 349: the transactions behind one Top-consumed row (same date filter).
+export const consumptionTransactionsSchema = z.object({
+  query: z.object({
+    fromDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    toDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    kind: z.enum(['item', 'drug']),
+    refId: z.string().uuid(),
+  }),
+});
+
 export const deptConsumptionReportSchema = z.object({
   query: z.object({
     fromDate: z.string().optional(),

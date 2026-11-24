@@ -3,8 +3,10 @@ import { assertTransferCustody } from './transfer-custody';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
-import { safeInventoryAudit } from './inventory.audit';
+import { safeInventoryAudit, stockSnapshot } from './inventory.audit';
+import { drugStockAuditAfterCommit } from '../pharmacy/pharmacy.audit';
 import { getISTDateStr } from '../../shared/date.utils';
+import { recordDrugStockMovement } from '../pharmacy/pharmacy.stock-movement';
 
 // ============================================================
 // Stock Transfer — moves stock between two departments, or out of the
@@ -117,6 +119,8 @@ export async function createStockTransfer(
     schedule?: string | null;
   } | null = null;
   let drugId: string | null = null;
+  // Gap 303: the moving item's stock and cost, for the audit's before/after.
+  let itemStock: { qty: number; unitCost: unknown } | null = null;
 
   if (data.drugBatchId) {
     const batch = await prisma.drugBatch.findFirst({
@@ -154,6 +158,7 @@ export async function createStockTransfer(
       );
     }
     itemLabel = item.itemName;
+    itemStock = { qty: item.currentStock, unitCost: item.costPerUnit };
   }
 
   if (data.fromDepartmentId) {
@@ -231,6 +236,16 @@ export async function createStockTransfer(
         where: { id: data.drugBatchId },
         data: { quantityInStock: { decrement: qty } },
       });
+      // 349: the received transfer as a pharmacy stock movement, so it shows in
+      // the Pharmacy Stock Ledger and the inventory outflow screens.
+      if (drugId) {
+        await recordDrugStockMovement(tx, {
+          tenantId, drugId, drugBatchId: data.drugBatchId, movementType: 'transfer_out',
+          quantity: -qty, referenceType: 'stock_transfer', referenceId: created.id,
+          party: created.toWard?.name ?? created.toDepartment?.name ?? data.toLocation ?? null,
+          performedBy: userId, notes: transferNumber,
+        });
+      }
 
       if (data.toWardId && drugId) {
         const existing = await tx.wardStock.findFirst({
@@ -307,6 +322,23 @@ export async function createStockTransfer(
     return created;
   });
 
+  // Gap 303: before/after quantity and value. A drug leaves its pharmacy batch;
+  // a generic item's hospital-wide stock is unchanged by a department move, so
+  // before and after are equal and the record says where it went.
+  const transferSnap = data.drugBatchId
+    ? await drugStockAuditAfterCommit(tenantId, [{ drugBatchId: data.drugBatchId, delta: -qty }], {
+        movementType: 'transfer_out', documentNumber: transferNumber, referenceType: 'stock_transfer', referenceId: transfer.id,
+      })
+    : {
+        oldValues: itemStock ? stockSnapshot(itemStock.qty, itemStock.unitCost) : {},
+        newValues: {
+          ...(itemStock ? stockSnapshot(itemStock.qty, itemStock.unitCost) : {}),
+          delta: 0,
+          movementType: 'transfer',
+          documentNumber: transferNumber,
+          source: { type: 'stock_transfer', id: transfer.id },
+        },
+      };
   void safeInventoryAudit({
     tenantId,
     userId,
@@ -319,10 +351,14 @@ export async function createStockTransfer(
         /\s+/g,
         ' ',
       ),
+    oldValues: transferSnap.oldValues,
     newValues: {
+      ...transferSnap.newValues,
       status: 'received',
       quantityTransferred: qty,
       custodianId: custody.custodianId,
+      from: transfer.fromDepartment?.name ?? data.fromLocation ?? null,
+      to: transfer.toWard?.name ?? transfer.toDepartment?.name ?? data.toLocation ?? null,
     },
   });
 

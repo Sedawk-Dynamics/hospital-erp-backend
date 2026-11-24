@@ -2,6 +2,9 @@ import { randomUUID } from 'crypto';
 import type { InventoryCategoryValue } from '../../shared/inventory-category';
 import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
 import { normalizeAdmissionType } from '../../shared/admission-type';
+import { istDayStart, istDayEnd } from '../../shared/date.utils';
+import { loadPaidSaleLines, summariseSaleLines } from './pharmacy.sales-figures';
+import { saleUnitNouns, formatUnits, describeSaleQty } from './pharmacy.units';
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
@@ -12,8 +15,9 @@ import { createBillInSeries } from '../../shared/bill-number';
 import { resolvePackSize, inferLooseUnitLabel } from '../drug-master/drug-master.dataset';
 import { resolveHsnGst, getHsnGstRows, matchHsnGst } from '../drug-master/drug-master.service';
 import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
+import { normalizeBuyer, type BuyerInput } from '../billing/billing.gst-checks';
 import { roundOffTotal } from '../../shared/gst';
-import { supplyKindForInventoryCategory } from '../../shared/gst-determination';
+import { supplyKindForInventoryCategory, itemTaxContext } from '../../shared/gst-determination';
 import { issueDocumentForBill } from '../gst/gst-document.service';
 import { getGstProfile } from '../hospital-settings/hospital-settings.service';
 import { issueCreditNoteBestEffort } from '../gst/credit-note.service';
@@ -31,7 +35,12 @@ import {
   createItem as createInventoryItem,
   createStockTransaction as createInventoryStockTransaction,
 } from '../inventory/inventory.service';
-import { safePharmacyAudit } from './pharmacy.audit';
+import {
+  safePharmacyAudit,
+  drugStockAuditValues,
+  drugStockAuditLinesAfterCommit,
+  drugStockAuditAfterCommit,
+} from './pharmacy.audit';
 import { checkControlledDispense, checkControlledReturn, QUARANTINE_PREFIX } from './controlled-dispense';
 import { resolveControlRequirements } from '../../shared/controlled-drug';
 import { getControlledDrugSettings } from '../hospital-settings/hospital-settings.service';
@@ -46,6 +55,11 @@ import { Prisma, type DrugMaster as CatalogDrug } from '@prisma/client';
 import { makeMedicineRankComparator, mergePrefixFirst } from '../../shared/medicine-search-rank';
 import { fuzzyMatchIds } from '../../shared/medicine-fuzzy';
 import { lookupNameMapping, saveNameMapping } from './pharmacy.name-mapping';
+import { recordDrugStockMovement, buildStockLedger } from './pharmacy.stock-movement';
+import {
+  assertSupplierInvoice, homeStateCode, inputTaxToReverse, purchaseLineTax, supplierStateOf,
+  writeOffTypeFor,
+} from './purchase-tax';
 import type {
   CreateFormularyInput,
   UpdateFormularyInput,
@@ -476,6 +490,8 @@ export async function createFormularyItem(
       taxPercent: data.gstTreatment && data.gstTreatment !== 'taxable' ? 0 : data.taxPercent,
       gstTreatment: data.gstTreatment ?? null,
       gstTreatmentSource: data.gstTreatment != null ? 'manual' : null,
+      // G-2: the typed rate is kept as typed; the reason says why it differs from HSN.
+      gstRateReason: (data as any).gstRateReason?.trim() || null,
       minStock: (data as any).minStock,
       // Product Resolution Engine identity (carried from the catalog or typed).
       // Normalised to digits-or-null so a blank never stores "" (which would
@@ -511,6 +527,7 @@ export async function createFormularyItem(
       gtin: formularyItem.gtin,
       hsnCode: formularyItem.hsnCode,
       taxPercent: formularyItem.taxPercent,
+      gstRateReason: (formularyItem as any).gstRateReason ?? null,
       price: formularyItem.price,
     },
   });
@@ -549,6 +566,16 @@ export async function createFormularyItem(
       await prisma.drugFormulary.update({ where: { id: formularyItem.id }, data: gstPatch });
     }
   }
+
+  // Gap 279: a drug's first rate is a rate change too (service tariffs already
+  // log their create). Covers the drug form, the unified item dialog and drugs
+  // born at inward, which all come through here.
+  const createdGst = { ...formularyItem, ...(gstPatch ?? {}) } as any;
+  void import('../gst/gst-rate-log').then((m) => m.recordItemRateChange({
+    tenantId, itemType: 'drug', itemId: formularyItem.id, itemName: formularyItem.drugName, before: null,
+    after: { rate: createdGst.taxPercent == null ? null : Number(createdGst.taxPercent), code: createdGst.hsnCode ?? null, treatment: createdGst.gstTreatment ?? null },
+    reason: m.pickRateChangeReason(data, 'Formulary drug created'),
+  })).catch(() => undefined);
 
   return {
     status: 'created' as const,
@@ -1195,6 +1222,32 @@ export async function commitInward(
     batchId?: string;
     message?: string;
   }> = [];
+
+  // G-9: a registered supplier's goods receipt must carry their invoice number
+  // and date. Checked once, up front, so the whole invoice is refused with one
+  // readable message rather than every line failing with the same error.
+  {
+    const receiving = inwardLines.filter((l) => (l.quantityReceived ?? 0) > 0);
+    const supplierIds = Array.from(
+      new Set(receiving.map((l) => l.supplierId ?? data.supplierId).filter((id): id is string => !!id)),
+    );
+    if (supplierIds.length) {
+      const suppliers = await prisma.supplier.findMany({
+        where: { tenantId, id: { in: supplierIds } },
+        select: { id: true, name: true, gstNumber: true, stateCode: true },
+      });
+      const byId = new Map(suppliers.map((s) => [s.id, s]));
+      for (const l of receiving) {
+        const sid = l.supplierId ?? data.supplierId;
+        if (!sid) continue;
+        assertSupplierInvoice(
+          byId.get(sid),
+          l.invoiceNumber ?? data.invoiceNumber,
+          l.invoiceDate ?? data.invoiceDate,
+        );
+      }
+    }
+  }
 
   // Preload the HSN → GST tax master once so each medicine line can auto-fill a
   // blank GST from its HSN code (longest-prefix match) with no query per line.
@@ -2150,6 +2203,9 @@ export async function updateFormularyItem(
   if (data.packSize !== undefined) updateData.packSize = data.packSize;
   if (data.looseUnitLabel !== undefined) updateData.looseUnitLabel = data.looseUnitLabel;
   if (data.taxPercent !== undefined) updateData.taxPercent = data.taxPercent;
+  if ((data as any).gstRateReason !== undefined) {
+    updateData.gstRateReason = (data as any).gstRateReason?.trim() || null;
+  }
   if (data.gstTreatment !== undefined) {
     updateData.gstTreatment = data.gstTreatment;
     updateData.gstTreatmentSource = data.gstTreatment ? 'manual' : null;
@@ -2238,6 +2294,15 @@ export async function updateFormularyItem(
       await prisma.drugFormulary.update({ where: { id }, data: gstPatch });
     }
   }
+  // Gap item 279: every GST rate / HSN / treatment change leaves an audit row.
+  const finalGst = { ...item, ...(gstPatch ?? {}) } as any;
+  void import('../gst/gst-rate-log').then((m) => m.recordItemRateChange({
+    tenantId, itemType: 'drug', itemId: id, itemName: item.drugName,
+    before: { rate: existing.taxPercent == null ? null : Number(existing.taxPercent), code: existing.hsnCode, treatment: existing.gstTreatment },
+    after: { rate: finalGst.taxPercent == null ? null : Number(finalGst.taxPercent), code: finalGst.hsnCode ?? null, treatment: finalGst.gstTreatment ?? null },
+    // Gap 279: the forms send gstRateReason — read both names, not just gstChangeReason.
+    reason: m.pickRateChangeReason(data, gstPatch ? 'Formulary drug edited (GST re-inferred)' : 'Formulary drug edited'),
+  })).catch(() => undefined);
   return { ...item, composition, ...(schedulePatch ?? {}), ...(gstPatch ?? {}) };
 }
 
@@ -2363,7 +2428,7 @@ export async function createOpeningBatch(
   },
 ) {
   const batchId = randomUUID();
-  return prisma.drugBatch.create({
+  const opening = await prisma.drugBatch.create({
     data: {
       id: batchId,
       tenantId,
@@ -2377,8 +2442,17 @@ export async function createOpeningBatch(
       storageLocation: opts.storageLocation ?? undefined,
       // Opening stock is stock — it needs a scannable label like any other batch.
       barcode: makeInternalBarcode(batchId),
+      // G-9: not a purchase — kept out of the purchase register.
+      isOpeningStock: true,
     },
   });
+  // 349: opening stock enters the ledger as a receipt row marked as opening.
+  await recordDrugStockMovement(prisma, {
+    tenantId, drugId, drugBatchId: batchId, movementType: 'receipt', quantity: opts.quantity,
+    referenceType: 'opening_stock', referenceId: batchId, unitCost: opts.purchasePrice ?? null,
+    notes: 'Opening stock',
+  });
+  return opening;
 }
 
 export async function createBatch(tenantId: string, userId: string, roles: string[], data: CreateBatchInput) {
@@ -2404,6 +2478,7 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
   }
 
   // Validate supplier if provided
+  let batchSupplier: { name: string; gstNumber: string | null; stateCode: string | null } | null = null;
   if (data.supplierId) {
     const supplier = await prisma.supplier.findFirst({
       where: { id: data.supplierId, tenantId },
@@ -2411,7 +2486,27 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
     if (!supplier) {
       throw AppError.notFound('Supplier not found');
     }
+    batchSupplier = supplier;
+    // G-9: a registered supplier's receipt must name their tax invoice.
+    assertSupplierInvoice(supplier, (data as any).invoiceNumber, (data as any).invoiceDate);
   }
+
+  // G-10: the input tax on THIS receipt, split CGST+SGST or IGST by comparing
+  // the supplier's GSTIN state with the hospital's.
+  const receiptPaidQty = Math.max(0, data.quantityReceived - (data.freeQuantity ?? 0));
+  const receiptNetRate =
+    data.purchasePrice != null
+      ? Number(data.purchasePrice) * (1 - Number(data.purchaseDiscountPercent ?? 0) / 100)
+      : null;
+  const receiptTax =
+    receiptNetRate != null && gstPercent != null
+      ? purchaseLineTax({
+          taxableValue: receiptNetRate * receiptPaidQty,
+          ratePercent: gstPercent,
+          supplierState: supplierStateOf(batchSupplier),
+          homeState: await homeStateCode(tenantId),
+        })
+      : null;
 
   // Pricing sanity (manual GRN Step 8 — flag abnormal pricing). A purchase rate
   // above the printed MRP is almost always a data-entry error; block it.
@@ -2453,11 +2548,31 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
         invoiceNumber: (data as any).invoiceNumber ?? existingBatch.invoiceNumber,
         invoiceDate: (data as any).invoiceDate ? new Date((data as any).invoiceDate) : existingBatch.invoiceDate,
         supplierId: data.supplierId ?? existingBatch.supplierId,
+        // G-10: the batch's input tax is the sum over its receipts. A legacy
+        // batch with no stored split stays unsplit (the register derives it
+        // across the whole quantity); adding one receipt to NULL would understate it.
+        ...(receiptTax &&
+        (existingBatch.inputCgst != null || existingBatch.inputSgst != null || existingBatch.inputIgst != null ||
+          existingBatch.quantityReceived === 0)
+          ? {
+              inputCgst: r2(Number(existingBatch.inputCgst ?? 0) + receiptTax.cgst),
+              inputSgst: r2(Number(existingBatch.inputSgst ?? 0) + receiptTax.sgst),
+              inputIgst: r2(Number(existingBatch.inputIgst ?? 0) + receiptTax.igst),
+            }
+          : {}),
       },
       include: {
         drug: { select: { id: true, drugName: true, category: true, genericName: true } },
         supplier: { select: { id: true, name: true } },
       },
+    });
+    // 349: a receipt folded into an existing batch is still a receipt.
+    await recordDrugStockMovement(prisma, {
+      tenantId, drugId: data.drugId, drugBatchId: merged.id, movementType: 'receipt',
+      quantity: data.quantityReceived, referenceType: 'drug_batch', referenceId: merged.id,
+      party: merged.supplier?.name ?? null,
+      unitCost: data.purchasePrice ?? null, performedBy: userId,
+      notes: (data as any).invoiceNumber ? `Invoice ${(data as any).invoiceNumber}` : null,
     });
     void safePharmacyAudit({
       tenantId,
@@ -2466,8 +2581,21 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
       entityType: 'drug_batch',
       entityId: merged.id,
       description: `Stock in (merged): +${data.quantityReceived} base unit(s) of ${drug.drugName} into existing batch ${data.batchNumber}`,
-      oldValues: { quantityInStock: existingBatch.quantityInStock },
-      newValues: { quantityInStock: merged.quantityInStock, addedQuantity: data.quantityReceived },
+      // Gap 303: before/after quantity and value, and the supplier invoice.
+      ...(() => {
+        const snap = drugStockAuditValues(
+          [{
+            drugBatchId: merged.id, batchNumber: merged.batchNumber, drugName: drug.drugName,
+            before: existingBatch.quantityInStock, after: merged.quantityInStock,
+            unitCostBefore: existingBatch.purchasePrice, unitCost: merged.purchasePrice,
+          }],
+          { movementType: 'receipt', documentNumber: (data as any).invoiceNumber ?? null, referenceType: 'drug_batch', referenceId: merged.id },
+        );
+        return {
+          oldValues: { quantityInStock: existingBatch.quantityInStock, ...snap.oldValues },
+          newValues: { quantityInStock: merged.quantityInStock, addedQuantity: data.quantityReceived, ...snap.newValues },
+        };
+      })(),
     });
     logger.info({ tenantId, batchId: merged.id, drugId: data.drugId }, 'Drug batch quantity increased');
     return merged;
@@ -2494,6 +2622,10 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
       sellingPrice: data.sellingPrice,
       invoiceNumber: (data as any).invoiceNumber ?? null,
       invoiceDate: (data as any).invoiceDate ? new Date((data as any).invoiceDate) : null,
+      // G-10: stored per head, not re-derived later on a local-supplier guess.
+      ...(receiptTax
+        ? { inputCgst: receiptTax.cgst, inputSgst: receiptTax.sgst, inputIgst: receiptTax.igst }
+        : {}),
       quantityReceived: data.quantityReceived,
       quantityInStock: data.quantityReceived,
       serialNumber: (data as any).serialNumber ?? null,
@@ -2506,7 +2638,20 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
     },
   });
   const finalBatch = batch;
+  // 349: the receipt's stock movement.
+  await recordDrugStockMovement(prisma, {
+    tenantId, drugId: data.drugId, drugBatchId: batch.id, movementType: 'receipt',
+    quantity: data.quantityReceived, referenceType: 'drug_batch', referenceId: batch.id,
+    party: batch.supplier?.name ?? null,
+    unitCost: data.purchasePrice ?? null, performedBy: userId,
+    notes: (data as any).invoiceNumber ? `Invoice ${(data as any).invoiceNumber}` : null,
+  });
 
+  // Gap 303: a new batch starts from 0 — before/after quantity and value.
+  const receiptSnap = drugStockAuditValues(
+    [{ drugBatchId: batch.id, batchNumber: batch.batchNumber, drugName: drug.drugName, before: 0, after: batch.quantityInStock, unitCost: batch.purchasePrice }],
+    { movementType: 'receipt', documentNumber: (data as any).invoiceNumber ?? null, referenceType: 'drug_batch', referenceId: batch.id },
+  );
   void safePharmacyAudit({
     tenantId,
     userId,
@@ -2514,7 +2659,9 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
     entityType: 'drug_batch',
     entityId: batch.id,
     description: `Stock in: ${data.quantityReceived} base unit(s) of ${drug.drugName} (batch ${data.batchNumber})`,
+    oldValues: receiptSnap.oldValues,
     newValues: {
+      ...receiptSnap.newValues,
       batchNumber: data.batchNumber,
       quantityReceived: data.quantityReceived,
       expiryDate: data.expiryDate,
@@ -2580,6 +2727,8 @@ export async function getBatches(tenantId: string, query: GetBatchesQuery) {
             strength: true,
             packSize: true,
             looseUnitLabel: true,
+            // 345: the pack noun ("Strip", "Bottle") the POS labels a pack sale with.
+            unitOfMeasurement: true,
             taxPercent: true,
             // Carried so a picker knows BEFORE the move is submitted that this
             // is a custody hand-over needing a second person — rather than the
@@ -2688,7 +2837,27 @@ export async function updateBatch(
     },
   });
 
+  // 349: a quantity typed onto the batch is an adjustment like any other.
+  if (updateData.quantityInStock !== undefined) {
+    await recordDrugStockMovement(prisma, {
+      tenantId, drugId: existing.drugId, drugBatchId: id, movementType: 'adjustment',
+      quantity: Number(updateData.quantityInStock) - existing.quantityInStock,
+      referenceType: 'batch_edit', referenceId: id, notes: 'Quantity edited on the batch',
+    });
+  }
   logger.info({ tenantId, batchId: id }, 'Drug batch updated');
+  // Gap 303: a quantity or cost edit changes stock value — record before/after.
+  const batchSnap =
+    updateData.quantityInStock !== undefined || updateData.purchasePrice !== undefined
+      ? drugStockAuditValues(
+          [{
+            drugBatchId: id, batchNumber: batch.batchNumber, drugName: batch.drug?.drugName,
+            before: existing.quantityInStock, after: batch.quantityInStock,
+            unitCostBefore: existing.purchasePrice, unitCost: batch.purchasePrice,
+          }],
+          { movementType: 'adjustment', documentNumber: batch.invoiceNumber ?? null, referenceType: 'batch_edit', referenceId: id },
+        )
+      : null;
   void safePharmacyAudit({
     tenantId,
     action: 'update',
@@ -2696,8 +2865,11 @@ export async function updateBatch(
     entityId: id,
     description: `Batch modified: ${batch.drug?.drugName ?? 'drug'} (batch ${batch.batchNumber})`,
     // Only the fields that changed, old → new.
-    oldValues: Object.fromEntries(Object.keys(updateData).map((k) => [k, (existing as any)[k]])),
-    newValues: updateData,
+    oldValues: {
+      ...Object.fromEntries(Object.keys(updateData).map((k) => [k, (existing as any)[k]])),
+      ...(batchSnap?.oldValues ?? {}),
+    },
+    newValues: { ...updateData, ...(batchSnap?.newValues ?? {}) },
   });
   return batch;
 }
@@ -2714,7 +2886,7 @@ export async function adjustBatchStock(
   userId: string,
   roles: string[],
   id: string,
-  data: { newQuantity?: number; physicalCount?: number; reason: string },
+  data: { newQuantity?: number; physicalCount?: number; reason: string; writeOffType?: string },
 ) {
   assertPharmacyAdmin(roles, 'adjust stock counts');
   const batch = await prisma.drugBatch.findFirst({
@@ -2738,7 +2910,71 @@ export async function adjustBatchStock(
       supplier: { select: { id: true, name: true } },
     },
   });
+  // 349: the correction as a signed movement, so the ledger still closes at live stock.
+  await recordDrugStockMovement(prisma, {
+    tenantId, drugId: batch.drugId, drugBatchId: id, movementType: 'adjustment', quantity: delta,
+    referenceType: 'stock_adjustment', referenceId: id,
+    unitCost: batch.purchasePrice != null ? Number(batch.purchasePrice) : null,
+    performedBy: userId, notes: data.reason,
+  });
 
+  // G-12: a reduction for damage / expiry / write-off is a write-off, and the
+  // credit taken on those units must be reversed under section 17(5)(h). Best
+  // effort — a failure here must never undo the count correction itself.
+  let writeOff: { id: string; taxToReverse: number } | null = null;
+  const writeOffType = delta < 0 ? writeOffTypeFor(data.writeOffType, data.reason) : null;
+  if (writeOffType) {
+    try {
+      const fullBatch = await prisma.drugBatch.findFirst({
+        where: { id, tenantId },
+        include: {
+          supplier: { select: { gstNumber: true, stateCode: true } },
+          drug: { select: { taxPercent: true } },
+        },
+      });
+      const tax = inputTaxToReverse(
+        fullBatch ?? batch,
+        -delta,
+        await homeStateCode(tenantId),
+        fullBatch?.drug?.taxPercent != null ? Number(fullBatch.drug.taxPercent) : null,
+      );
+      const row = await prisma.drugStockWriteOff.create({
+        data: {
+          tenantId,
+          drugId: batch.drugId,
+          drugBatchId: id,
+          drugName: batch.drug?.drugName ?? null,
+          batchNumber: batch.batchNumber,
+          supplierId: batch.supplierId,
+          writeOffType,
+          quantity: -delta,
+          reason: data.reason,
+          taxableValue: tax.taxableValue,
+          gstPercent: tax.gstPercent,
+          inputCgst: tax.cgst,
+          inputSgst: tax.sgst,
+          inputIgst: tax.igst,
+          purchaseInvoiceNo: batch.invoiceNumber,
+          performedBy: userId,
+        },
+        select: { id: true },
+      });
+      writeOff = { id: row.id, taxToReverse: tax.taxAmount };
+    } catch (err) {
+      logger.error({ err, tenantId, batchId: id }, 'Could not record the stock write-off for GST reversal');
+    }
+  }
+
+  const adjustSnap = drugStockAuditValues(
+    [{ drugBatchId: id, batchNumber: batch.batchNumber, drugName: batch.drug?.drugName, before: from, after: target, unitCost: batch.purchasePrice }],
+    {
+      movementType: writeOffType ? 'write_off' : 'adjustment',
+      // A write-off is its own record; a plain correction has no document.
+      documentNumber: writeOff ? `Write-off ${writeOff.id.slice(0, 8).toUpperCase()}` : null,
+      referenceType: writeOff ? 'drug_stock_write_off' : 'stock_adjustment',
+      referenceId: writeOff?.id ?? id,
+    },
+  );
   await safePharmacyAudit({
     tenantId,
     userId,
@@ -2746,8 +2982,10 @@ export async function adjustBatchStock(
     entityType: 'drug_batch',
     entityId: id,
     description: `Stock adjustment: ${batch.drug?.drugName ?? 'drug'} (batch ${batch.batchNumber}) ${from} → ${target} (${delta >= 0 ? '+' : ''}${delta})`,
-    oldValues: { quantityInStock: from },
+    // Gap 303: before/after quantity AND value at purchase cost.
+    oldValues: { quantityInStock: from, ...adjustSnap.oldValues },
     newValues: {
+      ...adjustSnap.newValues,
       type: 'stock_adjustment',
       from,
       to: target,
@@ -2756,11 +2994,14 @@ export async function adjustBatchStock(
       physicalCount: data.physicalCount ?? null,
       drugName: batch.drug?.drugName ?? null,
       batchNumber: batch.batchNumber,
+      writeOffType,
+      writeOffId: writeOff?.id ?? null,
+      inputTaxToReverse: writeOff?.taxToReverse ?? null,
     },
   });
 
   logger.info({ tenantId, batchId: id, from, to: target, delta }, 'Drug batch stock adjusted');
-  return { batch: updated, from, to: target, delta };
+  return { batch: updated, from, to: target, delta, writeOff };
 }
 
 /**
@@ -2819,6 +3060,9 @@ export async function getStockAdjustments(
       delta: (nv.delta as number) ?? null,
       physicalCount: (nv.physicalCount as number | null) ?? null,
       reason: (nv.reason as string) ?? null,
+      // G-12: set when the reduction was booked as a write-off.
+      writeOffType: (nv.writeOffType as string | null) ?? null,
+      inputTaxToReverse: (nv.inputTaxToReverse as number | null) ?? null,
       user: row.user ? `${row.user.firstName} ${row.user.lastName ?? ''}`.trim() : null,
       createdAt: row.createdAt,
     };
@@ -3324,13 +3568,8 @@ export async function autoLinkDispenseToBill(
     const linkPriced = linkTaxResolver.price(
       {
         kind: supplyKindForInventoryCategory(drugForTax.category),
-        hsnCode: drugForTax.hsnCode ?? null,
-        itemRatePercent: drugForTax.taxPercent != null ? Number(drugForTax.taxPercent) : null,
-        itemTreatment:
-          drugForTax.gstTreatment ??
-          (!drugForTax.hsnCode && drugForTax.taxPercent != null && Number(drugForTax.taxPercent) > 0
-            ? 'taxable'
-            : null),
+        // G-1: one precedence everywhere — line override, item rate, HSN default.
+        ...itemTaxContext(drugForTax),
         taxInclusive: true,
         patientAdmitted: !!adm,
         issuedForTreatment: !!adm,
@@ -3481,6 +3720,12 @@ export async function createDispense(tenantId: string, userId: string, data: Cre
         quantityInStock: { decrement: data.quantityDispensed },
       },
     });
+    // 349: the dispense's stock movement.
+    await recordDrugStockMovement(tx, {
+      tenantId, drugId: drugBatch.drugId, drugBatchId: data.drugBatchId, movementType: 'dispense',
+      quantity: -data.quantityDispensed, referenceType: 'dispensing_record', referenceId: record.id,
+      party: record.patient ? fullName(record.patient) : null, performedBy: userId,
+    });
 
     // Mark prescription as partially_dispensed / dispensed based on totals
     await recomputePrescriptionStatus(tx as any, data.prescriptionId);
@@ -3532,7 +3777,18 @@ export async function createDispense(tenantId: string, userId: string, data: Cre
     entityType: 'dispensing_record',
     entityId: result.id,
     description: `Dispensed ${data.quantityDispensed} × ${drugBatch.drug.drugName} (batch ${drugBatch.batchNumber})`,
-    newValues: { quantityDispensed: data.quantityDispensed, drugBatchId: data.drugBatchId },
+    // Gap 303: before/after quantity and value.
+    ...(await (async () => {
+      const snap = await drugStockAuditAfterCommit(
+        tenantId,
+        [{ drugBatchId: data.drugBatchId, delta: -data.quantityDispensed }],
+        { movementType: 'dispense', referenceType: 'dispensing_record', referenceId: result.id },
+      );
+      return {
+        oldValues: snap.oldValues,
+        newValues: { ...snap.newValues, quantityDispensed: data.quantityDispensed, drugBatchId: data.drugBatchId },
+      };
+    })()),
   });
 
   logger.info(
@@ -3631,18 +3887,28 @@ export function priceMedicineLine(
     category?: string | null;
   } | null | undefined,
   money: { unitPrice: number; quantity: number; discountAmount?: number },
+  /**
+   * The supply facts the drug cannot know: a rate typed on the line, and
+   * whether the patient is admitted (G-6 — the composite exemption is applied
+   * here, on the server, not trusted from the counter).
+   */
+  supply: {
+    manualRatePercent?: number | null;
+    patientAdmitted?: boolean;
+    issuedForTreatment?: boolean;
+    isTakeHome?: boolean;
+  } = {},
 ) {
   return resolver.price(
     {
       kind: supplyKindForInventoryCategory(drug?.category ?? 'drug'),
-      hsnCode: drug?.hsnCode ?? null,
-      itemRatePercent: drug?.taxPercent != null ? Number(drug.taxPercent) : null,
-      // A rate on the drug only means "taxable" when it is above zero; a bare
-      // 0 is the absence of an answer, not a nil rating.
-      itemTreatment:
-        (drug?.gstTreatment as any) ??
-        (!drug?.hsnCode && drug?.taxPercent != null && Number(drug.taxPercent) > 0 ? 'taxable' : null),
+      // G-1: line override, then the item's own rate, then the HSN default. A
+      // bare 0 on the drug is still the absence of an answer, not a nil rating.
+      ...itemTaxContext(drug, supply.manualRatePercent),
       taxInclusive: true,
+      patientAdmitted: supply.patientAdmitted,
+      issuedForTreatment: supply.issuedForTreatment,
+      isTakeHome: supply.isTakeHome,
     },
     money,
   );
@@ -3665,6 +3931,9 @@ export function priceMedicineLine(
 export async function previewPharmacySale(
   tenantId: string,
   data: {
+    /** G-6: an admitted patient's quote must carry the same exemption as the sale. */
+    patientId?: string | null;
+    isTto?: boolean;
     items: Array<{
       drugBatchId: string;
       quantity: number;
@@ -3675,6 +3944,12 @@ export async function previewPharmacySale(
   },
 ) {
   const resolver = await taxResolverFor(tenantId);
+  const previewAdmitted = data.patientId
+    ? !!(await prisma.admission.findFirst({
+        where: { tenantId, patientId: data.patientId, status: ACTIVE_ADMISSION_STATUS },
+        select: { id: true },
+      }))
+    : false;
   const lines = [] as Array<
     Record<string, unknown> & {
       drugName: string;
@@ -3708,11 +3983,12 @@ export async function previewPharmacySale(
     const unitPrice = item.unitPrice != null ? item.unitPrice : pickDispenseUnitPrice(batch as any);
     const gross = round2(unitPrice * baseQty);
     const discAmt = round2(gross * ((item.discountPercent ?? 0) / 100));
-    const priced = priceMedicineLine(resolver, batch.drug, {
-      unitPrice,
-      quantity: baseQty,
-      discountAmount: discAmt,
-    });
+    const priced = priceMedicineLine(
+      resolver,
+      batch.drug,
+      { unitPrice, quantity: baseQty, discountAmount: discAmt },
+      { patientAdmitted: previewAdmitted, issuedForTreatment: previewAdmitted, isTakeHome: data.isTto === true },
+    );
 
     lines.push({
       drugBatchId: batch.id,
@@ -3841,11 +4117,22 @@ export async function createPharmacySale(
     throw AppError.badRequest(compliance.blockers.join(' '));
   }
 
+  // G-6: the encounter comes from the patient's ACTIVE admission, decided here
+  // on the server — never from what the counter screen believed. A walk-in has
+  // no admission. The client may send the admission it saw; a mismatch means
+  // the screen is stale, and the server's answer wins.
+  const saleCredit = data.patientId ? await getPatientCreditStatus(tenantId, data.patientId) : null;
+  const saleAdmissionId = saleCredit?.hasAdmission ? saleCredit.admissionId : null;
+  // 344: only a sale that leaves money owing is "on credit".
+  const creditReason = (data as { creditReason?: string | null }).creditReason?.trim() || null;
+
   // G7/3.3: IP credit gate for a counter sale billed to a named, admitted cash
   // patient over deposit — held unless EVERY line is life-saving or clearance was
   // given. Walk-in / OTC sales (no patientId) are exempt (never admitted).
-  if (data.patientId && !(data as any).override) {
-    const credit = await getPatientCreditStatus(tenantId, data.patientId);
+  // G-6: it guards CREDIT, so a sale paid at the counter is not held by it —
+  // refusing cash from an admitted patient was one of the bare 400s at IP sales.
+  if (saleCredit && creditReason && !(data as any).override) {
+    const credit = saleCredit;
     if (credit.requiresClearance) {
       const batchDrugs = await prisma.drugBatch.findMany({
         where: { tenantId, id: { in: data.items.map((i) => i.drugBatchId) } },
@@ -3897,8 +4184,16 @@ export async function createPharmacySale(
   // the same reason as the resolver: the sale is retried wholesale on a
   // bill-number clash, and neither must be re-read on every attempt.
   const saleGstProfile = await getGstProfile(tenantId);
+  // G-4: validated before anything is written, so a bad GSTIN is a readable
+  // 400 and not a half-made sale.
+  const saleBuyer = normalizeBuyer((data as { buyer?: BuyerInput | null }).buyer);
 
+  // Gap 303: per-batch before/after for the sale's audit row, filled in the
+  // transaction (reset on every retry so a rolled-back attempt leaves nothing).
+  let saleStockLines: Array<{ drugBatchId: string; batchNumber: string; drugName: string; before: number; after: number; unitCost: unknown }> = [];
+  let saleBillNumber: string | null = null;
   const runSaleTx = (attempt: number) => prisma.$transaction(async (tx) => {
+    saleStockLines = [];
     // 1. Validate every line and pre-compute its economics.
     const lines = [] as Array<{
       batchId: string;
@@ -3909,6 +4204,8 @@ export async function createPharmacySale(
       baseQty: number;
       packSize: number;
       looseUnit: string;
+      /** 345: the selling-unit nouns the bill line is described in. */
+      unitNouns: { packNoun: string; looseNoun: string };
       unitPrice: number;
       discPct: number;
       discAmt: number;
@@ -3937,6 +4234,8 @@ export async function createPharmacySale(
               price: true,
               packSize: true,
               looseUnitLabel: true,
+              // 345: the pack noun printed on the bill line.
+              unitOfMeasurement: true,
               dosageForm: true,
               taxPercent: true,
               hsnCode: true,
@@ -3991,7 +4290,10 @@ export async function createPharmacySale(
       if (baseQty <= 0) throw AppError.badRequest('Quantity must be at least one unit');
       if (batch.quantityInStock < baseQty) {
         throw AppError.badRequest(
-          `Insufficient stock for ${batch.drug?.drugName ?? 'drug'}. Available: ${batch.quantityInStock}, requested: ${baseQty}`,
+          // 345: stock is in base units — say which.
+          `Insufficient stock for ${batch.drug?.drugName ?? 'drug'}. Available: ` +
+            `${formatUnits(batch.quantityInStock, saleUnitNouns({ ...batch.drug, packSize }).looseNoun)}, ` +
+            `requested: ${formatUnits(baseQty, saleUnitNouns({ ...batch.drug, packSize }).looseNoun)}`,
         );
       }
 
@@ -4010,11 +4312,19 @@ export async function createPharmacySale(
       // patient's bill, and 394 of the 430 drugs in this formulary have no rate
       // set, so it was the common case rather than the rare one. The rules
       // resolve it now: the drug's own rate, else its HSN code, else exempt.
-      const salePriced = priceMedicineLine(saleTaxResolver, batch.drug, {
-        unitPrice,
-        quantity: baseQty,
-        discountAmount: discAmt,
-      });
+      const salePriced = priceMedicineLine(
+        saleTaxResolver,
+        batch.drug,
+        { unitPrice, quantity: baseQty, discountAmount: discAmt },
+        // G-6: an admitted patient's medicine joins the composite supply of
+        // their treatment; the engine applies the hospital's exemption setting
+        // (and its take-home rule for a TTO).
+        {
+          patientAdmitted: !!saleAdmissionId,
+          issuedForTreatment: !!saleAdmissionId,
+          isTakeHome: data.isTto === true,
+        },
+      );
       const taxPct = salePriced.determination.ratePercent;
       const taxAmt = salePriced.money.taxAmount;
 
@@ -4031,6 +4341,7 @@ export async function createPharmacySale(
           batch.drug?.looseUnitLabel?.trim() ||
           inferLooseUnitLabel(batch.drug?.dosageForm, batch.drug?.drugName) ||
           'unit',
+        unitNouns: saleUnitNouns({ ...batch.drug, packSize }),
         unitPrice,
         discPct,
         discAmt,
@@ -4154,15 +4465,22 @@ export async function createPharmacySale(
     // Resolve the tender(s). G7 split payment: when `payments[]` is given each
     // entry becomes its own Payment row (cash + UPI + card…). Otherwise fall
     // back to the single-mode path — pay-in-full unless an explicit amount.
-    let paymentLines: Array<{ method: string; amount: number; reference?: string }>;
+    let paymentLines: Array<{ method: string; amount: number; reference?: string | null }>;
     if (data.payments && data.payments.length) {
       paymentLines = data.payments
         .filter((p) => p.amount > 0)
-        .map((p) => ({ method: p.method, amount: round2(p.amount), reference: p.reference }));
+        .map((p) => ({ method: p.method, amount: round2(p.amount), reference: p.reference || null }));
     } else {
       const single =
         data.amountPaid != null ? round2(Math.min(data.amountPaid, totalAmount)) : totalAmount;
-      paymentLines = single > 0 ? [{ method: data.paymentMethod ?? 'cash', amount: single }] : [];
+      paymentLines = single > 0
+        ? [{
+            method: data.paymentMethod ?? 'cash',
+            amount: single,
+            // G-8: the card slip / UPI reference for a single-mode tender.
+            reference: (data as { paymentReference?: string | null }).paymentReference || null,
+          }]
+        : [];
     }
     const rawPaid = round2(paymentLines.reduce((s, p) => s + p.amount, 0));
     // Cap the bill's settled amount at the total — extra cash tendered is change,
@@ -4177,6 +4495,15 @@ export async function createPharmacySale(
     paymentLines = paymentLines.filter((p) => p.amount > 0);
     const balanceDue = round2(totalAmount - applied);
     const status: any = balanceDue <= 0 ? 'paid' : applied > 0 ? 'partially_paid' : 'pending';
+    // 344: the medicine leaves the counter with this sale, so a balance left
+    // owing is a decision somebody must own — "dispense on credit", with a
+    // reason. Thrown inside the transaction, so nothing is written.
+    if (balanceDue > 0 && !creditReason) {
+      throw AppError.badRequest(
+        `₹${balanceDue.toFixed(2)} of this ₹${totalAmount.toFixed(2)} bill is unpaid. Take the payment, ` +
+          'or choose "Pay later" and give a reason to dispense on credit.',
+      );
+    }
 
     // G7: consume the IP advance for the advance tender actually applied (post
     // change-trim). Re-check the live deposit inside the transaction so a
@@ -4208,6 +4535,7 @@ export async function createPharmacySale(
     }
 
     const billNumber = await nextPharmacyInvoiceNumber(tx as any, tenantId, attempt);
+    saleBillNumber = billNumber;
     const bill = await tx.bill.create({
       data: {
         tenantId,
@@ -4226,6 +4554,25 @@ export async function createPharmacySale(
         balanceDue,
         status,
         generatedBy: userId,
+        // 344: kept only when the sale actually went out on credit.
+        creditReason: balanceDue > 0 ? creditReason : null,
+        // G-6: IP/OP from the server-resolved admission. Not `admissionId` —
+        // that would make this bill the admission's running IP bill.
+        encounterType: saleAdmissionId ? 'ip' : 'op',
+        saleAdmissionId,
+        // G-4: the B2B buyer. Goods handed over at the counter are supplied
+        // where they are delivered (IGST Act s.10(1)(d)), so the place of
+        // supply stays the hospital's state even for an out-of-state GSTIN.
+        ...(saleBuyer.recipientGstin
+          ? {
+              recipientGstin: saleBuyer.recipientGstin,
+              recipientLegalName: saleBuyer.recipientLegalName,
+              recipientAddress: saleBuyer.recipientAddress,
+              placeOfSupplyStateCode: saleGstProfile.stateCode ?? null,
+              supplierGstin: saleGstProfile.gstin ?? null,
+              supplierStateCode: saleGstProfile.stateCode ?? null,
+            }
+          : {}),
       },
     });
 
@@ -4263,20 +4610,32 @@ export async function createPharmacySale(
         },
       });
 
-      await tx.drugBatch.update({
+      const soldBatch = await tx.drugBatch.update({
         where: { id: l.batchId },
         data: { quantityInStock: { decrement: l.baseQty } },
+      });
+      // 349: the sale's stock movement, in the same transaction as the decrement.
+      await recordDrugStockMovement(tx, {
+        tenantId, drugId: (soldBatch as any)?.drugId, drugBatchId: l.batchId,
+        movementType: 'sale', quantity: -l.baseQty,
+        referenceType: 'pharmacy_sale', referenceId: bill.id,
+        unitCost: (soldBatch as any)?.purchasePrice != null ? Number((soldBatch as any).purchasePrice) : null,
+        performedBy: userId, notes: billNumber,
+      });
+      const soldAfter = Number((soldBatch as any)?.quantityInStock ?? 0);
+      // Two lines of one batch: keep the first "before" and the last "after".
+      const seen = saleStockLines.find((x) => x.drugBatchId === l.batchId);
+      if (seen) seen.after = soldAfter;
+      else saleStockLines.push({
+        drugBatchId: l.batchId, batchNumber: l.batchNumber, drugName: l.drugName,
+        before: soldAfter + l.baseQty, after: soldAfter, unitCost: (soldBatch as any)?.purchasePrice,
       });
 
       // Spell out what the count means on the invoice: loose lines bill the
       // exact number of base units (e.g. "10 tablet, loose"); pack lines note
       // how many packs of N were sold. `quantity` itself is always base units.
-      const unitDetail =
-        l.saleUnit === 'loose'
-          ? `${l.baseQty} ${l.looseUnit}, loose`
-          : l.packSize > 1
-            ? `${l.baseQty / l.packSize} pack of ${l.packSize} ${l.looseUnit}`
-            : `${l.baseQty} ${l.looseUnit}`;
+      // 345: the same unit nouns the POS shows on the quantity field.
+      const unitDetail = describeSaleQty(l.baseQty, l.saleUnit, l.packSize, l.unitNouns);
       // Print batch AND expiry on the receipt line (design doc OP Step 5 requires
       // "batch/expiry details" on the printed bill). dd/MM/yyyy per house style.
       const expTag = l.expiry
@@ -4343,7 +4702,11 @@ export async function createPharmacySale(
       await issueDocumentForBill(
         tx,
         tenantId,
-        { id: bill.id, billDate: bill.billDate, invoiceNumber: bill.invoiceNumber },
+        {
+          id: bill.id, billDate: bill.billDate, invoiceNumber: bill.invoiceNumber,
+          // G-4: a registered buyer makes this a B2B document.
+          recipientGstin: saleBuyer.recipientGstin,
+        },
         issueLines,
         { registered: saleGstProfile.registered },
       );
@@ -4382,8 +4745,17 @@ export async function createPharmacySale(
     action: 'create',
     entityType: 'pharmacy_sale',
     entityId: billId,
-    description: `Counter sale: ${data.items.length} line item(s) billed`,
-    newValues: { items: data.items.map((i) => ({ drugBatchId: i.drugBatchId, quantity: i.quantity })) },
+    description: `Counter sale${saleBillNumber ? ` ${saleBillNumber}` : ''}: ${data.items.length} line item(s) billed`,
+    // Gap 303: before/after quantity and value per batch, plus the bill number.
+    ...(() => {
+      const snap = drugStockAuditValues(saleStockLines, {
+        movementType: 'sale', documentNumber: saleBillNumber, referenceType: 'pharmacy_sale', referenceId: billId,
+      });
+      return {
+        oldValues: snap.oldValues,
+        newValues: { ...snap.newValues, items: data.items.map((i) => ({ drugBatchId: i.drugBatchId, quantity: i.quantity })) },
+      };
+    })(),
   });
 
   logger.info({ tenantId, billId, items: data.items.length }, 'Pharmacy counter sale billed');
@@ -4459,7 +4831,54 @@ export async function getPharmacySale(tenantId: string, billId: string) {
   }));
   const gst = buildGstBlock(profile, [bill as any], gstLines);
 
-  return { bill, hospital: tenant, gst };
+  // G-7: a cancelled or returned sale has a credit note, and the paper for it
+  // is a Credit Note — its own number, the invoice it reverses, and the tax
+  // split taken back. It used to exist only in the reports, so a voided sale
+  // reprinted as the original Tax Invoice (with no lines left on it).
+  const creditNotes = await prisma.creditNote.findMany({
+    where: { billId, tenantId },
+    orderBy: { issueDate: 'asc' },
+    select: {
+      id: true, creditNoteNumber: true, noteType: true, issueDate: true, reason: true, reasonNote: true,
+      taxableValue: true, cgstAmount: true, sgstAmount: true, igstAmount: true, cessAmount: true,
+      taxAmount: true, totalAmount: true, recipientGstin: true, placeOfSupplyStateCode: true,
+      withinTimeLimit: true,
+      items: {
+        select: {
+          id: true, description: true, hsnSacCode: true, gstTreatment: true, quantity: true,
+          unitPrice: true, taxableValue: true, taxPercent: true, taxAmount: true,
+          cgstAmount: true, sgstAmount: true, igstAmount: true, cessAmount: true, totalAmount: true,
+        },
+        orderBy: { createdAt: 'asc' },
+      },
+    },
+  });
+
+  // Gap 347: the receipt named nobody. The pharmacist on the dispensing
+  // records of this bill is who handed the medicine over (the same name the
+  // Dispensing Records tab shows); the bill's creator stands in for a sale
+  // with no dispensing rows.
+  const dispensers = await prisma.dispensingRecord.findMany({
+    where: { tenantId, billId },
+    select: { dispenser: { select: { firstName: true, lastName: true } } },
+    orderBy: { dispensedAt: 'asc' },
+  });
+  const personName = (u: { firstName: string; lastName: string | null } | null | undefined) =>
+    u ? `${u.firstName} ${u.lastName ?? ''}`.trim() : null;
+  const dispenserNames = [
+    ...new Set((dispensers ?? []).map((d) => personName(d.dispenser)).filter((n): n is string => !!n)),
+  ];
+  const dispensedBy = dispenserNames.length ? dispenserNames.join(', ') : personName(bill.generator);
+
+  return {
+    bill,
+    hospital: tenant,
+    gst,
+    creditNotes,
+    dispensedBy,
+    // The invoice a credit note reverses, by the number it was filed under.
+    originalInvoiceNumber: bill.invoiceNumber ?? bill.billNumber,
+  };
 }
 
 // Paginated list of pharmacy counter-sale bills (PH- invoices) for the
@@ -4471,8 +4890,10 @@ export async function getPharmacySales(tenantId: string, query: GetPharmacySales
   // Status is applied to the LIST only, so the summary cards stay stable as the
   // user flips between the Sales / Cancelled tabs.
   const baseWhere: any = { tenantId, billNumber: { startsWith: 'PH-' } };
-  if (query.fromDate) baseWhere.billDate = { ...baseWhere.billDate, gte: new Date(query.fromDate) };
-  if (query.toDate) baseWhere.billDate = { ...baseWhere.billDate, lte: new Date(query.toDate) };
+  // 346: IST calendar days — `new Date('2026-11-19')` is UTC midnight, which
+  // dropped the end date's sales and shifted the start by 5½ hours.
+  if (query.fromDate) baseWhere.billDate = { ...baseWhere.billDate, gte: istDayStart(query.fromDate) };
+  if (query.toDate) baseWhere.billDate = { ...baseWhere.billDate, lte: istDayEnd(query.toDate) };
   if (query.search) {
     baseWhere.OR = [
       { billNumber: { contains: query.search, mode: 'insensitive' } },
@@ -4530,7 +4951,7 @@ export async function cancelPharmacySale(
 ) {
   const bill = await prisma.bill.findFirst({
     where: { id: billId, tenantId, billNumber: { startsWith: 'PH-' } },
-    select: { id: true, status: true },
+    select: { id: true, status: true, billNumber: true },
   });
   if (!bill) throw AppError.notFound('Pharmacy bill not found');
   if (bill.status === 'cancelled') throw AppError.badRequest('Bill is already cancelled');
@@ -4553,9 +4974,15 @@ export async function cancelPharmacySale(
   await prisma.$transaction(async (tx) => {
     // 1. Put the dispensed units back into their batches.
     for (const rec of records) {
-      await tx.drugBatch.update({
+      const restocked = await tx.drugBatch.update({
         where: { id: rec.drugBatchId },
         data: { quantityInStock: { increment: rec.quantityDispensed } },
+      });
+      // 349: the void puts stock back — record it so the ledger reverses the sale row.
+      await recordDrugStockMovement(tx, {
+        tenantId, drugId: (restocked as any)?.drugId, drugBatchId: rec.drugBatchId,
+        movementType: 'sale_cancel', quantity: rec.quantityDispensed,
+        referenceType: 'pharmacy_sale', referenceId: billId, performedBy: userId, notes: data.reason,
       });
     }
     // 2. Mark the dispensing lines voided — do NOT delete them.
@@ -4632,8 +5059,18 @@ export async function cancelPharmacySale(
     action: 'delete',
     entityType: 'pharmacy_sale',
     entityId: billId,
-    description: `Counter sale cancelled — ${data.reason}`,
-    newValues: { reason: data.reason, restoredLines: records.length },
+    description: `Counter sale ${bill.billNumber} cancelled — ${data.reason}`,
+    // Gap 303: stock put back, before/after quantity and value per batch.
+    ...(await (async () => {
+      const snap = drugStockAuditValues(
+        await drugStockAuditLinesAfterCommit(
+          tenantId,
+          records.map((r) => ({ drugBatchId: r.drugBatchId, delta: r.quantityDispensed })),
+        ),
+        { movementType: 'sale_cancel', documentNumber: bill.billNumber, referenceType: 'pharmacy_sale', referenceId: billId },
+      );
+      return { oldValues: snap.oldValues, newValues: { ...snap.newValues, reason: data.reason, restoredLines: records.length } };
+    })()),
   });
 
   logger.info({ tenantId, billId, lines: records.length }, 'Pharmacy counter sale cancelled');
@@ -4648,11 +5085,12 @@ export async function getDispenseRecords(tenantId: string, query: GetDispenseQue
 
   if (query.patientId) where.patientId = query.patientId;
 
+  // 346: IST calendar days, as every other pharmacy figure is bucketed.
   if (query.fromDate) {
-    where.dispensedAt = { ...where.dispensedAt, gte: new Date(query.fromDate) };
+    where.dispensedAt = { ...where.dispensedAt, gte: istDayStart(query.fromDate) };
   }
   if (query.toDate) {
-    where.dispensedAt = { ...where.dispensedAt, lte: new Date(query.toDate) };
+    where.dispensedAt = { ...where.dispensedAt, lte: istDayEnd(query.toDate) };
   }
 
   if (query.search) {
@@ -4685,7 +5123,28 @@ export async function getDispenseRecords(tenantId: string, query: GetDispenseQue
     prisma.dispensingRecord.count({ where }),
   ]);
 
-  return { records, total, page, limit };
+  // 344: a line handed over on an unpaid bill is "to collect", not simply
+  // dispensed — the cash counter needs the bill's state to say so.
+  const billIds = [...new Set(records.map((r) => r.billId).filter((id): id is string => !!id))];
+  const bills = billIds.length
+    ? await prisma.bill.findMany({
+        where: { tenantId, id: { in: billIds } },
+        select: { id: true, billNumber: true, status: true, balanceDue: true, creditReason: true },
+      })
+    : [];
+  const billById = new Map(bills.map((b) => [b.id, b]));
+  const withBill = records.map((r) => {
+    const b = r.billId ? billById.get(r.billId) : undefined;
+    return {
+      ...r,
+      billNumber: b?.billNumber ?? null,
+      billStatus: b?.status ?? null,
+      billBalanceDue: b ? Number(b.balanceDue) : null,
+      creditReason: b?.creditReason ?? null,
+    };
+  });
+
+  return { records: withBill, total, page, limit };
 }
 
 export async function getDispenseById(tenantId: string, id: string) {
@@ -4930,6 +5389,7 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
   // Validate supplier if vendor return
   let creditNoteNumber: string | null = null;
   let creditAmount: number | null = null;
+  let vendorReturnFields: Record<string, unknown> | null = null;
   if (data.returnType === 'vendor_return') {
     if (!data.supplierId) {
       throw AppError.badRequest(
@@ -4951,13 +5411,35 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
         `Cannot return ${data.quantity} unit(s) — batch ${drugBatch.batchNumber} only has ${drugBatch.quantityInStock} in stock.`,
       );
     }
-    // G5: credited value = explicit amount, else the returned stock at its
-    // purchase price (what the distributor should credit back).
+    // G-12: the input tax to reverse, copied from the purchase batch (its rate
+    // and head split), with the medicine named on the return row itself.
+    const returnedDrug = await prisma.drugFormulary.findFirst({
+      where: { id: drugBatch.drugId, tenantId },
+      select: { taxPercent: true },
+    });
+    const tax = inputTaxToReverse(
+      { ...drugBatch, supplier },
+      data.quantity,
+      await homeStateCode(tenantId),
+      returnedDrug?.taxPercent != null ? Number(returnedDrug.taxPercent) : null,
+    );
+    vendorReturnFields = {
+      drugId: drugBatch.drugId,
+      batchNumber: drugBatch.batchNumber,
+      expiryDate: drugBatch.expiryDate,
+      inputGstPercent: tax.gstPercent,
+      inputTaxableValue: tax.taxableValue,
+      inputCgst: tax.cgst,
+      inputSgst: tax.sgst,
+      inputIgst: tax.igst,
+    };
+    // G5: credited value = explicit amount, else what was PAID for the
+    // returned stock — net purchase value plus its GST (G-12).
     creditNoteNumber = (data as any).creditNoteNumber ?? null;
     if ((data as any).creditAmount != null) {
       creditAmount = round2(Number((data as any).creditAmount));
     } else if (drugBatch.purchasePrice != null) {
-      creditAmount = round2(Number(drugBatch.purchasePrice) * data.quantity);
+      creditAmount = round2(tax.taxableValue + tax.taxAmount);
     }
   }
 
@@ -4978,6 +5460,7 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
       refundAmount,
       creditNoteNumber,
       creditAmount,
+      ...(vendorReturnFields ?? {}),
     },
     include: {
       drugBatch: {
@@ -5052,6 +5535,11 @@ export async function transferToWard(
     await tx.drugBatch.update({
       where: { id: batch.id },
       data: { quantityInStock: { decrement: data.quantity } },
+    });
+    // 349: leaves central pharmacy stock for the ward shelf.
+    await recordDrugStockMovement(tx, {
+      tenantId, drugId: batch.drugId, drugBatchId: batch.id, movementType: 'ward_issue',
+      quantity: -data.quantity, referenceType: 'ward', referenceId: data.wardId, performedBy: userId,
     });
 
     const existing = await tx.wardStock.findFirst({
@@ -5385,6 +5873,11 @@ export async function prePackHold(
         throw AppError.badRequest(`Insufficient stock for ${batch.drug?.drugName ?? 'drug'} (have ${batch.quantityInStock}, need ${item.quantity})`);
       }
       await tx.drugBatch.update({ where: { id: batch.id }, data: { quantityInStock: { decrement: item.quantity } } });
+      // 349: reserved stock leaves the shelf count, so the ledger records it.
+      await recordDrugStockMovement(tx, {
+        tenantId, drugId: batch.drugId, drugBatchId: batch.id, movementType: 'hold',
+        quantity: -item.quantity, referenceType: 'stock_hold', performedBy: userId,
+      });
       holdItems.push({
         drugFormularyId: batch.drugId,
         drugBatchId: batch.id,
@@ -5421,7 +5914,11 @@ export async function collectHold(
   tenantId: string,
   userId: string,
   holdId: string,
-  extras: { payments?: any[]; billDiscountPercent?: number; billDiscountAmount?: number } = {},
+  extras: {
+    payments?: any[]; billDiscountPercent?: number; billDiscountAmount?: number;
+    /** 344: required by the sale when the pick-up is not fully paid. */
+    creditReason?: string | null;
+  } = {},
 ) {
   const hold = await prisma.pharmacyStockHold.findFirst({ where: { id: holdId, tenantId }, include: { items: true } });
   if (!hold) throw AppError.notFound('Stock hold not found');
@@ -5431,6 +5928,11 @@ export async function collectHold(
   await prisma.$transaction(async (tx) => {
     for (const it of hold.items) {
       await tx.drugBatch.update({ where: { id: it.drugBatchId }, data: { quantityInStock: { increment: it.quantity } } });
+      // 349: released back to the shelf; the sale below records its own outflow.
+      await recordDrugStockMovement(tx, {
+        tenantId, drugId: it.drugFormularyId, drugBatchId: it.drugBatchId, movementType: 'hold_release',
+        quantity: it.quantity, referenceType: 'stock_hold', referenceId: holdId, performedBy: userId,
+      });
     }
   });
 
@@ -5442,6 +5944,7 @@ export async function collectHold(
       payments: extras.payments,
       billDiscountPercent: extras.billDiscountPercent,
       billDiscountAmount: extras.billDiscountAmount,
+      creditReason: extras.creditReason ?? undefined,
     } as CreatePharmacySaleInput);
     const updated = await prisma.pharmacyStockHold.update({
       where: { id: holdId },
@@ -5453,6 +5956,10 @@ export async function collectHold(
     await prisma.$transaction(async (tx) => {
       for (const it of hold.items) {
         await tx.drugBatch.update({ where: { id: it.drugBatchId }, data: { quantityInStock: { decrement: it.quantity } } });
+        await recordDrugStockMovement(tx, {
+          tenantId, drugId: it.drugFormularyId, drugBatchId: it.drugBatchId, movementType: 'hold',
+          quantity: -it.quantity, referenceType: 'stock_hold', referenceId: holdId, performedBy: userId,
+        });
       }
     });
     throw err;
@@ -5467,6 +5974,11 @@ export async function releaseHold(tenantId: string, userId: string, holdId: stri
   return prisma.$transaction(async (tx) => {
     for (const it of hold.items) {
       await tx.drugBatch.update({ where: { id: it.drugBatchId }, data: { quantityInStock: { increment: it.quantity } } });
+      // 349: an uncollected hold goes back on the shelf.
+      await recordDrugStockMovement(tx, {
+        tenantId, drugId: it.drugFormularyId, drugBatchId: it.drugBatchId, movementType: 'hold_release',
+        quantity: it.quantity, referenceType: 'stock_hold', referenceId: holdId, performedBy: userId,
+      });
     }
     return tx.pharmacyStockHold.update({ where: { id: holdId }, data: { status: 'released', releasedAt: new Date() } });
   });
@@ -5657,10 +6169,8 @@ export async function dispenseFromWard(
     const priced = wardTaxResolver.price(
       {
         kind: supplyKindForInventoryCategory(batch.drug?.category),
-        hsnCode: batch.drug?.hsnCode ?? null,
-        itemRatePercent: taxPct,
-        itemTreatment:
-          (batch.drug?.gstTreatment as any) ?? (!batch.drug?.hsnCode && taxPct > 0 ? 'taxable' : null),
+        // G-1: the item's own rate beats its HSN heading.
+        ...itemTaxContext({ hsnCode: batch.drug?.hsnCode, taxPercent: taxPct, gstTreatment: batch.drug?.gstTreatment }),
         taxInclusive: true,
         patientAdmitted: true,
         issuedForTreatment: true,
@@ -5745,6 +6255,12 @@ export async function returnWardStock(
     await tx.wardStock.update({ where: { id: ws.id }, data: { quantityInStock: { decrement: data.quantity } } });
     // Restore central stock for the batch.
     await tx.drugBatch.update({ where: { id: data.drugBatchId }, data: { quantityInStock: { increment: data.quantity } } });
+    // 349: back into central pharmacy stock.
+    await recordDrugStockMovement(tx, {
+      tenantId, drugId: ws.drugId, drugBatchId: data.drugBatchId, movementType: 'ward_return',
+      quantity: data.quantity, referenceType: 'ward', referenceId: data.wardId, performedBy: userId,
+      notes: data.reason ?? null,
+    });
 
     await tx.wardStockLedger.create({
       data: {
@@ -5889,7 +6405,13 @@ export async function getPurchaseReport(
   tenantId: string,
   query: { fromDate?: string; toDate?: string; supplierId?: string },
 ) {
-  const where: any = { tenantId };
+  // G-9: opening stock is not a purchase. Rows made before the flag existed are
+  // recognised by their fixed OPENING batch number and the absence of a supplier.
+  const where: any = {
+    tenantId,
+    isOpeningStock: false,
+    NOT: { batchNumber: 'OPENING', supplierId: null },
+  };
   if (query.supplierId) where.supplierId = query.supplierId;
   if (query.fromDate || query.toDate) {
     where.createdAt = {};
@@ -5912,12 +6434,16 @@ export async function getPurchaseReport(
       freeQuantity: true,
       invoiceNumber: true,
       invoiceDate: true,
+      inputCgst: true,
+      inputSgst: true,
+      inputIgst: true,
       drug: { select: { id: true, drugName: true, category: true } },
-      supplier: { select: { id: true, name: true } },
+      supplier: { select: { id: true, name: true, gstNumber: true, stateCode: true } },
     },
     orderBy: { createdAt: 'desc' },
     take: 3000,
   });
+  const purchaseHomeState = await homeStateCode(tenantId);
 
   let totalQty = 0;
   let totalValue = 0;
@@ -5944,6 +6470,26 @@ export async function getPurchaseReport(
       gstPercent: b.gstPercent != null ? Number(b.gstPercent) : null,
       netPurchaseValue: econ.netPurchaseValue,
       taxAmount: econ.taxAmount,
+      // G-10: the head split — stored on the receipt, else derived from the
+      // supplier's GSTIN state against the hospital's.
+      supplierGstin: b.supplier?.gstNumber ?? null,
+      ...(() => {
+        const stored = b.inputCgst != null || b.inputSgst != null || b.inputIgst != null;
+        if (stored) {
+          return {
+            cgstAmount: Number(b.inputCgst ?? 0),
+            sgstAmount: Number(b.inputSgst ?? 0),
+            igstAmount: Number(b.inputIgst ?? 0),
+          };
+        }
+        const t = purchaseLineTax({
+          taxableValue: econ.netPurchaseValue ?? 0,
+          ratePercent: b.gstPercent != null ? Number(b.gstPercent) : null,
+          supplierState: supplierStateOf(b.supplier),
+          homeState: purchaseHomeState,
+        });
+        return { cgstAmount: t.cgst, sgstAmount: t.sgst, igstAmount: t.igst };
+      })(),
     };
   });
 
@@ -6792,9 +7338,13 @@ export async function createVendorReturnBatch(
 
   const batches = await prisma.drugBatch.findMany({
     where: { id: { in: data.lines.map((l) => l.drugBatchId) }, tenantId },
-    include: { drug: { select: { id: true, drugName: true } } },
+    include: {
+      drug: { select: { id: true, drugName: true, taxPercent: true } },
+      supplier: { select: { gstNumber: true, stateCode: true } },
+    },
   });
   const byId = new Map(batches.map((b) => [b.id, b]));
+  const returnHomeState = await homeStateCode(tenantId);
 
   // Validate the whole basket up front.
   const prepared = data.lines.map((line) => {
@@ -6805,13 +7355,20 @@ export async function createVendorReturnBatch(
         `Cannot return ${line.quantity} unit(s) of ${batch.drug?.drugName ?? 'this medicine'} — batch ${batch.batchNumber} only has ${batch.quantityInStock} in stock.`,
       );
     }
+    // G-12: the input tax to reverse, at the rate and split PAID on the batch.
+    const tax = inputTaxToReverse(
+      batch,
+      line.quantity,
+      returnHomeState,
+      batch.drug?.taxPercent != null ? Number(batch.drug.taxPercent) : null,
+    );
     const credit =
       line.creditAmount != null
         ? round2(Number(line.creditAmount))
         : batch.purchasePrice != null
-          ? round2(Number(batch.purchasePrice) * line.quantity)
+          ? round2(tax.taxableValue + tax.taxAmount)
           : null;
-    return { line, batch, credit };
+    return { line, batch, credit, tax };
   });
 
   // An explicit header total wins; otherwise the lines add up to it.
@@ -6823,12 +7380,22 @@ export async function createVendorReturnBatch(
     const returnNumber = await nextVendorReturnNumber(tx, tenantId);
     const groupId = randomUUID();
     const ids: string[] = [];
-    for (const { line, credit } of prepared) {
+    for (const { line, batch, credit, tax } of prepared) {
       const row = await tx.drugReturn.create({
         data: {
           tenantId,
           returnType: 'vendor_return',
           drugBatchId: line.drugBatchId,
+          // G-12: name the medicine on the row itself, so registers that read
+          // the return (not the batch) stop printing a blank item.
+          drugId: batch.drugId,
+          batchNumber: batch.batchNumber,
+          expiryDate: batch.expiryDate,
+          inputGstPercent: tax.gstPercent,
+          inputTaxableValue: tax.taxableValue,
+          inputCgst: tax.cgst,
+          inputSgst: tax.sgst,
+          inputIgst: tax.igst,
           supplierId: data.supplierId,
           quantity: line.quantity,
           reason: line.reason ?? data.reason,
@@ -6978,13 +7545,24 @@ export async function getReturnById(tenantId: string, id: string) {
 
   // Resolve the original sale's invoice number (billId is a plain back-pointer).
   let billNumber: string | null = null;
+  let invoiceNumber: string | null = null;
   if (drugReturn.billId) {
     const bill = await prisma.bill.findFirst({
       where: { id: drugReturn.billId, tenantId },
-      select: { billNumber: true },
+      select: { billNumber: true, invoiceNumber: true },
     });
     billNumber = bill?.billNumber ?? null;
+    invoiceNumber = bill?.invoiceNumber ?? null;
   }
+  // G-7: the credit note this return raised, so the slip can print it — its
+  // number, the invoice it reverses and the tax taken back.
+  const creditNote = await prisma.creditNote.findFirst({
+    where: { tenantId, drugReturnId: id },
+    select: {
+      id: true, creditNoteNumber: true, issueDate: true, taxableValue: true, cgstAmount: true,
+      sgstAmount: true, igstAmount: true, cessAmount: true, taxAmount: true, totalAmount: true,
+    },
+  });
 
   const tenant = await prisma.tenant.findUnique({
     where: { id: tenantId },
@@ -6999,7 +7577,7 @@ export async function getReturnById(tenantId: string, id: string) {
     },
   });
 
-  return { return: drugReturn, billNumber, hospital: tenant };
+  return { return: drugReturn, billNumber, invoiceNumber, creditNote, hospital: tenant };
 }
 
 /**
@@ -7207,7 +7785,14 @@ export async function processReturn(
   // pay the patient back by creating a Refund against the original sale's
   // payment and reducing the bill — mirroring billing.approveRefund.
   if (data.status === 'processed') {
+    // Gap 303: every stock move this return makes, for the audit's before/after.
+    const returnStockDeltas: Array<{ drugBatchId: string; delta: number }> = [];
+    const recordReturnMove = (client: unknown, input: Parameters<typeof recordDrugStockMovement>[1]) => {
+      returnStockDeltas.push({ drugBatchId: input.drugBatchId, delta: input.quantity });
+      return recordDrugStockMovement(client, input);
+    };
     const result = await prisma.$transaction(async (tx) => {
+      returnStockDeltas.length = 0;
       // Resolve which batch to restock. Patient/vendor returns always carry a
       // drugBatchId. A counter return may carry one too; if not, match its
       // free-text batch number against an existing batch for the same medicine,
@@ -7265,10 +7850,16 @@ export async function processReturn(
           });
           const dec = Math.min(drugReturn.quantity, batch?.quantityInStock ?? 0);
           if (dec > 0) {
-            await tx.drugBatch.update({
+            const sentBack = await tx.drugBatch.update({
               where: { id: restockBatchId },
               data: { quantityInStock: { decrement: dec } },
             });
+            // 349: stock leaves for the supplier.
+            await recordReturnMove(tx, {
+                tenantId, drugId: (sentBack as any)?.drugId, drugBatchId: restockBatchId, movementType: 'vendor_return',
+                quantity: -dec, referenceType: 'drug_return', referenceId: id, performedBy: userId,
+                party: drugReturn.returnNumber ?? null,
+              });
           }
         } else if (controlledReturn.quarantine) {
           // Held, not restocked. The quantity goes into its own batch flagged
@@ -7290,6 +7881,12 @@ export async function processReturn(
                 where: { id: existing.id },
                 data: { quantityInStock: { increment: drugReturn.quantity } },
               });
+              // 349: quarantined stock is still on hand, so the ledger counts it in.
+              await recordReturnMove(tx, {
+                tenantId, drugId: source.drugId, drugBatchId: existing.id, movementType: 'patient_return',
+                quantity: drugReturn.quantity, referenceType: 'drug_return', referenceId: id, performedBy: userId,
+                party: drugReturn.returnNumber ?? null,
+              });
               // Point the return at where the stock actually ended up, so the
               // register's row shows the QUAR- batch rather than the shelf one.
               await tx.drugReturn.update({ where: { id }, data: { drugBatchId: existing.id } });
@@ -7309,14 +7906,25 @@ export async function processReturn(
                     'Controlled-drug return — quarantined pending destruction under the NDPS disposal flow.',
                 },
               });
+              await recordReturnMove(tx, {
+                tenantId, drugId: source.drugId, drugBatchId: quarantined.id, movementType: 'patient_return',
+                quantity: drugReturn.quantity, referenceType: 'drug_return', referenceId: id, performedBy: userId,
+                party: drugReturn.returnNumber ?? null,
+              });
               await tx.drugReturn.update({ where: { id }, data: { drugBatchId: quarantined.id } });
             }
           }
         } else {
-          await tx.drugBatch.update({
+          const restocked = await tx.drugBatch.update({
             where: { id: restockBatchId },
             data: { quantityInStock: { increment: drugReturn.quantity } },
           });
+          // 349: a patient / counter return comes back into stock.
+          await recordReturnMove(tx, {
+                tenantId, drugId: (restocked as any)?.drugId, drugBatchId: restockBatchId, movementType: drugReturn.returnType === 'counter_return' ? 'counter_return' : 'patient_return',
+                quantity: drugReturn.quantity, referenceType: 'drug_return', referenceId: id, performedBy: userId,
+                party: drugReturn.returnNumber ?? null,
+              });
         }
       }
 
@@ -7467,8 +8075,23 @@ export async function processReturn(
       description: result?.drugBatchId
         ? `Return approved — restocked ${drugReturn.quantity} unit(s) to batch ${result?.drugBatch?.batchNumber ?? '-'}`
         : `Return approved — ${drugReturn.quantity} unit(s) logged (no batch to restock)`,
-      oldValues: { status: 'pending' },
-      newValues: { status: 'processed', restockedQuantity: result?.drugBatchId ? drugReturn.quantity : 0 },
+      // Gap 303: before/after quantity and value of the batch(es) it moved.
+      ...(await (async () => {
+        const snap = await drugStockAuditAfterCommit(tenantId, returnStockDeltas, {
+          movementType: drugReturn.returnType,
+          documentNumber: drugReturn.returnNumber ?? null,
+          referenceType: 'drug_return',
+          referenceId: id,
+        });
+        return {
+          oldValues: { status: 'pending', ...snap.oldValues },
+          newValues: {
+            ...snap.newValues,
+            status: 'processed',
+            restockedQuantity: result?.drugBatchId ? drugReturn.quantity : 0,
+          },
+        };
+      })()),
     });
 
     logger.info({ tenantId, returnId: id, status: 'processed', processedBy: userId }, 'Drug return processed');
@@ -7520,128 +8143,15 @@ export async function processReturn(
 // sale) in the window, batch-wise, newest first, with window totals and the
 // live closing stock.
 
-export interface StockLedgerEntry {
-  date: Date;
-  movementType: 'receipt' | 'dispense' | 'patient_return' | 'vendor_return' | 'counter_return';
-  drugId: string;
-  drugName: string;
-  batchNumber: string;
-  quantityIn: number;
-  quantityOut: number;
-  party: string | null;
-  referenceId: string;
-}
+export type { StockLedgerEntry } from './pharmacy.stock-movement';
 
+/**
+ * 349: the ledger now reads the drug stock-movement log (every sale, transfer,
+ * return, adjustment, issue and receipt), and its closing is anchored on live
+ * stock so the two can no longer disagree. See `buildStockLedger`.
+ */
 export async function getStockLedger(tenantId: string, query: GetStockLedgerQuery) {
-  const toDate = query.toDate ? new Date(query.toDate) : new Date();
-  const fromDate = query.fromDate
-    ? new Date(query.fromDate)
-    : (() => {
-        const d = new Date(toDate);
-        d.setDate(d.getDate() - 30);
-        return d;
-      })();
-  const page = query.page ?? 1;
-  const limit = query.limit ?? 50;
-
-  const window = { gte: fromDate, lte: toDate };
-  const batchDrugFilter = query.drugId ? { drugBatch: { drugId: query.drugId } } : {};
-
-  const [batches, dispenses, returns, stockAgg] = await Promise.all([
-    prisma.drugBatch.findMany({
-      where: { tenantId, createdAt: window, ...(query.drugId ? { drugId: query.drugId } : {}) },
-      include: {
-        drug: { select: { id: true, drugName: true, category: true } },
-        supplier: { select: { name: true } },
-      },
-    }),
-    prisma.dispensingRecord.findMany({
-      where: { tenantId, cancelledAt: null, dispensedAt: window, ...batchDrugFilter },
-      include: {
-        drugBatch: { select: { batchNumber: true, drug: { select: { id: true, drugName: true, category: true } } } },
-        patient: { select: { firstName: true, lastName: true, mrn: true } },
-      },
-    }),
-    // DrugReturn has no processedAt; createdAt is close enough for a
-    // window-bounded register (returns are processed within days).
-    // Only returns that actually moved stock back in — counter returns without a
-    // resolved batch (drugBatchId still null after approval) never incremented
-    // stock, so they don't belong in the inflow register.
-    prisma.drugReturn.findMany({
-      where: { tenantId, status: 'processed', createdAt: window, drugBatchId: { not: null }, ...batchDrugFilter },
-      include: {
-        drugBatch: { select: { batchNumber: true, drug: { select: { id: true, drugName: true, category: true } } } },
-        drug: { select: { id: true, drugName: true, category: true } },
-        supplier: { select: { name: true } },
-      },
-    }),
-    prisma.drugBatch.aggregate({
-      where: { tenantId, isExpired: false, ...(query.drugId ? { drugId: query.drugId } : {}) },
-      _sum: { quantityInStock: true },
-    }),
-  ]);
-
-  const entries: StockLedgerEntry[] = [
-    ...batches.map((b): StockLedgerEntry => ({
-      date: b.createdAt,
-      movementType: 'receipt',
-      drugId: b.drug.id,
-      drugName: b.drug.drugName,
-      batchNumber: b.batchNumber,
-      quantityIn: b.quantityReceived,
-      quantityOut: 0,
-      party: b.supplier?.name ?? null,
-      referenceId: b.id,
-    })),
-    ...dispenses.map((d): StockLedgerEntry => ({
-      date: d.dispensedAt,
-      movementType: 'dispense',
-      drugId: d.drugBatch.drug.id,
-      drugName: d.drugBatch.drug.drugName,
-      batchNumber: d.drugBatch.batchNumber,
-      quantityIn: 0,
-      quantityOut: d.quantityDispensed,
-      party: d.patient ? `${fullName(d.patient)} (${d.patient.mrn})` : null,
-      referenceId: d.id,
-    })),
-    ...returns.map((r): StockLedgerEntry => ({
-      date: r.createdAt,
-      movementType:
-        r.returnType === 'vendor_return'
-          ? 'vendor_return'
-          : r.returnType === 'counter_return'
-          ? 'counter_return'
-          : 'patient_return',
-      drugId: r.drugBatch?.drug.id ?? r.drug?.id ?? '',
-      drugName: r.drugBatch?.drug.drugName ?? r.drug?.drugName ?? 'Medication',
-      batchNumber: r.drugBatch?.batchNumber ?? r.batchNumber ?? '-',
-      quantityIn: r.quantity,
-      quantityOut: 0,
-      party: r.supplier?.name ?? null,
-      referenceId: r.id,
-    })),
-  ].sort((a, b) => b.date.getTime() - a.date.getTime());
-
-  const totalIn = entries.reduce((s, e) => s + e.quantityIn, 0);
-  const totalOut = entries.reduce((s, e) => s + e.quantityOut, 0);
-
-  return {
-    fromDate: fromDate.toISOString(),
-    toDate: toDate.toISOString(),
-    entries: entries.slice((page - 1) * limit, page * limit),
-    page,
-    limit,
-    total: entries.length,
-    summary: {
-      totalReceived: batches.reduce((s, b) => s + b.quantityReceived, 0),
-      totalDispensed: dispenses.reduce((s, d) => s + d.quantityDispensed, 0),
-      totalReturned: returns.reduce((s, r) => s + r.quantity, 0),
-      totalIn,
-      totalOut,
-      netChange: totalIn - totalOut,
-      closingStock: stockAgg._sum.quantityInStock ?? 0,
-    },
-  };
+  return buildStockLedger(tenantId, query);
 }
 
 // ============================================================
@@ -7655,22 +8165,27 @@ export async function getPharmacyAnalytics(
   tenantId: string,
   range: { fromDate?: string; toDate?: string },
 ) {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const weekAgo = new Date(today); weekAgo.setDate(weekAgo.getDate() - 7);
-  const monthAgo = new Date(today); monthAgo.setDate(monthAgo.getDate() - 30);
-  const ninetyDaysFromNow = new Date(today); ninetyDaysFromNow.setDate(ninetyDaysFromNow.getDate() + 90);
+  // 346: India-time day boundaries. The server's own midnight is UTC in
+  // production, so "today" started at 05:30 IST and a morning sale fell
+  // outside it.
+  const today = istDayStart();
+  const DAY = 24 * 60 * 60 * 1000;
+  const weekAgo = new Date(today.getTime() - 7 * DAY);
+  const monthAgo = new Date(today.getTime() - 30 * DAY);
+  const ninetyDaysFromNow = new Date(today.getTime() + 90 * DAY);
+  const now = new Date();
 
   // A voided sale is not a sale.
   const dispenseWhere: any = { tenantId, cancelledAt: null };
-  if (range.fromDate) dispenseWhere.dispensedAt = { ...dispenseWhere.dispensedAt, gte: new Date(range.fromDate) };
-  if (range.toDate) dispenseWhere.dispensedAt = { ...dispenseWhere.dispensedAt, lte: new Date(range.toDate) };
+  if (range.fromDate) dispenseWhere.dispensedAt = { ...dispenseWhere.dispensedAt, gte: istDayStart(range.fromDate) };
+  if (range.toDate) dispenseWhere.dispensedAt = { ...dispenseWhere.dispensedAt, lte: istDayEnd(range.toDate) };
+  const rangeFrom: Date = dispenseWhere.dispensedAt?.gte ?? new Date(0);
+  const rangeTo: Date = dispenseWhere.dispensedAt?.lte ?? now;
 
   const [
     allDispenses,
-    todayDispenses,
-    weekDispenses,
-    monthDispenses,
+    rangeSales,
+    monthSales,
     expiringBatches,
     expiredBatches,
     activeBatches,
@@ -7687,18 +8202,10 @@ export async function getPharmacyAnalytics(
         },
       },
     }),
-    prisma.dispensingRecord.findMany({
-      where: { tenantId, cancelledAt: null, dispensedAt: { gte: today } },
-      include: { drugBatch: { select: { sellingPrice: true } } },
-    }),
-    prisma.dispensingRecord.findMany({
-      where: { tenantId, cancelledAt: null, dispensedAt: { gte: weekAgo } },
-      include: { drugBatch: { select: { sellingPrice: true } } },
-    }),
-    prisma.dispensingRecord.findMany({
-      where: { tenantId, cancelledAt: null, dispensedAt: { gte: monthAgo } },
-      include: { drugBatch: { select: { sellingPrice: true } } },
-    }),
+    // 346/348: sales and margin are PAID bill lines, priced as billed — the
+    // same query the Detailed Analysis report runs.
+    loadPaidSaleLines(tenantId, rangeFrom, rangeTo),
+    loadPaidSaleLines(tenantId, monthAgo, now),
     prisma.drugBatch.findMany({
       where: {
         tenantId,
@@ -7721,25 +8228,19 @@ export async function getPharmacyAnalytics(
     }),
   ]);
 
-  const lineRevenue = (r: { quantityDispensed: number; drugBatch: { sellingPrice: any } | null }) =>
-    Number(r.drugBatch?.sellingPrice ?? 0) * r.quantityDispensed;
+  const rangeSummary = summariseSaleLines(rangeSales);
+  const totalRevenue = rangeSummary.revenue;
+  const totalMargin = rangeSummary.profit;
+  const revenueByLine = new Map(rangeSales.map((l) => [l.id, l.figures.revenue]));
 
-  const lineMargin = (r: {
-    quantityDispensed: number;
-    drugBatch: { sellingPrice: any; purchasePrice: any } | null;
-  }) => (Number(r.drugBatch?.sellingPrice ?? 0) - Number(r.drugBatch?.purchasePrice ?? 0)) * r.quantityDispensed;
-
-  const totalRevenue = allDispenses.reduce((s, r) => s + lineRevenue(r), 0);
-  const totalMargin = allDispenses.reduce((s, r) => s + lineMargin(r), 0);
-
-  // Top-dispensed drugs
+  // Top-dispensed drugs (movement: every dispense counts; revenue only from paid lines)
   const drugTally = new Map<string, { drugId: string; drugName: string; qty: number; revenue: number }>();
   for (const r of allDispenses) {
     const drug = r.drugBatch?.drug;
     if (!drug) continue;
     const k = drug.id;
     const prev = drugTally.get(k);
-    const inc = lineRevenue(r);
+    const inc = revenueByLine.get(r.id) ?? 0;
     if (prev) {
       prev.qty += r.quantityDispensed;
       prev.revenue += inc;
@@ -7750,8 +8251,10 @@ export async function getPharmacyAnalytics(
   const topDrugs = Array.from(drugTally.values()).sort((a, b) => b.qty - a.qty).slice(0, 15);
 
   // Sum helpers for sale windows
-  const sumRevenue = (rows: typeof todayDispenses) =>
-    rows.reduce((s, r) => s + Number(r.drugBatch?.sellingPrice ?? 0) * r.quantityDispensed, 0);
+  const sumRevenue = (since: Date) =>
+    Math.round(
+      monthSales.filter((l) => l.dispensedAt >= since).reduce((s, l) => s + l.figures.revenue, 0) * 100,
+    ) / 100;
 
   // Batch-wise summary
   const totalStockValue = activeBatches.reduce(
@@ -7784,12 +8287,15 @@ export async function getPharmacyAnalytics(
 
   return {
     sales: {
-      today: sumRevenue(todayDispenses),
-      week: sumRevenue(weekDispenses),
-      month: sumRevenue(monthDispenses),
+      today: sumRevenue(today),
+      week: sumRevenue(weekAgo),
+      month: sumRevenue(monthAgo),
       rangeRevenue: totalRevenue,
+      // 348: profit over retail excl. tax, and margin on COST.
       rangeMargin: totalMargin,
-      rangeTransactions: allDispenses.length,
+      rangeMarginPct: rangeSummary.marginPct,
+      rangeCostMissingLines: rangeSummary.costMissingLines,
+      rangeTransactions: rangeSales.length,
     },
     topDrugs,
     expiry: {

@@ -89,6 +89,8 @@ labRoutes.post('/templates/:templateId/clone', authenticate, validate(cloneOneLa
 labRoutes.post('/tests', authenticate, requirePermission('lab_orders', 'create'), validate(createTestSchema), controller.createTest);
 labRoutes.get('/tests', authenticate, requirePermission('lab_orders', 'read'), validate(getTestsSchema), controller.getTests);
 labRoutes.get('/test-catalog', authenticate, requirePermission('lab_orders', 'read'), validate(getTestsSchema), controller.getTests);
+// Gap 369: placeholder text / duplicate names / price-vs-panel review flags.
+labRoutes.get('/tests/quality-flags', authenticate, requirePermission('lab_orders', 'read'), controller.getCatalogQualityFlags);
 labRoutes.get('/tests/:id', authenticate, requirePermission('lab_orders', 'read'), validate(testIdParamSchema), controller.getTestById);
 labRoutes.put('/tests/:id', authenticate, requirePermission('lab_orders', 'update'), validate(updateTestSchema), controller.updateTest);
 // Narrow PATCH for lab_supervisor (and admin) — price + TAT only. Bypasses

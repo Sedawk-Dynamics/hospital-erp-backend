@@ -80,10 +80,10 @@ describe('Dashboard Service', () => {
       vi.mocked(prisma.bed.count).mockResolvedValueOnce(d.occupiedBeds);
       // doctorProfile.count
       vi.mocked(prisma.doctorProfile.count).mockResolvedValueOnce(d.doctorCount);
-      // staffProfile.count - nurses
-      vi.mocked(prisma.staffProfile.count).mockResolvedValueOnce(d.nurseCount);
-      // staffProfile.count - totalStaff
-      vi.mocked(prisma.staffProfile.count).mockResolvedValueOnce(d.totalStaffCount);
+      // user.count - active users with a nurse role (same source as Settings → Users)
+      vi.mocked(prisma.user.count).mockResolvedValueOnce(d.nurseCount);
+      // user.count - all active users of the hospital
+      vi.mocked(prisma.user.count).mockResolvedValueOnce(d.totalStaffCount);
     }
 
     it('should return all dashboard statistics with correct values', async () => {
@@ -138,6 +138,19 @@ describe('Dashboard Service', () => {
 
       expect(stats.patientStats.outpatient).toBe(0);
       expect(stats.bedStats.available).toBe(0);
+    });
+
+    // Gap item 360: an advance is held money, not revenue, until it is applied.
+    it('keeps advances out of revenue and reports them separately', async () => {
+      setupDashboardMocks();
+      vi.mocked(prisma.payment.aggregate).mockResolvedValueOnce({ _sum: { amount: 1_500 } } as any);
+
+      const stats = await getDashboardStats(TENANT_ID);
+
+      const revenueWhere = vi.mocked(prisma.payment.aggregate).mock.calls[0][0]!.where as any;
+      expect(revenueWhere.paymentType).toEqual({ not: 'refund' });
+      expect(revenueWhere.bill).toEqual({ billNumber: { not: { startsWith: 'ADV-' } } });
+      expect(stats.billingStats.todayAdvances).toBe(1_500);
     });
   });
 });

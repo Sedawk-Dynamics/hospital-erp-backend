@@ -28,6 +28,7 @@ import {
   type GstDocumentType,
   type GstTreatment,
 } from '../../shared/gst';
+import { gstinVerificationCaption } from '../../shared/gst-profile';
 import {
   drawSectionHeading,
   drawTable,
@@ -120,9 +121,18 @@ export interface BillDocumentGst {
   billOfSupplyNumbers: string[];
   financialYear: string | null;
   supplierGstin: string | null;
+  /**
+   * Gap #311: printed beside the hospital's GSTIN — "not verified with the GST
+   * portal" until the GST provider has confirmed THIS number, and a SANDBOX
+   * label after a sandbox pass. Null when nothing needs saying.
+   */
+  supplierGstinCaption?: string | null;
   supplierStateCode: string | null;
   supplierStateName: string | null;
   recipientGstin: string | null;
+  /** G-4: the B2B buyer's legal name and address. */
+  recipientLegalName?: string | null;
+  recipientAddress?: string | null;
   placeOfSupplyStateCode: string | null;
   placeOfSupplyStateName: string | null;
   isInterState: boolean;
@@ -259,6 +269,8 @@ export interface GstBillHeader {
   supplierGstin?: string | null;
   supplierStateCode?: string | null;
   recipientGstin?: string | null;
+  recipientLegalName?: string | null;
+  recipientAddress?: string | null;
   placeOfSupplyStateCode?: string | null;
   isInterState?: boolean | null;
   irn?: string | null;
@@ -277,7 +289,16 @@ export interface GstBillHeader {
  * document it consolidates.
  */
 export function buildGstBlock(
-  profile: { registered: boolean; gstin?: string | null; stateCode?: string | null },
+  profile: {
+    registered: boolean;
+    gstin?: string | null;
+    stateCode?: string | null;
+    /** G-5: the hospital's setting that e-invoicing applies to it. */
+    eInvoiceApplicable?: boolean;
+    /** Gap #311: provider verification of the profile's GSTIN. */
+    gstinVerified?: boolean;
+    gstinVerification?: { sandbox: boolean } | null;
+  },
   headers: GstBillHeader[],
   lines: GstLine[],
 ): BillDocumentGst {
@@ -305,6 +326,7 @@ export function buildGstBlock(
 
   const documentType = (primary?.gstDocumentType as GstDocumentType | null) ?? null;
   const hasTax = profile.registered && totals.taxAmount > 0;
+  const supplierGstin = primary?.supplierGstin ?? profile.gstin ?? null;
 
   const notes: string[] = [];
   if (hasTax && (documentType === 'tax_invoice' || documentType === 'invoice_cum_bill_of_supply')) {
@@ -312,6 +334,20 @@ export function buildGstBlock(
     // charge. Billing a patient it never is, and an auditor still looks for the
     // sentence.
     notes.push('Tax is not payable on reverse charge basis.');
+  }
+  // G-5: there is no IRP integration, so a B2B invoice of a hospital inside the
+  // e-invoicing regime goes out without an IRN. The paper says so rather than
+  // passing for an e-invoice.
+  if (
+    profile.registered &&
+    profile.eInvoiceApplicable &&
+    primary?.recipientGstin &&
+    !primary?.irn &&
+    issued.length > 0
+  ) {
+    notes.push(
+      'E-invoicing applies, but no IRN has been generated for this invoice: it is not a registered e-invoice until it is reported on the IRP.',
+    );
   }
   if (profile.registered && taxSummary.some((r) => r.treatment !== 'taxable')) {
     notes.push(
@@ -327,10 +363,15 @@ export function buildGstBlock(
     /** Rule 46A's second document, for a registered recipient with mixed lines. */
     billOfSupplyNumbers: billsOfSupply,
     financialYear: primary?.financialYear ?? null,
-    supplierGstin: primary?.supplierGstin ?? profile.gstin ?? null,
+    supplierGstin,
+    // The bill keeps the GSTIN it was issued under; it counts as verified only
+    // if that is the number the provider confirmed.
+    supplierGstinCaption: gstinVerificationCaption(profile, supplierGstin),
     supplierStateCode: primary?.supplierStateCode ?? profile.stateCode ?? null,
     supplierStateName: stateNameForCode(primary?.supplierStateCode ?? profile.stateCode),
     recipientGstin: primary?.recipientGstin ?? null,
+    recipientLegalName: primary?.recipientLegalName ?? null,
+    recipientAddress: primary?.recipientAddress ?? null,
     placeOfSupplyStateCode: primary?.placeOfSupplyStateCode ?? null,
     placeOfSupplyStateName: stateNameForCode(primary?.placeOfSupplyStateCode),
     isInterState: primary?.isInterState ?? false,
@@ -517,10 +558,19 @@ export function gstIdentityFields(gst: BillDocumentGst): Array<[string, string]>
   if (gst.invoiceNumbers.length) {
     out.push([`${gst.documentLabel ?? 'Invoice'} No.`, gst.invoiceNumbers.join(', ')]);
   }
-  if (gst.supplierGstin) out.push(['GSTIN (Hospital)', gst.supplierGstin]);
+  if (gst.supplierGstin) {
+    // Gap #311: the unverified / sandbox caption travels with the number.
+    out.push([
+      'GSTIN (Hospital)',
+      gst.supplierGstinCaption ? `${gst.supplierGstin} (${gst.supplierGstinCaption})` : gst.supplierGstin,
+    ]);
+  }
   // A patient with a GSTIN is being billed as a business — it is what lets them
   // claim the credit, so it belongs on the paper.
   if (gst.recipientGstin) out.push(['GSTIN (Patient)', gst.recipientGstin]);
+  // G-4: Rule 46(e) — a B2B invoice names the registered buyer and their address.
+  if (gst.recipientGstin && gst.recipientLegalName) out.push(['Buyer', gst.recipientLegalName]);
+  if (gst.recipientGstin && gst.recipientAddress) out.push(['Buyer address', gst.recipientAddress]);
   if (gst.placeOfSupplyStateName) {
     out.push(['Place of Supply', `${gst.placeOfSupplyStateName} (${gst.placeOfSupplyStateCode})`]);
   }
@@ -532,7 +582,7 @@ export function gstIdentityFields(gst: BillDocumentGst): Array<[string, string]>
     out.push([
       'Ack No. / Date',
       gst.irnAckDate
-        ? `${gst.irnAckNo} / ${gst.irnAckDate.toLocaleDateString('en-IN')}`
+        ? `${gst.irnAckNo} / ${gst.irnAckDate.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })}`
         : gst.irnAckNo,
     ]);
   }

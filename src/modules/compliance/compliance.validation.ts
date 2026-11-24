@@ -247,6 +247,8 @@ export const createOtRequestSchema = z.object({
       preOpChecklist: z.record(z.unknown()).optional(),
       preOpDiagnosis: z.string().max(2000).optional(),
       notes: z.string().max(5000).optional(),
+      // Gap 351: the desk saw the clash list and chose to book anyway.
+      overrideConflicts: z.boolean().optional(),
     })
     .refine((d) => d.procedureName || d.surgeryName, {
       message: 'Either procedureName or surgeryName is required',
@@ -318,6 +320,8 @@ export const scheduleOtSchema = z.object({
     // doctor asked for (or moves an existing booking) — the doctor is told
     // why, and has to accept it before the surgery can start.
     rescheduleReason: z.string().max(2000).optional(),
+    // Gap 351: the desk saw the clash list and chose to book anyway.
+    overrideConflicts: z.boolean().optional(),
   }),
 });
 
@@ -358,6 +362,10 @@ export const updateOtRequestSchema = z.object({
     anaesthetistId: z.string().uuid().optional(),
     surgeryType: z.string().max(50).optional(),
     speciality: z.string().max(100).optional(),
+    // Gap 351: confirmed override when a surgeon change clashes.
+    overrideConflicts: z.boolean().optional(),
+    // Gap 354: confirmed start/complete before the scheduled date.
+    confirmEarly: z.boolean().optional(),
   }),
 });
 

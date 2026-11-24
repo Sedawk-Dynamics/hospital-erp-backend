@@ -47,6 +47,23 @@ export interface GstProfile {
   /** Always derived from the GSTIN, never typed separately — they cannot disagree. */
   stateCode: string | null;
   stateName: string | null;
+  /** The hospital's PAN. When stored, the GSTIN's characters 3–12 must match it (gap item 311). */
+  pan: string | null;
+  /**
+   * Whether the CURRENT GSTIN has been confirmed through the hospital's GST
+   * service provider (gap item 311). True only when the stored lookup was for
+   * this exact number and came back active — see applyGstinVerification. It is
+   * never stored in the profile JSON; it is overlaid on every read from the
+   * GstinVerification row. Passing the local checks below is NOT verification.
+   */
+  gstinVerified: boolean;
+  /**
+   * What the last provider lookup said, for the settings screen and the
+   * reports. Absent on a profile built without reading the verification row.
+   */
+  gstinVerification?: GstinVerificationState | null;
+  /** The local checks the GSTIN passed, recomputed on every read. */
+  gstinChecks: GstinChecks | null;
   /** The name on the registration, which is often not the name on the signboard. */
   legalName: string | null;
   tradeName: string | null;
@@ -128,11 +145,50 @@ export interface GstProfile {
   };
 }
 
+export interface GstinChecks {
+  format: boolean;
+  checkDigit: boolean;
+  stateCode: boolean;
+  /** null when no hospital PAN is stored to compare against. */
+  panMatches: boolean | null;
+  /** A documentation / placeholder GSTIN, or a PAN part made of repeats. */
+  looksLikeSample: boolean;
+}
+
+/**
+ * GSTINs printed in GST documentation and tutorials. Each passes the check
+ * digit, which is exactly why one ends up saved as a hospital's own number.
+ */
+const SAMPLE_GSTINS = new Set(['27AAPFU0939F1ZV']);
+
+/** The local checks on a GSTIN. A pass is still not portal verification. */
+export function gstinChecksFor(gstin: string | null, pan: string | null): GstinChecks | null {
+  if (!gstin) return null;
+  const g = gstin.trim().toUpperCase();
+  const check = checkGstin(g);
+  const format = g.length === 15 && /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/.test(g);
+  const panPart = g.slice(2, 12);
+  return {
+    format,
+    stateCode: !!stateNameForCode(g.slice(0, 2)),
+    checkDigit: check.valid,
+    panMatches: pan ? panPart === pan.trim().toUpperCase() : null,
+    looksLikeSample:
+      SAMPLE_GSTINS.has(g) ||
+      /^(.)\1{4}/.test(panPart) ||
+      /0000|1234/.test(panPart.slice(5, 9)) ||
+      /^ABCDE/.test(panPart),
+  };
+}
+
 export const DEFAULT_GST_PROFILE: GstProfile = {
   registered: false,
   gstin: null,
   stateCode: null,
   stateName: null,
+  pan: null,
+  gstinVerified: false,
+  gstinChecks: null,
   legalName: null,
   tradeName: null,
   registrationType: 'unregistered',
@@ -229,6 +285,20 @@ export function mergeGstProfile(base: GstProfile, patch: unknown): GstProfile {
     : base.roomUpgradeTreatment;
 
   let registered = bool(p.registered, base.registered);
+  // The hospital's PAN, format-checked. Matching it against the GSTIN is done
+  // where the profile is SAVED (updateGstProfile), not here, so a stored
+  // mismatch can never make a read fall back to "unregistered".
+  let pan = base.pan ?? null;
+  if ('pan' in p) {
+    const raw = p.pan;
+    if (raw === null || (typeof raw === 'string' && !raw.trim())) pan = null;
+    else {
+      const t = String(raw).trim().toUpperCase();
+      if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(t)) throw new GstProfileError('PAN must be 5 letters, 4 digits and a letter (e.g. ABCPE1234F)');
+      pan = t;
+    }
+  }
+
   // Asking to be registered without supplying a number is a request that would
   // produce invalid invoices, so it is refused rather than half-applied.
   if (p.registered === true && !gstin) {
@@ -244,6 +314,11 @@ export function mergeGstProfile(base: GstProfile, patch: unknown): GstProfile {
     gstin,
     stateCode,
     stateName: stateName ?? stateNameForCode(stateCode),
+    pan,
+    // Never true from the profile alone: only applyGstinVerification, reading
+    // the provider's stored answer for this exact GSTIN, can set it (gap 311).
+    gstinVerified: false,
+    gstinChecks: gstinChecksFor(gstin, pan),
     legalName: text(p.legalName, base.legalName, 200),
     tradeName: text(p.tradeName, base.tradeName, 200),
     registrationType: registered && registrationType === 'unregistered' ? 'regular' : registrationType,
@@ -309,4 +384,164 @@ export function defaultPlaceOfSupply(profile: GstProfile): {
   stateName: string | null;
 } {
   return { stateCode: profile.stateCode, stateName: profile.stateName };
+}
+
+// ── GSTIN verification through the GST service provider (gap item 311) ─────
+//
+// The provider's answer is kept in its own row (GstinVerification) and folded
+// onto the profile on every read. Pure functions here, so the rule "verified
+// only for the exact GSTIN that was checked, and only when it came back
+// active" is decided in one place and tested without a database.
+
+export type GstinVerificationStatus =
+  | 'verified'
+  | 'not_found'
+  | 'inactive'
+  | 'error'
+  /** No lookup on record for this GSTIN. */
+  | 'never_checked'
+  /** A lookup is on record, but for a different GSTIN than the one saved now. */
+  | 'stale'
+  /** The verification record could not be read. */
+  | 'unreadable';
+
+export interface GstinVerificationState {
+  status: GstinVerificationStatus;
+  /** The GSTIN the stored lookup was about. */
+  checkedGstin: string | null;
+  legalName: string | null;
+  tradeName: string | null;
+  registrationStatus: string | null;
+  provider: string | null;
+  /** The QA sandbox answered — NOT a real government check. */
+  sandbox: boolean;
+  lastCheckedAt: string | null;
+  verifiedAt: string | null;
+  lastError: string | null;
+  /** Provider legal name vs the legal name entered here; null when either is missing. */
+  legalNameMatches: boolean | null;
+}
+
+/** The stored row, as far as this logic needs it. */
+export interface GstinVerificationRecord {
+  checkedGstin: string;
+  verifiedGstin: string | null;
+  resultStatus: string;
+  provider: string;
+  sandbox: boolean;
+  legalName: string | null;
+  tradeName: string | null;
+  registrationStatus: string | null;
+  lastError: string | null;
+  lastCheckedAt: Date;
+  verifiedAt: Date | null;
+}
+
+const STORED_STATUSES = new Set(['verified', 'not_found', 'inactive', 'error']);
+
+/**
+ * Legal names compared loosely — case, punctuation and the usual
+ * PVT/PRIVATE, LTD/LIMITED spellings — so a full stop is not a mismatch.
+ */
+export function normaliseLegalName(name: string): string {
+  return name
+    .toUpperCase()
+    .replace(/&/g, ' AND ')
+    .replace(/[^A-Z0-9 ]+/g, ' ')
+    .replace(/\bPVT\b/g, 'PRIVATE')
+    .replace(/\bLTD\b/g, 'LIMITED')
+    .replace(/\bCO\b/g, 'COMPANY')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+const iso = (d: Date | null | undefined) => (d ? new Date(d).toISOString() : null);
+
+/**
+ * Fold the stored provider answer onto a profile.
+ *
+ * `row === undefined` means the row could not be read: the profile is still
+ * returned (billing must not fail), just unverified.
+ */
+export function applyGstinVerification(
+  profile: GstProfile,
+  row: GstinVerificationRecord | null | undefined,
+): GstProfile {
+  if (!profile.gstin) return { ...profile, gstinVerified: false, gstinVerification: null };
+  const empty: GstinVerificationState = {
+    status: 'never_checked',
+    checkedGstin: null,
+    legalName: null,
+    tradeName: null,
+    registrationStatus: null,
+    provider: null,
+    sandbox: false,
+    lastCheckedAt: null,
+    verifiedAt: null,
+    lastError: null,
+    legalNameMatches: null,
+  };
+  if (row === undefined) {
+    return {
+      ...profile,
+      gstinVerified: false,
+      gstinVerification: { ...empty, status: 'unreadable', lastError: 'The verification record could not be read' },
+    };
+  }
+  if (!row) return { ...profile, gstinVerified: false, gstinVerification: empty };
+
+  const sameNumber = row.checkedGstin === profile.gstin;
+  const stored = STORED_STATUSES.has(row.resultStatus)
+    ? (row.resultStatus as GstinVerificationStatus)
+    : 'error';
+  const verified = sameNumber && stored === 'verified' && row.verifiedGstin === profile.gstin;
+  const legalNameMatches =
+    sameNumber && row.legalName && profile.legalName
+      ? normaliseLegalName(row.legalName) === normaliseLegalName(profile.legalName)
+      : null;
+
+  return {
+    ...profile,
+    gstinVerified: verified,
+    gstinVerification: {
+      status: sameNumber ? stored : 'stale',
+      checkedGstin: row.checkedGstin,
+      legalName: sameNumber ? row.legalName : null,
+      tradeName: sameNumber ? row.tradeName : null,
+      registrationStatus: sameNumber ? row.registrationStatus : null,
+      provider: row.provider,
+      sandbox: row.sandbox,
+      lastCheckedAt: iso(row.lastCheckedAt),
+      verifiedAt: verified ? iso(row.verifiedAt) : null,
+      lastError: sameNumber ? row.lastError : 'The last lookup was for a different GSTIN',
+      legalNameMatches,
+    },
+  };
+}
+
+/** True only when `gstin` is the profile's GSTIN and that GSTIN is verified. */
+export function gstinVerifiedFor(
+  profile: { gstin?: string | null; gstinVerified?: boolean },
+  gstin: string | null | undefined,
+): boolean {
+  return !!gstin && !!profile.gstinVerified && profile.gstin === gstin.trim().toUpperCase();
+}
+
+/**
+ * The caption printed beside the hospital's GSTIN on reports and bills, or
+ * null when nothing needs saying. A sandbox pass still carries a caption: it
+ * exercised the flow, it did not check anything with the government.
+ */
+export function gstinVerificationCaption(
+  profile: {
+    gstin?: string | null;
+    gstinVerified?: boolean;
+    gstinVerification?: { sandbox: boolean } | null;
+  },
+  gstin: string | null | undefined = profile.gstin,
+): string | null {
+  if (!gstin) return null;
+  if (!gstinVerifiedFor(profile, gstin)) return 'not verified with the GST portal';
+  if (profile.gstinVerification?.sandbox) return 'SANDBOX verification — not a real government check';
+  return null;
 }

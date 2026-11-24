@@ -245,6 +245,7 @@ export async function buildAdmissionBillDocument(
           id: true, discountAmount: true, taxAmount: true,
           gstDocumentType: true, invoiceNumber: true, billOfSupplyNumber: true, financialYear: true,
           supplierGstin: true, supplierStateCode: true, recipientGstin: true,
+          recipientLegalName: true, recipientAddress: true,
           placeOfSupplyStateCode: true, isInterState: true,
           irn: true, irnAckNo: true, irnAckDate: true, irnQrPayload: true,
         },

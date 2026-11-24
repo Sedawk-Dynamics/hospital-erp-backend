@@ -36,7 +36,9 @@
 import { prisma } from '../../config/database';
 import { r2 } from '../../shared/gst';
 import { logger } from '../../config/logger';
-import { buildGstr1Json } from './gst-reports.gstr1-json';
+import { buildGstr1Json, returnPeriodLabel } from './gst-reports.gstr1-json';
+import { filedHeadline, filedStatus } from './gst-reports.archive';
+import { fullName } from '../../shared/person-name';
 
 /** One B2B invoice, as the return reports it. Mirrors the JSON's `inv` entry. */
 interface JsonInvoice {
@@ -164,6 +166,12 @@ export async function getGstr1Amendments(
      * supply twice.
      */
     excludePeriod?: string;
+    /**
+     * Gap 281: also return each amended period's sections AS THEY ARE NOW, so
+     * filing the current return can record what it declared. Internal — the
+     * report itself does not need them.
+     */
+    withCurrentSections?: boolean;
   } = {},
 ) {
   const filed = await prisma.gstFiledPeriod.findMany({
@@ -176,8 +184,50 @@ export async function getGstr1Amendments(
     select: {
       id: true, returnPeriod: true, periodFrom: true, periodTo: true,
       filedAt: true, lockedAt: true, snapshot: true,
+      // Gap 281: the reopen / correction trail, shown beside each period.
+      history: {
+        orderBy: { createdAt: 'asc' },
+        select: { action: true, version: true, reason: true, userId: true, createdAt: true },
+      },
     },
   });
+
+  // ── Gap 281: what was LAST DECLARED for each period ───────────────────────
+  //
+  // The original snapshot is never overwritten any more, so diffing against
+  // it alone would declare the same amendment in every later return. Each
+  // filed return records the state of the earlier periods it amended
+  // (`amendmentsDeclared`); the latest such record is the baseline, and the
+  // original snapshot is the baseline until one exists. The return being
+  // prepared (excludePeriod) never counts as having declared anything.
+  const declaring = query.returnPeriod
+    ? await prisma.gstFiledPeriod.findMany({
+        where: {
+          tenantId,
+          ...(query.excludePeriod ? { returnPeriod: { not: query.excludePeriod } } : {}),
+        },
+        select: { returnPeriod: true, filedAt: true, snapshot: true },
+      })
+    : filed;
+  const declaredFor = (period: string): { sections: FiledSections; inPeriod: string } | null => {
+    let best: { sections: FiledSections; inPeriod: string; at: number } | null = null;
+    for (const q of declaring ?? []) {
+      if (q.returnPeriod === period || q.returnPeriod === query.excludePeriod) continue;
+      const decl = (q.snapshot as Record<string, any> | null)?.amendmentsDeclared?.periods?.[period];
+      if (!decl) continue;
+      const at = new Date(q.filedAt).getTime();
+      if (!best || at > best.at) {
+        best = {
+          sections: { b2b: decl.b2b ?? [], b2cs: decl.b2cs ?? [], cdnr: decl.cdnr ?? [] },
+          inPeriod: q.returnPeriod,
+          at,
+        };
+      }
+    }
+    return best ? { sections: best.sections, inPeriod: best.inPeriod } : null;
+  };
+  /** Each amended period's sections today, for the filing to record. */
+  const currentSections: Record<string, FiledSections> = {};
 
   const rows: AmendmentRow[] = [];
   // The same findings in the portal's own shape, so the current month's file
@@ -197,18 +247,40 @@ export async function getGstr1Amendments(
     returnPeriod: string;
     filedAt: Date;
     locked: boolean;
+    /** Same status and figures C-6 shows — read from the same snapshot (gap item 281). */
+    status: string;
+    filed: ReturnType<typeof filedHeadline>;
     comparable: boolean;
     amendments: number;
     note: string;
+    /** Gap 281: what the diff is against — the original filing, or a later return's declaration. */
+    baseline: { kind: 'original' | 'declared'; inPeriod: string | null };
+    /** Gap 281: every reopen / correction / re-lock of this period. */
+    corrections: Array<{ action: string; version: number | null; reason: string | null; userId: string | null; at: Date; by?: string | null }>;
   }> = [];
 
   for (const p of filed) {
-    const was = sectionsOf(p.snapshot);
+    const decl = declaredFor(p.returnPeriod);
+    const was = decl?.sections ?? sectionsOf(p.snapshot);
+    const baseline = decl
+      ? { kind: 'declared' as const, inPeriod: decl.inPeriod }
+      : { kind: 'original' as const, inPeriod: null };
+    const corrections = ((p as { history?: Array<Record<string, any>> }).history ?? []).map((h) => ({
+      action: String(h.action),
+      version: h.version ?? null,
+      reason: h.reason ?? null,
+      userId: h.userId ?? null,
+      at: h.createdAt as Date,
+    }));
     if (!was) {
       periods.push({
+        baseline,
+        corrections,
         returnPeriod: p.returnPeriod,
         filedAt: p.filedAt,
         locked: !!p.lockedAt,
+        status: filedStatus(p.lockedAt),
+        filed: filedHeadline(p.snapshot),
         comparable: false,
         amendments: 0,
         note:
@@ -239,9 +311,13 @@ export async function getGstr1Amendments(
     } catch (err) {
       logger.warn({ err, tenantId, period: p.returnPeriod }, 'Could not rebuild a filed period for comparison');
       periods.push({
+        baseline,
+        corrections,
         returnPeriod: p.returnPeriod,
         filedAt: p.filedAt,
         locked: !!p.lockedAt,
+        status: filedStatus(p.lockedAt),
+        filed: filedHeadline(p.snapshot),
         comparable: false,
         amendments: 0,
         note: 'The period could not be rebuilt for comparison.',
@@ -285,7 +361,7 @@ export async function getGstr1Amendments(
         // row the portal rejects. Named in the warnings instead, so the
         // accountant handles it deliberately — by credit note, or on the
         // portal itself.
-        sections.vanished.push(`${inum} (${p.returnPeriod})`);
+        sections.vanished.push(`${inum} (${returnPeriodLabel(p.returnPeriod)})`);
         continue;
       }
       const dv = r2(n(b.inv.val) - n(a.inv.val));
@@ -375,7 +451,7 @@ export async function getGstr1Amendments(
         if (b && a.ctin) {
           pushAmended(cdnraByGstin, a.ctin, { ...b.nt, ont_num: a.nt.nt_num, ont_dt: a.nt.nt_dt });
         } else if (!b) {
-          sections.vanished.push(`${num} (${p.returnPeriod})`);
+          sections.vanished.push(`${num} (${returnPeriodLabel(p.returnPeriod)})`);
         }
       }
     }
@@ -443,16 +519,26 @@ export async function getGstr1Amendments(
     }
 
     const found = rows.length - before;
+    if (found > 0 && query.withCurrentSections) currentSections[p.returnPeriod] = now;
     periods.push({
+      baseline,
+      corrections,
       returnPeriod: p.returnPeriod,
       filedAt: p.filedAt,
       locked: !!p.lockedAt,
+      status: filedStatus(p.lockedAt),
+      filed: filedHeadline(p.snapshot),
       comparable: true,
       amendments: found,
       note:
-        found === 0
+        (found === 0
           ? 'Today’s figures still match what was filed.'
-          : `${found} document(s) no longer match the return that went in.`,
+          : `${found} document(s) no longer match the return that went in.`) +
+        (decl
+          ? ` Compared with the amendments already declared in the ${returnPeriodLabel(decl.inPeriod)} return.`
+          : corrections.some((c) => c.action === 'unlocked')
+            ? ' Compared with the original filed snapshot; the period was reopened for correction since.'
+            : ''),
     });
   }
 
@@ -468,6 +554,23 @@ export async function getGstr1Amendments(
     netValueChange: r2(rows.reduce((t, r) => t + r.difference, 0)),
   };
 
+  // Who reopened / corrected each period, by name rather than id (gap 281).
+  const actorIds = [...new Set(periods.flatMap((p) => p.corrections.map((c) => c.userId)).filter((x): x is string => !!x))];
+  if (actorIds.length) {
+    try {
+      const users = await prisma.user.findMany({
+        where: { id: { in: actorIds } },
+        select: { id: true, firstName: true, lastName: true },
+      });
+      const names = new Map((users ?? []).map((u) => [u.id, fullName(u)]));
+      for (const p of periods) {
+        p.corrections = p.corrections.map((c) => ({ ...c, by: c.userId ? names.get(c.userId) ?? null : null }));
+      }
+    } catch {
+      /* names are a courtesy; the trail stands without them */
+    }
+  }
+
   sections.b2ba = [...b2baByGstin.entries()].map(([ctin, inv]) => ({ ctin, inv }));
   sections.cdnra = [...cdnraByGstin.entries()].map(([ctin, nt]) => ({ ctin, nt }));
 
@@ -475,6 +578,7 @@ export async function getGstr1Amendments(
     summary,
     sections,
     periods,
+    ...(query.withCurrentSections ? { currentSections } : {}),
     rows: rows.sort((a, b) => a.originalPeriod.localeCompare(b.originalPeriod)),
     note:
       filed.length === 0

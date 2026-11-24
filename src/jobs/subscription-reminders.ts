@@ -1,6 +1,7 @@
 import { prisma } from '../config/database';
 import { logger } from '../config/logger';
 import { formatDateIST } from '../shared/date.utils';
+import { writeNotificationOnce } from '../modules/communication/notification-writer';
 
 /**
  * Check for subscriptions expiring in 7, 3, or 1 days and create reminder notifications.
@@ -34,17 +35,19 @@ export async function checkSubscriptionReminders() {
     });
 
     for (const sub of subs) {
-      await prisma.notification.create({
-        data: {
-          tenantId: sub.user.tenantId,
-          userId: sub.userId,
-          title: `Subscription expiring in ${days} day${days > 1 ? 's' : ''}`,
-          message: `Your ${sub.plan.name} plan expires on ${sub.endDate ? formatDateIST(new Date(sub.endDate)) : 'soon'}. Renew now to avoid service interruption.`,
-          notificationType: 'subscription',
-          channel: 'in_app',
-          referenceType: 'subscription',
-          referenceId: sub.id,
-        },
+      // Gap 295: one row per subscription + reminder stage via the unique
+      // dedupe key, so an overlapping run cannot write the same stage twice.
+      await writeNotificationOnce({
+        tenantId: sub.user.tenantId,
+        userId: sub.userId,
+        title: `Subscription expiring in ${days} day${days > 1 ? 's' : ''}`,
+        message: `Your ${sub.plan.name} plan expires on ${sub.endDate ? formatDateIST(new Date(sub.endDate)) : 'soon'}. Renew now to avoid service interruption.`,
+        notificationType: 'subscription',
+        channel: 'in_app',
+        referenceType: 'subscription',
+        referenceId: sub.id,
+        eventKey: 'subscription_expiry',
+        reminderStage: `${days}d`,
       }).catch(() => {});
 
       await prisma.userSubscription.update({

@@ -2111,7 +2111,7 @@ export async function publishLabReport(
     void safeLabReportEmail({
       toEmail: patient?.email ?? null,
       patientName,
-      reportDate: new Date().toLocaleDateString('en-IN'),
+      reportDate: new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' }),
       hospitalName: tenant?.name ?? 'Hospital',
       testSummary,
     });
@@ -2125,7 +2125,7 @@ export async function publishLabReport(
       void safeLabReportEmail({
         toEmail: doctor?.email ?? null,
         patientName: `Dr. ${doctor?.firstName ?? ''} ${doctor?.lastName ?? ''}`.trim(),
-        reportDate: new Date().toLocaleDateString('en-IN'),
+        reportDate: new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' }),
         hospitalName: tenant?.name ?? 'Hospital',
         testSummary: `${patientName} — ${testSummary}`,
       });
@@ -2897,7 +2897,7 @@ export async function correctLabReport(
     void safeLabReportCorrectedEmail({
       toEmail: patient?.email ?? null,
       patientName,
-      reportDate: new Date().toLocaleDateString('en-IN'),
+      reportDate: new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' }),
       hospitalName: tenant?.name ?? 'Hospital',
       correctionNotes: data.correctionNotes,
     });
@@ -2909,7 +2909,7 @@ export async function correctLabReport(
       void safeLabReportCorrectedEmail({
         toEmail: doctor?.email ?? null,
         patientName: `Dr. ${doctor?.firstName ?? ''} ${doctor?.lastName ?? ''}`.trim(),
-        reportDate: new Date().toLocaleDateString('en-IN'),
+        reportDate: new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' }),
         hospitalName: tenant?.name ?? 'Hospital',
         correctionNotes: `${patientName} — ${data.correctionNotes}`,
       });

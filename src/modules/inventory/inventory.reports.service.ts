@@ -449,6 +449,20 @@ export interface ReorderHistoryQuery {
   limit?: number;
 }
 
+/** Gap 302: name for a PO line — item name, drug name, then the item/drug code. */
+export function poLineName(line: {
+  inventoryItem?: { itemName?: string | null; itemCode?: string | null } | null;
+  drug?: { drugName?: string | null; hsnCode?: string | null } | null;
+}): string {
+  return (
+    line.inventoryItem?.itemName ||
+    line.drug?.drugName ||
+    line.inventoryItem?.itemCode ||
+    line.drug?.hsnCode ||
+    'Unnamed item'
+  );
+}
+
 export async function getReorderHistoryReport(tenantId: string, query: ReorderHistoryQuery) {
   const { skip, take, page, limit } = getPaginationParams({
     page: query.page,
@@ -479,6 +493,8 @@ export async function getReorderHistoryReport(tenantId: string, query: ReorderHi
         items: {
           include: {
             inventoryItem: { select: { id: true, itemName: true, itemCode: true, unitOfMeasurement: true } },
+            // Gap 302: drug lines have no inventoryItem — include the drug too.
+            drug: { select: { id: true, drugName: true, genericName: true, hsnCode: true } },
           },
           ...(query.inventoryItemId ? { where: { inventoryItemId: query.inventoryItemId } } : {}),
         },
@@ -512,7 +528,11 @@ export async function getReorderHistoryReport(tenantId: string, query: ReorderHi
     .sort((a, b) => b.totalAmount - a.totalAmount);
 
   return {
-    orders,
+    // Gap 302: every line carries a display name (UI showed "undefined × 20").
+    orders: orders.map((o) => ({
+      ...o,
+      items: (o.items ?? []).map((it: any) => ({ ...it, itemName: poLineName(it) })),
+    })),
     bySupplier,
     page,
     limit,
@@ -775,7 +795,23 @@ const INVENTORY_ENTITY_TYPES = [
   'dispensing_record',
   'pharmacy_sale',
   'drug_return',
+  // Gap 303: master and inward actions pharmacy already audits.
+  'drug_formulary',
+  'inward_invoice',
 ];
+
+/**
+ * Gap 303: the page sends date-only bounds. `new Date('YYYY-MM-DD')` is UTC
+ * midnight, so `lte toDate` dropped the whole "to" day (today, by default) and
+ * the IST morning of the "from" day. Date-only values are read as IST days.
+ */
+export function auditDateBounds(fromDate?: string, toDate?: string) {
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/;
+  const range: { gte?: Date; lte?: Date } = {};
+  if (fromDate) range.gte = dateOnly.test(fromDate) ? new Date(`${fromDate}T00:00:00.000+05:30`) : new Date(fromDate);
+  if (toDate) range.lte = dateOnly.test(toDate) ? new Date(`${toDate}T23:59:59.999+05:30`) : new Date(toDate);
+  return range;
+}
 
 export async function getInventoryAuditLogs(tenantId: string, query: InventoryAuditQuery) {
   const { skip, take, page, limit } = getPaginationParams({
@@ -791,9 +827,7 @@ export async function getInventoryAuditLogs(tenantId: string, query: InventoryAu
   if (query.userId) where.userId = query.userId;
   if (query.action) where.action = query.action;
   if (query.fromDate || query.toDate) {
-    where.createdAt = {};
-    if (query.fromDate) where.createdAt.gte = new Date(query.fromDate);
-    if (query.toDate) where.createdAt.lte = new Date(query.toDate);
+    where.createdAt = auditDateBounds(query.fromDate, query.toDate);
   }
   if (query.search) {
     where.OR = [

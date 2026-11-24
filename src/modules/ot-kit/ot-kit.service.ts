@@ -4,6 +4,7 @@ import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { checkControlledDispense } from '../pharmacy/controlled-dispense';
+import { recordDrugStockMovement } from '../pharmacy/pharmacy.stock-movement';
 
 // ============================================================
 // OT Kit — "Issue Bulk, Reconcile Net" surgical consumables (design doc III)
@@ -342,6 +343,11 @@ export async function issueKit(
         const take = Math.min(remaining, b.quantityInStock);
         if (take <= 0) continue;
         await tx.drugBatch.update({ where: { id: b.id }, data: { quantityInStock: { decrement: take } } });
+        // 349: the OT kit issue as a pharmacy stock movement.
+        await recordDrugStockMovement(tx, {
+          tenantId, drugId: drug.id, drugBatchId: b.id, movementType: 'ot_issue', quantity: -take,
+          referenceType: 'ot_kit_issue', referenceId: issue.id, performedBy: userId,
+        });
         await tx.otKitIssueItem.create({
           data: {
             issueId: issue.id,
@@ -453,6 +459,10 @@ export async function reconcileKit(
       // Reverse unused units into active stock (the exact batch they left).
       if (ret > 0 && it.drugBatchId) {
         await tx.drugBatch.update({ where: { id: it.drugBatchId }, data: { quantityInStock: { increment: ret } } });
+        await recordDrugStockMovement(tx, {
+          tenantId, drugId: it.drugFormularyId, drugBatchId: it.drugBatchId, movementType: 'ot_return',
+          quantity: ret, referenceType: 'ot_kit_issue', referenceId: issue.id, performedBy: userId,
+        });
       }
       await tx.otKitIssueItem.update({
         where: { id: it.id },
@@ -680,6 +690,11 @@ export async function cancelKit(tenantId: string, userId: string, roles: string[
       for (const it of issue.items) {
         if (it.drugBatchId && it.issuedQty > 0) {
           await tx.drugBatch.update({ where: { id: it.drugBatchId }, data: { quantityInStock: { increment: it.issuedQty } } });
+          // 349: a cancelled kit goes back on the shelf.
+          await recordDrugStockMovement(tx, {
+            tenantId, drugId: it.drugFormularyId, drugBatchId: it.drugBatchId, movementType: 'ot_return',
+            quantity: it.issuedQty, referenceType: 'ot_kit_issue', referenceId: id, performedBy: userId,
+          });
         }
         await tx.otKitIssueItem.update({ where: { id: it.id }, data: { returnedQty: it.issuedQty, consumedQty: 0 } });
       }

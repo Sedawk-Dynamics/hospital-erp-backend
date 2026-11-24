@@ -11,10 +11,43 @@
 // invoice series has no holes.
 // ---------------------------------------------------------------------------
 
+import { isAdvanceApplication, collectionDocumentNumber } from '../billing/bill-payment-ledger';
 import { prisma } from '../../config/database';
 import { r2 } from '../../shared/gst';
 import { fullName } from '../../shared/person-name';
 import { getSalesRegister, totalOf, type SalesReportQuery } from './gst-reports.sales';
+import {
+  getCreditNoteRegister, notesThatReduceOutward, noteExclusions, outwardTaxableNet,
+} from './gst-reports.returns';
+import {
+  getItemRateChanges, getItemVsMasterDifferences, getBilledVsItemDifferences,
+} from './gst-reports.rate-audit';
+
+/**
+ * The tender a payment was made in, grouped the way the cash desk counts it.
+ *
+ * Read from the payment row itself. Credit and debit cards are one "Card"
+ * bucket — the day-end sheet counts them together, and C-1b showed card as ₹0
+ * when card takings were listed under other names (gap item 280).
+ */
+export function paymentModeOf(method: string | null | undefined): string {
+  switch (String(method ?? '')) {
+    case 'cash': return 'cash';
+    case 'credit_card':
+    case 'debit_card':
+    case 'card': return 'card';
+    case 'upi': return 'upi';
+    case 'net_banking':
+    case 'bank_transfer': return 'net_banking';
+    case 'cheque': return 'cheque';
+    case 'insurance': return 'insurance';
+    case 'advance': return 'advance';
+    default: return 'other';
+  }
+}
+
+/** Every mode, so a mode with nothing in it reads ₹0 rather than vanishing. */
+const PAYMENT_MODES = ['cash', 'card', 'upi', 'net_banking', 'cheque', 'insurance', 'advance', 'other'];
 
 const n = (v: unknown) => r2(Number(v ?? 0));
 
@@ -45,7 +78,7 @@ function dateRange(query: { from?: string; to?: string }) {
 export async function getDailyCollection(tenantId: string, query: { from?: string; to?: string } = {}) {
   const { from, to } = dateRange(query);
 
-  const payments = await prisma.payment.findMany({
+  const allPayments = await prisma.payment.findMany({
     where: {
       tenantId,
       status: 'completed',
@@ -55,28 +88,57 @@ export async function getDailyCollection(tenantId: string, query: { from?: strin
     select: {
       id: true, paymentDate: true, amount: true, paymentMethod: true,
       paymentType: true, paymentSource: true,
+      transactionId: true, notes: true, voucherNumber: true, sourceAdvancePaymentId: true,
       processor: { select: { firstName: true, lastName: true } },
       bill: { select: { id: true, billNumber: true, totalAmount: true, taxAmount: true } },
     },
   });
 
+  // A deposit or advance APPLIED to a bill is not new money — the receipt that
+  // brought it in is already counted (gap item 361). Leave the applications
+  // out so the day's collection is counted once.
+  const payments = allPayments.filter((p) => !isAdvanceApplication({
+    paymentType: String(p.paymentType),
+    paymentMethod: String(p.paymentMethod),
+    sourceAdvancePaymentId: p.sourceAdvancePaymentId,
+    transactionId: p.transactionId,
+    notes: p.notes,
+  }));
+
+  // A bill settled in several tenders (cash + card…) is several payment rows.
+  // Each carries tax in proportion to its own amount, and the shares are
+  // scaled so a bill's tenders together never carry more than the bill's tax
+  // (gap item 280).
+  const tenderedByBill = new Map<string, number>();
+  for (const p of payments) {
+    if (!p.bill || p.paymentType === 'refund') continue;
+    tenderedByBill.set(p.bill.id, r2((tenderedByBill.get(p.bill.id) ?? 0) + n(p.amount)));
+  }
+
   const rows = payments.map((p) => {
     const amount = n(p.amount);
     const billTotal = n(p.bill?.totalAmount);
     const billTax = n(p.bill?.taxAmount);
+    const base = Math.max(billTotal, p.bill ? tenderedByBill.get(p.bill.id) ?? 0 : 0);
     // The payment's share of the bill's tax. A refund carries its share back.
-    const share = billTotal > 0 ? Math.min(1, amount / billTotal) : 0;
+    const share = base > 0 ? Math.min(1, amount / base) : 0;
     const taxShare = r2(billTax * share) * (p.paymentType === 'refund' ? -1 : 1);
     return {
       paymentId: p.id,
       date: p.paymentDate,
       day: p.paymentDate.toISOString().slice(0, 10),
       amount: p.paymentType === 'refund' ? -amount : amount,
+      /** The mode as saved on the payment record. */
       method: String(p.paymentMethod),
+      mode: paymentModeOf(String(p.paymentMethod)),
       type: String(p.paymentType),
       counter: p.paymentSource ? String(p.paymentSource) : 'unknown',
       cashier: p.processor ? fullName(p.processor) : null,
       billNumber: p.bill?.billNumber ?? null,
+      /** The receipt voucher for an advance / refund — unique per receipt (gap 361). */
+      documentNumber: collectionDocumentNumber({
+        paymentType: String(p.paymentType), voucherNumber: p.voucherNumber, bill: p.bill,
+      }),
       taxCollected: taxShare,
     };
   });
@@ -99,6 +161,13 @@ export async function getDailyCollection(tenantId: string, query: { from?: strin
     rows,
     byDay: [...fold((r) => r.day)].map(([day, v]) => ({ day, ...v })).sort((a, b) => a.day.localeCompare(b.day)),
     byMethod: [...fold((r) => r.method)].map(([method, v]) => ({ method, ...v })),
+    /** By tender, every mode listed — card = credit + debit card. */
+    byMode: (() => {
+      const m = fold((r) => r.mode);
+      return PAYMENT_MODES.map((mode) => ({
+        mode, ...(m.get(mode) ?? { collected: 0, taxCollected: 0, count: 0 }),
+      }));
+    })(),
     byCounter: [...fold((r) => r.counter)].map(([counter, v]) => ({ counter, ...v })),
     byCashier: [...fold((r) => r.cashier ?? 'unattributed')].map(([cashier, v]) => ({ cashier, ...v })),
     totals: {
@@ -125,7 +194,10 @@ export async function getDailyCollection(tenantId: string, query: { from?: strin
  * person who raised the document.
  */
 export async function getDailyGstLiability(tenantId: string, query: SalesReportQuery = {}) {
-  const { period, rows } = await getSalesRegister(tenantId, query);
+  const [{ period, rows }, notes] = await Promise.all([
+    getSalesRegister(tenantId, query),
+    getCreditNoteRegister(tenantId, { from: query.from, to: query.to }),
+  ]);
 
   const fold = (key: (l: (typeof rows)[number]) => string) => {
     const m = new Map<
@@ -157,8 +229,66 @@ export async function getDailyGstLiability(tenantId: string, query: SalesReportQ
   const taxable = rows.filter((l) => l.gstTreatment === 'taxable');
   const exempt = rows.filter((l) => l.gstTreatment && l.gstTreatment !== 'taxable');
 
+  // ── Gross, credit notes and net, rate by rate (gap item 276) ─────────────
+  //
+  // The liability for the period is what was billed LESS the sales returns
+  // and cancellations that reverse it — the same notes, chosen the same way,
+  // that GSTR-3B nets off. Without them C-1 overstated the liability and never
+  // agreed with 3.1(a).
+  const applied = notesThatReduceOutward(notes.rows);
+  type RateRow = { ratePercent: number; gross: ReturnType<typeof zeroHeads>; creditNotes: ReturnType<typeof zeroHeads> };
+  const zeroHeads = () => ({ taxableValue: 0, cgstAmount: 0, sgstAmount: 0, igstAmount: 0, taxAmount: 0 });
+  const addHeads = (a: ReturnType<typeof zeroHeads>, b: Partial<Record<keyof ReturnType<typeof zeroHeads>, unknown>>) => {
+    for (const k of Object.keys(a) as (keyof typeof a)[]) a[k] = r2(a[k] + Number(b[k] ?? 0));
+  };
+  const rates = new Map<number, RateRow>();
+  const rateRow = (rate: number) => {
+    const cur = rates.get(rate) ?? { ratePercent: rate, gross: zeroHeads(), creditNotes: zeroHeads() };
+    rates.set(rate, cur);
+    return cur;
+  };
+  for (const l of taxable) addHeads(rateRow(l.taxRatePercent).gross, l);
+  for (const c of applied) {
+    const taxableItems = (c.items ?? []).filter((i) => i.gstTreatment === 'taxable');
+    if (taxableItems.length) {
+      for (const i of taxableItems) addHeads(rateRow(Number(i.taxPercent ?? 0)).creditNotes, i);
+    } else if (c.byTreatment.taxable.taxableValue !== 0 || c.byTreatment.taxable.taxAmount !== 0) {
+      // A legacy note with no lines: its rate is read off its own figures.
+      const t = c.byTreatment.taxable;
+      const rate = t.taxableValue !== 0 ? Math.round((t.taxAmount / t.taxableValue) * 100) : 0;
+      addHeads(rateRow(rate).creditNotes, t);
+    }
+  }
+  const byRate = [...rates.values()]
+    .map((r) => {
+      const net = zeroHeads();
+      addHeads(net, r.gross);
+      addHeads(net, r.creditNotes);
+      return { ...r, net };
+    })
+    .sort((a, b) => b.ratePercent - a.ratePercent);
+  const sumOf = (pick: (r: (typeof byRate)[number]) => ReturnType<typeof zeroHeads>) => {
+    const t = zeroHeads();
+    for (const r of byRate) addHeads(t, pick(r));
+    return t;
+  };
+  const gstr3bOutward = outwardTaxableNet(totalOf(taxable), applied);
+  const netTotals = sumOf((r) => r.net);
+
   return {
     period,
+    /** Gross billed, credit notes (negative) and net, per rate. Net = GSTR-3B 3.1(a). */
+    byRate,
+    liability: {
+      gross: sumOf((r) => r.gross),
+      creditNotes: sumOf((r) => r.creditNotes),
+      net: netTotals,
+      gstr3bOutwardTax: gstr3bOutward.taxAmount,
+      agreesWithGstr3b: Math.abs(netTotals.taxAmount - gstr3bOutward.taxAmount) < 0.01
+        && Math.abs(netTotals.taxableValue - gstr3bOutward.taxableValue) < 0.01,
+      notesApplied: applied.length,
+      notesExcluded: noteExclusions(notes.rows),
+    },
     byDay: fold((l) => l.billDate.toISOString().slice(0, 10))
       .map((r) => ({ day: r.key, ...r }))
       .sort((a, b) => a.day.localeCompare(b.day)),
@@ -635,42 +765,70 @@ export async function getCancelledInvoices(tenantId: string, query: SalesReportQ
     select: {
       id: true, billNumber: true, invoiceNumber: true, gstDocumentType: true,
       billDate: true, cancelledAt: true, totalAmount: true, taxAmount: true, cancellationReason: true,
+      taxableValue: true, cgstAmount: true, sgstAmount: true, igstAmount: true,
       updatedAt: true,
       canceller: { select: { firstName: true, lastName: true } },
       patient: { select: { mrn: true, firstName: true, lastName: true } },
-      creditNotes: { select: { creditNoteNumber: true, taxAmount: true, totalAmount: true } },
+      creditNotes: {
+        select: {
+          creditNoteNumber: true, noteType: true, taxableValue: true, cgstAmount: true,
+          sgstAmount: true, igstAmount: true, taxAmount: true, totalAmount: true,
+        },
+      },
     },
   });
 
-  const rows = bills.map((b) => ({
-    billId: b.id,
-    billNumber: b.billNumber,
-    invoiceNumber: b.invoiceNumber,
-    documentType: b.gstDocumentType,
-    billDate: b.billDate,
-    // The real date where we have it; the row's last touch only as a
-    // fallback for a bill cancelled before the column existed.
-    cancelledAt: b.cancelledAt ?? b.updatedAt,
-    cancelledBy: b.canceller ? fullName(b.canceller) : null,
-    reason: b.cancellationReason,
-    patientName: b.patient ? fullName(b.patient) : null,
-    mrn: b.patient?.mrn ?? null,
-    totalAmount: n(b.totalAmount),
-    taxAmount: n(b.taxAmount),
-    creditNotes: b.creditNotes.map((c) => ({
-      creditNoteNumber: c.creditNoteNumber,
-      taxAmount: n(c.taxAmount),
-      totalAmount: n(c.totalAmount),
-    })),
-    /** Issued, cancelled, and never reversed. The tax is still declared. */
-    unreversed: !!b.invoiceNumber && b.creditNotes.length === 0,
-  }));
+  const rows = bills.map((b) => {
+    // Gap 268: voiding a pharmacy sale deletes or zeroes its lines, so the bill
+    // itself reads ₹0 / ₹0 once cancelled. The credit note that reversed it
+    // still holds what was invoiced (stored negative), so the register shows
+    // the larger of the two — the bill's own figure when it kept one, the
+    // reversal's when the bill was zeroed. Debit notes are not reversals.
+    const credits = b.creditNotes.filter((c) => (c.noteType ?? 'credit') === 'credit');
+    const reversed = (k: 'taxableValue' | 'cgstAmount' | 'sgstAmount' | 'igstAmount' | 'taxAmount' | 'totalAmount') =>
+      r2(Math.abs(credits.reduce((t, c) => t + n(c[k]), 0)));
+    const useNotes = credits.length > 0 && reversed('totalAmount') > Math.abs(n(b.totalAmount));
+    const pick = (k: 'taxableValue' | 'cgstAmount' | 'sgstAmount' | 'igstAmount' | 'taxAmount' | 'totalAmount') =>
+      useNotes ? reversed(k) : n(b[k]);
+    return {
+      billId: b.id,
+      billNumber: b.billNumber,
+      invoiceNumber: b.invoiceNumber,
+      documentType: b.gstDocumentType,
+      billDate: b.billDate,
+      // The real date where we have it; the row's last touch only as a
+      // fallback for a bill cancelled before the column existed.
+      cancelledAt: b.cancelledAt ?? b.updatedAt,
+      cancelledBy: b.canceller ? fullName(b.canceller) : null,
+      reason: b.cancellationReason,
+      patientName: b.patient ? fullName(b.patient) : null,
+      mrn: b.patient?.mrn ?? null,
+      totalAmount: pick('totalAmount'),
+      taxableValue: pick('taxableValue'),
+      cgstAmount: pick('cgstAmount'),
+      sgstAmount: pick('sgstAmount'),
+      igstAmount: pick('igstAmount'),
+      taxAmount: pick('taxAmount'),
+      /** Where the value came from: the bill, or the credit note when the bill was zeroed. */
+      valueSource: useNotes ? ('credit_note' as const) : ('bill' as const),
+      creditNotes: b.creditNotes.map((c) => ({
+        creditNoteNumber: c.creditNoteNumber,
+        noteType: c.noteType,
+        taxableValue: r2(Math.abs(n(c.taxableValue))),
+        taxAmount: r2(Math.abs(n(c.taxAmount))),
+        totalAmount: r2(Math.abs(n(c.totalAmount))),
+      })),
+      /** Issued, cancelled, and never reversed. The tax is still declared. */
+      unreversed: !!b.invoiceNumber && credits.length === 0,
+    };
+  });
 
   return {
     period: { from: query.from ?? null, to: query.to ?? null },
     rows,
     totals: {
       count: rows.length,
+      taxableValue: r2(rows.reduce((t, r) => t + r.taxableValue, 0)),
       taxAmount: r2(rows.reduce((t, r) => t + r.taxAmount, 0)),
       totalAmount: r2(rows.reduce((t, r) => t + r.totalAmount, 0)),
       /** The exception: cancelled after issue, with no credit note behind it. */
@@ -701,7 +859,13 @@ export async function getCancelledInvoices(tenantId: string, query: SalesReportQ
  * for how much tax, and which rule the engine would otherwise have used.
  */
 export async function getRateOverrides(tenantId: string, query: SalesReportQuery = {}) {
-  const { period, rows } = await getSalesRegister(tenantId, query);
+  const [{ period, rows }, itemChanges, itemVsMaster, billedVsItem] = await Promise.all([
+    getSalesRegister(tenantId, query),
+    // Gap item 279: the three places a rate is actually overridden today.
+    getItemRateChanges(tenantId, query),
+    getItemVsMasterDifferences(tenantId).catch(() => []),
+    getBilledVsItemDifferences(tenantId, query).catch(() => []),
+  ]);
   const overrides = rows.filter((l) => l.requiresTaxResolution);
 
   const byPerson = new Map<string, { lines: number; taxCharged: number; value: number }>();
@@ -733,17 +897,27 @@ export async function getRateOverrides(tenantId: string, query: SalesReportQuery
     byPerson: [...byPerson.entries()]
       .map(([person, v]) => ({ person, ...v }))
       .sort((a, b) => b.taxCharged - a.taxCharged || b.lines - a.lines),
+    /** Changes made to an item's rate, code or treatment in the period — who, when, why. */
+    itemChanges,
+    /** Items whose own rate differs from their HSN / SAC master: an item-level override. */
+    itemVsMaster,
+    /** Lines billed at a rate different from the item's rate. */
+    billedVsItem,
     totals: {
       linesChecked: rows.length,
       overrides: overrides.length,
       taxCharged: r2(overrides.reduce((t, l) => t + l.taxAmount, 0)),
       value: r2(overrides.reduce((t, l) => t + l.totalAmount, 0)),
+      itemChanges: itemChanges.length,
+      itemVsMaster: itemVsMaster.length,
+      billedVsItem: billedVsItem.length,
     },
     notes: [
-      'Finalising a bill now REFUSES a line with no GST classification, so a new override cannot reach a finalised bill. What appears here is legacy — lines billed before that gate existed.',
+      'Finalising a bill now REFUSES a line with no GST classification, so a new typed rate cannot reach a finalised bill. Typed-rate lines below are legacy.',
+      'Item changes are logged from the day the log was added: every change to a service tariff or formulary drug\u2019s rate, HSN/SAC or treatment, with the user and time. A reason is recorded where the save sends one; otherwise the screen it came from is named.',
+      'Item vs master compares each item with its HSN / SAC master as they stand today. A difference is an item-level override and should be one the auditor approved.',
+      'Billed vs item compares each line with the item as it stands today, so a line billed before a logged change appears here too — check it against the change log.',
       '"Raised by" is the person who raised the document, not provably the person who typed the rate — a bill line carries no author of its own.',
-      'No reason is recorded against an override. Capturing one means asking for it at the counter, which changes what staff have to do.',
-      'Fix an override at its source: give the item an HSN or SAC code, or have its rate approved on the service tariff. Both are in the Unmapped Items report.',
     ],
   };
 }
@@ -771,22 +945,34 @@ export async function getRateChangeImpact(
 ) {
   const { from, to } = dateRange(query);
 
-  const changes = await prisma.gstRateChange.findMany({
-    where: {
-      ...(from || to ? { changedAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {}),
-    },
-    orderBy: { changedAt: 'desc' },
-    include: { changer: { select: { firstName: true, lastName: true } } },
-  });
+  const [changes, itemChanges, itemVsMaster] = await Promise.all([
+    prisma.gstRateChange.findMany({
+      where: {
+        ...(from || to ? { changedAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {}),
+      },
+      orderBy: { changedAt: 'desc' },
+      include: { changer: { select: { firstName: true, lastName: true } } },
+    }),
+    // Gap item 279: the hospital's own item changes, not only the masters.
+    getItemRateChanges(tenantId, query),
+    getItemVsMasterDifferences(tenantId).catch(() => []),
+  ]);
+  const itemImpact = await itemChangeImpact(tenantId, itemChanges);
 
   if (changes.length === 0) {
     return {
       period: { from: query.from ?? null, to: query.to ?? null },
       changes: [],
-      totals: { changes: 0, linesAffected: 0, outOfStep: 0 },
+      itemChanges: itemImpact,
+      itemVsMaster,
+      totals: {
+        changes: 0, linesAffected: itemImpact.reduce((t, r) => t + r.linesBefore.count + r.linesAfter.count, 0),
+        outOfStep: itemImpact.reduce((t, r) => t + r.outOfStep.length, 0),
+        itemChanges: itemImpact.length, itemVsMaster: itemVsMaster.length,
+      },
       notes: [
-        'Nothing on a tax master changed in this period.',
-        'This log starts from the day it was added — a rate that moved before then is not in it.',
+        ...(itemImpact.length ? [] : ['Nothing on a tax master or an item changed in this period.']),
+        'Both logs start from the day they were added — a rate that moved before then is not in them.',
       ],
     };
   }
@@ -861,10 +1047,16 @@ export async function getRateChangeImpact(
   return {
     period: { from: query.from ?? null, to: query.to ?? null },
     changes: rows,
+    itemChanges: itemImpact,
+    itemVsMaster,
     totals: {
       changes: rows.length,
-      linesAffected: rows.reduce((t, r) => t + r.linesBefore.count + r.linesAfter.count, 0),
-      outOfStep: rows.reduce((t, r) => t + r.outOfStep.length, 0),
+      linesAffected: rows.reduce((t, r) => t + r.linesBefore.count + r.linesAfter.count, 0)
+        + itemImpact.reduce((t, r) => t + r.linesBefore.count + r.linesAfter.count, 0),
+      outOfStep: rows.reduce((t, r) => t + r.outOfStep.length, 0)
+        + itemImpact.reduce((t, r) => t + r.outOfStep.length, 0),
+      itemChanges: itemImpact.length,
+      itemVsMaster: itemVsMaster.length,
     },
     notes: [
       'A line billed BEFORE a change keeps the rate that applied on the day — that is what freezing the tax onto the line is for, and it is not restated here.',
@@ -874,3 +1066,71 @@ export async function getRateChangeImpact(
   };
 }
 
+
+/**
+ * For each logged ITEM change, the bill lines for that item either side of it
+ * (gap item 279). Services are matched on the tariff the line billed; drugs on
+ * the formulary drug behind the dispensing record.
+ */
+async function itemChangeImpact(
+  tenantId: string,
+  changes: Awaited<ReturnType<typeof getItemRateChanges>>,
+) {
+  if (changes.length === 0) return [];
+  const serviceIds = [...new Set(changes.filter((c) => c.itemType === 'service').map((c) => c.itemId))];
+  const drugIds = [...new Set(changes.filter((c) => c.itemType === 'drug').map((c) => c.itemId))];
+  const select = {
+    taxPercent: true, taxAmount: true, totalAmount: true, description: true, createdAt: true,
+    serviceTariffId: true, referenceId: true,
+    bill: { select: { billNumber: true, invoiceNumber: true, billDate: true } },
+  } as const;
+  const [serviceLines, drugRecs] = await Promise.all([
+    serviceIds.length
+      ? prisma.billItem.findMany({
+          where: { serviceTariffId: { in: serviceIds }, bill: { tenantId, status: { not: 'draft' } } },
+          select,
+        })
+      : Promise.resolve([]),
+    drugIds.length
+      ? prisma.dispensingRecord.findMany({
+          where: { tenantId, drugBatch: { drugId: { in: drugIds } } },
+          select: { id: true, drugBatch: { select: { drugId: true } } },
+        })
+      : Promise.resolve([]),
+  ]);
+  const drugOfRec = new Map((drugRecs ?? []).map((r) => [r.id, r.drugBatch?.drugId ?? null]));
+  const drugLines = drugOfRec.size
+    ? await prisma.billItem.findMany({
+        where: {
+          referenceType: 'dispensing_record', referenceId: { in: [...drugOfRec.keys()] },
+          bill: { tenantId, status: { not: 'draft' } },
+        },
+        select,
+      })
+    : [];
+  type Line = (typeof serviceLines)[number];
+  const linesFor = (c: (typeof changes)[number]): Line[] =>
+    c.itemType === 'service'
+      ? (serviceLines ?? []).filter((l) => l.serviceTariffId === c.itemId)
+      : (drugLines ?? []).filter((l) => l.referenceId && drugOfRec.get(l.referenceId) === c.itemId);
+  const sum = (list: Line[], pick: (l: Line) => number) => r2(list.reduce((t, l) => t + pick(l), 0));
+
+  return changes.map((c) => {
+    const affected = linesFor(c);
+    const before = affected.filter((l) => l.createdAt < c.changedAt);
+    const after = affected.filter((l) => l.createdAt >= c.changedAt);
+    const outOfStep = c.newRate == null ? [] : after.filter((l) => Number(l.taxPercent) !== c.newRate);
+    return {
+      ...c,
+      linesBefore: { count: before.length, taxCharged: sum(before, (l) => Number(l.taxAmount)), value: sum(before, (l) => Number(l.totalAmount)) },
+      linesAfter: { count: after.length, taxCharged: sum(after, (l) => Number(l.taxAmount)), value: sum(after, (l) => Number(l.totalAmount)) },
+      outOfStep: outOfStep.map((l) => ({
+        billNumber: l.bill?.invoiceNumber ?? l.bill?.billNumber ?? null,
+        billDate: l.bill?.billDate ?? null,
+        description: l.description,
+        ratePercent: Number(l.taxPercent),
+        taxAmount: Number(l.taxAmount),
+      })),
+    };
+  });
+}

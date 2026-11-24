@@ -27,6 +27,7 @@ import type {
   ForgotPasswordInput,
   ResetPasswordInput,
   Verify2FAInput,
+  ChangePasswordInput,
 } from './auth.validation';
 import { createPatientInTenant } from '../patient-portal/patient-portal.service';
 
@@ -742,6 +743,41 @@ export const authService = {
     logger.info({ userId: user.id }, 'Password reset successful');
 
     return { message: 'Password has been reset successfully' };
+  },
+
+  /**
+   * Gap 297: change the signed-in user's password, given the current one.
+   *
+   * A hospital session may be running as the hospital-tenant COPY of the user,
+   * whose password hash is random — login always checks the platform user with
+   * the same email. So the check and the update both go to the row login uses,
+   * otherwise "current password is wrong" for a correct password, or a change
+   * that the next sign-in ignores.
+   *
+   * A wrong current password is a 400, not a 401: a 401 makes the client treat
+   * the session as expired and sign the user out.
+   */
+  async changePassword(userId: string, data: ChangePasswordInput) {
+    const me = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, email: true } });
+    if (!me) throw AppError.notFound('User not found');
+
+    const sameEmail = await prisma.user.findMany({
+      where: { email: me.email },
+      select: { id: true, passwordHash: true, tenant: { select: { slug: true } } },
+    });
+    const target =
+      sameEmail.find((u) => u.tenant.slug === '__platform__') ??
+      sameEmail.find((u) => u.id === me.id);
+    if (!target) throw AppError.notFound('User not found');
+
+    const ok = await bcrypt.compare(data.currentPassword, target.passwordHash);
+    if (!ok) throw AppError.badRequest('Current password is wrong', 'WRONG_PASSWORD');
+
+    const passwordHash = await bcrypt.hash(data.newPassword, env.BCRYPT_SALT_ROUNDS);
+    await prisma.user.update({ where: { id: target.id }, data: { passwordHash } });
+
+    logger.info({ userId, credentialUserId: target.id }, 'Password changed');
+    return { message: 'Password changed' };
   },
 
   async setup2FA(userId: string) {

@@ -5,11 +5,15 @@ import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
 import { randomUUID } from 'crypto';
-import { safeInventoryAudit } from './inventory.audit';
+import { safeInventoryAudit, stockSnapshot } from './inventory.audit';
+import { getStockValuation } from './stock-valuation.service';
 import { getInventorySettings, getInventorySettingsSafe } from './inventory.settings.service';
 import { notifyInventoryRecipients, hasOpenInventoryAlert } from './inventory.notify';
 import { makeInternalBarcode } from '../pharmacy/pharmacy.barcode';
-import { safePharmacyAudit } from '../pharmacy/pharmacy.audit';
+import { safePharmacyAudit, drugStockAuditValues } from '../pharmacy/pharmacy.audit';
+import { recordDrugStockMovement, drugOutflowAsStockTransactions } from '../pharmacy/pharmacy.stock-movement';
+import { assertSupplierInvoice, homeStateCode, purchaseLineTax, supplierStateOf } from '../pharmacy/purchase-tax';
+import { checkGstin } from '../../shared/gst';
 import { makeMedicineRankComparator, mergePrefixFirst } from '../../shared/medicine-search-rank';
 import { fuzzyMatchIds, ensureTrgmReady, FUZZY_MIN_QUERY_LEN } from '../../shared/medicine-fuzzy';
 import type {
@@ -82,7 +86,21 @@ async function generateOrderNumber(tenantId: string): Promise<string> {
 // Suppliers
 // ============================================================
 
+/**
+ * G-10: the supplier's state decides CGST+SGST against IGST on every receipt,
+ * so it is derived from a validated GSTIN (check digit included) rather than
+ * left blank. A wrong GSTIN is refused: it would silently miss GSTR-2B.
+ */
+function supplierGstinFields(raw: string | null | undefined): { gstNumber: string | null; stateCode: string | null } {
+  const t = String(raw ?? '').trim().toUpperCase();
+  if (!t) return { gstNumber: null, stateCode: null };
+  const check = checkGstin(t);
+  if (!check.valid) throw AppError.badRequest(`Supplier GSTIN ${t} is not valid — ${check.reason}`);
+  return { gstNumber: check.normalized, stateCode: check.stateCode };
+}
+
 export async function createSupplier(tenantId: string, data: CreateSupplierInput) {
+  const gstin = supplierGstinFields(data.gstNumber);
   const supplier = await prisma.supplier.create({
     data: {
       tenantId,
@@ -90,7 +108,7 @@ export async function createSupplier(tenantId: string, data: CreateSupplierInput
       phone: data.phone,
       email: data.email,
       address: data.address,
-      gstNumber: data.gstNumber,
+      ...gstin,
       licenseNumber: data.licenseNumber,
       supplyType: data.supplyType as any,
       paymentTermDays: data.paymentTermDays,
@@ -101,6 +119,12 @@ export async function createSupplier(tenantId: string, data: CreateSupplierInput
   });
 
   logger.info({ tenantId, supplierId: supplier.id }, 'Supplier created');
+  // Gap 303: inventory master changes belong in the inventory audit trail.
+  void safeInventoryAudit({
+    tenantId, action: 'create', entityType: 'supplier', entityId: supplier.id,
+    description: `Supplier created: ${supplier.name}`,
+    newValues: { name: supplier.name, gstNumber: supplier.gstNumber ?? null },
+  });
   return supplier;
 }
 
@@ -165,7 +189,15 @@ export async function updateSupplier(tenantId: string, id: string, data: UpdateS
   if (data.phone !== undefined) updateData.phone = data.phone;
   if (data.email !== undefined) updateData.email = data.email;
   if (data.address !== undefined) updateData.address = data.address;
-  if (data.gstNumber !== undefined) updateData.gstNumber = data.gstNumber;
+  if (data.gstNumber !== undefined) {
+    // G-10: only a CHANGED GSTIN is validated, so an old record with a bad
+    // number can still be edited for other fields.
+    const changed = String(data.gstNumber ?? '').trim().toUpperCase() !== String(existing.gstNumber ?? '').trim().toUpperCase();
+    if (changed) Object.assign(updateData, supplierGstinFields(data.gstNumber));
+    else if (!existing.stateCode && existing.gstNumber && /^\d{2}/.test(existing.gstNumber.trim())) {
+      updateData.stateCode = existing.gstNumber.trim().slice(0, 2);
+    }
+  }
   if (data.licenseNumber !== undefined) updateData.licenseNumber = data.licenseNumber;
   if (data.supplyType !== undefined) updateData.supplyType = data.supplyType;
   if (data.paymentTermDays !== undefined) updateData.paymentTermDays = data.paymentTermDays;
@@ -179,6 +211,12 @@ export async function updateSupplier(tenantId: string, id: string, data: UpdateS
   });
 
   logger.info({ tenantId, supplierId: id }, 'Supplier updated');
+  void safeInventoryAudit({
+    tenantId, action: 'update', entityType: 'supplier', entityId: id,
+    description: `Supplier updated: ${supplier.name}`,
+    oldValues: Object.fromEntries(Object.keys(updateData).map((k) => [k, (existing as any)[k] ?? null])),
+    newValues: updateData,
+  });
   return supplier;
 }
 
@@ -198,6 +236,11 @@ export async function deleteSupplier(tenantId: string, id: string) {
   });
 
   logger.info({ tenantId, supplierId: id }, 'Supplier deactivated');
+  void safeInventoryAudit({
+    tenantId, action: 'delete', entityType: 'supplier', entityId: id,
+    description: `Supplier deactivated: ${existing.name}`,
+    oldValues: { isActive: existing.isActive }, newValues: { isActive: false },
+  });
 }
 
 // ============================================================
@@ -237,6 +280,12 @@ export async function createItem(tenantId: string, data: CreateItemInput) {
   });
 
   logger.info({ tenantId, itemId: item.id }, 'Inventory item created');
+  void safeInventoryAudit({
+    tenantId, action: 'create', entityType: 'inventory_item', entityId: item.id,
+    description: `Item created: ${item.itemName}${item.itemCode ? ` (${item.itemCode})` : ''}, opening stock ${item.currentStock}`,
+    oldValues: stockSnapshot(0, item.costPerUnit),
+    newValues: stockSnapshot(item.currentStock, item.costPerUnit),
+  });
   return item;
 }
 
@@ -362,6 +411,15 @@ export async function updateItem(tenantId: string, id: string, data: UpdateItemI
   });
 
   logger.info({ tenantId, itemId: id }, 'Inventory item updated');
+  void safeInventoryAudit({
+    tenantId, action: 'update', entityType: 'inventory_item', entityId: id,
+    description: `Item updated: ${item.itemName} (${Object.keys(updateData).join(', ') || 'no changes'})`,
+    oldValues: {
+      ...Object.fromEntries(Object.keys(updateData).map((k) => [k, (existing as any)[k] ?? null])),
+      ...stockSnapshot(existing.currentStock, existing.costPerUnit),
+    },
+    newValues: { ...updateData, ...stockSnapshot(item.currentStock, item.costPerUnit) },
+  });
   return item;
 }
 
@@ -381,6 +439,12 @@ export async function deleteItem(tenantId: string, id: string) {
   });
 
   logger.info({ tenantId, itemId: id }, 'Inventory item deactivated');
+  void safeInventoryAudit({
+    tenantId, action: 'delete', entityType: 'inventory_item', entityId: id,
+    description: `Item deactivated: ${existing.itemName}`,
+    oldValues: { isActive: existing.isActive, ...stockSnapshot(existing.currentStock, existing.costPerUnit) },
+    newValues: { isActive: false },
+  });
 }
 
 /**
@@ -486,12 +550,9 @@ export async function getStockOverview(tenantId: string) {
   });
   let itemLowStock = 0;
   let itemOutOfStock = 0;
-  let itemStockValue = 0;
   for (const it of items) {
     if (it.currentStock <= 0) itemOutOfStock += 1;
     else if (it.currentStock <= it.minimumStockThreshold) itemLowStock += 1;
-    const unit = toNumber(it.sellingPricePerUnit) || toNumber(it.costPerUnit);
-    itemStockValue += unit * it.currentStock;
   }
   const itemSkus = items.length;
   const itemExpiring = (await getExpiringInventory(tenantId, { months: expiryAlertMonths } as GetExpiringQuery)).total;
@@ -510,19 +571,18 @@ export async function getStockOverview(tenantId: string) {
   // per-drug live-stock total used for drug low-stock.
   const batches = await prisma.drugBatch.findMany({
     where: { tenantId, isRecalled: false, quantityInStock: { gt: 0 } },
-    select: { drugId: true, quantityInStock: true, sellingPrice: true, expiryDate: true, isExpired: true },
+    select: { drugId: true, quantityInStock: true, purchasePrice: true, expiryDate: true, isExpired: true },
   });
-  let drugStockValue = 0;
   let drugExpiringConfigured = 0;
   let drugValueAtRisk = 0;
   const liveByDrug = new Map<string, number>();
   for (const b of batches) {
-    const sell = toNumber(b.sellingPrice);
-    drugStockValue += sell * b.quantityInStock;
+    // Gap 301: value at risk on the same purchase-cost basis as stock value.
+    const cost = toNumber(b.purchasePrice);
     liveByDrug.set(b.drugId, (liveByDrug.get(b.drugId) ?? 0) + b.quantityInStock);
     const exp = new Date(b.expiryDate);
     if (exp <= configuredThreshold) drugExpiringConfigured += 1;
-    if (b.isExpired || exp <= in90) drugValueAtRisk += sell * b.quantityInStock;
+    if (b.isExpired || exp <= in90) drugValueAtRisk += cost * b.quantityInStock;
   }
   // Drug low-stock: in-stock drugs whose live total has fallen to/below minStock.
   const minStockDrugs = await prisma.drugFormulary.findMany({
@@ -547,9 +607,16 @@ export async function getStockOverview(tenantId: string) {
   `;
   const linkedSkus = Number(linkedRows[0]?.count ?? 0);
 
+  // Gap 301: stock value comes from the shared valuation service so the
+  // dashboard, stock list and both Detailed Analysis reports agree.
+  const valuation = await getStockValuation(tenantId);
+  const itemStockValue = valuation.items.costValue;
+  const drugStockValue = valuation.drugs.costValue;
+
   return {
     expiryAlertMonths,
     linkedSkus,
+    valuation: { basis: valuation.basis, basisLabel: valuation.basisLabel, asOf: valuation.asOf },
     items: {
       skus: itemSkus,
       lowStock: itemLowStock,
@@ -571,7 +638,7 @@ export async function getStockOverview(tenantId: string) {
       lowStock: itemLowStock + drugLowStock,
       outOfStock: itemOutOfStock + drugOutOfStock,
       expiring: itemExpiring + drugExpiringConfigured,
-      stockValue: round2(itemStockValue + drugStockValue),
+      stockValue: valuation.costValue,
       valueAtRisk: round2(drugValueAtRisk),
     },
   };
@@ -612,6 +679,11 @@ export interface UnifiedStockRow {
   controlledClass: string | null;
   vaultControlled: boolean;
   scheduleReason: string | null;
+  /**
+   * Gap 301: on-hand value from the shared valuation service (purchase cost,
+   * live batches only) so the rows sum to the dashboard's stock value.
+   */
+  stockValue: number;
 }
 
 /**
@@ -827,7 +899,14 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
     controlledClass: r.controlled_class,
     vaultControlled: Boolean(r.vault_controlled),
     scheduleReason: r.schedule_reason,
+    stockValue: 0,
   });
+  const withValues = async (rows: UnifiedStockRow[]) => {
+    if (rows.length === 0) return rows;
+    const v = await getStockValuation(tenantId);
+    const byKey = new Map(v.lines.map((l) => [`${l.kind}:${l.refId}`, l.costValue]));
+    return rows.map((r) => ({ ...r, stockValue: byKey.get(`${r.kind}:${r.refId}`) ?? 0 }));
+  };
 
   // On a search we fetch ALL matching rows (the hospital's own stock — a bounded
   // set) and rank them in JS with the shared ranker, so the ordering matches the
@@ -844,7 +923,7 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
     const ranked = allRows
       .map(mapRow)
       .sort(makeMedicineRankComparator(query.search, (r) => ({ name: r.name })));
-    const data = ranked.slice(skip, skip + take);
+    const data = await withValues(ranked.slice(skip, skip + take));
     return { data, total: ranked.length, page, limit, expiryAlertMonths };
   }
 
@@ -863,7 +942,7 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
   `);
   const total = Number(countRows[0]?.count ?? 0);
 
-  const data: UnifiedStockRow[] = rows.map(mapRow);
+  const data: UnifiedStockRow[] = await withValues(rows.map(mapRow));
 
   return { data, total, page, limit, expiryAlertMonths };
 }
@@ -901,7 +980,7 @@ export async function flagExpiredInventory(tenantId: string, userId: string) {
     const remaining = tx.quantity - (used._sum.quantity ?? 0);
     if (remaining <= 0) continue;
 
-    await prisma.$transaction([
+    const [removal, updatedItem] = await prisma.$transaction([
       prisma.stockTransaction.create({
         data: {
           tenantId,
@@ -922,6 +1001,18 @@ export async function flagExpiredInventory(tenantId: string, userId: string) {
       }),
     ]);
     flagged += 1;
+    // Gap 303: expiry write-offs are stock actions and must show in the audit trail.
+    const unitCost = tx.unitCost ?? updatedItem.costPerUnit;
+    void safeInventoryAudit({
+      tenantId, userId, action: 'create', entityType: 'stock_transaction', entityId: removal.id,
+      description: `Write-off (expired) of ${remaining} × ${updatedItem.itemName}, batch ${tx.batchNumber}`,
+      oldValues: stockSnapshot(updatedItem.currentStock + remaining, unitCost),
+      newValues: {
+        transactionType: 'expired_removal', quantity: remaining, ...stockSnapshot(updatedItem.currentStock, unitCost),
+        movementType: 'write_off', documentNumber: tx.batchNumber ? `Batch ${tx.batchNumber}` : null,
+        source: { type: 'stock_transaction', id: removal.id },
+      },
+    });
   }
 
   logger.info({ tenantId, count: flagged }, 'Auto-flagged expired inventory batches');
@@ -1102,11 +1193,17 @@ export async function createStockTransaction(
     entityType: 'stock_transaction',
     entityId: result.id,
     description: `${data.transactionType.replace('_', ' ')} of ${data.quantity} × ${item.itemName}${data.batchNumber ? ` (batch ${data.batchNumber})` : ''}`,
+    // Gap 303: before/after quantity and value at the item's purchase cost.
+    oldValues: stockSnapshot(item.currentStock, data.unitCost ?? item.costPerUnit),
     newValues: {
       transactionType: data.transactionType,
       quantity: data.quantity,
       inventoryItemId: data.inventoryItemId,
       departmentId: data.departmentId ?? null,
+      ...stockSnapshot(newStock, data.unitCost ?? item.costPerUnit),
+      movementType: data.transactionType,
+      documentNumber: data.batchNumber ? `Batch ${data.batchNumber}` : null,
+      source: { type: data.referenceType ?? 'stock_transaction', id: data.referenceId ?? result.id },
     },
   });
 
@@ -1155,11 +1252,16 @@ export async function getStockTransactions(tenantId: string, query: GetStockTran
     ];
   }
 
-  const [transactions, total] = await Promise.all([
+  // 349: pharmacy outflow (sales, issues, transfers) lives in the drug
+  // stock-movement log, not here. Fold it into the unfiltered / stock_out
+  // history: take the newest skip+take of both, merge, then page.
+  const withPharmacy =
+    !query.inventoryItemId && (!query.transactionType || query.transactionType === 'stock_out');
+  const [transactions, total, pharmacy] = await Promise.all([
     prisma.stockTransaction.findMany({
       where,
-      skip,
-      take,
+      skip: withPharmacy ? 0 : skip,
+      take: withPharmacy ? skip + take : take,
       include: {
         inventoryItem: {
           select: { id: true, itemName: true, itemCode: true, unitOfMeasurement: true },
@@ -1174,9 +1276,21 @@ export async function getStockTransactions(tenantId: string, query: GetStockTran
       orderBy: { createdAt: 'desc' },
     }),
     prisma.stockTransaction.count({ where }),
+    withPharmacy
+      ? drugOutflowAsStockTransactions(tenantId, {
+          take: skip + take,
+          fromDate: query.fromDate ? new Date(query.fromDate) : undefined,
+          toDate: query.toDate ? new Date(query.toDate) : undefined,
+          search: query.search,
+        })
+      : Promise.resolve({ rows: [], total: 0 }),
   ]);
 
-  return { transactions, total, page, limit };
+  if (!withPharmacy) return { transactions, total, page, limit };
+  const merged = [...transactions, ...pharmacy.rows]
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    .slice(skip, skip + take);
+  return { transactions: merged, total: total + pharmacy.total, page, limit };
 }
 
 export async function getStockTransactionById(tenantId: string, id: string) {
@@ -1294,6 +1408,18 @@ export async function createPurchaseOrder(tenantId: string, data: CreatePurchase
   });
 
   logger.info({ tenantId, purchaseOrderId: purchaseOrder.id, orderNumber }, 'Purchase order created');
+  // Gap 303: PO creation was never audited (only approve/receive/cancel were).
+  void safeInventoryAudit({
+    tenantId, action: 'create', entityType: 'purchase_order', entityId: purchaseOrder.id,
+    description: `PO ${orderNumber} created for ${purchaseOrder.supplier?.name ?? 'supplier'} (${purchaseOrder.items.length} line(s))`,
+    newValues: {
+      orderNumber, status: purchaseOrder.status, totalAmount: Number(purchaseOrder.totalAmount ?? 0),
+      items: purchaseOrder.items.map((i) => ({
+        item: i.inventoryItem?.itemName ?? i.inventoryItem?.itemCode ?? i.drugId ?? null,
+        quantity: i.quantityOrdered,
+      })),
+    },
+  });
   return purchaseOrder;
 }
 
@@ -1459,6 +1585,11 @@ export async function updatePurchaseOrder(
   });
 
   logger.info({ tenantId, purchaseOrderId: id }, 'Purchase order updated');
+  void safeInventoryAudit({
+    tenantId, action: 'update', entityType: 'purchase_order', entityId: id,
+    description: `PO ${result.orderNumber} updated`,
+    newValues: { status: result.status, totalAmount: Number(result.totalAmount ?? 0), lines: result.items.length },
+  });
   return result;
 }
 
@@ -1540,6 +1671,34 @@ export async function receivePurchaseOrder(
     }
   }
 
+  // G-9/G-10: a goods receipt names the SUPPLIER's invoice (the PO number used
+  // to be stored as the invoice), required for a GST-registered supplier, and
+  // splits the input tax by the supplier's GSTIN state against the hospital's.
+  const receiptSupplier = await prisma.supplier.findFirst({
+    where: { id: order.supplierId, tenantId },
+    select: { name: true, gstNumber: true, stateCode: true },
+  });
+  if (data.items.some((i) => i.quantityReceived > 0)) {
+    assertSupplierInvoice(receiptSupplier, data.invoiceNumber, data.invoiceDate);
+  }
+  const receiptHomeState = await homeStateCode(tenantId);
+  const receiptInvoice = {
+    invoiceNumber: data.invoiceNumber?.trim() || null,
+    invoiceDate: data.invoiceDate ? new Date(data.invoiceDate) : null,
+  };
+  const receiptTaxFor = (unitCost: number, qty: number, gstPercent: number | null | undefined) =>
+    gstPercent != null && unitCost
+      ? purchaseLineTax({
+          taxableValue: unitCost * qty,
+          ratePercent: gstPercent,
+          supplierState: supplierStateOf(receiptSupplier),
+          homeState: receiptHomeState,
+        })
+      : null;
+
+  // Gap 303: per-line stock audits, written after the transaction commits.
+  const stockAudits: Array<{ txnId: string; itemName: string; qty: number; after: number; unitCost: number }> = [];
+
   const result = await prisma.$transaction(async (tx) => {
     let allFullyReceived = true;
 
@@ -1592,10 +1751,30 @@ export async function receivePurchaseOrder(
               sellingPrice: receivedItem.sellingPrice,
               quantityReceived: receivedItem.quantityReceived,
               quantityInStock: receivedItem.quantityReceived,
-              invoiceNumber: order.orderNumber,
+              // G-9: the supplier's invoice, not our PO number.
+              ...receiptInvoice,
+              gstPercent: receivedItem.gstPercent,
+              ...(() => {
+                const t = receiptTaxFor(unitCost, receivedItem.quantityReceived, receivedItem.gstPercent);
+                return t ? { inputCgst: t.cgst, inputSgst: t.sgst, inputIgst: t.igst } : {};
+              })(),
               barcode: makeInternalBarcode(batchId),
             },
           });
+          // 349: the PO receipt as a pharmacy stock movement.
+          await recordDrugStockMovement(tx, {
+            tenantId, drugId: poItem.drugId, drugBatchId: batch.id, movementType: 'receipt',
+            quantity: receivedItem.quantityReceived, referenceType: 'purchase_order', referenceId: order.id,
+            unitCost: unitCost || null, performedBy: userId, notes: `PO ${order.orderNumber}`,
+          });
+          // Gap 303: a new batch from 0 — before/after quantity and value, and the PO.
+          const poReceiptSnap = drugStockAuditValues(
+            [{
+              drugBatchId: batch.id, batchNumber: receivedItem.batchNumber,
+              before: 0, after: receivedItem.quantityReceived, unitCost: unitCost || null,
+            }],
+            { movementType: 'receipt', documentNumber: order.orderNumber, referenceType: 'purchase_order', referenceId: order.id },
+          );
           void safePharmacyAudit({
             tenantId,
             userId,
@@ -1603,7 +1782,9 @@ export async function receivePurchaseOrder(
             entityType: 'drug_batch',
             entityId: batch.id,
             description: `Stock in (PO ${order.orderNumber}): ${receivedItem.quantityReceived} unit(s), batch ${receivedItem.batchNumber}`,
+            oldValues: poReceiptSnap.oldValues,
             newValues: {
+              ...poReceiptSnap.newValues,
               batchNumber: receivedItem.batchNumber,
               quantityReceived: receivedItem.quantityReceived,
               supplierId: order.supplierId,
@@ -1611,7 +1792,7 @@ export async function receivePurchaseOrder(
             },
           });
         } else if (poItem.inventoryItemId) {
-          await tx.stockTransaction.create({
+          const stockIn = await tx.stockTransaction.create({
             data: {
               tenantId,
               inventoryItemId: poItem.inventoryItemId,
@@ -1624,11 +1805,25 @@ export async function receivePurchaseOrder(
               totalCost: unitCost ? unitCost * receivedItem.quantityReceived : undefined,
               performedBy: userId,
               notes: `Received from PO ${order.orderNumber}`,
+              // G-9/G-10: supplier invoice and the input tax split on this receipt.
+              ...receiptInvoice,
+              gstPercent: receivedItem.gstPercent,
+              ...(() => {
+                const t = receiptTaxFor(unitCost, receivedItem.quantityReceived, receivedItem.gstPercent);
+                return t ? { inputCgst: t.cgst, inputSgst: t.sgst, inputIgst: t.igst } : {};
+              })(),
             },
           });
-          await tx.inventoryItem.update({
+          const updatedItem = await tx.inventoryItem.update({
             where: { id: poItem.inventoryItemId },
             data: { currentStock: { increment: receivedItem.quantityReceived } },
+          });
+          stockAudits.push({
+            txnId: stockIn?.id ?? poItem.id,
+            itemName: updatedItem?.itemName ?? updatedItem?.itemCode ?? poItem.inventoryItemId,
+            qty: receivedItem.quantityReceived,
+            after: updatedItem?.currentStock ?? receivedItem.quantityReceived,
+            unitCost: unitCost || toNumber(updatedItem?.costPerUnit),
           });
         }
       }
@@ -1687,6 +1882,17 @@ export async function receivePurchaseOrder(
     description: `Purchase order ${order.orderNumber} items received`,
     newValues: { status: result.status, items: data.items },
   });
+  for (const a of stockAudits) {
+    void safeInventoryAudit({
+      tenantId, userId, action: 'create', entityType: 'stock_transaction', entityId: a.txnId,
+      description: `Stock in (PO ${order.orderNumber}): ${a.qty} × ${a.itemName}`,
+      oldValues: stockSnapshot(a.after - a.qty, a.unitCost),
+      newValues: {
+        transactionType: 'stock_in', quantity: a.qty, ...stockSnapshot(a.after, a.unitCost),
+        movementType: 'receipt', documentNumber: order.orderNumber, source: { type: 'purchase_order', id: order.id },
+      },
+    });
+  }
 
   return result;
 }
@@ -2012,6 +2218,11 @@ export async function approveSupplyRequest(
     { tenantId, supplyRequestId: id, approvedBy, status: data.status },
     `Supply request ${data.status}`,
   );
+  void safeInventoryAudit({
+    tenantId, userId: approvedBy, action: 'update', entityType: 'supply_request', entityId: id,
+    description: `Supply request ${data.status}: ${updated.inventoryItem?.itemName ?? ''}`.trim(),
+    newValues: { status: data.status },
+  });
   return updated;
 }
 
@@ -2104,6 +2315,18 @@ export async function fulfillSupplyRequest(
     { tenantId, supplyRequestId: id, fulfilledBy, quantity: data.quantityFulfilled },
     'Supply request fulfilled',
   );
+  // Gap 303: a fulfilment is a stock-out — record before/after qty and value.
+  const before = request.inventoryItem.currentStock;
+  void safeInventoryAudit({
+    tenantId, userId: fulfilledBy, action: 'update', entityType: 'supply_request', entityId: id,
+    description: `Issued ${data.quantityFulfilled} × ${request.inventoryItem.itemName} against supply request`,
+    oldValues: stockSnapshot(before, request.inventoryItem.costPerUnit),
+    newValues: {
+      quantityFulfilled: newFulfilledQty, status: result.status,
+      ...stockSnapshot(before - data.quantityFulfilled, request.inventoryItem.costPerUnit),
+      movementType: 'issue', documentNumber: null, source: { type: 'supply_request', id },
+    },
+  });
   return result;
 }
 

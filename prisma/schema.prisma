@@ -1543,6 +1543,8 @@ model Tenant {
   gstFiledPeriods            GstFiledPeriod[]
   gstr2bImports              Gstr2bImport[]
   calculators                Calculator[]
+  /// Gap #311: the latest GST-provider lookup of this hospital's own GSTIN.
+  gstinVerification          GstinVerification?
 
   @@map("tenants")
 }
@@ -1965,6 +1967,9 @@ model User {
   gstPeriodsLocked               GstFiledPeriod[]             @relation("GstPeriodLocker")
   gstr2bImports                  Gstr2bImport[]
   calculators                    Calculator[]
+  counsellingSessionsAssigned    CounsellingSession[]         @relation("CounsellingCounsellor")
+  counsellingSessionsCreated     CounsellingSession[]         @relation("CounsellingCreator")
+  counsellingReferralsMade       CounsellingSession[]         @relation("CounsellingReferrer")
 
   @@unique([tenantId, email])
   @@map("users")
@@ -2378,6 +2383,7 @@ model Patient {
   fastTrackCodes            FastTrackCode[]
   medicoLegalRecords        MedicoLegalRecord[]
   intoxicationExams         IntoxicationExam[]
+  counsellingSessions       CounsellingSession[]
 
   @@unique([tenantId, mrn])
   @@map("patients")
@@ -2562,6 +2568,73 @@ model IntoxicationExam {
   @@index([tenantId, admissionId])
   @@index([patientId])
   @@map("intoxication_exams")
+}
+
+// ============================================================
+// COUNSELLING (gap #200 / #298)
+// ============================================================
+// A counselling session, or a patient referred for counselling. Its own record
+// on purpose: Counsellor Home used to list ordinary OP visits as "sessions", so
+// a doctor's follow-up appeared there with the doctor as the counsellor
+// (gap #200). Eligibility for that screen is now "a row in this table", never
+// a Visit's type.
+
+enum CounsellingSessionStatus {
+  pending
+  in_progress
+  completed
+  cancelled
+  no_show
+}
+
+enum CounsellingSessionKind {
+  // A booked counselling session.
+  session
+  // A patient referred to the counsellor (by a doctor, desk, insurance…) who
+  // still has to be seen — optionally linked to the visit/appointment it came from.
+  referral
+}
+
+model CounsellingSession {
+  id           String                   @id @default(uuid())
+  tenantId     String                   @map("tenant_id")
+  patientId    String                   @map("patient_id")
+  // The assigned counsellor (a User holding the counsellor or admin role).
+  counsellorId String                   @map("counsellor_id")
+  createdById  String                   @map("created_by_id")
+  kind         CounsellingSessionKind   @default(session)
+  // Validated against COUNSELLING_SESSION_TYPES in the counselling module
+  // (pre_admission_financial, package_insurance, discharge, follow_up, other).
+  sessionType  String                   @map("session_type") @db.VarChar(40)
+  scheduledAt  DateTime                 @map("scheduled_at")
+  notes        String?
+  status       CounsellingSessionStatus @default(pending)
+
+  // Referral provenance — only meaningful when kind = referral.
+  referredById   String? @map("referred_by_id")
+  referralSource String? @map("referral_source") @db.VarChar(200)
+  // Plain ids (no FK) so this stays additive to Visit/Appointment; the service
+  // checks they belong to the same tenant and patient.
+  visitId        String? @map("visit_id")
+  appointmentId  String? @map("appointment_id")
+
+  startedAt       DateTime? @map("started_at")
+  completedAt     DateTime? @map("completed_at")
+  cancelledAt     DateTime? @map("cancelled_at")
+  cancelledReason String?   @map("cancelled_reason")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  patient    Patient @relation(fields: [patientId], references: [id])
+  counsellor User    @relation("CounsellingCounsellor", fields: [counsellorId], references: [id])
+  createdBy  User    @relation("CounsellingCreator", fields: [createdById], references: [id])
+  referredBy User?   @relation("CounsellingReferrer", fields: [referredById], references: [id])
+
+  @@index([tenantId, scheduledAt])
+  @@index([tenantId, status])
+  @@index([tenantId, counsellorId])
+  @@index([patientId])
+  @@map("counselling_sessions")
 }
 
 model PatientPersonalHistory {
@@ -4965,6 +5038,35 @@ model GstRateChange {
   @@map("gst_rate_changes")
 }
 
+/// One change to a hospital ITEM's GST rate, HSN/SAC or taxability (gap 279).
+///
+/// gst_rate_changes logs the platform masters; this logs the hospital's own
+/// service tariffs and formulary drugs, which is what C-5 and C-8 need. Created
+/// on first use by gst-rate-log.ts if the database predates it.
+model GstItemRateChange {
+  id                String   @id @default(uuid())
+  tenantId          String   @map("tenant_id")
+  /// 'service' (service_tariffs) | 'drug' (drug_formulary).
+  itemType          String   @map("item_type") @db.VarChar(20)
+  itemId            String   @map("item_id")
+  itemName          String?  @map("item_name") @db.VarChar(255)
+  previousRate      Decimal? @map("previous_rate") @db.Decimal(5, 2)
+  newRate           Decimal? @map("new_rate") @db.Decimal(5, 2)
+  previousCode      String?  @map("previous_code") @db.VarChar(20)
+  newCode           String?  @map("new_code") @db.VarChar(20)
+  previousTreatment String?  @map("previous_treatment") @db.VarChar(20)
+  newTreatment      String?  @map("new_treatment") @db.VarChar(20)
+  /// 'create' | 'update'.
+  action            String   @db.VarChar(12)
+  reason            String?  @db.VarChar(500)
+  changedBy         String?  @map("changed_by")
+  changedAt         DateTime @default(now()) @map("changed_at")
+
+  @@index([tenantId, changedAt])
+  @@index([tenantId, itemType, itemId])
+  @@map("gst_item_rate_changes")
+}
+
 /// A frozen copy of what a hospital actually filed for a period.
 ///
 /// The reports are live: they read today's bills, and a bill raised or amended
@@ -5000,11 +5102,78 @@ model GstFiledPeriod {
   tenant Tenant @relation(fields: [tenantId], references: [id])
   filer  User?  @relation("GstPeriodFiler", fields: [filedBy], references: [id])
   locker User?  @relation("GstPeriodLocker", fields: [lockedBy], references: [id])
+  /// Gap 281: every reopen, correction and re-lock, oldest first.
+  history GstFiledPeriodHistory[]
 
   @@unique([tenantId, returnPeriod])
   @@index([tenantId, filedAt])
   @@index([tenantId, lockedAt])
   @@map("gst_filed_periods")
+}
+
+/// Gap 281: the amendment trail of a filed period.
+///
+/// `GstFiledPeriod.snapshot` is the ORIGINAL filing and is never overwritten —
+/// a GSTR-1 that has gone in cannot be revised, only amended in a later return,
+/// and the amendment tables are declared against that original. Every act after
+/// filing is appended here instead: a reopen (with its reason), a corrected
+/// snapshot taken on re-filing (versioned 2, 3, ...), and the re-lock.
+/// Append-only; scalar user id so no other model has to change.
+model GstFiledPeriodHistory {
+  id            String   @id @default(uuid())
+  tenantId      String   @map("tenant_id")
+  filedPeriodId String   @map("filed_period_id")
+  returnPeriod  String   @map("return_period") @db.VarChar(6)
+  /// unlocked | refiled | locked
+  action        String   @db.VarChar(16)
+  /// Snapshot version this row created (refiled only). The original is 1.
+  version       Int?
+  reason        String?
+  /// The corrected figures, for a refiled row. Null for unlock / lock.
+  snapshot      Json?
+  userId        String?  @map("user_id")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  filedPeriod GstFiledPeriod @relation(fields: [filedPeriodId], references: [id])
+
+  @@index([tenantId, filedPeriodId, createdAt])
+  @@map("gst_filed_period_history")
+}
+
+/// Gap #311: the latest GST-provider ("search taxpayer") lookup of the hospital's
+/// OWN GSTIN. One row per hospital, overwritten by every lookup and deleted when
+/// the GSTIN changes, so a result can never outlive the number it was about.
+/// The GST profile itself stays in Tenant.themeConfig; this sits beside it so a
+/// failed read here can only ever mean "unverified", never "unregistered".
+/// History lives in the audit log (entity_type gst_registration).
+model GstinVerification {
+  id                 String    @id @default(uuid())
+  tenantId           String    @unique @map("tenant_id")
+  /// The exact GSTIN the provider was asked about.
+  checkedGstin       String    @map("checked_gstin") @db.VarChar(15)
+  /// Set only when the result was 'verified' — equal to checkedGstin then.
+  verifiedGstin      String?   @map("verified_gstin") @db.VarChar(15)
+  /// verified | not_found | inactive | error
+  resultStatus       String    @map("result_status") @db.VarChar(20)
+  /// Who answered, e.g. "http:<gsp>" or "sandbox".
+  provider           String    @db.VarChar(60)
+  /// The QA sandbox — not a real government check. Labelled wherever shown.
+  sandbox            Boolean   @default(false)
+  legalName          String?   @map("legal_name") @db.VarChar(300)
+  tradeName          String?   @map("trade_name") @db.VarChar(300)
+  /// As the provider gave it, e.g. "Active", "Cancelled".
+  registrationStatus String?   @map("registration_status") @db.VarChar(60)
+  providerStateCode  String?   @map("provider_state_code") @db.VarChar(2)
+  lastError          String?   @map("last_error") @db.VarChar(500)
+  lastCheckedAt      DateTime  @map("last_checked_at")
+  verifiedAt         DateTime? @map("verified_at")
+  checkedBy          String?   @map("checked_by")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("gstin_verifications")
 }
 
 /// One GSTR-2B statement, as downloaded from the portal.
@@ -5798,6 +5967,8 @@ model DrugFormulary {
   gstTreatment           String?           @map("gst_treatment") @db.VarChar(20)
   gstTreatmentSource     String?           @map("gst_treatment_source") @db.VarChar(20)
   gstClassifierVersion   Int?              @map("gst_classifier_version")
+  // G-2: why taxPercent differs from the HSN master's default, when it does.
+  gstRateReason          String?           @map("gst_rate_reason") @db.VarChar(255)
   // G9: reorder level (in base units). When live stock falls to/below this, the
   // drug surfaces in the reorder list for a draft purchase order.
   minStock               Int?              @map("min_stock")
@@ -5938,6 +6109,9 @@ model DrugBatch {
   inputCgst               Decimal?  @map("input_cgst") @db.Decimal(12, 2)
   inputSgst               Decimal?  @map("input_sgst") @db.Decimal(12, 2)
   inputIgst               Decimal?  @map("input_igst") @db.Decimal(12, 2)
+  /// G-9: opening stock is not a purchase — no supplier, no invoice, no credit.
+  /// The purchase register must skip these rows.
+  isOpeningStock          Boolean   @default(false) @map("is_opening_stock")
   // Free units received on top of the paid quantity (e.g. buy 100 get 10). They
   // count toward stock but not toward purchase value.
   freeQuantity            Int       @default(0) @map("free_quantity")
@@ -6099,6 +6273,13 @@ model DrugReturn {
   // compiled in here.
   ewayBillNumber     String?          @map("eway_bill_number") @db.VarChar(20)
   ewayBillDate       DateTime?        @map("eway_bill_date")
+  // G-12: input tax to reverse on a vendor return, copied from the purchase
+  // batch at the rate PAID (not today's rate) with the batch's own head split.
+  inputGstPercent    Decimal?         @map("input_gst_percent") @db.Decimal(5, 2)
+  inputTaxableValue  Decimal?         @map("input_taxable_value") @db.Decimal(12, 2)
+  inputCgst          Decimal?         @map("input_cgst") @db.Decimal(12, 2)
+  inputSgst          Decimal?         @map("input_sgst") @db.Decimal(12, 2)
+  inputIgst          Decimal?         @map("input_igst") @db.Decimal(12, 2)
   createdAt          DateTime         @default(now()) @map("created_at")
 
   tenant           Tenant            @relation(fields: [tenantId], references: [id])
@@ -6152,6 +6333,66 @@ model WardStockLedger {
 
   @@index([tenantId, wardId, createdAt])
   @@map("ward_stock_ledger")
+}
+
+/// G-12: a pharmacy batch written off (damaged, broken, expired, spoiled).
+/// Nothing goes back to the supplier, but section 17(5)(h) blocks the credit
+/// taken on those goods, so the input tax to reverse is recorded here at the
+/// rate PAID on the batch. Scalar FKs, append-only, like WardStockLedger.
+model DrugStockWriteOff {
+  id                String   @id @default(uuid())
+  tenantId          String   @map("tenant_id")
+  drugId            String   @map("drug_id")
+  drugBatchId       String   @map("drug_batch_id")
+  drugName          String?  @map("drug_name") @db.VarChar(255)
+  batchNumber       String?  @map("batch_number") @db.VarChar(100)
+  supplierId        String?  @map("supplier_id")
+  /// damaged | expired | other
+  writeOffType      String   @map("write_off_type") @db.VarChar(20)
+  quantity          Int
+  reason            String?
+  taxableValue      Decimal? @map("taxable_value") @db.Decimal(12, 2)
+  gstPercent        Decimal? @map("gst_percent") @db.Decimal(5, 2)
+  inputCgst         Decimal? @map("input_cgst") @db.Decimal(12, 2)
+  inputSgst         Decimal? @map("input_sgst") @db.Decimal(12, 2)
+  inputIgst         Decimal? @map("input_igst") @db.Decimal(12, 2)
+  purchaseInvoiceNo String?  @map("purchase_invoice_no") @db.VarChar(100)
+  performedBy       String?  @map("performed_by")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  @@index([tenantId, createdAt])
+  @@map("drug_stock_write_offs")
+}
+
+/// 349: one row per change to a pharmacy batch's on-hand quantity (sale,
+/// cancellation, return, transfer, adjustment, ward/OT/indent issue, receipt).
+/// The Pharmacy Stock Ledger and the inventory outflow screens read these rows
+/// instead of re-deriving movements from five different tables. Scalar FKs, no
+/// relations, so it is a self-contained append-only log like WardStockLedger.
+model DrugStockMovement {
+  id            String   @id @default(uuid())
+  tenantId      String   @map("tenant_id")
+  drugId        String   @map("drug_id")
+  drugBatchId   String   @map("drug_batch_id")
+  /// receipt | sale | sale_cancel | dispense | patient_return | counter_return |
+  /// vendor_return | adjustment | transfer_out | transfer_in | ward_issue |
+  /// ward_return | indent_issue | indent_return | ot_issue | ot_return |
+  /// hold | hold_release | ndps
+  movementType  String   @map("movement_type") @db.VarChar(30)
+  /// Signed, in base units: positive into pharmacy stock, negative out of it.
+  quantity      Int
+  referenceType String?  @map("reference_type") @db.VarChar(40)
+  referenceId   String?  @map("reference_id")
+  party         String?  @db.VarChar(255)
+  unitCost      Decimal? @map("unit_cost") @db.Decimal(10, 2)
+  performedBy   String?  @map("performed_by")
+  notes         String?
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, drugId, createdAt])
+  @@index([drugBatchId])
+  @@map("drug_stock_movements")
 }
 
 // ============================================================
@@ -6410,6 +6651,14 @@ model StockTransaction {
   notes           String?
   performedBy     String               @map("performed_by")
   createdAt       DateTime             @default(now()) @map("created_at")
+  // G-9/G-10: the supplier's own invoice and the input tax on a goods receipt
+  // (stock_in from a purchase order), split per head.
+  invoiceNumber   String?              @map("invoice_number") @db.VarChar(100)
+  invoiceDate     DateTime?            @map("invoice_date") @db.Date
+  gstPercent      Decimal?             @map("gst_percent") @db.Decimal(5, 2)
+  inputCgst       Decimal?             @map("input_cgst") @db.Decimal(12, 2)
+  inputSgst       Decimal?             @map("input_sgst") @db.Decimal(12, 2)
+  inputIgst       Decimal?             @map("input_igst") @db.Decimal(12, 2)
 
   tenant        Tenant        @relation(fields: [tenantId], references: [id])
   inventoryItem InventoryItem @relation(fields: [inventoryItemId], references: [id])
@@ -6650,10 +6899,20 @@ model ServiceTariff {
   /// Taxable however the rest of the surgery list is classified, and the code
   /// alone cannot tell the two apart.
   isCosmetic     Boolean               @default(false) @map("is_cosmetic")
+  /// G-3: the day this classification (SAC / treatment / rate) starts to apply.
+  /// Null = always. A bill dated earlier resolves through the SAC master.
+  gstEffectiveFrom DateTime?           @map("gst_effective_from") @db.Date
   // For imaging (category=radiology) tariffs: which modality this study runs on,
   // so the doctor's catalog search can route a picked study to the right
   // ImagingType when ordering. Null for non-imaging categories.
   modality       ImagingType?          @map("modality")
+  /// Gap 352: OT component charges on a surgery/procedure tariff. When any is
+  /// set, Complete posts one bill line per non-zero component INSTEAD of
+  /// basePrice (never both). Null = not configured; 0 is a real price.
+  otTheatreCharge     Decimal?         @map("ot_theatre_charge") @db.Decimal(12, 2)
+  otSurgeonCharge     Decimal?         @map("ot_surgeon_charge") @db.Decimal(12, 2)
+  otAnaesthesiaCharge Decimal?         @map("ot_anaesthesia_charge") @db.Decimal(12, 2)
+  otAssistantCharge   Decimal?         @map("ot_assistant_charge") @db.Decimal(12, 2)
   isActive       Boolean               @default(true) @map("is_active")
   createdAt      DateTime              @default(now()) @map("created_at")
   updatedAt      DateTime              @default(now()) @updatedAt @map("updated_at")
@@ -6695,6 +6954,9 @@ model Bill {
   supplierStateCode      String? @map("supplier_state_code") @db.VarChar(2)
   /// Set only for a B2B document — a corporate, insurer or TPA with a GSTIN.
   recipientGstin         String? @map("recipient_gstin") @db.VarChar(15)
+  /// G-4: the B2B buyer's legal name and address, printed on the invoice.
+  recipientLegalName     String? @map("recipient_legal_name") @db.VarChar(200)
+  recipientAddress       String? @map("recipient_address") @db.VarChar(500)
   placeOfSupplyStateCode String? @map("place_of_supply_state_code") @db.VarChar(2)
   isInterState           Boolean @default(false) @map("is_inter_state")
 
@@ -6753,6 +7015,15 @@ model Bill {
   approvedBy         String?    @map("approved_by")
   cancelledBy        String?    @map("cancelled_by")
   cancellationReason String?    @map("cancellation_reason")
+  /// Gap 344: why a pharmacy counter sale was handed over before it was paid
+  /// ("dispense on credit"). Null on a paid sale.
+  creditReason       String?    @map("credit_reason") @db.VarChar(500)
+  /// Gap G-6: 'op' | 'ip' for a pharmacy counter sale, from the patient's
+  /// active admission at the time of sale. Deliberately NOT `admissionId`:
+  /// that column makes a bill the admission's running IP bill.
+  encounterType      String?    @map("encounter_type") @db.VarChar(10)
+  /// Gap G-6: the admission a counter sale was made under (reference only).
+  saleAdmissionId    String?    @map("sale_admission_id")
   /// When it was cancelled, as its own fact.
   ///
   /// C-9 reported `updated_at` as the cancellation date and FILTERED on
@@ -8121,6 +8392,12 @@ model Notification {
   readAt           DateTime?           @map("read_at")
   sentAt           DateTime?           @map("sent_at")
   createdAt        DateTime            @default(now()) @map("created_at")
+  /// Gap 295: idempotency key — event/type + reference record + reminder
+  /// stage (see notification-dedupe.ts). Nullable and set only on new writes:
+  /// rows written before it stay NULL, and Postgres never treats two NULLs as
+  /// equal in a unique index, so historical duplicates cannot block the
+  /// constraint below. Null also for a notification with no reference record.
+  dedupeKey        String?             @map("dedupe_key") @db.VarChar(255)
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
   user   User   @relation(fields: [userId], references: [id])
@@ -8132,6 +8409,11 @@ model Notification {
   // the hospital's.
   @@index([userId, isRead, createdAt(sort: Desc)])
   @@index([tenantId, referenceType, referenceId])
+  // Gap 295: one notification per (tenant, recipient, dedupe key). Enforced by
+  // an advisory lock in notification-writer.ts, not a UNIQUE constraint: adding
+  // one to this existing table stops `prisma db push` (run by predev and start)
+  // with a data-loss warning on every environment. Plain index for the lookup.
+  @@index([tenantId, userId, dedupeKey], map: "notifications_tenant_user_dedupe_key")
   @@map("notifications")
 }
 

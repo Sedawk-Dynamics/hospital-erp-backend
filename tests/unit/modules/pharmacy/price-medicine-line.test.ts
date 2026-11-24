@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { prisma } from '../../../../src/config/database';
 import { taxResolverFor, clearGstMasterCache } from '../../../../src/modules/gst/gst-resolver.service';
 import { priceMedicineLine } from '../../../../src/modules/pharmacy/pharmacy.service';
-import { determineTax } from '../../../../src/shared/gst-determination';
+import { determineTax, itemTaxContext } from '../../../../src/shared/gst-determination';
 import { DEFAULT_GST_PROFILE, mergeGstProfile } from '../../../../src/shared/gst-profile';
 
 // The counter reads the formulary's HSN plus its optional product-specific GST
@@ -98,5 +98,71 @@ describe('priceMedicineLine — product-specific treatment', () => {
     );
     expect(p.determination.reason).toContain('Classified on the item');
     expect(p.determination.ratePercent).toBe(18);
+  });
+});
+
+// G-1: a coded medicine used to take its HSN heading's 5% whatever rate the
+// item carried, because a typed rate only counted when the drug had NO HSN.
+describe('priceMedicineLine — G-1 rate precedence (line override → item → HSN)', () => {
+  it('bills a coded medicine at its own 18%, not the heading 5%', async () => {
+    const r = await taxResolverFor(TENANT);
+    const p = priceMedicineLine(r, { hsnCode: '3004', taxPercent: 18 }, { unitPrice: 118, quantity: 1 });
+    expect(p.determination).toMatchObject({ ratePercent: 18, source: 'item_master', hsnSacCode: '3004' });
+    expect(p.determination.requiresResolution).toBe(false);
+    expect(p.money.taxAmount).toBe(18);
+  });
+
+  it('a rate typed on the line beats the item rate', async () => {
+    const r = await taxResolverFor(TENANT);
+    const p = priceMedicineLine(r, { hsnCode: '3004', taxPercent: 5 }, { unitPrice: 112, quantity: 1 }, {
+      manualRatePercent: 12,
+    });
+    expect(p.determination).toMatchObject({ ratePercent: 12, source: 'manual' });
+  });
+
+  it('"taxable" with no rate falls back to the HSN default instead of 0%', async () => {
+    const r = await taxResolverFor(TENANT);
+    const p = priceMedicineLine(r, { hsnCode: '3004', taxPercent: null, gstTreatment: 'taxable' }, MRP);
+    expect(p.determination).toMatchObject({ ratePercent: 5, source: 'hsn_master' });
+  });
+
+  it('an exempt classification still wins over a stale rate', async () => {
+    const r = await taxResolverFor(TENANT);
+    const p = priceMedicineLine(r, { hsnCode: '3004', taxPercent: 12, gstTreatment: 'exempt' }, MRP);
+    expect(p.determination).toMatchObject({ treatment: 'exempt', ratePercent: 0 });
+  });
+
+  // G-6: the composite exemption is decided on the server from the admission.
+  it('exempts a medicine for an admitted patient when the profile says so', async () => {
+    (prisma.tenant.findFirst as any).mockResolvedValue({
+      themeConfig: { gst: { registered: true, gstin: VALID_GSTIN, inpatientCompositeExempt: true } },
+    });
+    const r = await taxResolverFor(TENANT);
+    const p = priceMedicineLine(r, { hsnCode: '3004', taxPercent: 18 }, MRP, {
+      patientAdmitted: true,
+      issuedForTreatment: true,
+    });
+    expect(p.determination).toMatchObject({ treatment: 'exempt', source: 'inpatient_composite' });
+  });
+});
+
+describe('itemTaxContext', () => {
+  it('treats a positive item rate as the item classification even with an HSN code', () => {
+    expect(itemTaxContext({ hsnCode: '3004', taxPercent: '12.00' })).toEqual({
+      hsnCode: '3004',
+      itemRatePercent: 12,
+      itemTreatment: 'taxable',
+      manualRatePercent: null,
+    });
+  });
+
+  it('leaves a zero or missing rate to the HSN master', () => {
+    expect(itemTaxContext({ hsnCode: '3004', taxPercent: 0 }).itemTreatment).toBeNull();
+    expect(itemTaxContext({ hsnCode: '3004' }).itemTreatment).toBeNull();
+    expect(itemTaxContext(null).itemTreatment).toBeNull();
+  });
+
+  it('ignores a zero manual override', () => {
+    expect(itemTaxContext({ taxPercent: 5 }, 0).manualRatePercent).toBeNull();
   });
 });

@@ -59,7 +59,7 @@ const LIGHT = '#eef2f5';
 
 const dash = (v?: string | number | null) => (v === null || v === undefined || v === '' ? '—' : String(v));
 const num = (v: unknown): string | null => (v === null || v === undefined ? null : String(v));
-const fmtDate = (v?: Date | string | null) => (v ? new Date(v).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—');
+const fmtDate = (v?: Date | string | null) => (v ? new Date(v).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' }) : '—');
 const ageOf = (dob?: Date | string | null): number | null =>
   dob ? Math.floor((Date.now() - new Date(dob).getTime()) / (365.25 * 24 * 60 * 60 * 1000)) : null;
 

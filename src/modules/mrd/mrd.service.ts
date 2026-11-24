@@ -6,6 +6,7 @@ import { getPaginationParams } from '../../shared/pagination';
 import { formatDateIST } from '../../shared/date.utils';
 import { sendDischargeSummaryPublishedEmail } from '../../services/email.service';
 import type { DischargeDocument, DischargeVitalRow } from './discharge-summary-pdf';
+import { dischargeAttestation, withProfileContact } from './discharge-summary-pdf';
 import { getHospitalBranding } from '../hospital-branding/hospital-branding.service';
 import { fullName } from '../../shared/person-name';
 
@@ -1047,8 +1048,8 @@ async function notifyPatientOfDischargeSummary(
   const patientName = `${patient.firstName} ${patient.lastName ?? ''}`.trim();
   const hospitalName = tenant?.name || 'Hospital';
   const dischargeDate = summary.dischargeDate
-    ? new Date(summary.dischargeDate).toLocaleDateString('en-IN')
-    : new Date().toLocaleDateString('en-IN');
+    ? new Date(summary.dischargeDate).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })
+    : new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
 
   // In-app notification — only if the patient has a portal login
   if (patient.userId) {
@@ -1141,8 +1142,15 @@ export async function buildDischargeDocument(
         state: true, maritalStatus: true, nationality: true,
       },
     }),
-    // The hospital's configured PDF/print branding (letterhead, logo, colours).
-    getHospitalBranding(tenantId),
+    // The hospital's configured PDF/print branding (letterhead, logo, colours),
+    // with contact details from the hospital profile (gap 363).
+    Promise.all([
+      getHospitalBranding(tenantId),
+      prisma.tenant.findFirst({
+        where: { id: tenantId },
+        select: { address: true, city: true, state: true, country: true, phone: true, email: true },
+      }),
+    ]).then(([b, profile]) => withProfileContact(b, profile)),
     prisma.patientEmergencyContact.findFirst({
       where: { patientId },
       orderBy: [{ isPrimary: 'desc' }, { createdAt: 'asc' }],
@@ -1209,7 +1217,12 @@ export async function buildDischargeDocument(
       status: summary.status,
       signedAt: summary.signedAt ? summary.signedAt.toISOString() : null,
       signerName: summary.signer ? `${summary.signer.firstName} ${summary.signer.lastName ?? ''}`.trim() : null,
-      attestation: summary.eSignatureUrl?.startsWith('typed:') ? summary.eSignatureUrl.replace(/^typed:/, '') : null,
+      // Gap 363: built from the signing doctor + signed time, not the typed
+      // e-sign text (which QA found holding placeholder text).
+      attestation: dischargeAttestation({
+        signerName: summary.signer ? `${summary.signer.firstName} ${summary.signer.lastName ?? ''}`.trim() : null,
+        signedAt: summary.signedAt ? summary.signedAt.toISOString() : null,
+      }),
       generatedAt: new Date().toISOString(),
     },
     patient: {

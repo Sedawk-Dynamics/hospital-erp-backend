@@ -796,6 +796,21 @@ describe('ClinicalService', () => {
       );
     });
 
+    // Gap item 337: a signed (finalized) summary is the clinical sign-off too.
+    it('accepts a signed (finalized) discharge summary, not only a published one', async () => {
+      mockPublishedDischargeSummary();
+      vi.mocked(prisma.admission.findFirst).mockResolvedValue({ ...mockAdmission, status: 'admitted' } as any);
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) =>
+        fn(txProxy({ admission: { update: vi.fn().mockResolvedValue({ ...mockAdmission, status: 'discharged' }) } })),
+      );
+
+      // Only the clinical gate is under test; the bill gate may still refuse.
+      await dischargePatient(TENANT_ID, 'admission-1', USER_ID).catch(() => undefined);
+
+      const where = vi.mocked(prisma.dischargeSummary.findFirst).mock.calls[0][0]!.where as any;
+      expect(where.status).toEqual({ in: ['finalized', 'published'] });
+    });
+
     it('should discharge with an unpaid bill when forced with a reason', async () => {
       // No published summary and a live balance — both gates would normally fail.
       vi.mocked(prisma.dischargeSummary.findFirst).mockResolvedValue(null as any);

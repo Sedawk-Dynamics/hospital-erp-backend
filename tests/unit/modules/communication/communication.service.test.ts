@@ -100,7 +100,10 @@ describe('Communication Service - Notifications', () => {
 
   describe('getUnreadCount', () => {
     it('should return the count of unread notifications', async () => {
-      vi.mocked(prisma.notification.count).mockResolvedValueOnce(7);
+      // Gap 295: the badge counts distinct notifications, read from the rows.
+      vi.mocked(prisma.notification.findMany).mockResolvedValueOnce(
+        Array.from({ length: 7 }, (_, i) => ({ id: `n${i}`, referenceType: null, referenceId: null, title: 'X' })) as any,
+      );
 
       const result = await getUnreadCount(TENANT_ID, USER_ID);
 

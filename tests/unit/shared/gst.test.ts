@@ -370,3 +370,32 @@ describe('treatments', () => {
     expect(isGstTreatment(0)).toBe(false);
   });
 });
+
+// Gap item 312: CGST and SGST are each half the rate on the same value — one
+// figure, used for both heads — so they can never drift apart over a year.
+describe('computeLineTax — equal CGST and SGST (gap item 312)', () => {
+  it('gives both heads the same half on a line whose tax has an odd paisa', () => {
+    const l = computeLineTax({
+      unitPrice: 228.6, quantity: 1, ratePercent: 5, treatment: 'taxable', taxInclusive: false,
+    });
+    expect(l.cgst).toBe(l.sgst);
+    expect(r2(l.cgst + l.sgst)).toBe(l.taxAmount);
+    expect(r2(l.taxableValue + l.taxAmount)).toBe(l.totalAmount);
+  });
+
+  it('keeps an MRP line at its price while splitting the tax evenly', () => {
+    for (const price of [40.01, 99.99, 123.45, 17.3]) {
+      const l = computeLineTax({ unitPrice: price, quantity: 1, ratePercent: 12, treatment: 'taxable', taxInclusive: true });
+      expect(l.cgst).toBe(l.sgst);
+      expect(l.totalAmount).toBe(price);
+      expect(r2(l.taxableValue + l.taxAmount)).toBe(price);
+    }
+  });
+
+  it('leaves an inter-State line wholly IGST', () => {
+    const l = computeLineTax({
+      unitPrice: 228.6, quantity: 1, ratePercent: 5, treatment: 'taxable', taxInclusive: false, interState: true,
+    });
+    expect(l).toMatchObject({ cgst: 0, sgst: 0, igst: l.taxAmount });
+  });
+});

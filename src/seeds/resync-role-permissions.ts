@@ -8,6 +8,10 @@
  * `/beds/availability`, `/clinical/admissions`, etc. — because the
  * tenant-scoped `admin` role lacks rows that the canonical config lists.
  *
+ * It also creates any system role a tenant is missing (every role key in
+ * getRolePermissions() except super_admin) — e.g. `counsellor` together with
+ * the `counselling` permission module (gap #200/#298).
+ *
  * This script is idempotent and additive only. It never deletes existing
  * RolePermission rows — only inserts the missing ones — so revoked perms
  * stay revoked.

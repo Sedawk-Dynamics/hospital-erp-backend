@@ -5,6 +5,11 @@ import {
   istDayEnd,
   getISTDateStr,
   istDayNumber,
+  istDateStr,
+  istMinutesOfDay,
+  isFutureISTDate,
+  toEventInstant,
+  formatIST,
 } from '../../../src/shared/date.utils';
 
 // The hospital runs on IST. Every "today's collection", "day end" and
@@ -85,5 +90,68 @@ describe('istDayRange', () => {
     expect(lateEvening.getTime()).toBeGreaterThanOrEqual(start.getTime());
     expect(lateEvening.getTime()).toBeLessThanOrEqual(end.getTime());
     expect(new Date('2026-08-10').getTime()).toBeLessThan(lateEvening.getTime());
+  });
+});
+
+// ── Time-zone helpers (gaps 329 / 330 / 342 / 362) ─────────────────────────
+
+describe('istDateStr / istMinutesOfDay', () => {
+  it('gives the IST calendar date of an instant', () => {
+    // 19:00 UTC on the 19th is 00:30 IST on the 20th.
+    expect(istDateStr(new Date('2026-11-19T19:00:00.000Z'))).toBe('2026-11-20');
+    expect(istDateStr(new Date('2026-11-19T08:00:00.000Z'))).toBe('2026-11-19');
+    expect(istDateStr('2026-11-19')).toBe('2026-11-19');
+  });
+
+  it('counts minutes from IST midnight', () => {
+    expect(istMinutesOfDay(new Date('2026-11-19T08:00:00.000Z'))).toBe(13 * 60 + 30);
+    expect(istMinutesOfDay(new Date('2026-11-19T18:30:00.000Z'))).toBe(0);
+  });
+});
+
+describe('isFutureISTDate (date-of-birth guard)', () => {
+  const now = new Date('2026-11-19T08:00:00.000Z');
+  it('rejects a date after today', () => {
+    expect(isFutureISTDate('2030-01-01', now)).toBe(true);
+    expect(isFutureISTDate('2026-11-20', now)).toBe(true);
+  });
+  it('accepts today (a newborn) and earlier', () => {
+    expect(isFutureISTDate('2026-11-19', now)).toBe(false);
+    expect(isFutureISTDate('1990-05-01', now)).toBe(false);
+  });
+  it('uses the IST date, which is a day ahead of UTC after 18:30 UTC', () => {
+    const lateUtc = new Date('2026-11-19T19:00:00.000Z'); // 20 Nov in IST
+    expect(isFutureISTDate('2026-11-20', lateUtc)).toBe(false);
+  });
+  it('leaves unparseable input to the format validator', () => {
+    expect(isFutureISTDate('not-a-date', now)).toBe(false);
+  });
+});
+
+describe('toEventInstant (admission / discharge times)', () => {
+  const now = new Date('2026-11-19T08:10:00.000Z'); // 13:40 IST
+
+  it('turns a date-only value for today into now, not 05:30 IST', () => {
+    expect(toEventInstant('2026-11-19', now)).toEqual(now);
+    // What `new Date('2026-11-19').toISOString()` sends.
+    expect(toEventInstant('2026-11-19T00:00:00.000Z', now)).toEqual(now);
+  });
+
+  it('turns a date-only value for another day into that IST day start', () => {
+    expect(toEventInstant('2026-11-17', now).toISOString()).toBe('2026-11-16T18:30:00.000Z');
+  });
+
+  it('keeps a real timestamp exactly and defaults to now', () => {
+    expect(toEventInstant('2026-11-19T06:15:00.000Z', now).toISOString()).toBe('2026-11-19T06:15:00.000Z');
+    expect(toEventInstant(undefined, now)).toEqual(now);
+    expect(toEventInstant('', now)).toEqual(now);
+  });
+});
+
+describe('formatIST (PDF timestamps)', () => {
+  it('prints hospital time whatever the host zone', () => {
+    // 08:04 UTC is 13:34 IST — the PDF used to print 8:04 am.
+    const out = formatIST(new Date('2026-11-19T08:04:00.000Z'), { hour: '2-digit', minute: '2-digit', hour12: false });
+    expect(out).toBe('13:34');
   });
 });

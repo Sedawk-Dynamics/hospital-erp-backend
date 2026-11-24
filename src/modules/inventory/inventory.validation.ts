@@ -169,6 +169,8 @@ export const createUnifiedStockSchema = z.object({
           looseUnitLabel: z.string().max(40).optional(),
           packSize: z.number().int().min(1).optional(),
           taxPercent: z.number().min(0).max(100).optional(),
+          // G-2: why the rate differs from the HSN default, when it does.
+          gstRateReason: z.string().trim().max(255).optional().nullable(),
           price: z.number().min(0).optional(),
           minStock: z.number().int().min(0).optional(),
           hsnCode: z.string().max(20).optional(),
@@ -332,9 +334,15 @@ export const receivePurchaseOrderSchema = z.object({
           manufacturingDate: z.string().optional(),
           mrp: z.number().min(0).optional(),
           sellingPrice: z.number().min(0).optional(),
+          // G-10: GST rate on the supplier's invoice line; the service splits it.
+          gstPercent: z.number().min(0).max(100).optional(),
         }),
       )
       .min(1, 'At least one item is required'),
+    // G-9: the supplier's own tax invoice (required for a GST-registered
+    // supplier — enforced in the service, which knows the supplier).
+    invoiceNumber: z.string().max(100).optional(),
+    invoiceDate: z.string().optional(),
   }),
   params: z.object({
     id: z.string().uuid('Invalid purchase order ID'),

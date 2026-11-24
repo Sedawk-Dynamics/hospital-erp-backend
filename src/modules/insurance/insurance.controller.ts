@@ -301,7 +301,8 @@ export async function splitBill(req: AuthenticatedRequest, res: Response, next: 
 // ============================================================
 export async function getDashboard(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
-    const data = await service.getDashboard(req.user!.tenantId);
+    // Gap 290: same filters as Reports (validated by reportsQuerySchema).
+    const data = await service.getDashboard(req.user!.tenantId, req.query as any);
     sendResponse({ res, message: 'Dashboard retrieved', data });
   } catch (err) { next(err); }
 }

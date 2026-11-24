@@ -1,5 +1,11 @@
 import { z } from 'zod';
 import { paginationSchema } from '../../shared/pagination';
+import { isFutureISTDate } from '../../shared/date.utils';
+
+// Gap 329: a date of birth after today (IST) is a typo, not a patient. Today is
+// allowed — a newborn is registered on the day they are born.
+const NOT_FUTURE_DOB = { message: 'Date of birth cannot be in the future' };
+const notFutureDob = (val: string) => !isFutureISTDate(val);
 
 export const RELATIONSHIPS = [
   'self',
@@ -17,7 +23,7 @@ export const createPatientSchema = z.object({
     lastName: z.string().min(1, 'Last name is required').max(100),
     dateOfBirth: z.string().refine((val) => !isNaN(Date.parse(val)), {
       message: 'Invalid date of birth',
-    }).optional(),
+    }).refine(notFutureDob, NOT_FUTURE_DOB).optional(),
     gender: z.enum(['male', 'female', 'other', 'prefer_not_to_say']),
     bloodGroup: z
       .enum(['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'])
@@ -64,6 +70,7 @@ export const updatePatientSchema = z.object({
       .refine((val) => !isNaN(Date.parse(val)), {
         message: 'Invalid date of birth',
       })
+      .refine(notFutureDob, NOT_FUTURE_DOB)
       .optional(),
     gender: z.enum(['male', 'female', 'other', 'prefer_not_to_say']).optional(),
     bloodGroup: z
@@ -125,7 +132,7 @@ export const createTemporaryPatientSchema = z.object({
     firstName: z.string().max(100).optional(),
     lastName: z.string().max(100).optional(),
     gender: z.enum(['male', 'female', 'other', 'prefer_not_to_say']).optional(),
-    dateOfBirth: z.string().optional(),
+    dateOfBirth: z.string().refine(notFutureDob, NOT_FUTURE_DOB).optional(),
     age: z.coerce.number().int().min(0).max(150).optional(),
     phone: z.string().max(20).optional(),
     email: z.string().email('Invalid email').max(255).optional().or(z.literal('')),
@@ -163,7 +170,7 @@ export const registerTemporaryPatientSchema = z.object({
     firstName: z.string().min(1, 'First name is required').max(100),
     lastName: z.string().max(100).optional(),
     gender: z.enum(['male', 'female', 'other', 'prefer_not_to_say']).optional(),
-    dateOfBirth: z.string().optional(),
+    dateOfBirth: z.string().refine(notFutureDob, NOT_FUTURE_DOB).optional(),
     phone: z.string().max(20).optional(),
     email: z.string().email('Invalid email').max(255).optional().or(z.literal('')),
     bloodGroup: z.enum(['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-']).optional(),

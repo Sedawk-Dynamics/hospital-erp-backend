@@ -3,6 +3,15 @@ import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { formatDateTimeIST } from '../../shared/date.utils';
 import { getPaginationParams } from '../../shared/pagination';
+import { fullName } from '../../shared/person-name';
+import { describeClaimDeadline } from '../insurance/insurance.metrics';
+import {
+  collapseNotifications,
+  countUniqueNotifications,
+  isClaimDeadlineNotification,
+  notificationGroupKey,
+} from './notification-dedupe';
+import { writeNotificationOnce } from './notification-writer';
 import type {
   CreateNotificationInput,
   GetNotificationsQuery,
@@ -39,9 +48,10 @@ import type {
 // which is exactly what a patient with records at two hospitals needs.
 
 /**
- * Create and send a notification to a user.
+ * Create a notification, or return the one already written for the same
+ * event, record, user and reminder stage. `created` tells the caller which.
  */
-export async function createNotification(tenantId: string, data: CreateNotificationInput) {
+export async function createNotificationWithStatus(tenantId: string, data: CreateNotificationInput) {
   // The recipient must be someone this hospital deals with — staff on the
   // tenant, or a patient it actually treats. The check stays (this route is
   // permissioned but still lets a caller name any userId, and without it one
@@ -56,28 +66,42 @@ export async function createNotification(tenantId: string, data: CreateNotificat
     throw AppError.notFound('Target user not found in this tenant');
   }
 
-  const notification = await prisma.notification.create({
-    data: {
-      tenantId,
-      userId: data.userId,
-      title: data.title,
-      message: data.message,
-      notificationType: data.notificationType,
-      channel: data.channel,
-      referenceType: data.referenceType,
-      referenceId: data.referenceId,
-    },
+  // Gap 295: one row per (tenant, recipient, event/type, record, reminder
+  // stage) — a repeat or simultaneous POST returns the existing notification.
+  const result = await writeNotificationOnce({
+    tenantId,
+    userId: data.userId,
+    title: data.title,
+    message: data.message,
+    notificationType: data.notificationType,
+    channel: data.channel,
+    referenceType: data.referenceType,
+    referenceId: data.referenceId,
+    eventKey: data.eventKey,
+    reminderStage: data.reminderStage,
   });
 
   logger.info(
-    { tenantId, notificationId: notification.id, userId: data.userId },
-    'Notification created',
+    { tenantId, notificationId: result.notification.id, userId: data.userId, created: result.created },
+    result.created ? 'Notification created' : 'Notification already existed — returned the existing one',
   );
-  return notification;
+  return result;
+}
+
+/**
+ * Create and send a notification to a user (idempotent — gap 295).
+ */
+export async function createNotification(tenantId: string, data: CreateNotificationInput) {
+  return (await createNotificationWithStatus(tenantId, data)).notification;
 }
 
 /**
  * Get paginated notifications for the authenticated user.
+ *
+ * Duplicates (same event + record + stage) are collapsed into one entry, the
+ * newest, carrying `duplicateCount` (gap 295). Claim-deadline alerts are
+ * re-worded from the claim's due date at read time (gap 296), so a stored
+ * "expiring in 1 day" never outlives the day it was true.
  */
 export async function getNotifications(
   tenantId: string,
@@ -104,32 +128,104 @@ export async function getNotifications(
     ];
   }
 
-  const [notifications, total] = await Promise.all([
-    prisma.notification.findMany({
-      where,
-      skip,
-      take,
-      orderBy: { createdAt: 'desc' },
-    }),
-    prisma.notification.count({ where }),
-  ]);
+  // Grouping needs every matching row's key; only the key columns are read,
+  // and the page's full rows are fetched afterwards.
+  const keys = await prisma.notification.findMany({
+    where,
+    select: { id: true, referenceType: true, referenceId: true, title: true, isRead: true },
+    orderBy: { createdAt: 'desc' },
+    take: NOTIFICATION_SCAN_LIMIT,
+  });
+  const groups = collapseNotifications(keys);
+  const pageGroups = groups.slice(skip, skip + take);
 
-  return { notifications, total, page, limit };
+  const rows = pageGroups.length
+    ? await prisma.notification.findMany({ where: { id: { in: pageGroups.map((g) => g.head.id) } } })
+    : [];
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const shaped = pageGroups
+    .map((g) => {
+      const row = byId.get(g.head.id);
+      if (!row) return null;
+      return { ...row, isRead: !g.unread, duplicateCount: g.memberIds.length };
+    })
+    .filter((r): r is NonNullable<typeof r> => r !== null);
+
+  const notifications = await rewordClaimDeadlines(shaped);
+  return { notifications, total: groups.length, page, limit };
+}
+
+/** Upper bound on rows scanned for grouping — far above any real inbox. */
+const NOTIFICATION_SCAN_LIMIT = 5000;
+
+/**
+ * Gap 296: rebuild the title/message of claim-deadline alerts from the claim's
+ * current due date, so an already-expired claim never reads "expiring in 1 day".
+ */
+async function rewordClaimDeadlines<T extends { referenceType: string | null; referenceId: string | null; title: string; message: string }>(
+  rows: T[],
+): Promise<T[]> {
+  const claimIds = rows
+    .filter((r) => r.referenceId && isClaimDeadlineNotification(r))
+    .map((r) => r.referenceId as string);
+  if (!claimIds.length) return rows;
+  const claims = await prisma.insuranceClaim.findMany({
+    where: { id: { in: claimIds } },
+    select: {
+      id: true,
+      claimNumber: true,
+      expiryDate: true,
+      patient: { select: { firstName: true, lastName: true } },
+    },
+  });
+  const byId = new Map(claims.map((c) => [c.id, c]));
+  const now = new Date();
+  return rows.map((r) => {
+    if (!r.referenceId || !isClaimDeadlineNotification(r)) return r;
+    const claim = byId.get(r.referenceId);
+    if (!claim?.expiryDate) return r;
+    const { title, message } = describeClaimDeadline(
+      { id: claim.id, claimNumber: claim.claimNumber, expiryDate: claim.expiryDate },
+      fullName(claim.patient),
+      now,
+    );
+    return { ...r, title, message };
+  });
 }
 
 /**
- * Get count of unread notifications for the authenticated user.
+ * Get count of unread notifications for the authenticated user — distinct
+ * notifications, not rows, so 22 copies of one alert count once (gap 295).
  */
 export async function getUnreadCount(tenantId: string, userId: string) {
-  const count = await prisma.notification.count({
+  const rows = await prisma.notification.findMany({
     where: { userId, isRead: false },
+    select: { id: true, referenceType: true, referenceId: true, title: true },
+    take: NOTIFICATION_SCAN_LIMIT,
   });
 
-  return { unreadCount: count };
+  return { unreadCount: countUniqueNotifications(rows) };
+}
+
+/** Ids of every row in the same duplicate group as `n` for this user. */
+async function groupMemberIds(
+  userId: string,
+  n: { id: string; referenceType: string | null; referenceId: string | null; title: string },
+  extraWhere: Record<string, unknown> = {},
+): Promise<string[]> {
+  if (!n.referenceId) return [n.id];
+  const key = notificationGroupKey(n);
+  const candidates = await prisma.notification.findMany({
+    where: { userId, referenceType: n.referenceType, referenceId: n.referenceId, ...extraWhere },
+    select: { id: true, referenceType: true, referenceId: true, title: true },
+  });
+  const ids = (candidates ?? []).filter((c) => notificationGroupKey(c) === key).map((c) => c.id);
+  return ids.includes(n.id) ? ids : [n.id, ...ids];
 }
 
 /**
- * Mark a single notification as read.
+ * Mark a single notification as read — together with its collapsed duplicates,
+ * or the badge would keep counting the copies the reader never sees.
  */
 export async function markNotificationRead(tenantId: string, userId: string, id: string) {
   const notification = await prisma.notification.findFirst({
@@ -140,9 +236,18 @@ export async function markNotificationRead(tenantId: string, userId: string, id:
     throw AppError.notFound('Notification not found');
   }
 
+  const now = new Date();
+  const ids = await groupMemberIds(userId, notification, { isRead: false });
+  if (ids.length > 1) {
+    await prisma.notification.updateMany({
+      where: { id: { in: ids }, userId },
+      data: { isRead: true, readAt: now },
+    });
+  }
+
   const updated = await prisma.notification.update({
     where: { id },
-    data: { isRead: true, readAt: new Date() },
+    data: { isRead: true, readAt: now },
   });
 
   return updated;
@@ -162,7 +267,8 @@ export async function markAllNotificationsRead(tenantId: string, userId: string)
 }
 
 /**
- * Delete a notification.
+ * Delete a notification, with its collapsed duplicates — otherwise deleting
+ * the one shown just surfaces the next copy.
  */
 export async function deleteNotification(tenantId: string, userId: string, id: string) {
   const notification = await prisma.notification.findFirst({
@@ -173,9 +279,14 @@ export async function deleteNotification(tenantId: string, userId: string, id: s
     throw AppError.notFound('Notification not found');
   }
 
-  await prisma.notification.delete({ where: { id } });
+  const ids = await groupMemberIds(userId, notification);
+  if (ids.length > 1) {
+    await prisma.notification.deleteMany({ where: { id: { in: ids }, userId } });
+  } else {
+    await prisma.notification.delete({ where: { id } });
+  }
 
-  logger.info({ tenantId, notificationId: id }, 'Notification deleted');
+  logger.info({ tenantId, notificationId: id, duplicatesRemoved: ids.length - 1 }, 'Notification deleted');
   return { deleted: true };
 }
 

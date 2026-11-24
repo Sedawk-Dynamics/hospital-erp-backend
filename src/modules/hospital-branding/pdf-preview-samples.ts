@@ -35,7 +35,7 @@ export interface PreviewDoc {
 }
 
 const today = () =>
-  new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
 
 const SAMPLE_PATIENT: Array<[string, string]> = [
   ['Patient Name', 'Sample Patient'],

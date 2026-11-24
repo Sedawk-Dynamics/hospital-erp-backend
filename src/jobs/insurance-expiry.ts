@@ -1,9 +1,20 @@
 import { prisma } from '../config/database';
 import { logger } from '../config/logger';
-import { formatDateIST } from '../shared/date.utils';
+import { formatDateIST, istDateStr, istDayRange, istDayStart } from '../shared/date.utils';
 import { sweepExpiredPoliciesAndPreAuths } from '../modules/insurance/insurance.service';
 import { usersWithRoles } from '../shared/notify';
 import { fullName } from '../shared/person-name';
+import { writeNotificationOnce } from '../modules/communication/notification-writer';
+import {
+  CLAIM_DEADLINE_OPEN_STATUSES,
+  claimExpiredBefore,
+  describeClaimDeadline,
+} from '../modules/insurance/insurance.metrics';
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
+/** How far back a first run looks for already-expired open claims. */
+const EXPIRED_ALERT_LOOKBACK_DAYS = 30;
 
 // Look up users to notify when policy/pre-auth alerts have no obvious owner.
 // Tenant admins + insurance_staff get pinged so the deadline isn't missed.
@@ -17,6 +28,12 @@ async function getInsuranceRecipients(tenantId: string): Promise<string[]> {
   return usersWithRoles(tenantId, ['admin', 'insurance_staff', 'billing_admin']);
 }
 
+/**
+ * Gap 295: one row per event + record + user + reminder stage, enforced by the
+ * unique dedupe key (notification-writer) — the old read-then-insert let two
+ * overlapping runs (server start + the timer) both write. Returns true only
+ * when a new row was written.
+ */
 async function createNotificationOnce(data: {
   tenantId: string;
   userId: string;
@@ -24,26 +41,11 @@ async function createNotificationOnce(data: {
   message: string;
   referenceType: string;
   referenceId: string;
+  eventKey: string;
+  reminderStage: string;
 }) {
-  const exists = await prisma.notification.findFirst({
-    where: {
-      tenantId: data.tenantId,
-      userId: data.userId,
-      title: data.title,
-      referenceType: data.referenceType,
-      referenceId: data.referenceId,
-    },
-    select: { id: true },
-  });
-  if (exists) return false;
-  await prisma.notification.create({
-    data: {
-      ...data,
-      notificationType: 'alert',
-      channel: 'in_app',
-    },
-  });
-  return true;
+  const { created } = await writeNotificationOnce({ ...data, notificationType: 'alert', channel: 'in_app' });
+  return created;
 }
 
 /**
@@ -73,7 +75,7 @@ export async function runInsuranceSlaJob(now = new Date()) {
     const message = `${preAuth.requestNumber} for ${fullName(preAuth.patient)} ${breached ? 'passed' : 'is approaching'} ${deadline}. Follow up with the payer immediately.`;
     for (const userId of recipients) {
       try {
-        if (await createNotificationOnce({ tenantId: preAuth.tenantId, userId, title, message, referenceType: 'pre_authorization_request', referenceId: preAuth.id })) authorizationAlerts += 1;
+        if (await createNotificationOnce({ tenantId: preAuth.tenantId, userId, title, message, referenceType: 'pre_authorization_request', referenceId: preAuth.id, eventKey: finalDischarge ? 'final_discharge_auth_sla' : 'preauth_sla', reminderStage: breached ? 'breached' : 'warning' })) authorizationAlerts += 1;
       } catch (err) {
         logger.warn({ err, preAuthId: preAuth.id, userId }, 'Insurance SLA notification failed');
       }
@@ -108,7 +110,7 @@ export async function runInsuranceSlaJob(now = new Date()) {
     const message = `${query.claim.claimNumber ?? query.claimId} for ${fullName(query.claim.patient)}: ${query.subject}. Reply by ${query.responseDueAt ? formatDateIST(query.responseDueAt) : 'the configured deadline'}.`;
     for (const userId of recipients) {
       try {
-        if (await createNotificationOnce({ tenantId: query.tenantId, userId, title, message, referenceType: 'claim_query', referenceId: query.id })) queryAlerts += 1;
+        if (await createNotificationOnce({ tenantId: query.tenantId, userId, title, message, referenceType: 'claim_query', referenceId: query.id, eventKey: 'claim_query_response', reminderStage: overdue ? 'overdue' : 'due_24h' })) queryAlerts += 1;
       } catch (err) {
         logger.warn({ err, queryId: query.id, userId }, 'Insurance query notification failed');
       }
@@ -126,49 +128,48 @@ export async function runInsuranceSlaJob(now = new Date()) {
  * Daily insurance maintenance:
  *   1. Sweep policies/pre-auths whose validity passed → mark expired.
  *   2. Create in-app notifications for claims/policies/pre-auths approaching
- *      their deadlines (7-day, 3-day, 1-day windows).
+ *      their deadlines (7-day, 3-day, 1-day windows), plus ONE "expired" alert
+ *      per claim once its TPA deadline has passed.
+ *
+ * The job also runs on every server start, so each write goes through
+ * createNotificationOnce — one row per event + record + user + reminder stage
+ * (gap 295). Days are IST calendar days and claim wording comes from the same
+ * rule the dashboard counts with (gap 296).
  */
-export async function runInsuranceExpiryJob() {
+export async function runInsuranceExpiryJob(now = new Date()) {
   const swept = await sweepExpiredPoliciesAndPreAuths();
 
   const reminders = [7, 3, 1];
+  const today = istDateStr(now);
 
   for (const days of reminders) {
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
-    start.setDate(start.getDate() + days);
-    const end = new Date(start);
-    end.setHours(23, 59, 59, 999);
+    const { start, end } = istDayRange(istDateStr(new Date(istDayStart(today).getTime() + days * DAY_MS + HOUR_MS)));
 
     // --- Claims approaching the TPA deadline ---
     const claims = await prisma.insuranceClaim.findMany({
       where: {
-        status: { in: ['submitted', 'under_review', 'partially_approved', 'resubmitted'] },
+        status: { in: [...CLAIM_DEADLINE_OPEN_STATUSES] },
         expiryDate: { gte: start, lte: end },
       },
       include: {
         patient: { select: { firstName: true, lastName: true } },
-        tenant: { select: { id: true } },
       },
     });
 
     for (const c of claims) {
       const userId = c.submittedBy ?? c.reviewedBy;
-      if (!userId) continue;
-      await prisma.notification
-        .create({
-          data: {
-            tenantId: c.tenantId,
-            userId,
-            title: `Insurance claim expiring in ${days} day${days > 1 ? 's' : ''}`,
-            message: `Claim ${c.claimNumber ?? c.id} for ${fullName(c.patient)} is due by ${c.expiryDate ? formatDateIST(c.expiryDate) : 'soon'}. Follow up with the TPA.`,
-            notificationType: 'alert',
-            channel: 'in_app',
-            referenceType: 'insurance_claim',
-            referenceId: c.id,
-          },
-        })
-        .catch(() => {});
+      if (!userId || !c.expiryDate) continue;
+      const { title, message } = describeClaimDeadline(c as typeof c & { expiryDate: Date }, fullName(c.patient), now);
+      await createNotificationOnce({
+        tenantId: c.tenantId,
+        userId,
+        title,
+        message,
+        referenceType: 'insurance_claim',
+        referenceId: c.id,
+        eventKey: 'claim_deadline',
+        reminderStage: `${days}d`,
+      }).catch((err) => logger.warn({ err, claimId: c.id }, 'Claim expiry reminder failed'));
     }
 
     // --- Policies expiring soon ---
@@ -179,20 +180,16 @@ export async function runInsuranceExpiryJob() {
     for (const p of policies) {
       const insuranceStaff = await getInsuranceRecipients(p.tenantId);
       for (const userId of insuranceStaff) {
-        await prisma.notification
-          .create({
-            data: {
-              tenantId: p.tenantId,
-              userId,
-              title: `Policy expiring in ${days} day${days > 1 ? 's' : ''}`,
-              message: `Policy ${p.policyNumber} (${fullName(p.patient)}) expires on ${formatDateIST(p.validTo)}.`,
-              notificationType: 'alert',
-              channel: 'in_app',
-              referenceType: 'insurance_policy',
-              referenceId: p.id,
-            },
-          })
-          .catch(() => {});
+        await createNotificationOnce({
+          tenantId: p.tenantId,
+          userId,
+          title: `Policy expiring in ${days} day${days > 1 ? 's' : ''}`,
+          message: `Policy ${p.policyNumber} (${fullName(p.patient)}) expires on ${formatDateIST(p.validTo)}.`,
+          referenceType: 'insurance_policy',
+          referenceId: p.id,
+          eventKey: 'policy_expiry',
+          reminderStage: `${days}d`,
+        }).catch((err) => logger.warn({ err, policyId: p.id }, 'Policy expiry reminder failed'));
       }
     }
 
@@ -204,26 +201,49 @@ export async function runInsuranceExpiryJob() {
     for (const pa of preAuths) {
       const userId = pa.submittedBy ?? (await getInsuranceRecipients(pa.tenantId))[0];
       if (!userId) continue;
-      await prisma.notification
-        .create({
-          data: {
-            tenantId: pa.tenantId,
-            userId,
-            title: `Pre-authorization expiring in ${days} day${days > 1 ? 's' : ''}`,
-            message: `Pre-auth ${pa.approvalNumber ?? pa.id} for ${fullName(pa.patient)} is valid until ${pa.validTo ? formatDateIST(pa.validTo) : 'soon'}.`,
-            notificationType: 'alert',
-            channel: 'in_app',
-            referenceType: 'pre_authorization_request',
-            referenceId: pa.id,
-          },
-        })
-        .catch(() => {});
+      await createNotificationOnce({
+        tenantId: pa.tenantId,
+        userId,
+        title: `Pre-authorization expiring in ${days} day${days > 1 ? 's' : ''}`,
+        message: `Pre-auth ${pa.approvalNumber ?? pa.id} for ${fullName(pa.patient)} is valid until ${pa.validTo ? formatDateIST(pa.validTo) : 'soon'}.`,
+        referenceType: 'pre_authorization_request',
+        referenceId: pa.id,
+        eventKey: 'preauth_expiry',
+        reminderStage: `${days}d`,
+      }).catch((err) => logger.warn({ err, preAuthId: pa.id }, 'Pre-auth expiry reminder failed'));
     }
 
     if (claims.length || policies.length || preAuths.length) {
       logger.info({ days, claims: claims.length, policies: policies.length, preAuths: preAuths.length }, 'Insurance expiry reminders sent');
     }
   }
+
+  // --- Claims whose deadline has passed: one "expired" alert each (gap 296).
+  // After this no "expiring" reminder can fire — the windows above only look
+  // forward. The look-back stops a first run from paging staff about claims
+  // that lapsed long ago.
+  const expiredBefore = claimExpiredBefore(now);
+  const expiredClaims = await prisma.insuranceClaim.findMany({
+    where: {
+      status: { in: [...CLAIM_DEADLINE_OPEN_STATUSES] },
+      expiryDate: { lt: expiredBefore, gte: new Date(expiredBefore.getTime() - EXPIRED_ALERT_LOOKBACK_DAYS * DAY_MS) },
+    },
+    include: { patient: { select: { firstName: true, lastName: true } } },
+  });
+  let expiredAlerts = 0;
+  for (const c of expiredClaims) {
+    const userId = c.submittedBy ?? c.reviewedBy;
+    if (!userId || !c.expiryDate) continue;
+    const { title, message } = describeClaimDeadline(c as typeof c & { expiryDate: Date }, fullName(c.patient), now);
+    try {
+      if (await createNotificationOnce({ tenantId: c.tenantId, userId, title, message, referenceType: 'insurance_claim', referenceId: c.id, eventKey: 'claim_deadline', reminderStage: 'expired' })) {
+        expiredAlerts += 1;
+      }
+    } catch (err) {
+      logger.warn({ err, claimId: c.id }, 'Claim expired alert failed');
+    }
+  }
+  if (expiredAlerts) logger.info({ expiredAlerts }, 'Insurance claim expired alerts sent');
 
   return swept;
 }

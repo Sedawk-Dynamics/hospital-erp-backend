@@ -235,9 +235,31 @@ export async function issueCreditNoteBestEffort(
   tenantId: string,
   input: IssueCreditNoteInput,
 ): Promise<void> {
+  // G-7: a failed statement inside a Postgres transaction aborts the WHOLE
+  // transaction, so catching the error alone did not make this best effort —
+  // the refund or void it documents failed with "current transaction is
+  // aborted". A savepoint lets the note fail on its own.
+  const raw = typeof tx?.$executeRawUnsafe === 'function' ? tx.$executeRawUnsafe.bind(tx) : null;
+  let savepoint = false;
+  if (raw) {
+    try {
+      await raw('SAVEPOINT credit_note_best_effort');
+      savepoint = true;
+    } catch {
+      savepoint = false;
+    }
+  }
   try {
     await issueCreditNote(tx, tenantId, input);
+    if (savepoint) await raw!('RELEASE SAVEPOINT credit_note_best_effort');
   } catch (err) {
+    if (savepoint) {
+      try {
+        await raw!('ROLLBACK TO SAVEPOINT credit_note_best_effort');
+      } catch {
+        /* the original error is what matters */
+      }
+    }
     logger.error(
       { err, tenantId, billId: input.billId, reason: input.reason },
       'Could not issue a credit note for a reversal — the tax on it stays declared',

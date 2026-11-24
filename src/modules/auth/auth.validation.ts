@@ -77,6 +77,30 @@ export const resetPasswordSchema = z.object({
   }),
 });
 
+/**
+ * Gap 297: change your own password from My Account. Same strength rule as a
+ * reset; the current password is required so an unattended session cannot be
+ * used to take the account over.
+ */
+export const changePasswordSchema = z.object({
+  body: z
+    .object({
+      currentPassword: z.string().min(1, 'Current password is required'),
+      newPassword: z
+        .string()
+        .min(8, 'Password must be at least 8 characters')
+        .max(128, 'Password must not exceed 128 characters')
+        .regex(
+          /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&#])/,
+          'Password must contain uppercase, lowercase, number, and special character',
+        ),
+    })
+    .refine((b) => b.newPassword !== b.currentPassword, {
+      message: 'New password must be different from the current one',
+      path: ['newPassword'],
+    }),
+});
+
 export const setup2FASchema = z.object({});
 
 export const verify2FASchema = z.object({
@@ -104,3 +128,5 @@ export type RefreshTokenInput = z.infer<typeof refreshTokenSchema>['body'];
 export type ForgotPasswordInput = z.infer<typeof forgotPasswordSchema>['body'];
 export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>['body'];
 export type Verify2FAInput = z.infer<typeof verify2FASchema>['body'];
+
+export type ChangePasswordInput = z.infer<typeof changePasswordSchema>['body'];

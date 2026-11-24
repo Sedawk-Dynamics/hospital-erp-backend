@@ -76,7 +76,7 @@ export const insuranceRoutes = Router();
 // ============================================================
 // Dashboard
 // ============================================================
-insuranceRoutes.get('/dashboard', authenticate, requirePermission('insurance', 'read'), controller.getDashboard);
+insuranceRoutes.get('/dashboard', authenticate, requirePermission('insurance', 'read'), validate(reportsQuerySchema), controller.getDashboard);
 insuranceRoutes.get('/sla-queue', authenticate, requirePermission('insurance', 'read'), workflowController.getSlaQueue);
 insuranceRoutes.get('/workflow-analytics', authenticate, requirePermission('insurance', 'read'), validate(workflowReportQuerySchema), workflowController.getWorkflowAnalytics);
 

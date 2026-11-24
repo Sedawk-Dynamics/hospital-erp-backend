@@ -1,6 +1,9 @@
 import { prisma } from '../../config/database';
 import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
 import { logger } from '../../config/logger';
+import { istDateStr, istDayRange } from '../../shared/date.utils';
+import { fullName } from '../../shared/person-name';
+import { collectionDocumentNumber, isAdvanceApplication } from '../billing/bill-payment-ledger';
 
 interface PatientStats {
   total: number;
@@ -17,9 +20,86 @@ interface AppointmentStats {
 }
 
 interface BillingStats {
+  /** Recognised revenue today: money received against billed services. */
   todayRevenue: number;
   pendingBills: number;
   totalRevenue: number;
+  /** Advances / deposits received today — held money, not revenue. */
+  todayAdvances: number;
+  /** The IST day both money tiles cover — what their drill-down is asked for. */
+  moneyDate: string;
+}
+
+/**
+ * Recognised revenue (gap item 360): completed money on REAL bills. An advance
+ * or deposit receipt sits on the patient's ADV- holding bill and is not revenue
+ * until it is applied — and when it is applied it lands on a real bill (as an
+ * IPDEP: or adjustment row), which this then counts. Refund payouts are money
+ * going back, never revenue.
+ */
+export const RECOGNISED_REVENUE_WHERE = {
+  status: 'completed' as const,
+  paymentType: { not: 'refund' as const },
+  bill: { billNumber: { not: { startsWith: 'ADV-' } } },
+};
+
+/** Advance / deposit RECEIPTS: money held on the ADV- bill, not revenue. */
+export const ADVANCES_RECEIVED_WHERE = {
+  status: 'completed' as const,
+  paymentType: 'advance' as const,
+  bill: { billNumber: { startsWith: 'ADV-' } },
+};
+
+/**
+ * The money tiles' day (gap item 360). One definition, read by the tile AND by
+ * the rows it links to, so the two can never disagree. An IST calendar day,
+ * like every billing report: the old UTC midnight meant "today" did not begin
+ * until 05:30 in the morning at the counter.
+ */
+export function revenueDayWindow(date?: string): { date: string; gte: Date; lte: Date } {
+  const day = date ?? istDateStr(new Date());
+  const { start, end } = istDayRange(day);
+  return { date: day, gte: start, lte: end };
+}
+
+/**
+ * The payments behind "Today's revenue" and "Advances received today" — what
+ * the tiles link to. Same `where` and same window as the tiles, so the totals
+ * here equal the tiles to the rupee.
+ */
+export async function getRevenueRows(tenantId: string, query: { date?: string; kind?: 'revenue' | 'advances' } = {}) {
+  const { date, gte, lte } = revenueDayWindow(query.date);
+  const kind = query.kind === 'advances' ? 'advances' : 'revenue';
+  const rows = await prisma.payment.findMany({
+    where: {
+      tenantId,
+      ...(kind === 'advances' ? ADVANCES_RECEIVED_WHERE : RECOGNISED_REVENUE_WHERE),
+      paymentDate: { gte, lte },
+    },
+    orderBy: { paymentDate: 'asc' },
+    select: {
+      id: true, amount: true, paymentDate: true, paymentMethod: true, paymentType: true,
+      transactionId: true, sourceAdvancePaymentId: true, notes: true, voucherNumber: true,
+      receipt: { select: { receiptNumber: true } },
+      bill: { select: { billNumber: true } },
+      patient: { select: { firstName: true, lastName: true, mrn: true } },
+    },
+  });
+  const out = (rows ?? []).map((p) => ({
+    id: p.id,
+    paymentDate: p.paymentDate,
+    amount: Number(p.amount ?? 0),
+    method: String(p.paymentMethod),
+    type: String(p.paymentType),
+    documentNumber: collectionDocumentNumber(p as never),
+    billNumber: p.bill?.billNumber ?? null,
+    patientName: p.patient ? fullName(p.patient) : null,
+    mrn: p.patient?.mrn ?? null,
+    /** Revenue recognised by setting held money against the bill. */
+    fromAdvance: isAdvanceApplication(p as never),
+  }));
+  const total = Math.round(out.reduce((s, r) => s + r.amount, 0) * 100) / 100;
+  return { date, kind, total, count: out.length, rows: out };
 }
 
 interface BedStats {
@@ -52,6 +132,8 @@ export async function getDashboardStats(tenantId: string): Promise<DashboardStat
   today.setUTCHours(0, 0, 0, 0);
   const tomorrow = new Date(today);
   tomorrow.setDate(tomorrow.getDate() + 1);
+  // The money tiles use the day their drill-down uses (gap item 360).
+  const moneyDay = revenueDayWindow();
 
   // Run all queries in parallel for performance
   const [
@@ -131,8 +213,8 @@ export async function getDashboardStats(tenantId: string): Promise<DashboardStat
     prisma.payment.aggregate({
       where: {
         tenantId,
-        status: 'completed',
-        paymentDate: { gte: today, lt: tomorrow },
+        ...RECOGNISED_REVENUE_WHERE,
+        paymentDate: { gte: moneyDay.gte, lte: moneyDay.lte },
       },
       _sum: { amount: true },
     }),
@@ -140,7 +222,7 @@ export async function getDashboardStats(tenantId: string): Promise<DashboardStat
     prisma.payment.aggregate({
       where: {
         tenantId,
-        status: 'completed',
+        ...RECOGNISED_REVENUE_WHERE,
       },
       _sum: { amount: true },
     }),
@@ -158,16 +240,31 @@ export async function getDashboardStats(tenantId: string): Promise<DashboardStat
     // Staff stats
     prisma.doctorProfile.count({ where: { tenantId } }),
 
-    // Count nurses via role (users with a role containing 'nurse')
-    prisma.staffProfile.count({
+    // Staff and nurse counts come from the same source as Hospital Settings →
+    // Users (active user accounts of this hospital), not HR staff profiles.
+    // HR profiles are optional and usually empty, which made these tiles read
+    // 0 while the Users page listed every account (gap item 199).
+    prisma.user.count({
       where: {
         tenantId,
-        position: { contains: 'nurse', mode: 'insensitive' },
+        isActive: true,
+        userRoles: { some: { role: { name: { contains: 'nurse', mode: 'insensitive' } } } },
       },
     }),
 
-    prisma.staffProfile.count({ where: { tenantId } }),
+    prisma.user.count({ where: { tenantId, isActive: true } }),
   ]);
+
+  // Advances received today, shown beside revenue rather than inside it.
+  const todayAdvanceReceipts = await prisma.payment.aggregate({
+    where: {
+      tenantId,
+      ...ADVANCES_RECEIVED_WHERE,
+      paymentDate: { gte: moneyDay.gte, lte: moneyDay.lte },
+    },
+    _sum: { amount: true },
+  });
+  const todayAdvances = Number(todayAdvanceReceipts?._sum?.amount ?? 0);
 
   // Compute outpatient (total patients - currently admitted inpatients)
   const outpatientCount = totalPatients - inpatientCount;
@@ -199,6 +296,8 @@ export async function getDashboardStats(tenantId: string): Promise<DashboardStat
       todayRevenue,
       pendingBills,
       totalRevenue,
+      todayAdvances,
+      moneyDate: moneyDay.date,
     },
     bedStats: {
       total: totalBeds,

@@ -18,7 +18,9 @@ const uuidParam = z.string().uuid('Invalid ID');
 export const createStaffProfileSchema = z.object({
   body: z.object({
     userId: z.string().uuid('Invalid user ID'),
-    departmentId: z.string().uuid('Invalid department ID'),
+    // Gap 300: optional so "Add staff" works before HR picks a department;
+    // the service falls back to the tenant's default department.
+    departmentId: z.string().uuid('Invalid department ID').optional(),
     employeeId: z.string().max(50).optional(),
     position: z.string().max(100).optional(),
     dateOfJoining: dateString.optional(),
@@ -48,6 +50,15 @@ export const updateStaffProfileSchema = z.object({
     status: z.enum(['active', 'on_leave', 'resigned', 'terminated']).optional(),
   }),
   params: z.object({ id: uuidParam }),
+});
+
+// Gap 300: bulk-create draft staff profiles (one per user) for staff accounts
+// that have none yet, so attendance/payroll/rosters can select them.
+export const importStaffFromUsersSchema = z.object({
+  body: z.object({
+    departmentId: z.string().uuid('Invalid department ID').optional(),
+    userIds: z.array(z.string().uuid()).max(500).optional(),
+  }),
 });
 
 export const getStaffProfilesSchema = z.object({
@@ -325,6 +336,7 @@ export type HrReportsQuery = z.infer<typeof hrReportsQuerySchema>['query'];
 // ============================================================
 
 export type CreateStaffProfileInput = z.infer<typeof createStaffProfileSchema>['body'];
+export type ImportStaffFromUsersInput = z.infer<typeof importStaffFromUsersSchema>['body'];
 export type UpdateStaffProfileInput = z.infer<typeof updateStaffProfileSchema>['body'];
 export type GetStaffProfilesQuery = z.infer<typeof getStaffProfilesSchema>['query'];
 
@@ -349,3 +361,10 @@ export type GetLeavesQuery = z.infer<typeof getLeavesSchema>['query'];
 
 export type GeneratePayrollInput = z.infer<typeof generatePayrollSchema>['body'];
 export type GetPayrollListQuery = z.infer<typeof getPayrollListSchema>['query'];
+
+// Gap 313: tenant HR settings — the duty roster's week start day.
+export const updateHrSettingsSchema = z.object({
+  body: z.object({
+    rosterWeekStartDay: z.number().int().min(0).max(6),
+  }),
+});

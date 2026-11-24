@@ -7,9 +7,11 @@ describe('patient insurance milestone notifications', () => {
 
   it('creates one patient-portal notification and deduplicates retries', async () => {
     vi.mocked(prisma.patient.findFirst).mockResolvedValue({ userId: 'patient-user-1' } as never);
+    // First write: no keyed row, no legacy row → create. Retry: the keyed row exists.
     vi.mocked(prisma.notification.findFirst)
       .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({ id: 'notification-1' } as never);
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: 'notification-1', message: 'Approved' } as never);
     vi.mocked(prisma.notification.create).mockResolvedValue({ id: 'notification-1' } as never);
 
     const input = {

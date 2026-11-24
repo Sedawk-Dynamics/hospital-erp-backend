@@ -3,6 +3,8 @@ import { Router } from 'express';
 import { authenticate } from '../../middleware/authenticate';
 import { requirePermission } from '../../middleware/authorize';
 import { validate } from '../../middleware/validate';
+import { sendResponse } from '../../shared/apiResponse';
+import { setBillBuyer } from './billing.buyer.service';
 import {
   createServiceTariffSchema,
   updateServiceTariffSchema,
@@ -12,6 +14,7 @@ import {
   addIpChargeSchema,
   admissionLedgerParamSchema,
   admissionActionParamSchema,
+  consolidateAdmissionSchema,
   transferToTpaSchema,
   recordTpaSettlementSchema,
   setBillItemReimbursableSchema,
@@ -50,6 +53,7 @@ import {
   dayEndQuerySchema,
   advancePatientParamSchema,
   creditSettlementBillsParamSchema,
+  receivableLinesQuerySchema,
 } from './billing.validation';
 import * as controller from './billing.controller';
 
@@ -159,10 +163,22 @@ billingRoutes.post(
 
 // --- Service Tariffs ---
 
+// G-3: the GST settings right (admin — the same gate as /hospital-settings/
+// gst-profile) also lets a user classify and approve services; anyone else
+// needs the billing permission. The classification page was read-only for the
+// people whose job it is.
+const gstSettingsOr = (module: string, action: string) => {
+  const fallback = requirePermission(module, action);
+  return (req: any, res: any, next: any) =>
+    (req.user?.roles ?? []).some((r: string) => r === 'admin' || r === 'super_admin')
+      ? next()
+      : fallback(req, res, next);
+};
+
 billingRoutes.post(
   '/tariffs',
   authenticate,
-  requirePermission('billing', 'create'),
+  gstSettingsOr('billing', 'create'),
   validate(createServiceTariffSchema),
   controller.createServiceTariff,
 );
@@ -177,7 +193,7 @@ billingRoutes.get(
 billingRoutes.put(
   '/tariffs/:id',
   authenticate,
-  requirePermission('billing', 'update'),
+  gstSettingsOr('billing', 'update'),
   validate(updateServiceTariffSchema),
   controller.updateServiceTariff,
 );
@@ -192,7 +208,7 @@ billingRoutes.put(
 billingRoutes.patch(
   '/tariffs/:id/gst-approval',
   authenticate,
-  requirePermission('billing', 'approve'),
+  gstSettingsOr('billing', 'approve'),
   validate(
     z.object({
       params: z.object({ id: z.string().uuid('Invalid tariff ID') }),
@@ -317,6 +333,15 @@ billingRoutes.get(
   authenticate,
   requirePermission('billing', 'read'),
   controller.getCreditSettlements,
+);
+
+// Gap 287: Receivables headline drill-down — the bills behind one figure.
+billingRoutes.get(
+  '/credit-settlements/lines',
+  authenticate,
+  requirePermission('billing', 'read'),
+  validate(receivableLinesQuerySchema),
+  controller.getReceivableLines,
 );
 
 billingRoutes.get(
@@ -481,6 +506,31 @@ billingRoutes.post(
   controller.refreshDraftTax,
 );
 
+// G-4: the B2B buyer (GSTIN, legal name, address) — only before the bill is issued.
+billingRoutes.patch(
+  '/:id/buyer',
+  authenticate,
+  requirePermission('billing', 'update'),
+  validate(
+    z.object({
+      params: z.object({ id: z.string().uuid('Invalid bill ID') }),
+      body: z.object({
+        gstin: z.string().trim().max(15, 'A GSTIN is 15 characters').optional().nullable(),
+        legalName: z.string().trim().max(200).optional().nullable(),
+        address: z.string().trim().max(500).optional().nullable(),
+      }),
+    }),
+  ),
+  async (req: any, res: any, next: any) => {
+    try {
+      const data = await setBillBuyer(req.user.tenantId, req.user.userId, req.params.id, req.body ?? {});
+      sendResponse({ res, message: data.recipientGstin ? 'Buyer GSTIN saved — B2B invoice' : 'Buyer cleared', data });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 billingRoutes.patch(
   '/:id/finalize',
   authenticate,
@@ -569,8 +619,16 @@ billingRoutes.post(
   '/admissions/:admissionId/consolidate',
   authenticate,
   requirePermission('billing', 'update'),
-  validate(admissionActionParamSchema),
+  validate(consolidateAdmissionSchema),
   controller.consolidateAdmissionBill,
+);
+// The stay's one advance balance — deposit + Collect Advance (gap item 335).
+billingRoutes.get(
+  '/admissions/:admissionId/advance-balance',
+  authenticate,
+  requirePermission('billing', 'read'),
+  validate(admissionActionParamSchema),
+  controller.getAdmissionAdvanceBalance,
 );
 // Billing-counter correction: a cash/package admission can be moved into the
 // cashless TPA workflow without finalising its still-running bill.

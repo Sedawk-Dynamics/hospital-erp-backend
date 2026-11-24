@@ -1,5 +1,6 @@
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
+import { writeNotificationOnce } from '../communication/notification-writer';
 
 /**
  * Best-effort patient-portal milestone messaging. Insurance decisions must not
@@ -22,31 +23,20 @@ export async function notifyPatientInsuranceMilestone(params: {
     });
     if (!patient?.userId) return false;
 
-    const existing = await prisma.notification.findFirst({
-      where: {
-        tenantId: params.tenantId,
-        userId: patient.userId,
-        title: params.title,
-        referenceType: params.referenceType,
-        referenceId: params.referenceId,
-      },
-      select: { id: true },
+    // Gap 295: idempotent on (tenant, patient user, event, record) through the
+    // unique dedupe key — the old findFirst-then-create could double-write
+    // when two decisions on one claim landed together.
+    const { created } = await writeNotificationOnce({
+      tenantId: params.tenantId,
+      userId: patient.userId,
+      title: params.title,
+      message: params.message,
+      notificationType: params.alert ? 'alert' : 'general',
+      channel: 'in_app',
+      referenceType: params.referenceType,
+      referenceId: params.referenceId,
     });
-    if (existing) return false;
-
-    await prisma.notification.create({
-      data: {
-        tenantId: params.tenantId,
-        userId: patient.userId,
-        title: params.title,
-        message: params.message,
-        notificationType: params.alert ? 'alert' : 'general',
-        channel: 'in_app',
-        referenceType: params.referenceType,
-        referenceId: params.referenceId,
-      },
-    });
-    return true;
+    return created;
   } catch (err) {
     logger.warn(
       { err, patientId: params.patientId, referenceType: params.referenceType, referenceId: params.referenceId },

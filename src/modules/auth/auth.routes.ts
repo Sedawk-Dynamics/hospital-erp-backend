@@ -17,6 +17,7 @@ import {
   forgotPasswordSchema,
   resetPasswordSchema,
   verify2FASchema,
+  changePasswordSchema,
 } from './auth.validation';
 
 const router = Router();
@@ -51,6 +52,15 @@ router.post('/reset-password', sensitiveAuthLimiter, validate(resetPasswordSchem
 // 2FA — same tight budget; setup requires auth anyway but limit is still useful.
 router.post('/2fa/setup', sensitiveAuthLimiter, authenticate, authController.setup2FA);
 router.post('/2fa/verify', sensitiveAuthLimiter, authenticate, validate(verify2FASchema), authController.verify2FA);
+
+// Change own password (My Account, gap 297) — tight budget, it checks a password.
+router.post(
+  '/change-password',
+  sensitiveAuthLimiter,
+  authenticate,
+  validate(changePasswordSchema),
+  authController.changePassword,
+);
 
 router.get('/onboarding-status', authenticate, authController.getOnboardingStatus);
 router.get('/me', authenticate, authController.getMe);

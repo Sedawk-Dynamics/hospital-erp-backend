@@ -22,6 +22,14 @@ import type {
   AddFamilyHistoryInput,
 } from './patients.validation';
 import { fullName } from '../../shared/person-name';
+import { isFutureISTDate, istDayStart, istDayEnd } from '../../shared/date.utils';
+
+/** Gap 329: refuse a future DOB even from callers that skip the route schema. */
+function assertDobNotFuture(dob?: string | null) {
+  if (dob && isFutureISTDate(dob)) {
+    throw AppError.badRequest('Date of birth cannot be in the future');
+  }
+}
 
 /**
  * Generate a unique MRN (Medical Record Number) for a tenant.
@@ -282,6 +290,7 @@ function isSamePerson(row: PhoneMatchRow, data: CreatePatientInput): boolean {
 }
 
 export async function create(tenantId: string, data: CreatePatientInput) {
+  assertDobNotFuture(data.dateOfBirth);
   // Phone-driven account holder: resolve or auto-create unless the caller has
   // already pinned an explicit account (e.g. portal family-profile creation).
   if (!data.userId && data.phone) {
@@ -637,12 +646,14 @@ export async function findAll(tenantId: string, query: SearchPatientsQuery) {
     where.NOT = [...(where.NOT ?? []), { mrn: { startsWith: TEMP_MRN_PREFIX } }];
   }
 
+  // Gap 359: bound by IST days. `new Date('2026-11-13')` is UTC midnight, so a
+  // patient registered at 10:00 IST on the end date fell outside the range.
   if (query.fromDate) {
-    where.createdAt = { ...where.createdAt, gte: new Date(query.fromDate) };
+    where.createdAt = { ...where.createdAt, gte: istDayStart(query.fromDate) };
   }
 
   if (query.toDate) {
-    where.createdAt = { ...where.createdAt, lte: new Date(query.toDate) };
+    where.createdAt = { ...where.createdAt, lte: istDayEnd(query.toDate) };
   }
 
   const orderBy: any = {};
@@ -713,6 +724,7 @@ export async function findById(tenantId: string, id: string) {
  * Update a patient record.
  */
 export async function update(tenantId: string, id: string, data: UpdatePatientInput) {
+  assertDobNotFuture(data.dateOfBirth);
   const existing = await prisma.patient.findFirst({
     where: { id, tenantId },
   });
@@ -1000,8 +1012,17 @@ export async function globalPatientSearch(tenantId: string, rawSearch: string) {
     return `${anchor}|${who}`;
   };
 
-  const localByPerson = new Map<string, string>();
-  for (const r of rows) if (r.tenantId === tenantId) localByPerson.set(personKey(r), r.id);
+  // Gap 332: keep the local row itself, not just its id — the picker printed
+  // `mrn: <uuid>` because this map's id was returned as the MRN. Rows arrive
+  // most-recently-updated first; keep the first local row per person so the
+  // record the desk has been using is the one it gets (and whose visit history
+  // drives the "First visit" badge).
+  const localByPerson = new Map<string, { id: string; mrn: string }>();
+  for (const r of rows) {
+    if (r.tenantId !== tenantId) continue;
+    const k = personKey(r);
+    if (!localByPerson.has(k)) localByPerson.set(k, { id: r.id, mrn: r.mrn });
+  }
 
   const seen = new Set<string>();
   const out: any[] = [];
@@ -1009,7 +1030,8 @@ export async function globalPatientSearch(tenantId: string, rawSearch: string) {
     const k = personKey(r);
     if (seen.has(k)) continue;
     seen.add(k);
-    const localId = localByPerson.get(k) ?? null;
+    const local = localByPerson.get(k) ?? null;
+    const localId = local?.id ?? null;
     out.push({
       sourcePatientId: r.id,
       localPatientId: localId,
@@ -1019,7 +1041,7 @@ export async function globalPatientSearch(tenantId: string, rawSearch: string) {
       dateOfBirth: r.dateOfBirth,
       gender: r.gender,
       phone: r.phone,
-      mrn: localId ? localByPerson.get(k) : r.mrn,
+      mrn: local ? local.mrn : r.mrn,
       hospital: r.tenant?.name ?? 'Hospital',
     });
     if (out.length >= 25) break;

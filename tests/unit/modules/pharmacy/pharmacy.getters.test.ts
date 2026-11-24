@@ -16,6 +16,7 @@ import {
   verifyDispense,
   getReturns,
   getPharmacySales,
+  getPharmacySale,
   cancelPharmacySale,
   recallBatch,
   unrecallBatch,
@@ -318,6 +319,25 @@ describe('Pharmacy — getters / CRUD / recalls coverage', () => {
   });
 
   // ── Counter sale list + void ──────────────────────────────
+  // Gap 347: the printed receipt named no dispenser.
+  describe('getPharmacySale', () => {
+    it('names the dispenser on the receipt, falling back to the bill creator', async () => {
+      (prisma.bill.findFirst as any).mockResolvedValue({
+        id: 'bill-1', billItems: [], payments: [], patient: {}, generator: { firstName: 'Desk', lastName: 'User' },
+      });
+      (prisma.tenant.findUnique as any).mockResolvedValue({ name: 'H' });
+      (prisma.dispensingRecord.findMany as any).mockResolvedValue([
+        { dispenser: { firstName: 'Pharmacist', lastName: 'Test' } },
+        { dispenser: { firstName: 'Pharmacist', lastName: 'Test' } },
+      ]);
+      expect((await getPharmacySale(TENANT_ID, 'bill-1')).dispensedBy).toBe('Pharmacist Test');
+      expect((prisma.dispensingRecord.findMany as any).mock.calls.at(-1)[0].where).toEqual({ tenantId: TENANT_ID, billId: 'bill-1' });
+
+      (prisma.dispensingRecord.findMany as any).mockResolvedValue([]);
+      expect((await getPharmacySale(TENANT_ID, 'bill-1')).dispensedBy).toBe('Desk User');
+    });
+  });
+
   describe('getPharmacySales', () => {
     it('lists PH- invoices with a period summary', async () => {
       (prisma.bill.findMany as any).mockResolvedValue([{ id: 'bill-1', billNumber: 'PH-1' }]);

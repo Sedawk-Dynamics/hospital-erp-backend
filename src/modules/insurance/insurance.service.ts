@@ -3,7 +3,7 @@ import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { normalizeCounterpartyGstin } from '../../shared/gst';
 import { getPaginationParams } from '../../shared/pagination';
-import { getISTDateStr } from '../../shared/date.utils';
+import { getISTDateStr, istDayStart, istDayEnd } from '../../shared/date.utils';
 import { Prisma } from '@prisma/client';
 import type {
   CreateInsurerInput,
@@ -31,6 +31,23 @@ import type {
 import { notifyPatientInsuranceMilestone } from './insurance.notifications';
 import { recordSettlement as recordWorkflowSettlement } from './insurance.workflow.service';
 import { computePatientPaid } from '../billing/bill-payment-ledger';
+import {
+  CLAIM_RECEIVABLE_STATUSES,
+  CLAIM_AWAITING_DECISION_STATUSES,
+  CLAIM_VOID_STATUSES,
+  CLAIM_PAYER_SELECT,
+  INSURANCE_METRIC_DEFINITIONS,
+  PAYER_MISSING,
+  claimAwaitingDecision,
+  claimDeadlineWhere,
+  claimOutstanding,
+  computeApprovalRate,
+  computeAmountApprovalRate,
+  computeClaimTotals,
+  groupByPayer,
+  isVoidClaim,
+  resolveClaimPayer,
+} from './insurance.metrics';
 
 // ============================================================
 // Defaults
@@ -135,6 +152,59 @@ function gstinOf(raw: string | null | undefined): { gstin: string | null; stateC
   }
 }
 
+/**
+ * Name as compared for duplicates: case, spacing and punctuation ignored, so
+ * "M5 Insurer A", "m5  insurer-a" and "M5 INSURER A." are the same payer.
+ */
+export function normalizePayerName(name: string | null | undefined): string {
+  return (name ?? '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+}
+
+/**
+ * Gap 293: one hospital ended up with "M5 Insurer A" three times, splitting its
+ * claims and reports across three records. Refuse a second payer with the same
+ * normalised name, or the same GSTIN, within the hospital, and name the record
+ * that already exists so the user can pick it (or reactivate it) instead.
+ */
+async function assertUniquePayer(
+  kind: 'insurer' | 'tpa',
+  tenantId: string,
+  candidate: { name?: string | null; gstin?: string | null },
+  excludeId?: string,
+): Promise<void> {
+  const name = candidate.name !== undefined && candidate.name !== null ? normalizePayerName(candidate.name) : null;
+  const gstin = candidate.gstin ? candidate.gstin.toUpperCase() : null;
+  if (!name && !gstin) return;
+  const select = { id: true, name: true, gstin: true, isActive: true } as const;
+  const where = { tenantId, ...(excludeId ? { id: { not: excludeId } } : {}) };
+  const rows =
+    kind === 'insurer'
+      ? await prisma.insurer.findMany({ where, select })
+      : await prisma.tpaProvider.findMany({ where, select });
+  const label = kind === 'insurer' ? 'An insurer' : 'A TPA';
+  for (const row of rows ?? []) {
+    const inactive = row.isActive ? '' : ' (inactive — reactivate it instead)';
+    if (name && normalizePayerName(row.name) === name) {
+      throw AppError.conflict(
+        `${label} named "${row.name}" already exists${inactive}. Use the existing record instead of adding a duplicate.`,
+        'DUPLICATE_PAYER',
+        { existingId: row.id, existingName: row.name, field: 'name' },
+      );
+    }
+    if (gstin && row.gstin && row.gstin.toUpperCase() === gstin) {
+      throw AppError.conflict(
+        `${label} with GSTIN ${gstin} already exists: "${row.name}"${inactive}.`,
+        'DUPLICATE_PAYER',
+        { existingId: row.id, existingName: row.name, field: 'gstin' },
+      );
+    }
+  }
+}
+
 export async function createInsurer(tenantId: string, data: CreateInsurerInput) {
   // A payer with a GSTIN is a REGISTERED recipient, which is what turns a
   // hospital bill into a B2B invoice — GSTR-1 Table 4 rather than the B2C
@@ -142,6 +212,7 @@ export async function createInsurer(tenantId: string, data: CreateInsurerInput) 
   // Without this field none of that could ever happen: A-4 was structurally
   // empty and `recipientGstin` on a bill had twenty readers and no writer.
   const gst = gstinOf(data.gstin);
+  await assertUniquePayer('insurer', tenantId, { name: data.name, gstin: gst.gstin });
 
   const insurer = await prisma.insurer.create({
     data: {
@@ -216,6 +287,13 @@ export async function updateInsurer(tenantId: string, id: string, data: UpdateIn
     throw AppError.notFound('Insurer not found');
   }
 
+  await assertUniquePayer(
+    'insurer',
+    tenantId,
+    { name: data.name, gstin: data.gstin !== undefined ? gstinOf(data.gstin).gstin : undefined },
+    id,
+  );
+
   const insurer = await prisma.insurer.update({
     where: { id },
     data: {
@@ -262,6 +340,7 @@ export async function createTPA(tenantId: string, data: CreateTPAInput) {
   // Same reasoning as an insurer: a TPA with a GSTIN is a registered recipient,
   // and one registered in another state is the case that makes IGST real.
   const gst = gstinOf(data.gstin);
+  await assertUniquePayer('tpa', tenantId, { name: data.name, gstin: gst.gstin });
   const tpa = await prisma.tpaProvider.create({
     data: {
       tenantId,
@@ -334,6 +413,13 @@ export async function updateTPA(tenantId: string, id: string, data: UpdateTPAInp
   if (!existing) {
     throw AppError.notFound('TPA provider not found');
   }
+
+  await assertUniquePayer(
+    'tpa',
+    tenantId,
+    { name: data.name, gstin: data.gstin !== undefined ? gstinOf(data.gstin).gstin : undefined },
+    id,
+  );
 
   const tpa = await prisma.tpaProvider.update({
     where: { id },
@@ -843,12 +929,20 @@ export async function getClaims(tenantId: string, query: any) {
   if (query.policyId) where.policyId = query.policyId;
   if (query.insuranceCaseId) where.insuranceCaseId = query.insuranceCaseId;
   if (query.status) where.status = query.status;
+  // Gap 296: the dashboard's deadline counts link here; same clause, same rows.
+  // ANDed so a status filter on top narrows rather than replaces it.
+  if (query.expiry === 'expired' || query.expiry === 'expiring') {
+    where.AND = [claimDeadlineWhere(query.expiry, query.expiringWithinDays ?? 7)];
+  } else if (query.expiringWithinDays) {
+    where.AND = [claimDeadlineWhere('expiring', query.expiringWithinDays)];
+  }
 
+  // IST day bounds, end date inclusive (gap 359, Hospital Reports).
   if (query.fromDate) {
-    where.submissionDate = { ...where.submissionDate, gte: new Date(query.fromDate) };
+    where.submissionDate = { ...where.submissionDate, gte: istDayStart(query.fromDate) };
   }
   if (query.toDate) {
-    where.submissionDate = { ...where.submissionDate, lte: new Date(query.toDate) };
+    where.submissionDate = { ...where.submissionDate, lte: istDayEnd(query.toDate) };
   }
 
   if (query.search) {
@@ -889,7 +983,19 @@ export async function getClaims(tenantId: string, query: any) {
     prisma.insuranceClaim.count({ where }),
   ]);
 
-  return { claims, total, page, limit };
+  return { claims: claims.map(withLiveOutstanding), total, page, limit };
+}
+
+/**
+ * Gap 291: rows cancelled or superseded before cancel zeroed the column still
+ * store their old outstanding (one showed ₹2,00,001). Read-time correction — a
+ * void or rejected claim never owes anything, whatever the column says.
+ */
+function withLiveOutstanding<T extends { status: string; outstandingAmount: Prisma.Decimal | null }>(claim: T): T {
+  if (isVoidClaim(claim.status) || claim.status === 'rejected') {
+    return { ...claim, outstandingAmount: new Prisma.Decimal(0) };
+  }
+  return claim;
 }
 
 export async function getClaimById(tenantId: string, id: string) {
@@ -1014,7 +1120,7 @@ export async function getClaimById(tenantId: string, id: string) {
     : 0;
 
   return {
-    ...claim,
+    ...withLiveOutstanding(claim),
     bill: claim.bill ? { ...claim.bill, patientPaidAmount } : claim.bill,
   };
 }
@@ -1379,9 +1485,11 @@ export async function resubmitClaim(
 
   const resubmitted = await prisma.$transaction(async (tx) => {
     // Mark the prior claim as resubmitted (frozen) so it stays visible in history.
+    // Its replacement carries the money from here on, so the frozen original
+    // must not keep an outstanding of its own (gap 291: double counting).
     await tx.insuranceClaim.update({
       where: { id: original.id },
-      data: { status: 'resubmitted' },
+      data: { status: 'resubmitted', outstandingAmount: 0 },
     });
 
     return tx.insuranceClaim.create({
@@ -1450,6 +1558,9 @@ export async function cancelClaim(
       status: 'cancelled',
       rejectionReason: data.reason,
       reviewedBy: userId,
+      // Gap 291: a cancelled claim owes nothing. Totals also ignore cancelled
+      // claims at read time (insurance.metrics), which corrects older rows.
+      outstandingAmount: 0,
     },
   });
 
@@ -2288,15 +2399,9 @@ export async function findActivePolicyForPatient(tenantId: string, patientId: st
 // ============================================================
 
 export async function getExpiringClaims(tenantId: string, withinDays = 7) {
-  const now = new Date();
-  const cutoff = new Date(now.getTime() + withinDays * 24 * 60 * 60 * 1000);
-
+  // Same IST-day rule as the dashboard and the reminder job (gap 296).
   return prisma.insuranceClaim.findMany({
-    where: {
-      tenantId,
-      status: { in: ['submitted', 'under_review', 'partially_approved', 'resubmitted'] },
-      expiryDate: { not: null, gte: now, lte: cutoff },
-    },
+    where: { tenantId, ...claimDeadlineWhere('expiring', withinDays) },
     include: {
       patient: { select: { id: true, firstName: true, lastName: true } },
       policy: { select: { id: true, policyNumber: true, insurer: { select: { id: true, name: true } } } },
@@ -2347,10 +2452,21 @@ export async function sweepExpiredPoliciesAndPreAuths() {
 // Dashboard
 // ============================================================
 
-export async function getDashboard(tenantId: string) {
+/**
+ * Gap 290: the dashboard takes the same date-range / insurer / TPA filters as
+ * Reports and passes them through the same `reportWhere` + metric helpers, so
+ * for the same filters the two screens show the same approval rates and
+ * outstanding. The filters scope the CLAIM figures (status counts, approval,
+ * money, recent claims); the pre-auth and deadline panels stay "as of now",
+ * because their links open lists that are not date-filtered.
+ */
+export async function getDashboard(tenantId: string, filters: ReportFilters = {}) {
+  const claimWhere = reportWhere(tenantId, filters);
   const now = new Date();
   const sevenDays = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  // Gap 296: one IST-day rule for "expiring" and "expired" (claimDeadlineWhere),
+  // shared with the reminder job, the notification wording and the claims list.
 
   const [
     pendingClaims,
@@ -2365,47 +2481,43 @@ export async function getDashboard(tenantId: string) {
     approvedPreAuths,
     expiringPolicies,
     expiringClaims,
+    expiredClaims,
     expiringPreAuths,
     monthClaims,
-    aggregates,
+    moneyRows,
     recentClaims,
     recentPreAuths,
   ] = await Promise.all([
-    prisma.insuranceClaim.count({ where: { tenantId, status: 'submitted' } }),
-    prisma.insuranceClaim.count({ where: { tenantId, status: 'under_review' } }),
-    prisma.insuranceClaim.count({ where: { tenantId, status: 'approved' } }),
-    prisma.insuranceClaim.count({ where: { tenantId, status: 'partially_approved' } }),
-    prisma.insuranceClaim.count({ where: { tenantId, status: 'rejected' } }),
-    prisma.insuranceClaim.count({ where: { tenantId, status: 'settled' } }),
-    prisma.insuranceClaim.count({ where: { tenantId, status: 'partially_settled' } }),
+    prisma.insuranceClaim.count({ where: { ...claimWhere, status: 'submitted' } }),
+    prisma.insuranceClaim.count({ where: { ...claimWhere, status: 'under_review' } }),
+    prisma.insuranceClaim.count({ where: { ...claimWhere, status: 'approved' } }),
+    prisma.insuranceClaim.count({ where: { ...claimWhere, status: 'partially_approved' } }),
+    prisma.insuranceClaim.count({ where: { ...claimWhere, status: 'rejected' } }),
+    prisma.insuranceClaim.count({ where: { ...claimWhere, status: 'settled' } }),
+    prisma.insuranceClaim.count({ where: { ...claimWhere, status: 'partially_settled' } }),
     prisma.preAuthorizationRequest.count({ where: { tenantId, status: 'pending' } }),
     prisma.preAuthorizationRequest.count({ where: { tenantId, status: 'on_hold' } }),
     prisma.preAuthorizationRequest.count({ where: { tenantId, status: 'approved' } }),
     prisma.insurancePolicy.count({
       where: { tenantId, status: 'active', validTo: { gte: now, lte: sevenDays } },
     }),
-    prisma.insuranceClaim.count({
-      where: {
-        tenantId,
-        status: { in: ['submitted', 'under_review', 'partially_approved', 'resubmitted'] },
-        expiryDate: { not: null, gte: now, lte: sevenDays },
-      },
-    }),
+    // Gap 296: the same clause the claims list's ?expiry= filter uses.
+    prisma.insuranceClaim.count({ where: { tenantId, ...claimDeadlineWhere('expiring', 7, now) } }),
+    prisma.insuranceClaim.count({ where: { tenantId, ...claimDeadlineWhere('expired', 7, now) } }),
     prisma.preAuthorizationRequest.count({
       where: { tenantId, status: { in: ['pending', 'on_hold', 'approved'] }, validTo: { gte: now, lte: sevenDays } },
     }),
-    prisma.insuranceClaim.count({ where: { tenantId, createdAt: { gte: startOfMonth } } }),
-    prisma.insuranceClaim.aggregate({
-      where: { tenantId },
-      _sum: {
-        claimAmount: true,
-        approvedAmount: true,
-        paidAmount: true,
-        outstandingAmount: true,
-      },
+    prisma.insuranceClaim.count({ where: { ...claimWhere, createdAt: { gte: startOfMonth } } }),
+    // Gap 290/291: the money figures are computed per claim by the same helper
+    // the reports use, over live claims only — not summed from the stored
+    // outstanding column, which still carries stale values on old rows.
+    prisma.insuranceClaim.findMany({
+      // Same claim set as the Approval-rate report for the same filters.
+      where: { ...claimWhere, status: { notIn: [...CLAIM_VOID_STATUSES] } },
+      select: { status: true, claimAmount: true, approvedAmount: true, paidAmount: true, writtenOffAmount: true },
     }),
     prisma.insuranceClaim.findMany({
-      where: { tenantId },
+      where: claimWhere,
       orderBy: { createdAt: 'desc' },
       take: 8,
       include: {
@@ -2424,11 +2536,17 @@ export async function getDashboard(tenantId: string) {
     }),
   ]);
 
-  const totalDecided = approvedClaims + partiallyApprovedClaims + rejectedClaims + settledClaims + partiallySettledClaims;
-  const totalApproved = approvedClaims + partiallyApprovedClaims + settledClaims + partiallySettledClaims;
-  const approvalRate = totalDecided > 0 ? round2((totalApproved / totalDecided) * 100) : 0;
+  const rate = computeApprovalRate(moneyRows.map((c) => c.status));
+  const amountRate = computeAmountApprovalRate(moneyRows);
+  const totals = computeClaimTotals(moneyRows);
 
   return {
+    filters: {
+      fromDate: filters.fromDate ?? null,
+      toDate: filters.toDate ?? null,
+      insurerId: filters.insurerId ?? null,
+      tpaId: filters.tpaId ?? null,
+    },
     claims: {
       pending: pendingClaims,
       underReview: underReviewClaims,
@@ -2438,7 +2556,13 @@ export async function getDashboard(tenantId: string) {
       settled: settledClaims,
       partiallySettled: partiallySettledClaims,
       totalThisMonth: monthClaims,
-      approvalRate,
+      approvalRate: rate.approvalRate,
+      decided: rate.decided,
+      approvedOrPartial: rate.approved,
+      // Gap 290: by amount — numerator and denominator both returned.
+      amountApprovalRate: amountRate.amountApprovalRate,
+      decidedApprovedAmount: amountRate.decidedApprovedAmount,
+      decidedClaimedAmount: amountRate.decidedClaimedAmount,
     },
     preAuth: {
       pending: pendingPreAuths,
@@ -2446,16 +2570,20 @@ export async function getDashboard(tenantId: string) {
       approved: approvedPreAuths,
     },
     settlement: {
-      totalClaimed: decNum(aggregates._sum.claimAmount),
-      totalApprovedAmount: decNum(aggregates._sum.approvedAmount),
-      totalPaid: decNum(aggregates._sum.paidAmount),
-      totalOutstanding: decNum(aggregates._sum.outstandingAmount),
+      totalClaimed: totals.claimed,
+      totalApprovedAmount: totals.approved,
+      totalPaid: totals.paid,
+      totalWrittenOff: totals.writtenOff,
+      totalOutstanding: totals.outstanding,
+      awaitingDecision: totals.awaitingDecision,
     },
     expiry: {
       policiesIn7Days: expiringPolicies,
       claimsIn7Days: expiringClaims,
+      claimsExpired: expiredClaims,
       preAuthsIn7Days: expiringPreAuths,
     },
+    definitions: INSURANCE_METRIC_DEFINITIONS,
     recentClaims,
     recentPreAuths,
   };
@@ -2474,230 +2602,220 @@ interface ReportFilters {
 
 function reportWhere(tenantId: string, filters: ReportFilters): Prisma.InsuranceClaimWhereInput {
   const where: Prisma.InsuranceClaimWhereInput = { tenantId };
+  // Whole IST days, end date inclusive — `new Date('2026-11-13')` is 05:30 IST
+  // and cut off the last day of the range.
   if (filters.fromDate || filters.toDate) {
-    where.submissionDate = {};
-    if (filters.fromDate) (where.submissionDate as any).gte = new Date(filters.fromDate);
-    if (filters.toDate) (where.submissionDate as any).lte = new Date(filters.toDate);
+    where.submissionDate = {
+      ...(filters.fromDate ? { gte: istDayStart(filters.fromDate) } : {}),
+      ...(filters.toDate ? { lte: istDayEnd(filters.toDate) } : {}),
+    };
   }
-  if (filters.insurerId || filters.tpaId) {
-    where.policy = {};
-    if (filters.insurerId) (where.policy as any).insurerId = filters.insurerId;
-    if (filters.tpaId) (where.policy as any).tpaId = filters.tpaId;
+  // Gap 292: the payer is read from the payer case first, then the policy, so
+  // a claim filed through a case with no policy is still found by its payer.
+  const and: Prisma.InsuranceClaimWhereInput[] = [];
+  if (filters.insurerId) {
+    and.push({ OR: [{ insuranceCase: { insurerId: filters.insurerId } }, { policy: { insurerId: filters.insurerId } }] });
   }
+  if (filters.tpaId) {
+    and.push({ OR: [{ insuranceCase: { tpaId: filters.tpaId } }, { policy: { tpaId: filters.tpaId } }] });
+  }
+  if (and.length) where.AND = and;
   return where;
 }
 
+/** Fields every report reads to compute money and resolve the payer. */
+const REPORT_CLAIM_SELECT = {
+  id: true,
+  claimNumber: true,
+  status: true,
+  claimAmount: true,
+  approvedAmount: true,
+  paidAmount: true,
+  writtenOffAmount: true,
+  submissionDate: true,
+  approvalDate: true,
+  patient: { select: { id: true, firstName: true, lastName: true } },
+  ...CLAIM_PAYER_SELECT,
+} satisfies Prisma.InsuranceClaimSelect;
+
 export async function getClaimsSummaryReport(tenantId: string, filters: ReportFilters) {
-  const where = reportWhere(tenantId, filters);
-
-  const groups = await prisma.insuranceClaim.groupBy({
-    by: ['status'],
-    where,
-    _count: true,
-    _sum: { claimAmount: true, approvedAmount: true, paidAmount: true },
+  const claims = await prisma.insuranceClaim.findMany({
+    where: reportWhere(tenantId, filters),
+    select: REPORT_CLAIM_SELECT,
   });
 
-  const total = await prisma.insuranceClaim.aggregate({
-    where,
-    _count: true,
-    _sum: { claimAmount: true, approvedAmount: true, paidAmount: true, outstandingAmount: true },
-  });
+  const byStatus = new Map<string, { status: string; count: number; claimed: number; approved: number; paid: number }>();
+  for (const c of claims) {
+    const row = byStatus.get(c.status) ?? { status: c.status, count: 0, claimed: 0, approved: 0, paid: 0 };
+    row.count += 1;
+    row.claimed = round2(row.claimed + decNum(c.claimAmount));
+    row.approved = round2(row.approved + decNum(c.approvedAmount));
+    row.paid = round2(row.paid + decNum(c.paidAmount));
+    byStatus.set(c.status, row);
+  }
+  const totals = computeClaimTotals(claims);
 
   return {
-    total: {
-      count: total._count,
-      claimed: decNum(total._sum.claimAmount),
-      approved: decNum(total._sum.approvedAmount),
-      paid: decNum(total._sum.paidAmount),
-      outstanding: decNum(total._sum.outstandingAmount),
-    },
-    byStatus: groups.map((g) => ({
-      status: g.status,
-      count: g._count,
-      claimed: decNum(g._sum.claimAmount),
-      approved: decNum(g._sum.approvedAmount),
-      paid: decNum(g._sum.paidAmount),
+    total: totals,
+    // Cancelled and superseded claims are listed so they can be seen, but
+    // flagged: they are not in the totals above (gap 291).
+    byStatus: Array.from(byStatus.values()).map((r) => ({
+      ...r,
+      excludedFromTotals: (CLAIM_VOID_STATUSES as readonly string[]).includes(r.status),
     })),
+    definitions: INSURANCE_METRIC_DEFINITIONS,
   };
 }
 
 export async function getApprovalRateReport(tenantId: string, filters: ReportFilters) {
-  const where = reportWhere(tenantId, filters);
-
   const claims = await prisma.insuranceClaim.findMany({
-    where,
-    select: {
-      status: true,
-      claimAmount: true,
-      approvedAmount: true,
-      policy: { select: { insurer: { select: { id: true, name: true } } } },
-    },
+    where: { ...reportWhere(tenantId, filters), status: { notIn: [...CLAIM_VOID_STATUSES] } },
+    select: REPORT_CLAIM_SELECT,
   });
 
-  // Roll up by insurer
-  const byInsurer = new Map<
-    string,
-    { id: string; name: string; total: number; approved: number; rejected: number; claimed: number; approvedAmt: number }
-  >();
-  let total = 0;
-  let approved = 0;
-  let rejected = 0;
-  let claimedAmt = 0;
-  let approvedAmt = 0;
-
+  // Gap 290: same calculation as the dashboard (computeApprovalRate), and
+  // claims with no payer are grouped rather than silently dropped (gap 292).
+  const byPayer = new Map<string, { id: string | null; name: string; rows: typeof claims }>();
   for (const c of claims) {
-    if (!c.policy) continue;
-    const id = c.policy.insurer.id;
-    const name = c.policy.insurer.name;
-    const row = byInsurer.get(id) ?? {
-      id,
-      name,
-      total: 0,
-      approved: 0,
-      rejected: 0,
-      claimed: 0,
-      approvedAmt: 0,
-    };
-    row.total += 1;
-    row.claimed += decNum(c.claimAmount);
-    row.approvedAmt += decNum(c.approvedAmount);
-    if (
-      c.status === 'approved' ||
-      c.status === 'partially_approved' ||
-      c.status === 'settled' ||
-      c.status === 'partially_settled'
-    ) {
-      row.approved += 1;
-      approved += 1;
-    }
-    if (c.status === 'rejected') {
-      row.rejected += 1;
-      rejected += 1;
-    }
-    total += 1;
-    claimedAmt += decNum(c.claimAmount);
-    approvedAmt += decNum(c.approvedAmount);
-    byInsurer.set(id, row);
+    const payer = resolveClaimPayer(c);
+    const key = payer?.id ?? '__missing__';
+    const g = byPayer.get(key) ?? { id: payer?.id ?? null, name: payer?.name ?? PAYER_MISSING.name, rows: [] };
+    g.rows.push(c);
+    byPayer.set(key, g);
   }
 
+  const summarise = (rows: typeof claims) => {
+    const rate = computeApprovalRate(rows.map((r) => r.status));
+    const amountRate = computeAmountApprovalRate(rows);
+    const totals = computeClaimTotals(rows);
+    return {
+      total: rows.length,
+      decided: rate.decided,
+      approved: rate.approved,
+      rejected: rate.rejected,
+      awaitingDecision: rate.awaitingDecision,
+      approvalRate: rate.approvalRate,
+      // Gap 290: approval by amount over the same decided claims.
+      amountApprovalRate: amountRate.amountApprovalRate,
+      decidedApprovedAmount: amountRate.decidedApprovedAmount,
+      decidedClaimedAmount: amountRate.decidedClaimedAmount,
+      claimedAmount: totals.claimed,
+      approvedAmount: totals.approved,
+    };
+  };
+
   return {
-    overall: {
-      total,
-      approved,
-      rejected,
-      approvalRate: total > 0 ? round2((approved / total) * 100) : 0,
-      claimedAmount: round2(claimedAmt),
-      approvedAmount: round2(approvedAmt),
-    },
-    byInsurer: Array.from(byInsurer.values()).map((row) => ({
-      insurerId: row.id,
-      insurerName: row.name,
-      total: row.total,
-      approved: row.approved,
-      rejected: row.rejected,
-      approvalRate: row.total > 0 ? round2((row.approved / row.total) * 100) : 0,
-      claimedAmount: round2(row.claimed),
-      approvedAmount: round2(row.approvedAmt),
-    })),
+    overall: summarise(claims),
+    byInsurer: Array.from(byPayer.values())
+      .sort((a, b) => (a.id === null ? 1 : b.id === null ? -1 : b.rows.length - a.rows.length))
+      .map((g) => ({ insurerId: g.id, insurerName: g.name, ...summarise(g.rows) })),
+    definitions: INSURANCE_METRIC_DEFINITIONS,
   };
 }
 
-export async function getAgingReport(tenantId: string, filters: ReportFilters) {
-  const where: Prisma.InsuranceClaimWhereInput = {
-    ...reportWhere(tenantId, filters),
-    status: { in: ['submitted', 'under_review', 'approved', 'partially_approved', 'resubmitted', 'partially_settled'] },
-  };
+type AgingBucketKey = '0-30' | '31-60' | '61-90' | '90+';
 
+export async function getAgingReport(tenantId: string, filters: ReportFilters) {
+  // Live claims still waiting on the payer: for a decision, or for money.
+  // Cancelled, rejected, settled and superseded claims never age (gap 291).
   const claims = await prisma.insuranceClaim.findMany({
-    where,
-    select: {
-      id: true,
-      claimNumber: true,
-      claimAmount: true,
-      outstandingAmount: true,
-      status: true,
-      submissionDate: true,
-      policy: { select: { insurer: { select: { id: true, name: true } } } },
-      patient: { select: { id: true, firstName: true, lastName: true } },
+    where: {
+      ...reportWhere(tenantId, filters),
+      status: { in: [...CLAIM_AWAITING_DECISION_STATUSES, ...CLAIM_RECEIVABLE_STATUSES] },
     },
+    select: REPORT_CLAIM_SELECT,
   });
 
-  const now = Date.now();
-  const buckets = {
-    '0-30': { count: 0, amount: 0, claims: [] as typeof claims },
-    '31-60': { count: 0, amount: 0, claims: [] as typeof claims },
-    '61-90': { count: 0, amount: 0, claims: [] as typeof claims },
-    '90+': { count: 0, amount: 0, claims: [] as typeof claims },
+  type Row = (typeof claims)[number] & { outstanding: number; awaiting: number; amount: number };
+  const emptyBucket = () => ({ count: 0, amount: 0, outstanding: 0, awaitingDecision: 0, claims: [] as Row[] });
+  const buckets: Record<AgingBucketKey, ReturnType<typeof emptyBucket>> = {
+    '0-30': emptyBucket(),
+    '31-60': emptyBucket(),
+    '61-90': emptyBucket(),
+    '90+': emptyBucket(),
   };
+  const rows: Row[] = [];
+  const now = Date.now();
 
   for (const c of claims) {
+    const outstanding = claimOutstanding(c);
+    const awaiting = claimAwaitingDecision(c);
+    const amount = round2(outstanding + awaiting);
+    // An approved claim fully covered by payments or write-offs owes nothing.
+    if (amount <= 0) continue;
+    const row: Row = { ...c, outstanding, awaiting, amount };
+    rows.push(row);
     const ageDays = Math.floor((now - new Date(c.submissionDate).getTime()) / (24 * 60 * 60 * 1000));
-    const outstanding = decNum(c.outstandingAmount ?? c.claimAmount);
-    let key: keyof typeof buckets;
-    if (ageDays <= 30) key = '0-30';
-    else if (ageDays <= 60) key = '31-60';
-    else if (ageDays <= 90) key = '61-90';
-    else key = '90+';
-    buckets[key].count += 1;
-    buckets[key].amount += outstanding;
-    buckets[key].claims.push(c);
+    const key: AgingBucketKey = ageDays <= 30 ? '0-30' : ageDays <= 60 ? '31-60' : ageDays <= 90 ? '61-90' : '90+';
+    const b = buckets[key];
+    b.count += 1;
+    b.amount = round2(b.amount + amount);
+    b.outstanding = round2(b.outstanding + outstanding);
+    b.awaitingDecision = round2(b.awaitingDecision + awaiting);
+    b.claims.push(row);
   }
 
   return {
+    total: {
+      count: rows.length,
+      amount: round2(rows.reduce((sum, r) => sum + r.amount, 0)),
+      outstanding: round2(rows.reduce((sum, r) => sum + r.outstanding, 0)),
+      awaitingDecision: round2(rows.reduce((sum, r) => sum + r.awaiting, 0)),
+    },
+    byPayer: groupByPayer(rows, (r) => r.amount),
     buckets: Object.entries(buckets).map(([range, b]) => ({
       range,
       count: b.count,
-      amount: round2(b.amount),
+      amount: b.amount,
+      outstanding: b.outstanding,
+      awaitingDecision: b.awaitingDecision,
       claims: b.claims.slice(0, 50).map((c) => ({
         id: c.id,
         claimNumber: c.claimNumber,
         patient: c.patient,
-        insurer: c.policy?.insurer ?? null,
+        insurer: resolveClaimPayer(c),
         status: c.status,
-        outstandingAmount: decNum(c.outstandingAmount ?? c.claimAmount),
+        outstandingAmount: c.amount,
         submissionDate: c.submissionDate,
       })),
     })),
+    definitions: INSURANCE_METRIC_DEFINITIONS,
   };
 }
 
 export async function getOutstandingReport(tenantId: string, filters: ReportFilters) {
-  const where: Prisma.InsuranceClaimWhereInput = {
-    ...reportWhere(tenantId, filters),
-    status: { in: ['approved', 'partially_approved', 'partially_settled'] },
-  };
-
   const claims = await prisma.insuranceClaim.findMany({
-    where,
-    include: {
-      patient: { select: { id: true, firstName: true, lastName: true } },
-      policy: { select: { id: true, policyNumber: true, insurer: { select: { id: true, name: true } } } },
-    },
+    where: { ...reportWhere(tenantId, filters), status: { in: [...CLAIM_RECEIVABLE_STATUSES] } },
+    select: REPORT_CLAIM_SELECT,
     orderBy: { approvalDate: 'asc' },
   });
 
-  const totalOutstanding = claims.reduce(
-    (sum, c) => sum + decNum(c.outstandingAmount ?? c.approvedAmount ?? c.claimAmount),
-    0,
-  );
+  // Same per-claim rule as the dashboard's Outstanding (gap 290).
+  const rows = claims
+    .map((c) => ({ ...c, outstanding: claimOutstanding(c) }))
+    .filter((r) => r.outstanding > 0);
+  const totalOutstanding = round2(rows.reduce((sum, r) => sum + r.outstanding, 0));
 
   return {
-    totalOutstanding: round2(totalOutstanding),
-    count: claims.length,
-    claims: claims.map((c) => ({
+    totalOutstanding,
+    count: rows.length,
+    byPayer: groupByPayer(rows, (r) => r.outstanding),
+    claims: rows.map((c) => ({
       id: c.id,
       claimNumber: c.claimNumber,
       patient: c.patient,
-      insurer: c.policy?.insurer ?? null,
+      insurer: resolveClaimPayer(c),
       policyNumber: c.policy?.policyNumber ?? null,
       status: c.status,
       claimAmount: decNum(c.claimAmount),
       approvedAmount: decNum(c.approvedAmount),
       paidAmount: decNum(c.paidAmount),
-      outstandingAmount: decNum(c.outstandingAmount ?? c.approvedAmount ?? c.claimAmount),
+      writtenOffAmount: decNum(c.writtenOffAmount),
+      outstandingAmount: c.outstanding,
       submissionDate: c.submissionDate,
       approvalDate: c.approvalDate,
     })),
+    definitions: INSURANCE_METRIC_DEFINITIONS,
   };
 }
 
