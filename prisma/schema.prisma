@@ -9111,11 +9111,217 @@ model AiModel {
 
 
 
+enum UrineCharacter {
+  clear_amber        @map("clear_amber")
+  hazy_cloudy        @map("hazy_cloudy")
+  hematuria          @map("hematuria")
+  concentrated_dark  @map("concentrated_dark")
+}
+
+model IcuFluidBalance {
+  id            String          @id @default(uuid())
+  tenantId      String          @map("tenant_id")
+  admissionId   String          @map("admission_id")
+  patientId     String          @map("patient_id")
+
+  // "Hour (IST)" entry time — one row per hourly charting.
+  recordedAt    DateTime        @map("recorded_at")
+
+  // Fluid IN / OUT, all in mL (unit in column name).
+  ivCrystMl     Int?            @map("iv_cryst_ml")
+  bloodProdMl   Int?            @map("blood_prod_ml")
+  carrierMedMl  Int?            @map("carrier_med_ml")
+  enteralMl     Int?            @map("enteral_ml")
+  foleyUrineMl  Int?            @map("foley_urine_ml")
+  drainsIcdMl   Int?            @map("drains_icd_ml")
+
+  urineCharacter UrineCharacter? @map("urine_character")
+
+  recordedById  String?         @map("recorded_by_id")
+  createdAt     DateTime        @default(now()) @map("created_at")
+  updatedAt     DateTime        @default(now()) @updatedAt @map("updated_at")
+
+  @@index([tenantId, admissionId])
+  @@map("icu_fluid_balance")
+}
+
+enum VentMode {
+  prvc        @map("prvc")
+  vcv         @map("vcv")
+  pcv         @map("pcv")
+  psv         @map("psv")
+  niv_bipap   @map("niv_bipap")
+  hfnc        @map("hfnc")
+}
+
+model IcuAbgVent {
+  id              String    @id @default(uuid())
+  tenantId        String    @map("tenant_id")
+  admissionId     String    @map("admission_id")
+  patientId       String    @map("patient_id")
+  recordedAt      DateTime  @map("recorded_at")
+
+  // Blood gas values (unit in column name; pH is unitless)
+  ph              Decimal?  @db.Decimal(4, 2)
+  paO2Mmhg        Decimal?  @map("pao2_mmhg")      @db.Decimal(6, 2)
+  paCo2Mmhg       Decimal?  @map("paco2_mmhg")     @db.Decimal(6, 2)
+  hco3Meql        Decimal?  @map("hco3_meql")      @db.Decimal(6, 2)
+  baseExcessMeql  Decimal?  @map("base_excess_meql") @db.Decimal(6, 2)
+  lactateMmoll    Decimal?  @map("lactate_mmoll")  @db.Decimal(5, 2)
+  fio2Pct         Decimal?  @map("fio2_pct")       @db.Decimal(5, 2)
+  sodiumMeql      Decimal?  @map("sodium_meql")    @db.Decimal(6, 2)
+  chlorideMeql    Decimal?  @map("chloride_meql")  @db.Decimal(6, 2)
+
+  // Ventilator settings
+  mode            VentMode? @map("mode")
+  tidalVolumeMl   Int?      @map("tidal_volume_ml")
+  peepCmh2o       Decimal?  @map("peep_cmh2o")     @db.Decimal(5, 2)
+  pipCmh2o        Decimal?  @map("pip_cmh2o")      @db.Decimal(5, 2)
+  pplatCmh2o      Decimal?  @map("pplat_cmh2o")    @db.Decimal(5, 2)
+  breathingRatePerMin Int?  @map("breathing_rate_per_min")
+  ettCuffCmh2o    Decimal?  @map("ett_cuff_cmh2o") @db.Decimal(5, 2)
+
+  recordedById    String?   @map("recorded_by_id")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@index([tenantId, admissionId])
+  @@map("icu_abg_vent")
+}
 
 
 
 
+model IcuFastHugSepsis {
+  id                  String    @id @default(uuid())
+  tenantId            String    @map("tenant_id")
+  admissionId         String    @map("admission_id")
+  patientId           String    @map("patient_id")
+  recordedAt          DateTime  @map("recorded_at")
 
+  // FAST-HUG — one line each (free text)
+  feeding             String?   @db.VarChar(255)
+  analgesia           String?   @db.VarChar(255)
+  sedation            String?   @db.VarChar(255)
+  thromboprophylaxis  String?   @db.VarChar(255)
+  headOfBed           String?   @map("head_of_bed") @db.VarChar(255)
+  ulcerProphylaxis    String?   @map("ulcer_prophylaxis") @db.VarChar(255)
+  glucoseControl      String?   @map("glucose_control") @db.VarChar(255)
+  bowelCare           String?   @map("bowel_care") @db.VarChar(255)
+
+  // Sepsis bundle — each a yes/no plus its detail
+  bloodCulturesDone   Boolean?  @map("blood_cultures_done")
+  bloodCulturesTime   DateTime? @map("blood_cultures_time")
+  antibioticsGiven    Boolean?  @map("antibiotics_given")
+  antibioticName      String?   @map("antibiotic_name") @db.VarChar(255)
+  lactateDone         Boolean?  @map("lactate_done")
+  lactateMmoll        Decimal?  @map("lactate_mmoll") @db.Decimal(5, 2)
+  fluidBolusGiven     Boolean?  @map("fluid_bolus_given")
+  bolusVolumeMl       Int?      @map("bolus_volume_ml")
+  vasopressorsStarted Boolean?  @map("vasopressors_started")
+  mapTargetReached    Boolean?  @map("map_target_reached")
+
+  recordedById        String?   @map("recorded_by_id")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@index([tenantId, admissionId])
+  @@map("icu_fasthug_sepsis")
+}
+
+
+
+enum InvasiveLineStatus {
+  active   @map("active")
+  removed  @map("removed")
+}
+
+model IcuInvasiveLine {
+  id            String              @id @default(uuid())
+  tenantId      String              @map("tenant_id")
+  admissionId   String              @map("admission_id")
+  patientId     String              @map("patient_id")
+
+  deviceType    String              @map("device_type") @db.VarChar(120)
+  status        InvasiveLineStatus  @default(active)
+  bodySite      String?             @map("body_site") @db.VarChar(120)
+  details       String?             @db.VarChar(255)
+  insertedAt    DateTime?           @map("inserted_at")
+  insertedBy    String?             @map("inserted_by") @db.VarChar(120)
+  dressingDue   DateTime?           @map("dressing_due") @db.Date
+
+  recordedById  String?             @map("recorded_by_id")
+  createdAt     DateTime            @default(now()) @map("created_at")
+  updatedAt     DateTime            @default(now()) @updatedAt @map("updated_at")
+
+  @@index([tenantId, admissionId])
+  @@map("icu_invasive_line")
+}
+
+
+enum InfusionPumpStatus {
+  running  @map("running")
+  paused   @map("paused")
+  stopped  @map("stopped")
+}
+
+model IcuInfusionPump {
+  id             String              @id @default(uuid())
+  tenantId       String              @map("tenant_id")
+  admissionId    String              @map("admission_id")
+  patientId      String              @map("patient_id")
+
+  // Noradrenaline calculator inputs (the only fields captured for now).
+  noradSyringeMg    Decimal?         @map("norad_syringe_mg") @db.Decimal(10, 3)
+  noradDoseMcgKgMin Decimal?         @map("norad_dose_mcg_kg_min") @db.Decimal(10, 4)
+  weightKg          Decimal?         @map("weight_kg") @db.Decimal(6, 2)
+
+  // Pump fields — optional for now (form only captures the norad calculator).
+  drugName       String?             @map("drug_name") @db.VarChar(120)
+  concentration  String?             @db.VarChar(120)   // e.g. "4 mg / 50 mL"
+  dose           Decimal?            @db.Decimal(10, 3)
+  doseUnit       String?             @map("dose_unit") @db.VarChar(40)   // variable unit → stored
+  rateMlhr       Decimal?            @map("rate_mlhr") @db.Decimal(8, 2)
+  status         InfusionPumpStatus  @default(running)
+  indication     String?             @db.VarChar(255)
+
+  recordedById   String?             @map("recorded_by_id")
+  createdAt      DateTime            @default(now()) @map("created_at")
+  updatedAt      DateTime            @default(now()) @updatedAt @map("updated_at")
+
+  @@index([tenantId, admissionId])
+  @@map("icu_infusion_pump")
+}
+
+
+
+
+model IcuSeverityScore {
+  id                 String    @id @default(uuid())
+  tenantId           String    @map("tenant_id")
+  admissionId        String    @map("admission_id")
+  patientId          String    @map("patient_id")
+  recordedAt         DateTime  @map("recorded_at")
+
+  // SOFA — each organ system scored 0–4
+  sofaRespiration    Int?      @map("sofa_respiration")
+  sofaCoagulation    Int?      @map("sofa_coagulation")
+  sofaLiver          Int?      @map("sofa_liver")
+  sofaCardiovascular Int?      @map("sofa_cardiovascular")
+  sofaCns            Int?      @map("sofa_cns")
+  sofaRenal          Int?      @map("sofa_renal")
+  sofaTotal          Int?      @map("sofa_total")        // auto-summed (0–24)
+
+  // APACHE II total (0–71)
+  apacheScore        Int?      @map("apache_score")
+
+  recordedById       String?   @map("recorded_by_id")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@index([tenantId, admissionId])
+  @@map("icu_severity_score")
+}
 
 
 
