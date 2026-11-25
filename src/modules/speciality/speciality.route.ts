@@ -2,7 +2,7 @@ import { authenticate } from "../../middleware/authenticate";
 import { Router } from "express";
 import * as specialityController from './speciality.controller';
 import { addSpecialityDataSchema } from "./speciality.validation";
-import { validate } from "@/middleware/validate";
+import { validate } from "../../middleware/validate";
 
 export const specialityRoute=Router();
 
