@@ -14,6 +14,7 @@ import type {
 } from './insurance.workflow.validation';
 import { notifyPatientInsuranceMilestone } from './insurance.notifications';
 import { applyPaymentToBill } from '../billing/bill-payment-ledger';
+import { escalationDueAt, escalationTypeForPreAuth, resolveEscalationRules } from './insurance.escalation';
 
 const CASE_INCLUDE = {
   patient: { select: { id: true, mrn: true, firstName: true, lastName: true, phone: true, abhaNumber: true, deceasedAt: true } },
@@ -628,8 +629,20 @@ export async function getSlaQueue(tenantId: string) {
     },
     orderBy: { decisionDueAt: 'asc' },
   });
+  // Gap 294: each row says when (and to whom) it escalates under this
+  // hospital's configured rule, or that it already has.
+  const rules = await resolveEscalationRules(tenantId);
   return requests.map(({ auditEvents, tpaCommunicationLogs, ...item }) => ({
     ...item,
+    escalation: (() => {
+      const rule = rules[escalationTypeForPreAuth(item.requestType)];
+      return {
+        targetRole: item.escalatedToRole ?? rule.targetRole,
+        escalateAfterHours: rule.escalateAfterHours,
+        dueAt: item.decisionDueAt ? escalationDueAt(item.decisionDueAt, rule) : null,
+        escalatedAt: item.escalatedAt,
+      };
+    })(),
     breached: Boolean(item.decisionDueAt && item.decisionDueAt <= now),
     alert: Boolean(item.alertAt && item.alertAt <= now),
     remainingMinutes: item.decisionDueAt ? Math.ceil((item.decisionDueAt.getTime() - now.getTime()) / 60_000) : null,

@@ -19,12 +19,13 @@
 // crore is. Applicability is two switches on the hospital's own GST profile,
 // and the deadline and the consignment threshold are numbers beside them.
 //
-// WHAT THESE REPORTS DO NOT DO. They do not talk to an Invoice Registration
-// Portal. Nothing in this system does yet — that needs a provider, credentials
-// and the hospital's own decision about which one. What these do is hold the
-// portal's answer up against what the hospital issued and say where the two
-// disagree, which is the part an accountant needs and the part that survives
-// whichever provider is eventually chosen.
+// WHAT THESE REPORTS DO NOT DO. They do not talk to the Invoice Registration
+// Portal themselves. Generation, retry and cancellation live in
+// gst-einvoice.service.ts (gap #266) and need a provider plus the hospital's
+// portal login; each report carries `integration` — whether that is READY — so
+// the screen offers Generate / Retry / Cancel only when it can work. What the
+// reports do is hold the portal's answer up against what the hospital issued
+// and say where the two disagree.
 //
 // So an empty D-1 does NOT mean "all good". It means nothing has been sent,
 // and each report says which of those two it is IN WORDS rather than leaving a
@@ -43,6 +44,8 @@ import { gstAppliesOn, type GstProfile } from '../../shared/gst-profile';
 import { logger } from '../../config/logger';
 import { fullName } from '../../shared/person-name';
 import { istDayNumber } from '../../shared/date.utils';
+import { getPortalReadiness } from './gst-portal.credentials';
+import { ewayCancelWindowHours, irnCancelWindowHours, EWAY_CANCEL_REASONS } from '../../services/einvoice';
 
 const n = (v: unknown) => r2(Number(v ?? 0));
 
@@ -81,6 +84,29 @@ function applicabilityOf(profile: GstProfile, kind: 'e-invoice' | 'e-way bill') 
         'Turn it on in Settings → GST when the hospital\'s accountant says it does.',
     settingsPath: '/hospital/settings/gst',
   };
+}
+
+/**
+ * G-5 (gap #266): whether documents can actually be sent from these screens.
+ * Never throws — a report must render even when the integration cannot be read.
+ */
+async function integrationOf(tenantId: string, portal: 'einvoice' | 'eway') {
+  // The window that portal allows a cancellation in: after the IRN's
+  // acknowledgement, or after the e-way bill's generation.
+  const cancelWindowHours = portal === 'eway' ? ewayCancelWindowHours() : irnCancelWindowHours();
+  try {
+    const r = await getPortalReadiness(tenantId, portal);
+    return {
+      ready: r.ready,
+      reason: r.reason,
+      provider: r.provider.provider,
+      sandbox: r.provider.sandbox,
+      cancelWindowHours,
+    };
+  } catch (err) {
+    logger.warn({ err, tenantId, portal }, 'Could not read the e-invoice integration status');
+    return { ready: false, reason: 'The integration status could not be read', provider: null, sandbox: false, cancelWindowHours };
+  }
 }
 
 /**
@@ -198,7 +224,7 @@ async function loadIrnRows(
         id: true, creditNoteNumber: true, issueDate: true, noteType: true,
         recipientGstin: true, taxableValue: true, taxAmount: true, totalAmount: true,
         irn: true, irnAckNo: true, irnAckDate: true, irnStatus: true,
-        irnError: true, irnAttemptedAt: true,
+        irnError: true, irnAttemptedAt: true, irnCancelledAt: true,
         patient: { select: { firstName: true, lastName: true } },
       },
     }),
@@ -248,10 +274,11 @@ async function loadIrnRows(
         irn: c.irn,
         ackNo: c.irnAckNo,
         ackDate: c.irnAckDate,
-        status: statusOf(c),
+        // G-5 (gap #266): a note's IRN can be cancelled too.
+        status: c.irnCancelledAt ? 'cancelled' : statusOf(c),
         error: c.irnError,
         attemptedAt: c.irnAttemptedAt,
-        cancelledAt: null,
+        cancelledAt: c.irnCancelledAt,
         daysToDeadline: c.irn ? null : daysLeft(c.issueDate, uploadDays, todayIST),
       })),
   ].sort((a, b) => a.documentDate.getTime() - b.documentDate.getTime());
@@ -270,7 +297,7 @@ export async function getEInvoiceRegister(tenantId: string, query: EInvoiceQuery
   const { getGstProfile } = await import('../hospital-settings/hospital-settings.service');
   const profile = await getGstProfile(tenantId);
   const applicability = applicabilityOf(profile, 'e-invoice');
-  const rows = await loadIrnRows(tenantId, profile, query);
+  const [rows, integration] = await Promise.all([loadIrnRows(tenantId, profile, query), integrationOf(tenantId, 'einvoice')]);
 
   const count = (s: string) => rows.filter((r) => r.status === s).length;
   const summary = {
@@ -297,12 +324,13 @@ export async function getEInvoiceRegister(tenantId: string, query: EInvoiceQuery
         'Only supplies to a registered recipient — an insurer, a TPA or a corporate — need an IRN; ' +
         "a patient's own bill never does."
       : summary.registered === 0
-        ? `${rows.length} document(s) needed an IRN and none has been registered. This system is not ` +
-          'connected to an Invoice Registration Portal, so the IRNs must be obtained through the ' +
-          "hospital's e-invoicing provider and recorded here."
+        ? `${rows.length} document(s) needed an IRN and none has been registered. ` +
+          (integration.ready
+            ? 'Generate them from the Failed IRN report (D-2).'
+            : `E-invoice generation is not available: ${integration.reason}.`)
         : `${summary.registered} of ${rows.length} registered.`;
 
-  return { applicability, summary, rows, note };
+  return { applicability, integration, summary, rows, note };
 }
 
 /**
@@ -321,7 +349,10 @@ export async function getFailedIrnReport(tenantId: string, query: EInvoiceQuery 
   const { getGstProfile } = await import('../hospital-settings/hospital-settings.service');
   const profile = await getGstProfile(tenantId);
   const applicability = applicabilityOf(profile, 'e-invoice');
-  const all = await loadIrnRows(tenantId, profile, { from: query.from, to: query.to });
+  const [all, integration] = await Promise.all([
+    loadIrnRows(tenantId, profile, { from: query.from, to: query.to }),
+    integrationOf(tenantId, 'einvoice'),
+  ]);
 
   const rows = all
     .filter((r) => r.status === 'failed' || r.status === 'not_sent' || r.status === 'pending')
@@ -354,6 +385,7 @@ export async function getFailedIrnReport(tenantId: string, query: EInvoiceQuery 
 
   return {
     applicability,
+    integration,
     /** The window the deadline is measured against, from the hospital's settings. */
     uploadDays: profile.eInvoiceUploadDays,
     summary,
@@ -398,6 +430,8 @@ export async function getEwayBillRegister(tenantId: string, query: EInvoiceQuery
         id: true, createdAt: true, quantity: true, returnNumber: true, status: true,
         creditNoteNumber: true, creditAmount: true,
         ewayBillNumber: true, ewayBillDate: true,
+        ewayBillStatus: true, ewayBillError: true, ewayBillAttemptedAt: true, ewayBillValidUpto: true,
+        ewayBillTransport: true, ewayBillCancelledAt: true, ewayBillCancelReasonCode: true, ewayBillCancelRemark: true,
         drug: { select: { drugName: true, hsnCode: true } },
         supplier: { select: { name: true, gstNumber: true, address: true } },
         drugBatch: { select: { purchasePrice: true } },
@@ -409,6 +443,7 @@ export async function getEwayBillRegister(tenantId: string, query: EInvoiceQuery
     });
 
   const threshold = profile.eWayBillThreshold;
+  const integration = await integrationOf(tenantId, 'eway');
   const all = returns.map((row) => {
     // The credited value where the supplier stated one, otherwise what the
     // stock was bought for. Never a sale price — nothing is being sold here.
@@ -432,22 +467,44 @@ export async function getEwayBillRegister(tenantId: string, query: EInvoiceQuery
       destination: row.supplier?.address ?? null,
       ewayBillNumber: row.ewayBillNumber,
       ewayBillDate: row.ewayBillDate,
+      // G-5 (gap #266): the portal state. 'not_generated' | 'pending' |
+      // 'generated' | 'failed' (with the portal's words) | 'cancelled'.
+      ewayStatus: row.ewayBillCancelledAt
+        ? 'cancelled'
+        : row.ewayBillNumber
+          ? 'generated'
+          : (row.ewayBillStatus ?? 'not_generated'),
+      ewayError: row.ewayBillError,
+      ewayAttemptedAt: row.ewayBillAttemptedAt,
+      ewayValidUpto: row.ewayBillValidUpto,
+      ewayCancelledAt: row.ewayBillCancelledAt,
+      ewayCancelReason: row.ewayBillCancelReasonCode
+        ? `${EWAY_CANCEL_REASONS[row.ewayBillCancelReasonCode as keyof typeof EWAY_CANCEL_REASONS] ?? row.ewayBillCancelReasonCode}` +
+          (row.ewayBillCancelRemark ? ` — ${row.ewayBillCancelRemark}` : '')
+        : null,
+      /** The transport details last sent, so Retry can offer them again. */
+      ewayTransport: (row.ewayBillTransport ?? null) as Record<string, unknown> | null,
       /** Above the hospital's own consignment threshold. */
       billRequired: value > threshold,
     };
   });
 
-  const rows = all.filter((r) => r.billRequired);
+  // Above the threshold — plus anything that has been sent at all, so a
+  // failure or a cancellation never drops off the register.
+  const rows = all.filter((r) => r.billRequired || r.ewayStatus !== 'not_generated');
   const missing = rows.filter((r) => !r.ewayBillNumber);
 
   return {
     applicability,
+    integration,
     threshold,
     summary: {
       movements: all.length,
-      aboveThreshold: rows.length,
+      aboveThreshold: all.filter((r) => r.billRequired).length,
       withBill: rows.length - missing.length,
       missingBill: missing.length,
+      failed: rows.filter((r) => r.ewayStatus === 'failed').length,
+      cancelled: rows.filter((r) => r.ewayStatus === 'cancelled').length,
       totalValue: r2(rows.reduce((t, r) => t + r.consignmentValue, 0)),
     },
     rows,
@@ -459,6 +516,9 @@ export async function getEwayBillRegister(tenantId: string, query: EInvoiceQuery
         : rows.length === 0
           ? `${all.length} vendor return(s), none above the ₹${threshold.toLocaleString('en-IN')} ` +
             "consignment threshold in the hospital's GST settings, so none needs an e-way bill."
-          : `${rows.length} movement(s) above the threshold, ${missing.length} without an e-way bill number recorded.`,
+          : `${rows.length} movement(s) above the threshold, ${missing.length} without an e-way bill number recorded.` +
+            (rows.some((r) => r.ewayStatus === 'failed')
+              ? ` ${rows.filter((r) => r.ewayStatus === 'failed').length} refused by the portal — the reason is on the row, with Retry.`
+              : ''),
   };
 }

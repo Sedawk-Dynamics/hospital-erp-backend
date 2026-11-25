@@ -180,7 +180,9 @@ async function assertUniquePayer(
   const gstin = candidate.gstin ? candidate.gstin.toUpperCase() : null;
   if (!name && !gstin) return;
   const select = { id: true, name: true, gstin: true, isActive: true } as const;
-  const where = { tenantId, ...(excludeId ? { id: { not: excludeId } } : {}) };
+  // A record already merged into another (gap 293) is history, not a payer:
+  // its name lives on in the kept record, which is the one to compare with.
+  const where = { tenantId, mergedIntoId: null, ...(excludeId ? { id: { not: excludeId } } : {}) };
   const rows =
     kind === 'insurer'
       ? await prisma.insurer.findMany({ where, select })
@@ -202,6 +204,27 @@ async function assertUniquePayer(
         { existingId: row.id, existingName: row.name, field: 'gstin' },
       );
     }
+  }
+}
+
+/**
+ * Gap 293: a merged record stays deactivated — reactivating it would bring the
+ * duplicate back. Its references now live on the kept record.
+ */
+function assertNotMergedReactivation(existing: { mergedIntoId?: string | null }, isActive: boolean | undefined) {
+  if (existing.mergedIntoId && isActive === true) {
+    throw AppError.conflict(
+      'This record was merged into another and cannot be reactivated. Use the record it was merged into.',
+      'PAYER_MERGED',
+      { mergedIntoId: existing.mergedIntoId },
+    );
+  }
+}
+
+/** A merged record is kept (never hard-deleted) so the merge audit trail resolves. */
+function assertNotMergedDelete(existing: { mergedIntoId?: string | null }) {
+  if (existing.mergedIntoId) {
+    throw AppError.badRequest('A merged record is kept for the audit trail and cannot be deleted.');
   }
 }
 
@@ -286,6 +309,7 @@ export async function updateInsurer(tenantId: string, id: string, data: UpdateIn
   if (!existing) {
     throw AppError.notFound('Insurer not found');
   }
+  assertNotMergedReactivation(existing, data.isActive);
 
   await assertUniquePayer(
     'insurer',
@@ -326,6 +350,7 @@ export async function deleteInsurer(tenantId: string, id: string) {
   if (existing.insurancePolicies.length > 0) {
     throw AppError.badRequest('Cannot delete insurer with associated policies. Deactivate instead.');
   }
+  assertNotMergedDelete(existing);
 
   await prisma.insurer.delete({ where: { id } });
 
@@ -413,6 +438,7 @@ export async function updateTPA(tenantId: string, id: string, data: UpdateTPAInp
   if (!existing) {
     throw AppError.notFound('TPA provider not found');
   }
+  assertNotMergedReactivation(existing, data.isActive);
 
   await assertUniquePayer(
     'tpa',
@@ -453,6 +479,7 @@ export async function deleteTPA(tenantId: string, id: string) {
       'Cannot delete TPA provider with associated policies. Deactivate instead.',
     );
   }
+  assertNotMergedDelete(existing);
 
   await prisma.tpaProvider.delete({ where: { id } });
 

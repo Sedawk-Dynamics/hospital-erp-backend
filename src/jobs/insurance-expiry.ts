@@ -6,6 +6,11 @@ import { usersWithRoles } from '../shared/notify';
 import { fullName } from '../shared/person-name';
 import { writeNotificationOnce } from '../modules/communication/notification-writer';
 import {
+  escalationDueAt,
+  escalationTypeForPreAuth,
+  resolveEscalationRules,
+} from '../modules/insurance/insurance.escalation';
+import {
   CLAIM_DEADLINE_OPEN_STATUSES,
   claimExpiredBefore,
   describeClaimDeadline,
@@ -49,11 +54,61 @@ async function createNotificationOnce(data: {
 }
 
 /**
+ * The people who work the insurance desk: they get the warning and breach
+ * alerts. Escalation beyond them goes to the role the hospital configured.
+ */
+async function getSlaWorkingTeam(tenantId: string): Promise<string[]> {
+  return usersWithRoles(tenantId, ['insurance_staff']);
+}
+
+/**
+ * Users holding the configured escalation role. When nobody holds it (role
+ * emptied after it was configured), fall back to the hospital administrator so
+ * the escalation still reaches a person — and say so in the history.
+ */
+async function escalationRecipients(tenantId: string, targetRole: string): Promise<{ userIds: string[]; fallback: boolean }> {
+  const userIds = await usersWithRoles(tenantId, [targetRole]);
+  if (userIds.length || targetRole === 'admin') return { userIds, fallback: false };
+  return { userIds: await usersWithRoles(tenantId, ['admin']), fallback: true };
+}
+
+async function notifyAll(
+  userIds: Iterable<string>,
+  data: Omit<Parameters<typeof createNotificationOnce>[0], 'userId'>,
+  logContext: Record<string, unknown>,
+): Promise<number> {
+  let created = 0;
+  for (const userId of userIds) {
+    try {
+      if (await createNotificationOnce({ ...data, userId })) created += 1;
+    } catch (err) {
+      logger.warn({ err, ...logContext, userId }, 'Insurance SLA notification failed');
+    }
+  }
+  return created;
+}
+
+/**
  * Five-minute operational clock for IRDAI authorization SLAs and payer query
  * deadlines. Notification writes are idempotent, and failures are isolated so
  * they can never roll back a clinical or financial workflow action.
+ *
+ * Gap 294: escalation follows each hospital's InsuranceEscalationSetting — a
+ * breached request is escalated to the configured role once it has been
+ * overdue for the configured number of hours, and every escalation is written
+ * to the request's audit history.
  */
 export async function runInsuranceSlaJob(now = new Date()) {
+  const rulesByTenant = new Map<string, ReturnType<typeof resolveEscalationRules>>();
+  const rulesFor = (tenantId: string) => {
+    let rules = rulesByTenant.get(tenantId);
+    if (!rules) {
+      rules = resolveEscalationRules(tenantId);
+      rulesByTenant.set(tenantId, rules);
+    }
+    return rules;
+  };
+
   const preAuths = await prisma.preAuthorizationRequest.findMany({
     where: {
       status: { in: ['pending', 'on_hold'] },
@@ -63,28 +118,78 @@ export async function runInsuranceSlaJob(now = new Date()) {
   });
 
   let authorizationAlerts = 0;
+  let escalations = 0;
   for (const preAuth of preAuths) {
     const breached = Boolean(preAuth.decisionDueAt && preAuth.decisionDueAt <= now);
     const finalDischarge = preAuth.requestType === 'finalDischarge';
-    const recipients = new Set(await getInsuranceRecipients(preAuth.tenantId));
-    if (preAuth.submittedBy) recipients.add(preAuth.submittedBy);
-    const title = breached
-      ? `${finalDischarge ? 'Final discharge authorization' : 'Pre-authorization'} SLA breached`
-      : `${finalDischarge ? 'Final discharge authorization' : 'Pre-authorization'} SLA warning`;
+    const kind = finalDischarge ? 'Final discharge authorization' : 'Pre-authorization';
+    const eventKey = finalDischarge ? 'final_discharge_auth_sla' : 'preauth_sla';
     const deadline = preAuth.decisionDueAt ? formatDateIST(preAuth.decisionDueAt) : 'the configured deadline';
-    const message = `${preAuth.requestNumber} for ${fullName(preAuth.patient)} ${breached ? 'passed' : 'is approaching'} ${deadline}. Follow up with the payer immediately.`;
-    for (const userId of recipients) {
-      try {
-        if (await createNotificationOnce({ tenantId: preAuth.tenantId, userId, title, message, referenceType: 'pre_authorization_request', referenceId: preAuth.id, eventKey: finalDischarge ? 'final_discharge_auth_sla' : 'preauth_sla', reminderStage: breached ? 'breached' : 'warning' })) authorizationAlerts += 1;
-      } catch (err) {
-        logger.warn({ err, preAuthId: preAuth.id, userId }, 'Insurance SLA notification failed');
-      }
-    }
-    if (breached && !preAuth.escalatedAt) {
-      await prisma.preAuthorizationRequest.update({ where: { id: preAuth.id }, data: { escalatedAt: now } });
+    const patientName = fullName(preAuth.patient);
+
+    // Warning / breach: the owner and the insurance desk.
+    const team = new Set(await getSlaWorkingTeam(preAuth.tenantId));
+    if (preAuth.submittedBy) team.add(preAuth.submittedBy);
+    authorizationAlerts += await notifyAll(team, {
+      tenantId: preAuth.tenantId,
+      title: `${kind} SLA ${breached ? 'breached' : 'warning'}`,
+      message: `${preAuth.requestNumber} for ${patientName} ${breached ? 'passed' : 'is approaching'} ${deadline}. Follow up with the payer immediately.`,
+      referenceType: 'pre_authorization_request',
+      referenceId: preAuth.id,
+      eventKey,
+      reminderStage: breached ? 'breached' : 'warning',
+    }, { preAuthId: preAuth.id });
+
+    // Escalation: the configured role, once the configured hours have passed.
+    if (!breached || !preAuth.decisionDueAt || preAuth.escalatedAt) continue;
+    const ruleType = escalationTypeForPreAuth(preAuth.requestType);
+    const rule = (await rulesFor(preAuth.tenantId))[ruleType];
+    if (escalationDueAt(preAuth.decisionDueAt, rule) > now) continue;
+
+    const { userIds, fallback } = await escalationRecipients(preAuth.tenantId, rule.targetRole);
+    authorizationAlerts += await notifyAll(userIds, {
+      tenantId: preAuth.tenantId,
+      title: `${kind} escalated — overdue ${rule.escalateAfterHours}h+`,
+      message: `${preAuth.requestNumber} for ${patientName} passed its deadline (${deadline}) and is still undecided. Escalated to ${rule.targetRole.replace(/_/g, ' ')}.`,
+      referenceType: 'pre_authorization_request',
+      referenceId: preAuth.id,
+      eventKey,
+      reminderStage: 'escalated',
+    }, { preAuthId: preAuth.id });
+    escalations += 1;
+    try {
+      await prisma.$transaction(async (tx) => {
+        const marked = await tx.preAuthorizationRequest.updateMany({
+          where: { id: preAuth.id, escalatedAt: null },
+          data: { escalatedAt: now, escalatedToRole: rule.targetRole },
+        });
+        // A concurrent run already escalated it: keep one history entry.
+        if (!marked.count) return;
+        await tx.insuranceAuditEvent.create({
+          data: {
+            tenantId: preAuth.tenantId,
+            insuranceCaseId: preAuth.insuranceCaseId,
+            preAuthId: preAuth.id,
+            eventType: 'preauth.sla_escalated',
+            fromStatus: preAuth.status,
+            toStatus: preAuth.status,
+            details: {
+              ruleType,
+              targetRole: rule.targetRole,
+              escalateAfterHours: rule.escalateAfterHours,
+              decisionDueAt: preAuth.decisionDueAt!.toISOString(),
+              recipients: userIds.length,
+              fallbackToAdmin: fallback,
+            },
+          },
+        });
+      });
+    } catch (err) {
+      logger.warn({ err, preAuthId: preAuth.id }, 'Recording pre-auth escalation failed');
     }
   }
 
+  // Queries come into view 24h before they are due, so the owner is warned.
   const queryHorizon = new Date(now.getTime() + 24 * 60 * 60 * 1000);
   const queries = await prisma.claimQuery.findMany({
     where: { status: 'open', responseDueAt: { not: null, lte: queryHorizon } },
@@ -92,36 +197,81 @@ export async function runInsuranceSlaJob(now = new Date()) {
       claim: {
         select: {
           claimNumber: true,
+          insuranceCaseId: true,
           patient: { select: { firstName: true, lastName: true } },
         },
       },
     },
   });
 
+  // escalationLevel: 1 = due within 24h, 2 = overdue, 3 = escalated to the role.
   let queryAlerts = 0;
   for (const query of queries) {
-    const overdue = Boolean(query.responseDueAt && query.responseDueAt <= now);
-    const level = overdue ? 2 : 1;
+    if (!query.responseDueAt) continue;
+    const rule = (await rulesFor(query.tenantId)).claim_query;
+    const overdue = query.responseDueAt <= now;
+    const escalate = overdue && escalationDueAt(query.responseDueAt, rule) <= now;
+    const level = escalate ? 3 : overdue ? 2 : 1;
     if (query.escalationLevel >= level) continue;
+    const reference = `${query.claim.claimNumber ?? query.claimId} for ${fullName(query.claim.patient)}: ${query.subject}`;
+    const due = formatDateIST(query.responseDueAt);
+    const common = { tenantId: query.tenantId, referenceType: 'claim_query', referenceId: query.id, eventKey: 'claim_query_response' };
+
+    if (level === 3) {
+      const { userIds, fallback } = await escalationRecipients(query.tenantId, rule.targetRole);
+      queryAlerts += await notifyAll(userIds, {
+        ...common,
+        title: `Insurance query escalated — overdue ${rule.escalateAfterHours}h+`,
+        message: `${reference}. The reply was due ${due} and has not been sent. Escalated to ${rule.targetRole.replace(/_/g, ' ')}.`,
+        reminderStage: 'escalated',
+      }, { queryId: query.id });
+      escalations += 1;
+      try {
+        await prisma.$transaction(async (tx) => {
+          const marked = await tx.claimQuery.updateMany({
+            where: { id: query.id, escalationLevel: { lt: 3 } },
+            data: { escalationLevel: 3, escalatedAt: now, escalatedToRole: rule.targetRole },
+          });
+          if (!marked.count) return;
+          await tx.insuranceAuditEvent.create({
+            data: {
+              tenantId: query.tenantId,
+              claimId: query.claimId,
+              insuranceCaseId: query.claim.insuranceCaseId,
+              eventType: 'claim_query.sla_escalated',
+              details: {
+                queryId: query.id,
+                targetRole: rule.targetRole,
+                escalateAfterHours: rule.escalateAfterHours,
+                responseDueAt: query.responseDueAt!.toISOString(),
+                recipients: userIds.length,
+                fallbackToAdmin: fallback,
+              },
+            },
+          });
+        });
+      } catch (err) {
+        logger.warn({ err, queryId: query.id }, 'Recording claim query escalation failed');
+      }
+      continue;
+    }
+
     const recipients = new Set<string>();
     if (query.raisedBy) recipients.add(query.raisedBy);
-    if (overdue) (await getInsuranceRecipients(query.tenantId)).forEach((id) => recipients.add(id));
-    const title = overdue ? 'Insurance query response overdue' : 'Insurance query response due within 24 hours';
-    const message = `${query.claim.claimNumber ?? query.claimId} for ${fullName(query.claim.patient)}: ${query.subject}. Reply by ${query.responseDueAt ? formatDateIST(query.responseDueAt) : 'the configured deadline'}.`;
-    for (const userId of recipients) {
-      try {
-        if (await createNotificationOnce({ tenantId: query.tenantId, userId, title, message, referenceType: 'claim_query', referenceId: query.id, eventKey: 'claim_query_response', reminderStage: overdue ? 'overdue' : 'due_24h' })) queryAlerts += 1;
-      } catch (err) {
-        logger.warn({ err, queryId: query.id, userId }, 'Insurance query notification failed');
-      }
-    }
+    if (overdue) (await getSlaWorkingTeam(query.tenantId)).forEach((id) => recipients.add(id));
+    queryAlerts += await notifyAll(recipients, {
+      ...common,
+      title: overdue ? 'Insurance query response overdue' : 'Insurance query response due within 24 hours',
+      message: `${reference}. Reply by ${due}.`,
+      reminderStage: overdue ? 'overdue' : 'due_24h',
+    }, { queryId: query.id });
     await prisma.claimQuery.update({ where: { id: query.id }, data: { escalationLevel: level } });
   }
 
-  if (authorizationAlerts || queryAlerts) {
-    logger.info({ authorizationAlerts, queryAlerts }, 'Insurance SLA alerts processed');
+  if (authorizationAlerts || queryAlerts || escalations) {
+    logger.info({ authorizationAlerts, queryAlerts, escalations }, 'Insurance SLA alerts processed');
   }
-  return { authorizationAlerts, queryAlerts };
+  return { authorizationAlerts, queryAlerts, escalations };
 }
 
 /**

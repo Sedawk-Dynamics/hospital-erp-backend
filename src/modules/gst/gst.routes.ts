@@ -14,12 +14,17 @@ import * as archive from './gst-reports.archive';
 import * as annual from './gst-reports.annual';
 import * as reconcile from './gst-reports.reconcile';
 import * as einvoice from './gst-reports.einvoice';
+import { gstEinvoiceRoutes } from './gst-einvoice.routes';
 import * as amendments from './gst-reports.amendments';
 import * as masters from './gst-master.service';
 import { returnPeriodLabel } from './gst-reports.gstr1-json';
 import { gstinVerificationCaption } from '../../shared/gst-profile';
 
 export const gstRoutes = Router();
+
+// G-5 (gap #266): portal credentials, Test connection, IRN generate / retry /
+// cancel and e-way bill generation. Its own role gate (GST managers only).
+gstRoutes.use(gstEinvoiceRoutes);
 
 /**
  * GST reports show the hospital's complete revenue position, so they are not

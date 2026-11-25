@@ -12,31 +12,114 @@ describe('insurance SLA job', () => {
     vi.mocked(prisma.notification.findFirst).mockResolvedValue(null);
     vi.mocked(prisma.notification.create).mockResolvedValue({ id: 'notification-1' } as never);
     vi.mocked(prisma.preAuthorizationRequest.update).mockResolvedValue({} as never);
+    vi.mocked(prisma.preAuthorizationRequest.updateMany).mockResolvedValue({ count: 1 } as never);
     vi.mocked(prisma.claimQuery.update).mockResolvedValue({} as never);
+    vi.mocked(prisma.claimQuery.updateMany).mockResolvedValue({ count: 1 } as never);
+    vi.mocked(prisma.insuranceEscalationSetting.findMany).mockResolvedValue([] as never);
+    vi.mocked(prisma.preAuthorizationRequest.findMany).mockResolvedValue([] as never);
+    vi.mocked(prisma.claimQuery.findMany).mockResolvedValue([] as never);
   });
 
-  it('alerts authorization owners and escalates overdue payer queries', async () => {
-    const now = new Date('2026-09-21T12:00:00.000Z');
-    vi.mocked(prisma.preAuthorizationRequest.findMany).mockResolvedValue([{
-      id: 'preauth-1', tenantId: 'tenant-1', requestNumber: 'PA-1', requestType: 'finalDischarge',
-      submittedBy: 'submitter-1', decisionDueAt: new Date('2026-09-21T11:55:00.000Z'),
-      alertAt: new Date('2026-09-21T11:30:00.000Z'), escalatedAt: null,
-      patient: { firstName: 'Asha', lastName: 'Rao' },
-    }] as never);
-    vi.mocked(prisma.claimQuery.findMany).mockResolvedValue([{
-      id: 'query-1', tenantId: 'tenant-1', claimId: 'claim-1', subject: 'Discharge summary',
-      raisedBy: 'owner-1', responseDueAt: new Date('2026-09-21T11:00:00.000Z'), escalationLevel: 0,
-      claim: { claimNumber: 'CLM-1', patient: { firstName: 'Asha', lastName: 'Rao' } },
-    }] as never);
+  const preAuth = (overdueMinutes: number, extra: Record<string, unknown> = {}) => ({
+    id: 'preauth-1', tenantId: 'tenant-1', requestNumber: 'PA-1', requestType: 'initial', status: 'pending',
+    insuranceCaseId: 'case-1', submittedBy: 'submitter-1',
+    decisionDueAt: new Date(now.getTime() - overdueMinutes * 60_000),
+    alertAt: new Date(now.getTime() - (overdueMinutes + 15) * 60_000), escalatedAt: null,
+    patient: { firstName: 'Asha', lastName: 'Rao' }, ...extra,
+  });
+  const now = new Date('2026-09-21T12:00:00.000Z');
+  const stages = () => vi.mocked(prisma.notification.create).mock.calls.map((c) => (c[0] as any).data);
+
+  it('alerts the owner and the insurance desk on breach, but does not escalate before the configured hours', async () => {
+    vi.mocked(prisma.preAuthorizationRequest.findMany).mockResolvedValue([preAuth(5, { requestType: 'finalDischarge' })] as never);
 
     const result = await runInsuranceSlaJob(now);
 
-    expect(result).toEqual({ authorizationAlerts: 2, queryAlerts: 2 });
-    expect(prisma.preAuthorizationRequest.update).toHaveBeenCalledWith({
-      where: { id: 'preauth-1' }, data: { escalatedAt: now },
+    expect(result.authorizationAlerts).toBe(2);
+    expect(result.escalations).toBe(0);
+    expect(vi.mocked(usersWithRoles).mock.calls).toEqual([['tenant-1', ['insurance_staff']]]);
+    expect(prisma.preAuthorizationRequest.updateMany).not.toHaveBeenCalled();
+    expect(prisma.insuranceAuditEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('escalates to the configured role after the configured hours and records the escalation', async () => {
+    vi.mocked(prisma.insuranceEscalationSetting.findMany).mockResolvedValue([
+      { requestType: 'preauth', escalateAfterHours: 3, targetRole: 'billing_admin' },
+    ] as never);
+    vi.mocked(usersWithRoles).mockImplementation((async (_t: string, roles: string[]) =>
+      roles[0] === 'billing_admin' ? ['billing-head'] : ['desk-1']) as never);
+
+    // 2h overdue: not yet (rule says 3h).
+    vi.mocked(prisma.preAuthorizationRequest.findMany).mockResolvedValue([preAuth(120)] as never);
+    await runInsuranceSlaJob(now);
+    expect(usersWithRoles).not.toHaveBeenCalledWith('tenant-1', ['billing_admin']);
+
+    // 3h overdue: escalated.
+    vi.mocked(prisma.notification.create).mockClear();
+    vi.mocked(prisma.preAuthorizationRequest.findMany).mockResolvedValue([preAuth(180)] as never);
+    const result = await runInsuranceSlaJob(now);
+
+    expect(result.escalations).toBe(1);
+    expect(usersWithRoles).toHaveBeenCalledWith('tenant-1', ['billing_admin']);
+    const escalated = stages().filter((n) => n.title.includes('escalated'));
+    expect(escalated).toHaveLength(1);
+    expect(escalated[0]).toMatchObject({ userId: 'billing-head', referenceId: 'preauth-1' });
+    expect(prisma.preAuthorizationRequest.updateMany).toHaveBeenCalledWith({
+      where: { id: 'preauth-1', escalatedAt: null }, data: { escalatedAt: now, escalatedToRole: 'billing_admin' },
     });
-    expect(prisma.claimQuery.update).toHaveBeenCalledWith({
-      where: { id: 'query-1' }, data: { escalationLevel: 2 },
+    const history = vi.mocked(prisma.insuranceAuditEvent.create).mock.calls[0][0].data as any;
+    expect(history).toMatchObject({ preAuthId: 'preauth-1', eventType: 'preauth.sla_escalated' });
+    expect(history.details).toMatchObject({ targetRole: 'billing_admin', escalateAfterHours: 3, recipients: 1 });
+  });
+
+  it('does not escalate the same request twice', async () => {
+    vi.mocked(prisma.preAuthorizationRequest.findMany).mockResolvedValue([preAuth(600, { escalatedAt: new Date(now.getTime() - 60_000) })] as never);
+    const result = await runInsuranceSlaJob(now);
+    expect(result.escalations).toBe(0);
+    expect(prisma.preAuthorizationRequest.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the administrator when nobody holds the configured role', async () => {
+    vi.mocked(prisma.insuranceEscalationSetting.findMany).mockResolvedValue([
+      { requestType: 'preauth', escalateAfterHours: 1, targetRole: 'billing_admin' },
+    ] as never);
+    vi.mocked(usersWithRoles).mockImplementation((async (_t: string, roles: string[]) =>
+      roles[0] === 'admin' ? ['admin-1'] : roles[0] === 'billing_admin' ? [] : ['desk-1']) as never);
+    vi.mocked(prisma.preAuthorizationRequest.findMany).mockResolvedValue([preAuth(90)] as never);
+
+    await runInsuranceSlaJob(now);
+
+    expect(stages().find((n) => n.title.includes('escalated'))).toMatchObject({ userId: 'admin-1' });
+    expect((vi.mocked(prisma.insuranceAuditEvent.create).mock.calls[0][0].data as any).details.fallbackToAdmin).toBe(true);
+  });
+
+  it('escalates overdue payer queries by the claim-query rule', async () => {
+    vi.mocked(prisma.insuranceEscalationSetting.findMany).mockResolvedValue([
+      { requestType: 'claim_query', escalateAfterHours: 2, targetRole: 'insurance_staff' },
+    ] as never);
+    const query = (overdueHours: number) => ({
+      id: 'query-1', tenantId: 'tenant-1', claimId: 'claim-1', subject: 'Discharge summary',
+      raisedBy: 'owner-1', responseDueAt: new Date(now.getTime() - overdueHours * 3600_000), escalationLevel: 0,
+      claim: { claimNumber: 'CLM-1', insuranceCaseId: 'case-1', patient: { firstName: 'Asha', lastName: 'Rao' } },
+    });
+
+    // 1h overdue → overdue alert only (level 2).
+    vi.mocked(prisma.claimQuery.findMany).mockResolvedValue([query(1)] as never);
+    await runInsuranceSlaJob(now);
+    expect(prisma.claimQuery.update).toHaveBeenCalledWith({ where: { id: 'query-1' }, data: { escalationLevel: 2 } });
+    expect(prisma.claimQuery.updateMany).not.toHaveBeenCalled();
+
+    // 2h overdue → escalated to the configured role (level 3).
+    vi.mocked(prisma.claimQuery.findMany).mockResolvedValue([{ ...query(2), escalationLevel: 2 }] as never);
+    const result = await runInsuranceSlaJob(now);
+    expect(result.escalations).toBe(1);
+    expect(usersWithRoles).toHaveBeenCalledWith('tenant-1', ['insurance_staff']);
+    expect(prisma.claimQuery.updateMany).toHaveBeenCalledWith({
+      where: { id: 'query-1', escalationLevel: { lt: 3 } },
+      data: { escalationLevel: 3, escalatedAt: now, escalatedToRole: 'insurance_staff' },
+    });
+    expect(vi.mocked(prisma.insuranceAuditEvent.create).mock.calls[0][0].data).toMatchObject({
+      claimId: 'claim-1', eventType: 'claim_query.sla_escalated',
     });
   });
 });

@@ -109,6 +109,28 @@ export const verify2FASchema = z.object({
   }),
 });
 
+/** Gap 297: turning 2FA off needs the password AND a current code. */
+export const disable2FASchema = z.object({
+  body: z.object({
+    currentPassword: z.string().min(1, 'Current password is required'),
+    code: z.string().regex(/^\d{6}$/, 'Enter the 6-digit code from your authenticator app'),
+  }),
+});
+
+/** Gap 297: change your phone with a one-time code (service checks the format). */
+export const requestPhoneChangeSchema = z.object({
+  body: z.object({
+    phone: z.string().min(10, 'Enter a valid 10-digit mobile number').max(20),
+  }),
+});
+
+export const verifyPhoneChangeSchema = z.object({
+  body: z.object({
+    phone: z.string().min(10, 'Enter a valid 10-digit mobile number').max(20),
+    code: z.string().regex(/^\d{6}$/, 'Enter the 6-digit code'),
+  }),
+});
+
 export const registerAdminSchema = z.object({
   body: z.object({
     email: z.string().email('Invalid email address'),
@@ -130,3 +152,6 @@ export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>['body'];
 export type Verify2FAInput = z.infer<typeof verify2FASchema>['body'];
 
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>['body'];
+export type Disable2FAInput = z.infer<typeof disable2FASchema>['body'];
+export type RequestPhoneChangeInput = z.infer<typeof requestPhoneChangeSchema>['body'];
+export type VerifyPhoneChangeInput = z.infer<typeof verifyPhoneChangeSchema>['body'];

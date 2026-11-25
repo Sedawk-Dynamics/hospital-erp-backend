@@ -5176,6 +5176,35 @@ model GstinVerification {
   @@map("gstin_verifications")
 }
 
+/// G-5 (gap #266): the hospital's login on the e-invoice (IRP) and e-way bill
+/// portals, held for its GSP. One row per portal.
+///
+/// The secrets are AES-256-GCM ciphertext keyed by GST_PORTAL_CREDENTIALS_KEY
+/// (server env) and bound to the tenant and portal; they are never returned to
+/// the browser — the settings screen sees only a masked username and "set".
+/// Scalar tenantId (no relation) so the Tenant model is untouched.
+model GstPortalCredential {
+  id               String    @id @default(uuid())
+  tenantId         String    @map("tenant_id")
+  /// 'einvoice' | 'eway'
+  portal           String    @db.VarChar(10)
+  /// v1.<iv>.<tag>.<ciphertext> of {username,password,clientId,clientSecret}.
+  secretCipher     String    @map("secret_cipher")
+  /// e.g. "ho***al" — enough to recognise, not enough to log in with.
+  usernameHint     String?   @map("username_hint") @db.VarChar(40)
+  lastTestAt       DateTime? @map("last_test_at")
+  lastTestOk       Boolean?  @map("last_test_ok")
+  /// The portal's own words (never a credential).
+  lastTestMessage  String?   @map("last_test_message") @db.VarChar(500)
+  lastTestProvider String?   @map("last_test_provider") @db.VarChar(60)
+  updatedBy        String?   @map("updated_by")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  @@unique([tenantId, portal])
+  @@map("gst_portal_credentials")
+}
+
 /// One GSTR-2B statement, as downloaded from the portal.
 ///
 /// 2B is what the government says the hospital's SUPPLIERS have declared, and a
@@ -5338,6 +5367,8 @@ model CreditNote {
   irnStatus      String?   @map("irn_status") @db.VarChar(20)
   irnError       String?   @map("irn_error")
   irnAttemptedAt DateTime? @map("irn_attempted_at")
+  /// G-5 (gap #266): when the note's IRN was cancelled on the portal.
+  irnCancelledAt DateTime? @map("irn_cancelled_at")
 
   issuedBy  String?  @map("issued_by")
   createdAt DateTime @default(now()) @map("created_at")
@@ -6273,6 +6304,21 @@ model DrugReturn {
   // compiled in here.
   ewayBillNumber     String?          @map("eway_bill_number") @db.VarChar(20)
   ewayBillDate       DateTime?        @map("eway_bill_date")
+  // G-5 (gap #266): the portal state of that e-way bill, written on every line
+  // of the return. 'pending' (sent, awaiting the answer) | 'generated' |
+  // 'failed' (the portal's words in ewayBillError; D-3 offers Retry) |
+  // 'cancelled' (within the window after generation, with a reason). Null on a
+  // return nobody has sent — or one whose number was recorded before #266.
+  ewayBillStatus           String?          @map("eway_bill_status") @db.VarChar(20)
+  ewayBillError            String?          @map("eway_bill_error")
+  ewayBillAttemptedAt      DateTime?        @map("eway_bill_attempted_at")
+  ewayBillValidUpto        DateTime?        @map("eway_bill_valid_upto")
+  /// The transport details last sent (mode, km, vehicle, transporter), so a
+  /// Retry can resend them unchanged.
+  ewayBillTransport        Json?            @map("eway_bill_transport")
+  ewayBillCancelledAt      DateTime?        @map("eway_bill_cancelled_at")
+  ewayBillCancelReasonCode String?          @map("eway_bill_cancel_reason_code") @db.VarChar(2)
+  ewayBillCancelRemark     String?          @map("eway_bill_cancel_remark") @db.VarChar(100)
   // G-12: input tax to reverse on a vendor return, copied from the purchase
   // batch at the rate PAID (not today's rate) with the batch's own head split.
   inputGstPercent    Decimal?         @map("input_gst_percent") @db.Decimal(5, 2)
@@ -7361,6 +7407,11 @@ model Insurer {
   stateCode     String?  @map("state_code") @db.VarChar(2)
   isActive      Boolean  @default(true) @map("is_active")
   createdAt     DateTime @default(now()) @map("created_at")
+  /// Gap 293: set when this record was merged into another (the kept record).
+  /// A merged record is deactivated, never deleted, so old references and the
+  /// audit trail still resolve.
+  mergedIntoId  String?   @map("merged_into_id")
+  mergedAt      DateTime? @map("merged_at")
 
   tenant            Tenant            @relation(fields: [tenantId], references: [id])
   insurancePolicies InsurancePolicy[]
@@ -7385,6 +7436,11 @@ model TpaProvider {
   stateCode     String?  @map("state_code") @db.VarChar(2)
   isActive      Boolean  @default(true) @map("is_active")
   createdAt     DateTime @default(now()) @map("created_at")
+  /// Gap 293: set when this record was merged into another (the kept record).
+  /// A merged record is deactivated, never deleted, so old references and the
+  /// audit trail still resolve.
+  mergedIntoId  String?   @map("merged_into_id")
+  mergedAt      DateTime? @map("merged_at")
 
   tenant               Tenant                @relation(fields: [tenantId], references: [id])
   insurancePolicies    InsurancePolicy[]
@@ -7523,6 +7579,13 @@ model PreAuthorizationRequest {
   alertAt               DateTime?                   @map("alert_at")
   decidedAt             DateTime?                   @map("decided_at")
   escalatedAt           DateTime?                   @map("escalated_at")
+  /// Gap 294: the staff role the breach was escalated to (from the tenant's
+  /// InsuranceEscalationSetting at the time).
+  escalatedToRole       String?                     @map("escalated_to_role") @db.VarChar(50)
+  /// Gap 294: a stale/overdue request closed by staff — always with a reason.
+  closedAt              DateTime?                   @map("closed_at")
+  closedBy              String?                     @map("closed_by")
+  closeReason           String?                     @map("close_reason")
   validFrom             DateTime?                   @map("valid_from") @db.Date
   validTo               DateTime?                   @map("valid_to") @db.Date
   holdReason            String?                     @map("hold_reason")
@@ -7884,6 +7947,13 @@ model ClaimQuery {
   raisedBy        String?          @map("raised_by")
   respondedBy     String?          @map("responded_by")
   escalationLevel Int              @default(0) @map("escalation_level")
+  /// Gap 294: when the overdue query was escalated, and to which role.
+  escalatedAt     DateTime?        @map("escalated_at")
+  escalatedToRole String?          @map("escalated_to_role") @db.VarChar(50)
+  /// Gap 294: a stale query closed with a reason (status → closed).
+  closedAt        DateTime?        @map("closed_at")
+  closedBy        String?          @map("closed_by")
+  closeReason     String?          @map("close_reason")
   createdAt       DateTime         @default(now()) @map("created_at")
   updatedAt       DateTime         @default(now()) @updatedAt @map("updated_at")
 
@@ -7991,6 +8061,25 @@ model InsuranceAuditEvent {
   @@index([tenantId, insuranceCaseId, occurredAt])
   @@index([claimId, occurredAt])
   @@map("insurance_audit_events")
+}
+
+/// Gap 294: per-hospital SLA escalation rule for one kind of insurance
+/// request — how many hours past its deadline a breached request waits before
+/// it is escalated, and which staff role it is escalated to. A missing row
+/// means the built-in default (see insurance.escalation.ts).
+model InsuranceEscalationSetting {
+  id                 String   @id @default(uuid())
+  tenantId           String   @map("tenant_id")
+  /// 'preauth' (initial + enhancement) | 'final_discharge' | 'claim_query'
+  requestType        String   @map("request_type") @db.VarChar(40)
+  escalateAfterHours Int      @map("escalate_after_hours")
+  targetRole         String   @map("target_role") @db.VarChar(50)
+  updatedBy          String?  @map("updated_by")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([tenantId, requestType])
+  @@map("insurance_escalation_settings")
 }
 
 /// Protocol-neutral exchange/outbox record. NHCX uses FHIR R4 payloads, while
@@ -8950,6 +9039,14 @@ model HospitalForm {
   archivedAt    DateTime?    @map("archived_at")
   archiveReason String?      @map("archive_reason") @db.VarChar(255)
   archivedById  String?      @map("archived_by_id")
+  // Gap 304: `schema` is what nurses fill — the published snapshot once the
+  // form has been published (the working copy before that). Edits made to a
+  // published form land in `draftSchema` and stay invisible to nurses until
+  // the admin publishes them, which copies the draft into `schema` and bumps
+  // `version`. Null = no unpublished changes.
+  draftSchema   Json?        @map("draft_schema")
+  publishedAt   DateTime?    @map("published_at")
+  publishedById String?      @map("published_by_id")
   createdAt     DateTime     @default(now()) @map("created_at")
   updatedAt     DateTime     @updatedAt @map("updated_at")
 

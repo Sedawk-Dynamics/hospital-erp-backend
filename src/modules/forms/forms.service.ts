@@ -314,14 +314,106 @@ export async function deleteTemplate(roles: string[], id: string) {
 // ─────────────────────────────────────────────────────────────
 // Hospital forms
 // ─────────────────────────────────────────────────────────────
+//
+// Gap 304 — draft vs published.
+//   • `schema` is what nurses fill. Before the first publish it is simply the
+//     working copy (nobody but the admin can see an unpublished form).
+//   • Once published, `schema` is frozen as the nurse-visible snapshot. Admin
+//     edits land in `draftSchema` and stay invisible to nurses.
+//   • Publishing copies the draft into `schema`, bumps `version`, records who
+//     and when, and clears the draft. Discarding just clears the draft.
+// Name / description / category are catalogue metadata and apply immediately;
+// only the field schema is versioned.
 
-export async function listHospitalForms(tenantId: string, query: ListHospitalFormsQuery) {
+export type HospitalFormStatus = 'draft' | 'published' | 'published_with_changes' | 'archived';
+
+export const HOSPITAL_FORM_STATUS_LABEL: Record<HospitalFormStatus, string> = {
+  draft: 'Draft',
+  published: 'Published',
+  published_with_changes: 'Published · unpublished changes',
+  archived: 'Archived',
+};
+
+interface FormStateLike {
+  isPublished: boolean;
+  version: number;
+  draftSchema?: unknown;
+  archivedAt?: Date | string | null;
+}
+
+/**
+ * The one status both the forms list and the builder show. Derived on the
+ * server so the two screens can never disagree again.
+ */
+export function deriveHospitalFormStatus(form: FormStateLike): HospitalFormStatus {
+  if (form.archivedAt) return 'archived';
+  if (!form.isPublished) return 'draft';
+  return form.draftSchema != null ? 'published_with_changes' : 'published';
+}
+
+/**
+ * Shape a form for the response. Managers get the draft too; everyone else
+ * (nurses, doctors) only ever sees the published snapshot.
+ */
+export function presentHospitalForm<T extends FormStateLike>(form: T, canManage: boolean) {
+  const status = deriveHospitalFormStatus(form);
+  const out: { [key: string]: unknown } = {
+    ...(form as object),
+    status,
+    statusLabel: HOSPITAL_FORM_STATUS_LABEL[status],
+    hasUnpublishedChanges: form.isPublished && form.draftSchema != null,
+    publishedVersion: form.isPublished ? form.version : null,
+  };
+  if (!canManage) delete out.draftSchema;
+  return out as unknown as T & {
+    status: HospitalFormStatus;
+    statusLabel: string;
+    hasUnpublishedChanges: boolean;
+    publishedVersion: number | null;
+  };
+}
+
+function canManageHospitalForms(roles: string[] | undefined): boolean {
+  return (roles ?? []).some((r) => HOSPITAL_FORM_WRITER_ROLES.has(r));
+}
+
+/** Key-order-independent JSON (Postgres jsonb does not keep key order). */
+function canonicalJson(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(',')}]`;
+  if (v && typeof v === 'object') {
+    const entries = Object.entries(v as Record<string, unknown>)
+      .filter(([, val]) => val !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([k, val]) => `${JSON.stringify(k)}:${canonicalJson(val)}`).join(',')}}`;
+  }
+  return JSON.stringify(v ?? null);
+}
+
+function sameSchema(a: unknown, b: unknown): boolean {
+  return canonicalJson(a) === canonicalJson(b);
+}
+
+const HOSPITAL_FORM_INCLUDE = {
+  createdBy: { select: { id: true, firstName: true, lastName: true } },
+  archivedBy: { select: { id: true, firstName: true, lastName: true } },
+  template: { select: { id: true, name: true } },
+  _count: { select: { submissions: true } },
+} as const;
+
+export async function listHospitalForms(
+  tenantId: string,
+  query: ListHospitalFormsQuery,
+  roles: string[] = [],
+) {
   const { skip, take, page, limit } = getPaginationParams(query);
+  const canManage = canManageHospitalForms(roles);
   const where: Record<string, unknown> = { tenantId };
   if (query.status === 'active') where.archivedAt = null;
   else if (query.status === 'archived') where.archivedAt = { not: null };
   if (query.category) where.category = query.category;
   if (query.isPublished !== undefined) where.isPublished = query.isPublished;
+  // Nurses / doctors are never offered a form that has not been published.
+  if (!canManage) where.isPublished = true;
 
   const [items, total] = await Promise.all([
     prisma.hospitalForm.findMany({
@@ -329,30 +421,37 @@ export async function listHospitalForms(tenantId: string, query: ListHospitalFor
       skip,
       take,
       orderBy: { updatedAt: 'desc' },
-      include: {
-        createdBy: { select: { id: true, firstName: true, lastName: true } },
-        archivedBy: { select: { id: true, firstName: true, lastName: true } },
-        template: { select: { id: true, name: true } },
-        _count: { select: { submissions: true } },
-      },
+      include: HOSPITAL_FORM_INCLUDE,
     }),
     prisma.hospitalForm.count({ where }),
   ]);
-  return { items, total, page, limit };
+  return { items: items.map((f) => presentHospitalForm(f, canManage)), total, page, limit };
 }
 
-export async function getHospitalForm(tenantId: string, id: string) {
+export async function getHospitalForm(tenantId: string, id: string, roles: string[] = []) {
+  const canManage = canManageHospitalForms(roles);
   const form = await prisma.hospitalForm.findFirst({
-    where: { id, tenantId },
-    include: {
-      createdBy: { select: { id: true, firstName: true, lastName: true } },
-      archivedBy: { select: { id: true, firstName: true, lastName: true } },
-      template: { select: { id: true, name: true } },
-      _count: { select: { submissions: true } },
-    },
+    where: canManage ? { id, tenantId } : { id, tenantId, isPublished: true },
+    include: HOSPITAL_FORM_INCLUDE,
   });
   if (!form) throw AppError.notFound('Form not found');
-  return form;
+  return presentHospitalForm(form, canManage);
+}
+
+/**
+ * The version number a publish should carry. A republish bumps it. A first
+ * publish keeps the form's version unless submissions already claim it (a
+ * legacy form that was live once, then unpublished) — two different schemas
+ * must never share a version number.
+ */
+async function nextPublishVersion(formId: string, current: { isPublished: boolean; version: number }) {
+  if (current.isPublished) return current.version + 1;
+  const agg = await prisma.hospitalFormSubmission.aggregate({
+    where: { formId },
+    _max: { formVersion: true },
+  });
+  const maxSubmitted = agg?._max?.formVersion ?? 0;
+  return Math.max(current.version, maxSubmitted + 1);
 }
 
 export async function createHospitalForm(
@@ -362,6 +461,7 @@ export async function createHospitalForm(
   data: CreateHospitalFormInput,
 ) {
   assertCanManageHospitalForms(roles);
+  const publish = data.isPublished;
   const form = await prisma.hospitalForm.create({
     data: {
       tenantId,
@@ -369,13 +469,15 @@ export async function createHospitalForm(
       description: data.description ?? null,
       category: data.category,
       schema: data.schema,
-      isPublished: data.isPublished,
+      isPublished: publish,
       version: 1,
       createdById: userId,
+      publishedAt: publish ? new Date() : null,
+      publishedById: publish ? userId : null,
     },
   });
-  logger.info({ id: form.id, tenantId, name: form.name }, 'Hospital form created');
-  return form;
+  logger.info({ id: form.id, tenantId, name: form.name, published: publish }, 'Hospital form created');
+  return presentHospitalForm(form, true);
 }
 
 export async function updateHospitalForm(
@@ -383,27 +485,99 @@ export async function updateHospitalForm(
   roles: string[],
   id: string,
   data: UpdateHospitalFormInput,
+  userId?: string,
 ) {
   assertCanManageHospitalForms(roles);
   const existing = await prisma.hospitalForm.findFirst({
     where: { id, tenantId },
-    select: { id: true, version: true, archivedAt: true },
+    select: { id: true, version: true, archivedAt: true, isPublished: true, schema: true, draftSchema: true },
   });
   if (!existing) throw AppError.notFound('Form not found');
   if (existing.archivedAt) {
     throw AppError.badRequest('Cannot edit an archived form. Restore it first.');
   }
-  return prisma.hospitalForm.update({
-    where: { id },
-    data: {
-      name: data.name,
-      description: data.description,
-      category: data.category,
-      schema: data.schema,
-      isPublished: data.isPublished,
-      version: data.schema ? existing.version + 1 : undefined,
-    },
+  if (data.isPublished === false && existing.isPublished) {
+    // Un-publishing would pull a live form out from under the ward. Archive is
+    // the way to withdraw it; Discard draft is the way to drop pending edits.
+    throw AppError.badRequest(
+      'A published form cannot be turned back into a draft. Archive it to withdraw it, or discard the unpublished changes.',
+    );
+  }
+
+  const patch: Prisma.HospitalFormUpdateInput = {
+    name: data.name,
+    description: data.description,
+    category: data.category,
+  };
+
+  // Where the edited schema goes: a never-published form edits its working
+  // copy; a published form keeps `schema` (what nurses see) untouched and
+  // collects the edit as a draft. A draft identical to what is live is no
+  // draft at all.
+  let workingSchema: unknown = existing.draftSchema ?? existing.schema;
+  if (data.schema !== undefined) {
+    workingSchema = data.schema;
+    if (!existing.isPublished) {
+      patch.schema = data.schema;
+    } else {
+      patch.draftSchema = sameSchema(data.schema, existing.schema)
+        ? Prisma.DbNull
+        : (data.schema as Prisma.InputJsonValue);
+    }
+  }
+
+  if (data.isPublished === true) {
+    const hasChanges = !existing.isPublished || !sameSchema(workingSchema, existing.schema);
+    if (hasChanges) {
+      patch.schema = workingSchema as Prisma.InputJsonValue;
+      patch.draftSchema = Prisma.DbNull;
+      patch.isPublished = true;
+      patch.version = await nextPublishVersion(existing.id, existing);
+      patch.publishedAt = new Date();
+      patch.publishedById = userId ?? null;
+    } else {
+      // Already live and nothing pending — publishing again is a no-op, not
+      // a new version.
+      patch.draftSchema = Prisma.DbNull;
+    }
+  }
+
+  const form = await prisma.hospitalForm.update({ where: { id }, data: patch });
+  if (patch.isPublished) {
+    logger.info({ id, tenantId, version: patch.version }, 'Hospital form published');
+  }
+  return presentHospitalForm(form, true);
+}
+
+/** Publish the pending draft (or a never-published form) as a new version. */
+export async function publishHospitalForm(
+  tenantId: string,
+  userId: string,
+  roles: string[],
+  id: string,
+) {
+  return updateHospitalForm(tenantId, roles, id, { isPublished: true }, userId);
+}
+
+/** Drop unpublished edits; the builder falls back to the published schema. */
+export async function discardHospitalFormDraft(tenantId: string, roles: string[], id: string) {
+  assertCanManageHospitalForms(roles);
+  const existing = await prisma.hospitalForm.findFirst({
+    where: { id, tenantId },
+    select: { id: true, isPublished: true, draftSchema: true, archivedAt: true },
   });
+  if (!existing) throw AppError.notFound('Form not found');
+  if (existing.archivedAt) {
+    throw AppError.badRequest('Cannot edit an archived form. Restore it first.');
+  }
+  if (!existing.isPublished) {
+    throw AppError.badRequest('This form has never been published, so there is no published version to go back to.');
+  }
+  const form = await prisma.hospitalForm.update({
+    where: { id },
+    data: { draftSchema: Prisma.DbNull },
+  });
+  return presentHospitalForm(form, true);
 }
 
 export async function cloneTemplateToHospital(
@@ -423,7 +597,7 @@ export async function cloneTemplateToHospital(
   // schema (deep copy via JSON round-trip). Future template edits do not
   // retroactively change the cloned form.
   const schemaSnapshot = JSON.parse(JSON.stringify(tpl.schema));
-  return prisma.hospitalForm.create({
+  const form = await prisma.hospitalForm.create({
     data: {
       tenantId,
       templateId: tpl.id,
@@ -434,8 +608,11 @@ export async function cloneTemplateToHospital(
       isPublished: true,
       version: 1,
       createdById: userId,
+      publishedAt: new Date(),
+      publishedById: userId,
     },
   });
+  return presentHospitalForm(form, true);
 }
 
 export async function archiveHospitalForm(
@@ -452,7 +629,7 @@ export async function archiveHospitalForm(
   });
   if (!existing) throw AppError.notFound('Form not found');
   if (existing.archivedAt) throw AppError.badRequest('Form is already archived');
-  return prisma.hospitalForm.update({
+  const form = await prisma.hospitalForm.update({
     where: { id },
     data: {
       archivedAt: new Date(),
@@ -460,6 +637,7 @@ export async function archiveHospitalForm(
       archiveReason: data.reason ?? null,
     },
   });
+  return presentHospitalForm(form, true);
 }
 
 export async function restoreHospitalForm(
@@ -474,10 +652,11 @@ export async function restoreHospitalForm(
   });
   if (!existing) throw AppError.notFound('Form not found');
   if (!existing.archivedAt) throw AppError.badRequest('Form is not archived');
-  return prisma.hospitalForm.update({
+  const form = await prisma.hospitalForm.update({
     where: { id },
     data: { archivedAt: null, archivedById: null, archiveReason: null },
   });
+  return presentHospitalForm(form, true);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -559,7 +738,9 @@ export async function createSubmission(
   const schema = asFormSchema(form.schema);
   const normalized = validateAndNormalizeSubmissionData(schema, body.data);
 
-  // formSnapshot = deep copy of the form's current schema. Renderers use
+  // formSnapshot = deep copy of the PUBLISHED schema (`schema`; never the
+  // unpublished `draftSchema`, which is not even selected above) and
+  // formVersion = the published version it came from. Renderers use
   // this when displaying old submissions so a later admin edit can't
   // misrepresent what the nurse actually saw.
   const snapshot = JSON.parse(JSON.stringify(form.schema));

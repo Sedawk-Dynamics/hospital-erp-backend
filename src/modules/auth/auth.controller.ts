@@ -155,11 +155,50 @@ export const authController = {
       if (!req.user) {
         throw AppError.unauthorized();
       }
-      const result = await authService.verify2FA(req.user.userId, req.body);
+      const result = await authService.verify2FA(req.user.userId, req.body, { tenantId: req.user.tenantId });
       sendResponse({
         res,
         message: result.message,
       });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async disable2FA(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) {
+        throw AppError.unauthorized();
+      }
+      const result = await authService.disable2FA(req.user.userId, req.body, { tenantId: req.user.tenantId });
+      sendResponse({ res, message: result.message, data: null });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async requestPhoneChange(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) {
+        throw AppError.unauthorized();
+      }
+      // Says where the code went (masked); never contains the code.
+      const result = await authService.requestPhoneChange(req.user.userId, req.body);
+      sendResponse({ res, message: `Verification code sent to ${result.sentTo}`, data: result });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async verifyPhoneChange(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) {
+        throw AppError.unauthorized();
+      }
+      const result = await authService.verifyPhoneChange(req.user.userId, req.body, {
+        tenantId: req.user.tenantId,
+      });
+      sendResponse({ res, message: result.message, data: { phone: result.phone } });
     } catch (err) {
       next(err);
     }
@@ -200,7 +239,7 @@ export const authController = {
       if (!req.user) {
         throw AppError.unauthorized();
       }
-      const result = await authService.changePassword(req.user.userId, req.body);
+      const result = await authService.changePassword(req.user.userId, req.body, { tenantId: req.user.tenantId });
       sendResponse({ res, message: result.message, data: null });
     } catch (err) {
       next(err);

@@ -4843,6 +4843,8 @@ export async function getPharmacySale(tenantId: string, billId: string) {
       taxableValue: true, cgstAmount: true, sgstAmount: true, igstAmount: true, cessAmount: true,
       taxAmount: true, totalAmount: true, recipientGstin: true, placeOfSupplyStateCode: true,
       withinTimeLimit: true,
+      // G-5 (gap #266): a B2B note registered on the IRP prints its IRN and QR.
+      irn: true, irnAckNo: true, irnAckDate: true, irnQrPayload: true, irnStatus: true, irnCancelledAt: true,
       items: {
         select: {
           id: true, description: true, hsnSacCode: true, gstTreatment: true, quantity: true,
@@ -7561,6 +7563,8 @@ export async function getReturnById(tenantId: string, id: string) {
     select: {
       id: true, creditNoteNumber: true, issueDate: true, taxableValue: true, cgstAmount: true,
       sgstAmount: true, igstAmount: true, cessAmount: true, taxAmount: true, totalAmount: true,
+      // G-5 (gap #266): a B2B note registered on the IRP prints its IRN and QR.
+      irn: true, irnAckNo: true, irnAckDate: true, irnQrPayload: true, irnStatus: true, irnCancelledAt: true,
     },
   });
 

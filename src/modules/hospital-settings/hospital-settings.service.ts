@@ -30,6 +30,7 @@ import {
   type GstinProviderInfo,
   type GstinVerifyResult,
 } from '../../services/gstin-verification';
+import { getPortalReadiness } from '../gst/gst-portal.credentials';
 
 // ---------------------------------------------------------------------------
 // Per-hospital operational settings that are one value, not a catalog.
@@ -195,6 +196,11 @@ export async function updateGstProfile(
       `The GSTIN's PAN part (${merged.gstin.slice(2, 12)}) does not match the hospital PAN (${merged.pan}).`,
     );
   }
+  // G-5 (gap #266): the e-invoice / e-way switches cannot be turned ON until
+  // that integration is ready (provider configured + portal login saved). A
+  // switch reading "on" while nothing can generate an IRN is the bug. A value
+  // that is already on is left alone, so an unrelated save never fails on it.
+  await assertPortalSwitchAllowed(tenantId, current, merged);
   await prisma.tenant.update({
     where: { id: tenantId },
     data: { themeConfig: { ...cfg, gst: merged } as object },
@@ -224,6 +230,25 @@ export async function updateGstProfile(
     return applyGstinVerification(merged, null);
   }
   return applyGstinVerification(merged, merged.gstin ? await readGstinVerification(tenantId) : null);
+}
+
+/** G-5 (gap #266): refuse to switch e-invoice / e-way ON while that integration is not ready. */
+async function assertPortalSwitchAllowed(tenantId: string, current: GstProfile, merged: GstProfile): Promise<void> {
+  const switches = [
+    { on: merged.eInvoiceApplicable && !current.eInvoiceApplicable, portal: 'einvoice' as const, label: 'E-invoicing' },
+    { on: merged.eWayBillApplicable && !current.eWayBillApplicable, portal: 'eway' as const, label: 'E-way bills' },
+  ];
+  for (const s of switches) {
+    if (!s.on) continue;
+    const readiness = await getPortalReadiness(tenantId, s.portal);
+    if (!readiness.ready) {
+      throw AppError.conflict(
+        `${s.label} cannot be switched on — not available: ${readiness.reason}`,
+        'EINVOICE_NOT_AVAILABLE',
+        { portal: s.portal, reason: readiness.reason },
+      );
+    }
+  }
 }
 
 // ── GSTIN verification through the GST service provider (gap #311) ─────────
