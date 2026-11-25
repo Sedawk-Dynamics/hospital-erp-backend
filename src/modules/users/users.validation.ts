@@ -7,9 +7,6 @@ import { z } from 'zod';
 // Keep in sync with the Prisma enum `DoctorSpecialty` and the frontend
 // DOCTOR_SPECIALTIES list.
 export const DOCTOR_SPECIALTIES = [
-  'general_internal_medicine',
-  'emergency_casualty',
-  'intensive_care_unit',
   'pediatrics_neonatology',
   'obstetrics_gynecology',
   'general_surgery_laparoscopy',
@@ -20,15 +17,9 @@ export const DOCTOR_SPECIALTIES = [
   'pulmonology_sleep',
   'gastroenterology_liver',
   'neurology_neurosurgery',
-  'urology_andrology',
   'diabetology_endocrinology',
   'oncology',
-  'ophthalmology',
-  'ent_otolaryngology',
-  'dermatology_cosmetology',
   'psychiatry_mental_health',
-  'dental_surgery',
-  'ultrasound_diagnostic_radiology',
 ] as const;
 
 export const doctorProfileSchema = z.object({

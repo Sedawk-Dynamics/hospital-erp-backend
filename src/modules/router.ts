@@ -70,6 +70,7 @@ import { calculatorRoute } from './calculator/calculator.route';
 import { transcribeRoutes } from './transcribe/transcribe.route';
 import { counsellingRoutes } from './counselling/counselling.routes';
 import { icuRoute } from './icu/icu.routes';
+import { specialityRoute } from './speciality/speciality.route';
 
 const apiRouter = Router();
 
@@ -202,6 +203,7 @@ apiRouter.use('/calculator',authenticate,userTierLimiter,calculatorRoute);
 // --- Audio → text transcription for consultation voice recording ---
 apiRouter.use('/transcribe', authenticate, userTierLimiter, transcribeRoutes);
 apiRouter.use('/icu',authenticate,userTierLimiter,icuRoute);
+apiRouter.use('/speciality',authenticate,userTierLimiter,specialityRoute)
 
 export { apiRouter };
 
