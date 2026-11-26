@@ -28,6 +28,19 @@ enum DoctorSpecialty {
   diabetology_endocrinology
   oncology
   psychiatry_mental_health
+  // Retained in the DB enum so `db push` stays non-destructive (existing
+  // doctor_profiles rows may still use these). The add-doctor UI is limited
+  // to the 13 active specialities via DOCTOR_SPECIALTIES / Zod validation,
+  // not this enum.
+  general_internal_medicine
+  emergency_casualty
+  intensive_care_unit
+  urology_andrology
+  ophthalmology
+  ent_otolaryngology
+  dermatology_cosmetology
+  dental_surgery
+  ultrasound_diagnostic_radiology
 }
 
 enum SubscriptionStatus {
