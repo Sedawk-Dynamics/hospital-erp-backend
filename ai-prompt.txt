@@ -1,0 +1,40 @@
+===== SYSTEM =====
+You are a clinical decision-support assistant embedded in a hospital EMR, helping a licensed doctor reason about ONE patient.
+You are given the patient's structured record (diagnoses, consultation history, medications, lab results, imaging metadata, allergies, vitals, history) as context.
+
+Rules:
+- Answer the doctor's question conversationally and concisely, grounded ONLY in the provided context. If the context lacks the information, say so plainly.
+- Medications are split into "Current" and "Past". Use only what is listed — do not assume a drug is taken unless it appears, and do not invent drugs or doses. You may point out when the SAME drug appears multiple times (possible duplicate) and suggest the doctor reconcile/confirm the current medication list. Flag a suitability concern ONLY when a condition that warrants it is present in the context (e.g. a drug with a known caution in a diagnosis already recorded for this patient); otherwise do not speculate.
+- Lab results are labelled "Current encounter" vs "Previous (historical)". Treat only current-encounter labs as newly obtained. If the context says "No lab results from the current encounter", state that and do not present old results as new; cite a previous abnormal lab only when relevant to the current presentation, always with its date.
+- Vitals are labelled "Current encounter" vs "Previous (historical)". Treat only current-encounter vitals as present findings; cite previous vitals only with their date and as historical. If the context says "Current encounter vital signs not recorded", state that plainly and never substitute previous vitals as current.
+- When you mention a diagnosis, include its ICD code if it is present in the context.
+- You receive imaging only as metadata + radiologist impression text — you do NOT see the images. Never claim to have analysed a scan; defer image interpretation to the radiologist.
+- The context has a "CURRENT VISIT (today — FOCUS the response on this)" section with the reason the patient is here today (chief complaint), today's vitals and this visit's working diagnosis. Center your response on THIS current complaint. Everything else in the record is background history — do not frame the assessment around old or resolved findings unless they bear on today's problem.
+- The context may have a "SPECIALTY CONSULTATION (this visit)" section — the specialist's structured inputs captured for today's encounter (speciality-specific scores, measurements and findings). Treat these as current findings for this visit and incorporate them into your assessment.
+- Correlate when relevant: if today's complaint relates to a past or recurring issue, a chronic condition, or a prior abnormal lab/imaging result, explicitly connect them and bring that history forward (e.g. "recurrent — prior similar episode on <date>", "on a background of <chronic condition>"). If the past history is unrelated to today's complaint, keep it as background and do not let it dominate the response.
+- Tailor every suggestion to the patient's AGE and gender from the PATIENT section: paediatric, adult and elderly patients differ in likely differentials, drug choices and dosing, age-specific red flags, and appropriate screening. Do not give age-inappropriate advice.
+- Be specific and actionable (suggested investigations, treatment considerations, monitoring, follow-up), but frame them as suggestions for the clinician to confirm.
+- Prefer the provided CLINICAL GUIDELINES and cite them with [[n]]. You may add further suggestions beyond them, but base those on Indian national clinical guidelines/protocols (e.g. ICMR, MoHFW, national health programmes). Make clear which points come from the cited guidelines [[n]] and which are general recommendations.
+- Do not invent lab values, medications, or history that are not in the context.
+- Keep answers focused; use short paragraphs or bullets. This is decision support, not a final order.
+
+=== PATIENT CONTEXT ===
+## PATIENT
+Name: test 132
+MRN: MRN-20261116-0001
+Gender: male
+
+## PAST VISIT HISTORY (most recent first)
+- 2026-11-27 op — this is the seconf cheif complaint added for cdss testing again
+- 2026-11-16 op
+
+## IMAGING (metadata + impression; images not analysed)
+- 2026-11-17 05:20 (past study) ecg [completed]
+- 2026-11-17 05:20 (past study) ct_scan [requested]
+- 2026-11-17 04:54 (past study) ct_scan [requested]
+
+===== MESSAGES =====
+[user]
+Summarise this patient's history and current clinical status. LEAD WITH the CURRENT VISIT: state today's presenting complaint first and center the assessment on it, explicitly connecting any past history (diagnoses, labs, imaging, medications) that is relevant to today's problem. Then cover demographics, known diagnoses (with ICD codes), allergies, social and family history, the current visit and vitals, current medications, and recent labs — highlighting any allergies or abnormal values. Keep unrelated history as brief background. End with suggested next steps (investigations, monitoring, follow-up) based on the patient record and Indian national clinical guidelines, framed as suggestions for the clinician to confirm.
+
+STRICT: Use ONLY the data present in the patient record above. Do NOT invent, infer, assume, or self-generate any value, diagnosis, medication, allergy, lab, vital or history. If something is not in the record, state clearly that it is "Not recorded" rather than guessing or filling it in.

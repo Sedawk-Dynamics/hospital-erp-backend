@@ -1,7 +1,9 @@
 import { prisma } from '../../config/database';
+import { logger } from '../../config/logger';
 import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
 import { generateJson, generateText } from '../../services/ai';
 import { assertFeatureEnabled } from './ai.config.service';
+import { buildGuidelineContext } from './cdss.multimodal';
 import { retrieveDocs } from './ai.knowledge';
 import {
   describeCaller,
@@ -13,6 +15,12 @@ import {
 } from './ai.roles';
 import type { PlatformChatInput } from './ai.validation';
 import { buildMedicineContext } from './ai.drug-context';
+import { PATIENT_CHAT_SYSTEM } from './ai.chat.service';
+import { getClinicalVersion, getOrBuildContext, getOrBuildGuidelineContext } from './ai.context-version';
+import { AppError } from '../../shared/appError';
+import { getPacsProvider } from '../imaging/pacs';
+import { image } from 'pdfkit';
+import { callGeminiVisionImages } from '../../services/gemini-vision';
 
 // ============================================================================
 // Use Case 3 (Level 1): Platform-wide AI support chatbot — READ-ONLY + ROLE-AWARE.
@@ -283,8 +291,8 @@ export async function platformChat(
         '- You are READ-ONLY: you explain how to do things, you never perform actions or change data.',
         ...(medicine
           ? [
-              '- This question names a medicine. Answer it from the MEDICINE FACTS below rather than from the documentation, in the detail this role needs, and name the product you describe.',
-            ]
+            '- This question names a medicine. Answer it from the MEDICINE FACTS below rather than from the documentation, in the detail this role needs, and name the product you describe.',
+          ]
           : []),
         '',
         '=== DOCUMENTATION ===',
@@ -317,3 +325,210 @@ export async function platformChat(
     provider,
   };
 }
+
+export const getPatientSummary = async (tenantId: string, userId: string, patientId: string,visitId:string) => {
+  await assertFeatureEnabled('patientChat', tenantId);
+  const { context, version } = await getOrBuildContext(tenantId, patientId,visitId);
+
+  let guidelines = '';
+  let sources: { n: number; label: string; url: string }[] = [];
+  if (process.env.CDSS_RAG_ENABLED !== 'false') {
+    try {
+      const g = await getOrBuildGuidelineContext(tenantId,patientId,context.text,version);
+      if (g) {
+        guidelines = g.guidelines;
+        sources = g.sources;
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Guideline RAG unavailable — continuing without guidelines');
+    }
+  }
+
+  const system = [
+    PATIENT_CHAT_SYSTEM,
+    '',
+    '=== PATIENT CONTEXT ===',
+    context.text,
+    ...(guidelines
+      ? [
+          '',
+          '=== CLINICAL GUIDELINES (prefer these for next-step suggestions and cite them inline with the number in double brackets, e.g. [[1]]) ===',
+          guidelines,
+        ]
+      : []),
+  ].join('\n');
+
+  // When guidelines are present we force guideline-cited next steps; without
+  // them (RAG disabled/unavailable) we still give next steps from the record.
+  const nextStepsInstruction = guidelines
+    ? 'End with suggested next steps (investigations, monitoring, follow-up). Prefer the CLINICAL ' +
+      'GUIDELINES above and cite each guideline-based step inline with its number in double brackets, ' +
+      'e.g. [[1]]. You may add further steps based on Indian national clinical guidelines/protocols ' +
+      '(ICMR, MoHFW, national health programmes); clearly distinguish cited guideline points from ' +
+      'general recommendations.'
+    : 'End with suggested next steps (investigations, monitoring, follow-up) based on the patient ' +
+      'record and Indian national clinical guidelines, framed as suggestions for the clinician to confirm.';
+
+  const { text, model, provider } = await generateText({
+    system,
+    messages: [{ role: 'user', content:
+      "Summarise this patient's history and current clinical status. " +
+      'LEAD WITH the CURRENT VISIT: state today\'s presenting complaint first and center the ' +
+      'assessment on it, explicitly connecting any past history (diagnoses, labs, imaging, ' +
+      'medications) that is relevant to today\'s problem. Then cover demographics, ' +
+      'known diagnoses (with ICD codes), allergies, social and family history, the current ' +
+      'visit and vitals, current medications, and recent labs — highlighting any allergies or ' +
+      'abnormal values. Keep unrelated history as brief background. ' +
+      nextStepsInstruction + '\n' +
+      '\n' +
+      'STRICT: Use ONLY the data present in the patient record above. Do NOT invent, infer, ' +
+      'assume, or self-generate any value, diagnosis, medication, allergy, lab, vital or history. ' +
+      'If something is not in the record, state clearly that it is "Not recorded" rather than ' +
+      'guessing or filling it in.' }],
+  }, { tenantId });
+
+  return {
+    summary: text,
+    counts: context.counts,
+    patient: context.patient,
+    alerts: context.alerts,
+    sources,
+    model,
+    provider,
+  };
+}
+
+
+export const contextVersion=async(tenantId:string,patientId:string)=>{
+  const version = await getClinicalVersion(tenantId, patientId);
+  return { version };
+};
+
+
+
+export const getCdssSourcePath = async (sourceId: string) => {
+  const page = await prisma.cdssPageImage.findFirst({
+    where: { sourceId, sourcePath: { not: null } },
+    select: { sourcePath: true },
+  });
+  return page?.sourcePath ?? null;  // relative path
+};
+
+
+
+export const analyseImagingReport=async(tenantId:string,patientId:string,model?:string)=>{
+  const study=await prisma.dicomStudy.findFirst({
+    where:{tenantId,patientId,modality:{in:['CR','DX','XR']}},
+    orderBy:{studyDate:'desc'},
+    include:{
+      instances:true,
+      imagingResult:{
+        select:{
+          impression:true,
+          imagingRequest:{ select:{ clinicalIndication:true, bodyPart:true, imagingType:true } },
+        },
+      },
+    },
+  })
+  if(!study)throw new AppError('No X-ray study found',404);
+
+  const provider=getPacsProvider();
+
+  const images:Buffer[]=[];
+  for(const img of study.instances){
+    const png=await provider?.getInstancePreview?.(img.sopInstanceUid);
+    if(png)images.push(png);
+  }
+  if (images.length === 0) throw new AppError('No renderable images found', 404);
+
+  const imagingReportData  = study.imagingResult;
+  const req = imagingReportData?.imagingRequest;
+  const contextLines = [
+    req?.imagingType ? `Study type: ${String(req.imagingType).replace(/_/g, ' ')}` : null,
+    req?.bodyPart ? `Body part: ${req.bodyPart}` : null,
+    req?.clinicalIndication ? `Clinical indication (why ordered): ${req.clinicalIndication}` : null,
+    imagingReportData?.impression ? `Radiologist's impression / findings: ${imagingReportData.impression}` : null,
+  ].filter(Boolean) as string[];
+
+  const clinicalContext = contextLines.length
+    ? `\n\nCLINICAL CONTEXT PROVIDED BY THE HOSPITAL (background only — do NOT assume it is correct; still base your visual findings on the image itself and explicitly note any agreement or disagreement with the radiologist's note):\n${contextLines.map((l) => `- ${l}`).join('\n')}`
+    : '';
+
+  const prompt=`You are an experienced radiologist reviewing the X-ray image(s) provided.
+
+STRICT RULES:
+- Base your report ONLY on what is visibly present in the supplied image(s). Do not assume, infer, or invent any finding that is not clearly visible.
+- If the image quality, projection, or field of view does not allow a confident assessment, say so explicitly ("not assessable" / "limited by…").
+- Any clinical context below is background only — do not treat it as confirmed and do not simply repeat it. Form your own read of the image, then note where you agree or disagree with it.
+- If no abnormality is visible, state "No acute abnormality detected" — do not manufacture findings.
+- This is decision support only, not a final diagnosis.
+
+Produce the report in this structure:
+1. **Study** — modality and body region/projection as seen in the image.
+2. **Image quality** — adequate / limited (and why).
+3. **Findings** — systematic, only what is visible (e.g. bones, soft tissue, lung fields, cardiac silhouette, devices/lines).
+4. **Impression** — a short summary of the key visible finding(s), or "No acute abnormality detected".
+5. **Correlation with radiologist's note** — state whether your read agrees with the provided impression/indication; omit this section if no context was provided.
+6. **Note** — "AI-generated from images only; correlate clinically and confirm with a radiologist."
+
+Be concise and factual. Never state a diagnosis the image cannot support.${clinicalContext}`;
+
+
+  const { text } = await callGeminiVisionImages({
+  prompt: prompt,
+  images: images.map(b => ({ data: b, mimetype: 'image/png' })),
+  feature: 'Imaging report analysis',
+  fallbackHint: 'Please review the images manually.',
+  model,
+});
+return {
+  summary: text,
+  images: images.map(b => `data:image/png;base64,${b.toString('base64')}`),
+  imageCount: images.length,
+  modality: study.modality ?? undefined,
+};
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

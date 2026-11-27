@@ -4,6 +4,7 @@ import { sendResponse, sendPaginatedResponse } from '../../shared/apiResponse';
 import * as labService from './lab.service';
 import * as labTemplates from './lab-templates.service';
 import * as labUnits from './lab-units.service';
+import { getCatalogQualityFlags as getCatalogQualityFlagsService } from './lab-catalog-quality';
 
 // ============================================================
 // Test Catalog
@@ -24,6 +25,19 @@ export async function createTest(
       message: 'Lab test created successfully',
       data: test,
     });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getCatalogQualityFlags(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await getCatalogQualityFlagsService(req.user!.tenantId);
+    sendResponse({ res, message: 'Catalogue review flags', data });
   } catch (err) {
     next(err);
   }
@@ -198,8 +212,10 @@ export async function cancelLabOrder(
 ) {
   try {
     const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
     const order = await labService.cancelLabOrder(
       tenantId,
+      userId,
       req.params.id as string,
       (req.body?.reason as string | undefined) ?? undefined,
     );
@@ -808,7 +824,10 @@ export async function listLabUnitGroups(
   next: NextFunction,
 ) {
   try {
-    const groups = await labUnits.listUnitGroups(req.user!.tenantId);
+    // Gap 314: platform QA/test groups are shown to super admins only.
+    const groups = await labUnits.listUnitGroups(req.user!.tenantId, {
+      includeTestRecords: (req.user!.roles ?? []).includes('super_admin'),
+    });
     sendResponse({ res, message: 'Unit groups retrieved', data: groups });
   } catch (err) {
     next(err);

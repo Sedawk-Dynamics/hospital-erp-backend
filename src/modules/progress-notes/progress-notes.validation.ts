@@ -9,6 +9,16 @@ const progressNoteTypeEnum = z.enum([
   'procedure_note',
   'consultation_note',
   'op_clinic_visit',
+  // Legacy values kept valid so the OP consultation flow (which writes
+  // `general`) and any existing rows keep working. The IP composer only
+  // offers the five values above.
+  'complaint',
+  'vitals',
+  'investigation',
+  'discussion',
+  'impression',
+  'advice',
+  'general',
 ]);
 
 
@@ -36,6 +46,7 @@ const dischargeSectionEnum = z.enum([
   'examination',
   'investigation',
   'impression',
+  'vitals',
 ]);
 
 const pinInputSchema = z.object({
@@ -52,6 +63,10 @@ export const createProgressNoteSchema = z.object({
     prescriptionId: z.string().uuid('Invalid prescription ID').optional().nullable(),
     noteType: progressNoteTypeEnum.optional(),
     noteTitle: z.string().max(200).optional().nullable(),
+    // Hospital day this note is for (Day 1 = admission day).
+    noteDay: z.number().int().min(1).max(3650).optional().nullable(),
+    // Doctor-entered date + time ("YYYY-MM-DDTHH:MM" from datetime-local, or ISO).
+    noteAt: z.string().min(1).max(40).optional().nullable(),
     content: z.string().min(1, 'Content is required').max(10000),
     impressions: z.string().max(10000).optional().nullable(),
     discussions: z.string().max(10000).optional().nullable(),
@@ -65,6 +80,7 @@ export const createProgressNoteSchema = z.object({
     assessment: soapSchema.optional().nullable(),
     plan: soapSchema.optional().nullable(),
     customFields: z.array(customFieldSchema).max(50).optional(),
+    specialtyData: z.record(z.string(), z.any()).optional().nullable(),
     weightKgAtEntry: z.number().positive().max(999.99).optional().nullable(),
     pinToDischargeSummary: z.boolean().default(false),
     pins: z.array(pinInputSchema).max(20).optional(),
@@ -94,6 +110,7 @@ export const updateProgressNoteSchema = z.object({
     assessment: soapSchema.optional().nullable(),
     plan: soapSchema.optional().nullable(),
     customFields: z.array(customFieldSchema).max(50).optional(),
+    specialtyData: z.record(z.string(), z.any()).optional().nullable(),
     weightKgAtEntry: z.number().positive().max(999.99).optional().nullable(),
     pinToDischargeSummary: z.boolean().optional(),
     pins: z.array(pinInputSchema).max(20).optional(),

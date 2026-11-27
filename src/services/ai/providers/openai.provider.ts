@@ -10,10 +10,13 @@ function isReasoningModel(model: string): boolean {
   return /^o\d/i.test(model) || /^gpt-5/i.test(model);
 }
 
-// OpenAI (chat completions) provider. Present so the platform can switch
-// providers from the super-admin panel without code changes, per the meeting
-// decision to keep the architecture flexible. Gemini stays the cost-efficient
-// default; this is the upgrade path when output quality demands it.
+function stripReasoning(text: string): string {
+  let out = text;
+  out = out.replace(/<(think|thinking|reasoning|thought)>[\s\S]*?<\/\1>/gi, '');
+  out = out.replace(/^[\s\S]*?<(?:think|thinking|reasoning|thought)>/i, '');
+  return out.trim();
+}
+
 export const openaiProvider: AiProviderClient = {
   provider: 'openai',
 
@@ -64,6 +67,6 @@ export const openaiProvider: AiProviderClient = {
     const data = (await res.json()) as {
       choices?: Array<{ message?: { content?: string } }>;
     };
-    return data.choices?.[0]?.message?.content ?? '';
+    return stripReasoning(data.choices?.[0]?.message?.content ?? '');
   },
 };

@@ -93,6 +93,9 @@ export async function getPatientFile(actor: FileActor, patientId: string) {
       include: {
         doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
         diagnoses: { select: { id: true } },
+        // Gap 333: visitType is only op/ip; new vs follow-up lives on the
+        // appointment the visit was opened from.
+        appointment: { select: { consultationType: true, visitType: true } },
       },
       orderBy: { visitDate: 'desc' },
       take: 50,
@@ -300,6 +303,10 @@ export async function getPatientFile(actor: FileActor, patientId: string) {
       id: v.id,
       date: v.visitDate,
       type: v.visitType,
+      // Gap 333: what the desk booked, so a follow-up visit reads "OP · Follow-up"
+      // like its appointment row instead of a bare "Op".
+      consultationType: v.appointment?.consultationType ?? null,
+      appointmentVisitType: v.appointment?.visitType ?? null,
       status: v.status,
       chiefComplaint: v.chiefComplaint,
       doctor: docName(v.doctor as never),
@@ -322,6 +329,9 @@ export async function getPatientFile(actor: FileActor, patientId: string) {
       status: a.status,
       type: a.appointmentType,
       visitType: a.visitType,
+      // What the desk booked (consultation / follow_up / procedure). The file
+      // showed a booked follow-up as "Scheduled · New" without it (gap 333).
+      consultationType: a.consultationType ?? null,
       doctor: docName(a.doctor as never),
     })),
     diagnoses: diagnoses.map((d) => ({

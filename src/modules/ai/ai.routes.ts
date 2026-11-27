@@ -68,3 +68,35 @@ aiRoutes.delete(
   validate(aiConfigResetSchema),
   controller.resetConfig,
 );
+
+aiRoutes.get('/patient/:patientId/summary',
+  requirePermission('patients','read'),
+  controller.patientSummary);
+
+
+aiRoutes.get('/patient/:patientId/context-version',authenticate, requirePermission('patients','read'), controller.getContextVersion);
+
+aiRoutes.get('/cdss/source/:sourceId',
+  authenticate,
+  requirePermission('patients', 'read'),
+  controller.downloadCdssSource);
+
+
+aiRoutes.post('/patient/:patientId/analyse-imaging',authenticate,requirePermission('patients','read'),controller.imagingReportAnalyse);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  

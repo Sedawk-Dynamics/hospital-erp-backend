@@ -39,6 +39,7 @@ import {
   reorderHistoryReportSchema,
   expiryWasteReportSchema,
   auditLogsReportSchema,
+  consumptionTransactionsSchema,
   createStockTransferSchema,
   listStockTransfersSchema,
   stockTransferIdSchema,
@@ -99,6 +100,8 @@ inventoryRoutes.post('/alerts/run', authenticate, requirePermission('inventory',
 // All are read-only and require `inventory:read`; access is further scoped per
 // tenant inside the service.
 inventoryRoutes.get('/reports/detailed', authenticate, requirePermission('inventory', 'read'), reportsController.detailedReport);
+// Gap 349: drill-down from a Top-consumed row to its supporting transactions.
+inventoryRoutes.get('/reports/detailed/consumption', authenticate, requirePermission('inventory', 'read'), validate(consumptionTransactionsSchema), reportsController.consumptionTransactions);
 inventoryRoutes.get('/reports/stock-balance', authenticate, requirePermission('inventory', 'read'), validate(stockBalanceReportSchema), reportsController.stockBalanceReport);
 inventoryRoutes.get('/reports/dept-consumption', authenticate, requirePermission('inventory', 'read'), validate(deptConsumptionReportSchema), reportsController.deptConsumptionReport);
 inventoryRoutes.get('/reports/reorder-history', authenticate, requirePermission('inventory', 'read'), validate(reorderHistoryReportSchema), reportsController.reorderHistoryReport);

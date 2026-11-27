@@ -20,6 +20,7 @@ export const createVisitSchema = z.object({
 export const getVisitsQuerySchema = z.object({
   query: paginationSchema.extend({
     patientId: z.string().uuid().optional(),
+    appointmentId: z.string().uuid().optional(),
     doctorId: z.string().uuid().optional(),
     visitType: z.enum(['op', 'ip']).optional(),
     status: z.enum(['active', 'completed', 'transferred', 'discharged']).optional(),
@@ -288,6 +289,10 @@ export const recordVitalsSchema = z.object({
       heightCm: z.number().min(0).max(300).optional(),
       bloodSugar: z.number().min(0).max(2000).optional(),
       notes: z.string().max(2000).optional(),
+      nurseChiefComplaint: z.string().max(2000).optional(),
+      progressNoteId: z.string().uuid('Invalid progress note ID').optional(),
+      pinnedDischargeSection: z.string().max(50).optional().nullable(),
+      showToPatient: z.boolean().optional(),
     })
     .refine(
       (b) => Boolean(b.visitId || b.admissionId || b.appointmentId),

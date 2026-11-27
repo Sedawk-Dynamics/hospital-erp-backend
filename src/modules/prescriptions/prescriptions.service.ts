@@ -1043,21 +1043,9 @@ export async function checkAllergy(tenantId: string, query: AllergyCheckQuery) {
   };
 }
 
-// ============================================================
-// Formulary Search (for prescription autocomplete)
-// ============================================================
 
-/**
- * Lightweight formulary search returning only fields needed for prescriptions.
- */
 export async function searchFormulary(tenantId: string, query: FormularySearchQuery, _userId?: string) {
   const { search } = query;
-
-  // 1. The hospital's own formulary (drugs it stocks) — these carry an `id`
-  //    usable as PrescriptionItem.drugId.
-  // Recall is batch-level, so a drug is never hidden here: `availableStock`
-  // below already excludes recalled batches, so a fully-recalled drug simply
-  // shows as out of stock.
   const formularySelect = {
     id: true,
     drugName: true,
@@ -1067,14 +1055,10 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
     manufacturer: true,
     price: true,
     drugMasterId: true,
-    // Stock type (medicine / consumable / surgical / …) so the pad can badge it.
     category: true,
   } as const;
+
   const q = (search ?? '').trim();
-  // Name and generic PREFIX windows kept SEPARATE (a combined OR ordered by name
-  // lets generic-prefix "A…" rows clip the real name-prefix rows), fetched
-  // alongside the substring window so a drug named like the query is never
-  // clipped out before JS ranking runs.
   const emptyFormulary = Promise.resolve(
     [] as Prisma.DrugFormularyGetPayload<{ select: typeof formularySelect }>[],
   );
@@ -1106,14 +1090,11 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
         ],
       },
       select: formularySelect,
-      // Wider window so JS relevance ranking below can see all near matches.
       take: 100,
       orderBy: { drugName: 'asc' },
     }),
   ]);
-  // Fuzzy (typo-tolerant) fill — formulary drugs trigram-similar to the query
-  // with no substring hit ("parcetamol" → "Paracetamol"). Additive: merged after
-  // the strict matches and ranked below them by the comparator further down.
+
   let fuzzyFormulary: typeof substringFormulary = [];
   if (q) {
     const fuzzyIds = await fuzzyMatchIds({
@@ -1137,9 +1118,6 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
     (f) => f.id,
   );
 
-  // Available pharmacy stock per formulary drug = Σ quantityInStock across the
-  // hospital's active (non-expired, non-recalled) batches — so the doctor sees
-  // what's actually on hand while prescribing.
   const formularyIds = formulary.map((f) => f.id);
   const stockByDrug = new Map<string, number>();
   if (formularyIds.length) {
@@ -1157,9 +1135,6 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
       source: 'formulary' as const,
       availableStock: stockByDrug.get(f.id) ?? 0,
     }))
-    // Rank: textual relevance (exact/prefix/word-start before substring) → in
-    // stock → alphabetical, so typing "DOLO" surfaces "DOLO 650" first and the
-    // doctor is nudged toward drugs the pharmacy can actually dispense.
     .sort(
       makeMedicineRankComparator(search, (f) => ({
         name: f.drugName,
@@ -1249,6 +1224,7 @@ export async function searchFormulary(tenantId: string, query: FormularySearchQu
       manufacturer: true,
       mrp: true,
     } as const;
+    
     const baseWhere = {
       isPublished: true,
       isDiscontinued: false,

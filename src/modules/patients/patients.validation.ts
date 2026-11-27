@@ -1,5 +1,11 @@
 import { z } from 'zod';
 import { paginationSchema } from '../../shared/pagination';
+import { isFutureISTDate } from '../../shared/date.utils';
+
+// Gap 329: a date of birth after today (IST) is a typo, not a patient. Today is
+// allowed — a newborn is registered on the day they are born.
+const NOT_FUTURE_DOB = { message: 'Date of birth cannot be in the future' };
+const notFutureDob = (val: string) => !isFutureISTDate(val);
 
 export const RELATIONSHIPS = [
   'self',
@@ -17,7 +23,7 @@ export const createPatientSchema = z.object({
     lastName: z.string().min(1, 'Last name is required').max(100),
     dateOfBirth: z.string().refine((val) => !isNaN(Date.parse(val)), {
       message: 'Invalid date of birth',
-    }).optional(),
+    }).refine(notFutureDob, NOT_FUTURE_DOB).optional(),
     gender: z.enum(['male', 'female', 'other', 'prefer_not_to_say']),
     bloodGroup: z
       .enum(['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'])
@@ -64,6 +70,7 @@ export const updatePatientSchema = z.object({
       .refine((val) => !isNaN(Date.parse(val)), {
         message: 'Invalid date of birth',
       })
+      .refine(notFutureDob, NOT_FUTURE_DOB)
       .optional(),
     gender: z.enum(['male', 'female', 'other', 'prefer_not_to_say']).optional(),
     bloodGroup: z
@@ -125,7 +132,7 @@ export const createTemporaryPatientSchema = z.object({
     firstName: z.string().max(100).optional(),
     lastName: z.string().max(100).optional(),
     gender: z.enum(['male', 'female', 'other', 'prefer_not_to_say']).optional(),
-    dateOfBirth: z.string().optional(),
+    dateOfBirth: z.string().refine(notFutureDob, NOT_FUTURE_DOB).optional(),
     age: z.coerce.number().int().min(0).max(150).optional(),
     phone: z.string().max(20).optional(),
     email: z.string().email('Invalid email').max(255).optional().or(z.literal('')),
@@ -135,13 +142,22 @@ export const createTemporaryPatientSchema = z.object({
     state: z.string().max(100).optional(),
     zipCode: z.string().max(20).optional(),
     notes: z.string().max(1000).optional(),
-    /**
-     * The account this patient belongs under — the attender who brought them
-     * in. Pass it explicitly, or leave it out and let the phone resolve to an
-     * existing account holder.
-     */
     userId: z.string().uuid('Invalid account holder ID').optional(),
-    /** How the patient relates to that account holder. */
+    emergency: z
+    .object({
+      priority: z.enum(['resuscitation', 'emergent', 'urgent', 'non_urgent']),
+      chiefComplaint: z.string().trim().max(2000).optional(),
+      broughtBy: z.enum([
+        'cat_108', 'private_ambulance', 'police',
+        'good_samaritan', 'relative', 'self',
+      ]),
+      informantName: z.string().trim().min(1).max(150),
+      contactPhone: z.string().trim().min(7).max(20),
+      relationship: z.string().trim().max(100).optional(),
+      ambulanceNumber: z.string().trim().max(50).optional(),
+      policeBadgeStation: z.string().trim().max(100).optional(),
+    })
+    .optional(),
     relationship: z
       .enum(['self', 'spouse', 'child', 'parent', 'sibling', 'guardian', 'other'])
       .optional(),
@@ -154,7 +170,7 @@ export const registerTemporaryPatientSchema = z.object({
     firstName: z.string().min(1, 'First name is required').max(100),
     lastName: z.string().max(100).optional(),
     gender: z.enum(['male', 'female', 'other', 'prefer_not_to_say']).optional(),
-    dateOfBirth: z.string().optional(),
+    dateOfBirth: z.string().refine(notFutureDob, NOT_FUTURE_DOB).optional(),
     phone: z.string().max(20).optional(),
     email: z.string().email('Invalid email').max(255).optional().or(z.literal('')),
     bloodGroup: z.enum(['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-']).optional(),

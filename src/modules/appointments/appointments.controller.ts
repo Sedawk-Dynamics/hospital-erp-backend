@@ -2,6 +2,7 @@ import { Response, NextFunction } from 'express';
 import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse, sendPaginatedResponse } from '../../shared/apiResponse';
 import * as appointmentsService from './appointments.service';
+import type { BookingChargePreviewQuery } from './appointments.validation';
 
 // --- Doctor Profiles ---
 
@@ -495,6 +496,24 @@ export async function getAppointmentChargePreview(
     const data = await appointmentsService.getAppointmentChargePreview(
       req.user!.tenantId,
       req.params.id as string,
+    );
+    sendResponse({ res, message: 'Charge preview', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Gap 331: the same itemisation for a booking that does not exist yet, so the
+// payment step can show the amount the bill will actually carry.
+export async function getBookingChargePreview(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const data = await appointmentsService.getBookingChargePreview(
+      req.user!.tenantId,
+      req.query as unknown as BookingChargePreviewQuery,
     );
     sendResponse({ res, message: 'Charge preview', data });
   } catch (err) {

@@ -7,13 +7,6 @@ import { UPLOAD_DIR, getFileUrl, deleteFile } from '../../services/upload.servic
 import { syncAttachmentToPacs } from './dicom.service';
 import { pacsSupportsArchive } from './pacs';
 
-// ── ImagingAttachment service ──────────────────────────────────────────────
-// File storage for anything a radiology role needs to attach to a request or
-// its result — scanned PDF reports, JPEG/PNG snapshots from the modality,
-// DICOM .dcm files, video loops (USG/echo), etc. Files land on disk via
-// multer; the metadata row points at the public URL. Soft-delete via
-// deletedAt so audit trail of corrections is preserved.
-
 type AllowedCategory =
   | 'report_pdf'
   | 'image'
@@ -30,7 +23,7 @@ function inferCategory(
 ): AllowedCategory {
   if (hint) return hint;
   const ext = path.extname(fileName).toLowerCase();
-  if (ext === '.dcm' || mimeType === 'application/dicom') return 'dicom';
+  if (ext === '.dcm' || mimeType === 'application/dicom' || ext===".zip" ) return 'dicom';
   if (mimeType.startsWith('video/')) return 'video';
   if (mimeType.startsWith('image/')) return 'image';
   if (mimeType === 'application/pdf') return 'report_pdf';
@@ -48,7 +41,6 @@ export async function createImagingAttachment(
     description?: string;
   },
 ) {
-  // Tenant ownership check — same shape as the lab variant.
   const request = await prisma.imagingRequest.findFirst({
     where: { id: imagingRequestId, tenantId },
     select: {
@@ -60,8 +52,6 @@ export async function createImagingAttachment(
   });
   if (!request) throw AppError.notFound('Imaging request not found');
 
-  // Once the report is published it is locked — nobody (radiologist or admin)
-  // can add, change, or remove its files.
   if (request.imagingResult?.status === 'published') {
     throw AppError.badRequest(
       'This report is published and locked — its files can no longer be changed.',
@@ -81,14 +71,8 @@ export async function createImagingAttachment(
 
   const category = inferCategory(file.mimetype, file.originalname, options.category);
 
-  // Resolve (and lazily create) the result row this file hangs off of.
-  // The radiologist's "Upload Result" dialog NO LONGER pre-creates a draft on
-  // open — that left an empty result behind whenever they opened and closed
-  // without uploading, which then tripped a "result already exists" conflict
-  // on the next open. Instead the result is created here, on the FIRST actual
-  // file upload. Opening + closing the dialog with no file now changes nothing.
-  let resolvedResultId =
-    options.imagingResultId ?? request.imagingResult?.id ?? null;
+  let resolvedResultId = options.imagingResultId ?? request.imagingResult?.id ?? null;
+
   if (!resolvedResultId) {
     try {
       const createdResult = await prisma.imagingResult.create({
@@ -102,8 +86,6 @@ export async function createImagingAttachment(
       });
       resolvedResultId = createdResult.id;
     } catch (err) {
-      // imagingRequestId is unique on ImagingResult — a concurrent upload may
-      // have created it first. Reuse whatever exists rather than failing.
       const existing = await prisma.imagingResult.findUnique({
         where: { imagingRequestId },
         select: { id: true },
@@ -124,7 +106,7 @@ export async function createImagingAttachment(
       category,
       fileName: file.originalname,
       fileUrl: getFileUrl(file.filename),
-      mimeType: file.mimetype,
+      mimeType: category === 'dicom' ? 'application/dicom' : file.mimetype,
       sizeBytes: file.size,
       description: options.description ?? null,
       uploadedBy: uploaderId,
@@ -134,13 +116,6 @@ export async function createImagingAttachment(
     },
   });
 
-  // A file means work has started, not that it is finished. The study moves to
-  // `in_progress` and the result stays a DRAFT the radiologist can keep editing
-  // — add another series, swap a wrong file, remove one — until they explicitly
-  // Mark as Done (submitImagingResult), which is what hands it to the admin for
-  // approval. Uploading used to complete the request outright, so a half-loaded
-  // study appeared in the approval queue with no way back.
-  // Skip terminal states (completed, or admin-closed as cancelled/no_show).
   if (!['completed', 'cancelled', 'no_show', 'in_progress'].includes(request.status)) {
     await prisma.imagingRequest
       .update({
@@ -155,9 +130,6 @@ export async function createImagingAttachment(
       );
   }
 
-  // Mirror the first PDF upload onto ImagingResult.pdfReportUrl so existing
-  // readers (doctor orders panel, patient portal) light up without needing
-  // to refactor them all at once.
   if (resolvedResultId && category === 'report_pdf') {
     const existing = await prisma.imagingResult.findUnique({
       where: { id: resolvedResultId },
@@ -178,11 +150,7 @@ export async function createImagingAttachment(
     }
   }
 
-  // When a real PACS is configured, archive DICOM uploads to it and mirror the
-  // study/series/instance records. Best-effort: a PACS outage must not fail the
-  // upload — the file already lives in /uploads and the in-house viewer reads it.
-  // TEMP DEBUG — search logs for "PACS_SYNC_DEBUG" to see why (or whether) a
-  // DICOM upload is pushed to Orthanc.
+
   logger.info(
     {
       attachmentId: attachment.id,
@@ -215,9 +183,7 @@ export async function createImagingAttachment(
   return attachment;
 }
 
-// A published report is immutable. Throws if the request behind an attachment
-// already has a published result — used by update/delete so locked files can't
-// be edited or removed by anyone.
+
 async function assertNotPublished(imagingRequestId: string) {
   const result = await prisma.imagingResult.findUnique({
     where: { imagingRequestId },

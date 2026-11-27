@@ -89,6 +89,74 @@ export function supplyKindForCategory(category: string | null | undefined): Supp
 }
 
 /** Translate pharmacy inventory categories without pretending retail goods are medicines. */
+/**
+ * The item-side half of a goods line's context, in ONE place (G-1).
+ *
+ * Precedence is: a rate typed on the line, then the item master's own rate,
+ * then the HSN default. Every pharmacy and indent path used to spell this out
+ * itself as `gstTreatment ?? (!hsnCode && rate > 0 ? 'taxable' : null)` — and
+ * the `!hsnCode` meant any coded medicine silently took its heading's 5%
+ * whatever rate the pharmacist had set (12%, 18%). A positive rate on the item
+ * is now the item's classification; a missing or zero rate still falls through
+ * to the HSN master.
+ */
+export function itemTaxContext(
+  item: {
+    hsnCode?: string | null;
+    taxPercent?: unknown;
+    gstTreatment?: string | null;
+  } | null | undefined,
+  manualRatePercent?: number | null,
+): Pick<SupplyContext, 'hsnCode' | 'itemRatePercent' | 'itemTreatment' | 'manualRatePercent'> {
+  const raw = item?.taxPercent;
+  const rate = raw != null && raw !== '' && Number.isFinite(Number(raw)) ? Number(raw) : null;
+  let treatment = (item?.gstTreatment as GstTreatment | null | undefined) ?? null;
+  // "Taxable" with no rate behind it says nothing about HOW MUCH — let the HSN
+  // master answer that instead of billing a taxable line at 0%.
+  if (treatment === 'taxable' && !(rate != null && rate > 0)) treatment = null;
+  if (!treatment && rate != null && rate > 0) treatment = 'taxable';
+  return {
+    hsnCode: item?.hsnCode ?? null,
+    itemRatePercent: rate,
+    itemTreatment: treatment,
+    manualRatePercent: manualRatePercent != null && manualRatePercent > 0 ? manualRatePercent : null,
+  };
+}
+
+/**
+ * The service-side counterpart of {@link itemTaxContext} (G-3): a bill line
+ * raised against a service tariff takes its SAC, treatment and rate from the
+ * tariff. The rate used to be read only once an auditor had approved the
+ * tariff — otherwise a rate off the request stood in, and a taxable tariff
+ * billed with none went out at 0%. Approval now only decides whether an
+ * uncoded taxable line needs resolving; a classification dated after the bill
+ * (`gstEffectiveFrom`) is not applied and the SAC master decides instead.
+ */
+export function tariffTaxContext(
+  tariff: {
+    sacCode?: string | null;
+    gstTreatment?: string | null;
+    gstRatePercent?: unknown;
+    gstApproved?: boolean | null;
+    isCosmetic?: boolean | null;
+    gstEffectiveFrom?: Date | string | null;
+  } | null | undefined,
+  on: Date,
+): Pick<SupplyContext, 'sacCode' | 'itemRatePercent' | 'itemTreatment' | 'itemApproved' | 'isCosmetic'> {
+  if (!tariff) return { sacCode: null, itemRatePercent: null, itemTreatment: null, itemApproved: false, isCosmetic: false };
+  const from = tariff.gstEffectiveFrom ? new Date(tariff.gstEffectiveFrom) : null;
+  // Compared as calendar days: the column is a DATE, the bill a timestamp.
+  const live = !from || Number.isNaN(from.getTime()) || on.getTime() >= from.getTime();
+  const rate = Number(tariff.gstRatePercent ?? 0);
+  return {
+    sacCode: tariff.sacCode ?? null,
+    itemRatePercent: live && Number.isFinite(rate) ? rate : null,
+    itemTreatment: live ? ((tariff.gstTreatment as GstTreatment | null | undefined) ?? null) : null,
+    itemApproved: live && !!tariff.gstApproved,
+    isCosmetic: !!tariff.isCosmetic,
+  };
+}
+
 export function supplyKindForInventoryCategory(category: string | null | undefined): SupplyKind {
   const value = String(category ?? '').toLowerCase();
   if (value === 'drug') return 'medicine';
@@ -103,6 +171,8 @@ export type TaxSource =
   | 'room_rule'
   | 'inpatient_composite'
   | 'cosmetic'
+  /** A rate typed on the line itself (G-1). Billing's draft refresh never touches it. */
+  | 'manual'
   | 'item_master'
   | 'hsn_master'
   | 'sac_master'
@@ -191,6 +261,12 @@ export interface SupplyContext {
    * classification is never overridden by a master or a default.
    */
   itemApproved?: boolean;
+  /**
+   * A rate somebody typed on THIS line (G-1). Beats the item master and the
+   * HSN default; a zero is ignored, because a bare 0 is the absence of an
+   * answer rather than a nil rating.
+   */
+  manualRatePercent?: number | null;
 
   // ── the context of the supply ──
   /** The patient has an active admission — IP, emergency or day care. */
@@ -384,6 +460,21 @@ export function determineTax(ctx: SupplyContext, masters: TaxMasters): TaxDeterm
       taxInclusive,
       source: 'cosmetic',
       reason: 'Taxable: cosmetic or non-therapeutic procedure, not healthcare',
+      requiresResolution: false,
+    };
+  }
+
+  // 5a. A rate typed on the line (G-1): manual override, then item master,
+  //     then HSN default. It sits below the composite and cosmetic rules
+  //     because those are what the law says the supply IS.
+  if (ctx.manualRatePercent != null && ctx.manualRatePercent > 0) {
+    return {
+      treatment: 'taxable',
+      ratePercent: ctx.manualRatePercent,
+      hsnSacCode: code,
+      taxInclusive,
+      source: 'manual',
+      reason: `${ctx.manualRatePercent}% set on the line`,
       requiresResolution: false,
     };
   }

@@ -121,6 +121,7 @@ export const usersService = {
             tenantId,
             departmentId: dp.departmentId!,
             specialization: dp.specialization,
+            specialty: dp.specialty,
             qualifications: dp.qualifications,
             licenseNumber: dp.licenseNumber,
             experienceYears: dp.experienceYears,
@@ -157,11 +158,24 @@ export const usersService = {
         tenantId: true,
         tenant: { select: { id: true, name: true, slug: true } },
         _count: { select: { patients: true } },
+        patients: {
+          select: {
+            id: true,
+            tenantId: true,     // to check "registered here?"
+            mrn: true,
+            dateOfBirth: true,
+            gender: true,
+            addressLine1: true,
+            addressLine2:true
+          },
+        },
       },
       take: 10,
       orderBy: { createdAt: 'desc' },
     });
   },
+
+
 
   async findAll(
     tenantId: string,
@@ -172,6 +186,15 @@ export const usersService = {
 
     const where = {
       tenantId,
+      // Gap 305: this is the hospital's STAFF list. A patient portal account
+      // (only the `patient` role) never belongs here. Users with no role at all
+      // stay visible so an admin can fix them.
+      NOT: {
+        AND: [
+          { userRoles: { some: { role: { name: 'patient' } } } },
+          { userRoles: { none: { role: { name: { not: 'patient' } } } } },
+        ],
+      },
       ...(search && {
         OR: [
           { firstName: { contains: search, mode: 'insensitive' as const } },
@@ -215,6 +238,7 @@ export const usersService = {
             select: {
               departmentId: true,
               specialization: true,
+              specialty: true,
               qualifications: true,
               licenseNumber: true,
               experienceYears: true,
@@ -470,6 +494,7 @@ export const usersService = {
           data: {
             ...(dp.departmentId !== undefined && { departmentId: dp.departmentId }),
             ...(dp.specialization !== undefined && { specialization: dp.specialization }),
+            ...(dp.specialty !== undefined && { specialty: dp.specialty }),
             ...(dp.qualifications !== undefined && { qualifications: dp.qualifications }),
             ...(dp.licenseNumber !== undefined && { licenseNumber: dp.licenseNumber }),
             ...(dp.experienceYears !== undefined && { experienceYears: dp.experienceYears }),
@@ -485,6 +510,7 @@ export const usersService = {
             tenantId,
             departmentId: dp.departmentId,
             specialization: dp.specialization,
+            specialty: dp.specialty,
             qualifications: dp.qualifications,
             licenseNumber: dp.licenseNumber,
             experienceYears: dp.experienceYears,

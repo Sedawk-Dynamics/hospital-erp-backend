@@ -87,6 +87,26 @@ describe('allotDocumentNumber', () => {
     expect(r.invoiceNumber).toBe('BOS/2026-27/000001');
     expect((prisma.gstDocumentSeries.upsert as any).mock.calls[0][0].create.lastNumber).toBe(1);
   });
+
+  // Gap item 281: no new numbered document may be dated inside a period that
+  // has been filed and locked — and no number is burned trying.
+  it('refuses a new document dated inside a locked period', async () => {
+    const { clearPeriodLockCache } = await import('../../../../src/shared/gst-period-lock');
+    clearPeriodLockCache();
+    (prisma.gstFiledPeriod.findMany as any).mockResolvedValue([
+      { periodFrom: new Date('2026-06-01T00:00:00Z'), periodTo: new Date('2026-06-30T00:00:00Z'), returnPeriod: '062026' },
+    ]);
+    await expect(
+      allotDocumentNumber(prisma, TENANT, 'tax_invoice', new Date('2026-06-15T06:00:00Z')),
+    ).rejects.toThrow(/Jun 2026 has been filed and locked/);
+    expect(prisma.gstDocumentSeries.upsert).not.toHaveBeenCalled();
+    // A date outside the locked month is still numbered.
+    (prisma.gstDocumentSeries.upsert as any).mockResolvedValue({ prefix: 'TI', lastNumber: 8 });
+    const ok = await allotDocumentNumber(prisma, TENANT, 'tax_invoice', new Date('2026-07-02T06:00:00Z'));
+    expect(ok.invoiceNumber).toBe('TI/2026-27/000008');
+    clearPeriodLockCache();
+    (prisma.gstFiledPeriod.findMany as any).mockResolvedValue([]);
+  });
 });
 
 describe('issueDocumentForBill', () => {

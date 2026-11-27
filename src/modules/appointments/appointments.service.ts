@@ -32,9 +32,11 @@ import type {
   GetDoctorProfilesQuery,
   RescheduleAppointmentInput,
   FrontdeskCheckoutInput,
+  BookingChargePreviewQuery,
 } from './appointments.validation';
 import { createPayment, recalculateBillTotalsPublic } from '../billing/billing.service';
 import { createBillInSeriesWithRetry } from '../../shared/bill-number';
+import { istDateStr, istMinutesOfDay, istDayStart, istDayEnd } from '../../shared/date.utils';
 
 // Valid status transitions
 const STATUS_TRANSITIONS: Record<string, string[]> = {
@@ -316,7 +318,7 @@ function parseProgressNoteContent(content: string | null | undefined): {
   followUpNotes: string;
   referralNotes: string;
   impression: string;
-} {
+} { 
   const empty = {
     chiefComplaint: '',
     generalExamination: '',
@@ -851,6 +853,12 @@ function toDbTime(hhmm: string): Date {
   return new Date(`1970-01-01T${hhmm}:00.000Z`);
 }
 
+/** "HH:MM" → minutes since midnight. */
+function hhmmToMinutes(hhmm: string): number {
+  const [h, m] = hhmm.split(':').map(Number);
+  return (h || 0) * 60 + (m || 0);
+}
+
 function normalizeDate(d: string | Date): Date {
   const r = new Date(d);
   r.setUTCHours(0, 0, 0, 0);
@@ -1075,7 +1083,9 @@ export async function getAvailableSlots(tenantId: string, doctorId: string, date
   }
 
   const targetDate = normalizeDate(date);
-  const dayOfWeek = new Date(date).getDay();
+  // The date is a calendar date stored at UTC midnight, so read its weekday in
+  // UTC — getDay() would follow the host's zone.
+  const dayOfWeek = targetDate.getUTCDay();
 
   // 1. Date-specific override takes precedence over the weekly recurring schedule.
   const override = await prisma.doctorScheduleOverride.findUnique({
@@ -1167,11 +1177,19 @@ export async function getAvailableSlots(tenantId: string, doctorId: string, date
   const pad2 = (n: number) => n.toString().padStart(2, '0');
   const fmt = (mins: number) => `${pad2(Math.floor(mins / 60))}:${pad2(mins % 60)}`;
 
+  // Gap 330: "now" is the hospital's clock (IST), not the server's. Shift times
+  // are IST wall-clock values, so compare them with IST minutes-of-day. A slot
+  // that has already ENDED is past; one still running stays bookable.
+  const slotDay = targetDate.toISOString().slice(0, 10);
+  const todayIST = istDateStr();
+  const nowMinIST = slotDay === todayIST ? istMinutesOfDay() : slotDay < todayIST ? Infinity : -1;
+
   const slots: Array<{
     startTime: string;
     endTime: string;
     available: boolean;
     onLeave?: boolean;
+    past?: boolean;
   }> = [];
 
   // Generate slots for every shift (date-override or weekly recurring)
@@ -1195,11 +1213,14 @@ export async function getAvailableSlots(tenantId: string, doctorId: string, date
         (br) => slotStartMin < br.endMin && slotEndMin > br.startMin,
       );
 
+      const isPast = slotEndMin <= nowMinIST;
+
       slots.push({
         startTime: fmt(slotStartMin),
         endTime: fmt(slotEndMin),
-        available: !isBooked && !onLeave,
+        available: !isBooked && !onLeave && !isPast,
         ...(onLeave ? { onLeave: true } : {}),
+        ...(isPast ? { past: true } : {}),
       });
 
       cur += slotDuration;
@@ -1241,11 +1262,16 @@ export async function bookAppointment(tenantId: string, data: BookAppointmentInp
   const appointmentDate = new Date(data.appointmentDate);
   appointmentDate.setUTCHours(0, 0, 0, 0);
 
-  // Prevent booking in the past
-  const today = new Date();
-  today.setUTCHours(0, 0, 0, 0);
-  if (appointmentDate < today) {
+  // Prevent booking in the past — by the hospital's (IST) calendar and clock.
+  // The UTC date lags IST until 05:30, and an ended slot today is just as past
+  // as yesterday (gap 330).
+  const apptDay = appointmentDate.toISOString().slice(0, 10);
+  const todayIST = istDateStr();
+  if (apptDay < todayIST) {
     throw AppError.badRequest('Cannot book an appointment in the past');
+  }
+  if (apptDay === todayIST && hhmmToMinutes(data.endTime) <= istMinutesOfDay()) {
+    throw AppError.badRequest('This time slot has already ended — pick a later one');
   }
 
   // Check for doctor leave on this date
@@ -1304,6 +1330,9 @@ export async function bookAppointment(tenantId: string, data: BookAppointmentInp
     // Within 30 days → review/revisit; otherwise → new cycle (old returning)
     visitType = daysSinceLast <= 30 ? 'revisit' : 'new';
   }
+  // Gap 333: the desk booked a follow-up, so it is a return visit whatever the
+  // history lookup guessed — the patient file showed it as "New".
+  if (data.type === 'follow_up') visitType = 'revisit';
 
   const appointment = await prisma.appointment.create({
     data: {
@@ -1356,7 +1385,8 @@ export async function bookAppointment(tenantId: string, data: BookAppointmentInp
  * Get appointment statistics for a given date (or today).
  */
 export async function getAppointmentStats(tenantId: string, date?: string) {
-  const targetDate = date ? new Date(date) : new Date();
+  // Default to TODAY IN IST — the UTC date is still yesterday before 05:30 IST.
+  const targetDate = new Date(date || istDateStr());
   const dayStart = new Date(targetDate);
   dayStart.setUTCHours(0, 0, 0, 0);
   const dayEnd = new Date(targetDate);
@@ -1385,6 +1415,101 @@ export async function getAppointmentStats(tenantId: string, date?: string) {
   };
 }
 
+// ------------------------------------------------------------
+// Referral revenue (gap 334)
+// ------------------------------------------------------------
+
+/** Bills that never became revenue: an unfinalised draft, or a cancelled bill. */
+const NON_REVENUE_BILL_STATUSES = ['draft', 'cancelled'];
+const COUNTED_REFUND_STATUSES = ['approved', 'processed'];
+
+/**
+ * Gap 334: the revenue a referred visit brought in — its NET BILLED amount.
+ *
+ * Basis: every finalised bill linked to the appointment (status pending,
+ * partially paid, paid or refunded; never draft or cancelled), at its total
+ * after concessions and tax, less refunds that were approved or processed.
+ * It is billed revenue, not cash: an unpaid bill still counts, because the
+ * referral produced it. Each bill counts once, and never below zero.
+ */
+export function netReferralRevenue(
+  bills: Array<{ status: string; totalAmount: unknown; refunds?: Array<{ amount: unknown; status?: string }> }>,
+): number {
+  let total = 0;
+  for (const b of bills) {
+    if (NON_REVENUE_BILL_STATUSES.includes(String(b.status))) continue;
+    const refunded = (b.refunds ?? [])
+      .filter((r) => !r.status || COUNTED_REFUND_STATUSES.includes(String(r.status)))
+      .reduce((sum, r) => sum + Number(r.amount ?? 0), 0);
+    total += Math.max(0, Number(b.totalAmount ?? 0) - refunded);
+  }
+  return Math.round(total * 100) / 100;
+}
+
+/**
+ * Net billed revenue per appointment. A bill belongs to the appointment when
+ * it carries the appointment's consultation line (BillItem referenceType
+ * 'appointment') or was raised on the visit opened from it (Bill.visitId →
+ * Visit.appointmentId) — e.g. the lab or pharmacy charges of that visit.
+ */
+export async function getReferralRevenue(tenantId: string, appointmentIds: string[]): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (appointmentIds.length === 0) return out;
+
+  const [items, visits] = await Promise.all([
+    prisma.billItem.findMany({
+      where: { referenceType: 'appointment', referenceId: { in: appointmentIds }, bill: { tenantId } },
+      select: { billId: true, referenceId: true },
+    }),
+    prisma.visit.findMany({
+      where: { tenantId, appointmentId: { in: appointmentIds } },
+      select: { id: true, appointmentId: true },
+    }),
+  ]);
+
+  const billToAppointment = new Map<string, string>();
+  for (const i of items ?? []) {
+    if (i.referenceId && !billToAppointment.has(i.billId)) billToAppointment.set(i.billId, i.referenceId);
+  }
+  const visitToAppointment = new Map<string, string>();
+  for (const v of visits ?? []) if (v.appointmentId) visitToAppointment.set(v.id, v.appointmentId);
+
+  const billIds = [...billToAppointment.keys()];
+  const visitIds = [...visitToAppointment.keys()];
+  if (billIds.length === 0 && visitIds.length === 0) return out;
+
+  const bills = await prisma.bill.findMany({
+    where: {
+      tenantId,
+      status: { notIn: NON_REVENUE_BILL_STATUSES as any },
+      OR: [
+        ...(billIds.length ? [{ id: { in: billIds } }] : []),
+        ...(visitIds.length ? [{ visitId: { in: visitIds } }] : []),
+      ],
+    },
+    select: {
+      id: true,
+      status: true,
+      totalAmount: true,
+      visitId: true,
+      refunds: { where: { status: { in: COUNTED_REFUND_STATUSES as any } }, select: { amount: true, status: true } },
+    },
+  });
+
+  const byAppointment = new Map<string, typeof bills>();
+  for (const b of bills ?? []) {
+    const apptId = billToAppointment.get(b.id) ?? (b.visitId ? visitToAppointment.get(b.visitId) : undefined);
+    if (!apptId) continue;
+    const list = byAppointment.get(apptId) ?? [];
+    list.push(b);
+    byAppointment.set(apptId, list);
+  }
+  for (const [apptId, list] of byAppointment) {
+    out.set(apptId, netReferralRevenue(list.map((b) => ({ ...b, status: String(b.status) }))));
+  }
+  return out;
+}
+
 /**
  * Get paginated list of appointments with filters.
  */
@@ -1401,11 +1526,13 @@ export async function getAppointments(tenantId: string, query: GetAppointmentsQu
     dayEnd.setUTCHours(23, 59, 59, 999);
     where.appointmentDate = { gte: dayStart, lte: dayEnd };
   } else {
+    // IST day bounds, end date inclusive (gap 359). appointmentDate is a
+    // calendar date at UTC midnight, which these bounds contain exactly.
     if (query.fromDate) {
-      where.appointmentDate = { ...where.appointmentDate, gte: new Date(query.fromDate) };
+      where.appointmentDate = { ...where.appointmentDate, gte: istDayStart(query.fromDate) };
     }
     if (query.toDate) {
-      where.appointmentDate = { ...where.appointmentDate, lte: new Date(query.toDate) };
+      where.appointmentDate = { ...where.appointmentDate, lte: istDayEnd(query.toDate) };
     }
   }
 
@@ -1428,6 +1555,16 @@ export async function getAppointments(tenantId: string, query: GetAppointmentsQu
   // consultationType at booking). Used by the Referral / follow-up report.
   if ((query as any).type) where.consultationType = (query as any).type;
 
+  // Gap 334: the Referral report lists visits that have a recorded referral
+  // source (the patient's "Referred by"), not every follow-up.
+  if ((query as any).referred === true || (query as any).referred === 'true') {
+    where.AND = [
+      ...(where.AND ?? []),
+      { patient: { referredBy: { not: null } } },
+      { NOT: { patient: { referredBy: '' } } },
+    ];
+  }
+
   if ((query as any).search) {
     const s = (query as any).search;
     where.patient = {
@@ -1447,7 +1584,7 @@ export async function getAppointments(tenantId: string, query: GetAppointmentsQu
       take,
       include: {
         patient: {
-          select: { id: true, mrn: true, firstName: true, lastName: true, phone: true, gender: true, dateOfBirth: true, isNew: true },
+          select: { id: true, mrn: true, firstName: true, lastName: true, phone: true, gender: true, dateOfBirth: true, isNew: true, referredBy: true },
         },
         doctor: {
           include: {
@@ -1495,6 +1632,10 @@ export async function getAppointments(tenantId: string, query: GetAppointmentsQu
     }
   }
 
+  // Gap 334: the Referral report shows what each referred visit earned.
+  const isReferralReport = (query as any).referred === true || (query as any).referred === 'true';
+  const referralRevenue = isReferralReport ? await getReferralRevenue(tenantId, appointmentIds) : null;
+
   const appointments = rawAppointments.map((a) => {
     const bill = billMap.get(a.id);
     const latestPayment = bill?.payments?.[0];
@@ -1527,6 +1668,7 @@ export async function getAppointments(tenantId: string, query: GetAppointmentsQu
 
     return {
       ...a,
+      ...(referralRevenue ? { referralRevenue: referralRevenue.get(a.id) ?? 0 } : {}),
       paymentInfo: bill
         ? {
             billId: bill.id,
@@ -1721,9 +1863,8 @@ export async function rescheduleAppointment(
   const appointmentDate = new Date(data.appointmentDate);
   appointmentDate.setUTCHours(0, 0, 0, 0);
 
-  const today = new Date();
-  today.setUTCHours(0, 0, 0, 0);
-  if (appointmentDate < today) {
+  // IST calendar, as for booking (gap 330).
+  if (appointmentDate.toISOString().slice(0, 10) < istDateStr()) {
     throw AppError.badRequest('Cannot reschedule an appointment into the past');
   }
 
@@ -2112,6 +2253,70 @@ export async function getAppointmentChargePreview(tenantId: string, appointmentI
     readRegistrationChoice(appointmentId),
   ]);
 
+  const feeResolution = await resolveConsultationFee(tenantId, appointment as never);
+  const listFee = appointment.doctor?.consultationFee
+    ? Number(appointment.doctor.consultationFee)
+    : 0;
+  return assembleChargePreview({ settings, visitStatus, deskChoice, feeResolution, listFee });
+}
+
+/**
+ * Gap 331: the same preview for a booking that has not been made yet. The
+ * front desk's payment step showed the doctor's list fee ("Collect ₹500 &
+ * Book") for a follow-up whose bill then came out at ₹0 "Waived (Follow-up)".
+ * This runs the very rules `ensureAppointmentBill` will run, so the screen,
+ * the toast and the bill agree. With no `patientId` (registering a new
+ * patient in the same step) it is, by definition, their first visit here.
+ */
+export async function getBookingChargePreview(tenantId: string, query: BookingChargePreviewQuery) {
+  const doctor = await prisma.doctorProfile.findFirst({
+    where: { id: query.doctorId, tenantId },
+    select: { consultationFee: true, freeFollowUpDays: true },
+  });
+  if (!doctor) throw AppError.notFound('Doctor not found');
+
+  // Never matches a real row: the appointment does not exist yet.
+  const NO_APPOINTMENT = '00000000-0000-0000-0000-000000000000';
+  const [settings, visitStatus] = await Promise.all([
+    getRegistrationFeeSettings(tenantId),
+    query.patientId
+      ? getPatientVisitStatus(tenantId, query.patientId)
+      : Promise.resolve({ isFirstVisit: true, registrationFeeCharged: false }),
+  ]);
+  const feeResolution = query.patientId
+    ? await resolveConsultationFee(tenantId, {
+        id: NO_APPOINTMENT,
+        patientId: query.patientId,
+        doctorId: query.doctorId,
+        consultationType: query.type,
+        doctor,
+      })
+    : query.type === 'follow_up'
+      ? { fee: 0, isFreeFollowUp: true, basedOn: null, windowDays: 0 }
+      : { fee: Number(doctor.consultationFee ?? 0), isFreeFollowUp: false, basedOn: null, windowDays: 0 };
+
+  return assembleChargePreview({
+    settings,
+    visitStatus,
+    deskChoice: query.chargeRegistrationFee ?? null,
+    feeResolution,
+    listFee: Number(doctor.consultationFee ?? 0),
+  });
+}
+
+function assembleChargePreview({
+  settings,
+  visitStatus,
+  deskChoice,
+  feeResolution,
+  listFee,
+}: {
+  settings: Awaited<ReturnType<typeof getRegistrationFeeSettings>>;
+  visitStatus: { isFirstVisit: boolean; registrationFeeCharged: boolean };
+  deskChoice: boolean | null;
+  feeResolution: Awaited<ReturnType<typeof resolveConsultationFee>>;
+  listFee: number;
+}) {
   const applies = shouldChargeRegistrationFee({
     settings,
     isFirstVisit: visitStatus.isFirstVisit,
@@ -2119,11 +2324,7 @@ export async function getAppointmentChargePreview(tenantId: string, appointmentI
     deskChoice,
   });
   const totals = registrationFeeTotals(settings);
-  const feeResolution = await resolveConsultationFee(tenantId, appointment as never);
   const consultationFee = feeResolution.fee;
-  const listFee = appointment.doctor?.consultationFee
-    ? Number(appointment.doctor.consultationFee)
-    : 0;
 
   // Say plainly why the fee is or is not on the bill, so a desk that expected
   // one and does not see it knows which of the three reasons applies.
@@ -2467,7 +2668,8 @@ export async function generateQueueToken(tenantId: string, appointmentId: string
  * Get queue for a doctor on a specific date.
  */
 export async function getQueueByDoctor(tenantId: string, doctorId: string, date?: string) {
-  const targetDate = date ? new Date(date) : new Date();
+  // Default to TODAY IN IST — the UTC date is still yesterday before 05:30 IST.
+  const targetDate = new Date(date || istDateStr());
   const dayStart = new Date(targetDate);
   dayStart.setUTCHours(0, 0, 0, 0);
   const dayEnd = new Date(targetDate);
@@ -2503,7 +2705,7 @@ export async function getQueueByDoctor(tenantId: string, doctorId: string, date?
  * Get today's appointments for a doctor.
  */
 export async function getTodayAppointments(tenantId: string, doctorId: string) {
-  const today = new Date();
+  const today = new Date(istDateStr()); // IST "today" as a calendar date
   const dayStart = new Date(today);
   dayStart.setUTCHours(0, 0, 0, 0);
   const dayEnd = new Date(today);

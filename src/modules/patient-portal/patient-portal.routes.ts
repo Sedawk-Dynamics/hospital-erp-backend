@@ -2,9 +2,12 @@ import { Router, Response, NextFunction } from 'express';
 import { authenticate } from '../../middleware/authenticate';
 import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse } from '../../shared/apiResponse';
+import { AppError } from '../../shared/appError';
 import * as patientPortalService from './patient-portal.service';
 import { uploadSingle } from '../../services/upload.service';
 import { validate } from '../../middleware/validate';
+import * as patientportalController from './patient-portal.controller';
+
 // Patient and clinician write the SAME medical-history rows, so the portal
 // validates against the same schemas the clinical routes use — otherwise a
 // patient could push a value the enum columns reject and get a 500.
@@ -13,6 +16,7 @@ import {
   familyHistorySchema,
   allergySchema,
 } from '../medical-history/medical-history.validation';
+import { updateProfileSchema } from './patient-portal.validation';
 
 const router = Router();
 
@@ -83,12 +87,14 @@ router.delete('/connections/:id', async (req: AuthenticatedRequest, res: Respons
 // GET /patient-portal/profile
 router.get('/profile', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    const profile = await patientPortalService.getPatientProfile(req.user!.userId, req.user!.email);
+    const profile = await patientPortalService.getPatientProfile(req.user!.userId, req.user!.email, req.query.profileId as string | undefined);
     sendResponse({ res, statusCode: 200, message: 'Patient profile', data: profile });
   } catch (err) {
     next(err);
   }
 });
+
+router.put('/profile/:id',authenticate,validate(updateProfileSchema),patientportalController.profileUpdate) ;
 
 // GET /patient-portal/profiles — list every family-member patient profile under this user
 router.get('/profiles', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
@@ -125,7 +131,7 @@ router.post('/profiles', async (req: AuthenticatedRequest, res: Response, next: 
 // GET /patient-portal/all-hospitals — List all active hospitals for booking (paginated)
 router.get('/all-hospitals', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    const result = await patientPortalService.getAllHospitalsForBooking({
+    const result = await patientPortalService.getAllHospitalsForBooking(req.user!.userId,{
       search: req.query.search as string | undefined,
       page: req.query.page ? parseInt(req.query.page as string, 10) : undefined,
       limit: req.query.limit ? parseInt(req.query.limit as string, 10) : undefined,
@@ -305,7 +311,7 @@ router.get('/prescriptions', async (req: AuthenticatedRequest, res: Response, ne
 // ── Miscellaneous Records (patient-uploaded documents) ──────
 router.get('/documents', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    const data = await patientPortalService.listMyDocuments(req.user!.userId, req.user!.email, req.query.tenantId as string | undefined);
+    const data = await patientPortalService.listMyDocuments(req.user!.userId, req.user!.email, req.query.tenantId as string | undefined, req.query.profileId as string | undefined);
     sendResponse({ res, message: 'Documents', data });
   } catch (err) { next(err); }
 });
@@ -324,6 +330,7 @@ router.post(
         file,
         { title, documentType, notes },
         req.query.tenantId as string | undefined,
+         req.query.profileId as string | undefined,
       );
       sendResponse({ res, statusCode: 201, message: 'Document uploaded', data });
     } catch (err) { next(err); }
@@ -332,7 +339,7 @@ router.post(
 
 router.delete('/documents/:id', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    await patientPortalService.deleteMyDocument(req.user!.userId, req.user!.email, req.params.id as string);
+    await patientPortalService.deleteMyDocument(req.user!.userId, req.user!.email, req.params.id as string, req.query.tenantId as string | undefined, req.query.profileId as string | undefined);
     sendResponse({ res, message: 'Document deleted' });
   } catch (err) { next(err); }
 });
@@ -340,7 +347,7 @@ router.delete('/documents/:id', async (req: AuthenticatedRequest, res: Response,
 // ── Current Medications (patient read-only, combined) ───────
 router.get('/current-medications', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    const data = await patientPortalService.listMyCurrentMedications(req.user!.userId, req.user!.email, req.query.tenantId as string | undefined);
+    const data = await patientPortalService.listMyCurrentMedications(req.user!.userId, req.user!.email, req.query.tenantId as string | undefined, req.query.profileId as string | undefined);
     sendResponse({ res, message: 'Current medications', data });
   } catch (err) { next(err); }
 });
@@ -348,14 +355,14 @@ router.get('/current-medications', async (req: AuthenticatedRequest, res: Respon
 // ── Medical History (patient self-service) ──────────────────
 router.get('/medical-history/personal', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    const data = await patientPortalService.getMyPersonalHistory(req.user!.userId, req.user!.email, req.query.tenantId as string | undefined);
+    const data = await patientPortalService.getMyPersonalHistory(req.user!.userId, req.user!.email, req.query.tenantId as string | undefined, req.query.profileId as string | undefined);
     sendResponse({ res, message: 'Personal history', data });
   } catch (err) { next(err); }
 });
 
 router.put('/medical-history/personal', validate(upsertPersonalHistorySchema), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    const data = await patientPortalService.upsertMyPersonalHistory(req.user!.userId, req.user!.email, req.body, req.query.tenantId as string | undefined);
+    const data = await patientPortalService.upsertMyPersonalHistory(req.user!.userId, req.user!.email, req.body, req.query.tenantId as string | undefined,req.query.profileId as string | undefined);
     sendResponse({ res, message: 'Personal history saved', data });
   } catch (err) { next(err); }
 });
@@ -455,7 +462,7 @@ router.get(
 // GET /patient-portal/discharge-summaries
 router.get('/discharge-summaries', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    const data = await patientPortalService.getPatientDischargeSummaries(req.user!.userId, req.user!.email);
+    const data = await patientPortalService.getPatientDischargeSummaries(req.user!.userId, req.user!.email,req.query.profileId as string | undefined);
     sendResponse({ res, statusCode: 200, message: 'Discharge summaries', data });
   } catch (err) {
     next(err);
@@ -479,13 +486,23 @@ router.get('/discharge-summaries/:id', async (req: AuthenticatedRequest, res: Re
 // GET /patient-portal/discharge-summaries/:id/pdf
 router.get('/discharge-summaries/:id/pdf', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
+    // Ownership + published check (throws 404 if this summary isn't the patient's).
     const summary = await patientPortalService.getPatientDischargeSummaryById(
       req.user!.userId,
       req.user!.email,
       req.params.id as string,
     );
+    const tenantId = (summary as any).patient?.tenant?.id as string | undefined;
+    if (!tenantId) throw AppError.notFound('Discharge summary not found');
+
+    // Build the full PDF document, patient-visible only (strips doctor-hidden pins).
+    const { buildDischargeDocument } = await import('../mrd/mrd.service');
+    const document = await buildDischargeDocument(tenantId, req.params.id as string, {
+      onlyPatientVisible: true,
+    });
+
     const { streamDischargeSummaryPdf } = await import('../mrd/discharge-summary-pdf');
-    streamDischargeSummaryPdf(res, summary as any);
+    streamDischargeSummaryPdf(res, document);
   } catch (err) {
     next(err);
   }
@@ -647,4 +664,14 @@ router.post('/confirm-frontdesk-payment', async (req: AuthenticatedRequest, res:
   } catch (err) { next(err); }
 });
 
+
+router.post('/registration-fee',authenticate,patientportalController.getRegistrationFees)
+
 export { router as patientPortalRoutes };
+
+
+
+
+
+
+

@@ -25,6 +25,7 @@ import {
   frontdeskCheckoutSchema,
   slotsQuerySchema,
   queueQuerySchema,
+  bookingChargePreviewSchema,
 } from './appointments.validation';
 import * as controller from './appointments.controller';
 
@@ -186,6 +187,16 @@ appointmentRoutes.get(
   '/stats',
   authenticate,
   controller.getAppointmentStats,
+);
+
+// What booking would charge, before the appointment exists (gap 331). Declared
+// before '/:id' so "charge-preview" is not read as an appointment id.
+appointmentRoutes.get(
+  '/charge-preview',
+  authenticate,
+  requirePermission('appointments', 'read'),
+  validate(bookingChargePreviewSchema),
+  controller.getBookingChargePreview,
 );
 
 // --- Appointments ---

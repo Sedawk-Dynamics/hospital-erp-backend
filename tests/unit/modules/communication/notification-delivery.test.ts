@@ -44,11 +44,13 @@ describe('reading notifications is scoped to the person, not the tenant', () => 
   });
 
   it('counts unread by recipient, so the badge is not always zero', async () => {
-    vi.mocked(prisma.notification.count).mockResolvedValue(3 as never);
+    vi.mocked(prisma.notification.findMany).mockResolvedValue(
+      ['a', 'b', 'c'].map((id) => ({ id, referenceType: null, referenceId: null, title: 't' })) as never,
+    );
 
     const res = await getUnreadCount(PLATFORM, PATIENT_USER);
 
-    const where = vi.mocked(prisma.notification.count).mock.calls[0][0]!.where as any;
+    const where = vi.mocked(prisma.notification.findMany).mock.calls[0][0]!.where as any;
     expect(where).toMatchObject({ userId: PATIENT_USER, isRead: false });
     expect(where.tenantId).toBeUndefined();
     expect(res.unreadCount).toBe(3);

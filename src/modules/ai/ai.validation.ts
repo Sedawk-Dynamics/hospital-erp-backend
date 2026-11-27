@@ -57,12 +57,16 @@ export type PlatformChatInput = z.infer<typeof platformChatSchema>['body'];
 export const patientChatSchema = z.object({
   body: z.object({
     patientId: z.string().uuid('A valid patient is required'),
+    visitId: z.string().optional().default(''),
     message: z.string().trim().min(1, 'Message is required').max(2000),
+    model:z.string(),
     history: z
       .array(
         z.object({
           role: z.enum(['user', 'assistant']),
-          content: z.string().max(4000),
+          // A prior turn can be a full patient briefing (summary) with inline
+          // source links, so this must be well above a short chat reply.
+          content: z.string().max(16000),
         }),
       )
       .max(20)

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as appointmentsService from '../../../../src/modules/appointments/appointments.service';
 import { prisma } from '../../../../src/config/database';
 import { AppError } from '../../../../src/shared/appError';
@@ -173,7 +173,8 @@ describe('AppointmentsService', () => {
         },
       ] as any);
 
-      const result = await appointmentsService.getAvailableSlots('tenant-1', 'doc-1', '2026-03-09');
+      // A future date — a past one has every slot marked past (gap 330).
+      const result = await appointmentsService.getAvailableSlots('tenant-1', 'doc-1', FUTURE_DATE_STR);
 
       // 09:00-11:00 with 30 min slots = 4 slots
       expect(result.slots).toHaveLength(4);
@@ -183,6 +184,109 @@ describe('AppointmentsService', () => {
       // Second slot should be available
       expect(result.slots[1].available).toBe(true);
       expect(result.slots[1].startTime).toBe('09:30');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Gap 330: "now" is IST. The shift is still running at 13:30 IST (08:00 UTC);
+  // a server comparing in UTC either disabled the rest of the day or offered
+  // slots that had already ended.
+  // ---------------------------------------------------------------------------
+  describe('slots and booking against the IST clock', () => {
+    const shift = () => {
+      vi.mocked(prisma.doctorProfile.findFirst).mockResolvedValue({ id: 'doc-1', isAvailable: true } as any);
+      vi.mocked(prisma.doctorScheduleOverride.findUnique).mockResolvedValue(null as any);
+      vi.mocked(prisma.doctorSchedule.findMany).mockResolvedValue([{
+        id: 'sched-1', dayOfWeek: 4,
+        startTime: new Date('1970-01-01T09:00:00Z'),
+        endTime: new Date('1970-01-01T17:00:00Z'),
+        slotDurationMinutes: 30,
+      }] as any);
+      vi.mocked(prisma.doctorLeave.findMany).mockResolvedValue([] as any);
+      vi.mocked(prisma.appointment.findMany).mockResolvedValue([] as any);
+    };
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      // Thu 19 Nov 2026, 13:30 IST.
+      vi.setSystemTime(new Date('2026-11-19T08:00:00.000Z'));
+    });
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('disables only the slots that have ended in IST today', async () => {
+      shift();
+      const { slots } = await appointmentsService.getAvailableSlots('tenant-1', 'doc-1', '2026-11-19');
+      const byStart = Object.fromEntries(slots.map((sl) => [sl.startTime, sl]));
+
+      expect(byStart['13:00']).toMatchObject({ available: false, past: true }); // ended 13:30
+      expect(byStart['13:30']).toMatchObject({ available: true }); // starts now
+      expect(byStart['16:30']).toMatchObject({ available: true });
+      expect(slots.filter((sl) => sl.available)).toHaveLength(7); // 13:30 → 17:00
+    });
+
+    it('reads the weekday from the calendar date, not the host clock', async () => {
+      shift();
+      await appointmentsService.getAvailableSlots('tenant-1', 'doc-1', '2026-11-19');
+      expect(vi.mocked(prisma.doctorSchedule.findMany).mock.calls[0]![0]!.where).toMatchObject({ dayOfWeek: 4 });
+    });
+
+    it('marks every slot past for an earlier day and none for a later one', async () => {
+      shift();
+      const before = await appointmentsService.getAvailableSlots('tenant-1', 'doc-1', '2026-11-18');
+      expect(before.slots.every((sl) => sl.past && !sl.available)).toBe(true);
+      const after = await appointmentsService.getAvailableSlots('tenant-1', 'doc-1', '2026-11-20');
+      expect(after.slots.every((sl) => !sl.past && sl.available)).toBe(true);
+    });
+
+    it('still treats it as today between 00:00 and 05:30 IST', async () => {
+      // 00:30 IST on the 20th is 19:00 UTC on the 19th.
+      vi.setSystemTime(new Date('2026-11-19T19:00:00.000Z'));
+      shift();
+      const { slots } = await appointmentsService.getAvailableSlots('tenant-1', 'doc-1', '2026-11-20');
+      expect(slots.every((sl) => sl.available)).toBe(true);
+    });
+
+    const booking = (over: Record<string, unknown> = {}) => ({
+      patientId: 'patient-1', doctorId: 'doc-1', appointmentDate: '2026-11-19',
+      startTime: '13:30', endTime: '14:00', type: 'consultation' as const, priority: 'normal' as const,
+      ...over,
+    });
+
+    const bookable = () => {
+      vi.mocked(prisma.patient.findFirst).mockResolvedValue({ id: 'patient-1' } as any);
+      vi.mocked(prisma.doctorProfile.findFirst).mockResolvedValue({ id: 'doc-1', isAvailable: true } as any);
+      vi.mocked(prisma.doctorLeave.findFirst).mockResolvedValue(null);
+      vi.mocked(prisma.appointment.findFirst).mockResolvedValue(null);
+      vi.mocked(prisma.appointment.create).mockImplementation((async (args: any) => ({ id: 'apt-1', ...args.data })) as any);
+    };
+
+    it('books a slot later today', async () => {
+      bookable();
+      await expect(appointmentsService.bookAppointment('tenant-1', booking())).resolves.toBeDefined();
+    });
+
+    it('refuses a slot that ended earlier today', async () => {
+      bookable();
+      await expect(
+        appointmentsService.bookAppointment('tenant-1', booking({ startTime: '13:00', endTime: '13:30' })),
+      ).rejects.toThrow('already ended');
+    });
+
+    it('refuses yesterday in IST even while the UTC date has not rolled over', async () => {
+      vi.setSystemTime(new Date('2026-11-19T19:00:00.000Z')); // 00:30 IST on the 20th
+      bookable();
+      await expect(
+        appointmentsService.bookAppointment('tenant-1', booking({ startTime: '15:00', endTime: '15:30' })),
+      ).rejects.toThrow('in the past');
+    });
+
+    // Gap 333: a booked follow-up is a return visit, whatever the history says.
+    it('stores a follow-up as a revisit', async () => {
+      bookable();
+      await appointmentsService.bookAppointment('tenant-1', booking({ type: 'follow_up' }));
+      const data = vi.mocked(prisma.appointment.create).mock.calls[0]![0]!.data as any;
+      expect(data.visitType).toBe('revisit');
+      expect(data.consultationType).toBe('follow_up');
     });
   });
 
@@ -600,5 +704,58 @@ describe('registration fee decided after the bill exists', () => {
 
     // No answer means the rule already decided when the bill was built.
     expect(prisma.billItem.create).not.toHaveBeenCalled();
+  });
+});
+
+// Gap 331: the payment step showed "Collect ₹500 & Book" for a follow-up the
+// bill then waived to ₹0. The booking preview runs the bill's own rules.
+describe('getBookingChargePreview', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('shows a follow-up as waived, not the list fee', async () => {
+    vi.mocked(prisma.doctorProfile.findFirst).mockResolvedValue({ consultationFee: 500, freeFollowUpDays: 0 } as any);
+    vi.mocked(prisma.patient.findFirst).mockResolvedValue({ id: 'p1' } as any);
+
+    const out = await appointmentsService.getBookingChargePreview('tenant-1', {
+      doctorId: 'doc-1', patientId: 'p1', type: 'follow_up',
+    } as any);
+
+    expect(out.consultationFee).toBe(0);
+    expect(out.followUp).toMatchObject({ isFree: true, listFee: 500 });
+  });
+
+  it('charges the list fee for a consultation by a new patient', async () => {
+    vi.mocked(prisma.doctorProfile.findFirst).mockResolvedValue({ consultationFee: 500, freeFollowUpDays: 0 } as any);
+
+    const out = await appointmentsService.getBookingChargePreview('tenant-1', {
+      doctorId: 'doc-1', type: 'consultation',
+    } as any);
+
+    expect(out.consultationFee).toBe(500);
+    expect(out.registration.isFirstVisit).toBe(true);
+  });
+});
+
+// Gap 334: the Referral report listed a same-doctor follow-up as a referral.
+describe('getAppointments — referred filter', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('keeps only visits whose patient has a referral source', async () => {
+    await appointmentsService.getAppointments('tenant-1', { referred: true } as any);
+    const where = vi.mocked(prisma.appointment.findMany).mock.calls[0]![0]!.where as any;
+    expect(where.consultationType).toBeUndefined();
+    expect(where.AND).toEqual([
+      { patient: { referredBy: { not: null } } },
+      { NOT: { patient: { referredBy: '' } } },
+    ]);
+  });
+
+  it('bounds a date range by IST days, end date inclusive (gap 359)', async () => {
+    await appointmentsService.getAppointments('tenant-1', { fromDate: '2026-10-14', toDate: '2026-11-13' } as any);
+    const where = vi.mocked(prisma.appointment.findMany).mock.calls[0]![0]!.where as any;
+    // appointmentDate is a calendar date at UTC midnight; 13 Nov must be inside.
+    expect(where.appointmentDate.lte.getTime()).toBeGreaterThanOrEqual(new Date('2026-11-13T00:00:00Z').getTime());
+    expect(where.appointmentDate.lte.getTime()).toBeLessThan(new Date('2026-11-14T00:00:00Z').getTime());
+    expect(where.appointmentDate.gte.getTime()).toBeGreaterThan(new Date('2026-10-13T00:00:00Z').getTime());
   });
 });

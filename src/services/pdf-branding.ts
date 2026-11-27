@@ -309,7 +309,8 @@ export function drawBrandedFooters(
   const showGen = tpl?.footer.showGeneratedAt ?? true;
   const showPages = tpl?.footer.showPageNumbers ?? true;
   const gen = opts.generatedAt ?? new Date();
-  const genStr = gen.toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  // Hospital time, not the server's: a UTC host printed 8:04 am for 13:34 IST (gap 362).
+  const genStr = gen.toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' });
   for (let i = 0; i < range.count; i++) {
     pdf.switchToPage(range.start + i);
     // Writing into the bottom margin makes PDFKit auto-append a blank page (one

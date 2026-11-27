@@ -1,5 +1,7 @@
 import { prisma } from '../../config/database';
 import { getExpiryWasteReport, getDepartmentConsumptionReport } from './inventory.reports.service';
+import { getStockValuation } from './stock-valuation.service';
+import { drugMovementsAsStockTransactions, inventoryTypeForMovement } from '../pharmacy/pharmacy.stock-movement';
 
 // ============================================================
 // Inventory — Detailed Analysis report (single-call deep rollup).
@@ -21,6 +23,14 @@ const istDay = (d: Date) => new Date(d.getTime() + IST_OFFSET_MS).toISOString().
 const num = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
+/**
+ * The value one movement contributes to consumption. Shared by the aggregate
+ * (top consumed) and its drill-down (gap 349) so the two always reconcile.
+ */
+export function movementValue(t: { totalCost?: unknown; unitCost?: unknown; quantity: number }): number {
+  return t.totalCost != null ? num(t.totalCost) : num(t.unitCost) * t.quantity;
+}
+
 function resolveRange(range: Range) {
   const to = range.toDate ? new Date(`${range.toDate}T23:59:59.999+05:30`) : new Date();
   const from = range.fromDate ? new Date(`${range.fromDate}T00:00:00.000+05:30`) : new Date(to.getTime() - 29 * DAY_MS);
@@ -31,7 +41,7 @@ function resolveRange(range: Range) {
 export async function getInventoryDetailedReport(tenantId: string, range: Range) {
   const { from, to, days } = resolveRange(range);
 
-  const [items, txns, pos, transfers, expiry, dept] = await Promise.all([
+  const [items, txns, pos, transfers, expiry, dept, stock] = await Promise.all([
     prisma.inventoryItem.findMany({
       where: { tenantId, isActive: true },
       select: {
@@ -56,29 +66,23 @@ export async function getInventoryDetailedReport(tenantId: string, range: Range)
     }),
     getExpiryWasteReport(tenantId, { fromDate: range.fromDate, toDate: range.toDate }),
     getDepartmentConsumptionReport(tenantId, { fromDate: range.fromDate, toDate: range.toDate }),
+    getStockValuation(tenantId),
   ]);
 
   // ---- Valuation (live, by category) ----
-  const byCategory = new Map<string, { items: number; units: number; costValue: number; retailValue: number }>();
-  let totalCostValue = 0, totalRetailValue = 0, totalUnits = 0;
-  for (const it of items) {
-    const stock = it.currentStock;
-    const cost = num(it.costPerUnit) * stock;
-    const retail = num(it.sellingPricePerUnit ?? it.costPerUnit) * stock;
-    totalCostValue += cost; totalRetailValue += retail; totalUnits += stock;
-    const c = byCategory.get(it.category) ?? { items: 0, units: 0, costValue: 0, retailValue: 0 };
-    c.items += 1; c.units += stock; c.costValue += cost; c.retailValue += retail;
-    byCategory.set(it.category, c);
-  }
+  // Gap 301: this used to value generic inventory items only, so a store whose
+  // stock is all pharmacy batches showed ₹0 / 0 items. It now uses the shared
+  // valuation service (items + live drug batches, purchase-cost basis).
   const valuation = {
-    itemCount: items.length,
-    units: totalUnits,
-    costValue: round2(totalCostValue),
-    retailValue: round2(totalRetailValue),
-    potentialMargin: round2(totalRetailValue - totalCostValue),
-    byCategory: [...byCategory.entries()]
-      .map(([category, v]) => ({ category, items: v.items, units: v.units, costValue: round2(v.costValue), retailValue: round2(v.retailValue) }))
-      .sort((a, b) => b.costValue - a.costValue),
+    basis: stock.basis,
+    basisLabel: stock.basisLabel,
+    asOf: stock.asOf,
+    itemCount: stock.itemCount,
+    units: stock.units,
+    costValue: stock.costValue,
+    retailValue: stock.retailValue,
+    potentialMargin: round2(stock.retailValue - stock.costValue),
+    byCategory: stock.byCategory,
   };
 
   // ---- Low stock ----
@@ -98,9 +102,19 @@ export async function getInventoryDetailedReport(tenantId: string, range: Range)
     return_stock: { qty: 0, value: 0 }, expired_removal: { qty: 0, value: 0 },
   };
   const trend = new Map<string, { stockIn: number; stockOut: number }>();
-  const consumed = new Map<string, { itemName: string; category: string; qty: number; value: number }>();
-  for (const t of txns) {
-    const val = t.totalCost != null ? num(t.totalCost) : num(t.unitCost) * t.quantity;
+  const consumed = new Map<
+    string,
+    { kind: 'item' | 'drug'; refId: string; itemName: string; category: string; qty: number; value: number; transactions: number }
+  >();
+  // 349: pharmacy sales, issues and transfers move drug batches, not
+  // InventoryItems, so they were missing from movements and top-consumed.
+  const drugTxns = await drugMovementsAsStockTransactions(tenantId, from, to);
+  const tagged = [
+    ...txns.map((t) => ({ ...t, kind: 'item' as const })),
+    ...drugTxns.map((t) => ({ ...t, kind: 'drug' as const })),
+  ];
+  for (const t of tagged) {
+    const val = movementValue(t);
     const bucket = moveSummary[t.transactionType] ?? (moveSummary[t.transactionType] = { qty: 0, value: 0 });
     bucket.qty += t.quantity; bucket.value += val;
 
@@ -111,8 +125,13 @@ export async function getInventoryDetailedReport(tenantId: string, range: Range)
     trend.set(day, tr);
 
     if (t.transactionType === 'stock_out' && t.inventoryItem) {
-      const c = consumed.get(t.inventoryItem.id) ?? { itemName: t.inventoryItem.itemName, category: t.inventoryItem.category, qty: 0, value: 0 };
-      c.qty += t.quantity; c.value += val; consumed.set(t.inventoryItem.id, c);
+      // Gap 349: keyed by kind too — a drug and an item are different records.
+      const key = `${t.kind}:${t.inventoryItem.id}`;
+      const c = consumed.get(key) ?? {
+        kind: t.kind, refId: t.inventoryItem.id,
+        itemName: t.inventoryItem.itemName, category: String(t.inventoryItem.category), qty: 0, value: 0, transactions: 0,
+      };
+      c.qty += t.quantity; c.value += val; c.transactions += 1; consumed.set(key, c);
     }
   }
   const trendArr: { date: string; stockIn: number; stockOut: number }[] = [];
@@ -130,7 +149,11 @@ export async function getInventoryDetailedReport(tenantId: string, range: Range)
     trend: trendArr,
   };
   const topConsumed = [...consumed.values()]
-    .map((c) => ({ itemName: c.itemName, category: c.category, qty: c.qty, value: round2(c.value) }))
+    // kind + refId open the supporting transactions (getConsumptionTransactions).
+    .map((c) => ({
+      kind: c.kind, refId: c.refId, itemName: c.itemName, category: c.category,
+      qty: c.qty, value: round2(c.value), transactions: c.transactions,
+    }))
     .sort((a, b) => b.value - a.value)
     .slice(0, 15);
 
@@ -190,5 +213,158 @@ export async function getInventoryDetailedReport(tenantId: string, range: Range)
     transfers: transfersOut,
     expiryWaste,
     departments,
+  };
+}
+
+// ============================================================
+// Gap 349: the transactions behind one "Top consumed items" row.
+//
+// QA: the consumption rollup was aggregate-only — no batch, date or document
+// number to trace a figure back to (a PH-… bill, a transfer number). This
+// returns, for one item or drug and the SAME date range, every movement the
+// aggregate counted, with batch, date, source document, quantity and value.
+// The selection (stock-out only, same window) and the value formula
+// (`movementValue`) are the aggregate's own, so the rows sum to the row total.
+// ============================================================
+
+export interface ConsumptionTransaction {
+  id: string;
+  date: Date;
+  batchNumber: string | null;
+  movementType: string;
+  documentType: string | null;
+  documentNumber: string | null;
+  party: string | null;
+  quantity: number;
+  unitCost: number | null;
+  value: number;
+}
+
+export async function getConsumptionTransactions(
+  tenantId: string,
+  query: Range & { kind: 'item' | 'drug'; refId: string },
+) {
+  const { from, to } = resolveRange(query);
+  let name = '—';
+  let rows: ConsumptionTransaction[] = [];
+  // Unrounded per-row values, summed the way the rollup sums them.
+  let rawTotal = 0;
+
+  if (query.kind === 'drug') {
+    const [drug, moves] = await Promise.all([
+      prisma.drugFormulary.findFirst({ where: { id: query.refId, tenantId }, select: { drugName: true } }),
+      // Exactly the drug movements the rollup reads as stock_out
+      // (inventoryTypeForMovement): outbound, and not a receipt/adjustment.
+      prisma.drugStockMovement.findMany({
+        where: {
+          tenantId, drugId: query.refId, createdAt: { gte: from, lte: to },
+          quantity: { lt: 0 }, movementType: { notIn: ['receipt', 'adjustment'] },
+        },
+        orderBy: { createdAt: 'asc' },
+      }),
+    ]);
+    name = drug?.drugName ?? name;
+    const list = ((moves ?? []) as any[]).filter(
+      (m) => inventoryTypeForMovement(m.movementType, m.quantity) === 'stock_out',
+    );
+    const ids = (type: string) => [
+      ...new Set(list.filter((m) => m.referenceType === type && m.referenceId).map((m) => m.referenceId as string)),
+    ];
+    const saleIds = ids('pharmacy_sale');
+    const transferIds = ids('stock_transfer');
+    const returnIds = ids('drug_return');
+    const [batches, bills, transfers, returns] = await Promise.all([
+      prisma.drugBatch.findMany({
+        where: { tenantId, id: { in: [...new Set(list.map((m) => m.drugBatchId as string))] } },
+        select: { id: true, batchNumber: true },
+      }),
+      saleIds.length
+        ? prisma.bill.findMany({ where: { tenantId, id: { in: saleIds } }, select: { id: true, billNumber: true } })
+        : Promise.resolve([]),
+      transferIds.length
+        ? prisma.stockTransfer.findMany({ where: { tenantId, id: { in: transferIds } }, select: { id: true, transferNumber: true } })
+        : Promise.resolve([]),
+      returnIds.length
+        ? prisma.drugReturn.findMany({ where: { tenantId, id: { in: returnIds } }, select: { id: true, returnNumber: true } })
+        : Promise.resolve([]),
+    ]);
+    const batchNo = new Map(((batches ?? []) as any[]).map((b) => [b.id as string, b.batchNumber as string]));
+    const docNo = new Map<string, string | null>([
+      ...((bills ?? []) as any[]).map((b): [string, string | null] => [b.id, b.billNumber ?? null]),
+      ...((transfers ?? []) as any[]).map((t): [string, string | null] => [t.id, t.transferNumber ?? null]),
+      ...((returns ?? []) as any[]).map((r): [string, string | null] => [r.id, r.returnNumber ?? null]),
+    ]);
+    rows = list.map((m) => {
+      const qty = Math.abs(m.quantity);
+      const unit = m.unitCost != null ? Number(m.unitCost) : null;
+      // The same totalCost the rollup derives in drugMovementsAsStockTransactions.
+      const totalCost = unit != null ? round2(unit * qty) : null;
+      return {
+        id: m.id,
+        date: m.createdAt,
+        batchNumber: batchNo.get(m.drugBatchId) ?? null,
+        movementType: m.movementType,
+        documentType: m.referenceType ?? null,
+        documentNumber: (m.referenceId ? docNo.get(m.referenceId) : null) ?? m.notes ?? null,
+        party: m.party ?? null,
+        quantity: qty,
+        unitCost: unit,
+        value: round2(movementValue({ totalCost, unitCost: unit, quantity: qty })),
+      };
+    });
+    rawTotal = rows.reduce((sum, r) => sum + r.value, 0);
+  } else {
+    const [item, txns] = await Promise.all([
+      prisma.inventoryItem.findFirst({ where: { id: query.refId, tenantId }, select: { itemName: true } }),
+      prisma.stockTransaction.findMany({
+        where: {
+          tenantId, inventoryItemId: query.refId, transactionType: 'stock_out', createdAt: { gte: from, lte: to },
+        },
+        orderBy: { createdAt: 'asc' },
+        select: {
+          id: true, quantity: true, unitCost: true, totalCost: true, createdAt: true, batchNumber: true,
+          referenceType: true, referenceId: true, notes: true,
+          department: { select: { name: true } },
+        },
+      }),
+    ]);
+    name = item?.itemName ?? name;
+    const list = (txns ?? []) as any[];
+    const transferIds = [
+      ...new Set(list.filter((t) => t.referenceType === 'stock_transfer' && t.referenceId).map((t) => t.referenceId as string)),
+    ];
+    const transfers = transferIds.length
+      ? await prisma.stockTransfer.findMany({
+          where: { tenantId, id: { in: transferIds } },
+          select: { id: true, transferNumber: true },
+        })
+      : [];
+    const transferNo = new Map(((transfers ?? []) as any[]).map((t) => [t.id as string, t.transferNumber as string]));
+    rows = list.map((t) => ({
+      id: t.id,
+      date: t.createdAt,
+      batchNumber: t.batchNumber ?? null,
+      movementType: 'stock_out',
+      documentType: t.referenceType ?? null,
+      documentNumber: (t.referenceId ? transferNo.get(t.referenceId) : null) ?? t.notes ?? null,
+      party: t.department?.name ?? null,
+      quantity: t.quantity,
+      unitCost: t.unitCost != null ? Number(t.unitCost) : null,
+      value: round2(movementValue(t)),
+    }));
+    rawTotal = list.reduce((sum, t) => sum + movementValue(t), 0);
+  }
+
+  return {
+    period: { fromDate: istDay(from), toDate: istDay(to) },
+    kind: query.kind,
+    refId: query.refId,
+    itemName: name,
+    totals: {
+      transactions: rows.length,
+      qty: rows.reduce((s, r) => s + r.quantity, 0),
+      value: round2(rawTotal),
+    },
+    rows,
   };
 }

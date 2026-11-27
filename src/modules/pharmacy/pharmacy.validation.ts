@@ -44,6 +44,8 @@ export const createFormularySchema = z.object({
     looseUnitLabel: z.string().max(40).optional(),
     taxPercent: z.number().min(0).max(100).optional(),
     gstTreatment: gstTreatmentSchema.optional().nullable(),
+    // G-2: why the rate differs from the HSN default, when it does.
+    gstRateReason: z.string().trim().max(255).optional().nullable(),
     minStock: z.number().int().nonnegative().optional(),
     // Product Resolution Engine / compliance identity.
     gtin: z.string().max(20).optional(),
@@ -109,6 +111,8 @@ export const updateFormularySchema = z.object({
     looseUnitLabel: z.string().max(40).optional().nullable(),
     taxPercent: z.number().min(0).max(100).optional().nullable(),
     gstTreatment: gstTreatmentSchema.optional().nullable(),
+    // G-2: why the rate differs from the HSN default, when it does.
+    gstRateReason: z.string().trim().max(255).optional().nullable(),
     minStock: z.number().int().nonnegative().optional().nullable(),
     gtin: z.string().max(20).optional().nullable(),
     casePackGtin: z.string().max(20).optional().nullable(),
@@ -319,9 +323,10 @@ export const collectHoldSchema = z.object({
       .array(z.object({
         method: z.enum(['cash', 'credit_card', 'debit_card', 'upi', 'net_banking', 'insurance', 'advance', 'cheque', 'other']),
         amount: z.number().nonnegative(),
-        reference: z.string().max(120).optional(),
+        reference: z.string().trim().max(100).nullish(),
       }))
       .optional(),
+    creditReason: z.string().trim().max(500).nullish(),
   }),
 });
 
@@ -392,6 +397,9 @@ export const adjustBatchSchema = z.object({
       newQuantity: z.number().int().nonnegative().optional(),
       physicalCount: z.number().int().nonnegative().optional(),
       reason: z.string().min(1, 'A reason is required').max(500),
+      // G-12: book a reduction as a write-off (input tax reversed). Inferred
+      // from the reason when omitted.
+      writeOffType: z.enum(['damaged', 'expired', 'other']).optional(),
     })
     .refine((b) => b.newQuantity != null || b.physicalCount != null, {
       message: 'Provide the corrected quantity (newQuantity or physicalCount)',
@@ -641,6 +649,9 @@ export const createDispenseSchema = z.object({
  */
 export const previewPharmacySaleSchema = z.object({
   body: z.object({
+    // G-6: so the quote applies the same admitted-patient exemption as the sale.
+    patientId: z.string().uuid().nullish(),
+    isTto: z.boolean().optional(),
     items: z
       .array(
         z.object({
@@ -697,7 +708,25 @@ export const createPharmacySaleSchema = z.object({
     paymentMethod: z
       .enum(['cash', 'credit_card', 'debit_card', 'upi', 'net_banking', 'cheque', 'other'])
       .optional(),
+    // G-8: card slip / UPI reference for the single-mode tender. Capped at the
+    // Payment.transactionId column (100) so it can never fail at the database.
+    paymentReference: z.string().trim().max(100, 'Payment reference is too long (100 characters max)').nullish(),
     amountPaid: z.number().nonnegative().optional(),
+    // 344: why the medicine is handed over with a balance still due. Required
+    // by the service whenever the sale is not fully paid.
+    creditReason: z.string().trim().max(500).nullish(),
+    // G-6: the admission the counter believes the patient is on. The server
+    // resolves the active admission itself; this is only cross-checked.
+    admissionId: z.string().uuid('Invalid admission ID').nullish(),
+    // G-4: a registered buyer makes the counter sale a B2B tax invoice. The
+    // GSTIN's check digit is verified by the service.
+    buyer: z
+      .object({
+        gstin: z.string().trim().max(15, 'A GSTIN is 15 characters').nullish(),
+        legalName: z.string().trim().max(200).nullish(),
+        address: z.string().trim().max(500).nullish(),
+      })
+      .nullish(),
     // G7: split payment — multiple tenders (cash + UPI + card…) in one bill.
     // When present this takes precedence over paymentMethod/amountPaid.
     payments: z
@@ -716,7 +745,9 @@ export const createPharmacySaleSchema = z.object({
             'other',
           ]),
           amount: z.number().positive('Tender amount must be positive'),
-          reference: z.string().max(120).optional(),
+          // G-8: a blank card/UPI reference arrives as null or '' from the form;
+          // both used to be a bare 400. 100 = Payment.transactionId's width.
+          reference: z.string().trim().max(100, 'Payment reference is too long (100 characters max)').nullish(),
         }),
       )
       .max(8, 'At most 8 tenders per bill')

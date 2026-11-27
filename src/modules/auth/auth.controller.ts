@@ -3,6 +3,27 @@ import { authService } from './auth.service';
 import { sendResponse } from '../../shared/apiResponse';
 import { AuthenticatedRequest } from '../../shared/types';
 import { AppError } from '../../shared/appError';
+import { logger } from '../../config/logger';
+
+/**
+ * Gap 371: a fault inside sign-in (database down, a bug in token issuing) used
+ * to surface as a bare 500 "Internal server error" and blocked every login with
+ * nothing in the UI to say it was not the user's password. Expected refusals
+ * (AppError: bad password, locked, 2FA needed) and validation errors pass
+ * through untouched; anything else is logged loudly and answered with a
+ * controlled 503 the login page can explain.
+ */
+export function signInFailure(err: unknown, flow: string, identifier?: string): unknown {
+  if (err instanceof AppError || (err as { name?: string })?.name === 'ZodError') return err;
+  // Domain only — enough to spot a single tenant's outage without logging PII.
+  const domain = identifier?.includes('@') ? identifier.split('@').pop() : undefined;
+  logger.error({ err, flow, emailDomain: domain }, 'Sign-in failed unexpectedly');
+  return new AppError(
+    'Sign-in is temporarily unavailable. Try again in a few minutes.',
+    503,
+    'SIGNIN_UNAVAILABLE',
+  );
+}
 
 export const authController = {
   async register(req: AuthenticatedRequest, res: Response, next: NextFunction) {
@@ -28,7 +49,7 @@ export const authController = {
         data: result,
       });
     } catch (err) {
-      next(err);
+      next(signInFailure(err, 'password', req.body?.email));
     }
   },
 
@@ -55,7 +76,7 @@ export const authController = {
         data: result,
       });
     } catch (err) {
-      next(err);
+      next(signInFailure(err, 'phone-otp'));
     }
   },
 
@@ -134,11 +155,50 @@ export const authController = {
       if (!req.user) {
         throw AppError.unauthorized();
       }
-      const result = await authService.verify2FA(req.user.userId, req.body);
+      const result = await authService.verify2FA(req.user.userId, req.body, { tenantId: req.user.tenantId });
       sendResponse({
         res,
         message: result.message,
       });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async disable2FA(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) {
+        throw AppError.unauthorized();
+      }
+      const result = await authService.disable2FA(req.user.userId, req.body, { tenantId: req.user.tenantId });
+      sendResponse({ res, message: result.message, data: null });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async requestPhoneChange(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) {
+        throw AppError.unauthorized();
+      }
+      // Says where the code went (masked); never contains the code.
+      const result = await authService.requestPhoneChange(req.user.userId, req.body);
+      sendResponse({ res, message: `Verification code sent to ${result.sentTo}`, data: result });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async verifyPhoneChange(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) {
+        throw AppError.unauthorized();
+      }
+      const result = await authService.verifyPhoneChange(req.user.userId, req.body, {
+        tenantId: req.user.tenantId,
+      });
+      sendResponse({ res, message: result.message, data: { phone: result.phone } });
     } catch (err) {
       next(err);
     }
@@ -169,6 +229,18 @@ export const authController = {
         message: 'Onboarding status retrieved',
         data: result,
       });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async changePassword(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) {
+        throw AppError.unauthorized();
+      }
+      const result = await authService.changePassword(req.user.userId, req.body, { tenantId: req.user.tenantId });
+      sendResponse({ res, message: result.message, data: null });
     } catch (err) {
       next(err);
     }

@@ -17,8 +17,16 @@ export const createServiceTariffSchema = z.object({
       'other',
     ]),
     description: z.string().max(1000).optional(),
-    basePrice: z.number().positive('Base price must be positive'),
+    // Gap 352: ₹0 is allowed — an explicit no-charge surgery/procedure (the
+    // service refuses 0 for other categories); a negative price never is.
+    basePrice: z.number().min(0, 'Base price cannot be negative'),
     taxRate: z.number().min(0).max(100).default(0),
+    // Gap 352: OT component charges on a surgery/procedure tariff (null = not
+    // configured). When any is set, Complete bills these instead of basePrice.
+    otTheatreCharge: z.number().min(0, 'Charges cannot be negative').nullable().optional(),
+    otSurgeonCharge: z.number().min(0, 'Charges cannot be negative').nullable().optional(),
+    otAnaesthesiaCharge: z.number().min(0, 'Charges cannot be negative').nullable().optional(),
+    otAssistantCharge: z.number().min(0, 'Charges cannot be negative').nullable().optional(),
     // The tariff's GST classification. `validate()` REPLACES req.body with the
     // parsed object, so a field the schema does not name is silently dropped —
     // these must be listed here or nothing reaches the writer. The SAC decides
@@ -27,6 +35,9 @@ export const createServiceTariffSchema = z.object({
     sacCode: z.string().max(20).optional().nullable(),
     gstTreatment: z.enum(['taxable', 'exempt', 'nil_rated', 'non_gst', 'zero_rated']).optional().nullable(),
     isCosmetic: z.boolean().optional(),
+    // G-3: the day the classification applies from (YYYY-MM-DD), and why it changed.
+    gstEffectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use a YYYY-MM-DD date').optional().nullable(),
+    gstChangeReason: z.string().trim().max(255).optional(),
     isActive: z.boolean().default(true),
     departmentId: z.string().uuid('Invalid department ID').optional(),
     // Imaging tariffs carry the modality so the doctor's order catalog can
@@ -56,8 +67,14 @@ export const updateServiceTariffSchema = z.object({
       ])
       .optional(),
     description: z.string().max(1000).optional().nullable(),
-    basePrice: z.number().positive().optional(),
+    basePrice: z.number().min(0, 'Base price cannot be negative').optional(),
     taxRate: z.number().min(0).max(100).optional(),
+    // Gap 352: OT component charges on a surgery/procedure tariff (null = not
+    // configured). When any is set, Complete bills these instead of basePrice.
+    otTheatreCharge: z.number().min(0, 'Charges cannot be negative').nullable().optional(),
+    otSurgeonCharge: z.number().min(0, 'Charges cannot be negative').nullable().optional(),
+    otAnaesthesiaCharge: z.number().min(0, 'Charges cannot be negative').nullable().optional(),
+    otAssistantCharge: z.number().min(0, 'Charges cannot be negative').nullable().optional(),
     // The tariff's GST classification. `validate()` REPLACES req.body with the
     // parsed object, so a field the schema does not name is silently dropped —
     // these must be listed here or nothing reaches the writer. The SAC decides
@@ -66,6 +83,9 @@ export const updateServiceTariffSchema = z.object({
     sacCode: z.string().max(20).optional().nullable(),
     gstTreatment: z.enum(['taxable', 'exempt', 'nil_rated', 'non_gst', 'zero_rated']).optional().nullable(),
     isCosmetic: z.boolean().optional(),
+    // G-3: the day the classification applies from (YYYY-MM-DD), and why it changed.
+    gstEffectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use a YYYY-MM-DD date').optional().nullable(),
+    gstChangeReason: z.string().trim().max(255).optional(),
     isActive: z.boolean().optional(),
     departmentId: z.string().uuid().optional().nullable(),
     modality: z
@@ -195,6 +215,8 @@ export const getBillsQuerySchema = z.object({
     status: z.enum(['draft', 'pending', 'partially_paid', 'paid', 'cancelled', 'refunded']).optional(),
     // ip = admission-scoped bills; op = the rest.
     billType: z.enum(['ip', 'op']).optional(),
+    /** Issued bills only — leaves drafts out (the OP List, gap item 288). */
+    finalised: z.enum(['true', 'false']).optional(),
     fromDate: z.string().optional(),
     toDate: z.string().optional(),
   }),
@@ -203,6 +225,12 @@ export const getBillsQuerySchema = z.object({
 // Consolidate / transfer-to-TPA operate on an admission.
 export const admissionActionParamSchema = z.object({
   params: z.object({ admissionId: z.string().uuid('Invalid admission ID') }),
+});
+
+// Generate Bill for a stay: pull every unbilled charge, optionally finalising.
+export const consolidateAdmissionSchema = z.object({
+  params: z.object({ admissionId: z.string().uuid('Invalid admission ID') }),
+  body: z.object({ finalize: z.boolean().optional() }).optional(),
 });
 
 // Transfer to TPA — optionally with an explicit policy or inline new-policy details.
@@ -255,6 +283,12 @@ export const getPaymentsQuerySchema = z.object({
         'other',
       ])
       .optional(),
+    /**
+     * Collection view (gap item 361): leave out rows that only MOVE held money
+     * (a deposit or desk advance set against a bill) — that money was counted
+     * when it was received.
+     */
+    collectionOnly: z.enum(['true', 'false']).optional(),
   }),
 });
 
@@ -313,6 +347,8 @@ export const splitPaymentSchema = z.object({
 export const advancePaymentSchema = z.object({
   body: z.object({
     patientId: z.string().uuid('Invalid patient ID'),
+    // Collect Advance for an admitted patient goes onto that stay (gap 335).
+    admissionId: z.string().uuid('Invalid admission ID').optional(),
     amount: z.number().positive('Amount must be > 0'),
     paymentMethod: z.enum([
       'cash',
@@ -404,6 +440,23 @@ export const advancePatientParamSchema = z.object({
   }),
 });
 
+/**
+ * Gap 287: the bills behind one Receivables headline figure. Same type and
+ * search filters as the list, plus which figure was clicked.
+ */
+export const receivableLinesQuerySchema = z.object({
+  query: z.object({
+    type: z.enum(['insurance', 'corporate', 'patient']).optional(),
+    search: z.string().max(100).optional(),
+    figure: z
+      .enum([
+        'billed', 'received', 'adjusted', 'disallowed', 'writtenOff', 'outstanding',
+        'approvedReceivable', 'awaitingDecision', 'otherPayer', 'patientOutstanding',
+      ])
+      .default('outstanding'),
+  }),
+});
+
 export const creditSettlementBillsParamSchema = z.object({
   params: z.object({
     id: z.string().min(1),
@@ -427,6 +480,8 @@ export const getChargesQuerySchema = z.object({
       .string()
       .transform((v) => v === 'true')
       .optional(),
+    // Only this stay's charges (gap items 338-340).
+    admissionId: z.string().uuid('Invalid admission ID').optional(),
   }),
 });
 

@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { authenticator } from 'otplib';
@@ -13,6 +14,7 @@ import {
   canonicalPhone,
   isPlaceholderAccountEmail,
   normalizeAccountPhone,
+  phoneLast10,
   phoneMatchFilter,
   placeholderAccountEmail,
 } from '../../shared/account-holder';
@@ -26,7 +28,65 @@ import type {
   ForgotPasswordInput,
   ResetPasswordInput,
   Verify2FAInput,
+  ChangePasswordInput,
+  Disable2FAInput,
+  RequestPhoneChangeInput,
+  VerifyPhoneChangeInput,
 } from './auth.validation';
+import { createPatientInTenant } from '../patient-portal/patient-portal.service';
+import { writeAudit } from '../../shared/audit';
+import { getRequestContext } from '../../config/request-context';
+import { sendEmail } from '../../services/email.service';
+
+/** Who is acting, for audit rows: the session's tenant (hospital or platform). */
+export interface AccountActionContext {
+  tenantId?: string;
+}
+
+// ── Gap 297: phone change with a one-time code ───────────────────
+// The code is random, only its HMAC is stored (in Redis, with a TTL), wrong
+// guesses are capped, and it is never returned or logged. This is deliberately
+// separate from the patient phone-login flow above, which still uses a fixed
+// dev code.
+export const PHONE_CHANGE_TTL_SECONDS = 10 * 60;
+export const PHONE_CHANGE_MAX_ATTEMPTS = 5;
+export const PHONE_CHANGE_RESEND_SECONDS = 60;
+const phoneChangeKey = (userId: string) => `phone-change:${userId}`;
+const phoneChangeAttemptsKey = (userId: string) => `phone-change-attempts:${userId}`;
+const phoneChangeCooldownKey = (userId: string) => `phone-change-cooldown:${userId}`;
+
+/**
+ * An Indian mobile number in canonical `+91XXXXXXXXXX` form, or null. Accepts
+ * an optional +91 / 91 / 0 prefix and the usual separators; the 10-digit number
+ * must start with 6-9.
+ */
+export function parseIndianMobile(raw: string): string | null {
+  const compact = (raw || '').replace(/[\s()\-.]/g, '');
+  const m = compact.match(/^(?:\+?91|0)?([6-9]\d{9})$/);
+  return m ? `+91${m[1]}` : null;
+}
+
+function hashPhoneChangeCode(userId: string, phone: string, code: string): string {
+  return crypto
+    .createHmac('sha256', env.JWT_ACCESS_SECRET)
+    .update(`phone-change:${userId}:${phone}:${code}`)
+    .digest('hex');
+}
+
+/** `jane.doe@x.com` → `j*******@x.com` — enough to recognise, not to harvest. */
+export function maskEmail(email: string): string {
+  const [local, domain] = email.split('@');
+  if (!domain) return '***';
+  return `${local.slice(0, 1)}${'*'.repeat(Math.max(3, Math.min(local.length - 1, 8)))}@${domain}`;
+}
+
+const escapeHtml = (s: string) =>
+  s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
+
+/** Tenant to file an account audit row under: the session's, else the user's own. */
+function auditTenant(ctx: AccountActionContext | undefined, fallback: string): string {
+  return ctx?.tenantId || getRequestContext()?.tenantId || fallback;
+}
 
 /**
  * Fixed one-time code accepted for patient phone login while SMS delivery is not
@@ -73,7 +133,6 @@ export const authService = {
     let tenant;
 
     if (data.tenantSlug) {
-      // Register under a specific hospital tenant
       tenant = await prisma.tenant.findUnique({
         where: { slug: data.tenantSlug },
       });
@@ -150,25 +209,16 @@ export const authService = {
       },
     } as const;
 
-    // Claim an unclaimed placeholder account holder that the front desk
-    // auto-created earlier for this phone number. Doing so attaches every
-    // patient already linked to it (the owner plus any relatives the desk
-    // registered under the number) to the real login being created now, instead
-    // of spawning a duplicate account and orphaning those records. Guardrails:
-    // only patient self-signup (platform tenant) claims, and only a *placeholder*
-    // account (synthetic email) is ever claimed — a real, already-claimed
-    // account is never taken over. (Phone ownership is trusted for now; OTP
-    // verification is a planned hardening step.)
     if (!data.tenantSlug && data.phone) {
       const normalizedPhone = canonicalPhone(data.phone);
       const placeholder = normalizedPhone
         ? await prisma.user.findFirst({
-            where: {
-              tenantId: tenant.id,
-              phone: phoneMatchFilter(data.phone),
-            },
-            orderBy: { createdAt: 'asc' },
-          })
+          where: {
+            tenantId: tenant.id,
+            phone: phoneMatchFilter(data.phone),
+          },
+          orderBy: { createdAt: 'asc' },
+        })
         : null;
 
       if (placeholder && isPlaceholderAccountEmail(placeholder.email)) {
@@ -469,33 +519,22 @@ export const authService = {
     return patient?.userId ?? null;
   },
 
-  /**
-   * Verify a phone OTP and log the patient in. If the number has no account
-   * yet, one is created on the platform tenant (patient role); if it maps to an
-   * unclaimed placeholder created by the front desk, the owner's name is
-   * captured on first login. Then a normal session is issued.
-   */
+  
   async loginWithPhoneOtp(data: VerifyOtpInput) {
     if (data.otp !== HARDCODED_OTP) {
       throw AppError.unauthorized('Invalid or expired code');
     }
     const phone = canonicalPhone(data.phone);
     if (!phone) throw AppError.badRequest('Enter a valid phone number');
-
-    // Resolve the existing account for this number: a User carrying the phone,
-    // or a Patient already linked to a User. Legacy standalone patients (a
-    // Patient row with the number but userId=null — e.g. registered at the front
-    // desk before phone accounts existed) have no account yet; detect those so
-    // we can adopt them on login/signup instead of reporting "no account".
     let userId = await this.findAccountUserIdByPhone(phone, data.phone);
 
     const orphanPatients = userId
       ? []
       : await prisma.patient.findMany({
-          where: { phone: phoneMatchFilter(data.phone), userId: null, isActive: true },
-          select: { id: true, firstName: true, lastName: true },
-          orderBy: { createdAt: 'asc' },
-        });
+        where: { phone: phoneMatchFilter(data.phone), userId: null, isActive: true },
+        select: { id: true, firstName: true, lastName: true },
+        orderBy: { createdAt: 'asc' },
+      });
     const hasExisting = !!userId || orphanPatients.length > 0;
 
     // Enforce the separate patient flows.
@@ -507,10 +546,12 @@ export const authService = {
     }
 
     if (!userId) {
-      // Create the account holder on the platform tenant.
-      const tenant = await prisma.tenant.findFirst({ where: { slug: '__platform__' } });
-      if (!tenant) throw AppError.internal('Platform tenant not found');
-
+      const tenant = data.tenantSlug ? await prisma.tenant.findFirst({ where: { slug: data.tenantSlug } }) : await prisma.tenant.findFirst({ where: { slug: '__platform__' } });
+      if (!tenant) {
+        throw data.tenantSlug
+          ? AppError.badRequest('Hospital not found')
+          : AppError.internal('Platform tenant not found');
+      }
       let patientRole = await prisma.role.findFirst({
         where: { tenantId: tenant.id, name: 'patient' },
       });
@@ -545,7 +586,11 @@ export const authService = {
           passwordHash,
           firstName: data.firstName?.trim() || firstOrphan?.firstName || 'Patient',
           lastName: data.lastName?.trim() || firstOrphan?.lastName || null,
-          phone,
+          // Store the bare 10-digit national number (not the +91 canonical form)
+          // so account phones match the format used in the patients table.
+          // Matching still works regardless of format (phoneMatchFilter compares
+          // by last-10 digits); `phone` stays canonical for the lookups above.
+          phone: phoneLast10(phone),
           tenantId: tenant.id,
           isActive: true,
           userRoles: { create: { roleId: patientRole.id } },
@@ -586,6 +631,10 @@ export const authService = {
         // brand-new account correctly has none until then.
         logger.info({ userId }, 'Patient account created via phone OTP');
       }
+      if (data.tenantSlug && data.tenantSlug !== '__platform__') {
+        await createPatientInTenant(userId, email, tenant.id);
+      }
+
     } else {
       // Existing account. Backfill the phone if it was only on the patient
       // record (so future lookups are direct), and capture the owner's name on
@@ -753,31 +802,97 @@ export const authService = {
     return { message: 'Password has been reset successfully' };
   },
 
-  async setup2FA(userId: string) {
-    const user = await prisma.user.findUnique({
+  /**
+   * Gap 297: change the signed-in user's password, given the current one.
+   *
+   * A hospital session may be running as the hospital-tenant COPY of the user,
+   * whose password hash is random — login always checks the platform user with
+   * the same email. So the check and the update both go to the row login uses,
+   * otherwise "current password is wrong" for a correct password, or a change
+   * that the next sign-in ignores.
+   *
+   * A wrong current password is a 400, not a 401: a 401 makes the client treat
+   * the session as expired and sign the user out.
+   */
+  async changePassword(userId: string, data: ChangePasswordInput, ctx?: AccountActionContext) {
+    const me = await prisma.user.findUnique({
       where: { id: userId },
+      select: { id: true, email: true, tenantId: true },
     });
+    if (!me) throw AppError.notFound('User not found');
 
-    if (!user) {
-      throw AppError.notFound('User not found');
-    }
+    const sameEmail = await prisma.user.findMany({
+      where: { email: me.email },
+      select: { id: true, passwordHash: true, tenant: { select: { slug: true } } },
+    });
+    const target =
+      sameEmail.find((u) => u.tenant.slug === '__platform__') ??
+      sameEmail.find((u) => u.id === me.id);
+    if (!target) throw AppError.notFound('User not found');
 
-    if (user.is2faEnabled) {
-      throw AppError.badRequest('Two-factor authentication is already enabled');
+    const ok = await bcrypt.compare(data.currentPassword, target.passwordHash);
+    if (!ok) throw AppError.badRequest('Current password is wrong', 'WRONG_PASSWORD');
+
+    const passwordHash = await bcrypt.hash(data.newPassword, env.BCRYPT_SALT_ROUNDS);
+    await prisma.user.update({ where: { id: target.id }, data: { passwordHash } });
+
+    logger.info({ userId, credentialUserId: target.id }, 'Password changed');
+    await writeAudit({
+      tenantId: auditTenant(ctx, me.tenantId),
+      userId,
+      action: 'update',
+      entityType: 'user',
+      entityId: target.id,
+      description: 'Changed own password (My Account)',
+      // Never the password or its hash — only that it changed.
+      newValues: { passwordChanged: true },
+    });
+    return { message: 'Password changed' };
+  },
+
+  /**
+   * The row that sign-in checks for this person. Login looks up the PLATFORM
+   * user with the same email (hospital-tenant copies carry random hashes), so
+   * the password and the 2FA flag/secret must be read from and written to that
+   * row — enabling 2FA on a hospital copy would never be enforced at login.
+   * Falls back to the signed-in row itself.
+   */
+  async resolveCredentialUser(userId: string) {
+    const me = await prisma.user.findUnique({ where: { id: userId } });
+    if (!me) throw AppError.notFound('User not found');
+    const sameEmail = await prisma.user.findMany({
+      where: { email: me.email },
+      include: { tenant: { select: { slug: true } } },
+    });
+    const platform = (sameEmail ?? []).find((u) => u.tenant?.slug === '__platform__');
+    return { me, target: platform ?? me };
+  },
+
+  /**
+   * Start 2FA setup: issue a fresh secret. Refused once 2FA is on, so an
+   * enabled secret can never be silently replaced — turn it off first (which
+   * needs the password and a current code). Calling it again while setup is
+   * still pending just issues a new secret.
+   */
+  async setup2FA(userId: string) {
+    const { target } = await this.resolveCredentialUser(userId);
+
+    if (target.is2faEnabled) {
+      throw AppError.badRequest('Two-factor authentication is already enabled', '2FA_ALREADY_ENABLED');
     }
 
     const secret = authenticator.generateSecret();
 
     await prisma.user.update({
-      where: { id: userId },
+      where: { id: target.id },
       data: {
         twoFaSecret: secret,
       },
     });
 
-    const otpauthUrl = authenticator.keyuri(user.email, 'HospitalERP', secret);
+    const otpauthUrl = authenticator.keyuri(target.email, 'HospitalERP', secret);
 
-    logger.info({ userId }, '2FA setup initiated');
+    logger.info({ userId, credentialUserId: target.id }, '2FA setup initiated');
 
     return {
       secret,
@@ -785,22 +900,20 @@ export const authService = {
     };
   },
 
-  async verify2FA(userId: string, data: Verify2FAInput) {
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-    });
+  async verify2FA(userId: string, data: Verify2FAInput, ctx?: AccountActionContext) {
+    const { me, target } = await this.resolveCredentialUser(userId);
 
-    if (!user) {
-      throw AppError.notFound('User not found');
+    if (target.is2faEnabled) {
+      throw AppError.badRequest('Two-factor authentication is already enabled', '2FA_ALREADY_ENABLED');
     }
 
-    if (!user.twoFaSecret) {
+    if (!target.twoFaSecret) {
       throw AppError.badRequest('Two-factor authentication has not been set up');
     }
 
     const isValid = authenticator.verify({
       token: data.code,
-      secret: user.twoFaSecret,
+      secret: target.twoFaSecret,
     });
 
     if (!isValid) {
@@ -808,15 +921,235 @@ export const authService = {
     }
 
     await prisma.user.update({
-      where: { id: userId },
+      where: { id: target.id },
       data: {
         is2faEnabled: true,
       },
     });
 
-    logger.info({ userId }, '2FA enabled successfully');
+    logger.info({ userId, credentialUserId: target.id }, '2FA enabled successfully');
+    await writeAudit({
+      tenantId: auditTenant(ctx, me.tenantId),
+      userId,
+      action: 'update',
+      entityType: 'user',
+      entityId: target.id,
+      description: 'Turned on two-factor sign-in (My Account)',
+      oldValues: { is2faEnabled: false },
+      newValues: { is2faEnabled: true },
+    });
 
     return { message: 'Two-factor authentication has been enabled' };
+  },
+
+  /**
+   * Turn 2FA off. Needs BOTH the current password and a valid current code, so
+   * neither an unattended session nor a stolen password alone can strip the
+   * second factor. A wrong password/code is a 400 (a 401 would sign them out).
+   */
+  async disable2FA(userId: string, data: Disable2FAInput, ctx?: AccountActionContext) {
+    const { me, target } = await this.resolveCredentialUser(userId);
+
+    if (!target.is2faEnabled || !target.twoFaSecret) {
+      throw AppError.badRequest('Two-factor authentication is not turned on', '2FA_NOT_ENABLED');
+    }
+
+    const passwordOk = await bcrypt.compare(data.currentPassword, target.passwordHash);
+    if (!passwordOk) throw AppError.badRequest('Current password is wrong', 'WRONG_PASSWORD');
+
+    const codeOk = authenticator.verify({ token: data.code, secret: target.twoFaSecret });
+    if (!codeOk) throw AppError.badRequest('Invalid two-factor code', 'INVALID_2FA_CODE');
+
+    await prisma.user.update({
+      where: { id: target.id },
+      data: { is2faEnabled: false, twoFaSecret: null },
+    });
+
+    logger.info({ userId, credentialUserId: target.id }, '2FA disabled');
+    await writeAudit({
+      tenantId: auditTenant(ctx, me.tenantId),
+      userId,
+      action: 'update',
+      entityType: 'user',
+      entityId: target.id,
+      description: 'Turned off two-factor sign-in (My Account)',
+      oldValues: { is2faEnabled: true },
+      newValues: { is2faEnabled: false },
+    });
+
+    return { message: 'Two-factor authentication has been turned off' };
+  },
+
+  /**
+   * Refuse a number that already belongs to someone else, using the same
+   * notion of "owner" phone sign-in uses ({@link findAccountUserIdByPhone}):
+   * another active account whose phone matches (by last 10 digits), or a
+   * patient record linked to another account. The person's own per-tenant
+   * copies (same email) do not count.
+   */
+  async assertPhoneAvailable(phone: string, myEmail: string) {
+    const filter = phoneMatchFilter(phone);
+    const otherUser = await prisma.user.findFirst({
+      where: { phone: filter, isActive: true, NOT: { email: myEmail } },
+      select: { id: true },
+    });
+    if (otherUser) {
+      throw AppError.conflict('This phone number is already used by another account', 'PHONE_IN_USE');
+    }
+    const myIds = ((await prisma.user.findMany({ where: { email: myEmail }, select: { id: true } })) ?? []).map(
+      (u) => u.id,
+    );
+    const linkedPatient = await prisma.patient.findFirst({
+      where: { phone: filter, isActive: true, userId: { not: null, notIn: myIds } },
+      select: { id: true },
+    });
+    if (linkedPatient) {
+      throw AppError.conflict('This phone number is already used by another account', 'PHONE_IN_USE');
+    }
+  },
+
+  /**
+   * Gap 297: step 1 of changing your phone. Sends a random 6-digit code to the
+   * account's registered email (no SMS provider is configured). Only an HMAC of
+   * the code is kept, for {@link PHONE_CHANGE_TTL_SECONDS}. The code is never
+   * returned or logged; the response says where it went (masked).
+   */
+  async requestPhoneChange(userId: string, data: RequestPhoneChangeInput) {
+    const phone = parseIndianMobile(data.phone);
+    if (!phone) throw AppError.badRequest('Enter a valid 10-digit Indian mobile number', 'INVALID_PHONE');
+
+    const me = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, phone: true, firstName: true },
+    });
+    if (!me) throw AppError.notFound('User not found');
+
+    if (me.phone && phoneLast10(me.phone) === phoneLast10(phone)) {
+      throw AppError.badRequest('This is already your phone number', 'SAME_PHONE');
+    }
+    await this.assertPhoneAvailable(phone, me.email);
+
+    if (isPlaceholderAccountEmail(me.email)) {
+      throw AppError.badRequest(
+        'There is no email address on your account to send a code to. Ask your administrator to update your phone number.',
+        'NO_DELIVERY_CHANNEL',
+      );
+    }
+
+    // One code per minute per user — on top of the per-IP route limiter.
+    const cooldown = await redis.set(phoneChangeCooldownKey(userId), '1', 'EX', PHONE_CHANGE_RESEND_SECONDS, 'NX');
+    if (cooldown !== 'OK') {
+      throw new AppError('Please wait a minute before asking for another code', 429, 'OTP_COOLDOWN');
+    }
+
+    const code = crypto.randomInt(0, 1_000_000).toString().padStart(6, '0');
+    await redis.set(
+      phoneChangeKey(userId),
+      JSON.stringify({ phone, codeHash: hashPhoneChangeCode(userId, phone, code) }),
+      'EX',
+      PHONE_CHANGE_TTL_SECONDS,
+    );
+    await redis.del(phoneChangeAttemptsKey(userId));
+
+    const minutes = Math.round(PHONE_CHANGE_TTL_SECONDS / 60);
+    const last4 = phone.slice(-4);
+    const sent = await sendEmail({
+      to: me.email,
+      subject: 'Your code to change your phone number',
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <p>Hello ${escapeHtml(me.firstName || '')},</p>
+          <p>Use this code to change the phone number on your account to one ending in <strong>${last4}</strong>:</p>
+          <p style="font-size: 24px; font-weight: bold; letter-spacing: 4px;">${code}</p>
+          <p>It expires in ${minutes} minutes. If you did not ask for this, ignore this email and change your password.</p>
+        </div>`,
+      text: `Your code to change the phone number on your account (to one ending in ${last4}) is ${code}. It expires in ${minutes} minutes. If you did not ask for this, change your password.`,
+    });
+
+    if (!sent) {
+      // Fail closed: a code nobody received must not stay valid.
+      await redis.del(phoneChangeKey(userId), phoneChangeCooldownKey(userId));
+      throw new AppError(
+        'We could not send the verification code right now. Try again later.',
+        503,
+        'OTP_DELIVERY_FAILED',
+      );
+    }
+
+    logger.info({ userId, channel: 'email' }, 'Phone change code sent');
+    return { channel: 'email' as const, sentTo: maskEmail(me.email), expiresInSeconds: PHONE_CHANGE_TTL_SECONDS };
+  },
+
+  /** Step 2: check the code, then change the phone and burn the code. */
+  async verifyPhoneChange(userId: string, data: VerifyPhoneChangeInput, ctx?: AccountActionContext) {
+    const phone = parseIndianMobile(data.phone);
+    if (!phone) throw AppError.badRequest('Enter a valid 10-digit Indian mobile number', 'INVALID_PHONE');
+
+    const raw = await redis.get(phoneChangeKey(userId));
+    if (!raw) {
+      throw AppError.badRequest('The code has expired. Ask for a new code.', 'OTP_EXPIRED');
+    }
+    let pending: { phone: string; codeHash: string };
+    try {
+      pending = JSON.parse(raw);
+    } catch {
+      await redis.del(phoneChangeKey(userId));
+      throw AppError.badRequest('The code has expired. Ask for a new code.', 'OTP_EXPIRED');
+    }
+
+    const attempts = await redis.incr(phoneChangeAttemptsKey(userId));
+    if (attempts === 1) await redis.expire(phoneChangeAttemptsKey(userId), PHONE_CHANGE_TTL_SECONDS);
+    if (attempts > PHONE_CHANGE_MAX_ATTEMPTS) {
+      await redis.del(phoneChangeKey(userId), phoneChangeAttemptsKey(userId));
+      throw new AppError('Too many wrong codes. Ask for a new code.', 429, 'OTP_ATTEMPTS_EXCEEDED');
+    }
+
+    // The phone is part of the hash, so a code issued for one number cannot
+    // confirm a different one.
+    const expected = Buffer.from(String(pending.codeHash || ''), 'hex');
+    const actual = Buffer.from(hashPhoneChangeCode(userId, phone, data.code), 'hex');
+    const matches =
+      pending.phone === phone && expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
+    if (!matches) {
+      if (attempts >= PHONE_CHANGE_MAX_ATTEMPTS) {
+        await redis.del(phoneChangeKey(userId), phoneChangeAttemptsKey(userId));
+        throw new AppError('Too many wrong codes. Ask for a new code.', 429, 'OTP_ATTEMPTS_EXCEEDED');
+      }
+      const left = PHONE_CHANGE_MAX_ATTEMPTS - attempts;
+      throw AppError.badRequest(
+        `The code is wrong. ${left} attempt${left === 1 ? '' : 's'} left.`,
+        'OTP_INVALID',
+      );
+    }
+
+    // Single use, whatever happens next.
+    await redis.del(phoneChangeKey(userId), phoneChangeAttemptsKey(userId));
+
+    const me = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, phone: true, tenantId: true },
+    });
+    if (!me) throw AppError.notFound('User not found');
+
+    // Re-check: the number may have been taken while the code was in flight.
+    await this.assertPhoneAvailable(phone, me.email);
+
+    // Every per-tenant copy of this person (same email) carries the same phone.
+    await prisma.user.updateMany({ where: { email: me.email }, data: { phone } });
+
+    logger.info({ userId }, 'Phone number changed');
+    await writeAudit({
+      tenantId: auditTenant(ctx, me.tenantId),
+      userId,
+      action: 'update',
+      entityType: 'user',
+      entityId: me.id,
+      description: 'Changed own phone number with a one-time code (My Account)',
+      oldValues: { phone: me.phone },
+      newValues: { phone },
+    });
+
+    return { phone, message: 'Phone number updated' };
   },
 
   async registerAdmin(data: { email: string; password: string; firstName: string; lastName: string; phone?: string }) {
@@ -968,6 +1301,16 @@ export const authService = {
     const primaryRole = user.userRoles[0]?.role;
     const roles = user.userRoles.map((ur) => ur.role.name);
 
+    // 2FA lives on the row sign-in checks (the platform copy) — report that.
+    let is2faEnabled = user.is2faEnabled;
+    if (user.tenant && user.tenant.slug !== '__platform__') {
+      const credential = await prisma.user.findFirst({
+        where: { email: user.email, tenant: { slug: '__platform__' } },
+        select: { is2faEnabled: true },
+      });
+      if (credential) is2faEnabled = credential.is2faEnabled;
+    }
+
     return {
       id: user.id,
       email: user.email,
@@ -976,7 +1319,7 @@ export const authService = {
       phone: user.phone,
       tenantId: user.tenantId,
       isActive: user.isActive,
-      is2faEnabled: user.is2faEnabled,
+      is2faEnabled,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
       roles,
@@ -987,3 +1330,35 @@ export const authService = {
     };
   },
 };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

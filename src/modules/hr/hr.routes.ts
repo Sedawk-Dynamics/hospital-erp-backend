@@ -5,6 +5,7 @@ import { validate } from '../../middleware/validate';
 import * as controller from './hr.controller';
 import {
   createStaffProfileSchema,
+  importStaffFromUsersSchema,
   getStaffProfilesSchema,
   staffIdParamSchema,
   updateStaffProfileSchema,
@@ -30,15 +31,23 @@ import {
   getPayrollListSchema,
   payrollIdParamSchema,
   hrReportsQuerySchema,
+  updateHrSettingsSchema,
 } from './hr.validation';
 
 export const hrRoutes = Router();
+
+// --- HR settings (gap 313) ---
+// Anyone who reads rosters needs the week start; only HR (hr:update) or an
+// admin may change it.
+hrRoutes.get('/settings', authenticate, requirePermission('duty_rosters', 'read'), controller.getHrSettings);
+hrRoutes.put('/settings', authenticate, requirePermission('hr', 'update'), validate(updateHrSettingsSchema), controller.updateHrSettings);
 
 // --- HR Dashboard (Week 14) ---
 hrRoutes.get('/dashboard', authenticate, requirePermission('hr', 'read'), controller.getHrDashboard);
 
 // --- Staff Profiles ---
 hrRoutes.post('/staff', authenticate, requirePermission('hr', 'create'), validate(createStaffProfileSchema), controller.createStaffProfile);
+hrRoutes.post('/staff/import-from-users', authenticate, requirePermission('hr', 'create'), validate(importStaffFromUsersSchema), controller.importStaffFromUsers);
 hrRoutes.get('/staff', authenticate, requirePermission('hr', 'read'), validate(getStaffProfilesSchema), controller.getStaffProfiles);
 hrRoutes.get('/staff/:id', authenticate, requirePermission('hr', 'read'), validate(staffIdParamSchema), controller.getStaffProfileById);
 hrRoutes.put('/staff/:id', authenticate, requirePermission('hr', 'update'), validate(updateStaffProfileSchema), controller.updateStaffProfile);

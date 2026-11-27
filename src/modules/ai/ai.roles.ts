@@ -1,18 +1,4 @@
 // ============================================================================
-// Role profiles for the platform-wide support chatbot (Use Case 3).
-//
-// The support assistant is ROLE-AWARE: it knows which role the signed-in user
-// holds and tailors every answer to that role's portal, modules, workflows and
-// permissions. This file is the single source of truth for "who is asking":
-//   - normalizeRole()  — collapses the many DB role slugs (incl. every doctor
-//                        specialization) into the canonical role set below.
-//   - ROLE_PROFILES    — a human-readable description of each role used to build
-//                        the LLM system prompt and to power role-specific quick
-//                        actions/help.
-//
-// Keep this aligned with the frontend `config/role-modules.ts` mapping and the
-// backend RBAC permission matrix (see ROLES.md).
-// ============================================================================
 
 export type CanonicalRole =
   | 'super_admin'

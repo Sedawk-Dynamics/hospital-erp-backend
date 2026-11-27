@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { prisma } from '../../config/database';
 import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
-import { issueDocumentForExistingBill } from '../billing/billing.service';
+import { createBill, finalizeBill, issueDocumentForExistingBill } from '../billing/billing.service';
 
 /** Medical and dental services — an OPD consultation, exempt. */
 const PORTAL_CONSULTATION_SAC = '999312';
@@ -17,6 +17,10 @@ import { commissionService } from '../commission/commission.service';
 import { settleGatewayPayment } from '../billing/billing.service';
 import { getAvailableSlots } from '../appointments/appointments.service';
 import { fullName } from '../../shared/person-name';
+import { REGISTRATION_FEE_REFERENCE_TYPE, registrationFeeTotals } from '../../shared/registration-fee';
+
+import { getRegistrationFeeSettings } from '../hospital-settings/hospital-settings.service';
+import { profile } from 'console';
 
 // ────────────────────────────────────────────────────────────
 // MRN Generation (mirrors patients.service.ts)
@@ -351,7 +355,7 @@ export async function lookupHospital(userId: string, query: { code?: string; sea
   }
 
   const hospitals = await prisma.tenant.findMany({
-    where,
+    where:{...where,patients:{some:{userId}}},
     take: 10,
     select: {
       id: true,
@@ -570,7 +574,7 @@ export async function rejectConnection(
 // Internal: Create patient record in a hospital tenant
 // ────────────────────────────────────────────────────────────
 
-async function createPatientInTenant(userId: string, email: string, tenantId: string): Promise<string> {
+export async function createPatientInTenant(userId: string, email: string, tenantId: string): Promise<string> {
   // Check if patient already exists in this tenant by email
   const existingPatient = await prisma.patient.findFirst({
     where: { tenantId, email: { equals: email, mode: 'insensitive' } },
@@ -641,20 +645,27 @@ async function createPatientInTenant(userId: string, email: string, tenantId: st
 // Patient Portal Data Queries (updated to use connections)
 // ────────────────────────────────────────────────────────────
 
-export async function getPatientProfile(userId: string, email: string) {
+export async function getPatientProfile(userId: string, email: string, profileId?: string) {
+  const include = {
+    emergencyContacts: true,
+    allergies: true,
+    tenant: { select: { id: true, name: true, slug: true } },
+  };
+
+  if (profileId) {
+    const allowed = await resolvePatientIds(userId, email, undefined, profileId);
+    if (!allowed.includes(profileId)) return null;
+    return prisma.patient.findUnique({ where: { id: profileId }, include });
+  }
+
   const patients = await prisma.patient.findMany({
     where: { email: { equals: email, mode: 'insensitive' } },
-    include: {
-      emergencyContacts: true,
-      allergies: true,
-      tenant: { select: { id: true, name: true, slug: true } },
-    },
+    include,
     orderBy: { createdAt: 'desc' },
   });
-
-  if (patients.length === 0) return null;
-  return patients[0];
+  return patients[0] ?? null;
 }
+
 
 export async function getPatientAppointments(
   userId: string,
@@ -1106,9 +1117,11 @@ export async function markPatientOrderDoneExternally(
 
 // ── Patient-uploaded miscellaneous documents ────────────────
 
-export async function listMyDocuments(userId: string, email: string, tenantId?: string) {
-  const ids = await resolvePatientIds(userId, email, tenantId);
+export async function listMyDocuments(userId: string, email: string, tenantId?: string, profileId?: string) {
+  const ids = await resolvePatientIds(userId, email, tenantId, profileId);
   if (ids.length === 0) return [];
+
+
   return prisma.patientDocument.findMany({
     where: { patientId: { in: ids } },
     orderBy: { createdAt: 'desc' },
@@ -1121,9 +1134,27 @@ export async function createMyDocument(
   file: Express.Multer.File,
   data: { title?: string; documentType?: string; notes?: string },
   tenantId?: string,
+  profileId?: string
 ) {
-  const patientId = await resolvePrimaryPatientId(userId, email, tenantId);
-  if (!patientId) throw new Error('No patient record found');
+
+  const user=await prisma.user.findUnique({where:{id:userId}});
+  if(!user) throw new Error('User not found');
+  let patientId = await resolvePrimaryPatientId(userId, email, tenantId, profileId);
+  if (!patientId){
+    const patient = await prisma.patient.create({
+      data: {
+        tenantId: user!.tenantId,
+        userId,                            
+        isSelf: true,
+        relationship: 'self',
+        firstName: user?.firstName || 'Patient',   
+        lastName: user?.lastName ?? null,
+        phone: user?.phone ?? null,
+        mrn: await generateMRN(),
+      },
+    });
+    patientId=patient.id;
+  }
   const fileUrl = `/uploads/${file.filename}`;
   return prisma.patientDocument.create({
     data: {
@@ -1139,16 +1170,16 @@ export async function createMyDocument(
   });
 }
 
-export async function deleteMyDocument(userId: string, email: string, id: string) {
-  const ids = await resolvePatientIds(userId, email);
+export async function deleteMyDocument(userId: string, email: string, id: string,tenantId?: string, profileId?: string) {
+  const ids = await resolvePatientIds(userId, email, tenantId, profileId);
   const doc = await prisma.patientDocument.findFirst({ where: { id, patientId: { in: ids } } });
   if (!doc) throw new Error('Document not found');
   await prisma.patientDocument.delete({ where: { id } });
 }
 
 // Current medications — patient view (read-only, combined derived + manual)
-export async function listMyCurrentMedications(userId: string, email: string, tenantId?: string) {
-  const patientId = await resolvePrimaryPatientId(userId, email, tenantId);
+export async function listMyCurrentMedications(userId: string, email: string, tenantId?: string, profileId?: string) {
+  const patientId = await resolvePrimaryPatientId(userId, email, tenantId, profileId);
   if (!patientId) return { derived: [], manual: [] };
   const { getAllCurrentMedications } = await import('../medical-history/medical-history.service');
   return getAllCurrentMedications(patientId, tenantId);
@@ -1171,8 +1202,8 @@ export async function listMyCurrentMedications(userId: string, email: string, te
  * Deterministic order: the record that already carries personal history wins,
  * then the most recently updated, then the oldest by id as a stable tiebreak.
  */
-async function resolvePrimaryPatientId(userId: string, email: string, tenantId?: string) {
-  const ids = await resolvePatientIds(userId, email, tenantId);
+async function resolvePrimaryPatientId(userId: string, email: string, tenantId?: string, profileId?: string) {
+  const ids = await resolvePatientIds(userId, email, tenantId, profileId);
   if (ids.length === 0) return null;
   if (ids.length === 1) return ids[0];
 
@@ -1205,8 +1236,8 @@ async function resolveMyPersonPatientIds(userId: string, email: string) {
   return Array.from(new Set(sets.flat()));
 }
 
-export async function getMyPersonalHistory(userId: string, email: string, tenantId?: string) {
-  const patientId = await resolvePrimaryPatientId(userId, email, tenantId);
+export async function getMyPersonalHistory(userId: string, email: string, tenantId?: string, profileId?: string) {
+  const patientId = await resolvePrimaryPatientId(userId, email, tenantId, profileId);
   if (!patientId) return null;
   // Delegate to the clinical service so the portal and the doctor resolve the
   // SAME person and read the SAME record — the two must never disagree.
@@ -1214,9 +1245,25 @@ export async function getMyPersonalHistory(userId: string, email: string, tenant
   return getPersonalHistory(patientId);
 }
 
-export async function upsertMyPersonalHistory(userId: string, email: string, data: any, tenantId?: string) {
-  const patientId = await resolvePrimaryPatientId(userId, email, tenantId);
-  if (!patientId) throw new Error('No patient record found');
+export async function upsertMyPersonalHistory(userId: string, email: string, data: any, tenantId?: string, profileId?: string) {
+  const user=await prisma.user.findUnique({where:{id:userId}});
+  if(!user) throw new Error('User not found');
+  let patientId = await resolvePrimaryPatientId(userId, email, tenantId, profileId);
+  if (!patientId) {
+   const patient = await prisma.patient.create({
+    data: {
+      tenantId: user!.tenantId,
+      userId,                            
+      isSelf: true,
+      relationship: 'self',
+      firstName: user?.firstName || 'Patient',   
+      lastName: user?.lastName ?? null,
+      phone: user?.phone ?? null,
+      mrn: await generateMRN(),
+    },
+  });
+    patientId=patient.id;
+  }
   const { upsertPersonalHistory } = await import('../medical-history/medical-history.service');
   return upsertPersonalHistory(patientId, userId, data);
 }
@@ -1283,8 +1330,8 @@ export async function deleteMyAllergy(userId: string, email: string, id: string)
   return deleteAllergy(entry.patientId, id);
 }
 
-export async function getPatientDischargeSummaries(userId: string, email: string) {
-  const patientIds = await resolvePatientIds(userId, email);
+export async function getPatientDischargeSummaries(userId: string, email: string,profileId?: string) {
+  const patientIds = await resolvePatientIds(userId, email, undefined, profileId);
   const { getPublishedDischargeSummariesForPatients } = await import('../mrd/mrd.service');
   return getPublishedDischargeSummariesForPatients(patientIds);
 }
@@ -1804,21 +1851,12 @@ export async function getPatientBills(
     take: query.limit || 30,
     include: {
       patient: { select: { id: true, mrn: true, firstName: true, lastName: true, tenant: { select: { id: true, name: true } } } },
-      // The tax the patient was actually charged, per line. A bill that shows a
-      // total and no GST leaves them unable to check what they paid — and for a
-      // hospital most lines are EXEMPT, which is worth them seeing rather than
-      // assuming tax is hidden somewhere in the figure.
       billItems: {
         select: {
           id: true, description: true, quantity: true, unitPrice: true, totalAmount: true,
           hsnSacCode: true, gstTreatment: true, taxPercent: true,
           taxableValue: true, taxAmount: true,
           cgstAmount: true, sgstAmount: true, igstAmount: true,
-          // The engine's own words for why this line was taxed as it was.
-          // Section 15's control for "a patient questions the GST on their
-          // bill": every line carries the reason, so the counter can answer
-          // without calling accounts — and so can the patient, on their own
-          // screen, without calling the counter.
           taxReason: true,
         },
       },
@@ -1840,15 +1878,9 @@ function timeToDate(time: string): Date {
   return new Date(`1970-01-01T${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:00.000Z`);
 }
 
-// ────────────────────────────────────────────────────────────
-// Appointment Booking (Patient Side)
-// ────────────────────────────────────────────────────────────
 
-/**
- * List all active hospitals for patient to book appointments.
- */
 export async function getAllHospitalsForBooking(
-  query: { search?: string; page?: number; limit?: number } = {},
+  userId:string,query: { search?: string; page?: number; limit?: number } = {},
 ) {
   const limit = query.limit || 10;
   const page = query.page || 1;
@@ -1870,7 +1902,7 @@ export async function getAllHospitalsForBooking(
 
   const [hospitals, total] = await Promise.all([
     prisma.tenant.findMany({
-      where,
+      where:{...where,patients:{some:{userId}}},
       skip,
       take: limit,
       select: {
@@ -1893,14 +1925,6 @@ export async function getAllHospitalsForBooking(
   return { data: hospitals, meta: { total, page, limit, totalPages: Math.ceil(total / limit) } };
 }
 
-/**
- * List doctors available in a hospital for the patient to book with.
- * No connection required — open booking.
- *
- * If users with the "doctor" role exist but lack a DoctorProfile row,
- * a profile is auto-created so they appear in booking and downstream
- * slot / appointment flows work (Appointment.doctorId → DoctorProfile).
- */
 export async function getDoctorsForBooking(
   userId: string,
   tenantId: string,
@@ -2754,3 +2778,88 @@ export async function confirmFrontdeskPayment(
 
   return { billId: bill.id, status: 'pending' };
 }
+
+
+export const registrationFees=async(userId:string,tenantSlug:string)=>{
+  const tenant=await prisma.tenant.findUnique({where:{slug:tenantSlug}});
+  if(!tenant)throw new AppError('Tenant not found',404);
+
+  const user=await prisma.user.findUnique({where:{id:userId}});
+  if(!user)throw new AppError('User not found',404);
+
+  let patient=await prisma.patient.findFirst({where:{userId, tenantId:tenant.id}});
+  if (!patient) {
+  if (!tenantSlug || tenantSlug === '__platform__') {
+    throw new AppError('patient not found', 404);
+  }
+  await createPatientInTenant(userId, user.email, tenant.id);
+  patient = await prisma.patient.findFirst({ where: { userId, tenantId: tenant.id } });
+}
+  if (!patient) throw new AppError('patient not found', 404);
+
+  const registrationFee = await getRegistrationFeeSettings(tenant.id);
+  if (!registrationFee.enabled || registrationFee.amount <= 0) {
+    return { billId: null as string | null, status: 'not_required' as const };
+  }
+
+  const existing = await prisma.billItem.findFirst({
+    where: {
+      referenceType: REGISTRATION_FEE_REFERENCE_TYPE,
+      bill: { tenantId: tenant.id, patientId: patient?.id, status: { notIn: ['cancelled', 'refunded'] } },
+    },
+  });
+  if (existing) {
+    return  createPatientBillPaymentOrder(userId,user.email,{billId:existing.billId});
+  }
+
+  const newBill = await createBill(tenant.id, userId, { patientId: patient.id });
+  const totals = registrationFeeTotals(registrationFee);
+  const resolver = await taxResolverFor(tenant.id);
+  const tax = resolver.price(
+    {
+      kind: 'registration',
+      itemRatePercent: registrationFee.gstRatePercent,
+      itemTreatment: registrationFee.gstRatePercent > 0 ? 'taxable' : 'exempt',
+      itemApproved: true,
+    },
+    { unitPrice: totals.unitPrice, quantity: 1 },
+  );
+
+  await prisma.billItem.create({
+    data: {
+      billId: newBill.id,
+      description: registrationFee.label,
+      category: 'registration',
+      quantity: 1,
+      unitPrice: totals.unitPrice,
+      discountPercent: 0,
+      discountAmount: 0,
+      ...billItemTaxFields(tax),
+      referenceType: REGISTRATION_FEE_REFERENCE_TYPE,
+      referenceId: patient?.id,
+    },
+  });
+
+  await finalizeBill(tenant.id, userId, newBill.id);
+  return createPatientBillPaymentOrder(userId,user.email,{billId:newBill.id});
+};
+
+export const updateProfile=async(tenantId:string,userId:string,patientId:string,data:{firstName?:string,lastName?:string,phone?:string,email?:string})=>{
+  const user=await prisma.user.findUnique({where:{id:userId}});
+  if(!user)throw new AppError('User not found',404);
+
+  const allowed = await resolvePatientIds(userId, user.email, undefined, patientId);
+  if (!allowed.includes(patientId)) throw new AppError('Profile not found', 404);
+
+  const updatedUser=await prisma.patient.update({
+    where:{id:patientId},
+    data:{
+      firstName:data.firstName,
+      lastName:data.lastName,
+      // phone is the login identity — not editable here; changing it needs an OTP-verified flow.
+      email:data.email,
+    }
+  });
+
+  return updatedUser;
+};

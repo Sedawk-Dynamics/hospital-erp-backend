@@ -111,10 +111,19 @@ export async function resolveAttachmentPreview(
 }
 
 
-
-
-
-
+export async function uploadDicomFolder(
+  req: AuthenticatedRequest, res: Response, next: NextFunction,
+) {
+  try {
+    const data = await service.dicomFolderUpload(
+      req.user!.tenantId,
+      req.user!.userId,
+      req.params.requestId as string,
+      req.files as Express.Multer.File[],
+    );
+    sendResponse({ res, statusCode: 201, message: 'DICOM folder uploaded', data });
+  } catch (err) { next(err); }
+}
 
 
 

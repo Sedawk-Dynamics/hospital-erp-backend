@@ -4,7 +4,7 @@ import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { abnormalFindings } from '../../shared/vitals-ranges';
 import { notifyUsers, doctorUserIdFromProfile, usersWithRoles } from '../../shared/notify';
-import { istDayStart, istDayEnd } from '../../shared/date.utils';
+import { istDayStart, istDayEnd, toEventInstant } from '../../shared/date.utils';
 import { getPaginationParams } from '../../shared/pagination';
 import { normalizeAdmissionType, type AdmissionType } from '../../shared/admission-type';
 import { ACTIVE_ADMISSION_STATUS, isActiveAdmission } from '../../shared/admission-status';
@@ -131,7 +131,7 @@ export async function createVisit(tenantId: string, data: CreateVisitInput) {
       doctorId: data.doctorId,
       appointmentId: data.appointmentId,
       visitType: data.visitType,
-      visitDate: new Date(data.visitDate),
+      visitDate: toEventInstant(data.visitDate), // date-only today = now, not 05:30 IST (gap 342)
       chiefComplaint: data.chiefComplaint,
       status: 'active',
     },
@@ -181,10 +181,6 @@ export async function ensureVisitForAppointment(
     orderBy: { createdAt: 'desc' },
   });
   if (linked) return linked;
-
-  // Fall back to any active visit for this patient with the same doctor — the
-  // legacy consultation flow created visits without backfilling appointmentId
-  // before this endpoint existed.
   const existing = await prisma.visit.findFirst({
     where: {
       tenantId,
@@ -282,15 +278,18 @@ export async function getVisits(tenantId: string, query: GetVisitsQuery) {
   const where: any = { tenantId };
 
   if (query.patientId) where.patientId = query.patientId;
+  if (query.appointmentId) where.appointmentId = query.appointmentId;
   if (query.doctorId) where.doctorId = query.doctorId;
   if (query.visitType) where.visitType = query.visitType;
   if (query.status) where.status = query.status;
 
+  // IST day bounds (gap 342/359): visit times are now real instants, so a
+  // visit at 01:00 IST must still land on its own IST day.
   if (query.fromDate) {
-    where.visitDate = { ...where.visitDate, gte: new Date(query.fromDate) };
+    where.visitDate = { ...where.visitDate, gte: istDayStart(query.fromDate) };
   }
   if (query.toDate) {
-    where.visitDate = { ...where.visitDate, lte: new Date(query.toDate) };
+    where.visitDate = { ...where.visitDate, lte: istDayEnd(query.toDate) };
   }
 
   if (query.search) {
@@ -568,7 +567,8 @@ export async function createAdmission(tenantId: string, userId: string, data: Cr
         // Derive ward from the bed if only a bed was passed; both may be null.
         wardId: data.wardId ?? bed?.wardId ?? undefined,
         bedId: data.bedId ?? undefined,
-        admissionDate: new Date(data.admissionDate),
+        // Date-only input means "now" today, not UTC midnight (05:30 IST) — gap 342.
+        admissionDate: toEventInstant(data.admissionDate),
         expectedDischargeDate: data.expectedDischargeDate
           ? new Date(data.expectedDischargeDate)
           : undefined,
@@ -757,15 +757,13 @@ export async function getAdmissions(tenantId: string, query: GetAdmissionsQuery)
     }
   } else {
     // Date-range window (reports screen). `date` wins when both are supplied.
+    // IST day bounds, end date inclusive (gap 359) — UTC days dropped an
+    // admission made before 05:30 IST from its own date.
     if ((query as any).fromDate) {
-      const from = new Date((query as any).fromDate);
-      from.setUTCHours(0, 0, 0, 0);
-      where.admissionDate = { ...where.admissionDate, gte: from };
+      where.admissionDate = { ...where.admissionDate, gte: istDayStart((query as any).fromDate) };
     }
     if ((query as any).toDate) {
-      const to = new Date((query as any).toDate);
-      to.setUTCHours(23, 59, 59, 999);
-      where.admissionDate = { ...where.admissionDate, lte: to };
+      where.admissionDate = { ...where.admissionDate, lte: istDayEnd((query as any).toDate) };
     }
   }
 
@@ -1197,13 +1195,15 @@ export async function dischargePatient(
   // `force` is the administrative override for LAMA / transfer-out / death and
   // skips BOTH gates; it requires a reason, which is written into the notes.
   if (!data?.force) {
-    const publishedSummary = await prisma.dischargeSummary.findFirst({
-      where: { admissionId: id, status: 'published' },
+    // Signed (finalized) is the doctor's sign-off; publishing only releases it
+    // to the patient. Both satisfy the rule (gap item 337).
+    const signedSummary = await prisma.dischargeSummary.findFirst({
+      where: { admissionId: id, status: { in: ['finalized', 'published'] } },
       select: { id: true },
     });
-    if (!publishedSummary) {
+    if (!signedSummary) {
       throw AppError.badRequest(
-        'A published discharge summary is required before discharging this patient. Please complete and publish the discharge summary first.',
+        'A signed discharge summary is required before discharging this patient. Please complete and sign the discharge summary first.',
       );
     }
 
@@ -1230,7 +1230,7 @@ export async function dischargePatient(
     );
   }
 
-  const dischargeDate = data?.dischargeDate ? new Date(data.dischargeDate) : new Date();
+  const dischargeDate = toEventInstant(data?.dischargeDate); // gap 342
 
   const updated = await prisma.$transaction(async (tx) => {
     if (data?.payerCaseId && data.releaseUndertaking) {
@@ -1316,6 +1316,19 @@ export async function dischargePatient(
     logger.error({ err, admissionId: id }, 'discharge bill assembly failed');
   }
 
+  // The summary the stay was closed on (gap item 337): returned so the
+  // discharge screen can show and link it, and written into the audit row so
+  // the sign-off a discharge relied on stays recoverable.
+  let closedOnSummary: { id: string; status: string; signedAt: Date | null; signedBy: string | null } | null = null;
+  try {
+    closedOnSummary = (await prisma.dischargeSummary.findFirst({
+      where: { admissionId: id },
+      select: { id: true, status: true, signedAt: true, signedBy: true },
+    })) ?? null;
+  } catch (err) {
+    logger.warn({ err, admissionId: id }, 'Could not read the discharge summary for the discharge record');
+  }
+
   // Who released the bed, when, and on what authority. A forced discharge skips
   // the clinical + financial gates, so its reason has to be recoverable later.
   try {
@@ -1334,6 +1347,9 @@ export async function dischargePatient(
           dischargeDate: dischargeDate.toISOString(),
           forced: !!data?.force,
           reason: data?.reason?.trim() ?? null,
+          dischargeSummaryId: closedOnSummary?.id ?? null,
+          dischargeSummaryStatus: closedOnSummary?.status ?? null,
+          dischargeSummarySignedAt: closedOnSummary?.signedAt?.toISOString() ?? null,
         },
       },
     });
@@ -1342,7 +1358,7 @@ export async function dischargePatient(
   }
 
   logger.info({ tenantId, admissionId: id, forced: !!data?.force }, 'Patient discharged');
-  return { ...updated, dischargeBilling };
+  return { ...updated, dischargeBilling, dischargeSummary: closedOnSummary ?? null };
 }
 
 /**
@@ -1682,10 +1698,6 @@ export async function recordVitals(
 ) {
   assertCanWriteVitals(roles);
 
-  // Resolve to a visitId. Nurses on OPD see confirmed appointments before the
-  // doctor opens consultation, so a Visit row may not exist yet — auto-create
-  // one from the appointment in that case (parallels
-  // nursing-forms.resolveVisitContext).
   let resolvedVisitId: string | null = data.visitId ?? null;
 
   if (!resolvedVisitId && data.admissionId) {
@@ -1698,41 +1710,21 @@ export async function recordVitals(
   }
 
   if (!resolvedVisitId && data.appointmentId) {
-    const appt = await prisma.appointment.findFirst({
-      where: { id: data.appointmentId, tenantId, patientId: data.patientId },
-      select: {
-        id: true,
-        doctorId: true,
-        appointmentDate: true,
-        visits: { orderBy: { createdAt: 'desc' }, take: 1, select: { id: true } },
-      },
-    });
-    if (!appt) throw AppError.notFound('Appointment not found');
-    const existingVisitId = appt.visits[0]?.id;
-    if (existingVisitId) {
-      resolvedVisitId = existingVisitId;
-    } else {
-      const newVisit = await prisma.visit.create({
-        data: {
-          tenantId,
-          patientId: data.patientId,
-          doctorId: appt.doctorId,
-          appointmentId: appt.id,
-          visitType: 'op',
-          visitDate: appt.appointmentDate,
-          status: 'active',
-        },
-        select: { id: true },
-      });
-      resolvedVisitId = newVisit.id;
-    }
+    // Resolve the visit through the SAME canonical path the consultation uses,
+    // so a reading recorded before the consultation opens lands on the exact
+    // same visit — not a second one. The old inline logic only looked for a
+    // visit already linked to this appointment and otherwise created a fresh
+    // one, so it missed a legacy/unclaimed active visit that the consultation's
+    // ensureVisitForAppointment would adopt — leaving vitals and the
+    // consultation on two different visits for one encounter.
+    const visit = await ensureVisitForAppointment(tenantId, data.appointmentId);
+    resolvedVisitId = visit.id;
   }
 
   if (!resolvedVisitId) {
     throw AppError.badRequest('Either visitId, admissionId, or appointmentId is required');
   }
 
-  // Verify visit belongs to tenant
   const visit = await prisma.visit.findFirst({
     where: { id: resolvedVisitId, tenantId },
   });
@@ -1740,9 +1732,19 @@ export async function recordVitals(
     throw AppError.notFound('Visit not found');
   }
 
-  // Verify patient matches the visit
   if (visit.patientId !== data.patientId) {
     throw AppError.badRequest('Patient does not match the visit');
+  }
+
+  if (data.nurseChiefComplaint && data.nurseChiefComplaint.trim()) {
+    await prisma.visit.update({
+      where: { id: resolvedVisitId },
+      data: {
+        nurseChiefComplaint: data.nurseChiefComplaint.trim(),
+        nurseChiefComplaintById: userId,
+        nurseChiefComplaintAt: new Date(),
+      },
+    });
   }
 
   // Calculate BMI if weight and height provided
@@ -1774,6 +1776,9 @@ export async function recordVitals(
       bloodSugar: clamp(data.bloodSugar, 9999.99),         // Decimal(6,2)
       notes: data.notes,
       recordedBy: userId,
+      progressNoteId: data.progressNoteId ?? null,
+      pinnedDischargeSection: data.pinnedDischargeSection ?? null,
+      showToPatient: data.showToPatient ?? false,
     },
     include: {
       recorder: { select: { id: true, firstName: true, lastName: true } },
@@ -3596,7 +3601,7 @@ export async function acceptAdmissionRequest(
             patientId: existing.patientId,
             doctorId: existing.doctorId,
             visitType: 'ip',
-            visitDate: data.admissionDate ? new Date(data.admissionDate) : new Date(),
+            visitDate: toEventInstant(data.admissionDate), // gap 342
             chiefComplaint: existing.reason,
             status: 'active',
           },
@@ -3635,7 +3640,7 @@ export async function acceptAdmissionRequest(
           doctorId: existing.doctorId,
           wardId: data.wardId ?? undefined,
           bedId: data.bedId ?? undefined,
-          admissionDate: data.admissionDate ? new Date(data.admissionDate) : new Date(),
+          admissionDate: toEventInstant(data.admissionDate), // gap 342
           expectedDischargeDate: data.expectedDischargeDate
             ? new Date(data.expectedDischargeDate)
             : undefined,
@@ -3785,7 +3790,7 @@ export async function admitFromReservation(
           patientId: reservation.patientId,
           doctorId: reservation.doctorId,
           visitType: 'ip',
-          visitDate: data.admissionDate ? new Date(data.admissionDate) : new Date(),
+          visitDate: toEventInstant(data.admissionDate), // gap 342
           chiefComplaint: reservation.diagnosis ?? undefined,
           status: 'active',
         },
@@ -3805,7 +3810,7 @@ export async function admitFromReservation(
         doctorId: reservation.doctorId,
         wardId: reservation.wardId ?? undefined,
         bedId: targetBedId ?? undefined,
-        admissionDate: data.admissionDate ? new Date(data.admissionDate) : new Date(),
+        admissionDate: toEventInstant(data.admissionDate), // gap 342
         expectedDischargeDate: data.expectedDischargeDate
           ? new Date(data.expectedDischargeDate)
           : undefined,

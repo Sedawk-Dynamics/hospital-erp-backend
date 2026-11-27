@@ -268,8 +268,35 @@ export const getAppointmentsQuerySchema = z.object({
     type: z
       .enum(['consultation', 'follow_up', 'emergency', 'procedure', 'telemedicine'])
       .optional(),
+    // Referral report (gap 334): only visits whose patient has a referral source.
+    referred: z
+      .enum(['true', 'false'])
+      .transform((v) => v === 'true')
+      .optional(),
   }),
 });
+
+/**
+ * Gap 331: what booking WOULD charge, before the appointment exists — so the
+ * payment step shows the waived follow-up / registration fee the bill will
+ * carry, not the doctor's list fee. `patientId` is absent for a patient the
+ * desk is registering in the same step.
+ */
+export const bookingChargePreviewSchema = z.object({
+  query: z.object({
+    doctorId: z.string().uuid('Invalid doctor ID'),
+    patientId: z.string().uuid('Invalid patient ID').optional(),
+    type: z
+      .enum(['consultation', 'follow_up', 'emergency', 'procedure', 'telemedicine'])
+      .default('consultation'),
+    chargeRegistrationFee: z
+      .enum(['true', 'false'])
+      .transform((v) => v === 'true')
+      .optional(),
+  }),
+});
+
+export type BookingChargePreviewQuery = z.infer<typeof bookingChargePreviewSchema>['query'];
 
 export const getDoctorProfilesQuerySchema = z.object({
   query: paginationSchema.extend({

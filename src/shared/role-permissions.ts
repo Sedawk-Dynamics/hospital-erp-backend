@@ -13,6 +13,9 @@ export const SYSTEM_ROLE_NAMES = [
   'front_desk', 'lab_technician', 'lab_supervisor', 'radiology_admin', 'radiologist', 'pharmacist',
   'pharmacy_admin', 'inventory_manager',
   'billing_admin', 'cashier', 'insurance_staff', 'blood_bank_staff', 'hr_staff',
+  // Gap #200/#298: the Counsellor portal had no role of its own, so only admins
+  // could use it. The frontend role-modules map already keys on this slug.
+  'counsellor',
 ] as const;
 
 export const PERMISSION_MODULES = [
@@ -32,6 +35,11 @@ export const PERMISSION_MODULES = [
   // never declared here so no RolePermission row could exist and every doctor
   // got "Missing permission: ot_requests:create".
   'ot_requests',
+  // Counselling sessions and referrals (gap #200/#298). Its own module rather
+  // than riding on appointments/visits: a counsellor must not be able to book
+  // doctor slots, and a desk user with appointments:create must not be able to
+  // run counselling. admin/super_admin get it through the all-modules grant.
+  'counselling',
 ] as const;
 
 export const PERMISSION_ACTIONS = ['create', 'read', 'update', 'delete', 'export', 'approve'] as const;
@@ -105,12 +113,10 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'appointments', action: 'read' }, { module: 'appointments', action: 'update' },
       { module: 'visits', action: 'read' }, { module: 'visits', action: 'update' },
       { module: 'admissions', action: 'read' }, { module: 'admissions', action: 'update' },
-      // Ward-to-ward and bed-to-bed moves. The service refuses a
-      // doctor_to_doctor transfer from here — reassigning the consultant is a
-      // clinical decision, not a nursing one.
       { module: 'patient_transfers', action: 'create' }, { module: 'patient_transfers', action: 'approve' },
       { module: 'vitals', action: 'read' }, { module: 'vitals', action: 'create' }, { module: 'vitals', action: 'update' },
       { module: 'diagnoses', action: 'read' },
+      {module:'wards',action:'read'},
       // Read-through on OT bookings so the theatre list is visible here.
       { module: 'ot_requests', action: 'read' },
       { module: 'nursing_notes', action: 'read' }, { module: 'nursing_notes', action: 'create' }, { module: 'nursing_notes', action: 'update' },
@@ -304,6 +310,8 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       { module: 'pharmacy', action: 'read' }, { module: 'pharmacy', action: 'create' }, { module: 'pharmacy', action: 'update' },
       { module: 'prescriptions', action: 'read' }, { module: 'prescriptions', action: 'update' },
       { module: 'inventory', action: 'read' }, { module: 'patients', action: 'read' },
+      // Settle a generated OP pharmacy bill at the counter (POST /billing/payments).
+      { module: 'payments', action: 'read' }, { module: 'payments', action: 'create' },
       // OT kit issue is raised against a scheduled surgery.
       { module: 'ot_requests', action: 'read' },
     ],
@@ -318,6 +326,8 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
       // transfer source / destination.
       { module: 'departments', action: 'read' }, { module: 'wards', action: 'read' },
       { module: 'patients', action: 'read' }, { module: 'reports', action: 'read' }, { module: 'reports', action: 'export' },
+      // Settle a generated OP pharmacy bill at the counter (POST /billing/payments).
+      { module: 'payments', action: 'read' }, { module: 'payments', action: 'create' },
       // OT kit issue is raised against a scheduled surgery.
       { module: 'ot_requests', action: 'read' },
     ],
@@ -363,6 +373,19 @@ export function getRolePermissions(): Record<string, PermissionDef[]> {
     hr_staff: [
       { module: 'hr', action: 'read' }, { module: 'hr', action: 'create' }, { module: 'hr', action: 'update' }, { module: 'hr', action: 'approve' }, { module: 'hr', action: 'export' },
       { module: 'users', action: 'read' }, { module: 'departments', action: 'read' }, { module: 'reports', action: 'read' },
+      // Gap 300: HR owns the Duty Rosters screen ("Add shift"); the routes are
+      // gated on duty_rosters:*, which hr_staff never had.
+      { module: 'duty_rosters', action: 'read' }, { module: 'duty_rosters', action: 'create' },
+      { module: 'duty_rosters', action: 'update' }, { module: 'duty_rosters', action: 'approve' },
+    ],
+
+    // Gap #200/#298: runs Counsellor Home — books, starts, completes and
+    // cancels counselling sessions. patients:read is what the New Session
+    // patient picker searches with; nothing clinical or financial beyond that.
+    counsellor: [
+      { module: 'counselling', action: 'read' }, { module: 'counselling', action: 'create' },
+      { module: 'counselling', action: 'update' },
+      { module: 'patients', action: 'read' },
     ],
   };
 }

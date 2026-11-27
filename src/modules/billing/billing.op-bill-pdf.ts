@@ -118,7 +118,14 @@ export function streamOpBillPdf(
   branding: HospitalBranding,
   template?: PdfTemplate,
   /** Whether this hospital charges GST at all. Absent means it does not. */
-  profile: { registered: boolean; gstin?: string | null; stateCode?: string | null } = {
+  profile: {
+    registered: boolean;
+    gstin?: string | null;
+    stateCode?: string | null;
+    // Gap #311: so the hospital GSTIN prints with its "not verified" caption.
+    gstinVerified?: boolean;
+    gstinVerification?: { sandbox: boolean } | null;
+  } = {
     registered: false,
   },
 ) {
@@ -176,6 +183,7 @@ export function streamOpBillPdf(
           day: '2-digit',
           month: 'short',
           year: 'numeric',
+          timeZone: 'Asia/Kolkata', // gap 362
         }),
       },
     ],
@@ -184,7 +192,7 @@ export function streamOpBillPdf(
 
   drawKeyValueCard(pdf, theme, [
     ['Bill No', bill.billNumber],
-    ['Date', new Date(bill.billDate).toLocaleString('en-IN')],
+    ['Date', new Date(bill.billDate).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })],
     ['Status', bill.status.replace(/_/g, ' ').toUpperCase()],
     // Never `first + ' ' + last`: a patient with no surname prints "null".
     ['Patient', fullName(bill.patient)],
@@ -283,7 +291,7 @@ export function streamOpBillPdf(
         { header: 'Amount', width: 0.22, align: 'right' },
       ],
       settled.map((p) => [
-        new Date(p.paymentDate).toLocaleString('en-IN'),
+        new Date(p.paymentDate).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
         p.paymentMethod.replace(/_/g, ' ').toUpperCase() +
           (p.paymentType === 'refund' ? ' (refund)' : ''),
         p.transactionId ?? '—',

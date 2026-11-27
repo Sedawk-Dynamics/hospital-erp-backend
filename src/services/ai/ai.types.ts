@@ -12,12 +12,11 @@ export interface AiMessage {
 }
 
 export interface AiGenerateOptions {
-  /** System / behaviour instruction prepended to the conversation. */
   system?: string;
-  /** Conversation turns (most recent last). A single prompt = one user turn. */
   messages: AiMessage[];
   temperature?: number;
   maxOutputTokens?: number;
+  model?:string,
   /** Ask the model for strict JSON output (Gemini responseMimeType / OpenAI response_format). */
   json?: boolean;
 }
@@ -38,6 +37,9 @@ export interface AiProviderClient {
 export interface ResolvedAiConfig {
   provider: AiProvider;
   textModel: string;
+  /** Override base URL for openai-compatible local models (e.g. MedGemma via
+   *  Ollama); undefined = use the provider's default endpoint. */
+  baseUrl?: string;
   /** Ordered same-provider fallback models tried when the primary fails. */
   fallbackModels: string[];
   temperature: number;

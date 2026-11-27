@@ -15,18 +15,21 @@ import {
   istDayRange,
   istDayStart,
   istDayEnd,
+  istDateStr,
 } from '../../shared/date.utils';
 import { normalizeAdmissionType, type AdmissionType } from '../../shared/admission-type';
 import { writeAudit } from '../../shared/audit';
 import {
   supplyKindForCategory,
   supplyKindForInventoryCategory,
+  tariffTaxContext,
   type SupplyKind,
 } from '../../shared/gst-determination';
-import { roundOffTotal } from '../../shared/gst';
+import { roundOffTotal, isInterState } from '../../shared/gst';
+import { resplitLine, sacWarningFor, serviceLinesWithoutSac } from './billing.gst-checks';
 import { assertPeriodOpen } from '../../shared/gst-period-lock';
 import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
-import { issueDocumentForBill } from '../gst/gst-document.service';
+import { issueDocumentForBill, allotDocumentNumber } from '../gst/gst-document.service';
 import { issueCreditNoteBestEffort } from '../gst/credit-note.service';
 import {
   advancePaymentTaxFields,
@@ -59,9 +62,22 @@ import type {
 } from './billing.validation';
 import {
   applyPaymentToBill,
+  computeBillBalance,
   computeBillPaid,
   computePatientPaidForBills,
+  collectionDocumentNumber,
+  getBillBalanceBreakdowns,
+  isAdvanceApplication,
 } from './bill-payment-ledger';
+import {
+  CLAIM_RECEIVABLE_STATUSES,
+  CLAIM_VOID_STATUSES,
+  claimAwaitingDecision,
+  claimOutstanding,
+  computeClaimTotals,
+  isVoidClaim,
+  type ClaimMoneyFields,
+} from '../insurance/insurance.metrics';
 
 /**
  * Map validation category values to ServiceTariffCategory enum values.
@@ -306,8 +322,30 @@ async function recalculateBillTotals(billId: string) {
   // Determine status based on payment. draft / cancelled / refunded are states
   // a recalculation does not move a bill out of; the rest mirror
   // applyPaymentToBill exactly, so the two can never disagree about a bill.
-  const bill = await prisma.bill.findUnique({ where: { id: billId }, select: { status: true } });
+  const bill = await prisma.bill.findUnique({
+    where: { id: billId },
+    select: { status: true, insuranceCoveredAmount: true, patientPayableAmount: true },
+  });
   const settled: string[] = ['draft', 'cancelled', 'refunded'];
+
+  // The balance comes from the one shared formula (gap item 286). This used to
+  // be `total - paid` even on an insurer-split bill, so the next charge posted
+  // to a TPA bill made the patient "owe" the insurer's share until a payment
+  // re-settled it, and lists disagreed with the bill depending on which path
+  // touched it last.
+  const insurerShare = toNumber(bill?.insuranceCoveredAmount);
+  const patientPaid = insurerShare > 0 ? await computePatientPaidForBills(prisma, [billId]) : 0;
+  const balanceDue = computeBillBalance(
+    insurerShare > 0
+      ? {
+          total,
+          insurerShare,
+          patientShare: toNumber(bill?.patientPayableAmount),
+          payments: patientPaid,
+          insurerPaid: r2(totalPaid - patientPaid),
+        }
+      : { total, payments: totalPaid },
+  ).balance;
   const status =
     bill && !settled.includes(bill.status)
       ? totalPaid >= total && total > 0
@@ -323,7 +361,7 @@ async function recalculateBillTotals(billId: string) {
     discountAmount: totalDiscount,
     totalAmount: total,
     amountPaid: totalPaid,
-    balanceDue: Math.max(0, r2(total - totalPaid)),
+    balanceDue,
     taxableValue: r2(taxableValue),
     cgstAmount: r2(cgstAmount),
     sgstAmount: r2(sgstAmount),
@@ -515,11 +553,19 @@ export async function getCollectionSummary(
   // like any other, so counting them here would inflate the day's collection by
   // the very amount that left the drawer.
   let refunds = 0;
+  // Held money moved onto a bill. The money arrived once, as the advance
+  // receipt; counting the application too reported the same advance twice
+  // (gap item 361).
+  let advanceAdjusted = 0;
 
   for (const p of payments) {
     const amt = toNumber(p.amount);
     if (p.paymentType === 'refund') {
       refunds += amt;
+      continue;
+    }
+    if (isAdvanceApplication(p)) {
+      advanceAdjusted += amt;
       continue;
     }
     totalCollection += amt;
@@ -568,7 +614,7 @@ export async function getCollectionSummary(
     totalBill,
     totalPaid,
     totalCredit,
-    netAdvanceAdjusted: 0,
+    netAdvanceAdjusted: r2(advanceAdjusted),
     bySource,
   };
 }
@@ -583,6 +629,247 @@ export async function getCollectionSummary(
  *     dedicated Corporate table.)
  *   • patient — no claim; one row per patient with outstanding self-pay.
  */
+/**
+ * One receivable row per bill, with one definition per figure (gap item 287):
+ *
+ *   billed      bill total after concessions
+ *   received    cash actually received (patient + insurer, net of refunds)
+ *   adjusted    deposit / advance moved onto the bill
+ *   disallowed  what the insurer refused (claim settlements)
+ *   writtenOff  approved claim write-offs
+ *   outstanding billed - received - adjusted - disallowed - writtenOff
+ *
+ * so every total on the Receivables tab reconciles to the rupee. The old rows
+ * summed `balanceDue`, which on a TPA bill is only the PATIENT share, against
+ * a billed figure that included the insurer's — 45.2L billed less 6.3L received
+ * could never come to the 19.7L shown as outstanding.
+ */
+export function receivableFigures(
+  b: { total: number; payments: number; insurerPaid: number; refunds: number; advanceApplied: number; advanceRefunds?: number },
+  claims: Array<{ disallowedAmount?: unknown; writtenOffAmount?: unknown }>,
+) {
+  // A refund of an applied deposit reverses the ADJUSTMENT, not cash received;
+  // netting it off `received` showed −₹100 received after a deposit return.
+  const advanceRefunds = r2(Math.min(b.refunds, b.advanceRefunds ?? 0));
+  const billed = r2(b.total);
+  const received = r2(b.payments + b.insurerPaid - (b.refunds - advanceRefunds));
+  const adjusted = r2(b.advanceApplied - advanceRefunds);
+  const disallowed = r2(claims.reduce((sum, c) => sum + Number(c.disallowedAmount ?? 0), 0));
+  const writtenOff = r2(claims.reduce((sum, c) => sum + Number(c.writtenOffAmount ?? 0), 0));
+  const outstanding = r2(Math.max(0, billed - received - adjusted - disallowed - writtenOff));
+  return { billed, received, adjusted, disallowed, writtenOff, outstanding };
+}
+
+/**
+ * One bill's receivable split between the two parties who owe it (gap item
+ * 287). On a bill with a recorded insurer share the insurer row carries ONLY
+ * that share (the approved / covered amount) less insurer money, and the
+ * patient row carries the rest — a ₹1,000 bill with ₹800 approved used to put
+ * the whole ₹1,000 on the insurer while Insurance → Outstanding said ₹800.
+ * Each half reconciles on its own, so the payer rows add up to the header.
+ *
+ * With a claim but no recorded split the whole bill stays with the payer, as
+ * before: there is no figure to divide it by.
+ */
+export function receivableSplit(
+  b: {
+    total: number; payments: number; advanceApplied: number; refunds: number; advanceRefunds?: number;
+    insurerPaid: number; paid: number; insurerShare: number;
+  },
+  claims: Array<{ disallowedAmount?: unknown; writtenOffAmount?: unknown }>,
+  opts: { hasClaim?: boolean } = {},
+): { insurer: ReturnType<typeof receivableFigures> | null; patient: ReturnType<typeof receivableFigures> | null } {
+  const share = r2(Math.min(Math.max(0, b.insurerShare), b.total));
+  if (share <= 0) {
+    const whole = receivableFigures(b, opts.hasClaim ? claims : []);
+    return opts.hasClaim ? { insurer: whole, patient: null } : { insurer: null, patient: whole };
+  }
+  const patientNet = r2(b.payments + b.advanceApplied - b.refunds);
+  const insurerNet = r2(b.paid - patientNet);
+  return {
+    insurer: receivableFigures(
+      { total: share, payments: 0, insurerPaid: insurerNet, refunds: 0, advanceApplied: 0 },
+      claims,
+    ),
+    patient: receivableFigures(
+      {
+        total: r2(b.total - share), payments: b.payments, insurerPaid: 0, refunds: b.refunds,
+        advanceApplied: b.advanceApplied, advanceRefunds: b.advanceRefunds,
+      },
+      [],
+    ),
+  };
+}
+
+/**
+ * Gap 287: a payer line's outstanding, split by where its claim stands, using
+ * the Insurance module's own definitions (insurance.metrics) so the figures
+ * are the same numbers Insurance shows:
+ *
+ *   approvedReceivable  claimOutstanding() over approved / part-approved /
+ *                       part-settled claims — Insurance → Outstanding
+ *   awaitingDecision    claimAwaitingDecision() — claimed amount still with
+ *                       the payer for a decision
+ *   otherPayer          whatever of the bill-ledger outstanding neither covers
+ *                       (no live claim decision behind it, or a claim figure
+ *                       that differs from the bill's insurer share)
+ *
+ * The three always add up to the line's outstanding, so the payer total still
+ * reconciles to the rupee.
+ */
+export function classifyPayerOutstanding(outstanding: number, claims: ClaimMoneyFields[]) {
+  const live = claims.filter((c) => !isVoidClaim(String(c.status)));
+  const approvedReceivable = r2(live.reduce((sum, c) => sum + claimOutstanding(c), 0));
+  const awaitingDecision = r2(live.reduce((sum, c) => sum + claimAwaitingDecision(c), 0));
+  return {
+    approvedReceivable,
+    awaitingDecision,
+    otherPayer: r2(outstanding - approvedReceivable - awaitingDecision),
+  };
+}
+
+/** Every headline figure on the Receivables tab — each opens the bills behind it (gap 287). */
+export const RECEIVABLE_FIGURES = [
+  'billed', 'received', 'adjusted', 'disallowed', 'writtenOff', 'outstanding',
+  'approvedReceivable', 'awaitingDecision', 'otherPayer', 'patientOutstanding',
+] as const;
+export type ReceivableFigure = (typeof RECEIVABLE_FIGURES)[number];
+
+/** One bill's share owed by one party — the unit every Receivables total is summed from. */
+export interface ReceivableLine {
+  billId: string;
+  billNumber: string;
+  billDate: Date;
+  patient: { id: string; firstName: string | null; lastName: string | null; mrn: string | null } | null;
+  providerKey: string;
+  providerType: 'insurance' | 'corporate' | 'patient';
+  providerName: string;
+  providerContact?: string;
+  claimId: string | null;
+  claimNumber: string | null;
+  claimStatus: string | null;
+  billed: number;
+  received: number;
+  adjusted: number;
+  disallowed: number;
+  writtenOff: number;
+  outstanding: number;
+  approvedReceivable: number;
+  awaitingDecision: number;
+  otherPayer: number;
+}
+
+interface ReceivableQuery {
+  type?: 'insurance' | 'corporate' | 'patient';
+  search?: string;
+}
+
+/**
+ * The receivable lines of every open bill: one per party that still owes on
+ * it. getCreditSettlements groups them; getReceivableLines lists them for the
+ * headline drill-downs — so a headline and the bills it opens can never be
+ * summed two different ways (gap 287).
+ */
+async function loadReceivableLines(tenantId: string, query: ReceivableQuery): Promise<ReceivableLine[]> {
+  // Every issued bill still open for SOMEONE. `balanceDue > 0` used to be the
+  // filter, which dropped a TPA bill as soon as the patient had paid their
+  // share — while the insurer still owed the rest.
+  const openBills = await prisma.bill.findMany({
+    where: {
+      tenantId,
+      ...NOT_ADVANCE_BUCKET,
+      status: { in: ['pending', 'partially_paid'] },
+    },
+    include: {
+      patient: { select: { id: true, firstName: true, lastName: true, mrn: true, phone: true } },
+      insuranceClaims: {
+        // Rejected claims owe nothing; cancelled and resubmitted (superseded)
+        // claims are void and their replacement carries the money (gap 291).
+        where: { status: { notIn: ['rejected', ...CLAIM_VOID_STATUSES] as any } },
+        include: {
+          policy: {
+            include: {
+              insurer: { select: { id: true, name: true } },
+              tpa: { select: { id: true, name: true } },
+            },
+          },
+        },
+      },
+    },
+    orderBy: { createdAt: 'asc' },
+  });
+  const breakdowns = await getBillBalanceBreakdowns(prisma, openBills);
+
+  const lines: ReceivableLine[] = [];
+  for (const bill of openBills) {
+    const bd = breakdowns.get(bill.id);
+    if (!bd) continue;
+    const claims = bill.insuranceClaims ?? [];
+    const claim = claims[0];
+    const payer = claim?.policy?.tpa
+      ? { key: `tpa:${claim.policy.tpa.id}`, providerType: 'corporate' as const, providerName: claim.policy.tpa.name }
+      : claim?.policy?.insurer
+        ? { key: `ins:${claim.policy.insurer.id}`, providerType: 'insurance' as const, providerName: claim.policy.insurer.name }
+        : null;
+    // Each party is chased for its own share (gap item 287).
+    // A claim naming no payer has no row to carry an insurer share, so that
+    // bill stays whole on the patient row rather than dropping out.
+    const split = receivableSplit(payer ? bd : { ...bd, insurerShare: 0 }, claims, { hasClaim: !!payer });
+    const p = bill.patient;
+    const base = {
+      billId: bill.id,
+      billNumber: bill.billNumber,
+      billDate: bill.createdAt,
+      patient: p ? { id: p.id, firstName: p.firstName, lastName: p.lastName, mrn: p.mrn } : null,
+    };
+
+    if (payer && split.insurer && split.insurer.outstanding >= 0.01) {
+      lines.push({
+        ...base,
+        providerKey: payer.key,
+        providerType: payer.providerType,
+        providerName: payer.providerName,
+        claimId: claim?.id ?? null,
+        claimNumber: claim?.claimNumber ?? null,
+        claimStatus: claim ? String(claim.status) : null,
+        ...split.insurer,
+        ...classifyPayerOutstanding(split.insurer.outstanding, claims as unknown as ClaimMoneyFields[]),
+      });
+    }
+    // Nothing left to chase from the patient on this bill.
+    if (split.patient && split.patient.outstanding >= 0.01) {
+      // A temporary patient has only a first name by design, and the template
+      // literal stringified the missing surname: this row read "Walkin null".
+      lines.push({
+        ...base,
+        providerKey: `pat:${bill.patientId}`,
+        providerType: 'patient',
+        providerName: fullName(p, 'Patient'),
+        providerContact: p?.phone ?? undefined,
+        claimId: null,
+        claimNumber: null,
+        claimStatus: null,
+        ...split.patient,
+        approvedReceivable: 0,
+        awaitingDecision: 0,
+        otherPayer: 0,
+      });
+    }
+  }
+
+  // The same type / payer-name filters the grouped list applies.
+  const q = query.search?.trim().toLowerCase();
+  return lines.filter(
+    (l) => (!query.type || l.providerType === query.type) && (!q || l.providerName.toLowerCase().includes(q)),
+  );
+}
+
+/** What one line contributes to a headline figure. */
+function receivableLineFigure(l: ReceivableLine, figure: ReceivableFigure): number {
+  if (figure === 'patientOutstanding') return l.providerType === 'patient' ? l.outstanding : 0;
+  return l[figure];
+}
+
 export async function getCreditSettlements(
   tenantId: string,
   query: {
@@ -594,28 +881,7 @@ export async function getCreditSettlements(
   },
 ) {
   const { skip, take, page, limit } = getPaginationParams(query as any);
-
-  const unpaidBills = await prisma.bill.findMany({
-    where: {
-      tenantId,
-      balanceDue: { gt: 0 },
-      status: { in: ['pending', 'partially_paid'] },
-    },
-    include: {
-      patient: { select: { id: true, firstName: true, lastName: true, mrn: true, phone: true } },
-      insuranceClaims: {
-        include: {
-          policy: {
-            include: {
-              insurer: { select: { id: true, name: true } },
-              tpa: { select: { id: true, name: true } },
-            },
-          },
-        },
-        take: 1,
-      },
-    },
-  });
+  const lines = await loadReceivableLines(tenantId, query);
 
   type Row = {
     id: string;
@@ -625,100 +891,150 @@ export async function getCreditSettlements(
     totalAdmissions: number;
     claimAmount: number;
     receivedAmount: number;
+    adjustedAmount: number;
+    disallowedAmount: number;
+    writtenOffAmount: number;
     outstandingAmount: number;
+    /**
+     * Gap 287: the payer outstanding split by claim stage, with the Insurance
+     * module's definitions. approved + awaiting + other = outstanding.
+     */
+    approvedReceivableAmount: number;
+    awaitingDecisionAmount: number;
+    otherPayerAmount: number;
     oldestBillDate?: Date;
   };
   const grouped: Record<string, Row> = {};
 
-  const addToGroup = (key: string, row: Omit<Row, 'totalAdmissions' | 'claimAmount' | 'receivedAmount' | 'outstandingAmount'> & { bill: typeof unpaidBills[number] }) => {
-    if (!grouped[key]) {
-      grouped[key] = {
-        id: row.id,
-        providerType: row.providerType,
-        providerName: row.providerName,
-        providerContact: row.providerContact,
-        totalAdmissions: 0,
-        claimAmount: 0,
-        receivedAmount: 0,
-        outstandingAmount: 0,
-        oldestBillDate: row.bill.createdAt,
+  for (const l of lines) {
+    const g = (grouped[l.providerKey] ??= {
+      id: l.providerKey,
+      providerType: l.providerType,
+      providerName: l.providerName,
+      providerContact: l.providerContact,
+      totalAdmissions: 0,
+      claimAmount: 0,
+      receivedAmount: 0,
+      adjustedAmount: 0,
+      disallowedAmount: 0,
+      writtenOffAmount: 0,
+      outstandingAmount: 0,
+      approvedReceivableAmount: 0,
+      awaitingDecisionAmount: 0,
+      otherPayerAmount: 0,
+      oldestBillDate: l.billDate,
+    });
+    g.totalAdmissions += 1;
+    g.claimAmount = r2(g.claimAmount + l.billed);
+    g.receivedAmount = r2(g.receivedAmount + l.received);
+    g.adjustedAmount = r2(g.adjustedAmount + l.adjusted);
+    g.disallowedAmount = r2(g.disallowedAmount + l.disallowed);
+    g.writtenOffAmount = r2(g.writtenOffAmount + l.writtenOff);
+    g.outstandingAmount = r2(g.outstandingAmount + l.outstanding);
+    g.approvedReceivableAmount = r2(g.approvedReceivableAmount + l.approvedReceivable);
+    g.awaitingDecisionAmount = r2(g.awaitingDecisionAmount + l.awaitingDecision);
+    g.otherPayerAmount = r2(g.otherPayerAmount + l.otherPayer);
+    if (l.billDate < (g.oldestBillDate ?? new Date())) g.oldestBillDate = l.billDate;
+  }
+
+  const settlements = Object.values(grouped)
+    .map((r) => {
+      const ageDays = r.oldestBillDate
+        ? Math.floor((Date.now() - r.oldestBillDate.getTime()) / (1000 * 60 * 60 * 24))
+        : 0;
+      return {
+        ...r,
+        ageDays,
+        tenantId,
+        createdAt: formatDateTimeIST(r.oldestBillDate ?? new Date()),
+        updatedAt: formatDateTimeIST(new Date()),
       };
-    }
-    grouped[key].totalAdmissions += 1;
-    grouped[key].claimAmount += toNumber(row.bill.totalAmount);
-    grouped[key].receivedAmount += toNumber(row.bill.amountPaid);
-    grouped[key].outstandingAmount += toNumber(row.bill.balanceDue);
-    if (row.bill.createdAt < (grouped[key].oldestBillDate ?? new Date())) {
-      grouped[key].oldestBillDate = row.bill.createdAt;
-    }
-  };
-
-  for (const bill of unpaidBills) {
-    const claim = bill.insuranceClaims?.[0];
-    if (claim?.policy?.tpa) {
-      // Corporate via TPA
-      const tpa = claim.policy.tpa;
-      addToGroup(`tpa:${tpa.id}`, {
-        id: `tpa:${tpa.id}`,
-        providerType: 'corporate',
-        providerName: tpa.name,
-        bill,
-      });
-    } else if (claim?.policy?.insurer) {
-      const ins = claim.policy.insurer;
-      addToGroup(`ins:${ins.id}`, {
-        id: `ins:${ins.id}`,
-        providerType: 'insurance',
-        providerName: ins.name,
-        bill,
-      });
-    } else {
-      const p = bill.patient;
-      // A temporary patient has only a first name by design, and the template
-      // literal stringified the missing surname: this row read "Walkin null".
-      const name = fullName(p, 'Patient');
-      addToGroup(`pat:${bill.patientId}`, {
-        id: `pat:${bill.patientId}`,
-        providerType: 'patient',
-        providerName: name,
-        providerContact: p?.phone ?? undefined,
-        bill,
-      });
-    }
-  }
-
-  let settlements = Object.values(grouped).map((r) => {
-    const ageDays = r.oldestBillDate
-      ? Math.floor((Date.now() - r.oldestBillDate.getTime()) / (1000 * 60 * 60 * 24))
-      : 0;
-    return {
-      ...r,
-      ageDays,
-      tenantId,
-      createdAt: formatDateTimeIST(r.oldestBillDate ?? new Date()),
-      updatedAt: formatDateTimeIST(new Date()),
-    };
-  });
-
-  if (query.type) settlements = settlements.filter((s) => s.providerType === query.type);
-  if (query.search) {
-    const q = query.search.toLowerCase();
-    settlements = settlements.filter((s) => s.providerName.toLowerCase().includes(q));
-  }
-
-  settlements.sort((a, b) => b.outstandingAmount - a.outstandingAmount);
+    })
+    .sort((a, b) => b.outstandingAmount - a.outstandingAmount);
 
   const total = settlements.length;
   const paginated = settlements.slice(skip, skip + take);
 
+  const sumLines = (figure: ReceivableFigure) => r2(lines.reduce((s, l) => s + receivableLineFigure(l, figure), 0));
+  const totalClaim = sumLines('billed');
+  const totalReceived = sumLines('received');
+  const totalAdjusted = sumLines('adjusted');
+  const totalDisallowed = sumLines('disallowed');
+  const totalWrittenOff = sumLines('writtenOff');
+  const totalOutstanding = sumLines('outstanding');
+  const totalPatientOutstanding = sumLines('patientOutstanding');
+  const totalApprovedReceivable = sumLines('approvedReceivable');
+  const totalAwaitingDecision = sumLines('awaitingDecision');
+  const totalOtherPayer = sumLines('otherPayer');
+  const totalPayerOutstanding = r2(totalOutstanding - totalPatientOutstanding);
+
+  // Cancelled bills are not receivables; reported beside the reconciliation so
+  // nobody goes looking for them inside it.
+  const [cancelledAgg, receivableClaims] = await Promise.all([
+    prisma.bill.aggregate({
+      where: { tenantId, ...NOT_ADVANCE_BUCKET, status: 'cancelled' },
+      _sum: { totalAmount: true },
+      _count: { _all: true },
+    }),
+    // Gap 287: the Insurance → Outstanding figure itself, for the cross-check
+    // line — summed by the same helper Insurance uses.
+    prisma.insuranceClaim.findMany({
+      where: { tenantId, status: { in: [...CLAIM_RECEIVABLE_STATUSES] } },
+      select: { status: true, claimAmount: true, approvedAmount: true, paidAmount: true, writtenOffAmount: true },
+    }),
+  ]);
+
   const stats = {
     totalProviders: total,
-    totalClaim: settlements.reduce((s, r) => s + r.claimAmount, 0),
-    totalReceived: settlements.reduce((s, r) => s + r.receivedAmount, 0),
-    totalOutstanding: settlements.reduce((s, r) => s + r.outstandingAmount, 0),
+    totalClaim,
+    totalReceived,
+    totalAdjusted,
+    totalDisallowed,
+    totalWrittenOff,
+    totalOutstanding,
+    totalCancelled: r2(toNumber(cancelledAgg?._sum?.totalAmount)),
+    cancelledCount: (cancelledAgg as any)?._count?._all ?? 0,
+    /** billed - received - adjusted - disallowed - written off - outstanding. Always 0. */
+    reconciliationDifference: r2(totalClaim - totalReceived - totalAdjusted - totalDisallowed - totalWrittenOff - totalOutstanding),
+    // Gap 287: outstanding = patient + approved receivable + awaiting decision + other payer.
+    totalPatientOutstanding,
+    totalPayerOutstanding,
+    totalApprovedReceivable,
+    totalAwaitingDecision,
+    totalOtherPayer,
+    /** payer outstanding - approved - awaiting - other. Always 0. */
+    payerReconciliationDifference: r2(totalPayerOutstanding - totalApprovedReceivable - totalAwaitingDecision - totalOtherPayer),
+    /** Insurance → Outstanding over all live claims (ignores the payer-type / search filters). */
+    insuranceOutstanding: computeClaimTotals(receivableClaims ?? []).outstanding,
   };
 
   return { settlements: paginated, total, page, limit, stats };
+}
+
+/**
+ * Gap 287: the bills behind one Receivables headline figure, with the same
+ * type / search filters as the list, so the drill-down total IS the headline.
+ */
+export async function getReceivableLines(
+  tenantId: string,
+  query: ReceivableQuery & { figure?: ReceivableFigure },
+) {
+  const figure: ReceivableFigure = query.figure ?? 'outstanding';
+  const lines = await loadReceivableLines(tenantId, query);
+  const rows = lines
+    .map((l) => ({
+      ...l,
+      amount: receivableLineFigure(l, figure),
+      ageDays: Math.floor((Date.now() - l.billDate.getTime()) / (1000 * 60 * 60 * 24)),
+    }))
+    // "Billed" lists every line; the others only lines that contribute.
+    .filter((l) => figure === 'billed' || Math.abs(l.amount) >= 0.01);
+  return {
+    figure,
+    count: rows.length,
+    total: r2(rows.reduce((s, l) => s + l.amount, 0)),
+    lines: rows,
+  };
 }
 
 /**
@@ -737,15 +1053,27 @@ function creditProviderBillWhere(tenantId: string, providerId: string) {
   const [kind, id] = providerId.split(':');
   if (!id) throw AppError.badRequest('Invalid provider key');
 
+  // Patient rows chase the patient balance; payer rows chase what the payer
+  // still owes, which a zero PATIENT balance does not rule out (gap item 287).
   const base: any = {
     tenantId,
-    balanceDue: { gt: 0 },
+    ...NOT_ADVANCE_BUCKET,
     status: { in: ['pending', 'partially_paid'] },
+    ...(kind === 'pat' ? { balanceDue: { gt: 0 } } : {}),
   };
 
   if (kind === 'ins') return { ...base, insuranceClaims: { some: { policy: { insurerId: id } } } };
   if (kind === 'tpa') return { ...base, insuranceClaims: { some: { policy: { tpaId: id } } } };
-  if (kind === 'pat') return { ...base, patientId: id, insuranceClaims: { none: {} } };
+  // A patient also owes their share of an insurer-split bill (gap item 287) —
+  // the Receivables patient row now carries it, so its drill-down must list
+  // it. A claim with no recorded split still belongs wholly to the payer.
+  if (kind === 'pat') {
+    return {
+      ...base,
+      patientId: id,
+      OR: [{ insuranceClaims: { none: {} } }, { insuranceCoveredAmount: { gt: 0 } }],
+    };
+  }
   throw AppError.badRequest('Unknown provider kind');
 }
 
@@ -767,6 +1095,7 @@ export async function getCreditSettlementBills(
     orderBy: { createdAt: 'asc' },
   });
 
+  const breakdowns = await getBillBalanceBreakdowns(prisma, bills);
   return bills.map((b) => ({
     id: b.id,
     billNumber: b.billNumber,
@@ -774,6 +1103,7 @@ export async function getCreditSettlementBills(
     totalAmount: toNumber(b.totalAmount),
     amountPaid: toNumber(b.amountPaid),
     balanceDue: toNumber(b.balanceDue),
+    balanceBreakdown: breakdowns.get(b.id) ?? null,
     createdAt: b.createdAt,
     ageDays: Math.floor((Date.now() - b.createdAt.getTime()) / (1000 * 60 * 60 * 24)),
     insurer: b.insuranceClaims[0]?.policy?.insurer?.name ?? null,
@@ -799,7 +1129,19 @@ export async function settleCredit(
     orderBy: { createdAt: 'asc' },
   });
 
-  const totalOutstanding = bills.reduce((s, b) => s + toNumber(b.balanceDue), 0);
+  // What THIS payer owes on each bill, from the shared breakdown (gap items
+  // 286, 287): a patient owes their balance; an insurer owes its outstanding
+  // share (or the whole unpaid bill where no split was recorded).
+  const isPayer = !providerId.startsWith('pat:');
+  const breakdowns = await getBillBalanceBreakdowns(prisma, bills);
+  const owedBy = (billId: string, fallback: number) => {
+    const bd = breakdowns.get(billId);
+    if (!bd) return fallback;
+    if (!isPayer) return bd.balance;
+    return bd.insurerShare > 0 ? bd.insurerOutstanding : bd.totalOutstanding;
+  };
+
+  const totalOutstanding = r2(bills.reduce((s, b) => s + owedBy(b.id, toNumber(b.balanceDue)), 0));
   if (data.amount > totalOutstanding) {
     throw AppError.badRequest(
       `This payer owes ${totalOutstanding}; cannot settle ${data.amount} against them.`,
@@ -810,8 +1152,12 @@ export async function settleCredit(
 
   for (const bill of bills) {
     if (remaining <= 0) break;
-    const balance = toNumber(bill.balanceDue);
-    const payAmount = Math.min(remaining, balance);
+    const balance = owedBy(bill.id, toNumber(bill.balanceDue));
+    if (balance <= 0) continue;
+    const payAmount = r2(Math.min(remaining, balance));
+    // Insurer money on a split bill is recorded as an insurer remittance, so
+    // it settles the insurer's share and never the patient's.
+    const splitPayer = isPayer && (breakdowns.get(bill.id)?.insurerShare ?? 0) > 0;
 
     const receiptNumber = await generateReceiptNumber(tenantId);
 
@@ -822,7 +1168,7 @@ export async function settleCredit(
           billId: bill.id,
           patientId: bill.patientId,
           amount: payAmount,
-          paymentMethod: mapPaymentMethod(data.method || 'bank_transfer') as any,
+          paymentMethod: (splitPayer ? 'insurance' : mapPaymentMethod(data.method || 'bank_transfer')) as any,
           notes: data.notes || `Credit settlement for ${providerId}`,
           status: 'completed',
           paymentDate: new Date(),
@@ -928,7 +1274,41 @@ export async function setServiceTariffGstApproval(
   return updated;
 }
 
+/**
+ * Gap 352: ₹0 is a real price only where "no charge" means something — a
+ * surgery or procedure. Elsewhere a zero tariff is still refused, and OT
+ * component charges belong on surgery/procedure tariffs alone.
+ */
+const OT_PRICED_CATEGORIES = new Set(['surgery', 'procedure']);
+const OT_COMPONENT_FIELDS = ['otTheatreCharge', 'otSurgeonCharge', 'otAnaesthesiaCharge', 'otAssistantCharge'] as const;
+function assertTariffPricing(category: string, basePrice: unknown, data: Record<string, unknown>) {
+  const otPriced = OT_PRICED_CATEGORIES.has(category);
+  if (basePrice !== undefined && Number(basePrice) === 0 && !otPriced) {
+    throw AppError.badRequest('Base price must be positive');
+  }
+  if (!otPriced && OT_COMPONENT_FIELDS.some((f) => data[f] != null)) {
+    throw AppError.badRequest('Theatre / surgeon / anaesthesia charges apply to surgery and procedure tariffs only');
+  }
+}
+function otComponentData(data: Record<string, unknown>) {
+  const out: Record<string, number | null> = {};
+  for (const f of OT_COMPONENT_FIELDS) if (data[f] !== undefined) out[f] = data[f] as number | null;
+  return out;
+}
+/**
+ * Gap 352 (retest): when any component is configured, Complete bills the
+ * components and never the base price — so the base price is kept equal to
+ * their total. Otherwise the tariff list showed ₹18,000 while the case billed
+ * ₹15,000 (theatre + surgeon). Null when no component is set.
+ */
+export function otComponentTotal(components: Record<string, unknown>): number | null {
+  const set = OT_COMPONENT_FIELDS.map((f) => components[f]).filter((v) => v !== null && v !== undefined && v !== '');
+  if (!set.length) return null;
+  return Math.round(set.reduce((sum: number, v) => sum + Number(v), 0) * 100) / 100;
+}
+
 export async function createServiceTariff(tenantId: string, data: CreateServiceTariffInput) {
+  assertTariffPricing(mapToServiceTariffCategory(data.category), data.basePrice, data as Record<string, unknown>);
   // Check for duplicate serviceCode within tenant
   if (data.code) {
     const existing = await prisma.serviceTariff.findFirst({
@@ -946,7 +1326,7 @@ export async function createServiceTariff(tenantId: string, data: CreateServiceT
       serviceName: data.name,
       serviceCode: data.code,
       category: mapToServiceTariffCategory(data.category) as any,
-      basePrice: data.basePrice,
+      basePrice: otComponentTotal(data as Record<string, unknown>) ?? data.basePrice,
       gstRatePercent: data.taxRate ?? 0,
       // The tariff's GST classification, which nothing could set. `sacCode`,
       // `gstTreatment` and `isCosmetic` are columns the resolution chain reads —
@@ -956,16 +1336,25 @@ export async function createServiceTariff(tenantId: string, data: CreateServiceT
       sacCode: (data as any).sacCode ?? null,
       gstTreatment: (data as any).gstTreatment ?? null,
       isCosmetic: (data as any).isCosmetic ?? false,
+      // G-3: when this classification starts to apply.
+      gstEffectiveFrom: (data as any).gstEffectiveFrom ? new Date((data as any).gstEffectiveFrom) : null,
       modality:
         (data as any).modality ??
         (mapToServiceTariffCategory(data.category) === 'radiology'
           ? deriveImagingModality(data.name)
           : null),
       isActive: data.isActive ?? true,
+      ...otComponentData(data as Record<string, unknown>),
     },
   });
 
   logger.info({ tenantId, tariffId: tariff.id }, 'Service tariff created');
+  // Gap item 279: every GST rate / SAC / treatment change leaves an audit row.
+  void import('../gst/gst-rate-log').then((m) => m.recordItemRateChange({
+    tenantId, itemType: 'service', itemId: tariff.id, itemName: tariff.serviceName, before: null,
+    after: { rate: Number(tariff.gstRatePercent), code: tariff.sacCode, treatment: tariff.gstTreatment },
+    reason: m.pickRateChangeReason(data, 'Service tariff created'),
+  })).catch(() => undefined);
   return tariff;
 }
 
@@ -1025,6 +1414,19 @@ export async function updateServiceTariff(
   if (data.code !== undefined) updateData.serviceCode = data.code;
   if (data.category !== undefined) updateData.category = mapToServiceTariffCategory(data.category);
   if (data.basePrice !== undefined) updateData.basePrice = data.basePrice;
+  // Gap 352: zero price / OT components only on surgery & procedure tariffs.
+  assertTariffPricing(
+    data.category !== undefined ? mapToServiceTariffCategory(data.category) : String(existing.category),
+    data.basePrice,
+    data as Record<string, unknown>,
+  );
+  Object.assign(updateData, otComponentData(data as Record<string, unknown>));
+  {
+    const merged: Record<string, unknown> = {};
+    for (const f of OT_COMPONENT_FIELDS) merged[f] = f in updateData ? updateData[f] : (existing as any)[f];
+    const componentTotal = otComponentTotal(merged);
+    if (componentTotal !== null) updateData.basePrice = componentTotal;
+  }
   if (data.taxRate !== undefined) updateData.gstRatePercent = data.taxRate;
   // The GST classification. Changing any of it WITHDRAWS the approval: an
   // auditor signed off the classification that was there, not whatever it
@@ -1035,6 +1437,13 @@ export async function updateServiceTariff(
     if ((data as any)[f] === undefined) continue;
     updateData[f] = (data as any)[f];
     if ((data as any)[f] !== (existing as any)[f]) classificationChanged = true;
+  }
+  // G-3: moving the effective date is a change to the classification too.
+  if ((data as any).gstEffectiveFrom !== undefined) {
+    const next = (data as any).gstEffectiveFrom ? new Date((data as any).gstEffectiveFrom) : null;
+    updateData.gstEffectiveFrom = next;
+    const prev = (existing as any).gstEffectiveFrom as Date | null;
+    if ((prev?.getTime() ?? null) !== (next?.getTime() ?? null)) classificationChanged = true;
   }
   if (classificationChanged && existing.gstApproved) updateData.gstApproved = false;
   if (data.isActive !== undefined) updateData.isActive = data.isActive;
@@ -1051,6 +1460,13 @@ export async function updateServiceTariff(
   });
 
   logger.info({ tenantId, tariffId: id }, 'Service tariff updated');
+  // Gap item 279: every GST rate / SAC / treatment change leaves an audit row.
+  void import('../gst/gst-rate-log').then((m) => m.recordItemRateChange({
+    tenantId, itemType: 'service', itemId: id, itemName: tariff.serviceName,
+    before: { rate: Number(existing.gstRatePercent), code: existing.sacCode, treatment: existing.gstTreatment },
+    after: { rate: Number(tariff.gstRatePercent), code: tariff.sacCode, treatment: tariff.gstTreatment },
+    reason: m.pickRateChangeReason(data, 'Service tariff edited'),
+  })).catch(() => undefined);
   return tariff;
 }
 
@@ -1095,9 +1511,6 @@ export async function createBill(tenantId: string, userId: string, data: CreateB
       admissionId: data.admissionId,
       billDate: new Date(),
       status: 'draft',
-      // The IP running bill already stamped this; the OP counter bill did not,
-      // so "who raised this bill" was unanswerable for most of the bills in the
-      // system.
       generatedBy: userId,
       subtotal: 0,
       taxAmount: 0,
@@ -1135,9 +1548,21 @@ export async function getBills(tenantId: string, query: GetBillsQuery) {
 
   if (query.patientId) where.patientId = query.patientId;
   if (query.status) where.status = query.status;
+  // A draft is still being assembled at the counter, not an issued bill
+  // (gap item 288). An explicit `status` wins.
+  else if (query.finalised === 'true') where.status = { not: 'draft' };
   // IP vs OP: IP bills are admission-scoped (admissionId set); OP are not.
   if (query.billType === 'ip') where.admissionId = { not: null };
-  else if (query.billType === 'op') where.admissionId = null;
+  else if (query.billType === 'op') {
+    where.admissionId = null;
+    // Nor an IP running bill that lost its admission link, nor the lab /
+    // imaging bill raised on an IP stay's visit (gap item 288). Null-safe: a
+    // counter bill has no visit at all.
+    where.AND = [
+      { billNumber: { not: { startsWith: 'IPW-' } } },
+      { OR: [{ visitId: null }, { visit: { visitType: 'op' } }] },
+    ];
+  }
 
   if (query.fromDate) {
     where.createdAt = { ...where.createdAt, gte: istDayStart(query.fromDate) };
@@ -1190,7 +1615,11 @@ export async function getBills(tenantId: string, query: GetBillsQuery) {
     prisma.bill.count({ where }),
   ]);
 
-  return { bills, total, page, limit };
+  // Every list shows the same balance, with what it is made of (gap item 286).
+  const breakdowns = await getBillBalanceBreakdowns(prisma, bills);
+  const withBalance = bills.map((b) => ({ ...b, balanceBreakdown: breakdowns.get(b.id) ?? null }));
+
+  return { bills: withBalance, total, page, limit };
 }
 
 export async function getBillById(tenantId: string, id: string) {
@@ -1231,7 +1660,8 @@ export async function getBillById(tenantId: string, id: string) {
     throw AppError.notFound('Bill not found');
   }
 
-  return { ...bill, ...billReopenState(bill) };
+  const breakdowns = await getBillBalanceBreakdowns(prisma, [bill]);
+  return { ...bill, ...billReopenState(bill), balanceBreakdown: breakdowns.get(bill.id) ?? null };
 }
 
 type BillReopenStateInput = {
@@ -1353,13 +1783,9 @@ export async function addBillItem(tenantId: string, billId: string, data: AddBil
   const priced = resolver.price(
     {
       kind: tariff ? supplyKindForCategory(String(tariff.category)) : 'other',
-      sacCode: (tariff as any)?.sacCode ?? null,
-      itemRatePercent: (tariff as any)?.gstApproved
-        ? toNumber(tariff!.gstRatePercent)
-        : (data.taxRate ?? null),
-      itemTreatment: (tariff as any)?.gstTreatment ?? null,
-      itemApproved: (tariff as any)?.gstApproved ?? false,
-      isCosmetic: (tariff as any)?.isCosmetic ?? false,
+      // G-3: SAC, treatment and rate come from the service tariff.
+      ...tariffTaxContext(tariff, bill.billDate ?? new Date()),
+      ...(tariff ? {} : { itemRatePercent: data.taxRate ?? null }),
     },
     { unitPrice, quantity, discountAmount },
   );
@@ -1657,10 +2083,22 @@ export async function finalizeBill(tenantId: string, userId: string, billId: str
   // rate charged, and exempt lines sit there legitimately in every period.
   await assertRatesAreLegalSlabs(billId, bill.billDate);
 
+  const profile = await getGstProfile(tenantId);
+
+  // G-4: lines are priced intra-state when raised. With a registered buyer the
+  // place of supply of a service is the buyer's state, so the same tax moves
+  // to IGST (or back, if the buyer was removed). Amounts never change.
+  const placeOfSupply = (bill as any).recipientGstin
+    ? ((bill as any).placeOfSupplyStateCode ?? profile.stateCode)
+    : profile.stateCode;
+  const interState = profile.registered && isInterState(profile.stateCode, placeOfSupply);
+  for (const it of bill.billItems) {
+    const split = resplitLine(it as any, interState);
+    if (split) await prisma.billItem.update({ where: { id: it.id }, data: split });
+  }
+
   // Recalculate final totals
   await recalculateBillTotals(billId);
-
-  const profile = await getGstProfile(tenantId);
 
   const updatedBill = await prisma.$transaction(async (tx) => {
     const items = await tx.billItem.findMany({
@@ -1694,7 +2132,8 @@ export async function finalizeBill(tenantId: string, userId: string, billId: str
       // after the hospital's details change.
       supplierGstin: profile.gstin,
       supplierStateCode: profile.stateCode,
-      placeOfSupplyStateCode: (bill as any).placeOfSupplyStateCode ?? profile.stateCode,
+      placeOfSupplyStateCode: placeOfSupply ?? null,
+      isInterState: interState,
     },
     include: {
       patient: {
@@ -1729,7 +2168,10 @@ export async function finalizeBill(tenantId: string, userId: string, billId: str
       itemCount: updatedBill.billItems.length,
     },
   });
-  return updatedBill;
+  // G-3: a service line with no SAC is issued but flagged — see serviceLinesWithoutSac.
+  const sacWarning = sacWarningFor(serviceLinesWithoutSac(updatedBill.billItems as any[], profile.registered));
+  if (sacWarning) logger.warn({ tenantId, billId }, sacWarning);
+  return { ...updatedBill, gstWarnings: sacWarning ? [sacWarning] : [] };
 }
 
 /**
@@ -1741,6 +2183,27 @@ export async function finalizeBill(tenantId: string, userId: string, billId: str
  * payment history and rejected/cancelled claims are not financial commitments,
  * so those historical rows do not keep an otherwise clean bill locked.
  */
+/**
+ * Finalize from the counter. For a stay's bill, the money already held for the
+ * stay (admission deposit + Collect Advance) is applied straight away, up to
+ * the bill's balance, so the issued bill shows it as paid and what is left is
+ * cash due or refund due (gap item 335). The plain finalizeBill stays free of
+ * this so the advance-adjust path cannot recurse into it.
+ */
+export async function finalizeBillAtCounter(tenantId: string, userId: string, billId: string) {
+  const finalized = await finalizeBill(tenantId, userId, billId);
+  if (!finalized?.admissionId) return finalized;
+  let advanceApplied = 0;
+  try {
+    const res = await applyHeldMoneyToBill(tenantId, userId, finalized.admissionId, finalized.patientId, billId);
+    advanceApplied = res.applied;
+  } catch (err) {
+    logger.warn({ tenantId, billId, err }, 'Could not apply the stay advance while finalizing');
+  }
+  const fresh = await prisma.bill.findFirst({ where: { id: billId, tenantId } });
+  return { ...(fresh ?? finalized), advanceApplied, gstWarnings: finalized.gstWarnings };
+}
+
 export async function reopenBill(tenantId: string, billId: string) {
   // Section 6.10 — a bill inside a filed-and-locked return period cannot be
   // changed. The correction is a credit note in the current period.
@@ -1919,9 +2382,23 @@ export async function getPayments(tenantId: string, query: GetPaymentsQuery) {
       { transactionId: { contains: q, mode: 'insensitive' } },
       { gatewayReference: { contains: q, mode: 'insensitive' } },
       { receipt: { receiptNumber: { contains: q, mode: 'insensitive' } } },
+      { voucherNumber: { contains: q, mode: 'insensitive' } },
       { patient: { mrn: { contains: q, mode: 'insensitive' } } },
       { patient: { firstName: { contains: q, mode: 'insensitive' } } },
       { patient: { lastName: { contains: q, mode: 'insensitive' } } },
+    ];
+  }
+
+  // The Collection report (gap item 361): a deposit set against a bill is not
+  // new money — it was collected once, as the advance receipt. Each clause is
+  // null-safe: most payments carry no reference or notes, and a bare
+  // `NOT (col LIKE ...)` drops every one of those rows.
+  if (query.collectionOnly === 'true') {
+    where.AND = [
+      { OR: [{ sourceAdvancePaymentId: null }, { paymentType: 'refund' }] },
+      { OR: [{ paymentType: { not: 'advance' } }, { transactionId: null }, { NOT: { transactionId: { startsWith: 'IPDEP:' } } }] },
+      { OR: [{ paymentType: { not: 'advance' } }, { paymentMethod: { not: 'advance' } }] },
+      { OR: [{ paymentType: { not: 'regular' } }, { notes: null }, { notes: { not: 'Adjusted from advance' } }] },
     ];
   }
 
@@ -1940,13 +2417,25 @@ export async function getPayments(tenantId: string, query: GetPaymentsQuery) {
         // The Cash Counter lists who took each payment — with manual entry that
         // attribution is the control, so it belongs on the row itself.
         processor: { select: { id: true, firstName: true, lastName: true } },
+        receipt: { select: { receiptNumber: true } },
       },
       orderBy: { createdAt: 'desc' },
     }),
     prisma.payment.count({ where }),
   ]);
 
-  return { payments, total, page, limit };
+  return {
+    // Each row names its OWN document (gap item 361). Two deposits sit on the
+    // same ADV- holding bill, so the bill number repeated across both.
+    payments: payments.map((p) => ({
+      ...p,
+      documentNumber: collectionDocumentNumber(p),
+      isAdjustment: isAdvanceApplication(p),
+    })),
+    total,
+    page,
+    limit,
+  };
 }
 
 // --- Refunds ---
@@ -2606,10 +3095,10 @@ function otTaxFacts(
     };
   }
   return {
-    // The tariff's own rate where an auditor has approved it; otherwise leave
-    // it to the chain, which will resolve through the SAC and flag anything it
-    // has to guess at.
-    taxRate: tariff.gstApproved ? toNumber(tariff.gstRatePercent) : null,
+    // G-3: the tariff's own rate wherever it is classified (approval decides
+    // only whether an uncoded taxable line is flagged); unclassified, the
+    // chain resolves through the SAC and flags anything it has to guess at.
+    taxRate: tariff.gstTreatment ? toNumber(tariff.gstRatePercent) : null,
     sacCode: tariff.sacCode,
     gstTreatment: tariff.gstTreatment,
     gstApproved: tariff.gstApproved,
@@ -2628,7 +3117,6 @@ async function getOtCharges(
       tenantId,
       patientId,
       status: { notIn: ['cancelled'] as any },
-      billingAmount: { gt: 0 },
     },
     include: {
       surgeon: { include: { user: { select: { firstName: true, lastName: true } } } },
@@ -2646,29 +3134,40 @@ async function getOtCharges(
     take: 50,
   });
 
-  return requests.map((r) => {
-    const amount = toNumber(r.billingAmount ?? 0);
+  // Gap 352 (retest): the same resolver Complete and "Add to Ledger" use — the
+  // amount typed on the case, else the tariff's components, else its single
+  // price (₹0 = an explicit no-charge line). Reading billingAmount alone left
+  // tariff-priced surgeries out of the feed and billed components as one line.
+  const { resolveOtCharge, otChargeLineDescription } = await import('../compliance/ot-rules');
+  const quotes = await Promise.all(requests.map((r) => resolveOtCharge(tenantId, r)));
+  const rows: ChargeRow[] = [];
+  requests.forEach((r, i) => {
+    const quote = quotes[i];
+    if (!quote) return; // no configured price — nothing to bill
     const sUser = r.surgeon?.user ?? r.doctor?.user;
     const surgeon = sUser ? `Dr. ${fullName(sUser)}` : null;
-    const billed = billedIndex.get(`ot_request:${r.id}`);
-    return {
-      source: 'ot' as const,
-      referenceType: 'ot_request',
-      referenceId: r.id,
-      description: `Surgery — ${r.procedureName}${surgeon ? ` (${surgeon})` : ''}`,
-      quantity: 1,
-      unitPrice: amount,
-      totalAmount: amount,
-      ...otTaxFacts(r.serviceTariff, taxRates),
-      category: 'surgery',
-      occurredAt: formatDateTimeIST(r.scheduledDate ?? r.createdAt),
-      occurredAtISO: new Date(r.scheduledDate ?? r.createdAt).toISOString(),
-      status: r.status,
-      alreadyBilled: !!billed,
-      billItemId: billed?.billItemId,
-      billId: billed?.billId,
-    };
+    for (const line of quote.lines) {
+      const billed = billedIndex.get(`${line.referenceType}:${r.id}`);
+      rows.push({
+        source: 'ot' as const,
+        referenceType: line.referenceType,
+        referenceId: r.id,
+        description: otChargeLineDescription(line, r.procedureName, surgeon),
+        quantity: 1,
+        unitPrice: line.amount,
+        totalAmount: line.amount,
+        ...otTaxFacts(r.serviceTariff, taxRates),
+        category: 'surgery',
+        occurredAt: formatDateTimeIST(r.scheduledDate ?? r.createdAt),
+        occurredAtISO: new Date(r.scheduledDate ?? r.createdAt).toISOString(),
+        status: r.status,
+        alreadyBilled: !!billed,
+        billItemId: billed?.billItemId,
+        billId: billed?.billId,
+      });
+    }
   });
+  return rows;
 }
 
 async function getConsultationCharges(
@@ -2964,9 +3463,11 @@ async function getRoomCharges(
   patientId: string,
   billedIndex: Map<string, { billItemId: string; billId: string }>,
   taxRates: Record<string, number>,
+  opts: { admissionId?: string } = {},
 ): Promise<ChargeRow[]> {
   const admissions = await prisma.admission.findMany({
-    where: { tenantId, patientId },
+    // One stay's bill must never pick up another stay's bed days (gap 339).
+    where: { tenantId, patientId, ...(opts.admissionId ? { id: opts.admissionId } : {}) },
     select: {
       id: true,
       visitId: true,
@@ -3075,6 +3576,23 @@ async function getRoomCharges(
   type Seg = { bedId: string | null; wardId: string | null; startDay: number; startAt: Date; refId: string };
   const rows: ChargeRow[] = [];
 
+  // Days already on a bill per occupancy segment. A room line is pulled with
+  // the days occupied SO FAR; keying "billed" on the segment alone then hid
+  // every later day for good, so the desk added the bed charge by hand (gap
+  // item 338). Top-up lines carry `<segment>#<days already billed>`.
+  const billedRoomLines = await prisma.billItem.findMany({
+    where: {
+      referenceType: 'admission',
+      bill: { tenantId, patientId, status: { not: 'cancelled' } },
+    },
+    select: { id: true, billId: true, referenceId: true, quantity: true },
+  });
+  const billedDays = new Map<string, number>();
+  for (const it of billedRoomLines ?? []) {
+    const base = String(it.referenceId ?? '').split('#')[0];
+    billedDays.set(base, (billedDays.get(base) ?? 0) + Number(it.quantity ?? 0));
+  }
+
   for (const adm of admissions) {
     const tlist = transfersByVisit.get(adm.visitId) ?? [];
     const end = adm.dischargeDate ? new Date(adm.dischargeDate) : new Date();
@@ -3108,14 +3626,22 @@ async function getRoomCharges(
       const wardName = (seg.wardId ? wardById.get(seg.wardId)?.name : null) ?? 'Ward';
       const bedNumber = (seg.bedId ? bedById.get(seg.bedId)?.bedNumber : null) ?? '-';
       const billed = billedIndex.get(`admission:${seg.refId}`);
+      const alreadyDays = billed ? Math.max(billedDays.get(seg.refId) ?? 0, 0) : 0;
+      // Days occupied since the last pull are billed as their own top-up line,
+      // so no day is billed twice and none is lost.
+      const topUp = billed && alreadyDays > 0 && alreadyDays < days ? days - alreadyDays : 0;
+      const qty = topUp > 0 ? topUp : days;
+      const label = `Room (${wardName} / Bed ${bedNumber})`;
       rows.push({
         source: 'room' as const,
         referenceType: 'admission',
-        referenceId: seg.refId,
-        description: `Room (${wardName} / Bed ${bedNumber}) — ${days} day${days === 1 ? '' : 's'}`,
-        quantity: days,
+        referenceId: topUp > 0 ? `${seg.refId}#${alreadyDays}` : seg.refId,
+        description: topUp > 0
+          ? `${label} \u2014 ${topUp} more day${topUp === 1 ? '' : 's'} (days ${alreadyDays + 1}-${days})`
+          : `${label} \u2014 ${days} day${days === 1 ? '' : 's'}`,
+        quantity: qty,
         unitPrice: unit,
-        totalAmount: unit * days,
+        totalAmount: unit * qty,
         taxRate,
         // The room rule decides from the DAILY rate, the bed and the ward — not
         // from the line total, and not from a rate somebody worked out here.
@@ -3128,9 +3654,9 @@ async function getRoomCharges(
         occurredAt: formatDateTimeIST(seg.startAt),
         occurredAtISO: new Date(seg.startAt).toISOString(),
         status: adm.status,
-        alreadyBilled: !!billed,
-        billItemId: billed?.billItemId,
-        billId: billed?.billId,
+        alreadyBilled: !!billed && topUp === 0,
+        billItemId: topUp > 0 ? undefined : billed?.billItemId,
+        billId: topUp > 0 ? undefined : billed?.billId,
       });
     });
   }
@@ -3145,7 +3671,7 @@ async function getRoomCharges(
  */
 export async function getPatientCharges(
   tenantId: string,
-  query: { patientId: string; source?: ChargeSource; includeBilled?: boolean },
+  query: { patientId: string; source?: ChargeSource; includeBilled?: boolean; admissionId?: string },
 ) {
   const patient = await prisma.patient.findFirst({
     where: { id: query.patientId, tenantId },
@@ -3174,7 +3700,9 @@ export async function getPatientCharges(
     rows = rows.concat(await getImagingCharges(tenantId, query.patientId, billedIndex, taxRates));
   }
   if (source === 'room' || source === 'all') {
-    rows = rows.concat(await getRoomCharges(tenantId, query.patientId, billedIndex, taxRates));
+    rows = rows.concat(
+      await getRoomCharges(tenantId, query.patientId, billedIndex, taxRates, { admissionId: query.admissionId }),
+    );
   }
   if (source === 'ot' || source === 'all') {
     rows = rows.concat(await getOtCharges(tenantId, query.patientId, billedIndex, taxRates));
@@ -3182,6 +3710,25 @@ export async function getPatientCharges(
 
   if (!query.includeBilled) {
     rows = rows.filter((r) => !r.alreadyBilled);
+  }
+
+  // A stay's ledger and bill read only that stay's charges: from its admission
+  // day to its discharge day (gap items 339, 340). Without this a re-admission
+  // picked up the previous stay's unbilled lines.
+  if (query.admissionId) {
+    const stay = await prisma.admission.findFirst({
+      where: { id: query.admissionId, tenantId, patientId: query.patientId },
+      select: { admissionDate: true, dischargeDate: true },
+    });
+    if (stay) {
+      const from = istDayStart(istDateStr(stay.admissionDate)).getTime();
+      const to = stay.dischargeDate ? istDayEnd(istDateStr(stay.dischargeDate)).getTime() : Infinity;
+      rows = rows.filter((r) => {
+        if (r.source === 'room') return true; // already scoped to the stay
+        const at = new Date(r.occurredAtISO).getTime();
+        return Number.isNaN(at) || (at >= from && at <= to);
+      });
+    }
   }
 
   // Totals by source for the auto-pull UI summary strip.
@@ -3281,7 +3828,6 @@ export async function getPendingOrders(
           where: {
             tenantId,
             status: { notIn: ['cancelled'] as any },
-            billingAmount: { gt: 0 },
           },
           include: { patient: { select: { id: true, firstName: true, lastName: true, mrn: true } } },
           orderBy: { createdAt: 'desc' },
@@ -3352,16 +3898,25 @@ export async function getPendingOrders(
     });
   }
 
+  // Gap 352 (retest): price each surgery the way Complete will — the typed
+  // amount, else the tariff's components / single price. A ₹0 tariff is an
+  // explicit no-charge line; a surgery with no price at all is left out.
+  const { resolveOtCharge: resolveOtQuote } = await import('../compliance/ot-rules');
+  const otQuotes = new Map(
+    await Promise.all(otReqs.map(async (r) => [r.id, await resolveOtQuote(tenantId, r)] as const)),
+  );
   for (const req of otReqs) {
     if (billedKeys.has(`ot_request:${req.id}`)) continue;
+    const otQuote = otQuotes.get(req.id);
+    if (!otQuote) continue;
     const p = req.patient;
     rows.push({
       key: `ot:${req.id}`,
       source: 'ot',
       referenceType: 'ot_request',
       referenceId: req.id,
-      description: `Surgery — ${req.procedureName}`,
-      amount: toNumber(req.billingAmount),
+      description: `Surgery — ${req.procedureName}${otQuote.noCharge ? ' — ₹0 — no charge' : ''}`,
+      amount: otQuote.amount,
       taxRate: taxRates.ot ?? CHARGE_TAX_RATES.ot,
       orderedAt: formatDateTimeIST(req.createdAt),
       orderedAtISO: new Date(req.createdAt).toISOString(),
@@ -3418,15 +3973,22 @@ export async function billOtRequest(
     },
   });
   if (!req) throw AppError.notFound('OT request not found');
-  const amount = toNumber(req.billingAmount ?? 0);
-  if (amount <= 0) {
+  // Gap 352: the same resolver Complete uses — the amount typed on the case,
+  // else the tariff's component charges (theatre/surgeon/anaesthesia/assistant),
+  // else its single price. ₹0 is a real "no charge" price and still posts a line.
+  const { resolveOtCharge, otChargeLineDescription, OT_CHARGE_REFERENCE_TYPES } = await import(
+    '../compliance/ot-rules'
+  );
+  const quote = await resolveOtCharge(tenantId, req);
+  if (!quote) {
     throw AppError.badRequest('Set a billing amount on the surgery before billing it');
   }
+  const amount = quote.amount;
 
   // Idempotency: reuse the bill if this surgery was already billed.
   const existingItem = await prisma.billItem.findFirst({
     where: {
-      referenceType: 'ot_request',
+      referenceType: { in: [...OT_CHARGE_REFERENCE_TYPES] },
       referenceId: otRequestId,
       bill: { tenantId, status: { not: 'cancelled' } },
     },
@@ -3446,15 +4008,17 @@ export async function billOtRequest(
   const sUser = req.surgeon?.user ?? req.doctor?.user;
   const surgeon = sUser ? `Dr. ${fullName(sUser)}` : null;
   const otTaxRates = await buildServiceTaxRates(tenantId);
-  const otCharge = {
-    referenceType: 'ot_request',
+  const otTax = otTaxFacts((req as { serviceTariff?: OtTariff }).serviceTariff, otTaxRates);
+  // One line per component (gap 352); the first carries the 'ot_request' anchor.
+  const otCharges = quote.lines.map((line) => ({
+    referenceType: line.referenceType,
     referenceId: otRequestId,
-    description: `Surgery — ${req.procedureName}${surgeon ? ` (${surgeon})` : ''}`,
+    description: otChargeLineDescription(line, req.procedureName, surgeon),
     quantity: 1,
-    unitPrice: amount,
-    ...otTaxFacts((req as { serviceTariff?: OtTariff }).serviceTariff, otTaxRates),
+    unitPrice: line.amount,
+    ...otTax,
     category: 'surgery',
-  };
+  }));
 
   let billId: string;
   if (existingItem) {
@@ -3463,12 +4027,12 @@ export async function billOtRequest(
     // IP: add onto the running (draft) IP bill and leave it running — payment is
     // taken with the consolidated bill at discharge, so no finalize / no charge here.
     const ipBill = await getOrCreateRunningIpBill(tenantId, activeAdmission.id, userId);
-    await pullChargesToBill(tenantId, ipBill.id, [otCharge]);
+    await pullChargesToBill(tenantId, ipBill.id, otCharges);
     billId = ipBill.id;
   } else {
     // OP: a dedicated, finalized surgery invoice (optionally collect payment below).
     const bill = await createBill(tenantId, userId, { patientId: req.patientId, visitId: req.visitId ?? undefined });
-    await pullChargesToBill(tenantId, bill.id, [otCharge]);
+    await pullChargesToBill(tenantId, bill.id, otCharges);
     await finalizeBill(tenantId, userId, bill.id);
     billId = bill.id;
   }
@@ -3503,31 +4067,14 @@ export async function billOtRequest(
     billNumber: finalBill?.billNumber ?? null,
     billStatus: finalBill?.status ?? null,
     totalAmount: toNumber(finalBill?.totalAmount ?? amount),
+    /** This surgery's charge — totalAmount is the whole (possibly running IP) bill. */
+    chargeAmount: amount,
+    noCharge: quote.noCharge,
     amountPaid: toNumber(finalBill?.amountPaid ?? 0),
     balanceDue: toNumber(finalBill?.balanceDue ?? 0),
     paid,
   };
 }
-
-// ============================================================
-// Diagnostic order billing — lab + radiology, one rule for both
-// ============================================================
-//
-// A lab order and an imaging request are the same commercial event: the doctor
-// asks for something, the department admits it, and the money is settled one of
-// two ways depending on where the patient is.
-//
-//   OP  — the department is its own counter. A dedicated, finalized bill holding
-//         only this order's lines, collected and receipted at the lab/radiology
-//         desk, and printed from there.
-//   IP / Emergency / Day Care — there is no counter. The charge is posted to the
-//         admission's running IP ledger and settles once, on the consolidated
-//         bill at discharge.
-//
-// This used to fire the moment the DOCTOR placed the order, which put a charge
-// on the patient before anybody had agreed to do the work — an order the lab
-// then declined still left a line on the bill. It now runs when the department
-// ACCEPTS, which is also the point the patient is standing at the counter.
 
 export interface DiagnosticChargeInput {
   referenceType: 'lab_order_item' | 'imaging_request';
@@ -3596,7 +4143,7 @@ export async function resolveDiagnosticPayer(
   let admissionType: AdmissionType = 'ip';
   try {
     const rows = await prisma.$queryRaw<Array<{ admission_type: string | null }>>`
-      SELECT admission_type FROM admissions WHERE id = ${admission.id}::uuid LIMIT 1
+      SELECT admission_type FROM admissions WHERE id = ${admission.id}::text LIMIT 1
     `;
     admissionType = normalizeAdmissionType(rows[0]?.admission_type);
   } catch (err) {
@@ -3638,7 +4185,7 @@ export async function resolveDiagnosticPayers(
   try {
     const rows = await prisma.$queryRaw<Array<{ id: string; admission_type: string | null }>>`
       SELECT id, admission_type FROM admissions
-       WHERE id = ANY(${admissions.map((a) => a.id)}::uuid[])
+       WHERE id = ANY(${admissions.map((a) => a.id)}::text[])
     `;
     typeById = new Map(rows.map((r) => [r.id, normalizeAdmissionType(r.admission_type)]));
   } catch (err) {
@@ -4161,11 +4708,19 @@ export async function consolidateAdmissionBill(
 ) {
   const admission = await prisma.admission.findFirst({
     where: { id: admissionId, tenantId },
-    select: { id: true, patientId: true },
+    select: { id: true, patientId: true, status: true },
   });
   if (!admission) throw AppError.notFound('Admission not found');
 
   let bill = await getAdmissionBillForBilling(tenantId, admissionId, userId);
+
+  // Generate Bill on a stay whose last bill is already PAID: charges accrued
+  // since (more bed days) go on a fresh running bill rather than nowhere — a
+  // paid bill is a settled document and is never reopened (gap items 338, 366).
+  if (!opts.finalize && bill.status === 'paid' && isActiveAdmission(admission.status)) {
+    const { charges } = await getPatientCharges(tenantId, { patientId: admission.patientId, admissionId });
+    if (charges.length > 0) bill = await getOrCreateRunningIpBill(tenantId, admissionId, userId);
+  }
 
   // The running bill is now reused across finalizations rather than replaced,
   // so "Generate / refresh bill" has to be able to pull the next batch of
@@ -4190,13 +4745,16 @@ export async function consolidateAdmissionBill(
     }
   }
 
+  // How many unbilled charges this call moved onto the bill, so Generate Bill
+  // can say so (gap item 338).
+  let pulled = 0;
   try {
   // Only a draft can still accept charges / be finalized. A bill already
   // finalized (e.g. transferred to TPA earlier) is left as-is.
   if (bill.status === 'draft') {
-    const { charges } = await getPatientCharges(tenantId, { patientId: admission.patientId });
+    const { charges } = await getPatientCharges(tenantId, { patientId: admission.patientId, admissionId });
     if (charges.length > 0) {
-      await pullChargesToBill(
+      const res = await pullChargesToBill(
         tenantId,
         bill.id,
         // Spread the whole charge rather than picking fields off it. Picking is
@@ -4213,6 +4771,7 @@ export async function consolidateAdmissionBill(
           issuedForTreatment: true,
         })),
       );
+      pulled = res?.added ?? 0;
     }
     await recalculateBillTotals(bill.id);
     const draftItems = await prisma.billItem.count({ where: { billId: bill.id } });
@@ -4268,7 +4827,7 @@ export async function consolidateAdmissionBill(
 
   const fresh = await prisma.bill.findFirst({ where: { id: bill.id, tenantId } });
   const itemCount = await prisma.billItem.count({ where: { billId: bill.id } });
-  return { bill: fresh!, itemCount, depositApplied, finalized: fresh!.status !== 'draft' };
+  return { bill: fresh!, itemCount, depositApplied, pulled, finalized: fresh!.status !== 'draft' };
 }
 
 /**
@@ -4661,6 +5220,13 @@ export async function assembleDischargeBill(
   const totalBalanceDue = r2(bills.reduce((s, b) => s + Number(b.balanceDue), 0));
   const deposit = Number(admission.depositAmount ?? 0);
 
+  // The deposit has ALREADY been set against the bill by the consolidation
+  // above, so `balanceDue` is net of it. Subtracting the whole deposit again
+  // showed a ₹700 bill with a ₹1,000 deposit as "balance 0, refund 1,000" —
+  // the refund due is only what is still held and unapplied (gap item 340).
+  const dep = await getAdmissionDepositState(tenantId, admissionId);
+  const stillHeld = dep.availableToApply;
+
   logger.info({ tenantId, admissionId, finalBillId, totalBilled, totalBalanceDue }, 'Discharge bill assembled');
   return {
     admissionId,
@@ -4671,10 +5237,12 @@ export async function assembleDischargeBill(
     totalPaid,
     totalBalanceDue,
     depositAmount: deposit,
-    advanceApplied,
-    // Informational net after the deposit is settled by the biller.
-    netAfterDeposit: r2(Math.max(0, totalBalanceDue - deposit)),
-    refundDue: r2(Math.max(0, deposit - totalBalanceDue)),
+    /** Stay deposit + desk advance set against the bill. */
+    advanceApplied: r2(dep.applied + advanceApplied),
+    // Cash still to collect once every rupee held for the stay is used.
+    netAfterDeposit: r2(Math.max(0, totalBalanceDue - stillHeld)),
+    // Held for the stay but not needed by its bill: owed back to the patient.
+    refundDue: r2(Math.max(0, stillHeld - totalBalanceDue)),
   };
 }
 
@@ -4719,9 +5287,15 @@ export async function getOrCreateRunningIpBill(tenantId: string, admissionId: st
   }
 
   if (!bill) {
-    const patientDraft = await prisma.bill.findFirst({ where: { tenantId, patientId: admission.patientId, status: 'draft', ...NOT_ADVANCE_BUCKET }, orderBy: { createdAt: 'desc' } });
+    // Only an UNATTACHED draft may be adopted. A draft that belongs to an
+    // earlier stay is that stay's bill: reusing it made a re-admission post its
+    // charges onto the previous admission's bill (gap item 339).
+    const patientDraft = await prisma.bill.findFirst({
+      where: { tenantId, patientId: admission.patientId, status: 'draft', admissionId: null, ...NOT_ADVANCE_BUCKET },
+      orderBy: { createdAt: 'desc' },
+    });
     if (patientDraft) {
-      bill = patientDraft.admissionId ? patientDraft : await prisma.bill.update({ where: { id: patientDraft.id }, data: { admissionId } });
+      bill = await prisma.bill.update({ where: { id: patientDraft.id }, data: { admissionId } });
     }
   }
   if (!bill) {
@@ -4814,6 +5388,21 @@ async function assertIpLedgerAccess(
 }
 
 /**
+ * New charges belong to a stay in progress. A discharged stay's bill is
+ * closed: posting to it is how a re-admission ended up adding a second room
+ * charge to the old stay (gap item 339). A new Admit opens a new stay.
+ */
+async function assertStayOpenForCharges(tenantId: string, admissionId: string) {
+  const stay = await prisma.admission.findFirst({ where: { id: admissionId, tenantId }, select: { status: true } });
+  if (!stay) throw AppError.notFound('Admission not found');
+  if (!isActiveAdmission(stay.status)) {
+    throw AppError.badRequest(
+      `This stay is ${String(stay.status).replace(/_/g, ' ')}, so no new charges can be posted to it. Admit the patient again to open a new stay.`,
+    );
+  }
+}
+
+/**
  * A clinician (doctor / nurse) posts a charge onto the admission's running IP
  * ledger — a doctor visit / professional fee, a nursing procedure, a consumable,
  * bed extras, etc. Resolves/opens the running draft bill and appends a
@@ -4827,6 +5416,7 @@ export async function addIpCharge(
   roles: string[] = [],
 ) {
   await assertIpLedgerAccess(tenantId, admissionId, { userId, roles }, { write: true, nurseWrite: true });
+  await assertStayOpenForCharges(tenantId, admissionId);
   const r2 = (n: number) => Math.round(n * 100) / 100;
   const category = IP_CHARGE_CATEGORIES.has(data.category) ? data.category : 'other';
   const bill = await getOrCreateRunningIpBill(tenantId, admissionId, userId);
@@ -4847,13 +5437,9 @@ export async function addIpCharge(
   const priced = resolver.price(
     {
       kind: supplyKindForCategory(category),
-      sacCode: (tariff as any)?.sacCode ?? null,
-      itemRatePercent: (tariff as any)?.gstApproved
-        ? toNumber(tariff!.gstRatePercent)
-        : (data.taxRate ?? null),
-      itemTreatment: (tariff as any)?.gstTreatment ?? null,
-      itemApproved: (tariff as any)?.gstApproved ?? false,
-      isCosmetic: (tariff as any)?.isCosmetic ?? false,
+      // G-3: SAC, treatment and rate come from the service tariff.
+      ...tariffTaxContext(tariff, bill.billDate ?? new Date()),
+      ...(tariff ? {} : { itemRatePercent: data.taxRate ?? null }),
       patientAdmitted: true,
       issuedForTreatment: true,
     },
@@ -5052,6 +5638,84 @@ const DEPOSIT_RECEIPT_TXN_PREFIX = 'IPDEPRCPT:';
  * Runs inside the caller's transaction, so the deposit and its receipt commit
  * together — money recorded with no receipt is the very gap this closes.
  */
+/**
+ * Every advance receipt carries a receipt-voucher number from its own series
+ * (gap item 283). The GST helper allots one only for a registered hospital, so
+ * an unregistered one recorded advances with a blank voucher number and the
+ * advances register could not identify them. Best effort: taking the money
+ * never fails because a number could not be allotted.
+ */
+async function withReceiptVoucher(
+  tx: any,
+  tenantId: string,
+  fields: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  if (fields.voucherNumber) return fields;
+  try {
+    const alloted = await allotDocumentNumber(tx, tenantId, 'receipt_voucher', new Date());
+    return { ...fields, voucherType: 'receipt_voucher', voucherNumber: alloted.invoiceNumber };
+  } catch (err) {
+    logger.warn({ err, tenantId }, 'Could not allot a receipt voucher number for an advance');
+    return fields;
+  }
+}
+
+/**
+ * What is still undrawn on each advance receipt, oldest first: the receipt
+ * less every adjustment and refund already linked to it. An adjustment is
+ * split across receipts by this, so the advances register balance per patient
+ * equals the deposit ledger (gap item 283) instead of piling every drawdown
+ * onto the oldest receipt.
+ */
+async function advanceReceiptsWithHeadroom(
+  db: any,
+  tenantId: string,
+  where: Record<string, unknown>,
+): Promise<Array<{ id: string; remaining: number }>> {
+  const receipts: Array<{ id: string; amount: unknown }> =
+    (await db.payment.findMany({
+      where: { tenantId, status: 'completed', paymentType: 'advance', ...where },
+      orderBy: { paymentDate: 'asc' },
+      select: { id: true, amount: true },
+    })) ?? [];
+  if (receipts.length === 0) return [];
+  const drawn: Array<{ sourceAdvancePaymentId: string | null; amount: unknown }> =
+    (await db.payment.findMany({
+      where: { tenantId, status: 'completed', sourceAdvancePaymentId: { in: receipts.map((r) => r.id) } },
+      select: { sourceAdvancePaymentId: true, amount: true },
+    })) ?? [];
+  const used = new Map<string, number>();
+  for (const d of drawn) {
+    if (!d.sourceAdvancePaymentId) continue;
+    used.set(d.sourceAdvancePaymentId, (used.get(d.sourceAdvancePaymentId) ?? 0) + Number(d.amount ?? 0));
+  }
+  return receipts.map((r) => ({ id: r.id, remaining: r2(Math.max(0, Number(r.amount ?? 0) - (used.get(r.id) ?? 0))) }));
+}
+
+/** Split an amount across receipts FIFO. Any remainder (legacy data) is unlinked. */
+export function allocateAdvanceDrawdown(
+  receipts: Array<{ id: string; remaining: number }>,
+  amount: number,
+): Array<{ sourceId: string | null; amount: number }> {
+  const out: Array<{ sourceId: string | null; amount: number }> = [];
+  let left = r2(amount);
+  for (const r of receipts) {
+    if (left <= 0) break;
+    const take = r2(Math.min(left, r.remaining));
+    if (take <= 0) continue;
+    out.push({ sourceId: r.id, amount: take });
+    left = r2(left - take);
+  }
+  if (left > 0) {
+    // Point the remainder at the newest receipt when there is one: a legacy
+    // receipt drawn before links existed has no recorded headroom, and an
+    // unlinked adjustment is invisible to the advances register.
+    const last = receipts[receipts.length - 1];
+    out.push({ sourceId: last?.id ?? null, amount: left });
+  }
+  return out;
+}
+
 export async function recordAdmissionDepositReceipt(
   tx: any,
   tenantId: string,
@@ -5074,10 +5738,14 @@ export async function recordAdmissionDepositReceipt(
   // A deposit is money against treatment, and treatment is exempt — the same
   // reasoning as a desk advance, and recorded rather than assumed for the same
   // reason: it is what an advances report and GSTR-1 table 11 read.
-  const advanceTax = await advancePaymentTaxFields(tx, tenantId, profile, {
-    amount,
-    purpose: 'treatment',
-  });
+  const advanceTax = await withReceiptVoucher(
+    tx,
+    tenantId,
+    await advancePaymentTaxFields(tx, tenantId, profile, {
+      amount,
+      purpose: 'treatment',
+    }),
+  );
 
   const payment = await tx.payment.create({
     data: {
@@ -5170,14 +5838,29 @@ async function getAdmissionDepositState(tenantId: string, admissionId: string) {
         select: { amount: true },
       })
     : [];
-  const refunded = r2(refunds.reduce((s, r) => s + Number(r.amount), 0));
+  const refundedFromApplied = r2(refunds.reduce((s, r) => s + Number(r.amount), 0));
+
+  // Deposit handed back BEFORE it was ever applied (gap items 335/340). Such a
+  // refund hangs on the deposit RECEIPT, which sits on the ADV- holding bill,
+  // so no real bill's paid figure moves — it only shrinks what is still held.
+  const receiptRefunds = await prisma.refund.findMany({
+    where: {
+      tenantId,
+      status: { in: ['requested', 'approved', 'processed'] },
+      payment: { transactionId: `${DEPOSIT_RECEIPT_TXN_PREFIX}${admissionId}` },
+    },
+    select: { amount: true },
+  });
+  const refundedFromHeld = r2((receiptRefunds ?? []).reduce((s, r) => s + Number(r.amount), 0));
 
   return {
     onFile,
     applied,
-    refunded,
+    refunded: r2(refundedFromApplied + refundedFromHeld),
+    /** Returned out of the unapplied deposit; never touched a bill. */
+    refundedFromHeld,
     // Deposit still sitting on file that could be applied to the bill.
-    availableToApply: r2(Math.max(0, onFile - applied)),
+    availableToApply: r2(Math.max(0, onFile - applied - refundedFromHeld)),
     paymentIds,
   };
 }
@@ -5254,7 +5937,7 @@ export async function getAdmissionOutstanding(tenantId: string, admissionId: str
 
   let totalPending = 0;
   try {
-    const { charges } = await getPatientCharges(tenantId, { patientId: admission.patientId });
+    const { charges } = await getPatientCharges(tenantId, { patientId: admission.patientId, admissionId });
     totalPending = r2(charges.reduce((s, c) => s + c.totalAmount, 0));
   } catch {
     /* patient missing → nothing pending */
@@ -5273,7 +5956,8 @@ export async function getAdmissionOutstanding(tenantId: string, admissionId: str
   // Insurer remittances are part of `paid`, but they must never satisfy the
   // patient's co-pay/deductible. Only patient/front-desk tender plus money
   // still held on deposit can clear the patient-share discharge gate.
-  const moneyFromPatient = moneyHeldFromPatient(patientPaid, dep.onFile, dep.applied);
+  // The pool is net of deposit returned before it was applied (gap item 340).
+  const moneyFromPatient = moneyHeldFromPatient(patientPaid, r2(dep.onFile - dep.refundedFromHeld), dep.applied);
   const balanceAfterDeposit = r2(Math.max(0, netPatientObligation - moneyFromPatient));
 
   return {
@@ -5392,7 +6076,7 @@ export async function getAdmissionLedger(tenantId: string, admissionId: string, 
   // Pending auto-charges not yet on any bill (room days, doctor fee, lab, imaging, OT).
   let pending: typeof posted = [];
   try {
-    const { charges } = await getPatientCharges(tenantId, { patientId: admission.patientId });
+    const { charges } = await getPatientCharges(tenantId, { patientId: admission.patientId, admissionId });
     pending = charges.map((c) => ({
       id: `${c.referenceType}:${c.referenceId}`, billId: null as any, billNumber: null as any,
       description: c.description, category: String(c.category),
@@ -5463,7 +6147,8 @@ export async function getAdmissionLedger(tenantId: string, admissionId: string, 
   const cashPaid = r2(Math.max(0, patientPaid - dep.applied));
   // What the patient must ultimately pay = charges minus the insurer-covered part.
   const netPatientObligation = r2(Math.max(0, grandTotal - insuranceCovered));
-  const moneyFromPatient = moneyHeldFromPatient(patientPaid, deposit, dep.applied);
+  // Deposit returned before it was applied is no longer held (gap item 340).
+  const moneyFromPatient = moneyHeldFromPatient(patientPaid, r2(deposit - dep.refundedFromHeld), dep.applied);
   // Deposit-adjusted balance still owed by the patient.
   const balanceAfterDeposit = r2(Math.max(0, netPatientObligation - moneyFromPatient));
   // Surplus the patient overpaid (e.g. insurance covered the charges) —
@@ -5553,21 +6238,30 @@ async function applyHeldMoneyToBill(
     await adjustAdvanceToBill(tenantId, userId, { patientId, billId, amount: fromAdvance });
   }
   if (fromDeposit > 0) {
-    await prisma.payment.create({
-      data: {
-        tenantId,
-        billId,
-        patientId,
-        paymentDate: new Date(),
-        amount: fromDeposit,
-        paymentMethod: 'advance',
-        paymentType: 'advance',
-        transactionId: `${DEPOSIT_TXN_PREFIX}${admissionId}`,
-        status: 'completed',
-        processedBy: userId,
-        notes: 'Admission deposit applied to IP bill',
-      },
+    // Linked to the deposit receipt(s) it draws down, so the advances register
+    // shows the deposit as adjusted against this bill (gap item 283).
+    const receipts = await advanceReceiptsWithHeadroom(prisma, tenantId, {
+      patientId,
+      transactionId: `${DEPOSIT_RECEIPT_TXN_PREFIX}${admissionId}`,
     });
+    for (const slice of allocateAdvanceDrawdown(receipts, fromDeposit)) {
+      await prisma.payment.create({
+        data: {
+          tenantId,
+          billId,
+          patientId,
+          paymentDate: new Date(),
+          amount: slice.amount,
+          paymentMethod: 'advance',
+          paymentType: 'advance',
+          transactionId: `${DEPOSIT_TXN_PREFIX}${admissionId}`,
+          status: 'completed',
+          processedBy: userId,
+          notes: 'Admission deposit applied to IP bill',
+          sourceAdvancePaymentId: slice.sourceId,
+        },
+      });
+    }
   }
   await recalculateBillTotals(billId);
   return { fromDeposit, fromAdvance, applied: target, available, balance };
@@ -5617,8 +6311,8 @@ export async function applyDepositToBill(
 /**
  * Billing-counter action: "return the deposit" — refund the unused part of the
  * deposit to the patient (typically when insurance covered the charges in full,
- * so the deposit was never needed). Records the deposit as received on the bill
- * (if it wasn't already) and raises a processed Refund against it.
+ * so the deposit was never needed). Raises processed Refunds against the record
+ * the money actually came from — see the three steps below.
  */
 export async function refundDeposit(
   tenantId: string,
@@ -5640,21 +6334,170 @@ export async function refundDeposit(
     throw AppError.badRequest('No deposit to return — the charges (after insurance) still use up the deposit.');
   }
 
-  // The refundable figure now spans BOTH pools — the stay deposit and the
-  // patient's front-desk advance. Return the advance half out of its own
-  // bucket: minting a fresh deposit payment for money that is already sitting
-  // in the advance would hand it back while still showing it as held.
+  // Where the money comes back FROM decides which record carries the refund,
+  // and only one of the three sources may touch a bill (gap items 335 / 340 /
+  // 286 / 283). The refund used to be hung on the deposit row already APPLIED
+  // to the final bill, so returning an unused ₹100 of a ₹1,000 deposit took
+  // ₹100 off a ₹900 bill that the deposit had settled — the bill flipped to
+  // partially paid while the ledger said ₹0, and Receivables showed −₹100
+  // received. Planned in full before anything is written, in this order:
+  //
+  //   1. deposit still held, never applied → the deposit RECEIPT (ADV- holding
+  //      bill). No real bill moves; only what is held shrinks.
+  //   2. the patient's front-desk advance → that advance's own receipt.
+  //   3. money already on a bill the bill no longer needs (an insurer later
+  //      covered what the deposit paid) → that bill, capped at its overpayment.
   const dep = await getAdmissionDepositState(tenantId, admissionId);
-  const depositHeld = r2(Math.max(0, dep.onFile - dep.refunded));
-  const fromDeposit = r2(Math.min(toRefund, depositHeld));
-  const fromAdvance = r2(toRefund - fromDeposit);
+  const fromHeld = r2(Math.min(toRefund, dep.availableToApply));
+  const advanceBal = await getPatientAdvanceBalance(tenantId, admission.patientId);
+  const fromAdvance = r2(Math.min(r2(toRefund - fromHeld), Math.max(0, Number(advanceBal.balance ?? 0))));
+  let fromBills = r2(toRefund - fromHeld - fromAdvance);
 
+  // Step 3's slices, worked out up front so a refund that cannot be placed
+  // fails before any money record is written.
+  const billSlices: Array<{ paymentId: string; billId: string; amount: number; sourceAdvancePaymentId: string | null }> = [];
+  if (fromBills > 0) {
+    const stay = await prisma.admission.findFirst({ where: { id: admissionId, tenantId }, select: { visitId: true } });
+    const stayBills = (
+      await prisma.bill.findMany({
+        where: {
+          tenantId,
+          ...NOT_ADVANCE_BUCKET,
+          status: { notIn: ['cancelled', 'draft'] },
+          OR: [{ admissionId }, ...(stay?.visitId ? [{ visitId: stay.visitId, admissionId: null }] : [])],
+        },
+        orderBy: { createdAt: 'desc' },
+        select: { id: true, billNumber: true, totalAmount: true, insuranceCoveredAmount: true, patientPayableAmount: true },
+      })
+    ).filter((b) => !isAdvanceBucket(b.billNumber));
+    const bds = await getBillBalanceBreakdowns(prisma, stayBills);
+    for (const b of stayBills) {
+      if (fromBills <= 0) break;
+      const bd = bds.get(b.id);
+      if (!bd) continue;
+      const overpaid = patientOverpayment(bd, b.patientPayableAmount);
+      if (overpaid <= 0) continue;
+      const pays = await prisma.payment.findMany({
+        where: { billId: b.id, status: 'completed', paymentType: { not: 'refund' as never }, paymentMethod: { not: 'insurance' } },
+        orderBy: { paymentDate: 'desc' },
+        select: {
+          id: true, amount: true, transactionId: true, sourceAdvancePaymentId: true,
+          refunds: { where: { status: { in: ['requested', 'approved', 'processed'] } }, select: { amount: true } },
+        },
+      });
+      // The applied deposit first: that is the money being handed back.
+      pays.sort((x, y) => Number(String(y.transactionId ?? '').startsWith(DEPOSIT_TXN_PREFIX)) - Number(String(x.transactionId ?? '').startsWith(DEPOSIT_TXN_PREFIX)));
+      let billLeft = r2(Math.min(overpaid, fromBills));
+      for (const p of pays) {
+        if (billLeft <= 0) break;
+        const headroom = r2(Number(p.amount) - p.refunds.reduce((s, x) => s + Number(x.amount), 0));
+        const take = r2(Math.min(billLeft, headroom));
+        if (take <= 0) continue;
+        billSlices.push({ paymentId: p.id, billId: b.id, amount: take, sourceAdvancePaymentId: p.sourceAdvancePaymentId ?? null });
+        billLeft = r2(billLeft - take);
+        fromBills = r2(fromBills - take);
+      }
+    }
+    if (fromBills > 0.009) {
+      throw AppError.badRequest(
+        `₹${fromBills} of this return is not held on deposit, on the advance or as an overpayment on any bill of the stay — nothing to refund it from.`,
+      );
+    }
+  }
+
+  const reason = opts.reason?.trim() || 'Deposit returned — charges covered (insurance / no balance)';
+  const refunds: Array<{ id: string }> = [];
+
+  // ── 1. Unapplied stay deposit → its receipt(s) ──
+  if (fromHeld > 0) {
+    const receiptWhere = { patientId: admission.patientId, transactionId: `${DEPOSIT_RECEIPT_TXN_PREFIX}${admissionId}` };
+    const receipts = await advanceReceiptsWithHeadroom(prisma, tenantId, receiptWhere);
+    const receiptBills = new Map(
+      (
+        await prisma.payment.findMany({
+          where: { tenantId, id: { in: receipts.map((r) => r.id) } },
+          select: { id: true, billId: true },
+        })
+      ).map((r) => [r.id, r.billId] as const),
+    );
+    for (const slice of allocateAdvanceDrawdown(receipts, fromHeld)) {
+      const receiptBillId = slice.sourceId ? receiptBills.get(slice.sourceId) : undefined;
+      if (slice.sourceId && receiptBillId) {
+        await prisma.$transaction(async (tx) => {
+          refunds.push(
+            await tx.refund.create({
+              data: {
+                tenantId,
+                billId: receiptBillId,
+                paymentId: slice.sourceId!,
+                patientId: admission.patientId,
+                amount: slice.amount,
+                reason,
+                status: 'processed',
+                requestedBy: userId,
+                approvedBy: userId,
+                processedAt: new Date(),
+              },
+            }),
+          );
+          await issueRefundVoucherBestEffort(tx, tenantId, {
+            sourceAdvancePaymentId: slice.sourceId!,
+            patientId: admission.patientId,
+            billId: receiptBillId,
+            amount: slice.amount,
+            reason: opts.reason?.trim() || 'Deposit returned to patient',
+            issuedBy: userId,
+          });
+        });
+        continue;
+      }
+      // Legacy: a deposit recorded before deposits carried a receipt row has
+      // nothing to hang the refund on. Record it onto the running bill and
+      // refund it there in the same breath — the pair nets to zero on that
+      // bill, so no settled bill is disturbed.
+      const bill = await getOrCreateRunningIpBill(tenantId, admissionId, userId);
+      const created = await prisma.payment.create({
+        data: {
+          tenantId,
+          billId: bill.id,
+          patientId: admission.patientId,
+          paymentDate: new Date(),
+          amount: slice.amount,
+          paymentMethod: 'advance',
+          paymentType: 'advance',
+          transactionId: `${DEPOSIT_TXN_PREFIX}${admissionId}`,
+          status: 'completed',
+          processedBy: userId,
+          notes: 'Admission deposit recorded for refund',
+        },
+      });
+      refunds.push(
+        await prisma.refund.create({
+          data: {
+            tenantId,
+            billId: bill.id,
+            paymentId: created.id,
+            patientId: admission.patientId,
+            amount: slice.amount,
+            reason,
+            status: 'processed',
+            requestedBy: userId,
+            approvedBy: userId,
+            processedAt: new Date(),
+          },
+        }),
+      );
+      await recalculateBillTotals(bill.id);
+    }
+  }
+
+  // ── 2. Front-desk advance → its own receipt(s) ──
   if (fromAdvance > 0) {
     const bucket = await prisma.bill.findFirst({
       where: { tenantId, patientId: admission.patientId, billNumber: { startsWith: 'ADV-' } },
     });
     const available = bucket ? toNumber(bucket.amountPaid) : 0;
-    if (available + 0.001 < fromAdvance) {
+    if (!bucket || available + 0.001 < fromAdvance) {
       throw AppError.badRequest(
         `Only ₹${available} is left on the patient's advance — cannot return ₹${fromAdvance} from it.`,
       );
@@ -5663,40 +6506,47 @@ export async function refundDeposit(
       // Draw the bucket down, and record the payout against the advance payment
       // it came from so the money has a receipt trail on the way out as well as in.
       await tx.bill.update({
-        where: { id: bucket!.id },
+        where: { id: bucket.id },
         data: {
-          amountPaid: Math.max(0, toNumber(bucket!.amountPaid) - fromAdvance),
-          totalAmount: Math.max(0, toNumber(bucket!.totalAmount) - fromAdvance),
+          amountPaid: Math.max(0, toNumber(bucket.amountPaid) - fromAdvance),
+          totalAmount: Math.max(0, toNumber(bucket.totalAmount) - fromAdvance),
         },
       });
-      const advPayment = await tx.payment.findFirst({
-        where: { tenantId, billId: bucket!.id, paymentType: 'advance' as never, status: 'completed' },
-        orderBy: { paymentDate: 'desc' },
-        select: { id: true },
+      // A DESK advance receipt only. Stay-deposit receipts share this bucket,
+      // and "the newest advance on the bucket" could be one — a refund hung
+      // there would also be read as deposit returned, taking the same money
+      // off twice (gap item 340).
+      const deskReceipts = await advanceReceiptsWithHeadroom(tx, tenantId, {
+        billId: bucket.id,
+        patientId: admission.patientId,
+        ...notStartingWith('transactionId', DEPOSIT_RECEIPT_TXN_PREFIX),
       });
-      if (advPayment) {
-        await tx.refund.create({
-          data: {
-            tenantId,
-            billId: bucket!.id,
-            paymentId: advPayment.id,
-            patientId: admission.patientId,
-            amount: fromAdvance,
-            reason: opts.reason?.trim() || 'Advance returned to patient',
-            status: 'processed',
-            requestedBy: userId,
-            approvedBy: userId,
-            processedAt: new Date(),
-          },
-        });
+      for (const slice of allocateAdvanceDrawdown(deskReceipts, fromAdvance)) {
+        if (!slice.sourceId) continue;
+        refunds.push(
+          await tx.refund.create({
+            data: {
+              tenantId,
+              billId: bucket.id,
+              paymentId: slice.sourceId,
+              patientId: admission.patientId,
+              amount: slice.amount,
+              reason: opts.reason?.trim() || 'Advance returned to patient',
+              status: 'processed',
+              requestedBy: userId,
+              approvedBy: userId,
+              processedAt: new Date(),
+            },
+          }),
+        );
         // An advance taken and handed back without a supply ever happening is
         // a REFUND VOUCHER, not a credit note — there is no invoice to credit.
         // It mirrors the receipt voucher's own tax so the pair nets to zero.
         await issueRefundVoucherBestEffort(tx, tenantId, {
-          sourceAdvancePaymentId: advPayment.id,
+          sourceAdvancePaymentId: slice.sourceId,
           patientId: admission.patientId,
-          billId: bucket!.id,
-          amount: fromAdvance,
+          billId: bucket.id,
+          amount: slice.amount,
           reason: opts.reason?.trim() || 'Advance returned to patient',
           issuedBy: userId,
         });
@@ -5705,99 +6555,86 @@ export async function refundDeposit(
     logger.info({ tenantId, admissionId, fromAdvance }, 'Patient advance returned');
   }
 
-  if (fromDeposit <= 0) {
-    // Nothing was held against the stay itself — the whole return came out of
-    // the advance and is already done.
-    const summaryOnly = await getAdmissionLedger(tenantId, admissionId, actor);
-    return { refund: null, ledger: summaryOnly };
-  }
-
-  // We need a completed Payment to attach the Refund to. Reuse an existing deposit
-  // payment with enough headroom, else record the deposit onto the running bill now.
-  const bill = await getOrCreateRunningIpBill(tenantId, admissionId, userId);
-  const depositPayments = await prisma.payment.findMany({
-    where: { tenantId, status: 'completed', transactionId: { startsWith: DEPOSIT_TXN_PREFIX }, bill: { admissionId } },
-    select: { id: true, amount: true, billId: true, refunds: { where: { status: { in: ['requested', 'approved', 'processed'] } }, select: { amount: true } } },
-  });
-  let target = depositPayments.find((p) => {
-    const already = p.refunds.reduce((s, r) => s + Number(r.amount), 0);
-    return r2(Number(p.amount) - already) >= fromDeposit;
-  });
-  if (!target) {
-    const created = await prisma.payment.create({
-      data: {
+  // ── 3. Overpayment already on a bill → that bill ──
+  if (billSlices.length > 0) {
+    const firstDepositReceipt = await prisma.payment.findFirst({
+      where: {
         tenantId,
-        billId: bill.id,
         patientId: admission.patientId,
-        paymentDate: new Date(),
-        amount: fromDeposit,
-        paymentMethod: 'advance',
-        paymentType: 'advance',
-        transactionId: `${DEPOSIT_TXN_PREFIX}${admissionId}`,
+        transactionId: `${DEPOSIT_RECEIPT_TXN_PREFIX}${admissionId}`,
         status: 'completed',
-        processedBy: userId,
-        notes: 'Admission deposit recorded for refund',
       },
+      orderBy: { paymentDate: 'asc' },
+      select: { id: true, billId: true },
     });
-    await recalculateBillTotals(bill.id);
-    target = { id: created.id, amount: created.amount as any, billId: bill.id, refunds: [] };
+    for (const slice of billSlices) {
+      refunds.push(
+        await prisma.refund.create({
+          data: {
+            tenantId,
+            billId: slice.billId,
+            paymentId: slice.paymentId,
+            patientId: admission.patientId,
+            amount: slice.amount,
+            reason,
+            status: 'processed',
+            requestedBy: userId,
+            approvedBy: userId,
+            processedAt: new Date(),
+          },
+        }),
+      );
+      // This bill was overpaid, so taking the slice off it leaves it settled.
+      await recalculateBillTotals(slice.billId);
+      // The voucher is issued against the RECEIPT of the deposit, not against
+      // the row the refund is hung on. Rule 51 asks for the receipt voucher's
+      // number, and an applied deposit (IPDEP:) is a different event from the
+      // patient handing it over.
+      const sourceId = slice.sourceAdvancePaymentId ?? firstDepositReceipt?.id ?? null;
+      if (sourceId) {
+        const sourceBillId =
+          sourceId === firstDepositReceipt?.id
+            ? firstDepositReceipt.billId
+            : (await prisma.payment.findFirst({ where: { id: sourceId, tenantId }, select: { billId: true } }))?.billId ?? slice.billId;
+        await prisma.$transaction(async (tx) =>
+          issueRefundVoucherBestEffort(tx, tenantId, {
+            sourceAdvancePaymentId: sourceId,
+            patientId: admission.patientId,
+            billId: sourceBillId,
+            amount: slice.amount,
+            reason: opts.reason?.trim() || 'Deposit returned to patient',
+            issuedBy: userId,
+          }),
+        );
+      }
+    }
   }
 
-  // Put the refund on the bill that holds the payment it is refunding, NOT on
-  // whatever bill is running today. Once the stay's bill is fully paid it is no
-  // longer reused, so this opened a brand-new bill, hung a 120 refund on it
-  // with no payment behind it, and the counter was shown 120 due on an empty
-  // draft — which it then refused to take, because a draft is not payable:
-  // "This bill is still open for charges."
-  const refundBillId = target.billId ?? bill.id;
-
-  const refund = await prisma.refund.create({
-    data: {
-      tenantId,
-      billId: refundBillId,
-      paymentId: target.id,
-      patientId: admission.patientId,
-      amount: fromDeposit,
-      reason: opts.reason?.trim() || 'Deposit returned — charges covered (insurance / no balance)',
-      status: 'processed',
-      requestedBy: userId,
-      approvedBy: userId,
-      processedAt: new Date(),
-    },
-  });
-  // The refund changes what that bill counts as paid — settle its header.
-  await recalculateBillTotals(refundBillId);
-
-  // The voucher is issued against the RECEIPT of the deposit, not against the
-  // row the refund is hung on. Rule 51 asks for the receipt voucher's number,
-  // and the row above is an APPLIED deposit (IPDEP:) — the money moving onto a
-  // bill — which is a different event from the patient handing it over.
-  const depositReceipt = await prisma.payment.findFirst({
-    where: {
-      tenantId,
-      patientId: admission.patientId,
-      transactionId: `${DEPOSIT_RECEIPT_TXN_PREFIX}${admissionId}`,
-      status: 'completed',
-    },
-    orderBy: { paymentDate: 'asc' },
-    select: { id: true, billId: true },
-  });
-  if (depositReceipt) {
-    await prisma.$transaction(async (tx) =>
-      issueRefundVoucherBestEffort(tx, tenantId, {
-        sourceAdvancePaymentId: depositReceipt.id,
-        patientId: admission.patientId,
-        billId: depositReceipt.billId,
-        amount: fromDeposit,
-        reason: opts.reason?.trim() || 'Deposit returned to patient',
-        issuedBy: userId,
-      }),
-    );
-  }
-
-  logger.info({ tenantId, admissionId, billId: refundBillId, refundId: refund.id, fromDeposit, fromAdvance }, 'IP deposit returned to patient');
+  logger.info(
+    { tenantId, admissionId, refundIds: refunds.map((r) => r.id), fromHeld, fromAdvance, fromBills: r2(toRefund - fromHeld - fromAdvance) },
+    'IP deposit returned to patient',
+  );
   const summary = await getAdmissionLedger(tenantId, admissionId, actor);
-  return { refund, ledger: summary };
+  return { refund: refunds[0] ?? null, ledger: summary };
+}
+
+/**
+ * How much of what the PATIENT has put on a bill the bill no longer needs —
+ * e.g. a deposit applied before an insurer took over the charges. The only
+ * part of a deposit return that may come off a real bill (gap item 340).
+ */
+export function patientOverpayment(
+  bd: { total: number; payments: number; advanceApplied: number; refunds: number; paid: number; insurerShare: number },
+  patientPayableAmount?: unknown,
+): number {
+  const patientNet = r2(bd.payments + bd.advanceApplied - bd.refunds);
+  if (patientNet <= 0) return 0;
+  const insurerNet = r2(bd.paid - patientNet);
+  const patientDue =
+    bd.insurerShare > 0
+      ? r2(patientPayableAmount != null ? Number(patientPayableAmount) : Math.max(0, bd.total - bd.insurerShare))
+      : r2(Math.max(0, bd.total - insurerNet));
+  return r2(Math.min(patientNet, Math.max(0, patientNet - patientDue)));
 }
 
 // Billing categories that settle through insurance / a TPA.
@@ -5846,8 +6683,13 @@ export async function ensureAdmissionTpaLink(
     },
   });
 
+  // Look at the LATEST claim of ANY status — including cancelled/rejected. A
+  // cancelled claim is terminal (the bill was withdrawn from the TPA; the
+  // patient owes it in full) and a rejected one is re-filed only through the
+  // deliberate resubmit flow. Neither must trigger a silent auto re-raise here,
+  // so they count as an existing claim and block creation below.
   const existingClaim = await prisma.insuranceClaim.findFirst({
-    where: { tenantId, bill: { admissionId }, status: { notIn: ['cancelled', 'rejected'] } },
+    where: { tenantId, bill: { admissionId } },
     orderBy: { createdAt: 'desc' },
     select: { id: true, billId: true, status: true, claimAmount: true, coveredAmount: true },
   });
@@ -6047,6 +6889,18 @@ export async function getIpAdmissionsForBilling(
     const insuranceCovered = r2(bills.reduce((s, b) => s + Number(b.insuranceCoveredAmount ?? 0), 0));
     const patientPayable = r2(bills.reduce((s, b) => s + Number(b.patientPayableAmount ?? 0), 0));
     const discountAmount = r2(bills.reduce((s, b) => s + Number(b.discountAmount ?? 0), 0));
+    // The same breakdown every bill list shows, summed over the stay's bills
+    // (gap item 286), so IP Payment Due explains its balance the same way.
+    const bds = [...(await getBillBalanceBreakdowns(prisma, bills)).values()];
+    const sumBd = (k: 'lines' | 'concessions' | 'total' | 'payments' | 'advanceApplied' | 'insurerShare' | 'insurerPaid' | 'refunds' | 'balance' | 'insurerOutstanding' | 'totalOutstanding' | 'paid') =>
+      r2(bds.reduce((acc, b) => acc + b[k], 0));
+    const balanceBreakdown = {
+      lines: sumBd('lines'), concessions: sumBd('concessions'), total: sumBd('total'),
+      payments: sumBd('payments'), advanceApplied: sumBd('advanceApplied'),
+      insurerShare: sumBd('insurerShare'), insurerPaid: sumBd('insurerPaid'), refunds: sumBd('refunds'),
+      balance: sumBd('balance'), insurerOutstanding: sumBd('insurerOutstanding'),
+      totalOutstanding: sumBd('totalOutstanding'), paid: sumBd('paid'),
+    };
 
     // Same two pools as the ledger. The IP billing list showed ₹0 deposit for a
     // patient the desk had just taken ₹10,000 from, because the advance the
@@ -6056,7 +6910,7 @@ export async function getIpAdmissionsForBilling(
     const netPatientObligation = r2(Math.max(0, totalAmount - insuranceCovered));
     // TPA settlement can reduce the claim outstanding, but only patient tender
     // can reduce this patient-facing balance.
-    const moneyFromPatient = moneyHeldFromPatient(patientPaid, deposit, dep.applied);
+    const moneyFromPatient = moneyHeldFromPatient(patientPaid, r2(deposit - dep.refundedFromHeld), dep.applied);
     const balanceAfterDeposit = r2(Math.max(0, netPatientObligation - moneyFromPatient));
     const refundable = r2(Math.min(Math.max(0, moneyFromPatient - netPatientObligation), Math.max(0, deposit - dep.refunded)));
 
@@ -6081,6 +6935,7 @@ export async function getIpAdmissionsForBilling(
       // admission, so the payable figure is stated explicitly rather than left
       // to coincide.
       payableNow: r2(Number(primary?.balanceDue ?? 0)),
+      balanceBreakdown,
       insuranceCoveredAmount: insuranceCovered,
       patientPayableAmount: patientPayable,
       discountAmount,
@@ -6128,6 +6983,7 @@ export async function recordDoctorVisit(
   roles: string[] = [],
 ) {
   await assertIpLedgerAccess(tenantId, admissionId, { userId, roles }, { write: true });
+  await assertStayOpenForCharges(tenantId, admissionId);
   const r2 = (n: number) => Math.round(n * 100) / 100;
 
   // The visit fee is decided by the hospital admin (the doctor's configured
@@ -6660,11 +7516,98 @@ async function ensureAdvanceBucketBill(
   return bucket;
 }
 
+/**
+ * Collect Advance against an admitted patient's stay.
+ *
+ * It used to land in the patient's general advance bucket while the deposit
+ * taken at admission sat on the admission, so one stay had two balances:
+ * Collect Advance showed ₹0, Patient Home ₹1,000 and the ledger ₹1,500, and
+ * the final bill applied neither (gap item 335). Now it is a deposit receipt
+ * on the stay and lifts the stay's deposit, so there is ONE advance balance
+ * per admission — the figure Patient Home, the ledger and the bill all read —
+ * and a re-admission starts from zero (gap item 339).
+ */
+export async function collectAdmissionAdvance(
+  tenantId: string,
+  userId: string,
+  data: {
+    admissionId: string;
+    amount: number;
+    paymentMethod: string;
+    referenceNumber?: string;
+    notes?: string;
+  },
+) {
+  const amount = r2(data.amount);
+  if (!(amount > 0)) throw AppError.badRequest('Amount must be > 0');
+  const admission = await prisma.admission.findFirst({
+    where: { id: data.admissionId, tenantId },
+    select: { id: true, patientId: true, status: true, patient: { select: { firstName: true, lastName: true } } },
+  });
+  if (!admission) throw AppError.notFound('Admission not found');
+  if (!isActiveAdmission(admission.status)) {
+    throw AppError.badRequest(
+      `This stay is ${String(admission.status).replace(/_/g, ' ')} — an advance cannot be collected against it. Admit the patient again to open a new stay.`,
+    );
+  }
+
+  const note = [data.notes?.trim(), data.referenceNumber ? `Ref ${data.referenceNumber}` : null]
+    .filter(Boolean)
+    .join(' · ');
+  const result = await prisma.$transaction(async (tx) => {
+    const rec = await recordAdmissionDepositReceipt(tx, tenantId, userId, {
+      patientId: admission.patientId,
+      admissionId: admission.id,
+      amount,
+      paymentMethod: data.paymentMethod,
+      notes: note || 'Advance collected against the stay',
+    });
+    await tx.admission.update({
+      where: { id: admission.id },
+      data: { depositAmount: { increment: amount } },
+    });
+    return rec;
+  });
+  if (!result) throw AppError.badRequest('Amount must be > 0');
+
+  void writeAudit({
+    tenantId,
+    userId,
+    action: 'create',
+    entityType: 'payment',
+    entityId: result.paymentId,
+    description:
+      `Advance of ₹${amount} collected against the stay of ${fullName(admission.patient)} ` +
+      `by ${data.paymentMethod.replace(/_/g, ' ')} — receipt ${result.receiptNumber}`,
+    newValues: { admissionId: admission.id, amount, paymentMethod: data.paymentMethod, receiptNumber: result.receiptNumber },
+  });
+  return { ...result, admissionId: admission.id, balance: await getAdmissionAdvanceBalance(tenantId, admission.id) };
+}
+
+/**
+ * The one advance balance of a stay (gap item 335): everything collected for
+ * it (admission deposit + Collect Advance), what has been applied to its bill,
+ * what went back, and what is still held.
+ */
+export async function getAdmissionAdvanceBalance(tenantId: string, admissionId: string) {
+  const dep = await getAdmissionDepositState(tenantId, admissionId);
+  return {
+    admissionId,
+    collected: dep.onFile,
+    applied: dep.applied,
+    refunded: dep.refunded,
+    /** Still held for this stay and not yet set against its bill. */
+    available: dep.availableToApply,
+  };
+}
+
 export async function createAdvancePayment(
   tenantId: string,
   userId: string,
   data: {
     patientId: string;
+    /** An admitted stay to collect against — see collectAdmissionAdvance. */
+    admissionId?: string;
     amount: number;
     paymentMethod: string;
     referenceNumber?: string;
@@ -6680,6 +7623,10 @@ export async function createAdvancePayment(
   },
 ) {
   if (data.amount <= 0) throw AppError.badRequest('Amount must be > 0');
+  if (data.admissionId) {
+    const res = await collectAdmissionAdvance(tenantId, userId, { ...data, admissionId: data.admissionId });
+    return { paymentId: res.paymentId, receiptId: null, receiptNumber: res.receiptNumber, admissionId: res.admissionId, balance: res.balance };
+  }
   const patient = await prisma.patient.findFirst({
     where: { id: data.patientId, tenantId },
   });
@@ -6694,11 +7641,15 @@ export async function createAdvancePayment(
     // Usually exempt for a hospital — a deposit is against treatment — but the
     // position is RECORDED rather than assumed, because it is what the advances
     // report and GSTR-1 table 11 read.
-    const advanceTax = await advancePaymentTaxFields(tx, tenantId, gstProfile, {
-      amount: data.amount,
-      purpose: data.purpose,
-      ratePercent: data.taxRatePercent ?? null,
-    });
+    const advanceTax = await withReceiptVoucher(
+      tx,
+      tenantId,
+      await advancePaymentTaxFields(tx, tenantId, gstProfile, {
+        amount: data.amount,
+        purpose: data.purpose,
+        ratePercent: data.taxRatePercent ?? null,
+      }),
+    );
     const payment = await tx.payment.create({
       data: {
         tenantId,
@@ -6833,49 +7784,53 @@ export async function adjustAdvanceToBill(
     // balance falls correctly.
     const receiptNumber = await generateReceiptNumber(tenantId);
 
-    // Which advance receipt this draws down. GSTR-1 table 11B reports the
+    // Which advance receipt(s) this draws down. GSTR-1 table 11B reports the
     // adjustment of advances against invoices, and until now the only thing
     // connecting the two was the note "Adjusted from advance" — a string, which
     // no report can follow back to the money it came out of.
     //
-    // Oldest first, matching how the bucket is drawn down everywhere else.
-    const sourceAdvance = await tx.payment.findFirst({
-      where: {
-        tenantId,
-        billId: bucket!.id,
-        patientId: data.patientId,
-        paymentType: 'advance' as never,
-        status: 'completed',
-      },
-      orderBy: { paymentDate: 'asc' },
-      select: { id: true },
+    // Split FIFO by what is still undrawn on each receipt, so a ₹1,500
+    // adjustment against receipts of ₹500 and ₹1,000 shows both as used rather
+    // than the first one ₹1,000 overdrawn (gap item 283). Stay-deposit receipts
+    // are drawn by their own path and never here.
+    const receipts = await advanceReceiptsWithHeadroom(tx, tenantId, {
+      billId: bucket!.id,
+      patientId: data.patientId,
+      ...notStartingWith('transactionId', DEPOSIT_RECEIPT_TXN_PREFIX),
     });
+    const slices = allocateAdvanceDrawdown(receipts, data.amount);
 
-    const payment = await tx.payment.create({
-      data: {
-        tenantId,
-        billId: data.billId,
-        patientId: data.patientId,
-        amount: data.amount,
-        paymentMethod: 'other',
-        paymentSource: 'frontdesk',
-        paymentType: 'regular',
-        notes: 'Adjusted from advance',
-        status: 'completed',
-        paymentDate: new Date(),
-        processedBy: userId,
-        sourceAdvancePaymentId: sourceAdvance?.id ?? null,
-      },
-    });
-    await tx.receipt.create({
-      data: {
-        tenantId,
-        receiptNumber,
-        paymentId: payment.id,
-        receiptDate: new Date(),
-        amount: data.amount,
-      },
-    });
+    let firstPaymentId: string | null = null;
+    for (const slice of slices) {
+      const sliceReceipt = firstPaymentId ? await generateReceiptNumber(tenantId, tx) : receiptNumber;
+      const payment = await tx.payment.create({
+        data: {
+          tenantId,
+          billId: data.billId,
+          patientId: data.patientId,
+          amount: slice.amount,
+          paymentMethod: 'other',
+          paymentSource: 'frontdesk',
+          paymentType: 'regular',
+          notes: 'Adjusted from advance',
+          status: 'completed',
+          paymentDate: new Date(),
+          processedBy: userId,
+          sourceAdvancePaymentId: slice.sourceId,
+        },
+      });
+      await tx.receipt.create({
+        data: {
+          tenantId,
+          receiptNumber: sliceReceipt,
+          paymentId: payment.id,
+          receiptDate: new Date(),
+          amount: slice.amount,
+        },
+      });
+      firstPaymentId ??= payment.id;
+    }
+    const payment = { id: firstPaymentId! };
 
     // Lift bill totals from the ledger the payment above just joined.
     const settled = await applyPaymentToBill(tx, data.billId);
@@ -7119,6 +8074,56 @@ export async function settleCancelledAppointmentCharge(
   logger.info(
     { tenantId, appointmentId, billId: bill.id, refundedAmount: collectedTotal },
     'Cancelled appointment charge settled',
+  );
+  return { cancelledBillId: bill.id, refundedAmount: collectedTotal };
+}
+
+
+export async function settleCancelledLabOrderCharge(
+  tenantId: string,
+  userId: string,
+  labOrderItemIds: string[],
+  reason: string,
+): Promise<{ cancelledBillId: string | null; refundedAmount: number }> {
+  if (labOrderItemIds.length === 0) return { cancelledBillId: null, refundedAmount: 0 };
+
+  const billItem = await prisma.billItem.findFirst({
+    where: {
+      referenceType: 'lab_order_item',
+      referenceId: { in: labOrderItemIds },
+      bill: { tenantId, status: { notIn: ['cancelled', 'refunded'] } },
+    },
+    select: { billId: true },
+  });
+  if (!billItem) return { cancelledBillId: null, refundedAmount: 0 };
+
+  const bill = await prisma.bill.findFirst({
+    where: { id: billItem.billId, tenantId, status: { notIn: ['cancelled', 'refunded'] } },
+    include: { payments: { where: { status: 'completed' } } },
+  });
+  if (!bill) return { cancelledBillId: null, refundedAmount: 0 };
+
+  // Only rows that actually brought money in — a refund payout is not handed back again.
+  const collected = bill.payments.filter((p) => p.paymentType !== 'refund');
+  const collectedTotal = r2(collected.reduce((sum, p) => sum + toNumber(p.amount), 0));
+
+  for (const payment of collected) {
+    const refund = await createRefund(tenantId, userId, {
+      paymentId: payment.id,
+      amount: toNumber(payment.amount),
+      reason: `Lab order cancelled — ${reason}`,
+    });
+    await approveRefund(tenantId, refund.id, userId);
+  }
+  if (collectedTotal <= 0) {
+    await cancelBill(tenantId, userId, bill.id, {
+      reason: `Lab order cancelled — ${reason}`,
+    });
+  }
+
+  logger.info(
+    { tenantId, billId: bill.id, refundedAmount: collectedTotal },
+    'Cancelled lab order charge settled',
   );
   return { cancelledBillId: bill.id, refundedAmount: collectedTotal };
 }
@@ -7379,6 +8384,8 @@ export async function getDayEndReport(tenantId: string, query: { date?: string }
       // Who took (or handed back) the money — the counter runs on manual entry,
       // so the cashier is part of the record, not metadata.
       processor: { select: { id: true, firstName: true, lastName: true } },
+      // The receipt document each row IS (gap item 361).
+      receipt: { select: { receiptNumber: true } },
     },
     orderBy: { paymentDate: 'asc' },
   });
@@ -7400,7 +8407,7 @@ export async function getDayEndReport(tenantId: string, query: { date?: string }
 
   const byMethod: Record<string, number> = {};
   const refundsByMethod: Record<string, number> = {};
-  const byType: Record<string, number> = { regular: 0, advance: 0, refund: 0 };
+  const byType: Record<string, number> = { regular: 0, advance: 0, refund: 0, adjustment: 0 };
   const byCashier: Record<string, { name: string; collected: number; refunded: number }> = {};
   let collected = 0;
   let refunded = 0;
@@ -7408,6 +8415,12 @@ export async function getDayEndReport(tenantId: string, query: { date?: string }
   for (const p of payments) {
     const amt = toNumber(p.amount);
     if (p.status === 'completed') {
+      // Moving held money onto a bill is not a collection: the advance was
+      // counted when it was received (gap item 361).
+      if (isAdvanceApplication(p)) {
+        byType.adjustment += amt;
+        continue;
+      }
       byType[p.paymentType] = (byType[p.paymentType] ?? 0) + amt;
 
       // A refund is cash going the other way. Counting it in `collected` — or in
@@ -7456,6 +8469,11 @@ export async function getDayEndReport(tenantId: string, query: { date?: string }
     byStatusBills,
     payments: payments.map((p) => ({
       id: p.id,
+      // The voucher number for an advance / refund, else the receipt — the
+      // same document number the Collection report and A-10 register print.
+      receiptNumber: collectionDocumentNumber({ paymentType: p.paymentType, voucherNumber: p.voucherNumber, receipt: p.receipt }),
+      /** Held money set against a bill — listed, never counted as takings. */
+      isAdjustment: isAdvanceApplication(p),
       billNumber: p.bill?.billNumber,
       patientName: p.bill?.patient
         ? fullName(p.bill.patient)

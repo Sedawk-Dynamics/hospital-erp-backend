@@ -46,6 +46,20 @@ import {
   toTimeKey,
 } from '../../shared/ot-schedule';
 import { fullName } from '../../shared/person-name';
+import { billOtRequest } from '../billing/billing.service';
+import {
+  NO_OT_PRICE_MESSAGE,
+  assertNoOtConflicts,
+  dateKey,
+  defaultCompletionEnd,
+  displayDate,
+  getPostedOtCharges,
+  isBeforeScheduledDay,
+  istTodayKey,
+  requireTheatre,
+  resolveOtCharge,
+  type OtChargeQuote,
+} from './ot-rules';
 
 // ============================================================
 // Tickets
@@ -776,6 +790,28 @@ export async function createOTRequest(tenantId: string, userId: string, data: Cr
   const urgency = data.urgency ?? mapPriorityToUrgency(data.priority) ?? 'elective';
   const durationMinutes = data.durationMinutes ?? data.estimatedDuration;
 
+  // Gap 350: a firm booking must name a theatre from the master. A doctor's
+  // request (no scheduled date) may leave it to the OT desk.
+  if (data.scheduledDate || data.otId) await requireTheatre(tenantId, data.otId);
+  // Gap 351: no double-booking of theatre, surgeon, anaesthetist or patient,
+  // and no booking on the surgeon's day off / leave, unless confirmed.
+  if (data.scheduledDate) {
+    await assertNoOtConflicts(
+      tenantId,
+      {
+        date: data.scheduledDate,
+        startTime: data.scheduledStartTime,
+        endTime: data.scheduledEndTime,
+        durationMinutes,
+        otId: data.otId,
+        surgeonId: surgeonId ?? doctorId,
+        anaesthetistId,
+        patientId: data.patientId,
+      },
+      { override: data.overrideConflicts, userId },
+    );
+  }
+
   const otRequest = await prisma.otRequest.create({
     data: {
       tenantId,
@@ -864,11 +900,15 @@ export async function getOTRequests(
   // to half past five the next morning: it dropped that day's early-morning
   // theatre list and pulled in the following morning's.
   if ((query as any).date) {
-    const { start, end } = istDayRange((query as any).date);
+    // Both columns are @db.Date, stored as the IST day at UTC midnight; an IST
+    // instant range (which starts at 18:30Z the day before) can be truncated
+    // to the previous date, so match the day key exactly (gap 353).
+    const { start } = istDayRange((query as any).date);
+    const day = new Date(`${istTodayKey(start)}T00:00:00.000Z`);
     where.AND.push({
       OR: [
-        { scheduledDate: { gte: start, lte: end } },
-        { AND: [{ scheduledDate: null }, { preferredDate: { gte: start, lte: end } }] },
+        { scheduledDate: day },
+        { AND: [{ scheduledDate: null }, { preferredDate: day }] },
       ],
     });
   }
@@ -909,7 +949,15 @@ export async function getOTRequests(
   ]);
 
   const meta = await getOtScheduleMeta(requests.map((r) => r.id));
-  let shaped = requests.map((r) => shapeOtRequest(attachOtScheduleMeta(r as any, meta)));
+  // Gap 352 (retest): each row carries what is actually posted to bills and,
+  // until then, what Complete will post (the typed amount, else the tariff's
+  // components or single price, ₹0 = no charge). The billing screen used to
+  // total the typed billingAmount only, so tariff-priced cases read "No price
+  // set" and a posted ₹0 no-charge case looked unbilled.
+  const billing = await otRowBilling(tenantId, requests as any[]);
+  let shaped = requests.map((r) =>
+    shapeOtRequest(attachOtScheduleMeta(r as any, meta), billing.get(r.id)),
+  );
 
   // `scheduleState` lives in a raw column, so it is filtered after the fetch.
   // Only used by the doctor's "Awaiting my approval" tab, which is a small set.
@@ -918,6 +966,35 @@ export async function getOTRequests(
   }
 
   return { requests: shaped, total, page, limit };
+}
+
+export interface OtRowBilling {
+  /** Total of the lines on (non-cancelled) bills. 0 for a posted no-charge case. */
+  postedAmount: number;
+  /** True once any line is on a bill — a ₹0 no-charge line counts. */
+  isPosted: boolean;
+  /** What Complete / Add to Ledger will post; null when no price is configured. */
+  chargePreview: OtChargeQuote | null;
+}
+
+/** Posted amount and planned charge for each OT row (gap 352). */
+export async function otRowBilling(
+  tenantId: string,
+  rows: Array<{ id: string; billingAmount?: unknown; serviceTariffId?: string | null; procedureName: string }>,
+): Promise<Map<string, OtRowBilling>> {
+  const out = new Map<string, OtRowBilling>();
+  if (!rows.length) return out;
+  const posted = await getPostedOtCharges(tenantId, rows.map((r) => r.id));
+  const quotes = await Promise.all(rows.map((r) => resolveOtCharge(tenantId, r)));
+  rows.forEach((r, i) => {
+    const p = posted.get(r.id);
+    out.set(r.id, {
+      postedAmount: Math.round((p?.amount ?? 0) * 100) / 100,
+      isPosted: !!p && p.bills.length > 0,
+      chargePreview: quotes[i],
+    });
+  });
+  return out;
 }
 
 export async function getOTRequestById(tenantId: string, id: string) {
@@ -930,7 +1007,22 @@ export async function getOTRequestById(tenantId: string, id: string) {
     throw AppError.notFound('OT request not found');
   }
 
-  return shapeOtRequest(request as any, await getOneOtScheduleMeta(id));
+  // Gaps 352/354: the detail view shows what Complete will post (or that
+  // nothing will be billed) and what has actually been posted to the bill.
+  const [chargeQuote, posted] = await Promise.all([
+    resolveOtCharge(tenantId, request),
+    getPostedOtCharges(tenantId, [id]),
+  ]);
+  const postedRow = posted.get(id);
+
+  return shapeOtRequest(request as any, {
+    ...(await getOneOtScheduleMeta(id)),
+    chargePreview: chargeQuote,
+    chargePreviewMessage: chargeQuote ? null : NO_OT_PRICE_MESSAGE,
+    postedCharges: postedRow?.bills ?? [],
+    postedAmount: postedRow?.amount ?? 0,
+    isPosted: !!postedRow && postedRow.bills.length > 0,
+  });
 }
 
 export async function approveOTRequest(tenantId: string, id: string, userId: string) {
@@ -946,6 +1038,18 @@ export async function approveOTRequest(tenantId: string, id: string, userId: str
   // interchangeably). Idempotent: re-approving an already-scheduled returns 200.
   if (request.status !== 'requested' && request.status !== 'scheduled') {
     throw AppError.badRequest(`Cannot approve an OT request in status "${request.status}"`);
+  }
+  // Gap 350: approving puts the case on the theatre list, so it needs a
+  // theatre. Requests without one go through Schedule, which asks for it.
+  if (!request.otId) {
+    await requireTheatre(tenantId, null).catch((err: AppError) => {
+      throw err.code === 'OT_NO_THEATRE'
+        ? err
+        : AppError.badRequest(
+            'Pick a theater and slot with Schedule before approving this request.',
+            'OT_THEATRE_REQUIRED',
+          );
+    });
   }
 
   const updated = await prisma.otRequest.update({
@@ -1016,10 +1120,29 @@ export async function scheduleOT(
     'Anaesthetist',
   );
 
+  // Gap 350: the slot must be in a theatre from the master.
+  const theatre = await requireTheatre(tenantId, data.otId ?? request.otId);
+  // Gap 351: same clash checks as a new booking — this is also the move path.
+  await assertNoOtConflicts(
+    tenantId,
+    {
+      excludeId: id,
+      date: data.scheduledDate,
+      startTime: startTimeStr,
+      endTime: (data as any).scheduledEndTime,
+      durationMinutes: data.durationMinutes ?? request.durationMinutes,
+      otId: theatre.id,
+      surgeonId: surgeonId ?? request.surgeonId ?? request.doctorId,
+      anaesthetistId: anaesthetistId ?? request.anaesthetistId,
+      patientId: request.patientId,
+    },
+    { override: data.overrideConflicts, userId },
+  );
+
   const updated = await prisma.otRequest.update({
     where: { id },
     data: {
-      otId: data.otId,
+      otId: theatre.id,
       scheduledDate: new Date(data.scheduledDate),
       scheduledTime: startTimeStr ? new Date(`1970-01-01T${startTimeStr}:00Z`) : undefined,
       scheduledStartTime: (data as any).scheduledStartTime ?? data.scheduledTime,
@@ -1242,16 +1365,69 @@ export async function updateOTRequest(
         );
       }
     }
+    const entering = data.status !== existing.status;
+    if (entering && (data.status === 'in_progress' || data.status === 'completed')) {
+      // Gap 350: a case cannot run in "-" — it needs a theatre from the master.
+      await requireTheatre(tenantId, existing.otId);
+      // Gap 354: running a case before its scheduled day needs a confirmation.
+      if (!data.confirmEarly && isBeforeScheduledDay(existing.scheduledDate, now)) {
+        const day = displayDate(dateKey(existing.scheduledDate)!);
+        throw AppError.conflict(
+          `This surgery is scheduled for ${day}. Confirm to ${data.status === 'completed' ? 'complete' : 'start'} it before the scheduled date.`,
+          'OT_EARLY',
+          { scheduledDate: dateKey(existing.scheduledDate) },
+        );
+      }
+    }
     patch.status = data.status;
     if (data.status === 'in_progress' && !existing.actualStartTime) {
       patch.actualStartTime = data.actualStartTime ? new Date(data.actualStartTime) : now;
     }
     if (data.status === 'completed' && !existing.actualEndTime) {
-      patch.actualEndTime = data.actualEndTime ? new Date(data.actualEndTime) : now;
+      // Gap 354: the end is start + planned duration unless the user edited it
+      // — stamping "now" made a 60-min case read 01:51 PM – 01:51 PM.
+      const startRaw = data.actualStartTime ?? existing.actualStartTime;
+      if (!startRaw) {
+        throw AppError.badRequest('Start the surgery before completing it.');
+      }
+      const start = new Date(startRaw);
+      const settings = await getOtSchedulingSettings(tenantId);
+      const end = data.actualEndTime
+        ? new Date(data.actualEndTime)
+        : defaultCompletionEnd(start, existing, settings.defaultDurationMinutes);
+      if (!(end.getTime() > start.getTime())) {
+        throw AppError.badRequest('The surgery end time must be after its start time.');
+      }
+      patch.actualEndTime = end;
+      if (!existing.actualStartTime) patch.actualStartTime = start;
     }
   }
   if (data.actualStartTime) patch.actualStartTime = new Date(data.actualStartTime);
   if (data.actualEndTime) patch.actualEndTime = new Date(data.actualEndTime);
+
+  // Gap 351: changing the surgeon / anaesthetist on a booked slot re-runs the
+  // clash check for the new people.
+  if (
+    (data.surgeonId !== undefined || data.anaesthetistId !== undefined) &&
+    existing.scheduledDate &&
+    (existing.status === 'scheduled' || existing.status === 'in_progress')
+  ) {
+    await assertNoOtConflicts(
+      tenantId,
+      {
+        excludeId: id,
+        date: existing.scheduledDate,
+        startTime: existing.scheduledStartTime,
+        endTime: existing.scheduledEndTime,
+        durationMinutes: existing.durationMinutes,
+        otId: existing.otId,
+        surgeonId: (data.surgeonId ?? existing.surgeonId) || existing.doctorId,
+        anaesthetistId: data.anaesthetistId ?? existing.anaesthetistId,
+        patientId: existing.patientId,
+      },
+      { override: data.overrideConflicts, userId: _userId },
+    );
+  }
   if (data.postOpDiagnosis !== undefined) patch.postOpDiagnosis = data.postOpDiagnosis;
   if (data.cancellationReason !== undefined) patch.cancellationReason = data.cancellationReason;
   if (data.notes !== undefined) patch.notes = data.notes;
@@ -1289,7 +1465,68 @@ export async function updateOTRequest(
     }
   }
 
-  return shapeOtRequest(updated as any, await getOneOtScheduleMeta(id));
+  // Gap 352: completing a case posts its configured price to the patient's
+  // stay. With no configured price nothing is billed, and the response says so.
+  let billing: OtCompletionBilling | undefined;
+  if (data.status === 'completed' && existing.status !== 'completed') {
+    billing = await postOtChargeOnComplete(tenantId, id, _userId, updated);
+  }
+
+  return shapeOtRequest(updated as any, {
+    ...(await getOneOtScheduleMeta(id)),
+    ...(billing ? { billing } : {}),
+  });
+}
+
+export interface OtCompletionBilling {
+  posted: boolean;
+  amount: number;
+  billNumber: string | null;
+  message: string;
+}
+
+async function postOtChargeOnComplete(
+  tenantId: string,
+  id: string,
+  userId: string,
+  r: { billingAmount?: unknown; serviceTariffId?: string | null; procedureName: string },
+): Promise<OtCompletionBilling> {
+  const quote = await resolveOtCharge(tenantId, r);
+  if (!quote) {
+    return { posted: false, amount: 0, billNumber: null, message: NO_OT_PRICE_MESSAGE };
+  }
+  try {
+    if (quote.source !== 'manual' && quote.serviceTariffId) {
+      // Link the tariff first so the bill lines carry its GST classification.
+      await prisma.otRequest.update({ where: { id }, data: { serviceTariffId: quote.serviceTariffId } });
+    }
+    // Gap 352: billOtRequest resolves the same quote and posts one line per
+    // component (or the single price, or a labelled ₹0 no-charge line).
+    // billingAmount is left as typed (gap 352 retest): writing the tariff
+    // total back made every later read treat it as a manual one-line charge,
+    // so the case's own breakdown and "no charge" label were lost. The lists
+    // read the posted lines instead.
+    const result = await billOtRequest(tenantId, id, userId);
+    const parts = quote.lines.length > 1 ? ` — ${quote.lines.map((l) => `${l.label} ₹${l.amount.toLocaleString('en-IN')}`).join(', ')}` : '';
+    return {
+      posted: true,
+      amount: quote.amount,
+      billNumber: result.billNumber ?? null,
+      message: quote.noCharge
+        ? `${quote.label} posted to bill ${result.billNumber ?? ''}`.trim()
+        : `₹${quote.amount.toLocaleString('en-IN')} (${quote.label}${parts}) posted to bill ${result.billNumber ?? ''}`.trim(),
+    };
+  } catch (err) {
+    // The surgery is complete either way; the desk can still post it from
+    // OT Billing Transactions.
+    logger.warn({ err, tenantId, otRequestId: id }, 'OT charge could not be posted on completion');
+    return {
+      posted: false,
+      amount: quote.amount,
+      billNumber: null,
+      message: `The OT charge could not be posted: ${err instanceof Error ? err.message : 'unknown error'}. Post it from OT Billing Transactions.`,
+    };
+  }
 }
 
 // ============================================================
@@ -1317,9 +1554,22 @@ export async function getOTAnalytics(tenantId: string, query: OtAnalyticsQuery) 
         return d;
       })();
 
+  // Gap 353: the window is on the SURGERY date, not on when the row was
+  // created — filtering on createdAt listed a case booked on 13/11 for 14/11
+  // in a 14/10–13/11 report. Unscheduled requests fall back to the doctor's
+  // preferred date, the same rule the OT list's date filter uses.
+  // scheduled/preferred dates are @db.Date (stored as the IST calendar day at
+  // UTC midnight), so bound them by IST day keys, both ends inclusive.
+  const dayRange = {
+    gte: new Date(`${istTodayKey(fromDate)}T00:00:00.000Z`),
+    lte: new Date(`${istTodayKey(toDate)}T00:00:00.000Z`),
+  };
   const where: any = {
     tenantId,
-    createdAt: { gte: fromDate, lte: toDate },
+    OR: [
+      { scheduledDate: dayRange },
+      { AND: [{ scheduledDate: null }, { preferredDate: dayRange }] },
+    ],
   };
   if (query.otId) where.otId = query.otId;
   if (query.surgeonId) where.surgeonId = query.surgeonId;
@@ -1394,13 +1644,27 @@ export async function getOTAnalytics(tenantId: string, query: OtAnalyticsQuery) 
     row.avgDurationMin = row.durationCount ? Math.round(row.totalDuration / row.durationCount) : 0;
   }
 
-  // OT utilization
+  // OT utilization. Gap 353: every theatre in the master is listed (an idle
+  // theatre is 0%, not missing), and the theatre count comes from the master
+  // rather than from whichever theatres happened to have bookings.
+  const theatres = await prisma.operatingTheater.findMany({
+    where: { tenantId, ...(query.otId ? { id: query.otId } : {}) },
+    select: { id: true, name: true },
+    orderBy: { name: 'asc' },
+  });
   const otAgg = new Map<
     string,
     { otId: string; otName: string; total: number; completed: number; totalDuration: number }
   >();
+  for (const t of theatres) {
+    otAgg.set(t.id, { otId: t.id, otName: t.name, total: 0, completed: 0, totalDuration: 0 });
+  }
+  let unassignedTheatre = 0;
   for (const r of requests) {
-    if (!r.otId) continue;
+    if (!r.otId) {
+      if (r.status !== 'cancelled') unassignedTheatre += 1;
+      continue;
+    }
     let row = otAgg.get(r.otId);
     if (!row) {
       row = { otId: r.otId, otName: r.ot?.name ?? 'Unknown OT', total: 0, completed: 0, totalDuration: 0 };
@@ -1408,6 +1672,8 @@ export async function getOTAnalytics(tenantId: string, query: OtAnalyticsQuery) 
     }
     row.total += 1;
     if (r.status === 'completed') row.completed += 1;
+    // A cancelled case never used the theatre.
+    if (r.status === 'cancelled') continue;
     if (r.actualStartTime && r.actualEndTime) {
       row.totalDuration += Math.max(
         0,
@@ -1434,8 +1700,11 @@ export async function getOTAnalytics(tenantId: string, query: OtAnalyticsQuery) 
     if (!r.actualStartTime || !r.scheduledDate || !r.scheduledStartTime) continue;
     const [hh, mm] = r.scheduledStartTime.split(':').map(Number);
     if (Number.isNaN(hh)) continue;
-    const sched = new Date(r.scheduledDate);
-    sched.setHours(hh, mm ?? 0, 0, 0);
+    // The scheduled time is IST wall-clock; setHours used the server's zone.
+    const sched = new Date(
+      `${dateKey(r.scheduledDate)}T${String(hh).padStart(2, '0')}:${String(mm ?? 0).padStart(2, '0')}:00+05:30`,
+    );
+    if (Number.isNaN(sched.getTime())) continue;
     const delayMin = Math.round((r.actualStartTime.getTime() - sched.getTime()) / 60000);
     if (delayMin > -12 * 60 && delayMin < 24 * 60) {
       delaySum += delayMin;
@@ -1444,8 +1713,22 @@ export async function getOTAnalytics(tenantId: string, query: OtAnalyticsQuery) 
   }
   const avgStartDelayMin = delayCount ? Math.round(delaySum / delayCount) : 0;
 
+  // Gap 353: "billed" is what was actually posted to bills, not the planned
+  // amount typed on the surgery (which read ₹0 because nothing was posted).
+  const posted = await getPostedOtCharges(tenantId, requests.map((r) => r.id));
+  const billedTotal = Array.from(posted.values()).reduce((sum, p) => sum + p.amount, 0);
+  // Planned charge for cases not posted yet — the resolver Complete uses, not
+  // the typed amount alone (gap 352 retest). Posted cases need no quote.
+  const unposted = requests.filter((r) => r.status !== 'cancelled' && !posted.has(r.id));
+  const plannedQuotes = new Map(
+    await Promise.all(unposted.map(async (r) => [r.id, await resolveOtCharge(tenantId, r)] as const)),
+  );
+
   return {
     avgStartDelayMin,
+    theatreCount: theatres.length,
+    unassignedTheatreCount: unassignedTheatre,
+    billedTotal: Math.round(billedTotal * 100) / 100,
     startDelaySampleSize: delayCount,
     fromDate: fromDate.toISOString(),
     toDate: toDate.toISOString(),
@@ -1478,6 +1761,13 @@ export async function getOTAnalytics(tenantId: string, query: OtAnalyticsQuery) 
       durationMinutes: r.durationMinutes,
       billingAmount: r.billingAmount ? Number(r.billingAmount) : null,
       billingStatus: r.billingStatus,
+      billedAmount: posted.get(r.id)?.amount ?? 0,
+      /** A posted ₹0 no-charge line still counts as billed. */
+      isPosted: posted.has(r.id),
+      postedNoCharge: posted.has(r.id) && (posted.get(r.id)?.amount ?? 0) === 0,
+      /** What Complete will post, for cases not on a bill yet (null = no price). */
+      plannedAmount: plannedQuotes.get(r.id)?.amount ?? null,
+      plannedNoCharge: plannedQuotes.get(r.id)?.noCharge ?? false,
     })),
   };
 }

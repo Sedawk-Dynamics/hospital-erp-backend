@@ -4,10 +4,8 @@ import { sendResponse } from '../../shared/apiResponse';
 import * as configService from './ai.config.service';
 import * as chatService from './ai.chat.service';
 import * as platformService from './ai.platform.service';
-
-// --- Super-admin: LLM provider configuration ("Configure LLM Options") ---
-// tenantId (query for GET, body for PUT) selects the scope: omitted = platform
-// default, a uuid = that hospital's override.
+import { AppError } from '../../shared/appError';
+import path from 'path';
 
 export async function getConfig(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
@@ -112,5 +110,49 @@ export async function platformChat(req: AuthenticatedRequest, res: Response, nex
     sendResponse({ res, message: 'Support assistant', data: result });
   } catch (err) {
     next(err);
+  }
+}
+
+
+export const patientSummary = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const patientId = req.params.patientId as string;
+    const visitId = (req.query.visitId as string) || '';
+    const summary = await platformService.getPatientSummary(req.user!.tenantId, req.user!.userId, patientId, visitId);
+    sendResponse({ res, message: 'Patient summary', data: summary });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const getContextVersion=async(req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const patientId = req.params.patientId as string;
+    const version = await platformService.contextVersion(req.user!.tenantId as string, patientId);
+    sendResponse({ res, message: 'Patient context version', data: { version } });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export async function downloadCdssSource(req:AuthenticatedRequest, res:Response, next:NextFunction) {
+  try {
+    const result = await platformService.getCdssSourcePath(req.params.sourceId as string);
+    if (!result) throw new AppError('Source not found', 404);
+    const abs = path.join(process.env.CDSS_ROOT ?? path.resolve(process.cwd(), '../cdss'), result);
+    res.sendFile(abs);
+  } catch (err) { next(err); }
+}
+
+
+export const imagingReportAnalyse=async(req:AuthenticatedRequest,res:Response,next:NextFunction)=>{
+  try {
+    const tenantId=req.user!.tenantId as string;
+    const patientId=req.params.patientId as string;
+    const model=req.body?.model as string | undefined;
+    const result=await platformService.analyseImagingReport(tenantId,patientId,model);
+    sendResponse({ res, message: 'Patient imaging report analysed ', data: result });
+  } catch (error) {
+    next(error)
   }
 }

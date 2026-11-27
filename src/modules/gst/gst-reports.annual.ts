@@ -39,7 +39,15 @@ import {
   getExemptTurnover,
   totalOf,
 } from './gst-reports.sales';
-import { getCreditNoteRegister, getGstr3bSummary } from './gst-reports.returns';
+import {
+  getCreditNoteRegister,
+  getGstr3bSummary,
+  notesThatReduceOutward,
+  outwardTaxableNet,
+  taxableSideTotals,
+  treatmentTotals,
+} from './gst-reports.returns';
+import { prisma } from '../../config/database';
 import { getItcSummary, getItcReversalWorking, getPurchaseRegister } from './gst-reports.purchase';
 import { getAdvancesReport } from './gst-reports.service';
 
@@ -95,6 +103,22 @@ export async function getGstr9Summary(tenantId: string, query: { financialYear?:
 
   const registerTotals = totalOf(register.rows);
 
+  // Only the notes that may reduce outward supplies — the same selection the
+  // monthly GSTR-1 and 3B use. A cancellation note against a voided sale that
+  // already left the register is NOT a second reversal (gap item 277).
+  const applied = notesThatReduceOutward(notes.rows);
+  const appliedCredit = applied.filter((r) => r.noteType !== 'debit');
+  const appliedDebit = applied.filter((r) => r.noteType === 'debit');
+  const taxableSide = { credit: taxableSideTotals(appliedCredit), debit: taxableSideTotals(appliedDebit) };
+  const byTreatment = { credit: treatmentTotals(appliedCredit), debit: treatmentTotals(appliedDebit) };
+
+  // Notes against exempt / nil-rated / non-GST bills reduce Table 5, not 4I/4J
+  // (gap item 261). Values are stored with the note's sign (credit negative).
+  const exemptSide = (b: typeof byTreatment.credit) =>
+    r2(b.exempt.taxableValue + b.nil_rated.taxableValue + b.non_gst.taxableValue);
+  const exemptSideCredit = exemptSide(byTreatment.credit);
+  const exemptSideDebit = exemptSide(byTreatment.debit);
+
   // Table 4 — outward supplies on which tax IS payable.
   const table4 = {
     label: 'Table 4 — Outward supplies on which tax is payable',
@@ -102,22 +126,24 @@ export async function getGstr9Summary(tenantId: string, query: { financialYear?:
       {
         ref: '4A',
         label: 'Supplies to unregistered persons (B2C)',
-        taxableValue: b2c.totals.taxableValue,
-        cgstAmount: b2c.totals.cgstAmount,
-        sgstAmount: b2c.totals.sgstAmount,
-        igstAmount: b2c.totals.igstAmount,
-        cessAmount: b2c.totals.cessAmount,
-        source: 'A-5 B2C Summary',
+        // TAXABLE lines only. The B2C total also holds the exempt turnover,
+        // which is 5D — counting it here put it in both tables (gap item 277).
+        taxableValue: b2c.taxableTotals.taxableValue,
+        cgstAmount: b2c.taxableTotals.cgstAmount,
+        sgstAmount: b2c.taxableTotals.sgstAmount,
+        igstAmount: b2c.taxableTotals.igstAmount,
+        cessAmount: b2c.taxableTotals.cessAmount,
+        source: 'A-5 B2C Summary — taxable supplies only',
       },
       {
         ref: '4B',
         label: 'Supplies to registered persons (B2B)',
-        taxableValue: b2b.totals.taxableValue,
-        cgstAmount: b2b.totals.cgstAmount,
-        sgstAmount: b2b.totals.sgstAmount,
-        igstAmount: b2b.totals.igstAmount,
-        cessAmount: b2b.totals.cessAmount,
-        source: 'A-4 B2B Invoice Register',
+        taxableValue: b2b.taxableTotals.taxableValue,
+        cgstAmount: b2b.taxableTotals.cgstAmount,
+        sgstAmount: b2b.taxableTotals.sgstAmount,
+        igstAmount: b2b.taxableTotals.igstAmount,
+        cessAmount: b2b.taxableTotals.cessAmount,
+        source: 'A-4 B2B Invoice Register — taxable supplies only',
       },
       {
         ref: '4F',
@@ -132,20 +158,23 @@ export async function getGstr9Summary(tenantId: string, query: { financialYear?:
       {
         ref: '4I',
         label: 'Credit notes issued against 4A–4F',
-        taxableValue: notes.summary.credit.taxableValue,
-        cgstAmount: notes.summary.credit.cgstAmount,
-        sgstAmount: notes.summary.credit.sgstAmount,
-        igstAmount: notes.summary.credit.igstAmount,
+        // Only notes against TAXABLE supplies (gap item 261). Notes against
+        // exempt / nil / non-GST bills belong in 5H, not here.
+        // Each cancellation counted once (gap item 277): see `applied` above.
+        taxableValue: taxableSide.credit.taxableValue,
+        cgstAmount: taxableSide.credit.cgstAmount,
+        sgstAmount: taxableSide.credit.sgstAmount,
+        igstAmount: taxableSide.credit.igstAmount,
         cessAmount: 0,
         source: 'A-6 Credit and Debit Note Register (figures are negative)',
       },
       {
         ref: '4J',
         label: 'Debit notes issued against 4A–4F',
-        taxableValue: notes.summary.debit.taxableValue,
-        cgstAmount: notes.summary.debit.cgstAmount,
-        sgstAmount: notes.summary.debit.sgstAmount,
-        igstAmount: notes.summary.debit.igstAmount,
+        taxableValue: taxableSide.debit.taxableValue,
+        cgstAmount: taxableSide.debit.cgstAmount,
+        sgstAmount: taxableSide.debit.sgstAmount,
+        igstAmount: taxableSide.debit.igstAmount,
         cessAmount: 0,
         source: 'A-6 Credit and Debit Note Register',
       },
@@ -176,9 +205,22 @@ export async function getGstr9Summary(tenantId: string, query: { financialYear?:
         taxableValue: exempt.nonGst.taxableValue,
         source: 'A-7 Exempt, Nil-rated and Non-GST Turnover',
       },
+      {
+        ref: '5H',
+        label: 'Credit notes issued in respect of 5A–5F',
+        taxableValue: exemptSideCredit,
+        source: 'A-6 Credit and Debit Note Register — notes against exempt, nil-rated and non-GST bills (negative)',
+      },
+      {
+        ref: '5I',
+        label: 'Debit notes issued in respect of 5A–5F',
+        taxableValue: exemptSideDebit,
+        source: 'A-6 Credit and Debit Note Register — notes against exempt, nil-rated and non-GST bills',
+      },
     ],
     total: r2(
-      exempt.exempt.taxableValue + exempt.nilRated.taxableValue + exempt.nonGst.taxableValue,
+      exempt.exempt.taxableValue + exempt.nilRated.taxableValue + exempt.nonGst.taxableValue
+      + exemptSideCredit + exemptSideDebit,
     ),
   };
 
@@ -256,10 +298,104 @@ export async function getGstr9Summary(tenantId: string, query: { financialYear?:
     reportingDigits: hsn.reportingDigits,
   };
 
+  // ── Check: Table 4 against the sum of the monthly returns (gap item 312) ──
+  //
+  // The annual figure is a fold of saved line amounts; so is each month's
+  // 3.1(a). Summing the months separately and comparing head by head catches a
+  // fold that drifted — and, where months were filed from this system, the
+  // figures actually filed.
+  const table4Net = (k: 'taxableValue' | 'cgstAmount' | 'sgstAmount' | 'igstAmount') =>
+    r2(table4.rows.filter((x) => x.ref !== '4F').reduce((t, x) => t + Number(x[k] ?? 0), 0));
+  const monthKey = (d: Date) => d.toISOString().slice(0, 7);
+  const months = [...new Set([
+    ...register.rows.map((l) => monthKey(l.billDate)),
+    ...applied.map((r) => monthKey(new Date(r.issueDate))),
+  ])].sort();
+  const monthly = months.map((m) => {
+    const lines = register.rows.filter((l) => l.gstTreatment === 'taxable' && monthKey(l.billDate) === m);
+    const out = outwardTaxableNet(totalOf(lines), applied.filter((r) => monthKey(new Date(r.issueDate)) === m));
+    return { month: m, ...out };
+  });
+  const sumMonths = (k: 'taxableValue' | 'cgstAmount' | 'sgstAmount' | 'igstAmount') =>
+    r2(monthly.reduce((t, x) => t + x[k], 0));
+  let filedMonths: Array<{ returnPeriod: string; taxableValue: number; cgstAmount: number; sgstAmount: number; igstAmount: number }> = [];
+  try {
+    const filed = await prisma.gstFiledPeriod.findMany({
+      where: { tenantId, financialYear: window.financialYear },
+      select: { returnPeriod: true, snapshot: true },
+    });
+    filedMonths = (filed ?? []).map((f) => {
+      const o = (f.snapshot as Record<string, any> | null)?.gstr3b?.outwardTaxable ?? {};
+      return {
+        returnPeriod: f.returnPeriod,
+        taxableValue: r2(Number(o.taxableValue ?? 0)),
+        cgstAmount: r2(Number(o.cgstAmount ?? 0)),
+        sgstAmount: r2(Number(o.sgstAmount ?? 0)),
+        igstAmount: r2(Number(o.igstAmount ?? 0)),
+      };
+    });
+  } catch {
+    /* no archive readable → only the computed check is shown */
+  }
+  const heads = ['taxableValue', 'cgstAmount', 'sgstAmount', 'igstAmount'] as const;
+  const monthlyCheck = {
+    label: 'Check — Table 4 (net of 4I/4J) against the sum of the monthly GSTR-3B 3.1(a)',
+    annual: Object.fromEntries(heads.map((k) => [k, table4Net(k)])) as Record<(typeof heads)[number], number>,
+    sumOfMonths: Object.fromEntries(heads.map((k) => [k, sumMonths(k)])) as Record<(typeof heads)[number], number>,
+    difference: Object.fromEntries(heads.map((k) => [k, r2(table4Net(k) - sumMonths(k))])) as Record<(typeof heads)[number], number>,
+    agrees: heads.every((k) => Math.abs(table4Net(k) - sumMonths(k)) < 0.01),
+    months: monthly,
+    /** What was actually filed from this system, month by month, where it was. */
+    filed: {
+      months: filedMonths.length,
+      ...Object.fromEntries(heads.map((k) => [k, r2(filedMonths.reduce((t, x) => t + x[k], 0))])),
+    },
+    /** CGST and SGST should be equal on intra-State supplies; the gap is legacy rounding. */
+    cgstSgstGap: r2(table4Net('cgstAmount') - table4Net('sgstAmount')),
+  };
+
+  // ── Check: the treatment buckets against the register (gap item 277) ──
+  //
+  // Table 5's total includes 5H/5I, the notes against exempt supplies, while
+  // the register it was compared with is gross: a cancelled ₹1,000 exempt
+  // invoice stays in A-1 and is reversed by its credit note. Netting the note
+  // on one side only made a correct return read "₹6,400 against ₹7,400". Both
+  // sides are now the supplies as invoiced (5D + 5E + 5F, not 5H/5I), the same
+  // cut GSTR-1's own tie-back uses; the notes are reported next to it.
+  const partsGross = r2(
+    exempt.taxable.taxableValue +
+      exempt.exempt.taxableValue + exempt.nilRated.taxableValue + exempt.nonGst.taxableValue +
+      exempt.zeroRated.taxableValue +
+      exempt.unclassified.taxableValue,
+  );
+
+  // Table 5 against the months' 3.1(c) + 3.1(e), which net the same exempt-side
+  // notes (gap 277) — so 5H/5I are counted once on each side.
+  const isNotTaxable = (t: string | null) => t === 'exempt' || t === 'nil_rated' || t === 'non_gst';
+  const table5Monthly = months.map((m) => {
+    const supplies = register.rows
+      .filter((l) => isNotTaxable(l.gstTreatment) && monthKey(l.billDate) === m)
+      .reduce((t, l) => t + l.taxableValue, 0);
+    const monthNotes = applied.filter((r) => monthKey(new Date(r.issueDate)) === m);
+    const t = treatmentTotals(monthNotes);
+    return { month: m, taxableValue: r2(supplies + exemptSide(t)) };
+  });
+  const table5SumOfMonths = r2(table5Monthly.reduce((t, x) => t + x.taxableValue, 0));
+  const table5Check = {
+    label: 'Check — Table 5 (net of 5H/5I) against the sum of the monthly GSTR-3B 3.1(c) + 3.1(e)',
+    annual: table5.total,
+    sumOfMonths: table5SumOfMonths,
+    difference: r2(table5.total - table5SumOfMonths),
+    agrees: Math.abs(table5.total - table5SumOfMonths) < 0.01,
+    months: table5Monthly,
+  };
+
   return {
     financialYear: window.financialYear,
     period: { from: window.from, to: window.to },
     tables: { table4, table5, table6, table7, table9, table17 },
+    monthlyCheck,
+    table5Check,
     turnover: {
       grossOutward: r2(registerTotals.taxableValue + registerTotals.taxAmount),
       taxableTurnover: exempt.taxable.taxableValue,
@@ -271,6 +407,8 @@ export async function getGstr9Summary(tenantId: string, query: { financialYear?:
       invoices: new Set(register.rows.map((l) => l.billId)).size,
       lines: register.rows.length,
       creditNotes: notes.rows.length,
+      /** Notes left out of 4I/4J/5H/5I — late, or cancelling a sale already gone. */
+      creditNotesExcluded: notes.rows.length - applied.length,
       purchases: purchases.rows.length,
     },
     rateWise: rateWise.byRate,
@@ -287,21 +425,16 @@ export async function getGstr9Summary(tenantId: string, query: { financialYear?:
        * only the taxable slice, so adding them to the exempt total left every
        * unclassified line out and the check never agreed.
        */
-      partsTaxableValue: r2(
-        exempt.taxable.taxableValue +
-          table5.total +
-          exempt.zeroRated.taxableValue +
-          exempt.unclassified.taxableValue,
+      partsTaxableValue: partsGross,
+      agrees: Math.abs(r2(partsGross - registerTotals.taxableValue)) < 0.01,
+      /**
+       * The 4I/4J/5H/5I notes, shown beside the check rather than inside it:
+       * the register is GROSS — a cancelled invoice keeps its lines and is
+       * reversed by its note — so the buckets compared with it are gross too.
+       */
+      notesTaxableValue: r2(
+        taxableSide.credit.taxableValue + taxableSide.debit.taxableValue + exemptSideCredit + exemptSideDebit,
       ),
-      agrees:
-        Math.abs(
-          r2(
-            exempt.taxable.taxableValue +
-              table5.total +
-              exempt.zeroRated.taxableValue +
-              exempt.unclassified.taxableValue,
-          ) - registerTotals.taxableValue,
-        ) < 0.01,
     },
     notes: [
       'Every figure here is the monthly report run once over the whole financial year — the same folds of the same register — so the annual return cannot disagree with the twelve returns it summarises.',

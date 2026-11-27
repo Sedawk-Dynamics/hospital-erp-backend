@@ -50,12 +50,14 @@ export async function generateDischargeNarrative(tenantId: string, id: string) {
   }
 
   // The static (80%) facts the narrative must be grounded in.
+  // Lab results are deliberately NOT fed to the AI: they are factual, structured
+  // data owned by the dedicated Lab Results section (never AI-generated). Feeding
+  // them here made the AI restate individual values in the narrative, duplicating
+  // that section and risking a transcription error in a signed document.
   const facts = [
     summary.headerSummary && `HEADER:\n${summary.headerSummary}`,
     summary.diagnosesSummary && `DIAGNOSES:\n${summary.diagnosesSummary}`,
     summary.proceduresSummary && `PROCEDURES / COURSE NOTES:\n${summary.proceduresSummary}`,
-    summary.keyLabsSummary && `KEY LABS:\n${summary.keyLabsSummary}`,
-    summary.labResultsSummary && `LAB RESULTS:\n${summary.labResultsSummary}`,
     summary.medicationReconciliation && `MEDICATIONS:\n${summary.medicationReconciliation}`,
   ]
     .filter(Boolean)

@@ -1,6 +1,7 @@
 import { prisma } from '../../config/database';
 import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
-import { supplyKindForInventoryCategory } from '../../shared/gst-determination';
+import { supplyKindForInventoryCategory, itemTaxContext } from '../../shared/gst-determination';
+import { recordDrugStockMovement } from '../pharmacy/pharmacy.stock-movement';
 import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
 import { findOpenChargeBill } from '../../shared/charge-bill';
 import { createBillInSeries } from '../../shared/bill-number';
@@ -464,6 +465,11 @@ export async function dispenseIndent(
         const take = Math.min(b.quantityInStock, remaining);
         if (take > 0) {
           await tx.drugBatch.update({ where: { id: b.id }, data: { quantityInStock: { decrement: take } } });
+          // 349: the IP issue as a pharmacy stock movement.
+          await recordDrugStockMovement(tx, {
+            tenantId, drugId: drug.id, drugBatchId: b.id, movementType: 'indent_issue', quantity: -take,
+            referenceType: 'indent', referenceId: id, performedBy: userId,
+          });
           remaining -= take;
         }
       }
@@ -507,9 +513,8 @@ export async function dispenseIndent(
       const priced = resolver.price(
         {
           kind: supplyKindForInventoryCategory(drug.category),
-          hsnCode: drug.hsnCode ?? null,
-          itemRatePercent: taxPct,
-          itemTreatment: (drug.gstTreatment as any) ?? (!drug.hsnCode && taxPct > 0 ? 'taxable' : null),
+          // G-1: the item's own rate beats its HSN heading.
+          ...itemTaxContext({ hsnCode: drug.hsnCode, taxPercent: taxPct, gstTreatment: drug.gstTreatment }),
           taxInclusive: true,
           patientAdmitted: true,
           issuedForTreatment: true,
@@ -597,7 +602,7 @@ export async function dispenseIpPrescription(
   roles: string[],
   prescriptionId: string,
   data: {
-    batches?: Array<{ itemId: string; drugBatchId: string }>;
+    batches?: Array<{ itemId: string; drugBatchId: string; quantity:number }>;
   } = {},
 ) {
   assertPharmacyOperator(roles, 'dispense an IP prescription');
@@ -613,11 +618,8 @@ export async function dispenseIpPrescription(
   const already = await prisma.dispensingRecord.findFirst({ where: { tenantId, prescriptionId, cancelledAt: null }, select: { id: true } });
   if (already) throw AppError.badRequest('This prescription has already been dispensed.');
 
-  // PRN lines still have to leave pharmacy stock before a nurse/doctor can
-  // administer a dose. Excluding them here made a PRN-only prescription
-  // impossible to issue, and therefore impossible to link to the eMAR/NDPS
-  // patient-dose record that accounts for the used and residual quantities.
-  const dispensable = rx.prescriptionItems.filter((i) => i.drugId && Number(i.quantity ?? 0) > 0);
+  const sentQty = new Map((data.batches ?? []).map((b) => [b.itemId, b.quantity]));
+  const dispensable = rx.prescriptionItems.filter((i,index) => i.drugId && Number(i.quantity ?? sentQty.get(i.id)) > 0);
   if (dispensable.length === 0) {
     throw AppError.badRequest('No stocked medicine with a quantity to dispense on this prescription.');
   }
@@ -652,7 +654,7 @@ export async function dispenseIpPrescription(
     let addedTax = 0;
 
     for (const it of dispensable) {
-      const baseQty = Math.max(1, Math.trunc(Number(it.quantity ?? 1)));
+      const baseQty = Math.max(1, Math.trunc(Number(it.quantity ?? sentQty.get(it.id) ?? 1)));
       const drug = await tx.drugFormulary.findFirst({
         where: { id: it.drugId as string, tenantId },
         select: {
@@ -696,6 +698,11 @@ export async function dispenseIpPrescription(
         const take = Math.min(b.quantityInStock, remaining);
         if (take > 0) {
           await tx.drugBatch.update({ where: { id: b.id }, data: { quantityInStock: { decrement: take } } });
+          // 349: the IP issue as a pharmacy stock movement.
+          await recordDrugStockMovement(tx, {
+            tenantId, drugId: drug.id, drugBatchId: b.id, movementType: 'indent_issue', quantity: -take,
+            referenceType: 'prescription', referenceId: prescriptionId, performedBy: userId,
+          });
           remaining -= take;
         }
       }
@@ -735,9 +742,8 @@ export async function dispenseIpPrescription(
       const priced = resolver.price(
         {
           kind: supplyKindForInventoryCategory(drug.category),
-          hsnCode: drug.hsnCode ?? null,
-          itemRatePercent: taxPct,
-          itemTreatment: (drug.gstTreatment as any) ?? (!drug.hsnCode && taxPct > 0 ? 'taxable' : null),
+          // G-1: the item's own rate beats its HSN heading.
+          ...itemTaxContext({ hsnCode: drug.hsnCode, taxPercent: taxPct, gstTreatment: drug.gstTreatment }),
           taxInclusive: true,
           patientAdmitted: true,
           issuedForTreatment: true,
@@ -833,6 +839,11 @@ export async function returnIndentItems(
 
       // (a) Restock the exact original batch.
       await tx.drugBatch.update({ where: { id: it.dispensedBatchId }, data: { quantityInStock: { increment: baseQty } } });
+      // 349: the ward return back into pharmacy stock.
+      await recordDrugStockMovement(tx, {
+        tenantId, drugId: drug.id, drugBatchId: it.dispensedBatchId, movementType: 'indent_return',
+        quantity: baseQty, referenceType: 'indent', referenceId: id, performedBy: userId,
+      });
 
       // (b) Credit the running bill — MIRRORING the line that was actually
       // billed, not recomputing it.

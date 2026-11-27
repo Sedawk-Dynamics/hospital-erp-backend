@@ -5,8 +5,11 @@ import { razorpay } from '../../config/razorpay';
 import { env } from '../../config/env';
 import { AppError } from '../../shared/appError';
 import { commissionService } from '../commission/commission.service';
-import { settleGatewayPayment } from '../billing/billing.service';
+import { createBill, finalizeBill, settleGatewayPayment } from '../billing/billing.service';
 import { VerifyOnlinePaymentInput } from './online-payments.validation';
+import { getRegistrationFeeSettings } from '../hospital-settings/hospital-settings.service';
+import { REGISTRATION_FEE_REFERENCE_TYPE, registrationFeeTotals } from '../../shared/registration-fee';
+import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
 
 async function createOnlineOrder(tenantId: string, userId: string, data: { billId: string }) {
   const bill = await prisma.bill.findFirst({
@@ -34,7 +37,6 @@ async function createOnlineOrder(tenantId: string, userId: string, data: { billI
   }
 
   const commissionPercent = await commissionService.getCommissionForTenant(tenantId);
-
   const commissionAmount = Math.round((amount * commissionPercent / 100) * 100) / 100;
   const hospitalAmount = Math.round((amount - commissionAmount) * 100) / 100;
 

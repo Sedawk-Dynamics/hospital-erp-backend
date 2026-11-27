@@ -54,8 +54,8 @@ const fmt = (n: number | string | null | undefined) =>
 const monthLabel = (start: Date, end: Date) => {
   const s = new Date(start);
   const e = new Date(end);
-  const sm = s.toLocaleString('en-IN', { month: 'short', year: 'numeric' });
-  const em = e.toLocaleString('en-IN', { month: 'short', year: 'numeric' });
+  const sm = s.toLocaleString('en-IN', { month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
+  const em = e.toLocaleString('en-IN', { month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
   return sm === em ? sm : `${sm} – ${em}`;
 };
 
@@ -80,7 +80,7 @@ export function streamSalarySlipPdf(
   });
 
   const d = (v: Date | string | null | undefined) =>
-    v ? new Date(v).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+    v ? new Date(v).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' }) : '—';
 
   drawKeyValueCard(pdf, theme, [
     ['Employee', `${staff.user.firstName} ${staff.user.lastName ?? ''}`.trim()],

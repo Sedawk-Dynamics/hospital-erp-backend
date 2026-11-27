@@ -14,6 +14,7 @@ import type {
 } from './insurance.workflow.validation';
 import { notifyPatientInsuranceMilestone } from './insurance.notifications';
 import { applyPaymentToBill } from '../billing/bill-payment-ledger';
+import { escalationDueAt, escalationTypeForPreAuth, resolveEscalationRules } from './insurance.escalation';
 
 const CASE_INCLUDE = {
   patient: { select: { id: true, mrn: true, firstName: true, lastName: true, phone: true, abhaNumber: true, deceasedAt: true } },
@@ -615,17 +616,64 @@ export async function requestFinalAuthorization(tenantId: string, userId: string
 
 export async function getSlaQueue(tenantId: string) {
   const now = new Date();
+  const person = { select: { id: true, firstName: true, lastName: true } } as const;
   const requests = await prisma.preAuthorizationRequest.findMany({
     where: { tenantId, status: { in: ['pending', 'on_hold'] }, decisionDueAt: { not: null } },
-    include: { patient: { select: { id: true, mrn: true, firstName: true, lastName: true } }, insuranceCase: { select: { id: true, caseNumber: true, priority: true } } },
+    include: {
+      patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
+      insuranceCase: { select: { id: true, caseNumber: true, priority: true, creator: person } },
+      submitter: person,
+      // Gap 294: an overdue row must say who owns it and what last happened.
+      auditEvents: { orderBy: { occurredAt: 'desc' }, take: 1, select: { eventType: true, occurredAt: true, actor: person } },
+      tpaCommunicationLogs: { orderBy: { createdAt: 'desc' }, take: 1, select: { subject: true, createdAt: true, communicator: person } },
+    },
     orderBy: { decisionDueAt: 'asc' },
   });
-  return requests.map((item) => ({
+  // Gap 294: each row says when (and to whom) it escalates under this
+  // hospital's configured rule, or that it already has.
+  const rules = await resolveEscalationRules(tenantId);
+  return requests.map(({ auditEvents, tpaCommunicationLogs, ...item }) => ({
     ...item,
+    escalation: (() => {
+      const rule = rules[escalationTypeForPreAuth(item.requestType)];
+      return {
+        targetRole: item.escalatedToRole ?? rule.targetRole,
+        escalateAfterHours: rule.escalateAfterHours,
+        dueAt: item.decisionDueAt ? escalationDueAt(item.decisionDueAt, rule) : null,
+        escalatedAt: item.escalatedAt,
+      };
+    })(),
     breached: Boolean(item.decisionDueAt && item.decisionDueAt <= now),
     alert: Boolean(item.alertAt && item.alertAt <= now),
     remainingMinutes: item.decisionDueAt ? Math.ceil((item.decisionDueAt.getTime() - now.getTime()) / 60_000) : null,
+    owner: item.submitter ?? item.insuranceCase?.creator ?? null,
+    lastAction: latestSlaAction(auditEvents?.[0], tpaCommunicationLogs?.[0]),
   }));
+}
+
+type SlaPerson = { id: string; firstName: string; lastName: string | null } | null;
+
+/** The newer of the request's last audit event and last payer communication. */
+export function latestSlaAction(
+  audit?: { eventType: string; occurredAt: Date; actor: SlaPerson } | null,
+  log?: { subject: string | null; createdAt: Date; communicator: SlaPerson } | null,
+): { label: string; at: Date; by: SlaPerson } | null {
+  const fromAudit = audit ? { label: audit.eventType.replace(/[._]/g, ' '), at: audit.occurredAt, by: audit.actor } : null;
+  const fromLog = log ? { label: log.subject ?? 'Payer communication', at: log.createdAt, by: log.communicator } : null;
+  if (fromAudit && fromLog) return fromLog.at > fromAudit.at ? fromLog : fromAudit;
+  return fromAudit ?? fromLog;
+}
+
+/**
+ * Average pre-auth decision time in minutes, only over requests that have BOTH
+ * a submitted and a decided time (gap 294). null when there are none, so the
+ * UI shows "—" rather than a misleading "0 min".
+ */
+export function averageDecisionMinutes(items: Array<{ submittedAt: Date | null; decidedAt: Date | null }>): number | null {
+  const minutes = items
+    .filter((item) => item.submittedAt && item.decidedAt && item.decidedAt >= item.submittedAt)
+    .map((item) => (item.decidedAt!.getTime() - item.submittedAt!.getTime()) / 60_000);
+  return minutes.length ? Math.round(minutes.reduce((sum, value) => sum + value, 0) / minutes.length) : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -858,16 +906,20 @@ export async function getWorkflowAnalytics(tenantId: string, filters: any) {
   const caseWhere: Prisma.InsuranceCaseWhereInput = { tenantId, ...(dateWhere ? { createdAt: dateWhere } : {}) };
   if (filters.payerType && filters.payerId) Object.assign(caseWhere, { paymentResponsibleType: filters.payerType, paymentResponsibleId: filters.payerId });
   const cases = await prisma.insuranceCase.findMany({ where: caseWhere, include: { preAuthRequests: true, claims: { include: { queries: true, settlements: true } } } });
-  const preAuths = cases.flatMap((item) => item.preAuthRequests);
+  // Gap 294: pre-auths raised straight from the pre-auth screen have no payer
+  // case, so collecting them through cases left the SLA average at "0 min".
+  // Without a payer filter, read every pre-auth of the hospital.
+  const preAuths = filters.payerType && filters.payerId
+    ? cases.flatMap((item) => item.preAuthRequests)
+    : await prisma.preAuthorizationRequest.findMany({ where: { tenantId, ...(dateWhere ? { createdAt: dateWhere } : {}) } });
   const claims = cases.flatMap((item) => item.claims);
   const decided = preAuths.filter((item) => item.submittedAt && item.decidedAt);
-  const preAuthTatMinutes = decided.map((item) => (item.decidedAt!.getTime() - item.submittedAt!.getTime()) / 60_000);
   const denials = claims.filter((item) => item.status === 'rejected' || item.status === 'partially_approved');
   const queryItems = claims.flatMap((item) => item.queries);
   const settlementItems = claims.flatMap((item) => item.settlements);
   return {
     cases: { total: cases.length, open: cases.filter((item) => !['closed', 'cancelled'].includes(item.status)).length, cashless: cases.filter((item) => item.settlementMode === 'cashless').length, reimbursement: cases.filter((item) => item.settlementMode === 'reimbursement').length },
-    sla: { preAuthDecisions: decided.length, averageDecisionMinutes: preAuthTatMinutes.length ? Math.round(preAuthTatMinutes.reduce((sum, value) => sum + value, 0) / preAuthTatMinutes.length) : 0, breached: decided.filter((item) => item.decisionDueAt && item.decidedAt! > item.decisionDueAt).length, currentlyOverdue: preAuths.filter((item) => ['pending', 'on_hold'].includes(item.status) && item.decisionDueAt && item.decisionDueAt < new Date()).length },
+    sla: { preAuthDecisions: decided.length, averageDecisionMinutes: averageDecisionMinutes(decided), breached: decided.filter((item) => item.decisionDueAt && item.decidedAt! > item.decisionDueAt).length, currentlyOverdue: preAuths.filter((item) => ['pending', 'on_hold'].includes(item.status) && item.decisionDueAt && item.decisionDueAt < new Date()).length },
     claims: { total: claims.length, deniedOrPartial: denials.length, denialRate: claims.length ? Number(((denials.length / claims.length) * 100).toFixed(2)) : 0, queriesOpen: queryItems.filter((item) => item.status === 'open').length },
     leakage: { patientShare: claims.reduce((sum, item) => sum + money(item.patientShare), 0), disallowed: settlementItems.reduce((sum, item) => sum + money(item.disallowedAmount), 0), tdsReceivable: settlementItems.reduce((sum, item) => sum + money(item.tdsAmount), 0), insurerDelayLiability: claims.reduce((sum, item) => sum + money(item.delayLiabilityAmount), 0) },
   };

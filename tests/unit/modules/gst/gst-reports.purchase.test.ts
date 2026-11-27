@@ -200,14 +200,16 @@ describe('getItcReversalWorking (B-3)', () => {
   // The system does not record which purchases were used exclusively for what,
   // so the whole of the input tax is treated as common credit — the
   // conservative reading. Saying so is the point.
-  it('reports T1 to T4 as zero and says why', async () => {
+  it('reports T1, T2 and T4 as zero and says why', async () => {
     (prisma.drugBatch.findMany as any).mockResolvedValue([batch()]);
     const r = await getItcReversalWorking(TENANT);
-    for (const step of ['T1', 'T2', 'T3', 'T4']) {
+    for (const step of ['T1', 'T2', 'T4']) {
       const row = r.working.find((w) => w.step === step)!;
       expect(row.amount).toBe(0);
       expect(row.source).toMatch(/Not recorded/);
     }
+    // T3 is now the blocked credit, which this valid-GSTIN batch has none of.
+    expect(r.working.find((w) => w.step === 'T3')!.amount).toBe(0);
     expect(r.notes[0]).toMatch(/does not record that split/);
   });
 
@@ -295,5 +297,121 @@ describe('getPurchaseReturns (B-6)', () => {
     await getPurchaseReturns(TENANT);
     const where = (prisma.drugReturn.findMany as any).mock.calls[0][0].where;
     expect(where.returnType).toBe('vendor_return');
+  });
+});
+
+// Gap item 272: no valid supplier GSTIN, no input tax credit.
+describe('purchases from a supplier with no GSTIN (gap item 272)', () => {
+  const noGstin = () => batch({ id: 'b2', supplier: { id: 's2', name: 'Local Vendor', gstNumber: null } });
+
+  it('marks the purchase ineligible in the register, with the reason', async () => {
+    (prisma.drugBatch.findMany as any).mockResolvedValue([noGstin()]);
+    const { rows } = await getPurchaseRegister(TENANT);
+    expect(rows[0].itcEligibility).toBe('ineligible');
+    expect(rows[0].itcBlockedReason).toMatch(/no GSTIN/);
+  });
+
+  it('keeps it out of the credit B-3 hands to GSTR-3B', async () => {
+    (prisma.drugBatch.findMany as any).mockResolvedValue([batch(), noGstin()]);
+    const r = await getItcReversalWorking(TENANT);
+    expect(r.totalInputTax).toBe(240);
+    expect(r.working.find((w) => w.step === 'T3')!.amount).toBe(120);
+    expect(r.creditAvailable).toBe(120);
+    expect(r.netCreditAvailable).toBe(120);
+    expect(r.blockedCredit).toMatchObject({ total: 120, fromSuppliersWithoutGstin: 1 });
+  });
+
+  it('is still listed by the supplier exception report', async () => {
+    (prisma.drugBatch.findMany as any).mockResolvedValue([noGstin()]);
+    const r = await getSupplierGstinExceptions(TENANT);
+    expect(r.suppliers[0]).toMatchObject({ supplierName: 'Local Vendor', problem: 'No GSTIN on file', taxAtRisk: 120 });
+  });
+
+  it('is counted as ineligible on the B-2 ladder, not reversed again', async () => {
+    (prisma.drugBatch.findMany as any).mockResolvedValue([batch(), noGstin()]);
+    const r = await getItcSummary(TENANT);
+    const rung = (k: string) => r.ladder.find((x) => x.key === k)!.amount;
+    expect(rung('gross')).toBe(240);
+    expect(rung('ineligible')).toBe(120);
+    expect(rung('eligible')).toBe(120);
+  });
+});
+
+// ── Gap 273: damaged stock written off, and the head-wise split ─────────────
+describe('B-6 pharmacy write-offs and the CGST / SGST / IGST split (gap 273)', () => {
+  const damaged = (over: Record<string, unknown> = {}) => ({
+    id: 'wo1', tenantId: TENANT, drugId: 'd1', drugBatchId: 'b1',
+    drugName: 'Ceftriaxone 1g', batchNumber: 'CF-9', supplierId: 's1',
+    writeOffType: 'damaged', quantity: 1, reason: 'Vial cracked',
+    taxableValue: 100, gstPercent: 18, inputCgst: 9, inputSgst: 9, inputIgst: 0,
+    purchaseInvoiceNo: 'SUP/77', performedBy: 'u1', createdAt: new Date('2026-11-20T10:00:00Z'),
+    ...over,
+  });
+
+  beforeEach(() => {
+    (prisma.drugReturn.findMany as any).mockResolvedValue([]);
+    (prisma.stockTransaction.findMany as any).mockResolvedValue([]);
+    (prisma.drugBatch.findMany as any).mockResolvedValue([]);
+  });
+
+  // QA: one damaged unit of an 18% batch — the API had value 100 / tax 18 but
+  // the totals the screen reads carried no split and no combined reversal.
+  it('reports a damaged-stock write-off with its reversal, split by head, in the totals', async () => {
+    (prisma.drugStockWriteOff.findMany as any).mockResolvedValue([damaged()]);
+    const r = await getPurchaseReturns(TENANT);
+    expect(r.pharmacyWriteOffs[0]).toMatchObject({
+      writeOffType: 'damaged', taxableValue: 100, gstRatePercent: 18,
+      cgstAmount: 9, sgstAmount: 9, igstAmount: 0, taxToReverse: 18, purchaseInvoiceNumber: 'SUP/77',
+    });
+    expect(r.totals).toMatchObject({
+      pharmacyWriteOffs: 1, pharmacyWriteOffValue: 100, pharmacyWriteOffTaxToReverse: 18,
+      pharmacyWriteOffCgst: 9, pharmacyWriteOffSgst: 9, pharmacyWriteOffIgst: 0,
+      totalTaxToReverse: 18,
+    });
+  });
+
+  it('adds vendor returns and write-offs into one reversal total', async () => {
+    (prisma.drugStockWriteOff.findMany as any).mockResolvedValue([damaged()]);
+    (prisma.drugReturn.findMany as any).mockResolvedValue([
+      {
+        id: 'r1', createdAt: new Date('2026-11-12T00:00:00Z'), quantity: 2, reason: 'Short expiry',
+        status: 'approved', creditNoteNumber: null, creditAmount: null, batchNumber: 'B-1', expiryDate: null,
+        inputGstPercent: 18, inputTaxableValue: 200, inputCgst: 18, inputSgst: 18, inputIgst: null,
+        drug: { drugName: 'Paracetamol 500mg', hsnCode: '30049099' },
+        supplier: { id: 's1', name: 'Acme Pharma', gstNumber: VALID_GSTIN, stateCode: '27' },
+        drugBatch: null,
+      },
+    ]);
+    const r = await getPurchaseReturns(TENANT);
+    expect(r.returns[0]).toMatchObject({ taxableValue: 200, taxToReverse: 36, cgstAmount: 18, sgstAmount: 18, igstAmount: 0 });
+    expect(r.totals).toMatchObject({ taxToReverse: 36, returnCgst: 18, returnSgst: 18, returnIgst: 0, totalTaxToReverse: 54 });
+  });
+
+  it('splits an older return that stored no heads, and the heads add up to its tax', async () => {
+    (prisma.drugStockWriteOff.findMany as any).mockResolvedValue([]);
+    (prisma.drugReturn.findMany as any).mockResolvedValue([
+      {
+        id: 'r2', createdAt: new Date('2026-11-12T00:00:00Z'), quantity: 10, reason: null,
+        status: 'approved', creditNoteNumber: 'CN/1', creditAmount: 112, batchNumber: 'B-1', expiryDate: null,
+        inputGstPercent: null, inputTaxableValue: null, inputCgst: null, inputSgst: null, inputIgst: null,
+        drug: { drugName: 'Paracetamol 500mg', hsnCode: '30049099' },
+        // A Gujarat supplier; the hospital's state is unknown in this test, so
+        // the split falls back to intra-state, as the register assumes.
+        supplier: { id: 's2', name: 'Guj Pharma', gstNumber: '24AAACC1206D1ZM', stateCode: '24' },
+        drugBatch: { purchasePrice: 10, purchaseDiscountPercent: 0, gstPercent: 12, invoiceNumber: 'G/1', invoiceDate: null },
+      },
+    ]);
+    const r = await getPurchaseReturns(TENANT);
+    const row = r.returns[0];
+    expect(row.taxToReverse).toBe(12);
+    expect(row.cgstAmount + row.sgstAmount + row.igstAmount).toBe(12);
+  });
+
+  it('never reports a write-off with a rate but no stored heads as zero tax', async () => {
+    (prisma.drugStockWriteOff.findMany as any).mockResolvedValue([
+      damaged({ inputCgst: null, inputSgst: null, inputIgst: null }),
+    ]);
+    const r = await getPurchaseReturns(TENANT);
+    expect(r.pharmacyWriteOffs[0]).toMatchObject({ taxToReverse: 18, cgstAmount: 9, sgstAmount: 9 });
   });
 });

@@ -255,6 +255,32 @@ export function computeLineTax(input: LineTaxInput): LineTax {
     totalAmount = r2(net + taxAmount);
   }
 
+  // Intra-State: CGST and SGST are each levied at HALF the rate on the same
+  // taxable value, so they are one figure computed once and used for both
+  // heads. Splitting the rounded total instead gave the odd paisa to CGST on
+  // every such line, and a year of lines read CGST ₹69.31 vs SGST ₹69.28 on
+  // GSTR-9 (gap item 312). The tax is then 2 × the half; on an MRP line the
+  // taxable value absorbs the paisa so the total stays the price quoted.
+  if (!interState) {
+    const halfPaise = Math.round((toPaise(taxableValue) * ratePercent) / 200 + 1e-9);
+    const half = fromPaise(halfPaise);
+    taxAmount = fromPaise(halfPaise * 2);
+    if (input.taxInclusive) taxableValue = r2(net - taxAmount);
+    else totalAmount = r2(net + taxAmount);
+    return {
+      grossAmount,
+      discountAmount,
+      taxableValue,
+      ratePercent,
+      taxAmount,
+      totalAmount,
+      taxInclusive: input.taxInclusive,
+      cgst: half,
+      sgst: half,
+      igst: 0,
+    };
+  }
+
   return {
     grossAmount,
     discountAmount,

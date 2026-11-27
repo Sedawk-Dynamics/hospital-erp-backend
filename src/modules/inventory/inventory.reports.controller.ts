@@ -3,12 +3,20 @@ import { AuthenticatedRequest } from '../../shared/types';
 import { sendResponse, sendPaginatedResponse } from '../../shared/apiResponse';
 import * as reports from './inventory.reports.service';
 import * as transfers from './inventory.transfer.service';
-import { getInventoryDetailedReport } from './inventory.detailed-report.service';
+import { getInventoryDetailedReport, getConsumptionTransactions } from './inventory.detailed-report.service';
 
 export async function detailedReport(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
     const data = await getInventoryDetailedReport(req.user!.tenantId, req.query as any);
     sendResponse({ res, message: 'Inventory detailed report', data });
+  } catch (err) { next(err); }
+}
+
+// Gap 349: the consumption records behind one Top-consumed row.
+export async function consumptionTransactions(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const data = await getConsumptionTransactions(req.user!.tenantId, req.query as any);
+    sendResponse({ res, message: 'Consumption transactions', data });
   } catch (err) { next(err); }
 }
 

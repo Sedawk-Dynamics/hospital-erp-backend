@@ -140,6 +140,24 @@ formsRoutes.post(
   controller.archiveHospitalForm,
 );
 
+// Gap 304: publish the pending draft as a new nurse-visible version, or drop
+// it. Same permission as editing the form.
+formsRoutes.post(
+  '/:id/publish',
+  authenticate,
+  requirePermission('forms', 'update'),
+  validate(hospitalFormIdParam),
+  controller.publishHospitalForm,
+);
+
+formsRoutes.post(
+  '/:id/discard-draft',
+  authenticate,
+  requirePermission('forms', 'update'),
+  validate(hospitalFormIdParam),
+  controller.discardHospitalFormDraft,
+);
+
 formsRoutes.post(
   '/:id/restore',
   authenticate,

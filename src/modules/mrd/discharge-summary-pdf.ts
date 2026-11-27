@@ -59,7 +59,7 @@ export interface DischargeDocument {
   };
   allergies: Array<{ allergen: string; reaction: string | null }>;
   diagnoses: Array<{ name: string; type: string; icdCode: string | null }>;
-  vitals: { admission: DischargeVitalRow | null; discharge: DischargeVitalRow | null };
+  vitals: DischargeVitalRow[];
   procedures: Array<{ name: string; type: string | null; date: string | null; status: string; surgeon: string | null }>;
   imaging: Array<{ study: string; indication: string | null; impression: string | null; date: string | null }>;
   sections: {
@@ -73,6 +73,7 @@ export interface DischargeDocument {
     hospitalCourse: string | null;
     keyLabs: string | null;
     labResults: string | null;
+    radiologyText: string | null;
     medicationsText: string | null;
     dischargeInstructions: string | null;
     followUpDate: string | null;
@@ -113,9 +114,57 @@ function parseDayBlocks(text: string): {
   return { preamble: preambleLines.join('\n').trim(), blocks };
 }
 
-const fmtDate = (v?: string | null) => (v ? new Date(v).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—');
-const fmtDateTime = (v?: string | null) => (v ? new Date(v).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—');
+const fmtDate = (v?: string | null) => (v ? new Date(v).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' }) : '—');
+const fmtDateTime = (v?: string | null) => (v ? new Date(v).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : '—');
 const dash = (v?: string | number | null) => (v === null || v === undefined || v === '' ? '—' : String(v));
+
+// ---------------------------------------------------------------------------
+// Gap 363: sign-off and contact helpers shared by the PDF, the print view
+// (frontend mirrors these) and buildDischargeDocument.
+// ---------------------------------------------------------------------------
+
+/** "Dr. <name>" for the signing doctor (no double prefix). */
+export function signerDisplayName(name: string | null | undefined): string | null {
+  const n = (name ?? '').trim();
+  if (!n) return null;
+  return /^dr\.?\s/i.test(n) ? n : `Dr. ${n}`;
+}
+
+/**
+ * The sign-off line printed under the signature: who signed and when. Built
+ * from the signing doctor and the signed timestamp — never from free text, so a
+ * typed placeholder can't end up as the document's attestation.
+ */
+export function dischargeAttestation(meta: { signerName: string | null; signedAt: string | null }): string | null {
+  if (!meta.signedAt) return null;
+  const who = signerDisplayName(meta.signerName);
+  return `Electronically signed${who ? ` by ${who}` : ''} on ${fmtDateTime(meta.signedAt)}`;
+}
+
+/**
+ * Contact details come from the hospital PROFILE (Tenant row, edited in
+ * Settings → Hospital Info). The PDF-builder letterhead keeps its own copy in
+ * themeConfig.pdf which wins in getHospitalBranding, so after the profile was
+ * edited the discharge summary kept printing the old email. Profile values
+ * override; the letterhead fills any gaps.
+ */
+export function withProfileContact(
+  branding: HospitalBranding,
+  profile: { address?: string | null; city?: string | null; state?: string | null; country?: string | null; phone?: string | null; email?: string | null } | null,
+): HospitalBranding {
+  if (!profile) return branding;
+  const letterheadAddress = [branding.addressLine1, branding.addressLine2].filter(Boolean).join(', ');
+  const addressChanged = !!profile.address && profile.address !== letterheadAddress;
+  return {
+    ...branding,
+    email: profile.email || branding.email,
+    phone: profile.phone || branding.phone,
+    ...(addressChanged ? { addressLine1: profile.address!, addressLine2: null } : {}),
+    city: profile.city || branding.city,
+    state: profile.state || branding.state,
+    country: profile.country || branding.country,
+  };
+}
 
 export function streamDischargeSummaryPdf(
   res: Response,
@@ -253,21 +302,24 @@ export function streamDischargeSummaryPdf(
     paragraph(doc.sections.examination);
   }
 
-  // ---- Vitals ----
-  if (doc.vitals.admission || doc.vitals.discharge) {
+  // ---- Vitals ---- one dated row per pinned reading, all 9 vitals.
+  if (doc.vitals.length) {
     heading('Vital Signs');
-    const vr = (v: DischargeVitalRow | null, label: string): string[] => [
-      label,
-      v?.bp ?? '—',
-      dash(v?.pulse),
-      v?.temp != null ? `${v.temp}°C` : '—',
-      dash(v?.rr),
-      v?.spo2 != null ? `${v.spo2}%` : '—',
-      v?.weight != null ? `${v.weight} kg` : '—',
+    const vr = (v: DischargeVitalRow): string[] => [
+      fmtDateTime(v.at),
+      v.bp ?? '—',
+      dash(v.pulse),
+      v.temp != null ? `${v.temp}°C` : '—',
+      dash(v.rr),
+      v.spo2 != null ? `${v.spo2}%` : '—',
+      v.weight != null ? `${v.weight} kg` : '—',
+      v.height != null ? `${v.height} cm` : '—',
+      dash(v.bmi),
+      v.sugar != null ? `${v.sugar}` : '—',
     ];
-    table(['At', 'BP', 'Pulse', 'Temp', 'RR', 'SpO₂', 'Weight'],
-      [vr(doc.vitals.admission, 'On admission'), vr(doc.vitals.discharge, 'At discharge')],
-      [2.2, 1.4, 1, 1, 0.8, 1, 1.2]);
+    table(['Date/Time', 'BP', 'Pulse', 'Temp', 'RR', 'SpO₂', 'Weight', 'Height', 'BMI', 'Sugar'],
+      doc.vitals.map(vr),
+      [2.2, 1.2, 1, 1, 0.8, 1, 1.1, 1.1, 0.9, 1]);
   }
 
   // ---- Allergies ----
@@ -327,25 +379,19 @@ export function streamDischargeSummaryPdf(
   }
 
   // ---- Lab Results ----
-  if (doc.sections.keyLabs || doc.sections.labResults || doc.imaging.length) {
+  // The grouped lab summary (labResults) already lists each test's count and its
+  // abnormal values, so the separate "Significant / Abnormal" block is redundant.
+  if (doc.sections.labResults) {
     heading('Lab Results');
-    if (doc.sections.keyLabs) {
-      pdf.font(theme.font.bold).fontSize(8.5).fillColor(accent).text('Significant / Abnormal Labs', left, pdf.y, { width: CONTENT_W });
-      pdf.moveDown(0.1);
-      paragraph(doc.sections.keyLabs);
-    }
-    if (doc.sections.labResults) {
-      pdf.font(theme.font.bold).fontSize(8.5).fillColor(accent).text('All Lab Results', left, pdf.y, { width: CONTENT_W });
-      pdf.moveDown(0.1);
-      paragraph(doc.sections.labResults);
-    }
-    if (doc.imaging.length) {
-      pdf.font(theme.font.bold).fontSize(8.5).fillColor(accent).text('Imaging', left, pdf.y, { width: CONTENT_W });
-      pdf.moveDown(0.1);
-      table(['Study', 'Indication', 'Impression', 'Date'],
-        doc.imaging.map((im) => [im.study, im.indication ?? '—', im.impression ?? '—', fmtDate(im.date)]),
-        [1.6, 2, 3, 1.4]);
-    }
+    paragraph(doc.sections.labResults);
+  }
+
+  // ---- Radiology / Imaging ----
+  // The stored, doctor-reviewed radiology text (not a live imaging re-query), so
+  // the printout equals what was signed.
+  if (doc.sections.radiologyText) {
+    heading('Radiology / Imaging');
+    paragraph(doc.sections.radiologyText);
   }
 
   // ---- Medications on discharge ----
@@ -396,10 +442,12 @@ export function streamDischargeSummaryPdf(
   pdf.moveDown(1.2);
   const sy = pdf.y;
   pdf.moveTo(right - 200, sy + 26).lineTo(right, sy + 26).strokeColor(INK).lineWidth(0.6).stroke();
-  pdf.font(theme.font.bold).fontSize(9.5).fillColor(INK).text(doc.admission.attendingDoctor, right - 200, sy + 30, { width: 200, align: 'right' });
+  // Gap 363: the signature is the SIGNING doctor's, with the signed time.
+  const signer = signerDisplayName(doc.meta.signerName) ?? doc.admission.attendingDoctor;
+  pdf.font(theme.font.bold).fontSize(9.5).fillColor(INK).text(signer, right - 200, sy + 30, { width: 200, align: 'right' });
   if (doc.admission.specialization) pdf.font(theme.font.regular).fontSize(8).fillColor(MUTED).text(doc.admission.specialization, right - 200, pdf.y, { width: 200, align: 'right' });
-  if (doc.meta.signedAt) pdf.font(theme.font.regular).fontSize(8).fillColor(MUTED).text(`Electronically signed on ${fmtDateTime(doc.meta.signedAt)}`, right - 260, pdf.y + 2, { width: 260, align: 'right' });
-  if (doc.meta.attestation) pdf.font(theme.font.italic).fontSize(8).fillColor(MUTED).text(`Attested as “${doc.meta.attestation}”`, right - 260, pdf.y, { width: 260, align: 'right' });
+  const attestation = doc.meta.attestation ?? dischargeAttestation(doc.meta);
+  if (attestation) pdf.font(theme.font.regular).fontSize(8).fillColor(MUTED).text(attestation, right - 260, pdf.y + 2, { width: 260, align: 'right' });
 
   // ---- Branded footers (hospital name • page X of Y • disclaimer) ----
   finalizeBrandedDocument({

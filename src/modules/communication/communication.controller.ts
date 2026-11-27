@@ -6,8 +6,15 @@ import * as service from './communication.service';
 // Notifications
 export async function createNotification(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
-    const data = await service.createNotification(req.user!.tenantId, req.body);
-    sendResponse({ res, statusCode: 201, message: 'Notification sent', data });
+    // Gap 295: a repeat of an existing notification returns that one (same id)
+    // with 200; only a genuinely new row is 201.
+    const { notification, created } = await service.createNotificationWithStatus(req.user!.tenantId, req.body);
+    sendResponse({
+      res,
+      statusCode: created ? 201 : 200,
+      message: created ? 'Notification sent' : 'Notification already exists',
+      data: notification,
+    });
   } catch (err) { next(err); }
 }
 export async function getNotifications(req: AuthenticatedRequest, res: Response, next: NextFunction) {

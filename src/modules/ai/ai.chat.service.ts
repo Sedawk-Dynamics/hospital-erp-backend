@@ -4,11 +4,12 @@ import { AppError } from '../../shared/appError';
 import { generateText, generateJson } from '../../services/ai';
 import type { AiMessage } from '../../services/ai';
 import { assertFeatureEnabled } from './ai.config.service';
-import { buildPatientContext } from './ai.context';
 import { backfillResultsFromAttachments } from '../lab/lab.service';
 import { Prisma } from '@prisma/client';
 import type { PatientChatInput, BloodReportAnalysisInput } from './ai.validation';
 import { buildMedicineContext } from './ai.drug-context';
+import { getOrBuildContext } from './ai.context-version';
+import { buildGuidelineContext } from './cdss.multimodal';
 
 // Best-effort audit of AI usage. Never blocks the response.
 async function auditAi(
@@ -33,15 +34,24 @@ async function auditAi(
   }
 }
 
-const PATIENT_CHAT_SYSTEM = [
+export const PATIENT_CHAT_SYSTEM = [
   'You are a clinical decision-support assistant embedded in a hospital EMR, helping a licensed doctor reason about ONE patient.',
   'You are given the patient\'s structured record (diagnoses, consultation history, medications, lab results, imaging metadata, allergies, vitals, history) as context.',
   '',
   'Rules:',
+
   '- Answer the doctor\'s question conversationally and concisely, grounded ONLY in the provided context. If the context lacks the information, say so plainly.',
+  '- Medications are split into "Current" and "Past". Use only what is listed — do not assume a drug is taken unless it appears, and do not invent drugs or doses. You may point out when the SAME drug appears multiple times (possible duplicate) and suggest the doctor reconcile/confirm the current medication list. Flag a suitability concern ONLY when a condition that warrants it is present in the context (e.g. a drug with a known caution in a diagnosis already recorded for this patient); otherwise do not speculate.',
+  '- Lab results are labelled "Current encounter" vs "Previous (historical)". Treat only current-encounter labs as newly obtained. If the context says "No lab results from the current encounter", state that and do not present old results as new; cite a previous abnormal lab only when relevant to the current presentation, always with its date.',
+  '- Vitals are labelled "Current encounter" vs "Previous (historical)". Treat only current-encounter vitals as present findings; cite previous vitals only with their date and as historical. If the context says "Current encounter vital signs not recorded", state that plainly and never substitute previous vitals as current.',
   '- When you mention a diagnosis, include its ICD code if it is present in the context.',
   '- You receive imaging only as metadata + radiologist impression text — you do NOT see the images. Never claim to have analysed a scan; defer image interpretation to the radiologist.',
+  '- The context has a "CURRENT VISIT (today — FOCUS the response on this)" section with the reason the patient is here today (chief complaint), today\'s vitals and this visit\'s working diagnosis. Center your response on THIS current complaint. Everything else in the record is background history — do not frame the assessment around old or resolved findings unless they bear on today\'s problem.',
+  '- The context may have a "SPECIALTY CONSULTATION (this visit)" section — the specialist\'s structured inputs captured for today\'s encounter (speciality-specific scores, measurements and findings). Treat these as current findings for this visit and incorporate them into your assessment.',
+  '- Correlate when relevant: if today\'s complaint relates to a past or recurring issue, a chronic condition, or a prior abnormal lab/imaging result, explicitly connect them and bring that history forward (e.g. "recurrent — prior similar episode on <date>", "on a background of <chronic condition>"). If the past history is unrelated to today\'s complaint, keep it as background and do not let it dominate the response.',
+  '- Tailor every suggestion to the patient\'s AGE and gender from the PATIENT section: paediatric, adult and elderly patients differ in likely differentials, drug choices and dosing, age-specific red flags, and appropriate screening. Do not give age-inappropriate advice.',
   '- Be specific and actionable (suggested investigations, treatment considerations, monitoring, follow-up), but frame them as suggestions for the clinician to confirm.',
+  '- Prefer the provided CLINICAL GUIDELINES and cite them with [[n]]. You may add further suggestions beyond them, but base those on Indian national clinical guidelines/protocols (e.g. ICMR, MoHFW, national health programmes). Make clear which points come from the cited guidelines [[n]] and which are general recommendations.',
   '- Do not invent lab values, medications, or history that are not in the context.',
   '- Keep answers focused; use short paragraphs or bullets. This is decision support, not a final order.',
 ].join('\n');
@@ -54,17 +64,32 @@ export async function patientChat(
 ) {
   await assertFeatureEnabled('patientChat', tenantId);
 
-  const context = await buildPatientContext(tenantId, input.patientId);
-
-  // A question that names a medicine gets the catalogue's own facts for it —
-  // composition, interactions, the safety verdicts — so the answer comes from
-  // the label this hospital dispenses rather than the model's recollection of
-  // one. The patient's own medicines are already in the context above, which
-  // is what makes "can she take this with what she is on?" answerable.
+  const { context } = await getOrBuildContext(tenantId, input.patientId,input.visitId);
   const medicine = await buildMedicineContext(input.message, roles);
+
+  let guidelines = '';
+  let sources: { n: number; label: string; url: string }[] = [];
+  if (process.env.CDSS_RAG_ENABLED !== 'false') {
+    try {
+      const g = await buildGuidelineContext(`${input.message}\n\n${context.text}`);
+      if (g) {
+        guidelines = g.guidelines;
+        sources = g.sources;
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Guideline RAG unavailable — continuing without guidelines');
+    }
+  }
 
   const system = [
     PATIENT_CHAT_SYSTEM,
+    ...(guidelines
+      ? [
+          '',
+          '=== CLINICAL GUIDELINES (prefer these; cite inline using the number in double brackets, e.g. [[1]]. Use only the numbers shown.) ===',
+          guidelines,
+        ]
+      : []),
     '',
     '=== PATIENT CONTEXT ===',
     context.text,
@@ -77,7 +102,7 @@ export async function patientChat(
   }));
   const messages: AiMessage[] = [...history, { role: 'user', content: input.message }];
 
-  const { text, model, provider } = await generateText({ system, messages }, { tenantId });
+  const { text, model, provider } = await generateText({ system, messages ,model:input.model}, { tenantId });
 
   void auditAi(tenantId, userId, input.patientId, `Patient chat: ${input.message}`);
 
@@ -85,10 +110,10 @@ export async function patientChat(
     reply: text,
     model,
     provider,
+    sources,
     context: {
       patient: context.patient,
       counts: context.counts,
-      // What the answer was allowed to draw on, so the screen can show it.
       medicines: medicine?.products ?? [],
     },
   };
@@ -102,10 +127,6 @@ interface BloodReportResult {
   recommendations: string[];
 }
 
-// Use Case 2.2 — blood report (lab) analysis with a score. Works off the
-// stored LabResult values, including the ones read off an uploaded report PDF
-// or scan — the lab's real workflow is to upload the analyser's printout, not
-// to retype every number.
 export async function bloodReportAnalysis(
   tenantId: string,
   userId: string,
@@ -113,8 +134,7 @@ export async function bloodReportAnalysis(
 ) {
   await assertFeatureEnabled('bloodReport', tenantId);
 
-  // Released reports only — an analysis is written as if the numbers are final,
-  // so it must not be built on values still inside the lab's review loop.
+
   const where: Prisma.LabResultWhereInput = {
     patientId: input.patientId,
     labOrder: { tenantId, labReport: { status: { in: ['published', 'corrected'] } } },
@@ -180,3 +200,67 @@ export async function bloodReportAnalysis(
   const score = Math.max(0, Math.min(100, Number(result.score) || 0));
   return { ...result, score, resultCount: results.length };
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

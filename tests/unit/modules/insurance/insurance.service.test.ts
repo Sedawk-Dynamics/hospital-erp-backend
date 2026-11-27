@@ -783,7 +783,8 @@ describe('Insurance Service', () => {
         approvalDate: new Date(),
         reviewedBy: USER_ID,
       };
-      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue({ ...mockClaim, status: 'under_review' } as any);
+      // The payer can approve up to the covered amount (deductible/co-pay stay with the patient).
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue({ ...mockClaim, status: 'under_review', coveredAmount: 18000 } as any);
       vi.mocked(prisma.insuranceClaim.update).mockResolvedValue(approvedClaim as any);
 
       const result = await approveClaim(TENANT_ID, 'claim-1', USER_ID, {
@@ -1272,7 +1273,7 @@ describe('TPA communication logs', () => {
 
   describe('a failed log never undoes the action it describes', () => {
     it('approves the claim even when the log write fails', async () => {
-      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue({ ...mockClaim, status: 'under_review' } as any);
+      vi.mocked(prisma.insuranceClaim.findFirst).mockResolvedValue({ ...mockClaim, status: 'under_review', coveredAmount: 18000 } as any);
       vi.mocked(prisma.insuranceClaim.update).mockResolvedValue({
         ...mockClaim,
         status: 'approved',

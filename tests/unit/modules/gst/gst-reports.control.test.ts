@@ -9,6 +9,7 @@ import {
   getCancelledInvoices,
   getRateOverrides,
   getRateChangeImpact,
+  getDailyGstLiability,
 } from '../../../../src/modules/gst/gst-reports.control';
 
 const TENANT = 'tenant-1';
@@ -259,6 +260,31 @@ describe('getCancelledInvoices (C-9)', () => {
 
   // The exception worth finding: the money came off, the tax did not, and the
   // return still declares it.
+  // Gap 268: voiding a pharmacy sale zeroes the bill; the credit note keeps
+  // what was invoiced (stored negative), and that is what the register shows.
+  it('takes the value and tax from the credit note when the voided bill was zeroed', async () => {
+    (prisma.bill.findMany as any).mockResolvedValue([cancelled({
+      billNumber: 'PH-20261120-0001', totalAmount: 0, taxAmount: 0, taxableValue: 0,
+      cgstAmount: 0, sgstAmount: 0, igstAmount: 0,
+      creditNotes: [{
+        creditNoteNumber: 'CN/2026-27/000009', noteType: 'credit', taxableValue: -100,
+        cgstAmount: -9, sgstAmount: -9, igstAmount: 0, taxAmount: -18, totalAmount: -118,
+      }],
+    })]);
+    const r = await getCancelledInvoices(TENANT);
+    expect(r.rows[0]).toMatchObject({
+      totalAmount: 118, taxableValue: 100, taxAmount: 18, cgstAmount: 9, sgstAmount: 9,
+      valueSource: 'credit_note', unreversed: false,
+    });
+    expect(r.totals).toMatchObject({ totalAmount: 118, taxAmount: 18, taxableValue: 100 });
+  });
+
+  it('keeps the bill\'s own value when it was not zeroed', async () => {
+    (prisma.bill.findMany as any).mockResolvedValue([cancelled({ taxableValue: 8000 })]);
+    const r = await getCancelledInvoices(TENANT);
+    expect(r.rows[0]).toMatchObject({ totalAmount: 8400, taxAmount: 400, taxableValue: 8000, valueSource: 'bill' });
+  });
+
   it('flags an issued invoice cancelled with no credit note behind it', async () => {
     (prisma.bill.findMany as any).mockResolvedValue([cancelled({ creditNotes: [] })]);
     const r = await getCancelledInvoices(TENANT);
@@ -311,9 +337,10 @@ describe('getRateOverrides (C-5)', () => {
     (prisma.bill.findMany as any).mockResolvedValue([billWith([typed])]);
     const r = await getRateOverrides(TENANT);
     expect(r.notes.join(' ')).toMatch(/not provably the person who typed the rate/);
-    expect(r.notes.join(' ')).toMatch(/No reason is recorded/);
+    // Gap item 279: item changes now carry a reason where the save sends one.
+    expect(r.notes.join(' ')).toMatch(/A reason is recorded where the save sends one/);
     // The gate means a new one cannot get through, so everything here is old.
-    expect(r.notes.join(' ')).toMatch(/What appears here is legacy/);
+    expect(r.notes.join(" ")).toMatch(/Typed-rate lines below are legacy/);
   });
 
   it('attributes a line to nobody rather than guessing when the bill has no author', async () => {
@@ -395,7 +422,7 @@ describe('getRateChangeImpact (C-8)', () => {
     seed([]);
     const r = await getRateChangeImpact(TENANT);
     expect(r.changes).toEqual([]);
-    expect(r.notes[0]).toMatch(/Nothing on a tax master changed/);
+    expect(r.notes[0]).toMatch(/Nothing on a tax master or an item changed/);
     // Never queries the bill lines when there is no change to attribute to them.
     expect(prisma.billItem.findMany).not.toHaveBeenCalled();
   });
@@ -406,5 +433,122 @@ describe('getRateChangeImpact (C-8)', () => {
     expect(r.changes[0]).toMatchObject({ action: 'deactivate', newRate: null });
     // No new rate means nothing to compare a later line against.
     expect(r.changes[0].outOfStep).toEqual([]);
+  });
+});
+
+// Gap item 276: C-1 is gross billed LESS the notes that reverse it, per rate,
+// and its net must be GSTR-3B's output tax.
+describe('getDailyGstLiability (C-1) with credit notes', () => {
+  const note = (over: Record<string, unknown> = {}) => ({
+    id: 'cn-1', creditNoteNumber: 'CN/1', noteType: 'credit',
+    issueDate: new Date('2026-09-10T00:00:00Z'), financialYear: '2026-27',
+    reason: 'sales_return', reasonNote: null, patientId: 'p1', recipientGstin: null,
+    placeOfSupplyStateCode: '27', taxableValue: -1000, cgstAmount: -25, sgstAmount: -25,
+    igstAmount: 0, cessAmount: 0, taxAmount: -50, totalAmount: -1050, withinTimeLimit: true,
+    items: [{ taxPercent: 5, taxableValue: -1000, cgstAmount: -25, sgstAmount: -25, igstAmount: 0,
+      cessAmount: 0, taxAmount: -50, description: 'Returned', hsnSacCode: '9963', quantity: 1,
+      gstTreatment: 'taxable', billItem: null }],
+    bill: { billNumber: 'BILL-1', invoiceNumber: 'INV/1', gstDocumentType: 'tax_invoice',
+      billDate: new Date('2026-09-03T00:00:00Z'), status: 'paid', _count: { billItems: 1 } },
+    patient: null, issuer: null,
+    ...over,
+  });
+
+  it('shows gross, credit notes and net per rate, and the net ties to GSTR-3B', async () => {
+    (prisma.bill.findMany as any).mockResolvedValue([billWith([TAXED, {}])]);
+    (prisma.creditNote.findMany as any).mockResolvedValue([note()]);
+    const r = await getDailyGstLiability(TENANT);
+    const five = r.byRate.find((x) => x.ratePercent === 5)!;
+    expect(five.gross).toMatchObject({ taxableValue: 8000, taxAmount: 400 });
+    expect(five.creditNotes).toMatchObject({ taxableValue: -1000, taxAmount: -50 });
+    expect(five.net).toMatchObject({ taxableValue: 7000, taxAmount: 350 });
+    expect(r.liability.net.taxAmount).toBe(350);
+    expect(r.liability.gstr3bOutwardTax).toBe(350);
+    expect(r.liability.agreesWithGstr3b).toBe(true);
+  });
+
+  it('does not take a voided sale off twice', async () => {
+    (prisma.bill.findMany as any).mockResolvedValue([billWith([TAXED])]);
+    (prisma.creditNote.findMany as any).mockResolvedValue([
+      note({ bill: { billNumber: 'B9', invoiceNumber: 'INV/9', gstDocumentType: 'tax_invoice',
+        billDate: new Date('2026-09-03T00:00:00Z'), status: 'cancelled', _count: { billItems: 0 } } }),
+    ]);
+    const r = await getDailyGstLiability(TENANT);
+    expect(r.liability.net.taxAmount).toBe(400);
+    expect(r.liability.notesExcluded.originalNotInRegister).toBe(1);
+  });
+});
+
+// Gap item 280: the mode comes off the payment row, card is card, and a bill
+// paid in two tenders splits its tax between them by amount.
+describe('getDailyCollection (C-1b) by mode', () => {
+  it('puts card sales under card and splits a mixed payment in proportion', async () => {
+    const bill = { id: 'b1', billNumber: 'BILL-1', totalAmount: 1050, taxAmount: 50 };
+    (prisma.payment.findMany as any).mockResolvedValue([
+      { id: 'p1', paymentDate: new Date('2026-09-04T09:00:00Z'), amount: 630, paymentMethod: 'credit_card', paymentType: 'regular', paymentSource: 'pharmacy', processor: null, bill },
+      { id: 'p2', paymentDate: new Date('2026-09-04T09:00:00Z'), amount: 420, paymentMethod: 'cash', paymentType: 'regular', paymentSource: 'pharmacy', processor: null, bill },
+      { id: 'p3', paymentDate: new Date('2026-09-04T10:00:00Z'), amount: 200, paymentMethod: 'debit_card', paymentType: 'regular', paymentSource: 'pharmacy', processor: null, bill: null },
+    ]);
+    const r = await getDailyCollection(TENANT);
+    const card = r.byMode.find((m) => m.mode === 'card')!;
+    const cash = r.byMode.find((m) => m.mode === 'cash')!;
+    expect(card).toMatchObject({ collected: 830, taxCollected: 30, count: 2 });
+    expect(cash).toMatchObject({ collected: 420, taxCollected: 20 });
+    expect(r.byMode.find((m) => m.mode === 'net_banking')).toMatchObject({ collected: 0, count: 0 });
+  });
+});
+
+// Gap item 279: C-5 and C-8 are built from the item audit log and from the
+// differences between items, their masters and what was billed.
+describe('rate audit (gap item 279)', () => {
+  const logged = {
+    id: 'ic1', tenantId: TENANT, itemType: 'service', itemId: 'tariff-1', itemName: 'Deluxe room',
+    previousRate: 12, newRate: 5, previousCode: '996311', newCode: '996311',
+    previousTreatment: 'taxable', newTreatment: 'taxable', action: 'update',
+    reason: 'Service tariff edited', changedBy: 'u1', changedAt: new Date('2026-09-10T00:00:00Z'),
+  };
+
+  it('C-5 lists item changes with who and why, and lines billed off the item rate', async () => {
+    (prisma.bill.findMany as any).mockResolvedValue([billWith([TAXED])]);
+    (prisma.gstItemRateChange.findMany as any).mockResolvedValue([logged]);
+    (prisma.user.findMany as any).mockResolvedValue([{ id: 'u1', firstName: 'Billing', lastName: 'Admin' }]);
+    (prisma.billItem.findMany as any).mockResolvedValue([
+      {
+        description: 'Deluxe room', taxPercent: 12, taxAmount: 960, gstTreatment: 'taxable',
+        rateSource: 'item_master', serviceTariffId: 'tariff-1', referenceType: null, referenceId: null,
+        serviceTariff: { id: 'tariff-1', gstRatePercent: 5, gstTreatment: 'taxable' },
+        bill: { billNumber: 'BILL-1', invoiceNumber: 'INV/1', billDate: new Date('2026-09-05T00:00:00Z'), generator: null },
+      },
+    ]);
+    const r = await getRateOverrides(TENANT);
+    expect(r.itemChanges[0]).toMatchObject({
+      itemName: 'Deluxe room', previousRate: 12, newRate: 5, changedBy: 'Billing Admin', reason: 'Service tariff edited',
+    });
+    expect(r.billedVsItem[0]).toMatchObject({ billedRate: 12, itemRate: 5, itemType: 'service' });
+    expect(r.totals).toMatchObject({ itemChanges: 1, billedVsItem: 1 });
+  });
+
+  it('C-5 flags an item whose rate differs from its SAC master', async () => {
+    (prisma.bill.findMany as any).mockResolvedValue([]);
+    (prisma.serviceTariff.findMany as any).mockResolvedValue([
+      { id: 't1', serviceName: 'Deluxe room', sacCode: '996311', gstRatePercent: 12, gstTreatment: 'taxable', gstApproved: false },
+    ]);
+    (prisma.sacCode.findMany as any).mockResolvedValue([{ sacCode: '996311', gstRate: 5, treatment: 'taxable' }]);
+    const r = await getRateOverrides(TENANT);
+    expect(r.itemVsMaster[0]).toMatchObject({ itemName: 'Deluxe room', itemRate: 12, masterRate: 5 });
+  });
+
+  it('C-8 shows an item change and the lines either side of it', async () => {
+    (prisma.gstRateChange.findMany as any).mockResolvedValue([]);
+    (prisma.gstItemRateChange.findMany as any).mockResolvedValue([logged]);
+    (prisma.billItem.findMany as any).mockResolvedValue([
+      { taxPercent: 12, taxAmount: 960, totalAmount: 8960, description: 'Deluxe room', createdAt: new Date('2026-09-05T00:00:00Z'), serviceTariffId: 'tariff-1', referenceId: null, bill: { billNumber: 'B1', invoiceNumber: 'INV/1', billDate: new Date('2026-09-05T00:00:00Z') } },
+      { taxPercent: 12, taxAmount: 960, totalAmount: 8960, description: 'Deluxe room', createdAt: new Date('2026-09-15T00:00:00Z'), serviceTariffId: 'tariff-1', referenceId: null, bill: { billNumber: 'B2', invoiceNumber: 'INV/2', billDate: new Date('2026-09-15T00:00:00Z') } },
+    ]);
+    const r = await getRateChangeImpact(TENANT);
+    expect(r.itemChanges[0].linesBefore.count).toBe(1);
+    expect(r.itemChanges[0].linesAfter.count).toBe(1);
+    expect(r.itemChanges[0].outOfStep).toHaveLength(1);
+    expect(r.totals.itemChanges).toBe(1);
   });
 });

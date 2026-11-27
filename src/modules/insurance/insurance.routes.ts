@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { authenticate } from '../../middleware/authenticate';
-import { requirePermission } from '../../middleware/authorize';
+import { requirePermission, requireRoles } from '../../middleware/authorize';
 import { validate } from '../../middleware/validate';
 import {
   idParamSchema,
@@ -38,6 +38,14 @@ import {
 } from './insurance.validation';
 import * as controller from './insurance.controller';
 import * as workflowController from './insurance.workflow.controller';
+import * as adminController from './insurance.admin.controller';
+import {
+  closeStalePreAuthSchema,
+  closeStaleClaimQuerySchema,
+  mergePayerPreviewSchema,
+  mergePayerSchema,
+  updateEscalationSettingsSchema,
+} from './insurance.admin.validation';
 import {
   addCasePolicySchema,
   bankMatchQuerySchema,
@@ -76,8 +84,12 @@ export const insuranceRoutes = Router();
 // ============================================================
 // Dashboard
 // ============================================================
-insuranceRoutes.get('/dashboard', authenticate, requirePermission('insurance', 'read'), controller.getDashboard);
+insuranceRoutes.get('/dashboard', authenticate, requirePermission('insurance', 'read'), validate(reportsQuerySchema), controller.getDashboard);
 insuranceRoutes.get('/sla-queue', authenticate, requirePermission('insurance', 'read'), workflowController.getSlaQueue);
+// Gap 294: per-hospital SLA escalation (hours past deadline + target role).
+// Anyone on the module can read it; only a Hospital Admin can change it.
+insuranceRoutes.get('/sla-escalation-settings', authenticate, requirePermission('insurance', 'read'), adminController.getEscalationSettings);
+insuranceRoutes.put('/sla-escalation-settings', authenticate, requireRoles('admin', 'super_admin'), validate(updateEscalationSettingsSchema), adminController.updateEscalationSettings);
 insuranceRoutes.get('/workflow-analytics', authenticate, requirePermission('insurance', 'read'), validate(workflowReportQuerySchema), workflowController.getWorkflowAnalytics);
 
 // Distinct payer roles. A TPA administers a claim; it is not implicitly the
@@ -118,6 +130,9 @@ insuranceRoutes.get('/insurers', authenticate, requirePermission('insurance', 'r
 insuranceRoutes.get('/insurers/:id', authenticate, requirePermission('insurance', 'read'), validate(idParamSchema), controller.getInsurerById);
 insuranceRoutes.put('/insurers/:id', authenticate, requirePermission('insurance', 'update'), validate(updateInsurerSchema), controller.updateInsurer);
 insuranceRoutes.delete('/insurers/:id', authenticate, requirePermission('insurance', 'delete'), validate(idParamSchema), controller.deleteInsurer);
+// Gap 293: merge a duplicate (:id) into the record to keep — Hospital Admin only.
+insuranceRoutes.get('/insurers/:id/merge-preview', authenticate, requireRoles('admin', 'super_admin'), validate(mergePayerPreviewSchema), adminController.previewInsurerMerge);
+insuranceRoutes.post('/insurers/:id/merge', authenticate, requireRoles('admin', 'super_admin'), validate(mergePayerSchema), adminController.mergeInsurer);
 
 // ============================================================
 // TPA Providers
@@ -127,6 +142,8 @@ insuranceRoutes.get('/tpa', authenticate, requirePermission('insurance', 'read')
 insuranceRoutes.get('/tpa/:id', authenticate, requirePermission('insurance', 'read'), validate(idParamSchema), controller.getTPAById);
 insuranceRoutes.put('/tpa/:id', authenticate, requirePermission('insurance', 'update'), validate(updateTPASchema), controller.updateTPA);
 insuranceRoutes.delete('/tpa/:id', authenticate, requirePermission('insurance', 'delete'), validate(idParamSchema), controller.deleteTPA);
+insuranceRoutes.get('/tpa/:id/merge-preview', authenticate, requireRoles('admin', 'super_admin'), validate(mergePayerPreviewSchema), adminController.previewTpaMerge);
+insuranceRoutes.post('/tpa/:id/merge', authenticate, requireRoles('admin', 'super_admin'), validate(mergePayerSchema), adminController.mergeTpa);
 
 // ============================================================
 // TPA Communication Logs
@@ -172,6 +189,8 @@ insuranceRoutes.post('/claims/:id/resubmit', authenticate, requirePermission('in
 insuranceRoutes.patch('/claims/:id/cancel', authenticate, requirePermission('insurance', 'update'), validate(cancelClaimSchema), controller.cancelClaim);
 insuranceRoutes.patch('/claim-queries/:queryId/respond', authenticate, requirePermission('insurance', 'update'), validate(respondClaimQuerySchema), workflowController.respondClaimQuery);
 insuranceRoutes.patch('/claim-queries/:queryId/resolve', authenticate, requirePermission('insurance', 'approve'), validate(resolveClaimQuerySchema), workflowController.resolveClaimQuery);
+// Gap 294 (retest): close a stale payer query with a reason.
+insuranceRoutes.patch('/claim-queries/:queryId/close-stale', authenticate, requirePermission('insurance', 'approve'), validate(closeStaleClaimQuerySchema), adminController.closeStaleClaimQuery);
 insuranceRoutes.patch('/claim-write-offs/:writeOffId/decision', authenticate, requirePermission('insurance', 'approve'), validate(decideWriteOffSchema), workflowController.decideWriteOff);
 
 // ============================================================
@@ -186,6 +205,8 @@ insuranceRoutes.patch('/pre-auth/:id/approve', authenticate, requirePermission('
 insuranceRoutes.patch('/pre-auth/:id/reject', authenticate, requirePermission('insurance', 'approve'), validate(rejectPreAuthSchema), controller.rejectPreAuth);
 insuranceRoutes.patch('/pre-auth/:id/hold', authenticate, requirePermission('insurance', 'approve'), validate(holdPreAuthSchema), controller.holdPreAuth);
 insuranceRoutes.patch('/pre-auth/:id/release-hold', authenticate, requirePermission('insurance', 'approve'), validate(idParamSchema), controller.releasePreAuthHold);
+// Gap 294: close an overdue request that will never be decided — reason required.
+insuranceRoutes.patch('/pre-auth/:id/close-stale', authenticate, requirePermission('insurance', 'approve'), validate(closeStalePreAuthSchema), adminController.closeStalePreAuth);
 insuranceRoutes.patch('/pre-auth/:id/cancel', authenticate, requirePermission('insurance', 'update'), validate(idParamSchema), controller.cancelPreAuth);
 
 // ============================================================

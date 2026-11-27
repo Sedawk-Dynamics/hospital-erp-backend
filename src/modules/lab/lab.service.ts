@@ -1152,7 +1152,7 @@ export async function acceptLabOrder(
   return { ...updated, billing };
 }
 
-export async function cancelLabOrder(tenantId: string, id: string, reason?: string) {
+export async function cancelLabOrder(tenantId: string, userId: string, id: string, reason?: string) {
   const order = await prisma.labOrder.findFirst({
     where: { id, tenantId },
   });
@@ -1198,6 +1198,31 @@ export async function cancelLabOrder(tenantId: string, id: string, reason?: stri
       },
     });
   });
+
+  // Reverse the cash-counter charge (refund if paid, cancel the bill if unpaid).
+  // Best-effort and non-fatal, mirroring appointment cancellation: a booking
+  // that could not tidy its bill is a worse outcome than a bill needing a look.
+  try {
+    const billing = await import('../billing/billing.service');
+    const itemIds = updated.labOrderItems?.map((it) => it.id) ?? [];
+    const settled = await billing.settleCancelledLabOrderCharge(
+      tenantId,
+      userId,
+      itemIds,
+      reason?.trim() || 'cancelled by staff',
+    );
+    if (settled.refundedAmount > 0) {
+      logger.info(
+        { tenantId, orderId: id, amount: settled.refundedAmount },
+        'Cancelled lab order fee refunded to patient',
+      );
+    }
+  } catch (err) {
+    logger.warn(
+      { tenantId, orderId: id, err },
+      'Could not settle the lab order charge on cancellation (non-fatal)',
+    );
+  }
 
   logger.info({ tenantId, orderId: id }, 'Lab order cancelled');
   return updated;
@@ -2086,7 +2111,7 @@ export async function publishLabReport(
     void safeLabReportEmail({
       toEmail: patient?.email ?? null,
       patientName,
-      reportDate: new Date().toLocaleDateString('en-IN'),
+      reportDate: new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' }),
       hospitalName: tenant?.name ?? 'Hospital',
       testSummary,
     });
@@ -2100,7 +2125,7 @@ export async function publishLabReport(
       void safeLabReportEmail({
         toEmail: doctor?.email ?? null,
         patientName: `Dr. ${doctor?.firstName ?? ''} ${doctor?.lastName ?? ''}`.trim(),
-        reportDate: new Date().toLocaleDateString('en-IN'),
+        reportDate: new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' }),
         hospitalName: tenant?.name ?? 'Hospital',
         testSummary: `${patientName} — ${testSummary}`,
       });
@@ -2872,7 +2897,7 @@ export async function correctLabReport(
     void safeLabReportCorrectedEmail({
       toEmail: patient?.email ?? null,
       patientName,
-      reportDate: new Date().toLocaleDateString('en-IN'),
+      reportDate: new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' }),
       hospitalName: tenant?.name ?? 'Hospital',
       correctionNotes: data.correctionNotes,
     });
@@ -2884,7 +2909,7 @@ export async function correctLabReport(
       void safeLabReportCorrectedEmail({
         toEmail: doctor?.email ?? null,
         patientName: `Dr. ${doctor?.firstName ?? ''} ${doctor?.lastName ?? ''}`.trim(),
-        reportDate: new Date().toLocaleDateString('en-IN'),
+        reportDate: new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' }),
         hospitalName: tenant?.name ?? 'Hospital',
         correctionNotes: `${patientName} — ${data.correctionNotes}`,
       });

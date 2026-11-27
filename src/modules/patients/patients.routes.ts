@@ -226,4 +226,6 @@ patientRoutes.get(
   requirePermission('patients', 'read'),
   validate(patientIdParamSchema),
   controller.globalHistory,
-);
+); 
+
+patientRoutes.get('/:id/emergency-registration',authenticate,requirePermission('patients', 'read'),validate(patientIdParamSchema),controller.getEmergencyDetails)

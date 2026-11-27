@@ -173,10 +173,13 @@ describe('getPatientVisitStatus', () => {
     });
   });
 
-  it('ignores a fee on a cancelled bill', async () => {
+  // Regression: 0106fd2 deliberately widened the filter so a REFUNDED
+  // registration fee no longer counts as "already charged" (the money went
+  // back, so the fee is due again). The test still pinned the old shape.
+  it('ignores a fee on a cancelled or refunded bill', async () => {
     await getPatientVisitStatus(TENANT, PATIENT);
     const where = (prisma.billItem.findFirst as any).mock.calls[0][0].where;
-    expect(where.bill.status).toEqual({ not: 'cancelled' });
+    expect(where.bill.status).toEqual({ notIn: ['cancelled', 'refunded'] });
   });
 
   it('does not suggest a charge when the hospital has the fee switched off', async () => {
@@ -253,6 +256,15 @@ describe('GST registration', () => {
   it('refuses an invalid GSTIN as a bad request and writes nothing', async () => {
     (prisma.tenant.findFirst as any).mockResolvedValue({ themeConfig: {} });
     await expect(updateGstProfile(TENANT, { gstin: '27AAPFU0939F1ZA' })).rejects.toMatchObject({
+      statusCode: 400,
+    });
+    expect((prisma.tenant.update as any)).not.toHaveBeenCalled();
+  });
+
+  // Gap item 311: the PAN inside the GSTIN must be the hospital's own PAN.
+  it('refuses a GSTIN whose PAN part does not match the hospital PAN', async () => {
+    (prisma.tenant.findFirst as any).mockResolvedValue({ themeConfig: {} });
+    await expect(updateGstProfile(TENANT, { gstin: VALID, pan: 'BBBPF1234K' })).rejects.toMatchObject({
       statusCode: 400,
     });
     expect((prisma.tenant.update as any)).not.toHaveBeenCalled();

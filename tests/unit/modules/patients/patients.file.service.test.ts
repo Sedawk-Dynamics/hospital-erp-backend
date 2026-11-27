@@ -196,6 +196,29 @@ describe('centralized patient file — content', () => {
     expect(file.billing.bills).toHaveLength(3);
   });
 
+  // Gap 333: Visit.visitType is only op/ip, so the OP visits table printed "Op"
+  // for a booked follow-up. The kind comes from the linked appointment.
+  it('carries the booked consultation kind onto each OP visit', async () => {
+    (prisma.visit.findMany as any).mockResolvedValue([
+      { id: 'v1', visitDate: new Date(), visitType: 'op', status: 'completed', chiefComplaint: null, doctor: null, diagnoses: [],
+        appointment: { consultationType: 'follow_up', visitType: 'revisit' } },
+      { id: 'v2', visitDate: new Date(), visitType: 'op', status: 'completed', chiefComplaint: null, doctor: null, diagnoses: [],
+        appointment: { consultationType: 'consultation', visitType: 'new' } },
+      { id: 'v3', visitDate: new Date(), visitType: 'op', status: 'active', chiefComplaint: null, doctor: null, diagnoses: [],
+        appointment: null },
+    ]);
+
+    const file = await getPatientFile(hospitalAdmin, PATIENT);
+
+    expect(file.visits.map((v) => [v.consultationType, v.appointmentVisitType])).toEqual([
+      ['follow_up', 'revisit'],
+      ['consultation', 'new'],
+      [null, null],
+    ]);
+    const visitQuery = (prisma.visit.findMany as any).mock.calls[0][0];
+    expect(visitQuery.include.appointment).toBeDefined();
+  });
+
   it('surfaces a live admission so the file says the patient is in a bed', async () => {
     (prisma.admission.findMany as any).mockResolvedValue([
       {
