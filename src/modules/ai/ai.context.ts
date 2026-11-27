@@ -60,6 +60,7 @@ export async function buildPatientContext(
     vitals,
     imagingFiles,
     currentVisit,
+    specialitiesData,
   ] =
     await Promise.all([
       prisma.visit.findMany({
@@ -148,7 +149,7 @@ export async function buildPatientContext(
           },
         },
       }),
-      
+
       visitId
         ? prisma.visit.findFirst({
           where: { id: visitId, patientId, tenantId },
@@ -158,6 +159,8 @@ export async function buildPatientContext(
           },
         })
         : Promise.resolve(null),
+
+      visitId ? prisma.consultationSpecialtyData.findFirst({ where: { tenantId, visitId, patientId }, select: { data: true, speciality: true } }) : Promise.resolve(null),
     ]);
 
   const age = ageFromDob(patient.dateOfBirth);
@@ -482,6 +485,25 @@ Produce a concise report with Findings and an Impression. If clinical context wa
     if (previous.length) text += `Previous (historical):\n${previous.map(line).join('\n')}`;
 
     sections.push(text.trim());
+  }
+
+  const specData = specialitiesData?.data as Record<string, unknown> | undefined;
+  if (specData && Object.keys(specData).length) {
+    const fmt = (v: any): string => {
+      if (v == null || v === '') return '';
+      if (typeof v === 'boolean') return v ? 'Yes' : '';
+      if (Array.isArray(v)) return v.map(fmt).filter(Boolean).join(' | ');
+      if (typeof v === 'object')
+        return 'value' in v
+          ? `${v.value}${v.unit ? ` ${v.unit}` : ''}`
+          : Object.entries(v).map(([k, val]) => `${k}: ${fmt(val)}`).join(', ');
+      return String(v);
+    };
+    const body = Object.entries(specData)
+      .map(([k, v]) => (fmt(v) ? `- ${k}: ${fmt(v)}` : ''))
+      .filter(Boolean)
+      .join('\n');
+    if (body) sections.push('## SPECIALTY CONSULTATION (this visit)\n' + body);
   }
 
 
