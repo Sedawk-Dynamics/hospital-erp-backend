@@ -18,6 +18,7 @@
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { fullName } from '../../shared/person-name';
+import { formatDrugQty, formatQty, qtyUnitsOf, UNIT_SELECT, type QtyUnits } from './pharmacy.units';
 
 export type DrugMovementType =
   | 'receipt'
@@ -208,7 +209,7 @@ export async function drugOutflowAsStockTransactions(
   const [batches, users] = await Promise.all([
     prisma.drugBatch.findMany({
       where: { tenantId, id: { in: [...new Set(rows.map((r) => r.drugBatchId))] } },
-      select: { id: true, batchNumber: true, drug: { select: { id: true, drugName: true, unitOfMeasurement: true } } },
+      select: { id: true, batchNumber: true, drug: { select: { id: true, drugName: true, ...UNIT_SELECT } } },
     }),
     prisma.user.findMany({
       where: { id: { in: [...new Set(rows.map((r) => r.performedBy).filter((v): v is string => !!v))] } },
@@ -226,6 +227,8 @@ export async function drugOutflowAsStockTransactions(
         source: 'pharmacy',
         transactionType: 'stock_out',
         quantity: Math.abs(r.quantity),
+        // 345: the same words the sale's bill line prints.
+        quantityText: formatDrugQty(Math.abs(r.quantity), b?.drug),
         batchNumber: b?.batchNumber ?? null,
         referenceType: INVENTORY_LABEL[r.movementType] ?? r.movementType,
         referenceId: r.referenceId,
@@ -260,6 +263,10 @@ export interface StockLedgerEntry {
   batchNumber: string;
   quantityIn: number;
   quantityOut: number;
+  /** 345: the quantity in words — the unit the bill and the stock list print. */
+  quantityText: string;
+  /** 345: the running balance in words; null when there is no balance. */
+  balanceText: string | null;
   party: string | null;
   /**
    * Gap 347: who made the movement — the pharmacist who sold/dispensed, the
@@ -359,7 +366,7 @@ export async function buildStockLedger(
     batchIds.length
       ? prisma.drugBatch.findMany({
           where: { tenantId, id: { in: batchIds } },
-          select: { id: true, batchNumber: true, drug: { select: { id: true, drugName: true } } },
+          select: { id: true, batchNumber: true, drug: { select: { id: true, drugName: true, ...UNIT_SELECT } } },
         })
       : Promise.resolve([]),
     saleBillIds.length
@@ -382,6 +389,14 @@ export async function buildStockLedger(
   const billById = new Map((saleBills as any[]).map((b) => [b.id, b]));
   const performerById = new Map(((performers ?? []) as any[]).map((u) => [u.id, fullName(u)]));
 
+  // 345: one set of unit nouns per drug, for every row and the balance.
+  const unitsByDrug = new Map<string, QtyUnits>();
+  const qtyWords = (qty: number, drug: any): string => {
+    const units = qtyUnitsOf(drug);
+    if (drug?.id) unitsByDrug.set(drug.id, units);
+    return formatQty(Math.abs(qty), units);
+  };
+
   const entries: StockLedgerEntry[] = movesList.map((m) => {
     const b = batchById.get(m.drugBatchId);
     const bill = m.referenceId ? billById.get(m.referenceId) : null;
@@ -399,6 +414,8 @@ export async function buildStockLedger(
       batchNumber: b?.batchNumber ?? '-',
       quantityIn: m.quantity > 0 ? m.quantity : 0,
       quantityOut: m.quantity < 0 ? -m.quantity : 0,
+      quantityText: qtyWords(m.quantity, b?.drug),
+      balanceText: null,
       party,
       by: m.performedBy ? performerById.get(m.performedBy) ?? null : null,
       referenceId: m.referenceId ?? m.id,
@@ -417,12 +434,12 @@ export async function buildStockLedger(
     const [batches, dispenses, returns] = await Promise.all([
       prisma.drugBatch.findMany({
         where: { tenantId, createdAt: window, ...drugFilter },
-        include: { drug: { select: { id: true, drugName: true } }, supplier: { select: { name: true } } },
+        include: { drug: { select: { id: true, drugName: true, ...UNIT_SELECT } }, supplier: { select: { name: true } } },
       }),
       prisma.dispensingRecord.findMany({
         where: { tenantId, cancelledAt: null, dispensedAt: window, ...batchDrugFilter },
         include: {
-          drugBatch: { select: { batchNumber: true, drug: { select: { id: true, drugName: true } } } },
+          drugBatch: { select: { batchNumber: true, drug: { select: { id: true, drugName: true, ...UNIT_SELECT } } } },
           patient: { select: { firstName: true, lastName: true, mrn: true } },
           dispenser: { select: { firstName: true, lastName: true } },
         },
@@ -430,8 +447,8 @@ export async function buildStockLedger(
       prisma.drugReturn.findMany({
         where: { tenantId, status: 'processed', createdAt: window, drugBatchId: { not: null }, ...batchDrugFilter },
         include: {
-          drugBatch: { select: { batchNumber: true, drug: { select: { id: true, drugName: true } } } },
-          drug: { select: { id: true, drugName: true } },
+          drugBatch: { select: { batchNumber: true, drug: { select: { id: true, drugName: true, ...UNIT_SELECT } } } },
+          drug: { select: { id: true, drugName: true, ...UNIT_SELECT } },
           supplier: { select: { name: true } },
           processor: { select: { firstName: true, lastName: true } },
         },
@@ -442,6 +459,7 @@ export async function buildStockLedger(
         id: `receipt-${b.id}`, date: b.createdAt, movementType: 'receipt',
         drugId: b.drug?.id ?? b.drugId, drugName: b.drug?.drugName ?? 'Medication',
         batchNumber: b.batchNumber, quantityIn: b.quantityReceived ?? 0, quantityOut: 0,
+        quantityText: qtyWords(b.quantityReceived ?? 0, b.drug), balanceText: null,
         // A batch row records no receiving user.
         party: b.supplier?.name ?? null, by: null, referenceId: b.id, balance: null, reconstructed: true,
       })),
@@ -449,6 +467,7 @@ export async function buildStockLedger(
         id: `dispense-${d.id}`, date: d.dispensedAt, movementType: d.billId ? 'sale' : 'dispense',
         drugId: d.drugBatch?.drug?.id ?? '', drugName: d.drugBatch?.drug?.drugName ?? 'Medication',
         batchNumber: d.drugBatch?.batchNumber ?? '-', quantityIn: 0, quantityOut: d.quantityDispensed,
+        quantityText: qtyWords(d.quantityDispensed, d.drugBatch?.drug), balanceText: null,
         party: d.patient ? `${fullName(d.patient)} (${d.patient.mrn})` : null,
         by: d.dispenser ? fullName(d.dispenser) : null,
         referenceId: d.id, balance: null, reconstructed: true,
@@ -463,6 +482,7 @@ export async function buildStockLedger(
           drugName: r.drugBatch?.drug?.drugName ?? r.drug?.drugName ?? 'Medication',
           batchNumber: r.drugBatch?.batchNumber ?? r.batchNumber ?? '-',
           quantityIn: out ? 0 : r.quantity, quantityOut: out ? r.quantity : 0,
+          quantityText: qtyWords(r.quantity, r.drugBatch?.drug ?? r.drug), balanceText: null,
           party: r.supplier?.name ?? null, by: r.processor ? fullName(r.processor) : null,
           referenceId: r.id, balance: null, reconstructed: true,
         };
@@ -490,6 +510,8 @@ export async function buildStockLedger(
     for (const e of entries) {
       bal += e.quantityIn - e.quantityOut;
       e.balance = bal;
+      const u = unitsByDrug.get(e.drugId);
+      e.balanceText = u ? formatQty(bal, u) : null;
     }
   }
   entries.reverse();

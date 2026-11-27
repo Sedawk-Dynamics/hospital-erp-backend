@@ -20,6 +20,7 @@
 // statement from not having reached that section yet.
 // ---------------------------------------------------------------------------
 
+import { isB2cLarge } from '../../shared/b2cl-threshold';
 import { r2 } from '../../shared/gst';
 import { logger } from '../../config/logger';
 import { getSalesRegister, getHsnSummary, type SalesReportQuery, type SalesLine } from './gst-reports.sales';
@@ -147,9 +148,12 @@ export async function buildGstr1Json(
 
   // ── 5 and 7. B2C ──
   const b2cLines = taxable.filter((l) => !l.recipientGstin);
-  const B2CL_THRESHOLD = 250000;
+  // The WHOLE invoice's value decides Table 5 against Table 7, exempt lines
+  // included — the same test A-5 makes, so the file and the screen agree.
+  const invoiceValue = new Map<string, number>();
+  for (const l of register.rows) invoiceValue.set(l.billId, r2((invoiceValue.get(l.billId) ?? 0) + l.totalAmount));
   const b2clInvoices = invoicesOf(b2cLines).filter(
-    (inv) => inv[0].isInterState && sum(inv, (l) => l.totalAmount) > B2CL_THRESHOLD,
+    (inv) => isB2cLarge(inv[0].isInterState, invoiceValue.get(inv[0].billId) ?? 0, inv[0].billDate),
   );
   const b2clIds = new Set(b2clInvoices.map((inv) => inv[0].billId));
 

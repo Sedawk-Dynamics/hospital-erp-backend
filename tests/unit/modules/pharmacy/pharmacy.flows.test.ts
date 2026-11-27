@@ -234,7 +234,7 @@ describe('Pharmacy — flow coverage (sale / returns / merge / reports)', () => 
 
       await expect(createReturn(TENANT_ID, USER_ID, ADMIN_ROLES, {
         returnType: 'vendor_return', drugBatchId: 'b1', supplierId: 's1', quantity: 5,
-      } as any)).rejects.toThrow('only has 4 in stock');
+      } as any)).rejects.toThrow('only has 4 units in stock');
       expect(prisma.drugReturn.create).not.toHaveBeenCalled();
     });
 

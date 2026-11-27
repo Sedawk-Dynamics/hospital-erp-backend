@@ -3,6 +3,10 @@ import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { getPaginationParams } from '../../shared/pagination';
+import { writeAudit } from '../../shared/audit';
+import { splitRangeEdits } from './lab-range';
+import { createRangeProposals } from './lab-range-proposals.service';
+import { assertPriceConfirmed } from './lab-price-guard';
 import type {
   CreateLabTemplateInput,
   UpdateLabTemplateInput,
@@ -291,6 +295,9 @@ export async function deleteLabTemplate(roles: string[], id: string) {
 // ─────────────────────────────────────────────────────────────
 
 // Build the LabTestCatalog payload from a template.
+//
+// Gap 369: a template is not a sign-off. Its reference ranges are left out of
+// the hospital's live row and filed for the hospital's own pathologist.
 function buildCatalogDataFromTemplate(
   tenantId: string,
   template: Awaited<ReturnType<typeof prisma.labTestTemplate.findUnique>>,
@@ -316,7 +323,11 @@ function buildCatalogDataFromTemplate(
     sampleType: template.sampleType,
     specimen: template.specimen,
     instructions: template.instructions,
-    parameters: template.parameters as Prisma.InputJsonValue,
+    parameters: (splitRangeEdits({
+      existing: null,
+      next: { parameters: template.parameters as unknown[] | null },
+      onRename: 'reset',
+    }).live.parameters ?? []) as unknown as Prisma.InputJsonValue,
     interpretation: template.interpretation,
     aliases,
     tags,
@@ -337,11 +348,39 @@ function buildCatalogDataFromTemplate(
 // Clone one template into the calling tenant's catalog
 // ─────────────────────────────────────────────────────────────
 
+/** Create the catalogue row and queue the template's ranges for approval. */
+async function createCatalogFromTemplate(
+  tenantId: string,
+  template: NonNullable<Awaited<ReturnType<typeof prisma.labTestTemplate.findUnique>>>,
+  data: Prisma.LabTestCatalogUncheckedCreateInput,
+  userId?: string,
+) {
+  const { drafts } = splitRangeEdits({
+    existing: null,
+    next: { parameters: template.parameters as unknown[] | null },
+    onRename: 'reset',
+  });
+  return prisma.$transaction(async (tx) => {
+    const catalog = await tx.labTestCatalog.create({ data });
+    await createRangeProposals(tx, {
+      tenantId,
+      test: catalog,
+      drafts,
+      origin: 'template',
+      userId,
+      userName: 'Platform template',
+      skipInvalid: true,
+    });
+    return catalog;
+  });
+}
+
 export async function cloneOneLabTemplate(
   tenantId: string,
   roles: string[],
   templateId: string,
   body: CloneOneLabTemplateInput,
+  userId?: string,
 ) {
   assertCanCloneTemplates(roles);
 
@@ -358,16 +397,37 @@ export async function cloneOneLabTemplate(
   });
   if (existing) return { catalog: existing, status: 'already_cloned' as const };
 
-  const catalog = await prisma.labTestCatalog.create({
-    data: buildCatalogDataFromTemplate(
-      tenantId,
-      template,
-      body.overridePrice,
-      body.overrideTurnaroundHours,
-    ),
+  const data = buildCatalogDataFromTemplate(
+    tenantId,
+    template,
+    body.overridePrice,
+    body.overrideTurnaroundHours,
+  );
+  const guard = await assertPriceConfirmed({
+    tenantId,
+    userId,
+    before: null,
+    after: {
+      id: '',
+      testName: template.name,
+      price: data.price,
+      parameters: template.parameters,
+      isActive: true,
+    },
+    confirmation: body.priceConfirmation,
   });
+  const catalog = await createCatalogFromTemplate(tenantId, template, { ...data, ...guard.columns }, userId);
 
   logger.info({ tenantId, templateId, catalogId: catalog.id }, 'Lab template cloned (single)');
+  await writeAudit({
+    tenantId,
+    userId,
+    action: 'create',
+    entityType: 'lab_test_catalog',
+    entityId: catalog.id,
+    description: `Lab test added from platform template: ${template.name}`,
+    reason: guard.reason ?? undefined,
+  });
   return { catalog, status: 'created' as const };
 }
 
@@ -379,9 +439,10 @@ export async function cloneAllLabTemplates(
   tenantId: string,
   roles: string[],
   body: CloneAllLabTemplatesInput,
+  userId?: string,
 ) {
   assertCanCloneTemplates(roles);
-  return cloneTemplatesIntoTenant(tenantId, body);
+  return cloneTemplatesIntoTenant(tenantId, body, userId);
 }
 
 /**
@@ -399,6 +460,7 @@ export async function cloneAllLabTemplates(
 export async function cloneTemplatesIntoTenant(
   tenantId: string,
   body: CloneAllLabTemplatesInput,
+  userId?: string,
 ) {
   const templates = await prisma.labTestTemplate.findMany({
     where: {
@@ -414,17 +476,28 @@ export async function cloneTemplatesIntoTenant(
   // the loop below.
   const existingClones = await prisma.labTestCatalog.findMany({
     where: { tenantId, templateId: { in: templates.map((t) => t.id) } },
-    select: { id: true, templateId: true },
+    select: {
+      id: true,
+      templateId: true,
+      testName: true,
+      sampleType: true,
+      normalRange: true,
+      unit: true,
+      parameters: true,
+      rangeVersion: true,
+    },
   });
-  const existingByTemplateId = new Map(existingClones.map((c) => [c.templateId, c.id]));
+  const existingByTemplateId = new Map(existingClones.map((c) => [c.templateId, c]));
 
   let created = 0;
   let updated = 0;
   let skipped = 0;
+  // Template ranges that differ from the hospital's and went to the pathologist.
+  let rangesPending = 0;
 
   for (const tpl of templates) {
-    const existingId = existingByTemplateId.get(tpl.id);
-    if (existingId) {
+    const existing = existingByTemplateId.get(tpl.id);
+    if (existing) {
       if (!body.overwriteExisting) {
         skipped += 1;
         continue;
@@ -432,41 +505,75 @@ export async function cloneTemplatesIntoTenant(
       const aliases = tpl.aliases ?? [];
       const tags = tpl.tags ?? [];
       const params = tpl.parameters as unknown as ParameterSpec[] | null;
-      await prisma.labTestCatalog.update({
-        where: { id: existingId },
-        data: {
-          // Re-snapshot the template's schema but leave price untouched —
-          // hospitals frequently customise pricing locally and a re-clone
-          // shouldn't reset it.
-          loincCode: tpl.loincCode,
-          loincDisplayName: tpl.loincDisplayName,
-          sampleType: tpl.sampleType,
-          specimen: tpl.specimen,
-          instructions: tpl.instructions,
-          parameters: tpl.parameters as Prisma.InputJsonValue,
-          interpretation: tpl.interpretation,
-          turnaroundHours: tpl.turnaroundHours ?? undefined,
-          aliases,
-          tags,
-          searchTokens: buildSearchTokens({
-            name: tpl.name,
-            code: tpl.code,
+      // Gap 369: the schema is re-synced; live ranges the hospital already uses
+      // stay, and any different template range is proposed, not applied.
+      const { live, drafts } = splitRangeEdits({
+        existing,
+        next: { parameters: tpl.parameters as unknown[] | null },
+        onRename: 'reset',
+      });
+      const outcome = await prisma.$transaction(async (tx) => {
+        const written = await tx.labTestCatalog.updateMany({
+          where: { id: existing.id, tenantId, rangeVersion: existing.rangeVersion },
+          data: {
+            rangeVersion: { increment: 1 },
+            // Re-snapshot the template's schema but leave price untouched —
+            // hospitals frequently customise pricing locally and a re-clone
+            // shouldn't reset it.
+            loincCode: tpl.loincCode,
+            loincDisplayName: tpl.loincDisplayName,
             sampleType: tpl.sampleType,
+            specimen: tpl.specimen,
+            instructions: tpl.instructions,
+            parameters: (live.parameters ?? []) as unknown as Prisma.InputJsonValue,
+            interpretation: tpl.interpretation,
+            turnaroundHours: tpl.turnaroundHours ?? undefined,
             aliases,
             tags,
-            parameters: params,
-          }),
-        },
+            searchTokens: buildSearchTokens({
+              name: tpl.name,
+              code: tpl.code,
+              sampleType: tpl.sampleType,
+              aliases,
+              tags,
+              parameters: params,
+            }),
+          },
+        });
+        if (written.count !== 1) return null; // a range was approved meanwhile
+        const row = await tx.labTestCatalog.findFirstOrThrow({ where: { id: existing.id, tenantId } });
+        return createRangeProposals(tx, {
+          tenantId,
+          test: row,
+          drafts,
+          origin: 'template',
+          userId,
+          userName: 'Platform template',
+          skipInvalid: true,
+        });
       });
-      updated += 1;
+      if (outcome === null) {
+        skipped += 1;
+      } else {
+        rangesPending += outcome;
+        updated += 1;
+      }
     } else {
-      await prisma.labTestCatalog.create({
-        data: buildCatalogDataFromTemplate(tenantId, tpl),
-      });
+      await createCatalogFromTemplate(tenantId, tpl, buildCatalogDataFromTemplate(tenantId, tpl), userId);
       created += 1;
     }
   }
 
-  logger.info({ tenantId, created, updated, skipped }, 'Lab templates cloned (bulk)');
+  logger.info({ tenantId, created, updated, skipped, rangesPending }, 'Lab templates cloned (bulk)');
+  if (userId) {
+    await writeAudit({
+      tenantId,
+      userId,
+      action: 'update',
+      entityType: 'lab_test_catalog',
+      entityId: tenantId,
+      description: `Platform lab templates imported: ${created} added, ${updated} updated, ${rangesPending} range(s) sent for approval`,
+    });
+  }
   return { created, updated, skipped, total: templates.length };
 }

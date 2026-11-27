@@ -1,5 +1,6 @@
 import { prisma } from '../../config/database';
 import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
+import { assertTaxedServicesHaveSac } from '../billing/billing.gst-checks';
 
 /** Medical and dental services — what an OPD consultation is, and exempt. */
 const CONSULTATION_SAC = '999312';
@@ -15,6 +16,16 @@ import {
   getRegistrationFeeSettings,
   getPatientVisitStatus,
 } from '../hospital-settings/hospital-settings.service';
+import {
+  billedResolutions,
+  canEditFollowUpRules,
+  recordBilledResolution,
+  resolveConsultationFee,
+  saveDoctorFreeDays,
+  snapshotRuleAtBooking,
+  type SettingsActor,
+} from '../hospital-settings/follow-up-rules.service';
+import { consultationLineDescription, type FeeResolution } from '../../shared/follow-up-fee';
 
 /** Money to paise — bills must not carry floating-point dust. */
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -438,9 +449,13 @@ export async function updateDoctorProfile(
     bio?: string;
     isAvailable?: boolean;
     departmentId?: string;
-    /** Days after a paid consultation in which a return visit is free. */
+    /**
+     * Days after a paid consultation in which a return visit is free. A price
+     * setting: only the Hospital Admin may change it (gap #019).
+     */
     freeFollowUpDays?: number | null;
   },
+  actor?: SettingsActor,
 ) {
   const doctor = await prisma.doctorProfile.findFirst({
     where: { id, tenantId },
@@ -459,12 +474,16 @@ export async function updateDoctorProfile(
   if (data.bio !== undefined) patch.bio = data.bio;
   if (data.isAvailable !== undefined) patch.isAvailable = data.isAvailable;
   if (data.departmentId !== undefined) patch.departmentId = data.departmentId;
-  if (data.freeFollowUpDays !== undefined) {
-    // Clamped: a negative window is meaningless and a huge one would silently
-    // make every consultation free. 0/null both mean "no free follow-up".
-    const n = Number(data.freeFollowUpDays);
-    patch.freeFollowUpDays =
-      Number.isFinite(n) && n > 0 ? Math.min(365, Math.trunc(n)) : null;
+
+  // Anyone else's free days are dropped and the rest of their edit is saved:
+  // the schedule screen sends the whole form, and a receptionist correcting a
+  // qualification should not be refused over a field they did not touch.
+  if (data.freeFollowUpDays !== undefined && canEditFollowUpRules(actor)) {
+    const raw = data.freeFollowUpDays as number | string | null;
+    const freeDays = raw === null || raw === '' ? null : Number(raw);
+    if (freeDays !== (doctor.freeFollowUpDays ?? null)) {
+      await saveDoctorFreeDays(tenantId, actor!, id, freeDays);
+    }
   }
 
   const updated = await prisma.doctorProfile.update({
@@ -1374,6 +1393,9 @@ export async function bookAppointment(tenantId: string, data: BookAppointmentInp
     `;
   }
 
+  // The follow-up rule in force now is the one this visit will be billed under.
+  await snapshotRuleAtBooking(tenantId, { id: appointment.id, doctorId: data.doctorId }, doctor);
+
   logger.info(
     { tenantId, appointmentId: appointment.id, doctorId: data.doctorId, patientId: data.patientId },
     'Appointment booked',
@@ -1606,6 +1628,7 @@ export async function getAppointments(tenantId: string, query: GetAppointmentsQu
         where: { referenceType: 'appointment', referenceId: { in: appointmentIds } },
         select: {
           referenceId: true,
+          totalAmount: true,
           bill: {
             select: {
               id: true,
@@ -1626,11 +1649,15 @@ export async function getAppointments(tenantId: string, query: GetAppointmentsQu
     : [];
 
   const billMap = new Map<string, typeof billItems[number]['bill']>();
+  const consultationAmounts = new Map<string, number>();
   for (const bi of billItems) {
     if (bi.referenceId && !billMap.has(bi.referenceId)) {
       billMap.set(bi.referenceId, bi.bill);
+      consultationAmounts.set(bi.referenceId, Number(bi.totalAmount ?? 0));
     }
   }
+  // Gap 331/019: how the consultation was priced, as recorded on billing.
+  const pricing = await billedResolutions(tenantId, [...billMap.keys()]);
 
   // Gap 334: the Referral report shows what each referred visit earned.
   const isReferralReport = (query as any).referred === true || (query as any).referred === 'true';
@@ -1678,6 +1705,10 @@ export async function getAppointments(tenantId: string, query: GetAppointmentsQu
             amountPaid: Number(bill.amountPaid),
             balanceDue: Number(bill.balanceDue),
             paymentStatus,
+            // The consultation line alone; the bill may carry the registration fee too.
+            consultationAmount: consultationAmounts.get(a.id) ?? 0,
+            isFreeFollowUp: pricing.get(a.id)?.isFreeFollowUp ?? paymentStatus === 'waived',
+            feeLabel: pricing.get(a.id)?.label ?? null,
           }
         : null,
     };
@@ -1970,86 +2001,6 @@ export async function cancelAppointment(
  * be paid (`createPayment` rejects it) and never shows as revenue. Idempotent —
  * a second call returns the bill that already references this appointment.
  */
-/**
- * Whether this appointment is a free follow-up, and what the consultation
- * therefore costs.
- *
- * Every consultation used to charge the doctor's full fee, so a patient asked
- * back in a week to have a wound looked at paid twice for a visit the doctor
- * had scheduled themselves. A doctor can now set a window in days; a return to
- * the SAME doctor inside it carries no consultation fee.
- *
- * Deliberately narrow:
- *   - same doctor only. A follow-up is with the clinician who asked for it;
- *     waiving another doctor's fee is not this feature's business.
- *   - the previous visit must have been PAID. A free follow-up follows a
- *     consultation the hospital was actually paid for — chaining it off an
- *     unpaid visit would let a whole course of treatment run for nothing.
- *   - it never touches the registration fee, which is a separate one-time
- *     charge for opening the file.
- *
- * A patient can therefore have consecutive free follow-ups only if each one is
- * itself paid, which by definition it is not — the window always measures back
- * to the last PAID consultation.
- */
-async function resolveConsultationFee(
-  tenantId: string,
-  appointment: { id: string; patientId: string; doctorId: string; consultationType?: string | null; doctor: { consultationFee: unknown; freeFollowUpDays?: number | null } },
-): Promise<{ fee: number; isFreeFollowUp: boolean; basedOn: Date | null; windowDays: number }> {
-  const listFee = appointment.doctor?.consultationFee ? Number(appointment.doctor.consultationFee) : 0;
-
-  // Front-desk-declared follow-up → no consultation fee. The desk sees the
-  // patient's last-visit date at booking and picks "Follow Up" when the return
-  // is a genuine follow-up (e.g. reviewing a lab ordered on the prior visit),
-  // so the fee is waived on their explicit say-so — no time-window rule needed.
-  // Only the consultation fee is waived here; any new orders (labs, meds) and
-  // the one-time registration fee are billed separately and are unaffected.
-  if (appointment.consultationType === 'follow_up') {
-    return { fee: 0, isFreeFollowUp: true, basedOn: null, windowDays: 0 };
-  }
-
-  const windowDays = Number(appointment.doctor?.freeFollowUpDays ?? 0) || 0;
-  if (windowDays <= 0 || listFee <= 0) {
-    return { fee: listFee, isFreeFollowUp: false, basedOn: null, windowDays: 0 };
-  }
-
-  const since = new Date();
-  since.setDate(since.getDate() - windowDays);
-
-  // The most recent consultation with this doctor whose bill was actually
-  // settled. `paid` only — a partially paid bill has not been paid for.
-  const previous = await prisma.appointment.findFirst({
-    where: {
-      tenantId,
-      patientId: appointment.patientId,
-      doctorId: appointment.doctorId,
-      id: { not: appointment.id },
-      appointmentDate: { gte: since },
-      status: { in: ['completed', 'in_consultation', 'checked_in', 'confirmed'] },
-    },
-    orderBy: { appointmentDate: 'desc' },
-    select: { id: true, appointmentDate: true },
-  });
-  if (!previous) {
-    return { fee: listFee, isFreeFollowUp: false, basedOn: null, windowDays };
-  }
-
-  const paidBill = await prisma.bill.findFirst({
-    where: {
-      tenantId,
-      patientId: appointment.patientId,
-      status: 'paid',
-      billItems: { some: { referenceType: 'appointment', referenceId: previous.id } },
-    },
-    select: { id: true },
-  });
-  if (!paidBill) {
-    return { fee: listFee, isFreeFollowUp: false, basedOn: null, windowDays };
-  }
-
-  return { fee: 0, isFreeFollowUp: true, basedOn: previous.appointmentDate, windowDays };
-}
-
 async function ensureAppointmentBill(
   tenantId: string,
   appointmentId: string,
@@ -2075,10 +2026,10 @@ async function ensureAppointmentBill(
 
   if (existingBill) return { appointment, bill: existingBill };
 
-  // A return to the same doctor inside their free-follow-up window carries no
-  // consultation fee. The registration fee below is untouched — that is a
-  // separate one-time charge for opening the file.
-  const feeResolution = await resolveConsultationFee(tenantId, appointment as never);
+  // What the consultation costs under the hospital's follow-up rules. The
+  // registration fee below is untouched — that is a separate one-time charge
+  // for opening the file.
+  const feeResolution = await resolveConsultationFee(tenantId, appointmentToPrice(appointment));
   const amount = feeResolution.fee > 0 ? feeResolution.fee : 0;
 
   // The one-time registration fee for opening a file at THIS hospital. Decided
@@ -2109,6 +2060,7 @@ async function ensureAppointmentBill(
   const registrationTax = resolver.price(
     {
       kind: 'registration',
+      sacCode: settings.sacCode ?? null,
       itemRatePercent: settings.gstRatePercent,
       itemTreatment: settings.gstRatePercent > 0 ? 'taxable' : 'exempt',
       // The hospital set this rate deliberately on its own settings screen, so
@@ -2117,6 +2069,14 @@ async function ensureAppointmentBill(
     },
     { unitPrice: regTotals.unitPrice, quantity: 1 },
   );
+  // #264: this bill is created already payable, so a taxed fee with no SAC is
+  // refused here, before there is a bill, rather than left on an unnumbered one.
+  if (chargeRegistration && regTotals.unitPrice > 0) {
+    assertTaxedServicesHaveSac(
+      [{ description: settings.label, category: 'registration', ...billItemTaxFields(registrationTax) }],
+      resolver.profile?.registered ?? false,
+    );
+  }
 
   const registrationTotal = chargeRegistration ? registrationTax.money.totalAmount : 0;
   const subtotal = round2(consultationTax.money.taxableValue + (chargeRegistration ? registrationTax.money.taxableValue : 0));
@@ -2125,16 +2085,14 @@ async function ensureAppointmentBill(
   );
   const total = round2(consultationTax.money.totalAmount + registrationTotal);
 
-  // A front-desk-declared follow-up carries no consultation fee. When nothing
-  // else lands on the bill either (no registration fee), the bill nets to ₹0 —
-  // there is nothing to collect, so it must NOT sit in the "pending payment"
-  // queue as if money were owed. Settle it (`paid`, zero balance) and label the
-  // line "Waived (Follow-up)" so it reads as a deliberate waiver, not a payment.
-  const isWaivedFollowUp = appointment.consultationType === 'follow_up' && amount === 0;
+  // A waived follow-up carries no consultation fee. When nothing else lands on
+  // the bill either (no registration fee), the bill nets to ₹0 — there is
+  // nothing to collect, so it must NOT sit in the "pending payment" queue as if
+  // money were owed. Settle it (`paid`, zero balance) and label the line
+  // "Waived (Follow-up)" so it reads as a deliberate waiver, not a payment. The
+  // rule it was priced under goes on the line ("Free follow-up, day 4 of 7").
   const billStatus = total <= 0 ? 'paid' : 'pending';
-  const consultationDescription = isWaivedFollowUp
-    ? 'Consultation Fee — Waived (Follow-up)'
-    : description;
+  const consultationDescription = consultationLineDescription(feeResolution, description);
 
   // `bill_number` is unique GLOBALLY, so a per-tenant sequence collides between
   // hospitals: two of them raising a consultation bill on the same day both
@@ -2202,6 +2160,7 @@ async function ensureAppointmentBill(
   // because a series could not be read.
   const { issueDocumentForExistingBill } = await import('../billing/billing.service');
   const issued = await issueDocumentForExistingBill(tenantId, bill.id);
+  await recordBilledResolution(tenantId, appointment, bill.id, feeResolution);
 
   logger.info(
     {
@@ -2243,7 +2202,7 @@ async function readRegistrationChoice(appointmentId: string): Promise<boolean | 
 export async function getAppointmentChargePreview(tenantId: string, appointmentId: string) {
   const appointment = await prisma.appointment.findFirst({
     where: { id: appointmentId, tenantId },
-    include: { doctor: { select: { consultationFee: true, freeFollowUpDays: true } } },
+    include: { doctor: { select: { consultationFee: true, freeFollowUpDays: true, departmentId: true } } },
   });
   if (!appointment) throw AppError.notFound('Appointment not found');
 
@@ -2253,11 +2212,10 @@ export async function getAppointmentChargePreview(tenantId: string, appointmentI
     readRegistrationChoice(appointmentId),
   ]);
 
-  const feeResolution = await resolveConsultationFee(tenantId, appointment as never);
-  const listFee = appointment.doctor?.consultationFee
-    ? Number(appointment.doctor.consultationFee)
-    : 0;
-  return assembleChargePreview({ settings, visitStatus, deskChoice, feeResolution, listFee });
+  const live = await resolveConsultationFee(tenantId, appointmentToPrice(appointment));
+  // A bill already raised is the answer, whatever the facts have become since.
+  const feeResolution = (await billedResolution(tenantId, appointment)) ?? live;
+  return assembleChargePreview({ settings, visitStatus, deskChoice, feeResolution, listFee: live.listFee });
 }
 
 /**
@@ -2271,29 +2229,23 @@ export async function getAppointmentChargePreview(tenantId: string, appointmentI
 export async function getBookingChargePreview(tenantId: string, query: BookingChargePreviewQuery) {
   const doctor = await prisma.doctorProfile.findFirst({
     where: { id: query.doctorId, tenantId },
-    select: { consultationFee: true, freeFollowUpDays: true },
+    select: { consultationFee: true, freeFollowUpDays: true, departmentId: true },
   });
   if (!doctor) throw AppError.notFound('Doctor not found');
 
-  // Never matches a real row: the appointment does not exist yet.
-  const NO_APPOINTMENT = '00000000-0000-0000-0000-000000000000';
   const [settings, visitStatus] = await Promise.all([
     getRegistrationFeeSettings(tenantId),
     query.patientId
       ? getPatientVisitStatus(tenantId, query.patientId)
       : Promise.resolve({ isFirstVisit: true, registrationFeeCharged: false }),
   ]);
-  const feeResolution = query.patientId
-    ? await resolveConsultationFee(tenantId, {
-        id: NO_APPOINTMENT,
-        patientId: query.patientId,
-        doctorId: query.doctorId,
-        consultationType: query.type,
-        doctor,
-      })
-    : query.type === 'follow_up'
-      ? { fee: 0, isFreeFollowUp: true, basedOn: null, windowDays: 0 }
-      : { fee: Number(doctor.consultationFee ?? 0), isFreeFollowUp: false, basedOn: null, windowDays: 0 };
+  const feeResolution = await resolveConsultationFee(tenantId, {
+    patientId: query.patientId ?? null,
+    doctorId: query.doctorId,
+    consultationType: query.type,
+    date: query.date ?? null,
+    doctor,
+  });
 
   return assembleChargePreview({
     settings,
@@ -2302,6 +2254,64 @@ export async function getBookingChargePreview(tenantId: string, query: BookingCh
     feeResolution,
     listFee: Number(doctor.consultationFee ?? 0),
   });
+}
+
+/** An appointment as the fee resolver wants it. */
+function appointmentToPrice(appointment: {
+  id: string;
+  patientId: string;
+  doctorId: string;
+  consultationType?: string | null;
+  appointmentDate?: Date | null;
+  createdAt?: Date | null;
+  doctor: { consultationFee: unknown; freeFollowUpDays?: number | null; departmentId?: string | null };
+}) {
+  return {
+    appointmentId: appointment.id,
+    patientId: appointment.patientId,
+    doctorId: appointment.doctorId,
+    consultationType: appointment.consultationType,
+    date: appointment.appointmentDate,
+    createdAt: appointment.createdAt,
+    doctor: appointment.doctor,
+  };
+}
+
+/** How the bill's consultation was priced, for the desk's message. */
+async function feeNote(tenantId: string, appointmentId: string) {
+  const saved = (await billedResolutions(tenantId, [appointmentId])).get(appointmentId);
+  return { isFreeFollowUp: saved?.isFreeFollowUp ?? false, feeLabel: saved?.label ?? null };
+}
+
+/** What the appointment's bill already charges for the consultation, if raised. */
+async function billedResolution(
+  tenantId: string,
+  appointment: { id: string; patientId: string },
+): Promise<FeeResolution | null> {
+  const line = await prisma.billItem.findFirst({
+    where: {
+      referenceType: 'appointment',
+      referenceId: appointment.id,
+      bill: { tenantId, patientId: appointment.patientId, status: { notIn: ['cancelled', 'refunded'] } },
+    },
+    select: { totalAmount: true },
+  });
+  if (!line) return null;
+  const saved = (await billedResolutions(tenantId, [appointment.id])).get(appointment.id);
+  const fee = Number(line.totalAmount);
+  return {
+    fee,
+    listFee: saved?.listFee ?? fee,
+    isFreeFollowUp: saved?.isFreeFollowUp ?? false,
+    kind: saved?.kind ?? 'legacy',
+    governed: saved?.governed ?? false,
+    basedOn: saved?.basedOn ? new Date(saved.basedOn) : null,
+    anchorKind: saved?.anchorKind ?? null,
+    dayNumber: saved?.dayNumber ?? null,
+    windowDays: saved?.windowDays ?? 0,
+    label: saved?.label ?? null,
+    ruleSummary: saved?.ruleSummary ?? null,
+  };
 }
 
 function assembleChargePreview({
@@ -2314,7 +2324,7 @@ function assembleChargePreview({
   settings: Awaited<ReturnType<typeof getRegistrationFeeSettings>>;
   visitStatus: { isFirstVisit: boolean; registrationFeeCharged: boolean };
   deskChoice: boolean | null;
-  feeResolution: Awaited<ReturnType<typeof resolveConsultationFee>>;
+  feeResolution: FeeResolution;
   listFee: number;
 }) {
   const applies = shouldChargeRegistrationFee({
@@ -2355,6 +2365,12 @@ function assembleChargePreview({
       listFee,
       windowDays: feeResolution.windowDays,
       previousVisitDate: feeResolution.basedOn,
+      // Gap #019: the rule that decided it, in words, for every booking screen.
+      kind: feeResolution.kind,
+      governed: feeResolution.governed,
+      dayNumber: feeResolution.dayNumber,
+      label: feeResolution.label,
+      ruleSummary: feeResolution.ruleSummary,
     },
     registration: {
       // Can the desk act on it at all? Only when the hospital charges one.
@@ -2432,11 +2448,17 @@ async function reconcileRegistrationFeeLine(
   const reconcileTax = reconcileResolver.price(
     {
       kind: 'registration',
+      sacCode: settings.sacCode ?? null,
       itemRatePercent: settings.gstRatePercent,
       itemTreatment: settings.gstRatePercent > 0 ? 'taxable' : 'exempt',
       itemApproved: true,
     },
     { unitPrice: totals.unitPrice, quantity: 1 },
+  );
+  // #264: the bill is already payable; the same refusal as raising it.
+  assertTaxedServicesHaveSac(
+    [{ description: settings.label, category: 'registration', ...billItemTaxFields(reconcileTax) }],
+    reconcileResolver.profile?.registered ?? false,
   );
   await prisma.billItem.create({
     data: {
@@ -2512,6 +2534,7 @@ export async function initiateFrontdeskPayment(
     amountPaid: Number(bill.amountPaid),
     balanceDue: Number(bill.balanceDue),
     status: bill.status,
+    ...(await feeNote(tenantId, appointmentId)),
     items: items.map((i) => ({
       id: i.id,
       description: i.description,
@@ -2595,6 +2618,7 @@ export async function frontdeskCheckout(
     status: refreshed?.status ?? bill.status,
     paymentId,
     receiptNumber,
+    ...(await feeNote(tenantId, appointmentId)),
   };
 }
 

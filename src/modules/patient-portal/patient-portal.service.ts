@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { prisma } from '../../config/database';
 import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
 import { createBill, finalizeBill, issueDocumentForExistingBill } from '../billing/billing.service';
+import { assertTaxedServicesHaveSac } from '../billing/billing.gst-checks';
 
 /** Medical and dental services — an OPD consultation, exempt. */
 const PORTAL_CONSULTATION_SAC = '999312';
@@ -20,6 +21,13 @@ import { fullName } from '../../shared/person-name';
 import { REGISTRATION_FEE_REFERENCE_TYPE, registrationFeeTotals } from '../../shared/registration-fee';
 
 import { getRegistrationFeeSettings } from '../hospital-settings/hospital-settings.service';
+import {
+  publicResolution,
+  recordBilledResolution,
+  resolveConsultationFee,
+  snapshotRuleAtBooking,
+} from '../hospital-settings/follow-up-rules.service';
+import { consultationLineDescription } from '../../shared/follow-up-fee';
 import { profile } from 'console';
 
 // ────────────────────────────────────────────────────────────
@@ -2218,6 +2226,9 @@ export async function bookAppointmentAsPatient(
     },
   });
 
+  // The follow-up rule in force now is the one this visit will be billed under.
+  await snapshotRuleAtBooking(tenantId, { id: appointment.id, doctorId: data.doctorId }, doctor);
+
   // A booking made in the portal used to reach the hospital silently — nothing
   // told the doctor or the desk it had happened, so it was found only by
   // someone refreshing a list. The doctor holds the slot; the desk takes the
@@ -2380,6 +2391,72 @@ async function generateBillNumber(_tenantId: string): Promise<string> {
 }
 
 /**
+ * What a portal booking costs. With no follow-up rule set the portal charges
+ * the doctor's fee, as it always has; under a rule it follows the same resolver
+ * as the desk (gap #019).
+ */
+function priceAppointmentForPortal(appointment: {
+  id: string;
+  tenantId: string;
+  patientId: string;
+  doctorId: string;
+  consultationType?: string | null;
+  appointmentDate?: Date | null;
+  createdAt?: Date | null;
+  doctor: { consultationFee: unknown; freeFollowUpDays?: number | null; departmentId?: string | null };
+}) {
+  return resolveConsultationFee(
+    appointment.tenantId,
+    {
+      appointmentId: appointment.id,
+      patientId: appointment.patientId,
+      doctorId: appointment.doctorId,
+      consultationType: appointment.consultationType,
+      date: appointment.appointmentDate,
+      createdAt: appointment.createdAt,
+      doctor: appointment.doctor,
+    },
+    { ungoverned: 'list_fee' },
+  );
+}
+
+/**
+ * Gap #019: what booking WOULD cost this patient, before they book. Priced for
+ * the caller's own record at that hospital only; nobody else's history is used.
+ */
+export async function getConsultationQuote(
+  userId: string,
+  email: string,
+  tenantId: string,
+  query: { doctorId: string; date?: string },
+) {
+  const doctor = await prisma.doctorProfile.findFirst({
+    where: { id: query.doctorId, tenantId, isAvailable: true },
+    select: { consultationFee: true, freeFollowUpDays: true, departmentId: true },
+  });
+  if (!doctor) throw AppError.notFound('Doctor not found');
+
+  // The record `bookAppointmentAsPatient` would book against.
+  const [connected] = await findConnectedPatients(userId, tenantId);
+  const patientId =
+    connected?.id ??
+    (
+      await prisma.patient.findFirst({
+        where: { tenantId, email: { equals: email, mode: 'insensitive' } },
+        select: { id: true },
+      })
+    )?.id ??
+    null;
+
+  const resolution = await resolveConsultationFee(
+    tenantId,
+    { patientId, doctorId: query.doctorId, date: query.date ?? null, doctor },
+    { ungoverned: 'list_fee' },
+  );
+  return publicResolution(resolution);
+}
+
+/**
  * Create a Razorpay order so the patient can pay online for a booked appointment.
  * Creates a Bill + BillItem + Payment + PaymentTransfer in one go.
  */
@@ -2402,13 +2479,6 @@ export async function createPatientPaymentOrder(
   });
   if (!appointment) throw AppError.notFound('Appointment not found');
 
-  const consultationFee = appointment.doctor.consultationFee
-    ? Number(appointment.doctor.consultationFee)
-    : 0;
-  if (consultationFee <= 0) {
-    throw AppError.badRequest('No consultation fee for this doctor');
-  }
-
   const tenantId = appointment.tenantId;
 
   // Verify hospital has bank linked
@@ -2425,7 +2495,29 @@ export async function createPatientPaymentOrder(
       billItems: { some: { referenceType: 'appointment', referenceId: appointment.id } },
       status: { in: ['pending', 'partially_paid'] },
     },
+    include: {
+      billItems: {
+        where: { referenceType: 'appointment', referenceId: appointment.id },
+        select: { totalAmount: true },
+      },
+    },
   });
+
+  // A bill already raised keeps its price; otherwise the hospital's follow-up
+  // rules decide it. The client never sends an amount.
+  const resolution = await priceAppointmentForPortal(appointment);
+  const billedFee = existingBill?.billItems?.[0]?.totalAmount;
+  const consultationFee =
+    billedFee === undefined || billedFee === null
+      ? resolution.fee
+      : Math.min(Number(billedFee), Number(existingBill?.balanceDue ?? billedFee));
+  if (consultationFee <= 0) {
+    throw AppError.badRequest(
+      resolution.isFreeFollowUp
+        ? 'This follow-up is free — there is nothing to pay'
+        : 'No consultation fee for this doctor',
+    );
+  }
 
   let billId: string;
 
@@ -2460,7 +2552,7 @@ export async function createPatientPaymentOrder(
         generatedBy: userId,
         billItems: {
           create: {
-            description: 'Consultation Fee',
+            description: consultationLineDescription(resolution, 'Consultation Fee'),
             category: 'consultation',
             quantity: 1,
             unitPrice: consultationFee,
@@ -2478,6 +2570,7 @@ export async function createPatientPaymentOrder(
     // passes through `finalizeBill` and carried no document type and no invoice
     // number. Best effort — the booking must not fail over a series read.
     await issueDocumentForExistingBill(tenantId, bill.id);
+    await recordBilledResolution(tenantId, appointment, bill.id, resolution);
   }
 
   // Commission calculation
@@ -2708,9 +2801,6 @@ export async function confirmFrontdeskPayment(
   if (!appointment) throw AppError.notFound('Appointment not found');
 
   const tenantId = appointment.tenantId;
-  const consultationFee = appointment.doctor.consultationFee
-    ? Number(appointment.doctor.consultationFee)
-    : 0;
 
   // Check if a bill already exists for this appointment
   const existingBill = await prisma.bill.findFirst({
@@ -2727,7 +2817,11 @@ export async function confirmFrontdeskPayment(
 
   // Create a pending bill for front desk collection
   const billNumber = await generateBillNumber(tenantId);
-  const amount = consultationFee > 0 ? consultationFee : 0;
+  const resolution = await priceAppointmentForPortal(appointment);
+  const amount = resolution.fee > 0 ? resolution.fee : 0;
+  // A free follow-up has nothing to collect, so it must not wait in the desk's
+  // "pending payment" queue — the same as a waived follow-up booked at the desk.
+  const billStatus = resolution.isFreeFollowUp && amount === 0 ? 'paid' : 'pending';
   const portalConsultationTax = billItemTaxFields(
     (await taxResolverFor(tenantId)).price(
       { kind: 'consultation', sacCode: PORTAL_CONSULTATION_SAC },
@@ -2749,11 +2843,11 @@ export async function confirmFrontdeskPayment(
       patientPayableAmount: amount,
       amountPaid: 0,
       balanceDue: amount,
-      status: 'pending',
+      status: billStatus,
       generatedBy: userId,
       billItems: {
         create: {
-          description: 'Consultation Fee (Pay at Front Desk)',
+          description: consultationLineDescription(resolution, 'Consultation Fee (Pay at Front Desk)'),
           category: 'consultation',
           quantity: 1,
           unitPrice: amount,
@@ -2770,13 +2864,20 @@ export async function confirmFrontdeskPayment(
   // Same as the portal path above: created already-payable, so nothing else
   // would ever have named or numbered it.
   await issueDocumentForExistingBill(tenantId, bill.id);
+  await recordBilledResolution(tenantId, appointment, bill.id, resolution);
 
   logger.info({ appointmentId: data.appointmentId, billId: bill.id }, 'Frontdesk payment bill created');
 
   // Confirm appointment (pending_payment → booked)
   await confirmAppointmentPayment(data.appointmentId, 'frontdesk');
 
-  return { billId: bill.id, status: 'pending' };
+  return {
+    billId: bill.id,
+    status: billStatus,
+    amount,
+    isFreeFollowUp: resolution.isFreeFollowUp,
+    label: resolution.label,
+  };
 }
 
 
@@ -2812,19 +2913,35 @@ export const registrationFees=async(userId:string,tenantSlug:string)=>{
     return  createPatientBillPaymentOrder(userId,user.email,{billId:existing.billId});
   }
 
-  const newBill = await createBill(tenant.id, userId, { patientId: patient.id });
   const totals = registrationFeeTotals(registrationFee);
   const resolver = await taxResolverFor(tenant.id);
   const tax = resolver.price(
     {
       kind: 'registration',
+      sacCode: registrationFee.sacCode ?? null,
       itemRatePercent: registrationFee.gstRatePercent,
       itemTreatment: registrationFee.gstRatePercent > 0 ? 'taxable' : 'exempt',
       itemApproved: true,
     },
     { unitPrice: totals.unitPrice, quantity: 1 },
   );
+  // #264: refused before a bill exists. Afterwards it would be a draft the next
+  // attempt finds, and cannot pay. The patient cannot set a code, so they are
+  // told what they CAN do; the service and the fix are in the hospital's report.
+  try {
+    assertTaxedServicesHaveSac(
+      [{ description: registrationFee.label, category: 'registration', ...billItemTaxFields(tax) }],
+      resolver.profile?.registered ?? false,
+    );
+  } catch (err) {
+    logger.warn({ tenantId: tenant.id, err }, 'Portal registration fee refused — no SAC code');
+    throw AppError.conflict(
+      'The registration fee cannot be paid online right now. Please pay it at the hospital front desk.',
+      'SAC_REQUIRED',
+    );
+  }
 
+  const newBill = await createBill(tenant.id, userId, { patientId: patient.id });
   await prisma.billItem.create({
     data: {
       billId: newBill.id,

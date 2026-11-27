@@ -6,6 +6,7 @@ import { validate } from '../../middleware/validate';
 import { uploadSingle } from '../../services/upload.service';
 import type { AuthenticatedRequest } from '../../shared/types';
 import * as controller from './pharmacy.controller';
+import { GST_RATE_EDIT_ROLES } from '../gst/gst-retired-rate';
 import * as externalRxController from './external-prescription.controller';
 import {
   createFormularySchema,
@@ -62,6 +63,8 @@ import {
   getRecalledItemsQuerySchema,
   getGstReportQuerySchema,
   getStockLedgerQuerySchema,
+  previewGstRateListSchema,
+  applyGstRateListSchema,
   dailyTransactionQuerySchema,
   purchaseReportQuerySchema,
   vendorWiseQuerySchema,
@@ -282,6 +285,12 @@ pharmacyRoutes.delete('/recalls/batches/:id', authenticate, requirePermission('p
 // Recall is batch-level only — the whole-medicine recall route was removed.
 
 // --- GST Report ---
+// #262: medicines on a retired GST rate, and the rate-list import that corrects
+// them. Role-gated like every other medicine GST edit, plus finance (billing
+// admin), who holds no pharmacy permission. Nothing here reprices an issued bill.
+pharmacyRoutes.get('/gst-rates/retired', authenticate, requireRoles(...GST_RATE_EDIT_ROLES), controller.listRetiredGstRates);
+pharmacyRoutes.post('/gst-rates/preview', authenticate, requireRoles(...GST_RATE_EDIT_ROLES), validate(previewGstRateListSchema), controller.previewGstRateList);
+pharmacyRoutes.post('/gst-rates/apply', authenticate, requireRoles(...GST_RATE_EDIT_ROLES), validate(applyGstRateListSchema), controller.applyGstRateList);
 pharmacyRoutes.get('/gst', authenticate, requirePermission('pharmacy', 'read'), validate(getGstReportQuerySchema), controller.getGstReport);
 
 // --- G15: mandatory reports (Daily Txn / Purchase / Stock Valuation / Vendor-wise / Credit Notes) ---

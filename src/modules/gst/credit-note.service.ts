@@ -23,6 +23,7 @@ import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { r2 } from '../../shared/gst';
 import { allotDocumentNumber, financialYearFor } from './gst-document.service';
+import { snapshotQtyText } from '../pharmacy/pharmacy.units';
 
 /** Why the money went back. Reported on the credit note register. */
 export type CreditNoteReason =
@@ -128,9 +129,18 @@ export async function issueCreditNote(
       if (named && !wanted.has(it.id)) return null;
       const share = named ? (wanted.get(it.id) ?? 0) : 1;
       if (share <= 0) return null;
+      // 345: a part return of "2 strips (20 tablets)" must not print those words
+      // beside 3 tablets. Only the wording follows; every figure is still the
+      // original's, scaled. A line with no unit snapshot is copied untouched.
+      const soldText = snapshotQtyText(Number(it.quantity ?? 0), it.qtyUnits);
+      const backText = snapshotQtyText(Number(it.quantity ?? 0) * share, it.qtyUnits);
       return {
         billItemId: it.id,
-        description: it.description,
+        description:
+          soldText && backText && share < 1 && String(it.description).endsWith(soldText)
+            ? `${String(it.description).slice(0, -soldText.length)}returned ${backText} of ${soldText}`.slice(0, 500)
+            : it.description,
+        ...(backText ? { quantityText: backText } : {}),
         hsnSacCode: it.hsnSacCode ?? null,
         gstTreatment: it.gstTreatment ?? null,
         // Negative throughout: a credit note records what is coming OFF the

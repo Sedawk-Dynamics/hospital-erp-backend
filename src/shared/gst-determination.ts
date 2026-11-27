@@ -39,6 +39,7 @@
 import type { GstTreatment } from './gst';
 import type { GstProfile } from './gst-profile';
 import { gstAppliesOn } from './gst-profile';
+import { DIAGNOSTIC_UNAPPROVED_REASON, radiologyTaxFacts } from './radiology-gst';
 
 /** What is being supplied. Decides which branch of the rule set applies. */
 export type SupplyKind =
@@ -140,10 +141,25 @@ export function tariffTaxContext(
     gstApproved?: boolean | null;
     isCosmetic?: boolean | null;
     gstEffectiveFrom?: Date | string | null;
+    /** 'radiology' tariffs follow their own rule (#358). */
+    category?: unknown;
+    serviceName?: string | null;
   } | null | undefined,
   on: Date,
 ): Pick<SupplyContext, 'sacCode' | 'itemRatePercent' | 'itemTreatment' | 'itemApproved' | 'isCosmetic'> {
   if (!tariff) return { sacCode: null, itemRatePercent: null, itemTreatment: null, itemApproved: false, isCosmetic: false };
+  // #358: a scan is exempt unless it is an approved cosmetic / non-medical one,
+  // whichever path bills it.
+  if (String(tariff.category ?? '') === 'radiology') {
+    const f = radiologyTaxFacts(tariff, on);
+    return {
+      sacCode: f.sacCode,
+      itemRatePercent: f.taxRate,
+      itemTreatment: f.gstTreatment as GstTreatment,
+      itemApproved: f.gstApproved,
+      isCosmetic: f.isCosmetic,
+    };
+  }
   const from = tariff.gstEffectiveFrom ? new Date(tariff.gstEffectiveFrom) : null;
   // Compared as calendar days: the column is a DATE, the bill a timestamp.
   const live = !from || Number.isNaN(from.getTime()) || on.getTime() >= from.getTime();
@@ -451,6 +467,20 @@ export function determineTax(ctx: SupplyContext, masters: TaxMasters): TaxDeterm
   // 4. A procedure done to improve appearance rather than to treat is an
   //    ordinary taxable service, whatever the rest of the surgery list says.
   if (ctx.isCosmetic) {
+    // #358: a cosmetic / non-medical SCAN has no default rate — the admin enters
+    // one, with its SAC, and approves it. Until then the line is held: issuing
+    // it at 0%, or at a guessed 18%, are both wrong.
+    if (ctx.kind === 'imaging' && !(ctx.itemApproved && Number(ctx.itemRatePercent ?? 0) > 0)) {
+      return {
+        treatment: 'taxable',
+        ratePercent: 0,
+        hsnSacCode: code,
+        taxInclusive,
+        source: 'cosmetic',
+        reason: 'Cosmetic / non-medical scan: GST rate and SAC not set and approved',
+        requiresResolution: true,
+      };
+    }
     const rate =
       ctx.itemRatePercent && ctx.itemRatePercent > 0 ? ctx.itemRatePercent : COSMETIC_DEFAULT_RATE;
     return {
@@ -492,7 +522,9 @@ export function determineTax(ctx: SupplyContext, masters: TaxMasters): TaxDeterm
       source: 'item_master',
       reason: ctx.itemApproved
         ? 'Classified on the item, approved by the hospital'
-        : 'Classified on the item',
+        : ctx.kind === 'imaging' && !taxable
+          ? DIAGNOSTIC_UNAPPROVED_REASON
+          : 'Classified on the item',
       // Taxable, from an item that nobody has signed off, and with no code
       // behind it — that is a rate somebody typed. It has to be resolved.
       requiresResolution: taxable && !ctx.itemApproved && !code,

@@ -102,7 +102,16 @@ export interface EInvoiceProvider {
     creds: PortalCredentials,
     input: { irn: string; reasonCode: IrnCancelReasonCode; remark: string },
   ): Promise<PortalResult<IrnCancelled>>;
-  generateEwayBill(creds: PortalCredentials, payload: EwayBillPayload): Promise<PortalResult<EwayBillGenerated>>;
+  /**
+   * `replaces` is the cancelled e-way bill this one follows, if any. It is not
+   * part of what is sent: the portal issues its own number and knows which ones
+   * it cancelled. Only the sandbox, which remembers nothing, needs telling.
+   */
+  generateEwayBill(
+    creds: PortalCredentials,
+    payload: EwayBillPayload,
+    context?: { replaces?: string | null },
+  ): Promise<PortalResult<EwayBillGenerated>>;
   cancelEwayBill(
     creds: PortalCredentials,
     input: { ewayBillNo: string; reasonCode: EwayCancelReasonCode; remark: string },

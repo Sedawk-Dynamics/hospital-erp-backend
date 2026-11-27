@@ -95,6 +95,8 @@ const mockBillItem = {
   taxAmount: 50,
   totalAmount: 550,
   category: 'other',
+  // #264: a taxed service line with no SAC refuses the bill.
+  hsnSacCode: '999319',
 };
 
 // ─── Helper: set up recalculateBillTotals dependencies ───

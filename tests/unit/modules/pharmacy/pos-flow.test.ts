@@ -213,7 +213,7 @@ describe('345 — one selling unit per item', () => {
   it('describes a strip sale and a loose sale in the configured nouns', async () => {
     const { saleUnitNouns, describeSaleQty } = await import('../../../../src/modules/pharmacy/pharmacy.units');
     const nouns = saleUnitNouns({ looseUnitLabel: 'tablet', unitOfMeasurement: 'Strip (UQC PAC)', packSize: 10 });
-    expect(describeSaleQty(20, 'pack', 10, nouns)).toBe('2 strips of 10 tablets');
-    expect(describeSaleQty(5, 'loose', 10, nouns)).toBe('5 tablets, loose');
+    expect(describeSaleQty(20, 'pack', 10, nouns)).toBe('2 strips (20 tablets)');
+    expect(describeSaleQty(5, 'loose', 10, nouns)).toBe('5 tablets (loose)');
   });
 });

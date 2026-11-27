@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { authController } from './auth.controller';
+import { patientPinController } from './patient-pin.controller';
 import { authenticate } from '../../middleware/authenticate';
 import {
   authLimiter,
@@ -21,6 +22,10 @@ import {
   disable2FASchema,
   requestPhoneChangeSchema,
   verifyPhoneChangeSchema,
+  pinLoginSchema,
+  setPinSchema,
+  changePinSchema,
+  pinDeviceIdSchema,
 } from './auth.validation';
 
 const router = Router();
@@ -39,9 +44,19 @@ router.post(
   authController.login,
 );
 
-// Patient phone-OTP auth — per-IP limiter, same as login.
+// Patient phone-OTP auth — per-IP limiter, same as login. Per-phone limits
+// (resend cooldown, sends per hour/day, wrong-code lockout) are in the service.
 router.post('/otp/request', authLimiter, validate(requestOtpSchema), authController.requestOtp);
 router.post('/otp/verify', authLimiter, validate(verifyOtpSchema), authController.verifyOtp);
+
+// Patient device PIN — per-IP limiter here, 5 attempts per device in the service.
+router.post('/pin/login', authLimiter, validate(pinLoginSchema), patientPinController.login);
+router.get('/me/pin/devices', authenticate, patientPinController.listDevices);
+router.post('/me/pin/code', authLimiter, authenticate, patientPinController.requestSetupCode);
+router.post('/me/pin', authLimiter, authenticate, validate(setPinSchema), patientPinController.setPin);
+router.put('/me/pin', authLimiter, authenticate, validate(changePinSchema), patientPinController.changePin);
+router.delete('/me/pin/devices', authenticate, patientPinController.revokeAllDevices);
+router.delete('/me/pin/devices/:id', authenticate, validate(pinDeviceIdSchema), patientPinController.revokeDevice);
 
 // Refresh — looser limit; browsers can legitimately burst refreshes on tab wake.
 router.post('/refresh', refreshLimiter, validate(refreshTokenSchema), authController.refresh);

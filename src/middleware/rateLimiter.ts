@@ -356,6 +356,24 @@ export async function loginAttemptGuard(
 }
 
 /**
+ * The same lockout for sign-ins that are not email + password (phone codes):
+ * throws while `identifier` is locked. Callers pass a digest, not a phone
+ * number. Fails open on a Redis error like the guard above; the codes
+ * themselves live in Redis and fail closed.
+ */
+export async function assertNotLockedOut(identifier: string): Promise<void> {
+  let locked: string | null = null;
+  try {
+    locked = await redis.get(lockoutKey(identifier));
+  } catch {
+    return;
+  }
+  if (locked) {
+    throw new AppError('Too many wrong attempts. Try again in 15 minutes.', 429, 'ACCOUNT_LOCKED');
+  }
+}
+
+/**
  * Record a failed login attempt. Call this from the auth service whenever
  * credentials are rejected. Increments a counter; if it exceeds the
  * threshold, sets a lockout key.

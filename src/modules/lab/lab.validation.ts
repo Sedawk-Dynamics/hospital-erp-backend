@@ -88,6 +88,9 @@ export const cloneOneLabTemplateSchema = z.object({
     .object({
       overridePrice: z.number().nonnegative().optional(),
       overrideTurnaroundHours: z.number().int().positive().optional(),
+      priceConfirmation: z
+        .object({ confirmed: z.literal(true), reason: z.string().trim().min(5).max(500) })
+        .optional(),
     })
     .default({}),
 });
@@ -106,6 +109,12 @@ export const cloneAllLabTemplatesSchema = z.object({
 // ============================================================
 // Test Catalog
 // ============================================================
+
+// Gap 369: saving a price above a panel that includes the test.
+export const priceConfirmationSchema = z.object({
+  confirmed: z.literal(true),
+  reason: z.string().trim().min(5, 'Give a reason for the price').max(500),
+});
 
 export const createTestSchema = z.object({
   body: z.object({
@@ -128,6 +137,7 @@ export const createTestSchema = z.object({
     // for these so re-clone-all skips them.
     isCustom: z.boolean().optional(),
     isActive: z.boolean().default(true),
+    priceConfirmation: priceConfirmationSchema.optional(),
   }),
 });
 
@@ -138,6 +148,12 @@ export const getTestsSchema = z.object({
       .transform((val) => val === 'true')
       .optional(),
     sampleType: z.string().optional(),
+    // Gap 369 catalogue filters.
+    rangeStatus: z.enum(['all', 'not_signed_off', 'pending', 'no_range']).optional(),
+    priceReview: z
+      .string()
+      .transform((val) => val === 'true')
+      .optional(),
   }),
 });
 
@@ -167,6 +183,11 @@ export const updateTestSchema = z.object({
     aliases: aliasesField.optional(),
     tags: tagsField.optional(),
     isActive: z.boolean().optional(),
+    priceConfirmation: priceConfirmationSchema.optional(),
+    // Renaming a parameter that has a live range takes that range out of use.
+    confirmRangeReset: z.boolean().optional(),
+    // LabTestCatalog.rangeVersion the form was opened with.
+    expectedRangeVersion: z.number().int().nonnegative().optional(),
   }),
 });
 
@@ -180,6 +201,7 @@ export const updateTestPriceSchema = z.object({
   body: z.object({
     price: z.number().positive().optional(),
     turnaroundHours: z.number().int().positive().optional(),
+    priceConfirmation: priceConfirmationSchema.optional(),
   }).refine((b) => b.price != null || b.turnaroundHours != null, {
     message: 'price or turnaroundHours is required',
   }),

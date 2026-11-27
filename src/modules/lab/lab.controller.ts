@@ -18,7 +18,7 @@ export async function createTest(
   try {
     const tenantId = req.user!.tenantId;
     const roles = req.user!.roles ?? [];
-    const test = await labService.createTest(tenantId, roles, req.body);
+    const test = await labService.createTest(tenantId, roles, req.body, { userId: req.user!.userId });
     sendResponse({
       res,
       statusCode: 201,
@@ -83,7 +83,9 @@ export async function updateTest(
   try {
     const tenantId = req.user!.tenantId;
     const roles = req.user!.roles ?? [];
-    const test = await labService.updateTest(tenantId, roles, req.params.id as string, req.body);
+    const test = await labService.updateTest(tenantId, roles, req.params.id as string, req.body, {
+      userId: req.user!.userId,
+    });
     sendResponse({
       res,
       message: 'Lab test updated successfully',
@@ -103,7 +105,9 @@ export async function updateTestPrice(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const test = await labService.updateTestPrice(tenantId, req.params.id as string, req.body);
+    const test = await labService.updateTestPrice(tenantId, req.params.id as string, req.body, {
+      userId: req.user!.userId,
+    });
     sendResponse({ res, message: 'Lab test price updated', data: test });
   } catch (err) {
     next(err);
@@ -790,6 +794,7 @@ export async function cloneOneLabTemplate(
       req.user!.roles ?? [],
       req.params.templateId as string,
       req.body,
+      req.user!.userId,
     );
     sendResponse({ res, statusCode: 201, message: 'Template cloned', data: out });
   } catch (err) {
@@ -807,6 +812,7 @@ export async function cloneAllLabTemplates(
       req.user!.tenantId,
       req.user!.roles ?? [],
       req.body,
+      req.user!.userId,
     );
     sendResponse({ res, message: 'Templates cloned', data: out });
   } catch (err) {

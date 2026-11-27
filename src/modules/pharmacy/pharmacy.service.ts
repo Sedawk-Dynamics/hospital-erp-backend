@@ -4,7 +4,11 @@ import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
 import { normalizeAdmissionType } from '../../shared/admission-type';
 import { istDayStart, istDayEnd } from '../../shared/date.utils';
 import { loadPaidSaleLines, summariseSaleLines } from './pharmacy.sales-figures';
-import { saleUnitNouns, formatUnits, describeSaleQty } from './pharmacy.units';
+import { formatQty, formatDrugQty, pluralUnit, qtyUnitsOf, snapshotQtyText, unitsFromSnapshot, UNIT_SELECT, type QtyUnits } from './pharmacy.units';
+import {
+  assertMasterRateLegal, assertResolvedRateLegal, illegalRateReason, purchaseRateWarning,
+  retiredRateError, retiredRateMessage, ILLEGAL_RATE_CODE, type RetiredRateItem,
+} from '../gst/gst-retired-rate';
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
@@ -16,7 +20,7 @@ import { resolvePackSize, inferLooseUnitLabel } from '../drug-master/drug-master
 import { resolveHsnGst, getHsnGstRows, matchHsnGst } from '../drug-master/drug-master.service';
 import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
 import { normalizeBuyer, type BuyerInput } from '../billing/billing.gst-checks';
-import { roundOffTotal } from '../../shared/gst';
+import { roundOffPharmacyTotal } from '../../shared/gst';
 import { supplyKindForInventoryCategory, itemTaxContext } from '../../shared/gst-determination';
 import { issueDocumentForBill } from '../gst/gst-document.service';
 import { getGstProfile } from '../hospital-settings/hospital-settings.service';
@@ -57,8 +61,8 @@ import { fuzzyMatchIds } from '../../shared/medicine-fuzzy';
 import { lookupNameMapping, saveNameMapping } from './pharmacy.name-mapping';
 import { recordDrugStockMovement, buildStockLedger } from './pharmacy.stock-movement';
 import {
-  assertSupplierInvoice, homeStateCode, inputTaxToReverse, purchaseLineTax, supplierStateOf,
-  writeOffTypeFor,
+  assertSupplierInvoice, drugRateWhenReceived, homeStateCode, inputTaxToReverse, purchaseLineTax,
+  supplierStateOf, writeOffTypeFor,
 } from './purchase-tax';
 import type {
   CreateFormularyInput,
@@ -450,6 +454,10 @@ export async function createFormularyItem(
   data: CreateFormularyInput & { force?: boolean },
 ) {
   assertPharmacyAdmin(roles, 'add formulary drugs');
+  // #262: a new item cannot start life on a rate the law no longer recognises.
+  if (!data.gstTreatment || data.gstTreatment === 'taxable') {
+    await assertMasterRateLegal(data.taxPercent, `"${data.drugName}"`);
+  }
   await assertFormularyGtinUnique(tenantId, (data as any).gtin, (data as any).casePackGtin);
   // G1 duplicate guard: unless the user explicitly forced creation, refuse to
   // silently add a new row when a high-confidence near-duplicate already exists
@@ -1221,6 +1229,8 @@ export async function commitInward(
     formularyId?: string;
     batchId?: string;
     message?: string;
+    /** #262: received, but the supplier's GST rate was not legal on the invoice date. */
+    warning?: string;
   }> = [];
 
   // G-9: a registered supplier's goods receipt must carry their invoice number
@@ -1338,6 +1348,18 @@ export async function commitInward(
         // GST from the effective HSN (master's when the box is blank).
         const effHsn = line.hsnCode || master?.hsnCode || null;
         const createGst = line.gstPercent ?? matchHsnGst(effHsn, hsnRows)?.gstRate;
+        // #262: the supplier's rate belongs on the batch. It cannot become a NEW
+        // medicine's selling rate when that rate has been retired since.
+        {
+          const reason = await illegalRateReason(createGst, `"${master?.name ?? line.drugName}"`);
+          if (reason) {
+            throw AppError.badRequest(
+              `${reason} Add the medicine with its current rate first, then map this line to it — ` +
+                "the batch will keep the rate on the supplier's document.",
+              ILLEGAL_RATE_CODE,
+            );
+          }
+        }
         const created = await createFormularyItem(tenantId, roles, {
           drugName: master?.name ?? line.drugName,
           // Carries the "Type" chosen at stock entry (medicine / consumable / …).
@@ -1389,9 +1411,19 @@ export async function commitInward(
       // Only receive a batch when a quantity is given — qty 0/absent just
       // registers the medicine in the formulary (the old "New Item" behaviour).
       let batchId: string | undefined;
+      let gstRateWarning: string | undefined;
       if (drugQty > 0) {
         if (!line.batchNumber || !line.expiryDate) {
           throw AppError.badRequest('Batch number and expiry date are required when receiving stock');
+        }
+        // #262: a blank rate is never filled from an HSN default that was not
+        // legal on the invoice's own date.
+        const inwardInvoiceDate = line.invoiceDate ?? data.invoiceDate;
+        if (
+          line.gstPercent == null && lineGst != null &&
+          (await illegalRateReason(lineGst, 'This line', inwardInvoiceDate ? new Date(inwardInvoiceDate) : new Date()))
+        ) {
+          lineGst = undefined;
         }
         const batch = await createBatch(tenantId, userId, roles, {
           drugId,
@@ -1416,6 +1448,7 @@ export async function commitInward(
           addToExisting: line.addToExisting ?? data.addToExisting,
         } as CreateBatchInput);
         batchId = batch.id;
+        gstRateWarning = (batch as { gstRateWarning?: string | null }).gstRateWarning ?? undefined;
         batchesIn++;
       }
 
@@ -1436,6 +1469,7 @@ export async function commitInward(
         status: 'ok',
         formularyId: drugId,
         batchId,
+        ...(gstRateWarning ? { warning: gstRateWarning } : {}),
       });
     } catch (err) {
       failed++;
@@ -1567,6 +1601,11 @@ export async function importFormularyItem(
   // synchronously as well as in the deploy backfill so an early import can
   // never race ahead of its HSN/tax classification.
   master = await ensureCatalogDrugGst(master);
+  // #262: the catalogue may still carry a retired rate. Copying it would make a
+  // drug nobody can bill; dropping it would switch the rate silently.
+  if (!master.gstTreatment || master.gstTreatment === 'taxable') {
+    await assertMasterRateLegal(master.gstRate, `"${master.name}" in the drug catalogue`);
+  }
 
   // Prefer the catalog's stored numeric pack size; fall back to resolving it
   // from the free-text label (with a sensible strip default for solids) so the
@@ -1689,6 +1728,21 @@ export async function importFormularyItemsBulk(
     toCreate[i] = await ensureCatalogDrugGst(toCreate[i]!);
   }
 
+  // #262: catalogue rows on a retired rate are left out and listed with the
+  // reason, rather than copied (unsellable) or silently re-rated.
+  const rejected: Array<{ drugMasterId: string; drugName: string; reason: string }> = [];
+  {
+    const accepted: typeof toCreate = [];
+    for (const m of toCreate) {
+      const taxable = !m.gstTreatment || m.gstTreatment === 'taxable';
+      // eslint-disable-next-line no-await-in-loop
+      const reason = taxable ? await illegalRateReason(m.gstRate, `"${m.name}" in the drug catalogue`) : null;
+      if (reason) rejected.push({ drugMasterId: m.id, drugName: m.name, reason });
+      else accepted.push(m);
+    }
+    toCreate = accepted;
+  }
+
   if (toCreate.length) {
     // Bulk import must carry the same identity/tax fields as one-click import.
     // Claim GTIN variants in memory first so one colliding catalogue row cannot
@@ -1777,7 +1831,8 @@ export async function importFormularyItemsBulk(
   return {
     requested: ids.length,
     created: toCreate.length,
-    skipped: ids.length - toCreate.length,
+    skipped: ids.length - toCreate.length - rejected.length,
+    rejected,
   };
 }
 
@@ -2211,6 +2266,19 @@ export async function updateFormularyItem(
     updateData.gstTreatmentSource = data.gstTreatment ? 'manual' : null;
     if (data.gstTreatment && data.gstTreatment !== 'taxable') updateData.taxPercent = 0;
   }
+  // #262: an edit cannot GIVE an item a retired rate. A drug that still carries
+  // one can have its name, price or reorder level corrected without first
+  // settling its tax — it stays unsellable until somebody sets a legal rate.
+  {
+    const nextRate = updateData.taxPercent !== undefined ? updateData.taxPercent : existing.taxPercent;
+    const nextTreatment = data.gstTreatment !== undefined ? data.gstTreatment : existing.gstTreatment;
+    const moved =
+      Number(nextRate ?? 0) !== Number(existing.taxPercent ?? 0) ||
+      (nextTreatment ?? null) !== (existing.gstTreatment ?? null);
+    if (moved && (!nextTreatment || nextTreatment === 'taxable')) {
+      await assertMasterRateLegal(nextRate, `"${data.drugName ?? existing.drugName}"`);
+    }
+  }
   if ((data as any).minStock !== undefined) updateData.minStock = (data as any).minStock;
   if ((data as any).gtin !== undefined) updateData.gtin = normalizeGtin((data as any).gtin);
   if ((data as any).casePackGtin !== undefined) updateData.casePackGtin = normalizeGtin((data as any).casePackGtin);
@@ -2474,8 +2542,12 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
     gstPercent = 0;
   } else if (gstPercent == null && drug.hsnCode) {
     const hit = await resolveHsnGst(drug.hsnCode);
-    if (hit) gstPercent = hit.gstRate;
+    // #262: an HSN default that was not legal on the invoice's date is not
+    // filled in; a rate the user typed off the supplier's document always is kept.
+    const on = (data as any).invoiceDate ? new Date((data as any).invoiceDate) : new Date();
+    if (hit && !(await illegalRateReason(hit.gstRate, drug.drugName, on))) gstPercent = hit.gstRate;
   }
+  const gstRateWarning = await purchaseRateWarning(gstPercent, (data as any).invoiceDate);
 
   // Validate supplier if provided
   let batchSupplier: { name: string; gstNumber: string | null; stateCode: string | null } | null = null;
@@ -2598,7 +2670,7 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
       })(),
     });
     logger.info({ tenantId, batchId: merged.id, drugId: data.drugId }, 'Drug batch quantity increased');
-    return merged;
+    return gstRateWarning ? { ...merged, gstRateWarning } : merged;
   }
 
   // Pre-mint the batch id so the internal barcode (spec Section 2) can be derived
@@ -2674,7 +2746,7 @@ export async function createBatch(tenantId: string, userId: string, roles: strin
   });
 
   logger.info({ tenantId, batchId: batch.id, drugId: data.drugId }, 'Drug batch created');
-  return finalBatch;
+  return gstRateWarning ? { ...finalBatch, gstRateWarning } : finalBatch;
 }
 
 export async function getBatches(tenantId: string, query: GetBatchesQuery) {
@@ -2936,7 +3008,7 @@ export async function adjustBatchStock(
         fullBatch ?? batch,
         -delta,
         await homeStateCode(tenantId),
-        fullBatch?.drug?.taxPercent != null ? Number(fullBatch.drug.taxPercent) : null,
+        await drugRateWhenReceived(tenantId, fullBatch ?? batch, fullBatch?.drug?.taxPercent),
       );
       const row = await prisma.drugStockWriteOff.create({
         data: {
@@ -3507,6 +3579,7 @@ export async function autoLinkDispenseToBill(
               select: {
                 drugName: true, category: true, price: true, isReimbursable: true,
                 taxPercent: true, hsnCode: true, gstTreatment: true,
+                ...UNIT_SELECT,
               },
             },
             sellingPrice: true,
@@ -3582,10 +3655,13 @@ export async function autoLinkDispenseToBill(
       { unitPrice: unit, quantity: record.quantityDispensed },
     );
 
+    // 345: the bill names the same unit as the stock list and the ledger.
+    const linkUnits = qtyUnitsOf((record.drugBatch as any)?.drug);
     await tx.billItem.create({
       data: {
         billId: bill.id,
-        description: `${drugName}${batchTag}`,
+        description: `${drugName}${batchTag} — ${formatQty(record.quantityDispensed, linkUnits)}`,
+        qtyUnits: { ...linkUnits },
         category: 'pharmacy',
         quantity: record.quantityDispensed,
         unitPrice: unit,
@@ -3622,6 +3698,13 @@ export async function createDispense(tenantId: string, userId: string, data: Cre
           schedule: true,
           controlledClass: true,
           vaultControlled: true,
+          // #262: the rate this dispense would be billed at.
+          category: true,
+          taxPercent: true,
+          hsnCode: true,
+          gstTreatment: true,
+          // 345: how the quantity reads.
+          ...UNIT_SELECT,
         },
       },
     },
@@ -3656,10 +3739,40 @@ export async function createDispense(tenantId: string, userId: string, data: Cre
   );
 
   // The hospital dispenses at its own price (operational truth).
+  const dispenseUnits = qtyUnitsOf(drugBatch.drug);
   if (drugBatch.quantityInStock < data.quantityDispensed) {
     throw AppError.badRequest(
-      `Insufficient stock. Available: ${drugBatch.quantityInStock}, Requested: ${data.quantityDispensed}`,
+      `Insufficient stock. Available: ${formatQty(drugBatch.quantityInStock, dispenseUnits)}, ` +
+        `Requested: ${formatQty(data.quantityDispensed, dispenseUnits)}`,
     );
+  }
+
+  // #262: this dispense posts a charge to the visit's bill. Refused here, before
+  // any stock moves, when the rate it would carry has been retired. An inpatient
+  // whose medicine is exempt resolves to 0% and passes.
+  if (data.prescriptionId) {
+    const rxVisit = await prisma.prescription.findFirst({
+      where: { id: data.prescriptionId, tenantId },
+      select: { visitId: true },
+    });
+    if (rxVisit?.visitId) {
+      const rateResolver = await taxResolverFor(tenantId);
+      const admitted = !!(await prisma.admission.findFirst({
+        where: { tenantId, visitId: rxVisit.visitId },
+        select: { id: true },
+      }));
+      assertResolvedRateLegal(
+        rateResolver,
+        drugBatch.drug?.drugName ?? 'This medicine',
+        rateResolver.determine({
+          kind: supplyKindForInventoryCategory(drugBatch.drug?.category),
+          ...itemTaxContext(drugBatch.drug),
+          taxInclusive: true,
+          patientAdmitted: admitted,
+          issuedForTreatment: admitted,
+        }),
+      );
+    }
   }
 
   // Validate patient exists
@@ -3695,6 +3808,7 @@ export async function createDispense(tenantId: string, userId: string, data: Cre
         patientId: data.patientId,
         drugBatchId: data.drugBatchId,
         quantityDispensed: data.quantityDispensed,
+        qtyUnits: { ...dispenseUnits },
         dispensedBy: userId,
         notes: data.notes,
         // Controlled-drug co-sign, when the gate required one.
@@ -3955,6 +4069,8 @@ export async function previewPharmacySale(
       drugName: string;
       taxRatePercent: number;
       requiresTaxResolution: boolean;
+      hsnSacCode: string | null;
+      rateSource: string;
     }
   >;
 
@@ -3964,8 +4080,9 @@ export async function previewPharmacySale(
       include: {
         drug: {
           select: {
-            drugName: true, price: true, packSize: true, taxPercent: true, hsnCode: true,
+            drugName: true, price: true, taxPercent: true, hsnCode: true,
             gstTreatment: true, category: true,
+            ...UNIT_SELECT,
           },
         },
       },
@@ -3994,8 +4111,12 @@ export async function previewPharmacySale(
       drugBatchId: batch.id,
       drugName: batch.drug?.drugName ?? 'Medication',
       quantity: baseQty,
+      // 345: the words the bill, the ledger and the stock list will print.
+      quantityText: formatDrugQty(baseQty, batch.drug),
+      availableText: formatDrugQty(batch.quantityInStock, batch.drug),
       unitPrice,
       discountAmount: discAmt,
+      rateSource: priced.determination.source,
       hsnSacCode: priced.determination.hsnSacCode ?? null,
       gstTreatment: priced.determination.treatment,
       taxRatePercent: priced.determination.ratePercent,
@@ -4028,26 +4149,21 @@ export async function previewPharmacySale(
         `${unclassified.length > 3 ? '…' : ''}. This sale cannot be billed until they are classified.`,
     );
   }
-  const illegal = new Map<number, string[]>();
-  for (const l of lines) {
-    if (l.taxRatePercent <= 0) continue;
-    if (resolver.isLegalRate(l.taxRatePercent)) continue;
-    const names = illegal.get(l.taxRatePercent) ?? [];
-    if (names.length < 3) names.push(l.drugName);
-    illegal.set(l.taxRatePercent, names);
-  }
-  if (illegal.size > 0) {
-    blockers.push(
-      'Not a legal GST slab: ' +
-        [...illegal.entries()].map(([rate, names]) => `${rate}% (${names.join(', ')})`).join('; ') +
-        `. Legal rates today are ${resolver.describeLegalRates()}.`,
-    );
-  }
+  // #262: the same words the sale refuses with, so the counter reads one message.
+  const retiredRates: RetiredRateItem[] = lines
+    .filter((l) => l.taxRatePercent > 0 && !resolver.isLegalRate(l.taxRatePercent))
+    .map((l) => ({
+      drugName: l.drugName, ratePercent: l.taxRatePercent, hsnCode: l.hsnSacCode, source: l.rateSource,
+    }));
+  const retiredBlock = retiredRateMessage(retiredRates, resolver.describeLegalRates());
+  if (retiredBlock) blockers.push(retiredBlock);
 
   return {
     lines,
     /** Reasons this cart cannot be billed as it stands. Empty is the normal case. */
     blockers,
+    /** #262: the items behind a retired-rate block, for the screen to mark. */
+    retiredRates,
     totals: {
       taxableValue: sum('taxableValue'),
       cgstAmount: sum('cgstAmount'),
@@ -4202,10 +4318,8 @@ export async function createPharmacySale(
       prescriptionItemId: string | null;
       saleUnit: 'pack' | 'loose';
       baseQty: number;
-      packSize: number;
-      looseUnit: string;
-      /** 345: the selling-unit nouns the bill line is described in. */
-      unitNouns: { packNoun: string; looseNoun: string };
+      /** 345: how this line's base quantity reads, and what is snapshotted with it. */
+      units: QtyUnits;
       unitPrice: number;
       discPct: number;
       discAmt: number;
@@ -4224,6 +4338,10 @@ export async function createPharmacySale(
       witnessedAt: Date | null;
     }>;
 
+    // 345: base units already claimed on this bill, per batch. Two lines of one
+    // batch (a strip and some loose tablets) used to be checked separately
+    // against the full stock, and together could take more than it held.
+    const claimed = new Map<string, number>();
     for (const item of data.items) {
       const batch = await tx.drugBatch.findFirst({
         where: { id: item.drugBatchId, tenantId },
@@ -4283,19 +4401,29 @@ export async function createPharmacySale(
 
       const packSize = batch.drug?.packSize && batch.drug.packSize > 0 ? batch.drug.packSize : 1;
       const saleUnit = item.saleUnit ?? 'pack';
-      // Loose sales must be whole sub-units; pack sales convert packs→base units.
-      const baseQty = saleUnit === 'loose'
-        ? Math.round(item.quantity)
-        : Math.round(item.quantity) * packSize;
-      if (baseQty <= 0) throw AppError.badRequest('Quantity must be at least one unit');
-      if (batch.quantityInStock < baseQty) {
+      const units = qtyUnitsOf(batch.drug);
+      // 345: half a strip is not "1.5 strips" rounded to 2 — it is loose tablets.
+      if (!Number.isInteger(item.quantity)) {
         throw AppError.badRequest(
-          // 345: stock is in base units — say which.
-          `Insufficient stock for ${batch.drug?.drugName ?? 'drug'}. Available: ` +
-            `${formatUnits(batch.quantityInStock, saleUnitNouns({ ...batch.drug, packSize }).looseNoun)}, ` +
-            `requested: ${formatUnits(baseQty, saleUnitNouns({ ...batch.drug, packSize }).looseNoun)}`,
+          `Enter a whole number of ${pluralUnit(2, saleUnit === 'loose' ? units.looseNoun : units.packNoun)} for ` +
+            `${batch.drug?.drugName ?? 'this item'}.` +
+            (saleUnit === 'pack' && units.packSize > 1 ? ` To sell part of a ${units.packNoun}, sell it by the ${units.looseNoun}.` : ''),
         );
       }
+      // Loose sales must be whole sub-units; pack sales convert packs→base units.
+      const baseQty = saleUnit === 'loose' ? item.quantity : item.quantity * packSize;
+      if (baseQty <= 0) throw AppError.badRequest('Quantity must be at least one unit');
+      const onThisBill = claimed.get(batch.id) ?? 0;
+      if (batch.quantityInStock < onThisBill + baseQty) {
+        throw AppError.badRequest(
+          // 345: the words the stock list shows for the same batch.
+          `Insufficient stock for ${batch.drug?.drugName ?? 'drug'}. Available: ` +
+            `${formatQty(batch.quantityInStock, units)}` +
+            `${onThisBill > 0 ? ` (${formatQty(onThisBill, units)} already on this bill)` : ''}, ` +
+            `requested: ${formatQty(baseQty, units)}`,
+        );
+      }
+      claimed.set(batch.id, onThisBill + baseQty);
 
       const unitPrice = item.unitPrice != null
         ? item.unitPrice
@@ -4336,12 +4464,7 @@ export async function createPharmacySale(
         prescriptionItemId: item.prescriptionItemId ?? null,
         saleUnit,
         baseQty,
-        packSize,
-        looseUnit:
-          batch.drug?.looseUnitLabel?.trim() ||
-          inferLooseUnitLabel(batch.drug?.dosageForm, batch.drug?.drugName) ||
-          'unit',
-        unitNouns: saleUnitNouns({ ...batch.drug, packSize }),
+        units,
         unitPrice,
         discPct,
         discAmt,
@@ -4381,23 +4504,16 @@ export async function createPharmacySale(
             'rate approved, before billing.',
         );
       }
-      const illegal = new Map<number, string[]>();
-      for (const l of lines) {
-        if (l.taxPct <= 0) continue;
-        if (saleTaxResolver.isLegalRate(l.taxPct)) continue;
-        const names = illegal.get(l.taxPct) ?? [];
-        if (names.length < 3) names.push(l.drugName);
-        illegal.set(l.taxPct, names);
-      }
-      if (illegal.size > 0) {
-        const listed = [...illegal.entries()]
-          .map(([rate, names]) => `${rate}% (${names.join(', ')})`)
-          .join('; ');
-        throw AppError.badRequest(
-          `This sale carries a GST rate that is not a legal slab: ${listed}. Legal rates today are ` +
-            `${saleTaxResolver.describeLegalRates()}. Correct the medicine's classification before billing.`,
-        );
-      }
+      // #262: never billed at a retired rate, never moved to another one.
+      const retired: RetiredRateItem[] = lines
+        .filter((l) => l.taxPct > 0 && !saleTaxResolver.isLegalRate(l.taxPct))
+        .map((l) => ({
+          drugName: l.drugName,
+          ratePercent: l.taxPct,
+          hsnCode: (l.taxFields.hsnSacCode as string | null) ?? null,
+          source: l.taxFields.rateSource,
+        }));
+      if (retired.length) throw retiredRateError(retired, saleTaxResolver.describeLegalRates());
     }
 
     // 2. Roll up the invoice totals.
@@ -4422,10 +4538,13 @@ export async function createPharmacySale(
     //
     // The round-off never touches the tax figures — those are what get
     // reported — so `ratio` below is still taken on the exact total.
-    const rounding =
-      saleGstProfile.registered && saleGstProfile.roundOffToRupee
-        ? roundOffTotal(exactTotal)
-        : { rounded: exactTotal, roundOff: 0 };
+    //
+    // #345: every hospital rounds (an unregistered one charged the paise), and a
+    // bill with loose tablets rounds down so it never goes above the MRP.
+    const hasLooseUnits = lines.some((l) => l.saleUnit === 'loose' && l.units.packSize > 1);
+    const rounding = saleGstProfile.roundOffToRupee
+      ? roundOffPharmacyTotal(exactTotal, hasLooseUnits)
+      : { rounded: exactTotal, roundOff: 0 };
     const totalAmount = rounding.rounded;
     const roundOff = rounding.roundOff;
     const discountAmount = round2(itemDiscount + billDiscount);
@@ -4590,6 +4709,7 @@ export async function createPharmacySale(
           patientId,
           drugBatchId: l.batchId,
           quantityDispensed: l.baseQty,
+          qtyUnits: { ...l.units },
           dispensedBy: userId,
           notes: data.notes,
           saleUnit: l.saleUnit,
@@ -4631,11 +4751,10 @@ export async function createPharmacySale(
         before: soldAfter + l.baseQty, after: soldAfter, unitCost: (soldBatch as any)?.purchasePrice,
       });
 
-      // Spell out what the count means on the invoice: loose lines bill the
-      // exact number of base units (e.g. "10 tablet, loose"); pack lines note
-      // how many packs of N were sold. `quantity` itself is always base units.
-      // 345: the same unit nouns the POS shows on the quantity field.
-      const unitDetail = describeSaleQty(l.baseQty, l.saleUnit, l.packSize, l.unitNouns);
+      // Spell out what the count means on the invoice — packs AND the tablets
+      // they hold. `quantity` itself is always base units.
+      // 345: the same words the POS, the stock list and the ledger show.
+      const unitDetail = formatQty(l.baseQty, l.units);
       // Print batch AND expiry on the receipt line (design doc OP Step 5 requires
       // "batch/expiry details" on the printed bill). dd/MM/yyyy per house style.
       const expTag = l.expiry
@@ -4645,6 +4764,7 @@ export async function createPharmacySale(
         data: {
           billId: bill.id,
           description: `${l.drugName} (Batch ${l.batchNumber}${expTag}) — ${unitDetail}`,
+          qtyUnits: { ...l.units },
           category: 'pharmacy',
           quantity: l.baseQty,
           unitPrice: l.unitPrice,
@@ -4850,6 +4970,8 @@ export async function getPharmacySale(tenantId: string, billId: string) {
           id: true, description: true, hsnSacCode: true, gstTreatment: true, quantity: true,
           unitPrice: true, taxableValue: true, taxPercent: true, taxAmount: true,
           cgstAmount: true, sgstAmount: true, igstAmount: true, cessAmount: true, totalAmount: true,
+          // 345: the returned quantity in words.
+          quantityText: true,
         },
         orderBy: { createdAt: 'asc' },
       },
@@ -4873,7 +4995,19 @@ export async function getPharmacySale(tenantId: string, billId: string) {
   const dispensedBy = dispenserNames.length ? dispenserNames.join(', ') : personName(bill.generator);
 
   return {
-    bill,
+    // 345: each line's quantity in words, from the units it was SOLD in. Null on
+    // a bill raised before they were kept — it reprints as it always did.
+    bill: {
+      ...bill,
+      billItems: bill.billItems.map((i) => {
+        const snap = (i as { qtyUnits?: unknown }).qtyUnits;
+        return {
+          ...i,
+          quantityText: snapshotQtyText(i.quantity, snap),
+          rateUnit: unitsFromSnapshot(snap)?.looseNoun ?? null,
+        };
+      }),
+    },
     hospital: tenant,
     gst,
     creditNotes,
@@ -5114,7 +5248,7 @@ export async function getDispenseRecords(tenantId: string, query: GetDispenseQue
           select: {
             id: true,
             batchNumber: true,
-            drug: { select: { id: true, drugName: true, category: true, genericName: true } },
+            drug: { select: { id: true, drugName: true, category: true, genericName: true, ...UNIT_SELECT } },
           },
         },
         dispenser: { select: { id: true, firstName: true, lastName: true } },
@@ -5139,6 +5273,9 @@ export async function getDispenseRecords(tenantId: string, query: GetDispenseQue
     const b = r.billId ? billById.get(r.billId) : undefined;
     return {
       ...r,
+      quantityText:
+        snapshotQtyText(r.quantityDispensed, (r as { qtyUnits?: unknown }).qtyUnits) ??
+        formatDrugQty(r.quantityDispensed, r.drugBatch?.drug),
       billNumber: b?.billNumber ?? null,
       billStatus: b?.status ?? null,
       billBalanceDue: b ? Number(b.balanceDue) : null,
@@ -5216,6 +5353,16 @@ export async function verifyDispense(tenantId: string, id: string, verifiedBy: s
 // Returns
 // ============================================================
 
+/**
+ * 345: a return's quantity in base units. Stock, the return row, its tax and its
+ * refund all count base units; a caller that says `pack` is counting strips. No
+ * unit means base units already - that is what the return screens send.
+ */
+function returnBaseQty(quantity: number, saleUnit: string | null | undefined, packSize: number | null | undefined) {
+  const size = Math.trunc(Number(packSize ?? 0));
+  return saleUnit === 'pack' && size > 1 ? quantity * size : quantity;
+}
+
 export async function createReturn(tenantId: string, userId: string, roles: string[], data: CreateReturnInput) {
   // Patient returns are an everyday counter task (pharmacist). Vendor returns
   // (damaged/unsold stock back to the supplier) are a stock-management action,
@@ -5234,9 +5381,13 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
     }
     const drug = await prisma.drugFormulary.findFirst({
       where: { id: data.drugId, tenantId },
-      select: { id: true, drugName: true },
+      select: { id: true, drugName: true, ...UNIT_SELECT },
     });
     if (!drug) throw AppError.notFound('Medicine not found in the formulary');
+    // 345: the form counts in the unit the staff picked; stock and the return
+    // row count in base units. A return of "2 strips" used to restock 2 tablets.
+    const counterUnits = qtyUnitsOf(drug);
+    const counterBaseQty = returnBaseQty(data.quantity, data.saleUnit, counterUnits.packSize);
 
     // If a tracked batch was picked, it must belong to this tenant + medicine.
     let counterBatchId: string | null = null;
@@ -5258,7 +5409,7 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
         batchNumber: data.batchNumber || null,
         expiryDate: data.expiryDate ?? null,
         saleUnit: data.saleUnit ?? 'pack',
-        quantity: data.quantity,
+        quantity: counterBaseQty,
         reason: data.reason,
         // Optional money given back to the walk-in customer. A counter return has
         // no original bill, so this is just recorded on the return + its receipt.
@@ -5279,8 +5430,8 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
       action: 'create',
       entityType: 'drug_return',
       entityId: counterReturn.id,
-      description: `Counter return recorded: ${data.quantity} × ${drug.drugName}${data.batchNumber ? ` (batch ${data.batchNumber})` : ''}`,
-      newValues: { quantity: data.quantity, returnType: 'counter_return', drugId: drug.id },
+      description: `Counter return recorded: ${formatQty(counterBaseQty, counterUnits)} of ${drug.drugName}${data.batchNumber ? ` (batch ${data.batchNumber})` : ''}`,
+      newValues: { quantity: counterBaseQty, returnType: 'counter_return', drugId: drug.id },
     });
 
     logger.info(
@@ -5306,6 +5457,8 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
   let saleUnit: string | null = null;
   let unitPrice: number | null = null;
   let refundAmount: number | null = null;
+  // Base units; converted below when the caller counted packs.
+  let baseQty = data.quantity;
 
   if (data.returnType === 'patient_return' && data.dispensingRecordId) {
     const record = await prisma.dispensingRecord.findFirst({
@@ -5336,6 +5489,20 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
     billId = record.billId ?? null;
     saleUnit = record.saleUnit ?? 'pack';
 
+    // 345: "2 packs" of this sale line, by the pack it was sold in.
+    if (data.saleUnit === 'pack') {
+      const soldIn = unitsFromSnapshot((record as { qtyUnits?: unknown }).qtyUnits);
+      const packSize =
+        soldIn?.packSize ??
+        (
+          await prisma.drugBatch.findFirst({
+            where: { id: record.drugBatchId, tenantId },
+            select: { drug: { select: { packSize: true } } },
+          })
+        )?.drug?.packSize;
+      baseQty = returnBaseQty(data.quantity, 'pack', packSize);
+    }
+
     // Non-rejected returns already booked against this sale line cap the return.
     const prior = await prisma.drugReturn.aggregate({
       where: { dispensingRecordId: record.id, status: { not: 'rejected' } },
@@ -5343,9 +5510,12 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
     });
     const alreadyReturned = prior._sum.quantity ?? 0;
     const remaining = record.quantityDispensed - alreadyReturned;
-    if (data.quantity > remaining) {
+    if (baseQty > remaining) {
+      const u = unitsFromSnapshot((record as { qtyUnits?: unknown }).qtyUnits) ??
+        { packSize: 1, packNoun: 'unit', looseNoun: 'unit' };
       throw AppError.badRequest(
-        `Cannot return ${data.quantity} unit(s) — only ${Math.max(0, remaining)} of ${record.quantityDispensed} dispensed are still returnable`,
+        `Cannot return ${formatQty(baseQty, u)} — only ${formatQty(Math.max(0, remaining), u)} of ` +
+          `${formatQty(record.quantityDispensed, u)} dispensed are still returnable`,
       );
     }
 
@@ -5354,7 +5524,7 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
     unitPrice = record.unitPrice != null ? Number(record.unitPrice) : null;
     const discPct = record.discountPercent != null ? Number(record.discountPercent) : 0;
     if (unitPrice != null) {
-      refundAmount = round2(unitPrice * data.quantity * (1 - discPct / 100));
+      refundAmount = round2(unitPrice * baseQty * (1 - discPct / 100));
     }
     // The staff-entered "money given" wins over the auto-computed billed price.
     if ((data as any).refundAmount != null) {
@@ -5373,6 +5543,16 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
 
   if (!drugBatch) {
     throw AppError.notFound('Drug batch not found');
+  }
+
+  // 345: a pack count on any return not already converted from its sale line.
+  if (data.saleUnit && !dispensingRecordId) {
+    const unitDrug = await prisma.drugFormulary.findFirst({
+      where: { id: drugBatch.drugId, tenantId },
+      select: { packSize: true },
+    });
+    baseQty = returnBaseQty(data.quantity, data.saleUnit, unitDrug?.packSize);
+    saleUnit = data.saleUnit;
   }
 
   // Validate patient if patient return
@@ -5408,22 +5588,25 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
     // decrement at the batch quantity, so an over-sized return used to be
     // accepted, move only what was there, and still raise a credit note for the
     // full amount — claiming money back for units that never left the shelf.
-    if (data.quantity > drugBatch.quantityInStock) {
+    const returnedDrug = await prisma.drugFormulary.findFirst({
+      where: { id: drugBatch.drugId, tenantId },
+      select: { taxPercent: true, drugName: true, ...UNIT_SELECT },
+    });
+    if (baseQty > drugBatch.quantityInStock) {
       throw AppError.badRequest(
-        `Cannot return ${data.quantity} unit(s) — batch ${drugBatch.batchNumber} only has ${drugBatch.quantityInStock} in stock.`,
+        `Cannot return ${formatDrugQty(baseQty, returnedDrug)} — batch ${drugBatch.batchNumber} only has ` +
+          `${formatDrugQty(drugBatch.quantityInStock, returnedDrug)} in stock.`,
       );
     }
     // G-12: the input tax to reverse, copied from the purchase batch (its rate
     // and head split), with the medicine named on the return row itself.
-    const returnedDrug = await prisma.drugFormulary.findFirst({
-      where: { id: drugBatch.drugId, tenantId },
-      select: { taxPercent: true },
-    });
     const tax = inputTaxToReverse(
       { ...drugBatch, supplier },
-      data.quantity,
+      baseQty,
       await homeStateCode(tenantId),
-      returnedDrug?.taxPercent != null ? Number(returnedDrug.taxPercent) : null,
+      // #262: a batch with no rate of its own reverses at the rate the drug had
+      // when it came in — not at whatever the drug was re-rated to since.
+      await drugRateWhenReceived(tenantId, drugBatch, returnedDrug?.taxPercent),
     );
     vendorReturnFields = {
       drugId: drugBatch.drugId,
@@ -5452,7 +5635,7 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
       drugBatchId: batchId,
       patientId,
       supplierId: data.supplierId,
-      quantity: data.quantity,
+      quantity: baseQty,
       reason: data.reason,
       status: 'pending',
       dispensingRecordId,
@@ -5484,8 +5667,8 @@ export async function createReturn(tenantId: string, userId: string, roles: stri
     action: 'create',
     entityType: 'drug_return',
     entityId: drugReturn.id,
-    description: `${data.returnType === 'vendor_return' ? 'Vendor' : 'Patient'} return recorded: ${data.quantity} × ${drugReturn.drugBatch?.drug?.drugName ?? 'drug'} (batch ${drugReturn.drugBatch?.batchNumber ?? '-'})`,
-    newValues: { quantity: data.quantity, returnType: data.returnType, refundAmount },
+    description: `${data.returnType === 'vendor_return' ? 'Vendor' : 'Patient'} return recorded: ${baseQty} × ${drugReturn.drugBatch?.drug?.drugName ?? 'drug'} (batch ${drugReturn.drugBatch?.batchNumber ?? '-'})`,
+    newValues: { quantity: baseQty, returnType: data.returnType, refundAmount },
   });
 
   logger.info(
@@ -5866,13 +6049,16 @@ export async function prePackHold(
       if (item.quantity <= 0) throw AppError.badRequest('Quantity must be positive');
       const batch = await tx.drugBatch.findFirst({
         where: { id: item.drugBatchId, tenantId },
-        include: { drug: { select: { drugName: true, category: true, price: true, taxPercent: true } } },
+        include: { drug: { select: { drugName: true, category: true, price: true, taxPercent: true, ...UNIT_SELECT } } },
       });
       if (!batch) throw AppError.notFound(`Drug batch ${item.drugBatchId} not found`);
       if (isBatchExpired(batch)) throw AppError.badRequest('Cannot pre-pack from an expired batch');
       if (batch.isRecalled) throw AppError.badRequest('Cannot pre-pack from a recalled batch');
       if (batch.quantityInStock < item.quantity) {
-        throw AppError.badRequest(`Insufficient stock for ${batch.drug?.drugName ?? 'drug'} (have ${batch.quantityInStock}, need ${item.quantity})`);
+        throw AppError.badRequest(
+          `Insufficient stock for ${batch.drug?.drugName ?? 'drug'} (have ${formatDrugQty(batch.quantityInStock, batch.drug)}, ` +
+            `need ${formatDrugQty(item.quantity, batch.drug)})`,
+        );
       }
       await tx.drugBatch.update({ where: { id: batch.id }, data: { quantityInStock: { decrement: item.quantity } } });
       // 349: reserved stock leaves the shelf count, so the ledger records it.
@@ -6078,6 +6264,7 @@ export async function dispenseFromWard(
           select: {
             drugName: true, category: true, price: true, taxPercent: true, hsnCode: true,
             gstTreatment: true,
+            ...UNIT_SELECT,
             isLifeSaving: true, isNarcotic: true, isReimbursable: true,
             // Read by the controlled-drug gate.
             schedule: true, controlledClass: true, vaultControlled: true,
@@ -6183,7 +6370,8 @@ export async function dispenseFromWard(
     await tx.billItem.create({
       data: {
         billId: bill.id,
-        description: `${batch.drug?.drugName ?? 'Medication'} (Batch ${batch.batchNumber}) — ward issue, ${data.quantity} unit(s)`,
+        description: `${batch.drug?.drugName ?? 'Medication'} (Batch ${batch.batchNumber}) — ward issue, ${formatDrugQty(data.quantity, batch.drug)}`,
+        qtyUnits: { ...qtyUnitsOf(batch.drug) },
         category: 'pharmacy',
         quantity: data.quantity,
         unitPrice,
@@ -7072,7 +7260,7 @@ export async function resolveScan(tenantId: string, code: string) {
   const drugSelect = {
     id: true, drugName: true, genericName: true, strength: true, dosageForm: true,
     gtin: true, casePackGtin: true, unitsPerCase: true, packSize: true,
-    looseUnitLabel: true, price: true, hsnCode: true, taxPercent: true,
+    looseUnitLabel: true, unitOfMeasurement: true, price: true, hsnCode: true, taxPercent: true,
   } as const;
 
   let drug: any = null;
@@ -7341,7 +7529,7 @@ export async function createVendorReturnBatch(
   const batches = await prisma.drugBatch.findMany({
     where: { id: { in: data.lines.map((l) => l.drugBatchId) }, tenantId },
     include: {
-      drug: { select: { id: true, drugName: true, taxPercent: true } },
+      drug: { select: { id: true, drugName: true, taxPercent: true, ...UNIT_SELECT } },
       supplier: { select: { gstNumber: true, stateCode: true } },
     },
   });
@@ -7349,20 +7537,29 @@ export async function createVendorReturnBatch(
   const returnHomeState = await homeStateCode(tenantId);
 
   // Validate the whole basket up front.
+  // #262: rates for batches that recorded none of their own, as they stood when
+  // the stock came in.
+  const rateWhenReceived = new Map<string, number | null>();
+  for (const b of batches) {
+    rateWhenReceived.set(b.id, await drugRateWhenReceived(tenantId, b, b.drug?.taxPercent));
+  }
   const prepared = data.lines.map((line) => {
     const batch = byId.get(line.drugBatchId);
     if (!batch) throw AppError.notFound('Drug batch not found');
-    if (line.quantity > batch.quantityInStock) {
+    // 345: base units from here on.
+    const qty = returnBaseQty(line.quantity, line.saleUnit, batch.drug?.packSize);
+    if (qty > batch.quantityInStock) {
       throw AppError.badRequest(
-        `Cannot return ${line.quantity} unit(s) of ${batch.drug?.drugName ?? 'this medicine'} — batch ${batch.batchNumber} only has ${batch.quantityInStock} in stock.`,
+        `Cannot return ${formatDrugQty(qty, batch.drug)} of ${batch.drug?.drugName ?? 'this medicine'} — ` +
+          `batch ${batch.batchNumber} only has ${formatDrugQty(batch.quantityInStock, batch.drug)} in stock.`,
       );
     }
     // G-12: the input tax to reverse, at the rate and split PAID on the batch.
     const tax = inputTaxToReverse(
       batch,
-      line.quantity,
+      qty,
       returnHomeState,
-      batch.drug?.taxPercent != null ? Number(batch.drug.taxPercent) : null,
+      rateWhenReceived.get(batch.id) ?? null,
     );
     const credit =
       line.creditAmount != null
@@ -7370,7 +7567,7 @@ export async function createVendorReturnBatch(
         : batch.purchasePrice != null
           ? round2(tax.taxableValue + tax.taxAmount)
           : null;
-    return { line, batch, credit, tax };
+    return { line, qty, batch, credit, tax };
   });
 
   // An explicit header total wins; otherwise the lines add up to it.
@@ -7382,7 +7579,7 @@ export async function createVendorReturnBatch(
     const returnNumber = await nextVendorReturnNumber(tx, tenantId);
     const groupId = randomUUID();
     const ids: string[] = [];
-    for (const { line, batch, credit, tax } of prepared) {
+    for (const { line, qty, batch, credit, tax } of prepared) {
       const row = await tx.drugReturn.create({
         data: {
           tenantId,
@@ -7399,7 +7596,8 @@ export async function createVendorReturnBatch(
           inputSgst: tax.sgst,
           inputIgst: tax.igst,
           supplierId: data.supplierId,
-          quantity: line.quantity,
+          quantity: qty,
+          saleUnit: line.saleUnit ?? null,
           reason: line.reason ?? data.reason,
           status: 'pending',
           creditNoteNumber: data.creditNoteNumber ?? null,
@@ -7428,7 +7626,7 @@ export async function createVendorReturnBatch(
     entityId: groupId,
     description:
       `Vendor return ${returnNumber} to ${supplier.name}: ${prepared.length} medicine(s), ` +
-      `${prepared.reduce((n, p) => n + p.line.quantity, 0)} unit(s)` +
+      `${prepared.reduce((n, p) => n + p.qty, 0)} unit(s)` +
       (data.creditNoteNumber ? ` — credit note ${data.creditNoteNumber}` : ''),
     newValues: {
       returnNumber,
@@ -7440,7 +7638,7 @@ export async function createVendorReturnBatch(
         drugBatchId: p.line.drugBatchId,
         drugName: p.batch.drug?.drugName ?? null,
         batchNumber: p.batch.batchNumber,
-        quantity: p.line.quantity,
+        quantity: p.qty,
         creditAmount: p.credit,
       })),
     },
@@ -7507,21 +7705,35 @@ export async function getReturns(tenantId: string, query: GetReturnsQuery) {
           select: {
             id: true,
             batchNumber: true,
-            drug: { select: { id: true, drugName: true, category: true } },
+            drug: { select: { id: true, drugName: true, category: true, ...UNIT_SELECT } },
           },
         },
-        drug: { select: { id: true, drugName: true, category: true } },
+        drug: { select: { id: true, drugName: true, category: true, ...UNIT_SELECT } },
         patient: { select: { id: true, firstName: true, lastName: true } },
         supplier: { select: { id: true, name: true } },
         processor: { select: { id: true, firstName: true, lastName: true } },
         refund: { select: { id: true, amount: true, status: true } },
+        dispensingRecord: { select: { qtyUnits: true } },
       },
       orderBy: { createdAt: 'desc' },
     }),
     prisma.drugReturn.count({ where }),
   ]);
 
-  return { returns, total, page, limit };
+  return { returns: returns.map((r) => ({ ...r, quantityText: returnQtyText(r) })), total, page, limit };
+}
+
+/** 345: a return in words — the units it was sold in, else the drug's own. */
+function returnQtyText(r: {
+  quantity: number;
+  dispensingRecord?: { qtyUnits?: unknown } | null;
+  drugBatch?: { drug?: Parameters<typeof qtyUnitsOf>[0] } | null;
+  drug?: Parameters<typeof qtyUnitsOf>[0];
+}): string {
+  return (
+    snapshotQtyText(r.quantity, r.dispensingRecord?.qtyUnits) ??
+    formatDrugQty(r.quantity, r.drug ?? r.drugBatch?.drug)
+  );
 }
 
 /**
@@ -7534,9 +7746,10 @@ export async function getReturnById(tenantId: string, id: string) {
     where: { id, tenantId },
     include: {
       drugBatch: {
-        select: { id: true, batchNumber: true, expiryDate: true, drug: { select: { id: true, drugName: true, category: true, looseUnitLabel: true } } },
+        select: { id: true, batchNumber: true, expiryDate: true, drug: { select: { id: true, drugName: true, category: true, ...UNIT_SELECT } } },
       },
-      drug: { select: { id: true, drugName: true, category: true, looseUnitLabel: true } },
+      dispensingRecord: { select: { qtyUnits: true } },
+      drug: { select: { id: true, drugName: true, category: true, ...UNIT_SELECT } },
       patient: { select: { id: true, mrn: true, firstName: true, lastName: true, phone: true } },
       supplier: { select: { id: true, name: true } },
       processor: { select: { id: true, firstName: true, lastName: true } },
@@ -7581,7 +7794,10 @@ export async function getReturnById(tenantId: string, id: string) {
     },
   });
 
-  return { return: drugReturn, billNumber, invoiceNumber, creditNote, hospital: tenant };
+  return {
+    return: { ...drugReturn, quantityText: returnQtyText(drugReturn) },
+    billNumber, invoiceNumber, creditNote, hospital: tenant,
+  };
 }
 
 /**
@@ -7627,7 +7843,7 @@ export async function getReturnableDispenses(
       drugBatch: {
         select: {
           batchNumber: true,
-          drug: { select: { drugName: true, category: true, looseUnitLabel: true } },
+          drug: { select: { drugName: true, category: true, ...UNIT_SELECT } },
         },
       },
       drugReturns: { where: { status: { not: 'rejected' } }, select: { quantity: true } },
@@ -7652,8 +7868,14 @@ export async function getReturnableDispenses(
     .map((r) => {
       const returned = r.drugReturns.reduce((s, x) => s + x.quantity, 0);
       const remaining = r.quantityDispensed - returned;
+      const units =
+        unitsFromSnapshot((r as { qtyUnits?: unknown }).qtyUnits) ?? qtyUnitsOf(r.drugBatch?.drug);
       return {
         id: r.id,
+        // 345: the units this line was sold in, and the counts in words.
+        units,
+        remainingText: formatQty(remaining, units),
+        quantityDispensedText: formatQty(r.quantityDispensed, units),
         drugName: r.drugBatch?.drug?.drugName ?? 'Medication',
         looseUnitLabel: r.drugBatch?.drug?.looseUnitLabel ?? null,
         batchNumber: r.drugBatch?.batchNumber ?? null,

@@ -863,6 +863,8 @@ export const createVendorReturnSchema = z.object({
     drugBatchId: z.string().uuid('Invalid drug batch ID'),
     supplierId: z.string().uuid('Supplier is required for vendor returns'),
     quantity: z.number().int().positive('Quantity must be positive'),
+    // #345: what `quantity` counts. Absent = base units (tablets).
+    saleUnit: z.enum(['pack', 'loose']).optional(),
     reason: z.string().max(1000).optional(),
     // G5: supplier credit note for the returned (expired/damaged) stock.
     creditNoteNumber: z.string().max(80).optional(),
@@ -891,6 +893,8 @@ export const createVendorReturnBatchSchema = z.object({
         z.object({
           drugBatchId: z.string().uuid('Invalid drug batch ID'),
           quantity: z.number().int().positive('Quantity must be positive'),
+          // #345: what `quantity` counts. Absent = base units (tablets).
+          saleUnit: z.enum(['pack', 'loose']).optional(),
           // Overrides the auto-computed qty x purchase price for this line.
           creditAmount: z.number().nonnegative().optional(),
           reason: z.string().max(1000).optional(),
@@ -1139,6 +1143,44 @@ export const getStockLedgerQuerySchema = z.object({
     drugId: z.string().uuid().optional(),
     page: z.coerce.number().int().positive().optional(),
     limit: z.coerce.number().int().positive().max(200).optional(),
+  }),
+});
+
+// --- #262: medicine GST rate list ---
+
+export const previewGstRateListSchema = z.object({
+  body: z.object({
+    rows: z
+      .array(
+        z.object({
+          rowNumber: z.number().int().positive(),
+          drugCode: z.string().max(120).nullish(),
+          drugName: z.string().max(300).nullish(),
+          hsnCode: z.string().max(40).nullish(),
+          gstPercent: z.union([z.string().max(20), z.number()]).nullish(),
+          effectiveFrom: z.string().max(20).nullish(),
+        }),
+      )
+      .min(1, 'The file has no rows')
+      .max(5000, 'Import at most 5,000 rows at a time'),
+  }),
+});
+
+export const applyGstRateListSchema = z.object({
+  body: z.object({
+    reason: z.string().trim().min(3, 'Give the reason for the rate change').max(400),
+    rows: z
+      .array(
+        z.object({
+          drugId: z.string().uuid('Invalid drug ID'),
+          gstPercent: z.number().min(0).max(100),
+          expectedRate: z.number().min(0).max(100).nullable(),
+          effectiveFrom: z.string().max(20).nullish(),
+          rowNumber: z.number().int().positive().nullish(),
+        }),
+      )
+      .min(1, 'Choose at least one row to apply')
+      .max(5000),
   }),
 });
 

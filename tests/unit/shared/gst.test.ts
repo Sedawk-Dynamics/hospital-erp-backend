@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   r2,
   roundOffTotal,
+  roundOffPharmacyTotal,
   splitTax,
   computeLineTax,
   scaleInclusiveTax,
@@ -25,6 +26,16 @@ describe('rounding', () => {
   it('survives a non-number', () => {
     expect(r2(NaN)).toBe(0);
     expect(r2(Infinity)).toBe(0);
+  });
+
+  it('a pharmacy bill with loose tablets rounds down, so it never goes above the MRP (#345)', () => {
+    expect(roundOffPharmacyTotal(100.05, true)).toEqual({ rounded: 100, roundOff: -0.05 });
+    expect(roundOffPharmacyTotal(63.7, true)).toEqual({ rounded: 63, roundOff: -0.7 });
+    expect(roundOffPharmacyTotal(63, true)).toEqual({ rounded: 63, roundOff: 0 });
+    // Whole strips only: the nearest rupee, as before.
+    expect(roundOffPharmacyTotal(63.7, false)).toEqual({ rounded: 64, roundOff: 0.3 });
+    // A sale under a rupee is not rounded to nothing.
+    expect(roundOffPharmacyTotal(0.67, true)).toEqual({ rounded: 0.67, roundOff: 0 });
   });
 
   it('rounds the grand total to the rupee and keeps the difference visible', () => {

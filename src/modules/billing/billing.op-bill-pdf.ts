@@ -64,6 +64,8 @@ interface OpBillLike {
   recipientGstin?: string | null;
   placeOfSupplyStateCode?: string | null;
   isInterState?: boolean | null;
+  supplyType?: string | null;
+  supplyDestinationStateCode?: string | null;
   /** Section 10's IRN and signed QR, once e-invoicing applies. */
   irn?: string | null;
   irnAckNo?: string | null;

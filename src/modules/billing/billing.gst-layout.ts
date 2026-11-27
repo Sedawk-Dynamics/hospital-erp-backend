@@ -29,6 +29,7 @@ import {
   type GstTreatment,
 } from '../../shared/gst';
 import { gstinVerificationCaption } from '../../shared/gst-profile';
+import { placeOfSupplyFor, supplyTypeOf, SUPPLY_TYPE_LABELS } from './billing.gst-checks';
 import {
   drawSectionHeading,
   drawTable,
@@ -135,6 +136,8 @@ export interface BillDocumentGst {
   recipientAddress?: string | null;
   placeOfSupplyStateCode: string | null;
   placeOfSupplyStateName: string | null;
+  /** #265: set only on a bill NOT supplied at the hospital, in words. */
+  supplyTypeLabel?: string | null;
   isInterState: boolean;
   hasTax: boolean;
   hasClassifiedLines: boolean;
@@ -273,6 +276,9 @@ export interface GstBillHeader {
   recipientAddress?: string | null;
   placeOfSupplyStateCode?: string | null;
   isInterState?: boolean | null;
+  /** #265: the draft's supply-type exception, if it has one. */
+  supplyType?: string | null;
+  supplyDestinationStateCode?: string | null;
   irn?: string | null;
   irnAckNo?: string | null;
   irnAckDate?: Date | null;
@@ -330,6 +336,18 @@ export function buildGstBlock(
   const documentType = (primary?.gstDocumentType as GstDocumentType | null) ?? null;
   const hasTax = profile.registered && totals.taxAmount > 0;
   const supplierGstin = primary?.supplierGstin ?? profile.gstin ?? null;
+  // #265: an issued document prints the place of supply it was issued with. One
+  // that has none stamped, and a draft, are supplied where the bill's own supply
+  // type says — the hospital's state, never the buyer's.
+  const hospitalState = primary?.supplierStateCode ?? profile.stateCode ?? null;
+  const placeOfSupply = !profile.registered
+    ? (primary?.placeOfSupplyStateCode ?? null)
+    : primary?.invoiceNumber
+      ? (primary.placeOfSupplyStateCode ?? hospitalState)
+      : primary
+        ? placeOfSupplyFor(primary, hospitalState)
+        : null;
+  const supplyType = supplyTypeOf(primary?.supplyType);
 
   const notes: string[] = [];
   if (hasTax && (documentType === 'tax_invoice' || documentType === 'invoice_cum_bill_of_supply')) {
@@ -390,8 +408,9 @@ export function buildGstBlock(
     recipientGstin: primary?.recipientGstin ?? null,
     recipientLegalName: primary?.recipientLegalName ?? null,
     recipientAddress: primary?.recipientAddress ?? null,
-    placeOfSupplyStateCode: primary?.placeOfSupplyStateCode ?? null,
-    placeOfSupplyStateName: stateNameForCode(primary?.placeOfSupplyStateCode),
+    placeOfSupplyStateCode: placeOfSupply,
+    placeOfSupplyStateName: stateNameForCode(placeOfSupply),
+    supplyTypeLabel: supplyType === 'performed_at_hospital' ? null : SUPPLY_TYPE_LABELS[supplyType],
     isInterState: primary?.isInterState ?? false,
     hasTax,
     hasClassifiedLines: lines.some((l) => !!l.gstTreatment || !!l.hsnSac),
@@ -583,15 +602,16 @@ export function gstIdentityFields(gst: BillDocumentGst): Array<[string, string]>
       gst.supplierGstinCaption ? `${gst.supplierGstin} (${gst.supplierGstinCaption})` : gst.supplierGstin,
     ]);
   }
-  // A patient with a GSTIN is being billed as a business — it is what lets them
-  // claim the credit, so it belongs on the paper.
-  if (gst.recipientGstin) out.push(['GSTIN (Patient)', gst.recipientGstin]);
+  // The corporate, insurer or TPA (or a patient billed as a business) the invoice
+  // is to — it is what lets them claim the credit, so it belongs on the paper.
+  if (gst.recipientGstin) out.push(['GSTIN (Buyer)', gst.recipientGstin]);
   // G-4: Rule 46(e) — a B2B invoice names the registered buyer and their address.
   if (gst.recipientGstin && gst.recipientLegalName) out.push(['Buyer', gst.recipientLegalName]);
   if (gst.recipientGstin && gst.recipientAddress) out.push(['Buyer address', gst.recipientAddress]);
   if (gst.placeOfSupplyStateName) {
     out.push(['Place of Supply', `${gst.placeOfSupplyStateName} (${gst.placeOfSupplyStateCode})`]);
   }
+  if (gst.supplyTypeLabel) out.push(['Supply', gst.supplyTypeLabel]);
   // Section 10: once e-invoicing applies, the IRN and the acknowledgement go on
   // the face of the document. Printed only when the portal has actually
   // answered — an empty IRN field on an invoice claims it is an e-invoice.

@@ -16,6 +16,12 @@ process.env.BCRYPT_SALT_ROUNDS = '4';
 // single test runs. Any suite that transitively imports a service died this way.
 process.env.RAZORPAY_KEY_ID = 'rzp_test_key';
 process.env.RAZORPAY_KEY_SECRET = 'rzp_test_secret';
+// The developer's own .env must not decide what a test sees: a sandbox provider
+// set there changed results, and real SMTP details must never be reachable.
+// Blank (not deleted) so a later .env load cannot put them back.
+for (const key of ['OTP_PROVIDER', 'EINVOICE_PROVIDER', 'SMTP_HOST', 'SMTP_USER', 'SMTP_PASS']) {
+  process.env[key] = '';
+}
 
 // ─── Mock Prisma ───
 //

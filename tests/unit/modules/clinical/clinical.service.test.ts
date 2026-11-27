@@ -572,6 +572,28 @@ describe('ClinicalService', () => {
       expect(result.dischargedBy).toBe(USER_ID);
     });
 
+    // #264: a refused final bill never fails the discharge, and never vanishes.
+    it('says why the final bill was not issued, and that the charges are still there', async () => {
+      const billing = await import('../../../../src/modules/billing/billing.service');
+      const { AppError } = await import('../../../../src/shared/appError');
+      const spy = vi.spyOn(billing, 'assembleDischargeBill').mockRejectedValue(
+        AppError.conflict('This bill cannot be issued: Laser carries GST but has no SAC code.', 'SAC_REQUIRED'),
+      );
+      try {
+        mockPublishedDischargeSummary();
+        vi.mocked(prisma.admission.findFirst).mockResolvedValue({ ...mockAdmission, status: 'admitted' } as any);
+        vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) =>
+          fn(txProxy({ admission: { update: vi.fn().mockResolvedValue({ ...mockAdmission, status: 'discharged' }) } })),
+        );
+        const result: any = await dischargePatient(TENANT_ID, 'admission-1', USER_ID);
+        expect(result.status).toBe('discharged');
+        expect(result.dischargeBilling).toBeNull();
+        expect(result.dischargeBillingError).toMatch(/Laser carries GST but has no SAC code.*draft bill/);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     it('should create discharge summary on discharge (visit status set to discharged)', async () => {
       mockPublishedDischargeSummary();
       vi.mocked(prisma.admission.findFirst).mockResolvedValue({

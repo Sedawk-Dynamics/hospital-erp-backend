@@ -67,7 +67,12 @@ export async function updateDoctorProfile(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const doctor = await appointmentsService.updateDoctorProfile(tenantId, req.params.id as string, req.body);
+    const doctor = await appointmentsService.updateDoctorProfile(
+      tenantId,
+      req.params.id as string,
+      req.body,
+      req.user!,
+    );
     sendResponse({
       res,
       message: 'Doctor profile updated successfully',

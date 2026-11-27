@@ -10,6 +10,7 @@ import {
   createPayment,
   type DiagnosticChargeInput,
 } from '../billing/billing.service';
+import { radiologyTaxFacts, type RadiologyTariff } from '../../shared/radiology-gst';
 import { resolveConsultationStates } from '../../shared/consultation-state';
 import type {
   CreateImagingRequestInput,
@@ -122,6 +123,8 @@ async function lookupImagingPrice(tenantId: string, imagingType: string, bodyPar
           tenantId,
           category: 'radiology',
           isActive: true,
+          // #358: a body part must never match an ordinary order onto a cosmetic study.
+          isCosmetic: false,
           serviceName: { contains: bodyPart, mode: 'insensitive' },
         },
       });
@@ -133,6 +136,7 @@ async function lookupImagingPrice(tenantId: string, imagingType: string, bodyPar
         tenantId,
         category: 'radiology',
         isActive: true,
+        isCosmetic: false,
         serviceCode: { equals: imagingType, mode: 'insensitive' },
       },
     });
@@ -143,6 +147,7 @@ async function lookupImagingPrice(tenantId: string, imagingType: string, bodyPar
         tenantId,
         category: 'radiology',
         isActive: true,
+        isCosmetic: false,
         serviceName: { contains: imagingType, mode: 'insensitive' },
       },
     });
@@ -207,32 +212,29 @@ async function buildImagingCharge(
   let price = 0;
   // The matched tariff's own classification, so a study priced by a specific
   // tariff is taxed by that tariff rather than by a radiology-wide average.
-  let sacCode: string | null = null;
-  let gstTreatment: string | null = null;
-  if (preferredTariffId) {
+  let tariff: RadiologyTariff | null = null;
+  // What radiology picked at accept, else the study the doctor picked when
+  // ordering (kept on the request — #358: a cosmetic scan is only ever billed
+  // from its own study, never by matching a modality or body part).
+  const pickedId = preferredTariffId ?? request.serviceTariffId ?? null;
+  if (pickedId) {
     const picked = await prisma.serviceTariff.findFirst({
-      where: { id: preferredTariffId, tenantId, category: 'radiology', isActive: true },
+      where: { id: pickedId, tenantId, category: 'radiology', isActive: true },
     });
     if (picked) {
       serviceTariffId = picked.id;
       price = Number(picked.basePrice ?? 0);
-      sacCode = (picked as any).sacCode ?? null;
-      gstTreatment = (picked as any).gstTreatment ?? null;
+      tariff = picked;
     }
   }
   if (!serviceTariffId) {
     const resolved = await lookupImagingPrice(tenantId, request.imagingType, request.bodyPart);
     serviceTariffId = resolved.id;
     price = resolved.price;
+    if (serviceTariffId) tariff = await prisma.serviceTariff.findFirst({ where: { id: serviceTariffId, tenantId } });
   }
-  if (serviceTariffId && !sacCode) {
-    const t = await prisma.serviceTariff.findFirst({
-      where: { id: serviceTariffId, tenantId },
-      select: { sacCode: true, gstTreatment: true },
-    });
-    sacCode = (t as any)?.sacCode ?? null;
-    gstTreatment = (t as any)?.gstTreatment ?? null;
-  }
+  // #358: approved rate, else exempt with a warning (diagnostic) or held (cosmetic).
+  const gst = radiologyTaxFacts(tariff, new Date());
 
   const charge: DiagnosticChargeInput = {
     referenceType: 'imaging_request',
@@ -241,10 +243,14 @@ async function buildImagingCharge(
     quantity: 1,
     unitPrice: price,
     serviceTariffId,
-    sacCode,
-    gstTreatment,
+    sacCode: gst.sacCode,
+    gstTreatment: gst.gstTreatment,
+    taxRate: gst.taxRate,
+    gstApproved: gst.gstApproved,
+    isCosmetic: gst.isCosmetic,
+    gstWarning: gst.warning,
   };
-  return { request, charge };
+  return { request, charge, gst };
 }
 
 /**
@@ -312,6 +318,9 @@ export async function getImagingBillingPreview(tenantId: string, requestId: stri
       },
     ],
     chargeAmount: built.charge.unitPrice,
+    /** #358: GST not approved (billed exempt), or a cosmetic scan that cannot be issued. */
+    gstWarning: built.charge.unitPrice > 0 ? built.gst.warning : null,
+    gstBlocked: built.charge.unitPrice > 0 && built.gst.blocked,
     unpricedCount: built.charge.unitPrice > 0 ? 0 : 1,
     alreadyBilled: !!existing?.bill,
     bill: existing?.bill
@@ -364,6 +373,7 @@ export async function createImagingRequest(
       clinicalIndication: data.clinicalIndication,
       notes: data.notes,
       scheduledAt: data.scheduledAt ? new Date(data.scheduledAt) : undefined,
+      serviceTariffId: data.serviceTariffId ?? null,
     },
     include: {
       patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
@@ -430,6 +440,8 @@ export async function acceptImagingRequest(
     if (!billing?.billId) {
       throw AppError.badRequest('There is nothing to collect on this request.');
     }
+    // #264 / #358: the bill was refused, so there is no document to collect on.
+    if (billing.issueBlockedReason) throw AppError.conflict(billing.issueBlockedReason, 'BILL_NOT_ISSUED');
     const due = billing.balanceDue ?? 0;
     if (due <= 0) {
       paymentVerified = true;
@@ -817,6 +829,8 @@ export async function updateImagingRequest(
     data: {
       imagingType: data.imagingType,
       bodyPart: data.bodyPart,
+      // #358: a different modality is a different study than the one picked.
+      ...(data.imagingType && data.imagingType !== request.imagingType ? { serviceTariffId: null } : {}),
       urgency: data.urgency,
       clinicalIndication: data.clinicalIndication,
       notes: data.notes,

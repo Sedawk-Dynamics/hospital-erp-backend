@@ -4,8 +4,12 @@ import { requirePermission, requireRoles } from '../../middleware/authorize';
 import { sendResponse } from '../../shared/apiResponse';
 import type { AuthenticatedRequest } from '../../shared/types';
 import * as service from './hospital-settings.service';
+import { followUpRulesRoutes } from './follow-up-rules.routes';
 
 export const hospitalSettingsRoutes = Router();
+
+// Follow-up fee rules (gap #019/#331).
+hospitalSettingsRoutes.use('/follow-up-rules', followUpRulesRoutes);
 
 // The registration fee is money the hospital charges, so only the hospital
 // admin sets it — the same bar as the rest of Settings.

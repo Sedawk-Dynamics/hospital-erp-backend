@@ -131,6 +131,38 @@ export function inputTaxToReverse(
 }
 
 /**
+ * #262: the rate to reverse at when the batch recorded none of its own — the
+ * drug's rate AS IT STOOD when the stock came in. The drug's current rate alone
+ * would move the reversal the day the drug is re-rated (12% → 5%), so a vendor
+ * return of old stock would no longer match the supplier's document. The item
+ * rate log answers what the rate was; with no logged change it never moved.
+ */
+export async function drugRateWhenReceived(
+  tenantId: string,
+  batch: { drugId?: string | null; gstPercent?: unknown; createdAt?: Date | null },
+  currentRate: unknown,
+): Promise<number | null> {
+  const current = num(currentRate);
+  if (num(batch.gstPercent) != null || !batch.drugId || !batch.createdAt) return current;
+  try {
+    const { prisma } = await import('../../config/database');
+    const { ensureItemRateChangeTable } = await import('../gst/gst-rate-log');
+    await ensureItemRateChangeTable();
+    const firstChange = await prisma.gstItemRateChange.findFirst({
+      where: {
+        tenantId, itemType: 'drug', itemId: batch.drugId, action: 'update',
+        changedAt: { gt: batch.createdAt },
+      },
+      orderBy: { changedAt: 'asc' },
+      select: { previousRate: true },
+    });
+    return num(firstChange?.previousRate) ?? current;
+  } catch {
+    return current;
+  }
+}
+
+/**
  * G-12: which negative stock adjustments are write-offs. An explicit type wins;
  * otherwise the reason decides, so the existing adjust dialog (reason only)
  * still records a damaged-stock write-off without a new field.

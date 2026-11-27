@@ -185,6 +185,8 @@ interface IrnDoc {
   buyerLegalName: string | null;
   buyerAddress: string | null;
   placeOfSupplyStateCode: string | null;
+  /** The document's stored split. Decides the place of supply when none is stored. */
+  isInterState: boolean;
   /** Where the buyer details are corrected, for the problem sentences. */
   buyerWhere: string;
   roundOff: number;
@@ -233,6 +235,19 @@ function buildIrnDocPayload(doc: IrnDoc, seller: Seller): { payload: IrnPayload 
       TotItemVal: r2(assAmt + igst + cgst + sgst + cess),
     };
   });
+  // #265: with no place of supply stored, what the tax says — only IGST is
+  // elsewhere. The portal refuses a document whose place of supply and tax
+  // disagree (IGST inside the state, CGST + SGST outside it); said here, in words.
+  const sellerState = doc.supplierStateCode ?? seller.gstin.slice(0, 2);
+  const buyerState = buyerGstin.slice(0, 2);
+  const pos = doc.placeOfSupplyStateCode ?? (doc.isInterState ? buyerState : sellerState);
+  const hasIgst = items.some((i) => i.IgstAmt > 0);
+  const hasCgst = items.some((i) => i.CgstAmt > 0 || i.SgstAmt > 0);
+  if ((pos === sellerState && hasIgst) || (pos !== sellerState && hasCgst)) {
+    problems.push(
+      `the place of supply (state ${pos}) does not match the tax on the ${doc.word} (${hasIgst ? 'IGST' : 'CGST + SGST'})`,
+    );
+  }
   if (problems.length) return { problems };
 
   const sum = (f: (i: IrnPayloadItem) => number) => r2(items.reduce((t, i) => t + f(i), 0));
@@ -242,8 +257,6 @@ function buildIrnDocPayload(doc: IrnDoc, seller: Seller): { payload: IrnPayload 
   const igstVal = sum((i) => i.IgstAmt);
   const cesVal = sum((i) => i.CesAmt);
   const rnd = doc.roundOff;
-  const sellerState = doc.supplierStateCode ?? seller.gstin.slice(0, 2);
-  const buyerState = buyerGstin.slice(0, 2);
 
   return {
     payload: {
@@ -268,7 +281,9 @@ function buildIrnDocPayload(doc: IrnDoc, seller: Seller): { payload: IrnPayload 
         Loc: placeFrom(doc.buyerAddress, 'NA'),
         Pin: pinFrom(doc.buyerAddress),
         Stcd: buyerState,
-        Pos: doc.placeOfSupplyStateCode ?? buyerState,
+        // #265: the document's own place of supply — the hospital's state for a
+        // health service whoever the buyer is.
+        Pos: pos,
       },
       ...(doc.ref ? { RefDtls: { PrecDocDtls: [{ InvNo: doc.ref.number, InvDt: formatDateIST(doc.ref.date) }] } } : {}),
       ItemList: items,
@@ -308,6 +323,7 @@ export function buildIrnPayload(bill: BillForIrn, seller: Seller): { payload: Ir
       buyerLegalName: bill.recipientLegalName,
       buyerAddress: bill.recipientAddress,
       placeOfSupplyStateCode: bill.placeOfSupplyStateCode,
+      isInterState: bill.isInterState,
       buyerWhere: "the bill's B2B buyer details",
       // The bill's round-off belongs to the whole bill; only carried when every line is on this document.
       roundOff: lines.length === bill.billItems.length ? n(bill.roundOff) : 0,
@@ -717,7 +733,9 @@ export function buildNoteIrnPayload(note: NoteForIrn, seller: Seller): { payload
       buyerGstin: note.recipientGstin ?? '',
       buyerLegalName: bill.recipientLegalName,
       buyerAddress: bill.recipientAddress,
+      // A note follows the document it adjusts.
       placeOfSupplyStateCode: note.placeOfSupplyStateCode ?? bill.placeOfSupplyStateCode,
+      isInterState: bill.isInterState,
       buyerWhere: `the B2B buyer details of invoice ${bill.invoiceNumber ?? ''}`.trim(),
       roundOff: 0,
       lines: lines.map((l) => {
@@ -1056,7 +1074,7 @@ async function loadReturnLines(tenantId: string, returnId: string) {
       id: true, createdAt: true, quantity: true, status: true, returnNumber: true, creditAmount: true,
       ewayBillNumber: true, ewayBillDate: true,
       ewayBillStatus: true, ewayBillError: true, ewayBillAttemptedAt: true, ewayBillValidUpto: true,
-      ewayBillTransport: true, ewayBillCancelledAt: true,
+      ewayBillTransport: true, ewayBillCancelledAt: true, ewayBillCancelReasonCode: true, ewayBillCancelRemark: true,
       inputGstPercent: true, inputTaxableValue: true, inputCgst: true, inputSgst: true, inputIgst: true,
       drug: { select: { drugName: true, hsnCode: true } },
       drugBatch: { select: { purchasePrice: true, drug: { select: { drugName: true, hsnCode: true } } } },
@@ -1092,6 +1110,8 @@ export interface EwayOutcome {
   error: string | null;
   /** True when the return already carried an e-way bill and nothing was sent. */
   alreadyGenerated: boolean;
+  /** #266: the cancelled number this one follows, when it is a new one. */
+  replaces: string | null;
   provider: string | null;
   sandbox: boolean;
 }
@@ -1106,6 +1126,7 @@ function ewayOutcome(
     validUpto?: Date | null;
     error?: string | null;
     alreadyGenerated?: boolean;
+    replaces?: string | null;
     provider?: string | null;
     sandbox?: boolean;
   },
@@ -1119,14 +1140,51 @@ function ewayOutcome(
     validUpto: o.validUpto?.toISOString() ?? null,
     error: o.error ?? null,
     alreadyGenerated: o.alreadyGenerated ?? false,
+    replaces: o.replaces ?? null,
     provider: o.provider ?? null,
     sandbox: o.sandbox ?? false,
   };
 }
 
 /**
+ * #266: keep a return's cancelled e-way bill in its history. Written with the
+ * cancellation, and again — a no-op the second time — before a new one is
+ * generated, so one cancelled before this table existed is kept too.
+ */
+async function recordEwayHistory(
+  db: Pick<typeof prisma, 'ewayBillHistory'>,
+  tenantId: string,
+  userId: string,
+  head: { id: string; returnGroupId: string | null },
+  e: {
+    returnNumber: string | null; ewayBillNumber: string; ewayBillDate: Date | null; validUpto: Date | null;
+    cancelledAt: Date | null; cancelReasonCode: string | null; cancelRemark: string | null; transport: unknown;
+  },
+) {
+  const { transport, ...rest } = e;
+  await db.ewayBillHistory.upsert({
+    where: { tenantId_ewayBillNumber: { tenantId, ewayBillNumber: e.ewayBillNumber } },
+    create: {
+      tenantId,
+      returnId: head.id,
+      returnGroupId: head.returnGroupId,
+      ...rest,
+      status: 'cancelled',
+      ...(transport && typeof transport === 'object' ? { transport: transport as object } : {}),
+      recordedBy: userId,
+    },
+    update: {},
+  });
+}
+
+/**
  * Generate — or, with mode 'retry', re-send — the e-way bill for a vendor
  * return. Retry may omit the transport details to resend the last ones.
+ *
+ * #266: after a cancellation, generating again raises a NEW e-way bill. The
+ * cancelled one moves to the history, and the claim below is what keeps it to
+ * one active bill: the two things happen in one transaction that only one of two
+ * clicks can win.
  */
 export async function generateEwayBillForReturn(
   tenantId: string,
@@ -1146,20 +1204,19 @@ export async function generateEwayBillForReturn(
   const first = lines[0];
   const state = ewayStateOf(lines);
   const existing = lines.find((l) => l.ewayBillNumber);
-  if (existing) {
-    // Idempotent: one return, one e-way bill — never a second, not even after
-    // a cancellation (the cancelled number stays on the record and in D-3).
-    if (state === 'cancelled') {
-      throw AppError.conflict(
-        `E-way bill ${existing.ewayBillNumber} for return ${docNo} was cancelled. This system does not raise a second e-way bill for the same return.`,
-        'EWAY_BILL_CANCELLED',
-      );
-    }
+  // #266: a cancelled number is not an active one. Every line must agree it was
+  // cancelled — a return with any line still carrying a live number has one.
+  const cancelledLine = state === 'cancelled' ? existing : undefined;
+  const liveLine = lines.find(
+    (l) => l.ewayBillNumber && !l.ewayBillCancelledAt && l.ewayBillStatus !== 'cancelled',
+  );
+  if (existing && liveLine) {
+    // Idempotent: one return, one ACTIVE e-way bill — never a second.
     return ewayOutcome(head.id, docNo, {
       status: 'generated',
-      ewayBillNumber: existing.ewayBillNumber,
-      ewayBillDate: existing.ewayBillDate,
-      validUpto: existing.ewayBillValidUpto ?? null,
+      ewayBillNumber: liveLine.ewayBillNumber,
+      ewayBillDate: liveLine.ewayBillDate,
+      validUpto: liveLine.ewayBillValidUpto ?? null,
       alreadyGenerated: true,
     });
   }
@@ -1276,25 +1333,85 @@ export async function generateEwayBillForReturn(
   // Claim the send on every line of the return, exactly as the IRN is claimed:
   // only lines with no number that were never sent, failed, or were abandoned
   // mid-send can move to pending — so two clicks cannot raise two bills.
-  const claimed = await prisma.drugReturn.updateMany({
-    where: {
-      id: { in: lineIds },
-      tenantId,
-      ewayBillNumber: null,
-      OR: [
-        { ewayBillStatus: null },
-        { ewayBillStatus: 'failed' },
-        { ewayBillStatus: 'pending', ewayBillAttemptedAt: { lt: new Date(now.getTime() - IRN_PENDING_STALE_MS) } },
-        { ewayBillStatus: 'pending', ewayBillAttemptedAt: null },
-      ],
-    },
-    data: { ewayBillStatus: 'pending', ewayBillAttemptedAt: now, ewayBillError: null, ewayBillTransport: transport },
-  });
-  if (claimed.count === 0) {
-    throw AppError.conflict(`Return ${docNo} is already being sent to the e-way bill portal`, 'EWAY_IN_FLIGHT');
+  const inFlight = () =>
+    AppError.conflict(`Return ${docNo} is already being sent to the e-way bill portal`, 'EWAY_IN_FLIGHT');
+  if (cancelledLine?.ewayBillNumber) {
+    // #266: the cancelled number goes to the history and comes off the lines in
+    // the same transaction as the claim. The second of two clicks finds no line
+    // still carrying it, updates nothing, and is refused — and a failure anywhere
+    // rolls both back, so a number can be neither lost nor left active.
+    const oldNumber = cancelledLine.ewayBillNumber;
+    await prisma.$transaction(async (tx) => {
+      const moved = await tx.drugReturn.updateMany({
+        where: {
+          id: { in: lineIds },
+          tenantId,
+          ewayBillNumber: oldNumber,
+          OR: [{ ewayBillStatus: 'cancelled' }, { ewayBillCancelledAt: { not: null } }],
+        },
+        data: {
+          ewayBillNumber: null, ewayBillDate: null, ewayBillValidUpto: null,
+          ewayBillCancelledAt: null, ewayBillCancelReasonCode: null, ewayBillCancelRemark: null,
+          ewayBillStatus: 'pending', ewayBillAttemptedAt: now, ewayBillError: null, ewayBillTransport: transport,
+        },
+      });
+      if (moved.count === 0) throw inFlight();
+      await recordEwayHistory(tx, tenantId, userId, head, {
+        returnNumber: cancelledLine.returnNumber,
+        ewayBillNumber: oldNumber,
+        ewayBillDate: cancelledLine.ewayBillDate,
+        validUpto: cancelledLine.ewayBillValidUpto,
+        cancelledAt: cancelledLine.ewayBillCancelledAt,
+        cancelReasonCode: cancelledLine.ewayBillCancelReasonCode,
+        cancelRemark: cancelledLine.ewayBillCancelRemark,
+        transport: cancelledLine.ewayBillTransport,
+      });
+    });
+  } else {
+    const claimed = await prisma.drugReturn.updateMany({
+      where: {
+        id: { in: lineIds },
+        tenantId,
+        ewayBillNumber: null,
+        OR: [
+          { ewayBillStatus: null },
+          { ewayBillStatus: 'failed' },
+          { ewayBillStatus: 'pending', ewayBillAttemptedAt: { lt: new Date(now.getTime() - IRN_PENDING_STALE_MS) } },
+          { ewayBillStatus: 'pending', ewayBillAttemptedAt: null },
+        ],
+      },
+      data: { ewayBillStatus: 'pending', ewayBillAttemptedAt: now, ewayBillError: null, ewayBillTransport: transport },
+    });
+    if (claimed.count === 0) throw inFlight();
   }
+  // The cancelled bill this one follows. After a failed regeneration the number
+  // is already off the lines, so a retry reads it back from the history.
+  const past = (
+    await prisma.ewayBillHistory.findMany({
+      where: {
+        tenantId,
+        OR: [{ returnId: { in: lineIds } }, ...(head.returnGroupId ? [{ returnGroupId: head.returnGroupId }] : [])],
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { ewayBillNumber: true },
+    })
+  ).map((h) => h.ewayBillNumber);
+  const replaces = cancelledLine?.ewayBillNumber ?? past[0] ?? null;
 
-  const result = await safely(() => provider.generateEwayBill(creds, payload));
+  const answer = await safely(() => provider.generateEwayBill(creds, payload, { replaces }));
+  // #266: a cancelled number is dead. If the portal (or a gateway's cache) hands
+  // one back as if it were new, the goods would move under no valid bill - so it
+  // is kept as a failure, never as the active number.
+  const result: typeof answer =
+    answer.ok && [replaces, ...past].includes(answer.ewayBillNo)
+      ? {
+          ok: false,
+          code: 'EWAY_CANCELLED_NUMBER',
+          message:
+            `The portal answered with e-way bill ${answer.ewayBillNo}, which was already cancelled. ` +
+            'No new e-way bill was recorded - check the e-way bill portal before retrying',
+        }
+      : answer;
 
   if (!result.ok) {
     // Kept on the record in the portal's words — D-3 lists it with Retry —
@@ -1316,9 +1433,9 @@ export async function generateEwayBillForReturn(
       entityId: head.id,
       description: `E-way bill ${verb} for vendor return ${docNo} failed via ${provider.name}${sandboxNote(provider)} (${how}): ${message}`,
       oldValues: { ewayBillStatus: state === 'none' ? null : state },
-      newValues: { ewayBillStatus: 'failed', ewayBillError: message, portalCode: result.code, ...sent, mode: verb, lineIds },
+      newValues: { ewayBillStatus: 'failed', ewayBillError: message, portalCode: result.code, replaces, ...sent, mode: verb, lineIds },
     });
-    return ewayOutcome(head.id, docNo, { status: 'failed', error: message, ...sent });
+    return ewayOutcome(head.id, docNo, { status: 'failed', error: message, replaces, ...sent });
   }
 
   await prisma.drugReturn.updateMany({
@@ -1337,13 +1454,14 @@ export async function generateEwayBillForReturn(
     action: 'update',
     entityType: 'drug_return',
     entityId: head.id,
-    description: `E-way bill ${result.ewayBillNo} ${verb === 'retry' ? 'generated on retry' : 'generated'} for vendor return ${docNo} via ${provider.name}${sandboxNote(provider)} (${how}${result.validUpto ? `, valid until ${formatDateTimeIST(result.validUpto)} IST` : ''})`,
+    description: `E-way bill ${result.ewayBillNo} ${verb === 'retry' ? 'generated on retry' : replaces ? `generated after cancelled ${replaces}` : 'generated'} for vendor return ${docNo} via ${provider.name}${sandboxNote(provider)} (${how}${result.validUpto ? `, valid until ${formatDateTimeIST(result.validUpto)} IST` : ''})`,
     oldValues: { ewayBillStatus: state === 'none' ? null : state },
     newValues: {
       ewayBillNumber: result.ewayBillNo,
       ewayBillDate: result.ewayBillDate.toISOString(),
       validUpto: result.validUpto?.toISOString() ?? null,
       ewayBillStatus: 'generated',
+      replaces,
       ...sent,
       mode: verb,
       lineIds,
@@ -1354,6 +1472,7 @@ export async function generateEwayBillForReturn(
     ewayBillNumber: result.ewayBillNo,
     ewayBillDate: result.ewayBillDate,
     validUpto: result.validUpto,
+    replaces,
     ...sent,
   });
 }
@@ -1430,14 +1549,27 @@ export async function cancelEwayBillForReturn(
     throw new AppError(`The portal did not cancel the e-way bill: ${result.message}`, 502, 'EWAY_CANCEL_FAILED');
   }
 
-  await prisma.drugReturn.updateMany({
-    where: { id: { in: lineIds }, tenantId, ewayBillNumber: ewbNo },
-    data: {
-      ewayBillStatus: 'cancelled',
-      ewayBillCancelledAt: result.cancelledAt,
-      ewayBillCancelReasonCode: reasonCode,
-      ewayBillCancelRemark: remark,
-    },
+  // #266: the cancellation and its place in the history are one write.
+  await prisma.$transaction(async (tx) => {
+    await tx.drugReturn.updateMany({
+      where: { id: { in: lineIds }, tenantId, ewayBillNumber: ewbNo },
+      data: {
+        ewayBillStatus: 'cancelled',
+        ewayBillCancelledAt: result.cancelledAt,
+        ewayBillCancelReasonCode: reasonCode,
+        ewayBillCancelRemark: remark,
+      },
+    });
+    await recordEwayHistory(tx, tenantId, userId, head, {
+      returnNumber: existing.returnNumber,
+      ewayBillNumber: ewbNo,
+      ewayBillDate: existing.ewayBillDate,
+      validUpto: existing.ewayBillValidUpto,
+      cancelledAt: result.cancelledAt,
+      cancelReasonCode: reasonCode,
+      cancelRemark: remark,
+      transport: existing.ewayBillTransport,
+    });
   });
   await writeAudit({
     tenantId,

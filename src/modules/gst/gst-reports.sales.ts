@@ -19,6 +19,7 @@
 // something the return never mentioned.
 // ---------------------------------------------------------------------------
 
+import { b2clThreshold, isB2cLarge } from '../../shared/b2cl-threshold';
 import { prisma } from '../../config/database';
 import { loadGstSlabs, isLegalSlabRate } from '../../shared/gst-slabs';
 import { uqcForLine, UQC_CODES } from '../../shared/gst-uqc';
@@ -107,6 +108,16 @@ function dateRange(query: SalesReportQuery) {
   };
 }
 
+/** The hospital's own state; null when the settings cannot be read. */
+async function hospitalStateCode(tenantId: string): Promise<string | null> {
+  try {
+    const { getGstProfile } = await import('../hospital-settings/hospital-settings.service');
+    return (await getGstProfile(tenantId)).stateCode ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * A-1 — GST Sales Register. One row per bill line.
  *
@@ -124,6 +135,7 @@ export async function getSalesRegister(
   summary: TurnoverSummary;
 }> {
   const { from, to } = dateRange(query);
+  const homeState = await hospitalStateCode(tenantId);
 
   const bills = await prisma.bill.findMany({
     where: {
@@ -141,7 +153,7 @@ export async function getSalesRegister(
     select: {
       id: true, billNumber: true, invoiceNumber: true, gstDocumentType: true,
       billDate: true, status: true, financialYear: true, admissionId: true, encounterType: true,
-      recipientGstin: true, placeOfSupplyStateCode: true, isInterState: true,
+      recipientGstin: true, placeOfSupplyStateCode: true, isInterState: true, supplierStateCode: true,
       patient: { select: { id: true, mrn: true, firstName: true, lastName: true } },
       generator: { select: { firstName: true, lastName: true } },
       billItems: {
@@ -184,7 +196,11 @@ export async function getSalesRegister(
         // becoming the admission's running bill (gap item 267).
         patientType: (b.encounterType === 'ip' || b.encounterType === 'op' ? b.encounterType : b.admissionId ? 'ip' : 'op') as 'ip' | 'op',
         recipientGstin: b.recipientGstin,
-        placeOfSupplyStateCode: b.placeOfSupplyStateCode,
+        // #265: a document with no place of supply stamped (a counter sale, an
+        // older consultation) was supplied at the hospital. Every report below
+        // folds this one value, so none of them can answer differently.
+        placeOfSupplyStateCode:
+          b.placeOfSupplyStateCode ?? (b.isInterState ? null : (b.supplierStateCode ?? homeState)),
         isInterState: b.isInterState,
         itemId: it.id,
         description: it.description,
@@ -478,14 +494,13 @@ const isTaxableLine = (l: SalesLine) => l.gstTreatment === 'taxable';
  * ones invoice-wise (Table 5), so the two are separated here rather than left
  * for the accountant to sort out.
  */
-const B2CL_THRESHOLD = 250000;
 
 export async function getB2cSummary(tenantId: string, query: SalesReportQuery = {}) {
   const { period, rows } = await getSalesRegister(tenantId, { ...query, customerType: 'b2c' });
 
   const byBill = [...groupBy(rows, (l) => l.billId)];
   const largeInterState = byBill
-    .filter(([, v]) => v.lines[0].isInterState && v.totals.totalAmount > B2CL_THRESHOLD)
+    .filter(([, v]) => isB2cLarge(v.lines[0].isInterState, v.totals.totalAmount, v.lines[0].billDate))
     .map(([billId, v]) => {
       const f = v.lines[0];
       return {
@@ -519,7 +534,8 @@ export async function getB2cSummary(tenantId: string, query: SalesReportQuery = 
     largeInterState,
     /** Table 7 — everything else, summarised. */
     summary,
-    threshold: B2CL_THRESHOLD,
+    // Rs 1 lakh from 1 Aug 2024 (Rs 2.5 lakh before); each invoice is judged by its own date.
+    threshold: b2clThreshold(period.to ?? period.from),
     totals: totalOf(rows),
     /** Tables 5 and 7 / GSTR-9 4A — taxable supplies only (gap item 277). */
     taxableTotals: totalOf(rows.filter(isTaxableLine)),

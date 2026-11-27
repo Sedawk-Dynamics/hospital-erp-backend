@@ -1308,12 +1308,20 @@ export async function dischargePatient(
   // wrapped so a billing glitch never fails the already-committed discharge. Its
   // charge-pull is idempotent, so this is the single assembly point (no double-bill).
   let dischargeBilling: Awaited<ReturnType<typeof import('../billing/billing.service')['assembleDischargeBill']>> | null = null;
+  // #264: why the final bill was not issued (a taxed service with no SAC, say).
+  // The discharge stands and every charge is still on the stay's draft bill; a
+  // log line alone left the desk believing there was nothing to bill.
+  let dischargeBillingError: string | null = null;
   try {
     const billing = await import('../billing/billing.service');
     // Signature is (tenantId, userId, admissionId, opts) — pass in that order.
     dischargeBilling = await billing.assembleDischargeBill(tenantId, userId, id);
   } catch (err) {
     logger.error({ err, admissionId: id }, 'discharge bill assembly failed');
+    dischargeBillingError =
+      err instanceof AppError && err.statusCode < 500
+        ? `The final bill was not issued: ${err.message} The charges are still on the stay's draft bill.`
+        : "The final bill could not be prepared. The charges are still on the stay's draft bill — open it in Hospital Billing.";
   }
 
   // The summary the stay was closed on (gap item 337): returned so the
@@ -1358,7 +1366,7 @@ export async function dischargePatient(
   }
 
   logger.info({ tenantId, admissionId: id, forced: !!data?.force }, 'Patient discharged');
-  return { ...updated, dischargeBilling, dischargeSummary: closedOnSummary ?? null };
+  return { ...updated, dischargeBilling, dischargeBillingError, dischargeSummary: closedOnSummary ?? null };
 }
 
 /**

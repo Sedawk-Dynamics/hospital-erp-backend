@@ -2,6 +2,7 @@ import { prisma } from '../../config/database';
 import { getExpiryWasteReport, getDepartmentConsumptionReport } from './inventory.reports.service';
 import { getStockValuation } from './stock-valuation.service';
 import { drugMovementsAsStockTransactions, inventoryTypeForMovement } from '../pharmacy/pharmacy.stock-movement';
+import { formatDrugQty, UNIT_SELECT } from '../pharmacy/pharmacy.units';
 
 // ============================================================
 // Inventory — Detailed Analysis report (single-call deep rollup).
@@ -236,6 +237,8 @@ export interface ConsumptionTransaction {
   documentNumber: string | null;
   party: string | null;
   quantity: number;
+  /** 345: the quantity in words, for a medicine. */
+  quantityText?: string | null;
   unitCost: number | null;
   value: number;
 }
@@ -252,7 +255,7 @@ export async function getConsumptionTransactions(
 
   if (query.kind === 'drug') {
     const [drug, moves] = await Promise.all([
-      prisma.drugFormulary.findFirst({ where: { id: query.refId, tenantId }, select: { drugName: true } }),
+      prisma.drugFormulary.findFirst({ where: { id: query.refId, tenantId }, select: { drugName: true, ...UNIT_SELECT } }),
       // Exactly the drug movements the rollup reads as stock_out
       // (inventoryTypeForMovement): outbound, and not a receipt/adjustment.
       prisma.drugStockMovement.findMany({
@@ -308,6 +311,7 @@ export async function getConsumptionTransactions(
         documentNumber: (m.referenceId ? docNo.get(m.referenceId) : null) ?? m.notes ?? null,
         party: m.party ?? null,
         quantity: qty,
+        quantityText: formatDrugQty(qty, drug),
         unitCost: unit,
         value: round2(movementValue({ totalCost, unitCost: unit, quantity: qty })),
       };

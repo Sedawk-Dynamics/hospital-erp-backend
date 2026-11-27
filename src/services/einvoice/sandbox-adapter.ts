@@ -106,7 +106,7 @@ export function createEInvoiceSandboxProvider(): EInvoiceProvider {
       return { ok: true, irn: input.irn, cancelledAt: new Date() };
     },
 
-    async generateEwayBill(_creds, payload: EwayBillPayload) {
+    async generateEwayBill(_creds, payload: EwayBillPayload, context) {
       const km = Number(payload.transDistance);
       if (!Number.isFinite(km) || km <= 0) {
         return { ok: false, code: '721', message: `721: Distance must be greater than zero (${EINVOICE_SANDBOX_LABEL})` };
@@ -119,7 +119,15 @@ export function createEInvoiceSandboxProvider(): EInvoiceProvider {
       const days = Math.max(1, Math.ceil(km / 200));
       return {
         ok: true,
-        ewayBillNo: digitsFrom(sha256(`ewb|${payload.fromGstin}|${payload.docNo}|${payload.docDate}`), 12),
+        // #266: the same request gets the same number, so a retry stays
+        // idempotent - but a bill raised after a cancellation is a new one.
+        ewayBillNo: digitsFrom(
+          sha256(
+            `ewb|${payload.fromGstin}|${payload.docNo}|${payload.docDate}` +
+              (context?.replaces ? `|after|${context.replaces}` : ''),
+          ),
+          12,
+        ),
         ewayBillDate: now,
         validUpto: new Date(now.getTime() + days * 24 * 60 * 60 * 1000),
       };

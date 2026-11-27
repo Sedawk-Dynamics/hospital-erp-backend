@@ -22,11 +22,23 @@ import { writeAudit } from '../../shared/audit';
 import {
   supplyKindForCategory,
   supplyKindForInventoryCategory,
+  itemTaxContext,
   tariffTaxContext,
   type SupplyKind,
 } from '../../shared/gst-determination';
+import { formatDrugQty, UNIT_SELECT } from '../pharmacy/pharmacy.units';
+import { WHO_CAN_FIX } from '../gst/gst-retired-rate';
 import { roundOffTotal, isInterState } from '../../shared/gst';
-import { resplitLine, sacWarningFor, serviceLinesWithoutSac } from './billing.gst-checks';
+import { DIAGNOSTIC_UNAPPROVED_REASON, radiologyApprovalProblem, radiologyTaxFacts } from '../../shared/radiology-gst';
+import {
+  assertSupplyTypeFitsLines,
+  assertTaxedServicesHaveSac,
+  placeOfSupplyFor,
+  resplitLine,
+  sacWarningFor,
+  serviceLinesWithoutSac,
+  supplyTypeOf,
+} from './billing.gst-checks';
 import { assertPeriodOpen } from '../../shared/gst-period-lock';
 import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
 import { issueDocumentForBill, allotDocumentNumber } from '../gst/gst-document.service';
@@ -1243,9 +1255,11 @@ export async function setServiceTariffGstApproval(
 
   // Approving a classification that carries a rate the law does not recognise
   // would be signing off an invoice the portal will reject.
+  let legalRate = true;
   if (approved && Number(tariff.gstRatePercent) > 0) {
     const { checkSlabRate, describeSlabs } = await import('../../shared/gst-slabs');
     const { legal, slabs } = await checkSlabRate(Number(tariff.gstRatePercent));
+    legalRate = legal;
     if (!legal) {
       throw AppError.badRequest(
         `${Number(tariff.gstRatePercent)}% is not a legal GST slab, so this classification ` +
@@ -1258,6 +1272,11 @@ export async function setServiceTariffGstApproval(
       'Set the tax treatment (taxable / exempt / nil-rated) before approving this classification.',
     );
   }
+  // #358: a scan's purpose and its rate have to say the same thing.
+  if (approved && String(tariff.category) === 'radiology') {
+    const problem = radiologyApprovalProblem(tariff, legalRate);
+    if (problem) throw AppError.badRequest(`${tariff.serviceName} cannot be approved. ${problem}.`);
+  }
 
   const updated = await prisma.serviceTariff.update({
     where: { id: tariffId },
@@ -1267,11 +1286,119 @@ export async function setServiceTariffGstApproval(
       gstRatePercent: true, isCosmetic: true, gstApproved: true,
     },
   });
+  await writeAudit({
+    tenantId,
+    userId,
+    action: 'update',
+    entityType: 'service_tariff',
+    entityId: tariffId,
+    description: approved
+      ? `GST classification of ${updated.serviceName} approved — ${updated.gstTreatment ?? 'no treatment'} ${Number(updated.gstRatePercent)}%${updated.sacCode ? `, SAC ${updated.sacCode}` : ''}`
+      : `GST approval of ${updated.serviceName} withdrawn`,
+    oldValues: { gstApproved: tariff.gstApproved },
+    newValues: {
+      gstApproved: approved, gstTreatment: updated.gstTreatment, gstRatePercent: Number(updated.gstRatePercent),
+      sacCode: updated.sacCode, isCosmetic: updated.isCosmetic,
+    },
+  });
   logger.info(
     { tenantId, tariffId, approved, by: userId },
     approved ? 'Service tariff GST classification approved' : 'Service tariff GST approval withdrawn',
   );
   return updated;
+}
+
+export interface RadiologyApprovalResult {
+  approved: Array<{ id: string; serviceName: string }>;
+  skipped: Array<{ id: string; serviceName: string | null; reason: string }>;
+}
+
+/**
+ * #358: the finance / GST admin approves the studies THEY selected as diagnostic,
+ * exempt at 0%. Row by row: one that cannot be a diagnostic 0% (marked cosmetic,
+ * or carrying a rate) is left alone and named, never quietly zeroed.
+ */
+export async function approveRadiologyDiagnostic(
+  tenantId: string,
+  userId: string,
+  tariffIds: string[],
+): Promise<RadiologyApprovalResult> {
+  const ids = [...new Set(tariffIds)];
+  if (!ids.length) throw AppError.badRequest('Select at least one study to approve');
+  const tariffs = await prisma.serviceTariff.findMany({ where: { tenantId, id: { in: ids }, category: 'radiology' } });
+  const byId = new Map(tariffs.map((t) => [t.id, t]));
+  const out: RadiologyApprovalResult = { approved: [], skipped: [] };
+
+  for (const id of ids) {
+    const t = byId.get(id);
+    if (!t) {
+      out.skipped.push({ id, serviceName: null, reason: 'Not a radiology study of this hospital' });
+      continue;
+    }
+    if (t.isCosmetic) {
+      out.skipped.push({ id, serviceName: t.serviceName, reason: 'Marked cosmetic / non-medical: approve it with its own rate and SAC' });
+      continue;
+    }
+    const problem = radiologyApprovalProblem(t, true);
+    if (problem) {
+      out.skipped.push({ id, serviceName: t.serviceName, reason: problem });
+      continue;
+    }
+    if (t.gstApproved && t.gstTreatment) {
+      out.skipped.push({ id, serviceName: t.serviceName, reason: 'Already approved' });
+      continue;
+    }
+    // Conditional on what was read: if somebody re-classified the row meanwhile,
+    // this approval is not of that.
+    const done = await prisma.serviceTariff.updateMany({
+      where: { id, tenantId, isCosmetic: false, gstRatePercent: 0, gstTreatment: t.gstTreatment },
+      data: { gstTreatment: t.gstTreatment ?? 'exempt', gstApproved: true },
+    });
+    if (done.count === 0) {
+      out.skipped.push({ id, serviceName: t.serviceName, reason: 'Changed by someone else — refresh and check it again' });
+      continue;
+    }
+    out.approved.push({ id, serviceName: t.serviceName });
+    await writeAudit({
+      tenantId,
+      userId,
+      action: 'update',
+      entityType: 'service_tariff',
+      entityId: id,
+      description: `${t.serviceName} approved as a diagnostic scan — exempt, GST 0%`,
+      oldValues: { gstApproved: t.gstApproved, gstTreatment: t.gstTreatment },
+      newValues: { gstApproved: true, gstTreatment: t.gstTreatment ?? 'exempt', gstRatePercent: 0 },
+    });
+  }
+  logger.info({ tenantId, by: userId, approved: out.approved.length, skipped: out.skipped.length }, 'Radiology GST approved as diagnostic');
+  return out;
+}
+
+/**
+ * #358: what may be SAVED on a radiology study. Incomplete is allowed — it just
+ * cannot be approved — but a contradiction or an illegal value is not.
+ */
+async function assertRadiologyClassification(t: {
+  serviceName?: string | null; isCosmetic?: boolean | null; gstTreatment?: string | null;
+  gstRatePercent?: unknown; sacCode?: string | null;
+}) {
+  const rate = Number(t.gstRatePercent ?? 0);
+  const sac = String(t.sacCode ?? '').trim();
+  if (sac && !/^\d{6}$/.test(sac)) throw AppError.badRequest('A SAC code is 6 digits');
+  if (!t.isCosmetic) {
+    if (rate > 0 || t.gstTreatment === 'taxable') {
+      throw AppError.badRequest('A diagnostic scan is exempt (0%). Mark it cosmetic / non-medical to set a GST rate.');
+    }
+    return;
+  }
+  if (t.gstTreatment && t.gstTreatment !== 'taxable') {
+    throw AppError.badRequest('A cosmetic / non-medical scan is taxable: its treatment cannot be exempt, nil-rated or non-GST.');
+  }
+  if (rate > 0) {
+    const { checkSlabRate, describeSlabs } = await import('../../shared/gst-slabs');
+    const { legal, slabs } = await checkSlabRate(rate);
+    if (!legal) throw AppError.badRequest(`${rate}% is not a legal GST slab. Legal rates today are ${describeSlabs(slabs)}.`);
+  }
 }
 
 /**
@@ -1318,6 +1445,14 @@ export async function createServiceTariff(tenantId: string, data: CreateServiceT
     if (existing) {
       throw AppError.conflict('A service tariff with this code already exists');
     }
+  }
+  if (mapToServiceTariffCategory(data.category) === 'radiology') {
+    await assertRadiologyClassification({
+      isCosmetic: (data as any).isCosmetic,
+      gstTreatment: (data as any).gstTreatment,
+      gstRatePercent: data.taxRate ?? 0,
+      sacCode: (data as any).sacCode,
+    });
   }
 
   const tariff = await prisma.serviceTariff.create({
@@ -1390,6 +1525,7 @@ export async function updateServiceTariff(
   tenantId: string,
   id: string,
   data: UpdateServiceTariffInput,
+  userId?: string,
 ) {
   const existing = await prisma.serviceTariff.findFirst({
     where: { id, tenantId },
@@ -1446,6 +1582,16 @@ export async function updateServiceTariff(
     if ((prev?.getTime() ?? null) !== (next?.getTime() ?? null)) classificationChanged = true;
   }
   if (classificationChanged && existing.gstApproved) updateData.gstApproved = false;
+  // #358: only when the classification itself moves — an old row that carries a
+  // rate on a diagnostic study can still have its price or name edited.
+  if (classificationChanged && (updateData.category ?? String(existing.category)) === 'radiology') {
+    await assertRadiologyClassification({
+      isCosmetic: updateData.isCosmetic ?? existing.isCosmetic,
+      gstTreatment: updateData.gstTreatment !== undefined ? updateData.gstTreatment : existing.gstTreatment,
+      gstRatePercent: updateData.gstRatePercent ?? existing.gstRatePercent,
+      sacCode: updateData.sacCode !== undefined ? updateData.sacCode : existing.sacCode,
+    });
+  }
   if (data.isActive !== undefined) updateData.isActive = data.isActive;
   if ((data as any).modality !== undefined) {
     updateData.modality = (data as any).modality;
@@ -1460,6 +1606,19 @@ export async function updateServiceTariff(
   });
 
   logger.info({ tenantId, tariffId: id }, 'Service tariff updated');
+  // #264: switching a service off or on is logged with who did it.
+  if (data.isActive !== undefined && data.isActive !== existing.isActive) {
+    void writeAudit({
+      tenantId,
+      userId,
+      action: 'update',
+      entityType: 'service_tariff',
+      entityId: id,
+      description: `${data.isActive ? 'Reactivated' : 'Deactivated'} service ${tariff.serviceName}`,
+      oldValues: { isActive: existing.isActive },
+      newValues: { isActive: data.isActive },
+    });
+  }
   // Gap item 279: every GST rate / SAC / treatment change leaves an audit row.
   void import('../gst/gst-rate-log').then((m) => m.recordItemRateChange({
     tenantId, itemType: 'service', itemId: id, itemName: tariff.serviceName,
@@ -1850,6 +2009,9 @@ export async function updateBillItem(
     },
     { unitPrice, quantity, discountAmount },
   );
+  // A line held for its GST stays held: changing the price is not an answer to
+  // "which rate" — otherwise an edit would release a cosmetic scan at 0%.
+  const stillHeld = item.requiresTaxResolution === true && !(Number(data.taxRate ?? 0) > 0);
 
   const updated = await prisma.billItem.update({
     where: { id: itemId },
@@ -1860,6 +2022,13 @@ export async function updateBillItem(
       discountPercent,
       discountAmount,
       ...billItemTaxFields(priced),
+      ...(stillHeld
+        ? { requiresTaxResolution: true, rateSource: item.rateSource, taxReason: item.taxReason }
+        : // Which rule decided the line has not changed, so a warning that hangs
+          // on it must not disappear because somebody corrected a quantity.
+          item.taxReason === DIAGNOSTIC_UNAPPROVED_REASON
+          ? { taxReason: item.taxReason }
+          : {}),
     },
   });
 
@@ -1926,10 +2095,11 @@ export async function assertRatesAreLegalSlabs(billId: string, billDate: Date): 
 
   const taxed = await prisma.billItem.findMany({
     where: { billId, gstTreatment: 'taxable' },
-    select: { description: true, taxPercent: true },
+    select: { description: true, taxPercent: true, category: true },
   });
 
   const offending = new Map<number, string[]>();
+  let medicine = false;
   for (const it of taxed) {
     const rate = Number(it.taxPercent ?? 0);
     if (rate <= 0) continue;
@@ -1937,6 +2107,7 @@ export async function assertRatesAreLegalSlabs(billId: string, billDate: Date): 
     const names = offending.get(rate) ?? [];
     if (names.length < 3) names.push(it.description);
     offending.set(rate, names);
+    if (it.category === 'pharmacy' || it.category === 'consumable') medicine = true;
   }
   if (offending.size === 0) return;
 
@@ -1947,7 +2118,9 @@ export async function assertRatesAreLegalSlabs(billId: string, billDate: Date): 
     `This bill carries a GST rate that is not a legal slab on ${billDate
       .toISOString()
       .slice(0, 10)}: ${listed}. Legal rates on that date are ${describeSlabs(legal)}. ` +
-      "Correct the item's classification before finalizing.",
+      "Correct the item's classification before finalizing." +
+      // #262: name who can, and that the draft must be re-priced afterwards.
+      (medicine ? ` For a medicine: ${WHO_CAN_FIX}, then refresh the GST on this draft.` : ''),
   );
 }
 
@@ -1981,7 +2154,11 @@ export async function issueDocumentForExistingBill(
       select: {
         id: true, billDate: true, invoiceNumber: true, status: true,
         recipientGstin: true,
-        billItems: { select: { taxAmount: true, gstTreatment: true, taxPercent: true, description: true } },
+        billItems: {
+          select: {
+            taxAmount: true, gstTreatment: true, taxPercent: true, description: true, category: true, hsnSacCode: true,
+          },
+        },
       },
     });
     // Already numbered, gone, or still a draft that finalizeBill will handle.
@@ -1990,10 +2167,13 @@ export async function issueDocumentForExistingBill(
     const profile = await getGstProfile(tenantId);
     if (!profile.registered) return null;
 
+    // #264: the callers check this before they create the bill, so this only
+    // fires for a line that reached one some other way. It stays unnumbered.
+    assertTaxedServicesHaveSac(bill.billItems, profile.registered);
     await assertRatesAreLegalSlabs(billId, bill.billDate);
 
-    return await prisma.$transaction((tx) =>
-      issueDocumentForBill(
+    return await prisma.$transaction(async (tx) => {
+      const issued = await issueDocumentForBill(
         tx,
         tenantId,
         {
@@ -2004,12 +2184,81 @@ export async function issueDocumentForExistingBill(
         },
         bill.billItems,
         { registered: profile.registered },
-      ),
-    );
+      );
+      // #265: a consultation or registration is supplied at the hospital. Stamped
+      // like a finalised bill, so every register shows the same place of supply.
+      await tx.bill.update({
+        where: { id: bill.id },
+        data: {
+          supplierGstin: profile.gstin,
+          supplierStateCode: profile.stateCode,
+          placeOfSupplyStateCode: profile.stateCode ?? null,
+          isInterState: false,
+        },
+      });
+      return issued;
+    });
   } catch (err) {
     logger.warn({ err, tenantId, billId }, 'Could not issue a GST document for this bill');
     return null;
   }
+}
+
+/**
+ * SACs the bill's uncoded services could take NOW from the master each was
+ * billed from (#264) - taxed AND exempt: an exempt line needs its code too, for
+ * the printed invoice and the GSTR-1 HSN/SAC summary. Only taxed ones block. The admin fixes a missing code on the service, not on
+ * every draft already holding it — so a draft picks the fix up when it is issued
+ * instead of staying blocked on a code that has since been set.
+ */
+async function currentServiceCodes(
+  tenantId: string,
+  items: Array<{
+    id: string; description?: string | null; category?: unknown; hsnSacCode?: string | null; taxPercent?: unknown;
+    taxAmount?: unknown; gstTreatment?: string | null; serviceTariffId?: string | null;
+    referenceType?: string | null; referenceId?: string | null;
+  }>,
+  registered: boolean,
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const blocked = items.filter(
+    (i) => serviceLinesWithoutSac([{ ...i, category: String(i.category ?? '') }], registered).length > 0,
+  );
+  if (!blocked.length) return out;
+
+  const otIds = [
+    ...new Set(blocked.filter((i) => i.referenceType?.startsWith('ot_request') && i.referenceId).map((i) => i.referenceId!)),
+  ];
+  const otTariff = new Map<string, string>();
+  if (otIds.length) {
+    const reqs = await prisma.otRequest.findMany({
+      where: { tenantId, id: { in: otIds }, serviceTariffId: { not: null } },
+      select: { id: true, serviceTariffId: true },
+    });
+    for (const r of reqs) if (r.serviceTariffId) otTariff.set(r.id, r.serviceTariffId);
+  }
+  const tariffOf = new Map<string, string>();
+  for (const i of blocked) {
+    const t = i.serviceTariffId ?? (i.referenceId ? otTariff.get(i.referenceId) : undefined);
+    if (t) tariffOf.set(i.id, t);
+  }
+  if (tariffOf.size) {
+    const tariffs = await prisma.serviceTariff.findMany({
+      where: { tenantId, id: { in: [...new Set(tariffOf.values())] } },
+      select: { id: true, sacCode: true },
+    });
+    const sac = new Map(tariffs.map((t) => [t.id, t.sacCode?.trim() || null]));
+    for (const [itemId, tariffId] of tariffOf) {
+      const code = sac.get(tariffId);
+      if (code) out.set(itemId, code);
+    }
+  }
+  if (blocked.some((i) => String(i.category) === 'registration')) {
+    const { getRegistrationFeeSettings } = await import('../hospital-settings/hospital-settings.service');
+    const code = (await getRegistrationFeeSettings(tenantId)).sacCode;
+    if (code) for (const i of blocked) if (String(i.category) === 'registration') out.set(i.id, code);
+  }
+  return out;
 }
 
 export async function finalizeBill(tenantId: string, userId: string, billId: string) {
@@ -2085,16 +2334,46 @@ export async function finalizeBill(tenantId: string, userId: string, billId: str
 
   const profile = await getGstProfile(tenantId);
 
-  // G-4: lines are priced intra-state when raised. With a registered buyer the
-  // place of supply of a service is the buyer's state, so the same tax moves
-  // to IGST (or back, if the buyer was removed). Amounts never change.
-  const placeOfSupply = (bill as any).recipientGstin
-    ? ((bill as any).placeOfSupplyStateCode ?? profile.stateCode)
-    : profile.stateCode;
-  const interState = profile.registered && isInterState(profile.stateCode, placeOfSupply);
+  // #264: a taxed service with no SAC refuses the bill. Every check sits above
+  // the first write below, so a refused bill is left exactly as it was.
+  const newCodes = await currentServiceCodes(tenantId, bill.billItems as any[], profile.registered);
+  assertTaxedServicesHaveSac(
+    bill.billItems.map((i) => ({ ...i, category: String(i.category), hsnSacCode: newCodes.get(i.id) ?? i.hsnSacCode })),
+    profile.registered,
+  );
+
+  // #265: health services are supplied where they are performed, so the place of
+  // supply is the hospital's state whoever the buyer is. Only the bill's own
+  // explicit exception moves it. A document already numbered (a reopened bill)
+  // keeps the place of supply and split it was issued with.
+  const issuedBefore = !!bill.invoiceNumber;
+  const supplyType = supplyTypeOf(bill.supplyType);
+  if (!issuedBefore && supplyType !== 'performed_at_hospital') {
+    assertSupplyTypeFitsLines(
+      supplyType,
+      bill.billItems.map((i) => ({ ...i, category: String(i.category) })),
+      { admissionId: bill.admissionId },
+    );
+    if (supplyType === 'off_site_service' && bill.recipientGstin?.slice(0, 2) !== bill.supplyDestinationStateCode) {
+      throw AppError.conflict(
+        "This bill is an off-site service but its buyer's GSTIN is not registered in the destination state. Correct the buyer or the place of supply before issuing it.",
+        'SUPPLY_TYPE_CONFLICT',
+      );
+    }
+  }
+  const placeOfSupply = issuedBefore
+    ? (bill.placeOfSupplyStateCode ?? profile.stateCode)
+    : placeOfSupplyFor(bill, profile.stateCode);
+  const interState = issuedBefore
+    ? Boolean(bill.isInterState)
+    : profile.registered && isInterState(profile.stateCode, placeOfSupply);
+
   for (const it of bill.billItems) {
+    const code = newCodes.get(it.id);
     const split = resplitLine(it as any, interState);
-    if (split) await prisma.billItem.update({ where: { id: it.id }, data: split });
+    if (split || code) {
+      await prisma.billItem.update({ where: { id: it.id }, data: { ...(split ?? {}), ...(code ? { hsnSacCode: code } : {}) } });
+    }
   }
 
   // Recalculate final totals
@@ -2130,8 +2409,8 @@ export async function finalizeBill(tenantId: string, userId: string, billId: str
       // Snapshot the hospital's own identity onto the document. It was raised
       // under this registration, and an old bill has to stay explainable even
       // after the hospital's details change.
-      supplierGstin: profile.gstin,
-      supplierStateCode: profile.stateCode,
+      supplierGstin: (issuedBefore ? bill.supplierGstin : null) ?? profile.gstin,
+      supplierStateCode: (issuedBefore ? bill.supplierStateCode : null) ?? profile.stateCode,
       placeOfSupplyStateCode: placeOfSupply ?? null,
       isInterState: interState,
     },
@@ -2171,7 +2450,21 @@ export async function finalizeBill(tenantId: string, userId: string, billId: str
   // G-3: a service line with no SAC is issued but flagged — see serviceLinesWithoutSac.
   const sacWarning = sacWarningFor(serviceLinesWithoutSac(updatedBill.billItems as any[], profile.registered));
   if (sacWarning) logger.warn({ tenantId, billId }, sacWarning);
-  return { ...updatedBill, gstWarnings: sacWarning ? [sacWarning] : [] };
+  // #358: a diagnostic scan whose GST nobody has approved yet is billed exempt —
+  // allowed, but said.
+  const unapprovedScans = [
+    ...new Set(
+      (updatedBill.billItems as any[])
+        .filter((i) => i.taxReason === DIAGNOSTIC_UNAPPROVED_REASON)
+        .map((i) => String(i.description)),
+    ),
+  ];
+  const scanWarning =
+    profile.registered && unapprovedScans.length
+      ? `GST not set for ${unapprovedScans.slice(0, 3).join(', ')}${unapprovedScans.length > 3 ? '…' : ''}: billed as exempt. ` +
+        'Ask the finance / GST admin to approve it in Radiology → Settings or Settings → GST classification.'
+      : null;
+  return { ...updatedBill, gstWarnings: [sacWarning, scanWarning].filter((w): w is string => !!w) };
 }
 
 /**
@@ -2871,6 +3164,8 @@ interface ChargeRow {
   isTakeHome?: boolean;
   /** A non-therapeutic procedure — taxable whatever the surgery list says. */
   isCosmetic?: boolean;
+  /** #358: the picked study has left the catalogue — its tax cannot be re-read. */
+  gstUnknown?: boolean;
   category: string;
   occurredAt: string;
   /** Raw ISO timestamp for chronological sorting (occurredAt is display-only). */
@@ -3182,11 +3477,15 @@ async function getConsultationCharges(
       doctor: {
         select: {
           consultationFee: true,
+          freeFollowUpDays: true,
+          departmentId: true,
           user: { select: { firstName: true, lastName: true } },
           specialization: true,
         },
       },
-      appointment: { select: { id: true, appointmentDate: true } },
+      appointment: {
+        select: { id: true, doctorId: true, appointmentDate: true, consultationType: true, createdAt: true },
+      },
       // Does this visit back an admission? Used to skip the admission's own
       // anchor visit below.
       admission: { select: { id: true } },
@@ -3195,7 +3494,7 @@ async function getConsultationCharges(
     take: 50,
   });
 
-  return visits
+  const billable = visits
     .filter((v) => v.visitType === 'op' || v.visitType === 'ip')
     // An admission creates a Visit purely to anchor the stay — nobody has
     // consulted at that point. Charging a consultation for it put a phantom
@@ -3206,9 +3505,43 @@ async function getConsultationCharges(
     // The OP→IP flow REUSES the OP visit and flips it to `ip`, and that one is
     // a real consultation — it is told apart by having an appointment behind
     // it, which an admission-created visit never does.
-    .filter((v) => !(v.admission && !v.appointmentId))
-    .map((v) => {
-      const fee = toNumber(v.doctor?.consultationFee ?? 0);
+    .filter((v) => !(v.admission && !v.appointmentId));
+
+  // Gap #019/#331: a consultation pulled onto a bill is priced by the same
+  // follow-up rules as one billed at the desk. One already billed keeps its line.
+  const { resolveConsultationFee } = await import('../hospital-settings/follow-up-rules.service');
+  const fees = await Promise.all(
+    billable.map(async (v) => {
+      const listFee = toNumber(v.doctor?.consultationFee ?? 0);
+      const alreadyBilled =
+        billedIndex.has(`visit:${v.id}`) ||
+        (!!v.appointmentId && billedIndex.has(`appointment:${v.appointmentId}`));
+      const isOutpatient = v.visitType === 'op' || !!v.appointmentId;
+      if (alreadyBilled || !isOutpatient || !v.doctor || !v.doctorId) return { fee: listFee, label: null };
+      const resolution = await resolveConsultationFee(
+        tenantId,
+        {
+          appointmentId: v.appointmentId,
+          visitId: v.id,
+          patientId,
+          doctorId: v.doctorId,
+          consultationType: v.appointment?.consultationType,
+          date: v.appointment?.appointmentDate ?? v.visitDate,
+          createdAt: v.appointment?.createdAt ?? v.createdAt,
+          doctor: v.doctor,
+        },
+        { ungoverned: 'list_fee' },
+      );
+      return {
+        fee: resolution.fee,
+        label: resolution.kind === 'paid_follow_up' ? resolution.label : null,
+      };
+    }),
+  );
+
+  return billable
+    .map((v, i) => {
+      const { fee, label } = fees[i];
       const doctorName = v.doctor?.user
         ? `Dr. ${fullName(v.doctor.user)}`
         : 'Doctor';
@@ -3220,7 +3553,7 @@ async function getConsultationCharges(
         source: 'consultation' as const,
         referenceType: 'visit',
         referenceId: v.id,
-        description: `Consultation — ${doctorName} (${formatDateTimeIST(v.visitDate)})`,
+        description: `Consultation — ${doctorName} (${formatDateTimeIST(v.visitDate)})${label ? ` — ${label}` : ''}`,
         quantity: 1,
         unitPrice: fee,
         totalAmount: fee,
@@ -3331,6 +3664,7 @@ async function getPharmacyCharges(
             select: {
               drugName: true, price: true, taxPercent: true, hsnCode: true,
               gstTreatment: true, category: true,
+              ...UNIT_SELECT,
             },
           },
         },
@@ -3361,20 +3695,27 @@ async function getPharmacyCharges(
           ? toNumber(drugGst)
           : (taxRates.pharmacy ?? CHARGE_TAX_RATES.pharmacy);
     const drug = (r.drugBatch as any)?.drug;
+    // #262: the item's own positive rate is its classification (G-1), here as
+    // at the counter. Dropping it for any coded drug let a pull or a draft
+    // refresh move a medicine still at 12% onto its HSN heading's 5% unseen;
+    // it now keeps its rate and the finalise check names it.
+    const ownTax = itemTaxContext(drug);
+    const ownRate = ownTax.itemTreatment === 'taxable' ? ownTax.itemRatePercent : null;
     return {
       source: 'pharmacy' as const,
       referenceType: 'dispensing_record',
       referenceId: r.id,
-      description: `${drugName}${batchTag}`,
+      // 345: the unit the pharmacy's own bill and ledger print.
+      description: `${drugName}${batchTag} — ${formatDrugQty(r.quantityDispensed, drug)}`,
       quantity: r.quantityDispensed,
       unitPrice: unit,
       totalAmount: total,
       // A code or an explicit treatment is authoritative. The old batch rate
       // is used only for uncoded legacy stock, never allowed to freeze a rate
       // after the HSN master changes.
-      taxRate: drug?.hsnCode || drug?.gstTreatment ? null : fallbackTaxRate,
+      taxRate: ownRate ?? (drug?.hsnCode || drug?.gstTreatment ? null : fallbackTaxRate),
       hsnCode: drug?.hsnCode ?? null,
-      gstTreatment: drug?.gstTreatment ?? null,
+      gstTreatment: ownTax.itemTreatment ?? null,
       supplyKind: supplyKindForInventoryCategory(drug?.category),
       // Medicine prices are MRP. The pharmacy counter already treats them as
       // tax-inclusive and shows the embedded GST as a breakup; the hospital
@@ -3412,11 +3753,18 @@ async function getImagingCharges(
   // by imagingType. Fallback to a configurable baseline.
   const tariffs = await prisma.serviceTariff.findMany({
     where: { tenantId, category: 'radiology', isActive: true },
-    select: { id: true, serviceName: true, serviceCode: true, basePrice: true, gstRatePercent: true },
+    select: {
+      id: true, serviceName: true, serviceCode: true, basePrice: true, gstRatePercent: true,
+      sacCode: true, gstTreatment: true, gstApproved: true, isCosmetic: true, gstEffectiveFrom: true,
+    },
   });
 
+  const tariffById = new Map(tariffs.map((t) => [t.id, t]));
   const tariffByCode = new Map<string, (typeof tariffs)[number]>();
   for (const t of tariffs) {
+    // #358: a cosmetic / non-medical scan is billed only when it was picked; a
+    // modality name must never resolve a diagnostic order onto one.
+    if (t.isCosmetic) continue;
     if (t.serviceCode) tariffByCode.set(t.serviceCode.toLowerCase(), t);
     tariffByCode.set(t.serviceName.toLowerCase(), t);
   }
@@ -3424,15 +3772,15 @@ async function getImagingCharges(
   return requests.map((req) => {
     const typeLabel = `${req.imagingType}${req.bodyPart ? ` — ${req.bodyPart}` : ''}`;
     const tariff =
+      (req.serviceTariffId ? tariffById.get(req.serviceTariffId) : undefined) ||
       tariffByCode.get(req.imagingType.toLowerCase()) ||
       tariffByCode.get(typeLabel.toLowerCase());
     const price = toNumber(tariff?.basePrice ?? 0);
-    // The matched study's own rate is the most specific answer; where no tariff
-    // matched, fall back to what the radiology category is configured at rather
-    // than silently assuming zero.
-    const taxRate = tariff
-      ? toNumber(tariff.gstRatePercent)
-      : (taxRates.imaging ?? CHARGE_TAX_RATES.imaging);
+    // #358: the same facts the accept step bills with. A picked study that has
+    // since left the catalogue is not re-read as a diagnostic one: the refresh
+    // leaves that line as it was billed.
+    const pickedMissing = !!req.serviceTariffId && !tariffById.has(req.serviceTariffId);
+    const facts = radiologyTaxFacts(tariff, new Date());
     const billed = billedIndex.get(`imaging_request:${req.id}`);
     return {
       source: 'imaging' as const,
@@ -3442,7 +3790,12 @@ async function getImagingCharges(
       quantity: 1,
       unitPrice: price,
       totalAmount: price,
-      taxRate,
+      taxRate: facts.taxRate,
+      sacCode: facts.sacCode,
+      gstTreatment: facts.gstTreatment,
+      gstApproved: facts.gstApproved,
+      isCosmetic: facts.isCosmetic,
+      ...(pickedMissing ? { gstUnknown: true } : {}),
       category: 'radiology',
       occurredAt: formatDateTimeIST(req.createdAt),
       occurredAtISO: new Date(req.createdAt).toISOString(),
@@ -4031,6 +4384,9 @@ export async function billOtRequest(
     billId = ipBill.id;
   } else {
     // OP: a dedicated, finalized surgery invoice (optionally collect payment below).
+    // #264: checked before the bill exists, so a refusal leaves the surgery
+    // unbilled and the desk can post it again once the code is set.
+    await assertChargesCanBeIssued(tenantId, otCharges);
     const bill = await createBill(tenantId, userId, { patientId: req.patientId, visitId: req.visitId ?? undefined });
     await pullChargesToBill(tenantId, bill.id, otCharges);
     await finalizeBill(tenantId, userId, bill.id);
@@ -4090,6 +4446,12 @@ export interface DiagnosticChargeInput {
    */
   sacCode?: string | null;
   gstTreatment?: string | null;
+  /** #358: the study's own rate, sign-off and purpose (radiology). */
+  taxRate?: number | null;
+  gstApproved?: boolean;
+  isCosmetic?: boolean;
+  /** #358: what to say about this line's GST where it is accepted. */
+  gstWarning?: string | null;
 }
 
 export interface DiagnosticBillSummary {
@@ -4107,6 +4469,13 @@ export interface DiagnosticBillSummary {
   balanceDue: number;
   /** True when every line was already on a bill and nothing new was posted. */
   alreadyBilled: boolean;
+  /** #358: GST warnings on the lines of this order. */
+  gstWarnings?: string[];
+  /**
+   * #264 / #358: the charge IS on a draft bill, but that bill was refused — why.
+   * Nothing can be collected against it until the reason is dealt with.
+   */
+  issueBlockedReason?: string | null;
 }
 
 /**
@@ -4253,6 +4622,7 @@ export async function billDiagnosticOrder(
   const payer = await resolveDiagnosticPayer(tenantId, opts.patientId, opts.visitId);
 
   let billId: string | null = existing[0]?.billId ?? null;
+  let issueBlockedReason: string | null = null;
 
   if (fresh.length) {
     const lines = fresh.map((c) => ({
@@ -4263,10 +4633,17 @@ export async function billDiagnosticOrder(
       unitPrice: c.unitPrice,
       // Per line: the test's own code first, the diagnostics code second, and
       // the department fallback only where neither exists.
-      sacCode: c.sacCode ?? DIAGNOSTIC_SAC,
+      // #358: never the diagnostic code on a scan that is not diagnostic.
+      sacCode: c.sacCode ?? (c.isCosmetic ? null : DIAGNOSTIC_SAC),
       // The test's OWN classification, where the catalogue carries one. Both
-      // producers populate `gstTreatment` and it was read nowhere.
-      gstTreatment: c.gstTreatment ?? null,
+      // producers populate `gstTreatment` and it was read nowhere. "Taxable" with
+      // no rate behind it is not an answer (it billed at 0%) — the SAC decides.
+      gstTreatment:
+        c.gstTreatment === 'taxable' && !c.isCosmetic && !(Number(c.taxRate ?? 0) > 0)
+          ? null
+          : (c.gstTreatment ?? null),
+      gstApproved: c.gstApproved ?? false,
+      isCosmetic: c.isCosmetic ?? false,
       // NOT the department average.
       //
       // `pullChargesToBill` feeds `taxRate` to the engine as `itemRatePercent`
@@ -4279,7 +4656,7 @@ export async function billDiagnosticOrder(
       //
       // The fallback now applies only where the line has no treatment of its
       // own AND no code to resolve one from.
-      taxRate: c.gstTreatment || c.sacCode ? null : fallbackRate,
+      taxRate: c.taxRate !== undefined ? c.taxRate : c.gstTreatment || c.sacCode ? null : fallbackRate,
       category,
       patientAdmitted: payer.mode === 'ip',
       issuedForTreatment: payer.mode === 'ip',
@@ -4310,7 +4687,19 @@ export async function billDiagnosticOrder(
         // A zero-value order (unpriced catalog entry) cannot be finalized —
         // finalizeBill rejects an empty bill and there is nothing to collect.
         const posted = await prisma.billItem.count({ where: { billId: bill.id } });
-        if (posted > 0) await finalizeBill(tenantId, userId, bill.id);
+        if (posted > 0) {
+          try {
+            await finalizeBill(tenantId, userId, bill.id);
+          } catch (err) {
+            // #264 / #358: refused — a taxed line with no SAC, a cosmetic scan with
+            // no approved rate. The charge stays on this draft bill and the reason
+            // goes back to the department; throwing here lost both, because the
+            // accept step treats a failed auto-bill as "nothing to charge".
+            if (!(err instanceof AppError) || err.statusCode >= 500) throw err;
+            issueBlockedReason = `${err.message} The charge is on draft bill ${bill.billNumber}; issue it from Billing once this is fixed.`;
+            logger.warn({ tenantId, billId: bill.id, reason: err.message }, 'Diagnostic bill left in draft — it could not be issued');
+          }
+        }
         billId = bill.id;
       }
     }
@@ -4342,6 +4731,8 @@ export async function billDiagnosticOrder(
     amountPaid: toNumber(bill.amountPaid),
     balanceDue: toNumber(bill.balanceDue),
     alreadyBilled: fresh.length === 0,
+    gstWarnings: [...new Set(charges.map((c) => c.gstWarning).filter((w): w is string => !!w))],
+    issueBlockedReason,
   };
 }
 
@@ -4393,7 +4784,7 @@ export async function refreshDraftBillTax(
           id: true, description: true, category: true, quantity: true,
           unitPrice: true, discountAmount: true, referenceType: true,
           referenceId: true, hsnSacCode: true, gstTreatment: true,
-          taxPercent: true, rateSource: true,
+          taxPercent: true, rateSource: true, serviceTariffId: true,
         },
       },
     },
@@ -4422,6 +4813,20 @@ export async function refreshDraftBillTax(
 
   const resolver = await taxResolverFor(tenantId, bill.billDate ?? new Date());
   const isAdmissionBill = !!bill.admissionId;
+  // A line raised from a service tariff is re-read from that tariff. Without it
+  // the line's own code was re-resolved alone, which dropped the tariff's rate
+  // and its cosmetic flag — a cosmetic scan refreshed to exempt.
+  const tariffIds = [...new Set(bill.billItems.map((i) => i.serviceTariffId).filter((v): v is string => !!v))];
+  const tariffById = new Map(
+    (tariffIds.length
+      ? await prisma.serviceTariff.findMany({ where: { tenantId, id: { in: tariffIds } } })
+      : []
+    ).map((t) => [t.id, t]),
+  );
+  // The registration fee has no tariff: its SAC is the hospital's own setting.
+  const registrationSac = bill.billItems.some((i) => String(i.category) === 'registration' && !i.hsnSacCode)
+    ? ((await (await import('../hospital-settings/hospital-settings.service')).getRegistrationFeeSettings(tenantId)).sacCode ?? null)
+    : null;
   let refreshed = 0;
   let skipped = 0;
 
@@ -4439,6 +4844,13 @@ export async function refreshDraftBillTax(
       skipped += 1;
       continue;
     }
+    // #358: nor a scan whose study cannot be read — its purpose (diagnostic or
+    // cosmetic) is on the study, and guessing would release a held line at 0%.
+    if (item.referenceType === 'imaging_request' && (!c || c.gstUnknown)) {
+      skipped += 1;
+      continue;
+    }
+    const tariff = !c && item.serviceTariffId ? tariffById.get(item.serviceTariffId) : undefined;
     const kind = c?.supplyKind ?? supplyKindForCategory(String(item.category));
     // Goods resolve through HSN, services through SAC — the engine picks the
     // master by which of the two it was given. The bill item keeps ONE column
@@ -4447,21 +4859,25 @@ export async function refreshDraftBillTax(
     // default. Same answer for an exempt consultation, and silently the wrong
     // one for a taxable SAC like 999319.
     const isGoods = kind === 'medicine' || kind === 'consumable';
-    const storedCode = item.hsnSacCode ?? null;
+    const storedCode = item.hsnSacCode ?? (String(item.category) === 'registration' ? registrationSac : null);
+    const tariffFacts = tariff ? tariffTaxContext(tariff, bill.billDate ?? new Date()) : null;
+    // The fee's rate was the hospital's own setting when the line was raised.
+    const registrationTreatment =
+      item.referenceType === 'registration' && item.gstTreatment ? item.gstTreatment : null;
     const priced = resolver.price(
       {
         kind,
         hsnCode: c?.hsnCode ?? (isGoods ? storedCode : null),
-        sacCode: c?.sacCode ?? (isGoods ? null : storedCode),
-        itemRatePercent: c?.taxRate ?? toNumber(item.taxPercent) ?? null,
-        itemTreatment: (c?.gstTreatment as never) ?? null,
-        itemApproved: c?.gstApproved ?? false,
+        sacCode: c?.sacCode ?? tariffFacts?.sacCode ?? (isGoods ? null : storedCode),
+        itemRatePercent: c?.taxRate ?? tariffFacts?.itemRatePercent ?? toNumber(item.taxPercent) ?? null,
+        itemTreatment: ((c?.gstTreatment ?? tariffFacts?.itemTreatment ?? registrationTreatment) as never) ?? null,
+        itemApproved: c?.gstApproved ?? tariffFacts?.itemApproved ?? !!registrationTreatment,
         taxInclusive: c?.taxInclusive ?? false,
         // The bill's own nature, exactly as `pullChargesToBill` reads it.
         patientAdmitted: isAdmissionBill || c?.patientAdmitted,
         issuedForTreatment: isAdmissionBill || c?.issuedForTreatment,
         isTakeHome: c?.isTakeHome,
-        isCosmetic: c?.isCosmetic,
+        isCosmetic: c?.isCosmetic ?? tariffFacts?.isCosmetic,
         // On a room line the unit price IS the per-day rate — quantity is
         // days. The charge row is preferred where there is one, because only
         // it knows the bed and the ward, and those decide the ICU exemption.
@@ -4485,6 +4901,73 @@ export async function refreshDraftBillTax(
   await recalculateBillTotals(bill.id);
   logger.info({ tenantId, billId, refreshed, skipped }, 'Draft bill tax refreshed');
   return { refreshed, skipped, status: bill.status };
+}
+
+/** The tax context a pulled charge is priced under. One definition, so the OT
+ *  pre-check below and the pull itself cannot decide differently. */
+function chargeTaxContext(
+  c: {
+    taxRate?: number | null; gstTreatment?: string | null; gstApproved?: boolean; supplyKind?: SupplyKind;
+    taxInclusive?: boolean; category?: string; hsnCode?: string | null; sacCode?: string | null;
+    patientAdmitted?: boolean; issuedForTreatment?: boolean; isTakeHome?: boolean; isCosmetic?: boolean;
+    dailyRate?: number; bedType?: string | null; wardType?: string | null;
+  },
+  isAdmissionBill: boolean,
+) {
+  return {
+    kind: c.supplyKind ?? supplyKindForCategory(c.category),
+    hsnCode: c.hsnCode ?? null,
+    sacCode: c.sacCode ?? null,
+    itemRatePercent: c.taxRate ?? null,
+    // The item's own treatment when its catalogue carries one, and only
+    // otherwise inferred from a rate. Inferring it from a rate the caller
+    // worked out is what let a department average outrank a test's SAC.
+    itemTreatment:
+      (c.gstTreatment as never) ??
+      (c.hsnCode || c.sacCode || c.taxRate == null
+        ? null
+        : c.taxRate > 0 ? 'taxable' : null),
+    itemApproved: c.gstApproved ?? false,
+    taxInclusive: c.taxInclusive ?? false,
+    // The BILL's own nature decides whether the patient is admitted, not
+    // the client. A bill raised against an admission is by definition a
+    // supply to an admitted patient in the course of their treatment —
+    // the same reasoning `consolidateAdmissionBill` already applies —
+    // and letting a browser assert otherwise would put 5% on a ward
+    // medicine that the composite supply rule makes exempt.
+    //
+    // A take-home pack still leaves the composite: the rule excludes it
+    // whenever the hospital's `dischargeMedicinesTaxable` setting says so.
+    patientAdmitted: isAdmissionBill || c.patientAdmitted,
+    issuedForTreatment: isAdmissionBill || c.issuedForTreatment,
+    isTakeHome: c.isTakeHome,
+    isCosmetic: c.isCosmetic,
+    dailyRate: c.dailyRate,
+    bedType: c.bedType,
+    wardType: c.wardType,
+  } as const;
+}
+
+/**
+ * #264, for a path that raises a bill of its own and issues it at once: refuse
+ * BEFORE the bill exists. Refusing after it would leave a draft holding the
+ * charge, which then reads as already billed and is never posted again.
+ */
+async function assertChargesCanBeIssued(
+  tenantId: string,
+  charges: Array<Parameters<typeof chargeTaxContext>[0] & { description: string; quantity: number; unitPrice: number }>,
+): Promise<void> {
+  const resolver = await taxResolverFor(tenantId, new Date());
+  assertTaxedServicesHaveSac(
+    charges.map((c) => ({
+      description: c.description,
+      category: c.category ?? 'other',
+      ...billItemTaxFields(
+        resolver.price(chargeTaxContext(c, false), { unitPrice: c.unitPrice, quantity: c.quantity }),
+      ),
+    })),
+    resolver.profile?.registered ?? false,
+  );
 }
 
 export async function pullChargesToBill(
@@ -4609,41 +5092,10 @@ export async function pullChargesToBill(
       // A rate the caller already worked out is offered as the item's own
       // classification, which the engine uses unless a context rule outranks
       // it — an inpatient's medicine being the case that does.
-      const priced = resolver.price(
-        {
-          kind: c.supplyKind ?? supplyKindForCategory(c.category),
-          hsnCode: c.hsnCode ?? null,
-          sacCode: c.sacCode ?? null,
-          itemRatePercent: c.taxRate ?? null,
-          // The item's own treatment when its catalogue carries one, and only
-          // otherwise inferred from a rate. Inferring it from a rate the caller
-          // worked out is what let a department average outrank a test's SAC.
-          itemTreatment:
-            (c.gstTreatment as never) ??
-            (c.hsnCode || c.sacCode || c.taxRate == null
-              ? null
-              : c.taxRate > 0 ? 'taxable' : null),
-          itemApproved: c.gstApproved ?? false,
-          taxInclusive: c.taxInclusive ?? false,
-          // The BILL's own nature decides whether the patient is admitted, not
-          // the client. A bill raised against an admission is by definition a
-          // supply to an admitted patient in the course of their treatment —
-          // the same reasoning `consolidateAdmissionBill` already applies —
-          // and letting a browser assert otherwise would put 5% on a ward
-          // medicine that the composite supply rule makes exempt.
-          //
-          // A take-home pack still leaves the composite: the rule excludes it
-          // whenever the hospital's `dischargeMedicinesTaxable` setting says so.
-          patientAdmitted: isAdmissionBill || c.patientAdmitted,
-          issuedForTreatment: isAdmissionBill || c.issuedForTreatment,
-          isTakeHome: c.isTakeHome,
-          isCosmetic: c.isCosmetic,
-          dailyRate: c.dailyRate,
-          bedType: c.bedType,
-          wardType: c.wardType,
-        },
-        { unitPrice: c.unitPrice, quantity: c.quantity },
-      );
+      const priced = resolver.price(chargeTaxContext(c, isAdmissionBill), {
+        unitPrice: c.unitPrice,
+        quantity: c.quantity,
+      });
       const item = await tx.billItem.create({
         data: {
           billId,
@@ -4673,7 +5125,7 @@ export async function pullChargesToBill(
     );
   }
   logger.info({ tenantId, billId, count: created.length, skipped: skipped.length }, 'Charges auto-pulled to bill');
-  return { added: created.length, skipped, billId };
+  return { added: created.length, skipped, billId, itemIds: created.map((i) => i?.id as string | undefined).filter((v): v is string => !!v) };
 }
 
 /**
@@ -4748,6 +5200,7 @@ export async function consolidateAdmissionBill(
   // How many unbilled charges this call moved onto the bill, so Generate Bill
   // can say so (gap item 338).
   let pulled = 0;
+  let pulledItemIds: string[] = [];
   try {
   // Only a draft can still accept charges / be finalized. A bill already
   // finalized (e.g. transferred to TPA earlier) is left as-is.
@@ -4772,6 +5225,7 @@ export async function consolidateAdmissionBill(
         })),
       );
       pulled = res?.added ?? 0;
+      pulledItemIds = res?.itemIds ?? [];
     }
     await recalculateBillTotals(bill.id);
     const draftItems = await prisma.billItem.count({ where: { billId: bill.id } });
@@ -4782,9 +5236,16 @@ export async function consolidateAdmissionBill(
   } catch (err) {
     // finalizeBill refuses a bill with an unclassified line or an undecided
     // concession. Put a reopened bill back the way we found it rather than
-    // leaving it a draft nobody can pay.
+    // leaving it a draft nobody can pay. That includes the charges this call put
+    // on it: left there they would sit on an ISSUED bill that was just refused
+    // because of them (#264). Off the bill they are unbilled charges again, and
+    // the next Generate Bill picks them up once the reason is fixed.
     if (reopenedFrom) {
+      if (pulledItemIds.length) {
+        await prisma.billItem.deleteMany({ where: { billId: bill.id, id: { in: pulledItemIds } } });
+      }
       await prisma.bill.update({ where: { id: bill.id }, data: { status: reopenedFrom as never } });
+      if (pulledItemIds.length) await recalculateBillTotals(bill.id);
     }
     throw err;
   }
@@ -4940,9 +5401,9 @@ async function resolveTransferPolicy(tenantId: string, patientId: string, opts: 
  * Put the payer's tax identity on the stay's bill, before it is finalised.
  *
  * The TPA pays, so the TPA is the recipient of the supply; where there is no
- * TPA the insurer is. Their state is the PLACE OF SUPPLY, which is what decides
- * CGST+SGST against IGST — a TPA registered in another state means IGST, which
- * is acceptance scenario 21 and has never been reachable.
+ * TPA the insurer is. Their state does NOT decide the tax: the stay was supplied
+ * at the hospital, so a TPA registered in another state is still CGST + SGST
+ * (#265, IGST Act s.12(4)).
  *
  * Silent when neither party has a GSTIN on file. Most do not, and a hospital
  * that has not filled it in should keep billing exactly as it does today.
@@ -4952,8 +5413,8 @@ async function stampPayerOnAdmissionBill(
   userId: string,
   admissionId: string,
   policy: {
-    insurer?: { gstin?: string | null; stateCode?: string | null } | null;
-    tpa?: { gstin?: string | null; stateCode?: string | null } | null;
+    insurer?: { name?: string | null; gstin?: string | null; stateCode?: string | null } | null;
+    tpa?: { name?: string | null; gstin?: string | null; stateCode?: string | null } | null;
   },
 ): Promise<void> {
   const payer = policy.tpa?.gstin ? policy.tpa : policy.insurer?.gstin ? policy.insurer : null;
@@ -4962,9 +5423,12 @@ async function stampPayerOnAdmissionBill(
     const bill = await getOrCreateRunningIpBill(tenantId, admissionId, userId);
     await prisma.bill.update({
       where: { id: bill.id },
+      // #265: the payer is who the invoice is TO. It is not where the stay was
+      // supplied, so it no longer writes the place of supply. The name goes on
+      // with the GSTIN (Rule 46(e)) unless the desk has already entered one.
       data: {
         recipientGstin: payer.gstin,
-        placeOfSupplyStateCode: payer.stateCode ?? payer.gstin.slice(0, 2),
+        ...(payer.name && !bill.recipientLegalName ? { recipientLegalName: payer.name.slice(0, 200) } : {}),
       },
     });
   } catch (err) {
@@ -5446,6 +5910,22 @@ export async function addIpCharge(
     { unitPrice, quantity: qty, discountAmount },
   );
   const totalAmount = priced.money.totalAmount;
+
+  // The running bill may already be issued (an interim bill, a TPA transfer).
+  // Issuing would have refused this line, so posting it afterwards is refused too.
+  if (bill.status !== 'draft') {
+    assertTaxedServicesHaveSac(
+      [{ description: data.description.trim(), category, ...billItemTaxFields(priced) }],
+      resolver.profile.registered,
+    );
+    // #358: nor a cosmetic scan whose GST is not set, which would go on at 0%.
+    if (priced.determination.requiresResolution && priced.determination.source === 'cosmetic') {
+      throw AppError.conflict(
+        `${data.description.trim()} cannot be added to an issued bill: ${priced.determination.reason}.`,
+        'GST_NOT_SET',
+      );
+    }
+  }
 
   const item = await prisma.billItem.create({
     data: {
@@ -7738,6 +8218,9 @@ export async function adjustAdvanceToBill(
       await finalizeBill(tenantId, userId, data.billId);
     } catch (err) {
       logger.warn({ tenantId, billId: data.billId, err }, 'Could not finalize draft bill before advance adjustment');
+      // Why it was refused (#264: a taxed service with no SAC; an unclassified
+      // line; a pending concession) is what the desk has to act on.
+      if (err instanceof AppError && err.statusCode < 500) throw err;
       throw AppError.badRequest(
         'This bill is still open for charges. Generate / refresh the bill first — that pulls the pending charges on and finalizes it for payment.',
       );

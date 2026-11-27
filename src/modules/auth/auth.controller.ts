@@ -60,10 +60,11 @@ export const authController = {
       sendResponse({
         res,
         message: 'Verification code sent',
+        // Channel and masked destination only.
         data: result,
       });
     } catch (err) {
-      next(err);
+      next(signInFailure(err, 'phone-otp-request'));
     }
   },
 

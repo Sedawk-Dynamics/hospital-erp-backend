@@ -19,6 +19,8 @@ export interface RegistrationFeeSettings {
   amount: number;
   /** Added on top of `amount`; 0 for most hospitals. */
   gstRatePercent: number;
+  /** #264: the fee's 6-digit SAC. Needed once the fee carries GST. */
+  sacCode?: string | null;
   /** What the patient sees on the bill. */
   label: string;
   /**
@@ -69,6 +71,12 @@ export function mergeRegistrationFee(
     // settings are saved — clamping here would silently change a number the
     // hospital typed.
     gstRatePercent: num(p.gstRatePercent, base.gstRatePercent, 0, 40),
+    // Six digits or nothing. An absent field keeps what was there.
+    ...(p.sacCode === undefined
+      ? base.sacCode !== undefined
+        ? { sacCode: base.sacCode }
+        : {}
+      : { sacCode: /^\d{6}$/.test(String(p.sacCode ?? '').trim()) ? String(p.sacCode).trim() : null }),
     label,
     oncePerPatient: typeof p.oncePerPatient === 'boolean' ? p.oncePerPatient : base.oncePerPatient,
   };

@@ -279,6 +279,10 @@ export async function createDrugMaster(
   data: CreateDrugMasterInput,
 ) {
   assertCanManage(roles);
+  // #262: the catalogue feeds every hospital's formulary.
+  if (!data.gstTreatment || data.gstTreatment === 'taxable') {
+    await assertLegalSlab(data.gstRate, `"${data.name}"`);
+  }
   await assertDrugMasterGtinUnique(data.gtin, data.casePackGtin);
 
   const aliases = data.aliases ?? [];
@@ -378,6 +382,18 @@ export async function updateDrugMaster(
 
   const existing = await prisma.drugMaster.findUnique({ where: { id } });
   if (!existing) throw AppError.notFound('Drug not found in catalog');
+  // #262: an edit cannot give the row a retired rate; one it already carries
+  // does not stop its name or pack size being corrected.
+  {
+    const nextTreatment = data.gstTreatment !== undefined ? data.gstTreatment : existing.gstTreatment;
+    const nextRate = data.gstRate !== undefined ? data.gstRate : existing.gstRate;
+    const moved =
+      Number(nextRate ?? 0) !== Number(existing.gstRate ?? 0) ||
+      (nextTreatment ?? null) !== (existing.gstTreatment ?? null);
+    if (moved && (!nextTreatment || nextTreatment === 'taxable')) {
+      await assertLegalSlab(nextRate, `"${data.name ?? existing.name}"`);
+    }
+  }
 
   // Normalise + uniqueness-check any GTIN change before writing.
   const nextGtin = data.gtin !== undefined ? normalizeGtin(data.gtin) : undefined;
@@ -722,12 +738,8 @@ export async function updateHsnGstRate(
 export async function bulkUpsertHsnGstRates(
   roles: string[],
   rows: CreateHsnGstRateInput[],
+  changedBy?: string | null,
 ) {
-  // Every row, before anything is written. A bulk paste is exactly how a
-  // retired slab gets back into the master at scale.
-  for (const r of rows) {
-    await assertLegalSlab(r.gstRate, 'An HSN rate');
-  }
   assertCanManage(roles);
   let created = 0;
   let updated = 0;
@@ -741,6 +753,21 @@ export async function bulkUpsertHsnGstRates(
     if (!code) {
       skipped.push({ hsnCode: r.hsnCode, reason: 'HSN code must contain digits' });
       continue;
+    }
+    // #262: a bulk paste is exactly how a retired slab gets back into the
+    // master at scale. The row is rejected with its reason; it used to take the
+    // whole paste down with a message that did not say which row it was.
+    if (!r.treatment || r.treatment === 'taxable') {
+      const { checkSlabRate, describeSlabs } = await import('../../shared/gst-slabs');
+      const rate = Number(r.gstRate ?? 0);
+      const check = rate > 0 ? await checkSlabRate(rate) : { legal: true, slabs: [] as number[] };
+      if (!check.legal) {
+        skipped.push({
+          hsnCode: r.hsnCode,
+          reason: `${rate}% is not a legal GST rate today. Use one of ${describeSlabs(check.slabs)}.`,
+        });
+        continue;
+      }
     }
     byCode.set(code, r);
   }
@@ -763,6 +790,12 @@ export async function bulkUpsertHsnGstRates(
             isActive: r.isActive ?? existing.isActive,
           },
         });
+        await recordRateChange({
+          codeType: 'hsn', code: hsnCode, description: r.description ?? existing.description,
+          previousRate: Number(existing.gstRate), newRate: classification.gstRate,
+          previousTreatment: existing.treatment, newTreatment: classification.treatment,
+          action: 'update', changedBy,
+        });
         updated++;
       } else {
         await prisma.hsnGstRate.create({
@@ -774,6 +807,12 @@ export async function bulkUpsertHsnGstRates(
             category: r.category ?? null,
             isActive: r.isActive ?? true,
           },
+        });
+        await recordRateChange({
+          codeType: 'hsn', code: hsnCode, description: r.description ?? null,
+          previousRate: null, newRate: classification.gstRate,
+          previousTreatment: null, newTreatment: classification.treatment,
+          action: 'create', changedBy,
         });
         created++;
       }

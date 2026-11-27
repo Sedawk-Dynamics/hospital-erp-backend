@@ -10,7 +10,6 @@ export const createDoctorProfileSchema = z.object({
     experience: z.number().int().min(0).max(70).optional(),
     registrationNumber: z.string().min(1, 'Registration number is required').max(100),
     consultationFee: z.number().positive('Consultation fee must be positive'),
-    followUpFee: z.number().positive('Follow-up fee must be positive').optional(),
     bio: z.string().max(2000).optional(),
     isActive: z.boolean().default(true),
   }),
@@ -292,6 +291,12 @@ export const bookingChargePreviewSchema = z.object({
     chargeRegistrationFee: z
       .enum(['true', 'false'])
       .transform((v) => v === 'true')
+      .optional(),
+    /** The day of the visit; the follow-up days are counted to it. Today if absent. */
+    date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be in YYYY-MM-DD format')
+      .refine((v) => !isNaN(Date.parse(v)), { message: 'Invalid date' })
       .optional(),
   }),
 });

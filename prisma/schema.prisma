@@ -1444,6 +1444,7 @@ model Tenant {
   patientTransfers           PatientTransfer[]
   prescriptions              Prescription[]
   labTestCatalog             LabTestCatalog[]
+  labRangeProposals          LabRangeProposal[]
   labOrders                  LabOrder[]
   labAttachments             LabAttachment[]
   labUnitGroups              LabUnitGroup[]
@@ -1970,6 +1971,7 @@ model User {
   counsellingSessionsAssigned    CounsellingSession[]         @relation("CounsellingCounsellor")
   counsellingSessionsCreated     CounsellingSession[]         @relation("CounsellingCreator")
   counsellingReferralsMade       CounsellingSession[]         @relation("CounsellingReferrer")
+  trustedDevices                 PatientTrustedDevice[]
 
   @@unique([tenantId, email])
   @@map("users")
@@ -2056,6 +2058,33 @@ model LoginAuditLog {
   tenant Tenant @relation(fields: [tenantId], references: [id])
 
   @@map("login_audit_logs")
+}
+
+/// A patient's phone or browser that may sign in with that patient's own PIN
+/// instead of a one-time code ("like a phone"). One row per device. The device
+/// token and the PIN exist here only as hashes; neither can be read back.
+model PatientTrustedDevice {
+  id              String    @id @default(uuid())
+  userId          String    @map("user_id")
+  /// SHA-256 of the random token the device keeps. The token is shown once.
+  deviceTokenHash String    @unique @map("device_token_hash") @db.VarChar(64)
+  /// bcrypt of the peppered PIN.
+  pinHash         String    @map("pin_hash") @db.VarChar(255)
+  failedAttempts  Int       @default(0) @map("failed_attempts")
+  /// Set after too many wrong PINs; the device then needs a one-time code.
+  lockedAt        DateTime? @map("locked_at")
+  lastUsedAt      DateTime? @map("last_used_at")
+  revokedAt       DateTime? @map("revoked_at")
+  revokedReason   String?   @map("revoked_reason") @db.VarChar(40)
+  /// Readable name from the user agent, e.g. "Chrome on Android".
+  label           String?   @db.VarChar(120)
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@map("patient_trusted_devices")
 }
 
 model DemoRequest {
@@ -2816,7 +2845,9 @@ model DoctorProfile {
   // visit carries no consultation fee. Per doctor, not per hospital: the window
   // that suits a surgeon reviewing a post-op wound is not the one for a
   // physician following a chronic case, and it is their fee being waived.
-  // Null or 0 = no free follow-up (what every existing doctor keeps).
+  // This is the doctor's override of the free days in FollowUpFeeRule. Null =
+  // use the department/hospital default; 0 = none, even when a default exists.
+  // With no rule set anywhere both mean "no free follow-up", as they always did.
   freeFollowUpDays Int?     @map("free_follow_up_days")
   bio              String?
   isAvailable      Boolean  @default(true) @map("is_available")
@@ -2953,6 +2984,50 @@ model Appointment {
   formSubmissions HospitalFormSubmission[]
 
   @@map("appointments")
+}
+
+/// Gap #019/#331: the hospital admin's follow-up fee rules.
+///
+/// One row per hospital default, department default or doctor override. A null
+/// field means "use the level above". A doctor's free days are NOT here: they
+/// stay in DoctorProfile.freeFollowUpDays, which already held them.
+model FollowUpFeeRule {
+  id                    String   @id @default(uuid())
+  tenantId              String   @map("tenant_id")
+  /// 'hospital' | 'department' | 'doctor'
+  level                 String   @db.VarChar(12)
+  /// The tenant, department or doctor profile id, by level.
+  targetId              String   @map("target_id")
+  freeDays              Int?     @map("free_days")
+  /// 'full' (the doctor's consultation fee) | 'fixed' (fixedFee)
+  afterWindow           String?  @map("after_window") @db.VarChar(8)
+  fixedFee              Decimal? @map("fixed_fee") @db.Decimal(10, 2)
+  /// 'same_doctor' | 'same_department'
+  scope                 String?  @db.VarChar(16)
+  dischargeStartsWindow Boolean? @map("discharge_starts_window")
+  updatedBy             String?  @map("updated_by")
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([tenantId, level, targetId])
+  @@map("follow_up_fee_rules")
+}
+
+/// Gap #019/#331: the follow-up rule an appointment was booked under, and how
+/// its consultation was priced when the bill was raised. Kept so that a later
+/// change to the settings cannot alter either.
+model AppointmentFeeSnapshot {
+  id            String   @id @default(uuid())
+  tenantId      String   @map("tenant_id")
+  appointmentId String   @unique @map("appointment_id")
+  rule          Json
+  resolution    Json?
+  billId        String?  @map("bill_id")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([tenantId])
+  @@map("appointment_fee_snapshots")
 }
 
 model QueueToken {
@@ -4164,13 +4239,85 @@ model LabTestCatalog {
   createdAt        DateTime @default(now()) @map("created_at")
   updatedAt        DateTime @default(now()) @updatedAt @map("updated_at")
 
-  tenant        Tenant           @relation(fields: [tenantId], references: [id])
-  template      LabTestTemplate? @relation(fields: [templateId], references: [id])
-  labOrderItems LabOrderItem[]
+  // Gap 369. Optimistic lock over the reference-range fields (parameters,
+  // normalRange, unit): every write that can touch them is conditional on it,
+  // so a range approval and an admin save can never overwrite each other.
+  rangeVersion        Int       @default(0) @map("range_version")
+  // Gap 369. A price above a panel that includes the test was confirmed with a
+  // reason. Only counts while the price is still the one that was confirmed.
+  priceOverridePrice  Decimal?  @map("price_override_price") @db.Decimal(10, 2)
+  priceOverrideReason String?   @map("price_override_reason")
+  priceOverrideById   String?   @map("price_override_by_id")
+  priceOverrideAt     DateTime? @map("price_override_at")
+  // Gap 369. Retired as a duplicate of another test (deactivated, never
+  // deleted — past orders and reports still point here).
+  replacedByTestId    String?   @map("replaced_by_test_id")
+  retiredById         String?   @map("retired_by_id")
+  retiredAt           DateTime? @map("retired_at")
+  retireReason        String?   @map("retire_reason")
+
+  tenant         Tenant             @relation(fields: [tenantId], references: [id])
+  template       LabTestTemplate?   @relation(fields: [templateId], references: [id])
+  labOrderItems  LabOrderItem[]
+  rangeProposals LabRangeProposal[]
 
   @@index([tenantId, templateId])
   @@index([tenantId, isActive])
   @@map("lab_test_catalog")
+}
+
+// Gap 369: a proposed reference range for one parameter of one test. Nothing
+// here is live — result entry, flags, reports and the patient portal read only
+// LabTestCatalog — until a pathologist approves it, which copies the (possibly
+// edited) values onto the catalogue row in the same transaction. Approved rows
+// double as the sign-off history; a "confirm current range" is an approved row
+// whose previous and applied ranges are the same.
+model LabRangeProposal {
+  id             String    @id @default(uuid())
+  tenantId       String    @map("tenant_id")
+  testId         String    @map("test_id")
+  // ParameterSpec.id, or '__test__' for the flat normalRange on the test row.
+  parameterKey   String    @map("parameter_key") @db.VarChar(60)
+  parameterName  String    @map("parameter_name") @db.VarChar(255)
+  // ai | manual
+  source         String    @db.VarChar(10)
+  // ai_suggest | manual | test_create | test_edit | template | import | confirm_current
+  origin         String    @db.VarChar(20)
+  // pending | approved | rejected
+  status         String    @default("pending") @db.VarChar(20)
+  unit           String?   @db.VarChar(50)
+  refLow         Float?    @map("ref_low")
+  refHigh        Float?    @map("ref_high")
+  refText        String?   @map("ref_text") @db.VarChar(100)
+  // [{ sex, ageMinYears, ageMaxYears, low, high }] — the live parameter format
+  // has no sex/age fields, so these are approved as printed text only.
+  qualifiers     Json?
+  rationale      String?
+  warnings       Json?
+  aiProvider     String?   @map("ai_provider") @db.VarChar(30)
+  aiModel        String?   @map("ai_model") @db.VarChar(100)
+  // Live range at the time of proposing, and its fingerprint.
+  baseLive       Json?     @map("base_live")
+  baseHash       String?   @map("base_hash") @db.VarChar(64)
+  proposedById   String?   @map("proposed_by_id")
+  proposedByName String?   @map("proposed_by_name") @db.VarChar(255)
+  proposedAt     DateTime  @default(now()) @map("proposed_at")
+  reviewedById   String?   @map("reviewed_by_id")
+  reviewedByName String?   @map("reviewed_by_name") @db.VarChar(255)
+  reviewedAt     DateTime? @map("reviewed_at")
+  reviewNote     String?   @map("review_note")
+  // Values the pathologist changed before approving (null = approved as proposed).
+  editedValues   Json?     @map("edited_values")
+  previousLive   Json?     @map("previous_live")
+  appliedLive    Json?     @map("applied_live")
+  appliedHash    String?   @map("applied_hash") @db.VarChar(64)
+
+  tenant Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  test   LabTestCatalog @relation(fields: [testId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, status])
+  @@index([testId, parameterKey, status])
+  @@map("lab_range_proposals")
 }
 
 // Platform-wide lab test template. Authored by super_admin once and cloned
@@ -4488,6 +4635,9 @@ model ImagingRequest {
   scheduledAt           DateTime?             @map("scheduled_at")
   completedAt           DateTime?             @map("completed_at")
   assignedTechnicianId  String?               @map("assigned_technician_id")
+  /// #358: the catalogue study the doctor picked (ServiceTariff id), so the
+  /// accept step bills that study. Null = resolved from modality / body part.
+  serviceTariffId       String?               @map("service_tariff_id")
   room                  String?               @db.VarChar(100)
   notes                 String?
   // Patient self-completion (scan done at another facility). Hides the
@@ -5403,6 +5553,9 @@ model CreditNoteItem {
   igstAmount   Decimal  @default(0) @map("igst_amount") @db.Decimal(12, 2)
   cessAmount   Decimal  @default(0) @map("cess_amount") @db.Decimal(12, 2)
   totalAmount  Decimal  @default(0) @map("total_amount") @db.Decimal(12, 2)
+  /// Gap 345: the returned quantity in words ("3 tablets (loose)"). The bill line
+  /// it reverses is deleted on a void, so the words are kept on the note itself.
+  quantityText String?  @map("quantity_text") @db.VarChar(160)
   createdAt    DateTime @default(now()) @map("created_at")
 
   creditNote CreditNote @relation(fields: [creditNoteId], references: [id], onDelete: Cascade)
@@ -6208,6 +6361,9 @@ model DispensingRecord {
   // hospital sets qrScanMode to 'require'. Kept so the sale can be evidenced
   // later, which is the only thing that makes the scan worth asking for.
   scannedCode            String?   @map("scanned_code") @db.VarChar(120)
+  /// Gap 345: {packSize, packNoun, looseNoun} when dispensed. quantityDispensed
+  /// is always base units; this only words it. Null on older rows.
+  qtyUnits               Json?     @map("qty_units")
   notes                  String?
   // Sale economics captured at dispense time so the cash counter, receipt and
   // GST report read the true billed figures (not a re-derived batch price).
@@ -6340,6 +6496,34 @@ model DrugReturn {
 
   @@index([returnGroupId])
   @@map("drug_returns")
+}
+
+/// #266: every e-way bill a vendor return has had that is no longer the active
+/// one. The active number stays on drug_returns; a cancelled one is kept here so
+/// a new e-way bill can be generated without losing it.
+model EwayBillHistory {
+  id               String    @id @default(uuid())
+  tenantId         String    @map("tenant_id")
+  /// The return's head line; returnGroupId groups a multi-line return.
+  returnId         String    @map("return_id")
+  returnGroupId    String?   @map("return_group_id")
+  returnNumber     String?   @map("return_number") @db.VarChar(50)
+  ewayBillNumber   String    @map("eway_bill_number") @db.VarChar(20)
+  ewayBillDate     DateTime? @map("eway_bill_date")
+  validUpto        DateTime? @map("valid_upto")
+  /// 'cancelled'.
+  status           String    @default("cancelled") @db.VarChar(20)
+  cancelledAt      DateTime? @map("cancelled_at")
+  cancelReasonCode String?   @map("cancel_reason_code") @db.VarChar(2)
+  cancelRemark     String?   @map("cancel_remark") @db.VarChar(100)
+  transport        Json?
+  recordedBy       String?   @map("recorded_by")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  @@unique([tenantId, ewayBillNumber])
+  @@index([tenantId, returnId])
+  @@index([tenantId, returnGroupId])
+  @@map("eway_bill_history")
 }
 
 // G13: on-hand stock of a drug batch held at a ward (transferred from the
@@ -7005,6 +7189,12 @@ model Bill {
   recipientAddress       String? @map("recipient_address") @db.VarChar(500)
   placeOfSupplyStateCode String? @map("place_of_supply_state_code") @db.VarChar(2)
   isInterState           Boolean @default(false) @map("is_inter_state")
+  /// #265: 'performed_at_hospital' (default: place of supply is the hospital's
+  /// own state, whoever the buyer is) | 'goods_shipped' | 'off_site_service'.
+  supplyType             String  @default("performed_at_hospital") @map("supply_type") @db.VarChar(30)
+  /// #265: where shipped goods / an off-site service go. Null otherwise.
+  supplyDestinationStateCode String? @map("supply_destination_state_code") @db.VarChar(2)
+  supplyTypeReason       String? @map("supply_type_reason") @db.VarChar(255)
 
   // ── The document this bill IS ──
   // billNumber above is the internal reference and resets daily. An invoice
@@ -7149,6 +7339,10 @@ model BillItem {
   // drug is covered but the disposable syringe is not). null = not categorised.
   isReimbursable Boolean? @map("is_reimbursable")
   tpaCategory    String?  @map("tpa_category") @db.VarChar(40)
+  /// Gap 345: the item's units when it was sold — {packSize, packNoun, looseNoun}.
+  /// `quantity` stays in base units; this is only how to WORD it on a reprint
+  /// after the drug's pack size has moved. Null on older and non-pharmacy lines.
+  qtyUnits       Json?    @map("qty_units")
   createdAt      DateTime @default(now()) @map("created_at")
 
   bill          Bill           @relation(fields: [billId], references: [id])

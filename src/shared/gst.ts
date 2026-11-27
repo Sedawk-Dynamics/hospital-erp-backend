@@ -116,6 +116,20 @@ export function roundOffTotal(total: number): { rounded: number; roundOff: numbe
 }
 
 /**
+ * #345 (client's answer: "round off prices", never above MRP). A pharmacy sale
+ * rounds to the rupee. A bill with loose tablets rounds DOWN: a tablet's price
+ * is the strip's MRP split and rounded to paise, so the tablets can add up to a
+ * few paise more than the strip's MRP, and rounding up would add more. Whole
+ * strips only round to the nearest rupee as before. A total under one rupee is
+ * left as it is rather than rounded to nothing.
+ */
+export function roundOffPharmacyTotal(total: number, hasLooseUnits: boolean): { rounded: number; roundOff: number } {
+  const rounded = hasLooseUnits ? Math.floor(r2(total) + 1e-9) : Math.round(total);
+  if (total > 0 && rounded <= 0) return { rounded: r2(total), roundOff: 0 };
+  return { rounded, roundOff: r2(rounded - total) };
+}
+
+/**
  * A counterparty's GSTIN and the state it implies, ready to store.
  *
  * Used for an insurer, a TPA and a supplier — every party the hospital bills or

@@ -3,6 +3,7 @@ import { prisma } from '../../config/database';
 import { env } from '../../config/env';
 import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
+import { revokeTrustedDevices } from '../../shared/trusted-devices';
 import { getPaginationParams, PaginationQuery } from '../../shared/pagination';
 import type {
   CreateUserInput,
@@ -438,6 +439,13 @@ export const usersService = {
       ]);
     }
 
+    // A patient's device PINs end with the number or the access they were set under.
+    if (data.isActive === false) {
+      await revokeTrustedDevices([userId], 'deactivated');
+    } else if (data.phone !== undefined && data.phone !== existing.phone) {
+      await revokeTrustedDevices([userId], 'phone_changed');
+    }
+
     const user = await prisma.user.update({
       where: { id: userId },
       data: {
@@ -572,6 +580,8 @@ export const usersService = {
       throw AppError.notFound('User not found');
     }
 
+    if (!isActive) await revokeTrustedDevices([userId], 'deactivated');
+
     const user = await prisma.user.update({
       where: { id: userId },
       data: { isActive },
@@ -597,6 +607,8 @@ export const usersService = {
     if (!existing) {
       throw AppError.notFound('User not found');
     }
+
+    await revokeTrustedDevices([userId], 'deactivated');
 
     const user = await prisma.user.update({
       where: { id: userId },

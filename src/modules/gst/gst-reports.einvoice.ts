@@ -427,7 +427,7 @@ export async function getEwayBillRegister(tenantId: string, query: EInvoiceQuery
       },
       orderBy: { createdAt: 'asc' },
       select: {
-        id: true, createdAt: true, quantity: true, returnNumber: true, status: true,
+        id: true, createdAt: true, quantity: true, returnNumber: true, status: true, returnGroupId: true,
         creditNoteNumber: true, creditAmount: true,
         ewayBillNumber: true, ewayBillDate: true,
         ewayBillStatus: true, ewayBillError: true, ewayBillAttemptedAt: true, ewayBillValidUpto: true,
@@ -441,6 +441,30 @@ export async function getEwayBillRegister(tenantId: string, query: EInvoiceQuery
       logger.warn({ err, tenantId }, 'Could not read vendor returns for the e-way bill register');
       return [];
     });
+
+  // #266: the e-way bills each return no longer uses. Best effort, like the
+  // returns above: the register must still open if the history cannot be read.
+  const history = returns.length
+    ? await prisma.ewayBillHistory
+        .findMany({
+          where: {
+            tenantId,
+            OR: [
+              { returnId: { in: returns.map((r) => r.id) } },
+              { returnGroupId: { in: [...new Set(returns.map((r) => r.returnGroupId).filter((v): v is string => !!v))] } },
+            ],
+          },
+          orderBy: { createdAt: 'asc' },
+        })
+        .catch((err: unknown) => {
+          logger.warn({ err, tenantId }, 'Could not read the e-way bill history');
+          return [];
+        })
+    : [];
+  const reasonText = (code: string | null, remark: string | null) =>
+    code
+      ? `${EWAY_CANCEL_REASONS[code as keyof typeof EWAY_CANCEL_REASONS] ?? code}${remark ? ` — ${remark}` : ''}`
+      : null;
 
   const threshold = profile.eWayBillThreshold;
   const integration = await integrationOf(tenantId, 'eway');
@@ -478,10 +502,19 @@ export async function getEwayBillRegister(tenantId: string, query: EInvoiceQuery
       ewayAttemptedAt: row.ewayBillAttemptedAt,
       ewayValidUpto: row.ewayBillValidUpto,
       ewayCancelledAt: row.ewayBillCancelledAt,
-      ewayCancelReason: row.ewayBillCancelReasonCode
-        ? `${EWAY_CANCEL_REASONS[row.ewayBillCancelReasonCode as keyof typeof EWAY_CANCEL_REASONS] ?? row.ewayBillCancelReasonCode}` +
-          (row.ewayBillCancelRemark ? ` — ${row.ewayBillCancelRemark}` : '')
-        : null,
+      ewayCancelReason: reasonText(row.ewayBillCancelReasonCode, row.ewayBillCancelRemark),
+      /** #266: every earlier e-way bill of this return, oldest first. */
+      ewayHistory: history
+        .filter((h) => (row.returnGroupId ? h.returnGroupId === row.returnGroupId : h.returnId === row.id))
+        .filter((h) => h.ewayBillNumber !== row.ewayBillNumber)
+        .map((h) => ({
+          ewayBillNumber: h.ewayBillNumber,
+          ewayBillDate: h.ewayBillDate,
+          validUpto: h.validUpto,
+          status: h.status,
+          cancelledAt: h.cancelledAt,
+          reason: reasonText(h.cancelReasonCode, h.cancelRemark),
+        })),
       /** The transport details last sent, so Retry can offer them again. */
       ewayTransport: (row.ewayBillTransport ?? null) as Record<string, unknown> | null,
       /** Above the hospital's own consignment threshold. */
@@ -492,7 +525,9 @@ export async function getEwayBillRegister(tenantId: string, query: EInvoiceQuery
   // Above the threshold — plus anything that has been sent at all, so a
   // failure or a cancellation never drops off the register.
   const rows = all.filter((r) => r.billRequired || r.ewayStatus !== 'not_generated');
-  const missing = rows.filter((r) => !r.ewayBillNumber);
+  // A cancelled number covers no goods: the return is without an e-way bill
+  // until a new one is generated (#266).
+  const missing = rows.filter((r) => !r.ewayBillNumber || r.ewayStatus === 'cancelled');
 
   return {
     applicability,

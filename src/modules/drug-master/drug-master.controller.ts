@@ -252,7 +252,7 @@ export async function bulkUpsertHsnGstRates(
   next: NextFunction,
 ) {
   try {
-    const out = await service.bulkUpsertHsnGstRates(req.user!.roles ?? [], req.body.rows);
+    const out = await service.bulkUpsertHsnGstRates(req.user!.roles ?? [], req.body.rows, req.user!.userId);
     sendResponse({
       res,
       statusCode: 201,

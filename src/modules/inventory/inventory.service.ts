@@ -13,6 +13,7 @@ import { makeInternalBarcode } from '../pharmacy/pharmacy.barcode';
 import { safePharmacyAudit, drugStockAuditValues } from '../pharmacy/pharmacy.audit';
 import { recordDrugStockMovement, drugOutflowAsStockTransactions } from '../pharmacy/pharmacy.stock-movement';
 import { assertSupplierInvoice, homeStateCode, purchaseLineTax, supplierStateOf } from '../pharmacy/purchase-tax';
+import { formatQty, qtyUnitsOf } from '../pharmacy/pharmacy.units';
 import { checkGstin } from '../../shared/gst';
 import { makeMedicineRankComparator, mergePrefixFirst } from '../../shared/medicine-search-rank';
 import { fuzzyMatchIds, ensureTrgmReady, FUZZY_MIN_QUERY_LEN } from '../../shared/medicine-fuzzy';
@@ -680,7 +681,12 @@ export interface UnifiedStockRow {
   vaultControlled: boolean;
   scheduleReason: string | null;
   /**
-   * Gap 301: on-hand value from the shared valuation service (purchase cost,
+   * Gap 345: the stock and reorder level in words ("4 strips + 5 tablets (45
+   * tablets)"), from the same formatter the bill and the ledger use.
+   */
+  currentStockText: string;
+  reorderLevelText: string | null;
+  /** Gap 301: on-hand value from the shared valuation service (purchase cost,
    * live batches only) so the rows sum to the dashboard's stock value.
    */
   stockValue: number;
@@ -719,6 +725,9 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
         ii.item_code AS code,
         ii.category::text AS category,
         ii.unit_of_measurement AS unit,
+        NULL::int AS pack_size,
+        ii.unit_of_measurement AS uom,
+        NULL::text AS dosage_form,
         ii.current_stock AS current_stock,
         ii.minimum_stock_threshold AS reorder_level,
         ii.cost_per_unit AS cost_per_unit,
@@ -754,6 +763,9 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
         df.hsn_code AS code,
         df.category::text AS category,
         df.loose_unit_label AS unit,
+        df.pack_size AS pack_size,
+        df.unit_of_measurement AS uom,
+        df.dosage_form::text AS dosage_form,
         COALESCE(b.qty, 0)::int AS current_stock,
         df.min_stock AS reorder_level,
         b.avg_purchase AS cost_per_unit,
@@ -861,6 +873,9 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
     code: string | null;
     category: string;
     unit: string | null;
+    pack_size: number | null;
+    uom: string | null;
+    dosage_form: string | null;
     current_stock: number;
     reorder_level: number | null;
     cost_per_unit: string | number | null;
@@ -877,6 +892,13 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
     vault_controlled: boolean | null;
     schedule_reason: string | null;
   };
+  // 345: a generic item has only its unit of measurement; a drug has the lot.
+  const unitsOfRow = (r: UnifiedRaw) =>
+    qtyUnitsOf(
+      r.kind === 'drug'
+        ? { packSize: r.pack_size, unitOfMeasurement: r.uom, looseUnitLabel: r.unit, dosageForm: r.dosage_form, drugName: r.name }
+        : { unitOfMeasurement: r.unit },
+    );
   const mapRow = (r: UnifiedRaw): UnifiedStockRow => ({
     kind: r.kind as 'item' | 'drug',
     refId: r.ref_id,
@@ -899,6 +921,8 @@ export async function getUnifiedStock(tenantId: string, query: GetUnifiedStockQu
     controlledClass: r.controlled_class,
     vaultControlled: Boolean(r.vault_controlled),
     scheduleReason: r.schedule_reason,
+    currentStockText: formatQty(Number(r.current_stock), unitsOfRow(r)),
+    reorderLevelText: r.reorder_level == null ? null : formatQty(Number(r.reorder_level), unitsOfRow(r)),
     stockValue: 0,
   });
   const withValues = async (rows: UnifiedStockRow[]) => {

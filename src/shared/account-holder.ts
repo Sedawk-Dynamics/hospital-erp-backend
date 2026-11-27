@@ -6,14 +6,11 @@
  * auto-creates a *placeholder* account holder: a platform-tenant User with a
  * random (unusable) password and a synthetic email on {@link AUTO_ACCOUNT_EMAIL_DOMAIN}.
  *
- * That placeholder cannot be logged into. When the real owner later signs up on
- * the patient portal with the same phone number, the signup *claims* the
- * placeholder (real email + password + name are written onto it) instead of
- * creating a second account — so every patient already linked to it (the owner
- * plus any relatives the desk registered) immediately shows up in their portal.
- *
- * (Phone ownership is taken on trust for now; OTP verification of the number is
- * a planned hardening step that will gate the claim.)
+ * The owner signs in to it with a one-time code sent to that number, so every
+ * patient already linked to it (the owner plus any relatives the desk
+ * registered) shows up in their portal. Nothing else claims it: registering with
+ * an email and the same number does not, because it proves nothing about who
+ * holds the number.
  */
 
 /** Synthetic-email domain that marks an unclaimed, auto-created account holder. */

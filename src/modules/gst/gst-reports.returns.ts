@@ -488,6 +488,43 @@ export function outwardTaxableNet(
 }
 
 /**
+ * GSTR-3B 3.2 — inter-State taxable supplies to unregistered persons, per place
+ * of supply, net of the notes against them. Since #265 the only bills that can
+ * be here are goods shipped out of the state (and any issued before it).
+ */
+export function interStateToUnregistered(
+  rows: Array<{
+    isInterState: boolean; recipientGstin: string | null; gstTreatment: string | null;
+    placeOfSupplyStateCode: string | null; taxableValue: number; igstAmount: number;
+  }>,
+  appliedNotes: Array<{
+    recipientGstin: string | null; placeOfSupplyStateCode: string | null;
+    byTreatment: Record<NoteTreatment, NoteBucket>;
+  }>,
+) {
+  const byPos = new Map<string, { taxableValue: number; igstAmount: number }>();
+  const add = (pos: string | null, taxableValue: number, igstAmount: number) => {
+    const cur = byPos.get(pos ?? '') ?? { taxableValue: 0, igstAmount: 0 };
+    cur.taxableValue = r2(cur.taxableValue + taxableValue);
+    cur.igstAmount = r2(cur.igstAmount + igstAmount);
+    byPos.set(pos ?? '', cur);
+  };
+  for (const l of rows) {
+    if (l.isInterState && !l.recipientGstin && l.gstTreatment === 'taxable') {
+      add(l.placeOfSupplyStateCode, l.taxableValue, l.igstAmount);
+    }
+  }
+  for (const note of appliedNotes) {
+    const t = note.byTreatment.taxable;
+    // The note mirrors the document's split, so IGST on it IS the inter-State flag.
+    if (!note.recipientGstin && t.igstAmount !== 0) add(note.placeOfSupplyStateCode, t.taxableValue, t.igstAmount);
+  }
+  return [...byPos]
+    .map(([placeOfSupplyStateCode, v]) => ({ placeOfSupplyStateCode: placeOfSupplyStateCode || null, ...v }))
+    .sort((a, b) => String(a.placeOfSupplyStateCode).localeCompare(String(b.placeOfSupplyStateCode)));
+}
+
+/**
  * A-9 — GSTR-3B: outward liability, input credit, and the net payable.
  *
  * 3.1(a) is the taxable outward supply and its tax; 3.1(c) and (e) are the
@@ -496,10 +533,11 @@ export function outwardTaxableNet(
  * reversal from B-3 rather than assumed to be fully available.
  */
 export async function getGstr3bSummary(tenantId: string, query: SalesReportQuery = {}) {
-  const [exempt, notes, itc] = await Promise.all([
+  const [exempt, notes, itc, register] = await Promise.all([
     getExemptTurnover(tenantId, query),
     getCreditNoteRegister(tenantId, query),
     (await import('./gst-reports.purchase')).getItcReversalWorking(tenantId, query),
+    getSalesRegister(tenantId, query),
   ]);
 
   // A credit note reduces the month's outward liability. Two filters decide
@@ -528,6 +566,7 @@ export async function getGstr3bSummary(tenantId: string, query: SalesReportQuery
   // exempt bill used to come off 3.1(a) and drive taxable value negative.
   const reversed = treatmentTotals(reversible);
   const outward = outwardTaxableNet(exempt.taxable, reversible);
+  const interStateUnregistered = interStateToUnregistered(register.rows, reversible);
 
   const netItc = itc.netCreditAvailable;
 
@@ -565,6 +604,8 @@ export async function getGstr3bSummary(tenantId: string, query: SalesReportQuery
     period: { from: query.from ?? null, to: query.to ?? null },
     /** 3.1(a) — outward taxable supplies, net of credit notes. */
     outwardTaxable: outward,
+    /** 3.2 — of the above, inter-State supplies to unregistered persons, by place of supply. */
+    interStateUnregistered,
     /** 3.1(c) — other exempt and nil-rated outward supplies. */
     outwardExempt: r2(
       exempt.exempt.taxableValue + exempt.nilRated.taxableValue

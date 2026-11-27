@@ -1058,6 +1058,38 @@ export async function createDispense(
  *
  * The same resolver the sale runs, so the quote on the screen IS the receipt.
  */
+// --- #262: medicines on a retired GST rate, and the rate-list import ---
+
+export async function listRetiredGstRates(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const { listRetiredGstRates: list } = await import('./gst-rate-list.service');
+    const data = await list(req.user!.tenantId, req.user!.roles ?? []);
+    sendResponse({ res, message: 'Medicines with a retired GST rate', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function previewGstRateList(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const { previewGstRateList: preview } = await import('./gst-rate-list.service');
+    const data = await preview(req.user!.tenantId, req.user!.roles ?? [], req.body);
+    sendResponse({ res, message: 'Rate list checked — nothing has been changed', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function applyGstRateList(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const { applyGstRateList: apply } = await import('./gst-rate-list.service');
+    const data = await apply(req.user!.tenantId, req.user!.userId, req.user!.roles ?? [], req.body);
+    sendResponse({ res, message: `${data.appliedCount} medicine rate(s) changed`, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function previewPharmacySale(
   req: AuthenticatedRequest,
   res: Response,

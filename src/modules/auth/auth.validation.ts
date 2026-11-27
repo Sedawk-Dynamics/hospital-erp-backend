@@ -28,17 +28,21 @@ export const loginSchema = z.object({
 
 // ── Patient phone-OTP auth ───────────────────────────────────
 // Patients sign in / sign up with just their phone number + a one-time code.
-// (The code is a fixed dev value for now; real SMS delivery is a later step.)
+// The code is random, single use, and sent by SMS / WhatsApp or email.
 export const requestOtpSchema = z.object({
   body: z.object({
     phone: z.string().min(7, 'Enter a valid phone number').max(20),
+    // What the code is for; the same value must come back with it on verify.
+    intent: z.enum(['login', 'signup']).optional(),
   }),
 });
 
 export const verifyOtpSchema = z.object({
   body: z.object({
     phone: z.string().min(7, 'Enter a valid phone number').max(20),
-    otp: z.string().min(4, 'Enter the code').max(8),
+    otp: z.string().regex(/^\d{6}$/, 'Enter the 6-digit code'),
+    // Only for an account with two-factor sign-in on (the server asks for it).
+    twoFactorCode: z.string().regex(/^\d{6}$/, 'Enter the 6-digit code from your authenticator app').optional(),
     // Separate patient flows: 'login' must find an existing account (never
     // creates one), 'signup' must NOT find one (creates it). Omitted → allow both.
     intent: z.enum(['login', 'signup']).optional(),
@@ -49,6 +53,37 @@ export const verifyOtpSchema = z.object({
     dateOfBirth: z.string().optional(),
     tenantSlug:z.string().optional()
   }),
+});
+
+// Patient device PIN (see patient-pin.service.ts). The PIN is a 6-digit string.
+const pin = z.string().regex(/^\d{6}$/, 'Enter a 6-digit PIN');
+const deviceToken = z.string().min(20, 'Invalid device').max(128, 'Invalid device');
+
+export const pinLoginSchema = z.object({
+  body: z.object({
+    deviceToken,
+    pin,
+    twoFactorCode: z.string().regex(/^\d{6}$/, 'Enter the 6-digit code from your authenticator app').optional(),
+  }),
+});
+
+export const setPinSchema = z.object({
+  body: z.object({
+    pin,
+    // One of these proves a one-time code was just used.
+    setupToken: z.string().min(20).max(128).optional(),
+    code: z.string().regex(/^\d{6}$/, 'Enter the 6-digit code').optional(),
+    // This device's previous token, when it already had a PIN.
+    deviceToken: deviceToken.optional(),
+  }),
+});
+
+export const changePinSchema = z.object({
+  body: z.object({ deviceToken, currentPin: pin, newPin: pin }),
+});
+
+export const pinDeviceIdSchema = z.object({
+  params: z.object({ id: z.string().uuid('Invalid device') }),
 });
 
 export const refreshTokenSchema = z.object({
@@ -142,6 +177,9 @@ export const registerAdminSchema = z.object({
 });
 
 export type RequestOtpInput = z.infer<typeof requestOtpSchema>['body'];
+export type PinLoginInput = z.infer<typeof pinLoginSchema>['body'];
+export type SetPinInput = z.infer<typeof setPinSchema>['body'];
+export type ChangePinInput = z.infer<typeof changePinSchema>['body'];
 export type VerifyOtpInput = z.infer<typeof verifyOtpSchema>['body'];
 export type RegisterInput = z.infer<typeof registerSchema>['body'];
 export type RegisterAdminInput = z.infer<typeof registerAdminSchema>['body'];

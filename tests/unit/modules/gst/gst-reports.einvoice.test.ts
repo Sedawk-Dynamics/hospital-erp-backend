@@ -298,9 +298,28 @@ describe('D-3 — the e-way bill register', () => {
     expect(by.BAD.ewayTransport).toMatchObject({ distanceKm: 10 });
     expect(by.GONE).toMatchObject({ ewayStatus: 'cancelled', ewayCancelReason: 'Order cancelled — Supplier refused' });
     expect(by.NEW.ewayStatus).toBe('not_generated');
-    expect(out.summary).toMatchObject({ failed: 1, cancelled: 1, missingBill: 2 });
+    // #266: a cancelled number covers no goods — that return is without a bill too.
+    expect(out.summary).toMatchObject({ failed: 1, cancelled: 1, missingBill: 3, withBill: 1 });
     expect(out.note).toMatch(/1 refused by the portal/);
     expect(out.integration.cancelWindowHours).toBe(24);
+  });
+
+  it('shows the active e-way bill and every cancelled one before it (#266)', async () => {
+    (prisma.drugReturn.findMany as any).mockResolvedValue([
+      vendorReturn({ id: 'r1', returnNumber: 'R1', returnGroupId: 'g1', ewayBillNumber: '300', ewayBillDate: daysAgo(1), ewayBillStatus: 'generated' }),
+      vendorReturn({ id: 'r2', returnNumber: 'R2', ewayBillNumber: '900', ewayBillDate: daysAgo(1), ewayBillStatus: 'generated' }),
+    ]);
+    (prisma.ewayBillHistory.findMany as any).mockResolvedValueOnce([
+      { returnId: 'r1', returnGroupId: 'g1', ewayBillNumber: '100', ewayBillDate: daysAgo(3), validUpto: null, status: 'cancelled', cancelledAt: daysAgo(3), cancelReasonCode: '3', cancelRemark: 'Wrong vehicle' },
+      { returnId: 'r1', returnGroupId: 'g1', ewayBillNumber: '200', ewayBillDate: daysAgo(2), validUpto: null, status: 'cancelled', cancelledAt: daysAgo(2), cancelReasonCode: '2', cancelRemark: null },
+    ]);
+    const out = await getEwayBillRegister(TENANT);
+    const by = Object.fromEntries(out.rows.map((r) => [r.documentNumber, r]));
+    expect(by.R1.ewayBillNumber).toBe('300');
+    expect(by.R1.ewayStatus).toBe('generated');
+    expect(by.R1.ewayHistory.map((h) => h.ewayBillNumber)).toEqual(['100', '200']);
+    expect(by.R1.ewayHistory[0]).toMatchObject({ status: 'cancelled', reason: 'Data entry mistake — Wrong vehicle' });
+    expect(by.R2.ewayHistory).toEqual([]);
   });
 
   it('keeps a failed or cancelled movement on the register even below the threshold', async () => {

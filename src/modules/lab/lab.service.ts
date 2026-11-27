@@ -23,6 +23,15 @@ import {
   type DiagnosticChargeInput,
 } from '../billing/billing.service';
 import { buildSearchTokens, normaliseAliases, normaliseTags } from './lab-templates.service';
+import { writeAudit } from '../../shared/audit';
+import { catalogueRangeForResult, normaliseUnit, splitRangeEdits } from './lab-range';
+import {
+  createRangeProposals,
+  filterRangeStatus,
+  getRangeStatus,
+  type RangeOrigin,
+} from './lab-range-proposals.service';
+import { assertPriceConfirmed, getPriceReview } from './lab-price-guard';
 import type { ParameterSpec } from './lab.validation';
 import type {
   CreateTestInput,
@@ -300,7 +309,27 @@ export async function assertLabOrderPaymentCleared(
 // Test Catalog
 // ============================================================
 
-export async function createTest(tenantId: string, roles: string[], data: CreateTestInput) {
+/** Who is saving a catalogue row, and by which route (gap 369). */
+export interface CatalogActor {
+  userId?: string;
+  origin?: RangeOrigin;
+}
+
+async function catalogActorName(userId?: string): Promise<string | null> {
+  if (!userId) return null;
+  const u = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { firstName: true, lastName: true },
+  });
+  return u ? `${u.firstName ?? ''} ${u.lastName ?? ''}`.trim() || null : null;
+}
+
+export async function createTest(
+  tenantId: string,
+  roles: string[],
+  data: CreateTestInput,
+  actor: CatalogActor = {},
+) {
   // Catalog authoring is an admin-only action. Lab supervisor/technician roles
   // get the read-only catalog + price-only PATCH instead.
   if (!canEditFullCatalog(roles)) {
@@ -316,6 +345,32 @@ export async function createTest(tenantId: string, roles: string[], data: Create
     }
   }
 
+  // Gap 369: a new test starts with NO reference ranges. Whatever was typed is
+  // filed for the pathologist; nothing is flagged or printed until approved.
+  const { live, drafts } = splitRangeEdits({
+    existing: null,
+    next: {
+      testName: data.testName,
+      parameters: data.parameters,
+      normalRange: data.normalRange,
+      unit: data.unit,
+    },
+    onRename: 'refuse',
+  });
+  const guard = await assertPriceConfirmed({
+    tenantId,
+    userId: actor.userId,
+    before: null,
+    after: {
+      id: '',
+      testName: data.testName,
+      price: data.price,
+      parameters: data.parameters,
+      isActive: data.isActive ?? true,
+    },
+    confirmation: data.priceConfirmation,
+  });
+
   const aliases = normaliseAliases(data.aliases ?? []);
   const tags = normaliseTags(data.tags ?? []);
   const params = (data.parameters as ParameterSpec[] | undefined) ?? null;
@@ -328,35 +383,62 @@ export async function createTest(tenantId: string, roles: string[], data: Create
     parameters: params,
   });
 
-  const test = await prisma.labTestCatalog.create({
-    data: {
+  const userName = drafts.length > 0 ? await catalogActorName(actor.userId) : null;
+  const test = await prisma.$transaction(async (tx) => {
+    const row = await tx.labTestCatalog.create({
+      data: {
+        tenantId,
+        testName: data.testName,
+        testCode: data.testCode,
+        description: data.description,
+        normalRange: null,
+        unit: live.unit ?? null,
+        price: data.price,
+        turnaroundHours: data.turnaroundHours,
+        sampleType: data.sampleType,
+        specimen: data.specimen,
+        instructions: data.instructions,
+        parameters: live.parameters
+          ? (live.parameters as unknown as Prisma.InputJsonValue)
+          : undefined,
+        interpretation: data.interpretation,
+        aliases,
+        tags,
+        searchTokens,
+        ...guard.columns,
+        // Custom rows live independently of master data — they have no
+        // templateId and are skipped by re-clone-all. Hospital-authored
+        // tests default to isCustom = true even if the caller forgot to set it.
+        isCustom: data.isCustom ?? true,
+        isActive: data.isActive,
+      },
+    });
+    const rangeProposals = await createRangeProposals(tx, {
       tenantId,
-      testName: data.testName,
-      testCode: data.testCode,
-      description: data.description,
-      normalRange: data.normalRange,
-      unit: data.unit,
-      price: data.price,
-      turnaroundHours: data.turnaroundHours,
-      sampleType: data.sampleType,
-      specimen: data.specimen,
-      instructions: data.instructions,
-      parameters: data.parameters
-        ? (data.parameters as unknown as Prisma.InputJsonValue)
-        : undefined,
-      interpretation: data.interpretation,
-      aliases,
-      tags,
-      searchTokens,
-      // Custom rows live independently of master data — they have no
-      // templateId and are skipped by re-clone-all. Hospital-authored
-      // tests default to isCustom = true even if the caller forgot to set it.
-      isCustom: data.isCustom ?? true,
-      isActive: data.isActive,
-    },
+      test: row,
+      drafts,
+      origin: actor.origin ?? 'test_create',
+      userId: actor.userId,
+      userName,
+    });
+    return { ...row, rangeProposals };
   });
 
   logger.info({ tenantId, testId: test.id, isCustom: test.isCustom }, 'Lab test created');
+  await writeAudit({
+    tenantId,
+    userId: actor.userId,
+    action: 'create',
+    entityType: 'lab_test_catalog',
+    entityId: test.id,
+    description: `Lab test created: ${data.testName}`,
+    reason: guard.reason ?? undefined,
+    newValues: {
+      price: data.price ?? null,
+      rangesSentForApproval: test.rangeProposals,
+      ...(guard.conflicts.length ? { priceConflicts: guard.conflicts } : {}),
+    },
+  });
   return test;
 }
 
@@ -386,6 +468,21 @@ export async function getTests(tenantId: string, query: GetTestsQuery) {
       { aliases: { has: q } },
       { tags: { has: q.toLowerCase() } },
     ];
+  }
+
+  // Gap 369 catalogue filters. Both are worked out from the whole active
+  // catalogue, so the ids are resolved first and the page is cut afterwards.
+  const only: string[][] = [];
+  if (query.rangeStatus && query.rangeStatus !== 'all') {
+    const status = await getRangeStatus(tenantId);
+    only.push(filterRangeStatus(status.tests, query.rangeStatus).map((t) => t.testId));
+  }
+  if (query.priceReview) {
+    const review = await getPriceReview(tenantId);
+    only.push(review.filter((r) => !r.confirmed).flatMap((r) => [r.testId, r.panelId]));
+  }
+  if (only.length > 0) {
+    where.id = { in: only.reduce((a, b) => a.filter((id) => b.includes(id))) };
   }
 
   const [tests, total] = await Promise.all([
@@ -422,6 +519,7 @@ export async function updateTest(
   roles: string[],
   id: string,
   data: UpdateTestInput,
+  actor: CatalogActor = {},
 ) {
   // Full catalog edits (name / parameters / unit / range / interpretation)
   // are admin-only. Lab supervisor / technician must use updateTestPrice for
@@ -449,6 +547,46 @@ export async function updateTest(
     }
   }
 
+  if (data.expectedRangeVersion !== undefined && data.expectedRangeVersion !== test.rangeVersion) {
+    throw AppError.conflict(
+      'This test changed after you opened it. Reload it and make your changes again.',
+      'RANGE_CHANGED',
+    );
+  }
+
+  // Gap 369: nobody on this route may change a live reference range. The edit
+  // is split: everything else is saved, range changes wait for a pathologist.
+  const { live, drafts } = splitRangeEdits({
+    existing: test,
+    next: {
+      testName: data.testName,
+      parameters: data.parameters,
+      normalRange: data.normalRange,
+      unit: data.unit,
+    },
+    onRename: data.confirmRangeReset ? 'reset' : 'refuse',
+  });
+
+  const guard = await assertPriceConfirmed({
+    tenantId,
+    userId: actor.userId,
+    before: {
+      id,
+      testName: test.testName,
+      price: test.price,
+      parameters: test.parameters,
+      isActive: test.isActive,
+    },
+    after: {
+      id,
+      testName: data.testName ?? test.testName,
+      price: data.price ?? test.price,
+      parameters: data.parameters === undefined ? test.parameters : data.parameters,
+      isActive: data.isActive ?? test.isActive,
+    },
+    confirmation: data.priceConfirmation,
+  });
+
   // Recompute searchTokens from the merged state so a single-field edit
   // (e.g. just adding an alias) keeps the index consistent.
   const aliases = data.aliases !== undefined ? normaliseAliases(data.aliases) : test.aliases ?? [];
@@ -466,34 +604,78 @@ export async function updateTest(
     parameters: nextParameters,
   });
 
-  const updated = await prisma.labTestCatalog.update({
-    where: { id },
-    data: {
-      testName: data.testName,
-      testCode: data.testCode,
-      description: data.description,
-      normalRange: data.normalRange,
-      unit: data.unit,
-      price: data.price,
-      turnaroundHours: data.turnaroundHours,
-      sampleType: data.sampleType,
-      specimen: data.specimen,
-      instructions: data.instructions,
-      parameters:
-        data.parameters === undefined
-          ? undefined
-          : data.parameters === null
-            ? Prisma.JsonNull
-            : (data.parameters as unknown as Prisma.InputJsonValue),
-      interpretation: data.interpretation,
-      aliases: data.aliases !== undefined ? aliases : undefined,
-      tags: data.tags !== undefined ? tags : undefined,
-      searchTokens,
-      isActive: data.isActive,
-    },
+  const userName = drafts.length > 0 ? await catalogActorName(actor.userId) : null;
+  const updated = await prisma.$transaction(async (tx) => {
+    // Conditional on the version read above, so an approval landing in between
+    // is never overwritten by the parameter list this edit started from.
+    const written = await tx.labTestCatalog.updateMany({
+      where: { id, tenantId, rangeVersion: test.rangeVersion },
+      data: {
+        testName: data.testName,
+        testCode: data.testCode,
+        description: data.description,
+        normalRange: live.normalRange,
+        unit: live.unit,
+        price: data.price,
+        turnaroundHours: data.turnaroundHours,
+        sampleType: data.sampleType,
+        specimen: data.specimen,
+        instructions: data.instructions,
+        parameters:
+          live.parameters === undefined
+            ? undefined
+            : live.parameters === null
+              ? Prisma.JsonNull
+              : (live.parameters as unknown as Prisma.InputJsonValue),
+        interpretation: data.interpretation,
+        aliases: data.aliases !== undefined ? aliases : undefined,
+        tags: data.tags !== undefined ? tags : undefined,
+        searchTokens,
+        isActive: data.isActive,
+        rangeVersion: { increment: 1 },
+        ...guard.columns,
+        // Putting a retired duplicate back into use ends the retirement.
+        ...(data.isActive === true && !test.isActive
+          ? { replacedByTestId: null, retiredAt: null, retiredById: null, retireReason: null }
+          : {}),
+      },
+    });
+    if (written.count !== 1) {
+      throw AppError.conflict(
+        'This test changed while you were saving. Reload it and make your changes again.',
+        'RANGE_CHANGED',
+      );
+    }
+    const row = await tx.labTestCatalog.findFirstOrThrow({ where: { id, tenantId } });
+    const rangeProposals = await createRangeProposals(tx, {
+      tenantId,
+      test: row,
+      drafts,
+      origin: actor.origin ?? 'test_edit',
+      userId: actor.userId,
+      userName,
+    });
+    return { ...row, rangeProposals };
   });
 
   logger.info({ tenantId, testId: id }, 'Lab test updated');
+  await writeAudit({
+    tenantId,
+    userId: actor.userId,
+    action: 'update',
+    entityType: 'lab_test_catalog',
+    entityId: id,
+    description: `Lab test updated: ${updated.testName}`,
+    reason: guard.reason ?? undefined,
+    oldValues: { testName: test.testName, price: test.price, isActive: test.isActive },
+    newValues: {
+      testName: updated.testName,
+      price: updated.price,
+      isActive: updated.isActive,
+      rangesSentForApproval: updated.rangeProposals,
+      ...(guard.conflicts.length ? { priceConflicts: guard.conflicts } : {}),
+    },
+  });
   return updated;
 }
 
@@ -503,18 +685,44 @@ export async function updateTestPrice(
   tenantId: string,
   id: string,
   data: UpdateTestPriceInput,
+  actor: CatalogActor = {},
 ) {
   const test = await prisma.labTestCatalog.findFirst({ where: { id, tenantId } });
   if (!test) throw AppError.notFound('Lab test not found');
+
+  const row = { id, testName: test.testName, parameters: test.parameters, isActive: test.isActive };
+  const guard = await assertPriceConfirmed({
+    tenantId,
+    userId: actor.userId,
+    before: { ...row, price: test.price },
+    after: { ...row, price: data.price ?? test.price },
+    confirmation: data.priceConfirmation,
+  });
 
   const updated = await prisma.labTestCatalog.update({
     where: { id },
     data: {
       price: data.price,
       turnaroundHours: data.turnaroundHours,
+      ...guard.columns,
     },
   });
   logger.info({ tenantId, testId: id }, 'Lab test price/TAT updated');
+  await writeAudit({
+    tenantId,
+    userId: actor.userId,
+    action: 'update',
+    entityType: 'lab_test_catalog',
+    entityId: id,
+    description: `Lab test price/turnaround updated: ${test.testName}`,
+    reason: guard.reason ?? undefined,
+    oldValues: { price: test.price, turnaroundHours: test.turnaroundHours },
+    newValues: {
+      price: data.price ?? test.price,
+      turnaroundHours: data.turnaroundHours ?? test.turnaroundHours,
+      ...(guard.conflicts.length ? { priceConflicts: guard.conflicts } : {}),
+    },
+  });
   return updated;
 }
 
@@ -563,6 +771,29 @@ export async function createLabOrder(tenantId: string, userId: string, data: Cre
     where: { id: { in: testIds }, tenantId, isActive: true },
   });
   if (tests.length !== testIds.length) {
+    // Gap 369: a test retired as a duplicate names the one to order instead.
+    // It is never swapped silently: the doctor chooses what is ordered.
+    const retired = await prisma.labTestCatalog.findMany({
+      where: { id: { in: testIds }, tenantId, isActive: false, replacedByTestId: { not: null } },
+      select: { testName: true, replacedByTestId: true },
+    });
+    const replaced = retired.filter((r) => r.replacedByTestId);
+    if (replaced.length > 0) {
+      const kept = await prisma.labTestCatalog.findMany({
+        where: { tenantId, id: { in: replaced.map((r) => r.replacedByTestId as string) } },
+        select: { id: true, testName: true },
+      });
+      const nameOf = new Map(kept.map((k) => [k.id, k.testName]));
+      throw AppError.badRequest(
+        replaced
+          .map(
+            (r) =>
+              `${r.testName} has been retired; order ${nameOf.get(r.replacedByTestId as string) ?? 'its replacement'} instead`,
+          )
+          .join('. '),
+        'LAB_TEST_RETIRED',
+      );
+    }
     throw AppError.badRequest('One or more test IDs are invalid or inactive');
   }
 
@@ -1051,6 +1282,8 @@ export async function acceptLabOrder(
     if (!billing?.billId) {
       throw AppError.badRequest('There is nothing to collect on this order.');
     }
+    // #264: the bill was refused, so there is no document to collect on.
+    if (billing.issueBlockedReason) throw AppError.conflict(billing.issueBlockedReason, 'BILL_NOT_ISSUED');
     if (due <= 0) {
       // Already settled (front desk got there first) — accept it as cleared
       // rather than refusing over money we have already taken.
@@ -1493,12 +1726,12 @@ export function evaluateAbnormal(value: string | undefined, normalRange: string 
   const num = Number(String(value).trim());
   if (Number.isNaN(num)) return null;
   const r = String(normalRange).trim().replace(/\s+/g, '');
-  // <X or ≤X
-  let m = r.match(/^[<≤]=?(-?\d+\.?\d*)$/);
-  if (m) return num >= Number(m[1]);
-  // >X or ≥X
-  m = r.match(/^[>≥]=?(-?\d+\.?\d*)$/);
-  if (m) return num <= Number(m[1]);
+  // "<X" excludes X; "≤X" / "<=X" includes it (a result of exactly X is normal).
+  let m = r.match(/^(<=|≤|<)(-?\d+\.?\d*)$/);
+  if (m) return m[1] === '<' ? num >= Number(m[2]) : num > Number(m[2]);
+  // ">X" excludes X; "≥X" / ">=X" includes it.
+  m = r.match(/^(>=|≥|>)(-?\d+\.?\d*)$/);
+  if (m) return m[1] === '>' ? num <= Number(m[2]) : num < Number(m[2]);
   // X-Y range
   m = r.match(/^(-?\d+\.?\d*)\s*[-–to]+\s*(-?\d+\.?\d*)$/i);
   if (m) {
@@ -1517,8 +1750,9 @@ function catalogParamRange(p: any): string | null {
   const lo = typeof p.refLow === 'number' ? p.refLow : null;
   const hi = typeof p.refHigh === 'number' ? p.refHigh : null;
   if (lo != null && hi != null) return `${lo}-${hi}`;
-  if (hi != null) return `<${hi}`; // upper-bound-only test (e.g. cholesterol)
-  if (lo != null) return `>${lo}`; // lower-bound-only test
+  // A stored limit is inside the range, as it is for lo-hi above.
+  if (hi != null) return `≤${hi}`; // upper-bound-only test (e.g. cholesterol)
+  if (lo != null) return `≥${lo}`; // lower-bound-only test
   const text = typeof p.refRangeText === 'string' ? p.refRangeText.trim() : '';
   // Keep the printed text only if it is actually parseable on its own.
   if (text && evaluateAbnormal('0', text) !== null) return text;
@@ -1567,7 +1801,10 @@ export async function enterResults(tenantId: string, userId: string, data: Enter
       id: data.labOrderItemId,
       labOrder: { tenantId },
     },
-    include: { labOrder: true },
+    include: {
+      labOrder: true,
+      test: { select: { testName: true, normalRange: true, unit: true, parameters: true } },
+    },
   });
 
   if (!orderItem) {
@@ -1587,6 +1824,21 @@ export async function enterResults(tenantId: string, userId: string, data: Enter
   // Block in-place edits once the supervisor has finalized the report.
   await assertOrderReportEditable(tenantId, data.labOrderId);
 
+  // Gap 369: for rows the catalogue defines, the range stored with the result
+  // is the LIVE catalogue range at this moment, read here rather than taken
+  // from the browser. It is a snapshot: later catalogue edits never reach it.
+  const entered = data.results.map((r) => {
+    const cat = catalogueRangeForResult(orderItem.test, r.parameterName);
+    if (!cat.known) return r;
+    if (r.unit && cat.unit && normaliseUnit(r.unit) !== normaliseUnit(cat.unit)) {
+      throw AppError.conflict(
+        `${r.parameterName} is now measured in ${cat.unit}, not ${r.unit}. Reload the order and check the value.`,
+        'LAB_UNIT_CHANGED',
+      );
+    }
+    return { ...r, normalRange: cat.range ?? undefined };
+  });
+
   const results = await prisma.$transaction(async (tx) => {
     // Re-entering a parameter must REPLACE its value, not add a second row.
     // Without this, correcting a flagged value (e.g. a wrong RBC in a CBC) via
@@ -1596,7 +1848,7 @@ export async function enterResults(tenantId: string, userId: string, data: Enter
     // parameter before inserting the fresh (status='entered') one — which also
     // clears a 'corrected' flag once the technician re-enters the value.
     const byParam = new Map<string, (typeof data.results)[number]>();
-    for (const r of data.results) byParam.set(r.parameterName, r);
+    for (const r of entered) byParam.set(r.parameterName, r);
 
     const created = [];
     for (const result of byParam.values()) {
@@ -2626,6 +2878,7 @@ export async function extractResultsFromAttachment(
         select: {
           id: true,
           patientId: true,
+          labReport: { select: { status: true, publishedAt: true } },
           labOrderItems: {
             select: {
               id: true,
@@ -2709,8 +2962,26 @@ export async function extractResultsFromAttachment(
   // PDF-read value never got flagged because analyser printouts often omit the
   // reference interval, leaving `evaluateAbnormal` with nothing to compare to.
   const targetItem = order.labOrderItems.find((i) => i.id === targetItemId);
-  const catalogRanges = buildCatalogRangeLookup(targetItem?.test?.parameters);
+  //
+  // Gap 369: a report that is already out keeps the ranges it went out with. If
+  // any range on this test was changed after publication, today's range is not
+  // borrowed for it: the value is stored without one rather than with a newer one.
+  const released = isLabReportReleased(order.labReport?.status) ? order.labReport?.publishedAt : null;
+  const changedSince =
+    released && targetItem
+      ? await prisma.labRangeProposal.count({
+          where: {
+            tenantId,
+            testId: targetItem.testId,
+            status: 'approved',
+            origin: { not: 'confirm_current' },
+            reviewedAt: { gt: released },
+          },
+        })
+      : 0;
+  const catalogRanges = buildCatalogRangeLookup(changedSince ? null : targetItem?.test?.parameters);
   const testLevelRange =
+    !changedSince &&
     typeof targetItem?.test?.normalRange === 'string' && targetItem.test.normalRange.trim()
       ? targetItem.test.normalRange.trim()
       : null;

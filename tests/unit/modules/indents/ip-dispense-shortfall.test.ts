@@ -81,7 +81,7 @@ describe('an IP dispense the shelf cannot fill', () => {
     // shortfall nobody acts on.
     const tx = setup(4);
     await dispenseIpPrescription(TENANT, USER, ROLES, RX);
-    expect(tx.billItem.create.mock.calls[0][0].data.description).toMatch(/26 of 30 still owed/);
+    expect(tx.billItem.create.mock.calls[0][0].data.description).toMatch(/26 [a-z]+ of 30 [a-z]+ still owed/);
   });
 
   it('refuses rather than billing nothing when there is no stock at all', async () => {

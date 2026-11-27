@@ -423,18 +423,168 @@ describe('e-way bill failure is persisted and retried', () => {
     expect(out.status).toBe('generated');
   });
 
-  it('is idempotent: never a second e-way bill, not even after a cancellation', async () => {
+  it('is idempotent: never a second e-way bill while one is active', async () => {
     (prisma.drugReturn.findMany as any).mockResolvedValue([line({ ewayBillNumber: '321000000001', ewayBillDate: new Date(), ewayBillStatus: 'generated' })]);
     const out = await generateEwayBillForReturn(TENANT, USER, 'ret-1', ROAD);
     expect(out).toMatchObject({ alreadyGenerated: true, ewayBillNumber: '321000000001' });
     expect(prisma.drugReturn.updateMany).not.toHaveBeenCalled();
+  });
+});
 
+// #266: "Yes, allow a new one and keep the cancelled one in the history."
+describe('a new e-way bill after a cancellation (#266)', () => {
+  const cancelledAt = new Date('2026-11-24T06:00:00Z');
+  const cancelled = (over: Record<string, unknown> = {}) =>
+    line({
+      ewayBillNumber: '321000000001', ewayBillDate: new Date('2026-11-24T05:00:00Z'), ewayBillStatus: 'cancelled',
+      ewayBillCancelledAt: cancelledAt, ewayBillCancelReasonCode: '3', ewayBillCancelRemark: 'Wrong vehicle',
+      ewayBillTransport: ROAD, ...over,
+    });
+  beforeEach(() => {
+    (prisma.drugReturn.findFirst as any).mockResolvedValue({ id: 'ret-1', returnType: 'vendor_return', returnGroupId: 'g1' });
+  });
+
+  it('generates a new one, keeps the cancelled number in the history, and audits what it replaces', async () => {
+    (prisma.drugReturn.findMany as any).mockResolvedValue([cancelled(), cancelled({ id: 'ret-2' })]);
+    const out = await generateEwayBillForReturn(TENANT, USER, 'ret-1', ROAD);
+    expect(out).toMatchObject({ status: 'generated', alreadyGenerated: false, replaces: '321000000001' });
+    expect(out.ewayBillNumber).not.toBe('321000000001');
+
+    const h = (prisma.ewayBillHistory.upsert as any).mock.calls[0][0];
+    expect(h.where.tenantId_ewayBillNumber).toEqual({ tenantId: TENANT, ewayBillNumber: '321000000001' });
+    expect(h.create).toMatchObject({
+      returnId: 'ret-1', returnGroupId: 'g1', ewayBillNumber: '321000000001', status: 'cancelled',
+      cancelledAt, cancelReasonCode: '3', cancelRemark: 'Wrong vehicle', recordedBy: USER,
+    });
+    // Recording it twice never rewrites the first record.
+    expect(h.update).toEqual({});
+    const [claim, done] = (prisma.drugReturn.updateMany as any).mock.calls.map((c: any[]) => c[0]);
+    expect(claim.where).toMatchObject({ id: { in: ['ret-1', 'ret-2'] }, ewayBillNumber: '321000000001' });
+    expect(claim.data).toMatchObject({ ewayBillNumber: null, ewayBillStatus: 'pending', ewayBillCancelledAt: null });
+    expect(done.data).toMatchObject({ ewayBillNumber: out.ewayBillNumber, ewayBillStatus: 'generated' });
+    expect(auditDescriptions().some((d: string) => /generated after cancelled 321000000001/.test(d))).toBe(true);
+  });
+
+  // QA retest: the sandbox answered a regeneration with the number just cancelled.
+  it('generate, cancel, generate, cancel, generate: three different numbers', async () => {
+    const numbers: string[] = [];
+    (prisma.drugReturn.findMany as any).mockResolvedValue([line()]);
+    numbers.push((await generateEwayBillForReturn(TENANT, USER, 'ret-1', ROAD)).ewayBillNumber!);
+    for (let n = 0; n < 2; n++) {
+      const old = numbers.at(-1)!;
+      (prisma.drugReturn.findMany as any).mockResolvedValue([cancelled({ ewayBillNumber: old })]);
+      (prisma.ewayBillHistory.findMany as any).mockResolvedValue([...numbers].reverse().map((ewayBillNumber) => ({ ewayBillNumber })));
+      const out = await generateEwayBillForReturn(TENANT, USER, 'ret-1', ROAD);
+      expect(out).toMatchObject({ status: 'generated', replaces: old });
+      numbers.push(out.ewayBillNumber!);
+    }
+    expect(new Set(numbers).size).toBe(3);
+    (prisma.ewayBillHistory.findMany as any).mockResolvedValue([]);
+  });
+
+  it('a retry of a failed regeneration reads the cancelled number from the history, and is idempotent', async () => {
+    (prisma.ewayBillHistory.findMany as any).mockResolvedValue([{ ewayBillNumber: '321000000001' }]);
     (prisma.drugReturn.findMany as any).mockResolvedValue([
-      line({ ewayBillNumber: '321000000001', ewayBillDate: new Date(), ewayBillStatus: 'cancelled', ewayBillCancelledAt: new Date() }),
+      line({ ewayBillStatus: 'failed', ewayBillAttemptedAt: new Date(), ewayBillTransport: ROAD }),
     ]);
-    await expect(generateEwayBillForReturn(TENANT, USER, 'ret-1', ROAD)).rejects.toMatchObject({ statusCode: 409, code: 'EWAY_BILL_CANCELLED' });
-    await expect(generateEwayBillForReturn(TENANT, USER, 'ret-1', {}, 'retry')).rejects.toMatchObject({ code: 'EWAY_BILL_CANCELLED' });
+    const a = await generateEwayBillForReturn(TENANT, USER, 'ret-1', {}, 'retry');
+    const b = await generateEwayBillForReturn(TENANT, USER, 'ret-1', {}, 'retry');
+    expect(a).toMatchObject({ status: 'generated', replaces: '321000000001' });
+    expect(a.ewayBillNumber).toBe(b.ewayBillNumber);
+    (prisma.ewayBillHistory.findMany as any).mockResolvedValue([]);
+    const first = await generateEwayBillForReturn(TENANT, USER, 'ret-1', {}, 'retry');
+    expect(first.ewayBillNumber).not.toBe(a.ewayBillNumber);
+  });
+
+  it('never stores a number this return already cancelled, even when the portal answers with it', async () => {
+    (prisma.drugReturn.findMany as any).mockResolvedValue([line()]);
+    const fresh = (await generateEwayBillForReturn(TENANT, USER, 'ret-1', ROAD)).ewayBillNumber!;
+    (prisma.drugReturn.updateMany as any).mockClear();
+    // An older cancelled bill holds the number the portal is about to give for the latest one.
+    (prisma.drugReturn.findMany as any).mockResolvedValue([line()]);
+    (prisma.ewayBillHistory.findMany as any)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ ewayBillNumber: '999' }]);
+    await generateEwayBillForReturn(TENANT, USER, 'ret-1', ROAD);
+    const afterNine = (await generateEwayBillForReturn(TENANT, USER, 'ret-1', ROAD)).ewayBillNumber!;
+    (prisma.drugReturn.updateMany as any).mockClear();
+    (prisma.ewayBillHistory.findMany as any).mockResolvedValue([{ ewayBillNumber: '999' }, { ewayBillNumber: afterNine }]);
+    const out = await generateEwayBillForReturn(TENANT, USER, 'ret-1', ROAD);
+    expect(out).toMatchObject({ status: 'failed', ewayBillNumber: null });
+    expect(out.error).toMatch(/already cancelled/);
+    const writes = (prisma.drugReturn.updateMany as any).mock.calls.map((x: any[]) => x[0].data);
+    expect(writes.some((d: any) => d.ewayBillStatus === 'generated')).toBe(false);
+    expect(fresh).not.toBe(afterNine);
+    (prisma.ewayBillHistory.findMany as any).mockResolvedValue([]);
+  });
+
+  it('a double click sends once: the second claim finds nothing to move and is refused', async () => {
+    (prisma.drugReturn.findMany as any).mockResolvedValue([cancelled()]);
+    (prisma.drugReturn.updateMany as any)
+      .mockResolvedValueOnce({ count: 1 }) // first click's claim
+      .mockResolvedValueOnce({ count: 0 }) // second click's claim
+      .mockResolvedValue({ count: 1 });
+    const results = await Promise.allSettled([
+      generateEwayBillForReturn(TENANT, USER, 'ret-1', ROAD),
+      generateEwayBillForReturn(TENANT, USER, 'ret-1', ROAD),
+    ]);
+    const ok = results.filter((r) => r.status === 'fulfilled') as PromiseFulfilledResult<any>[];
+    const refused = results.filter((r) => r.status === 'rejected') as PromiseRejectedResult[];
+    expect(ok).toHaveLength(1);
+    expect(refused).toHaveLength(1);
+    expect(refused[0]!.reason).toMatchObject({ statusCode: 409, code: 'EWAY_IN_FLIGHT' });
+    const generatedWrites = (prisma.drugReturn.updateMany as any).mock.calls.filter((c: any[]) => c[0].data.ewayBillStatus === 'generated');
+    expect(generatedWrites).toHaveLength(1);
+    // The refused click recorded no history either.
+    expect(prisma.ewayBillHistory.upsert).toHaveBeenCalledTimes(1);
+  });
+
+  it('asked again once the new one exists, hands that one back and sends nothing', async () => {
+    (prisma.drugReturn.findMany as any).mockResolvedValue([
+      line({ ewayBillNumber: '321000000002', ewayBillDate: new Date(), ewayBillStatus: 'generated' }),
+    ]);
+    const out = await generateEwayBillForReturn(TENANT, USER, 'ret-1', ROAD);
+    expect(out).toMatchObject({ alreadyGenerated: true, ewayBillNumber: '321000000002' });
+    expect(prisma.ewayBillHistory.upsert).not.toHaveBeenCalled();
+  });
+
+  it('never raises one while any line of the return still has an active number', async () => {
+    (prisma.drugReturn.findMany as any).mockResolvedValue([
+      cancelled(), line({ id: 'ret-2', ewayBillNumber: '555', ewayBillDate: new Date(), ewayBillStatus: 'generated' }),
+    ]);
+    const out = await generateEwayBillForReturn(TENANT, USER, 'ret-1', ROAD);
+    expect(out).toMatchObject({ alreadyGenerated: true, ewayBillNumber: '555' });
     expect(prisma.drugReturn.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('a refusal by the portal leaves the return failed (with Retry) and the cancelled number in the history', async () => {
+    const reject = { name: 'Bad Co', gstNumber: EINVOICE_SANDBOX_FIXTURES.rejectBuyerGstin, address: 'Chennai 600002' };
+    (prisma.drugReturn.findMany as any).mockResolvedValue([cancelled({ supplier: reject })]);
+    const out = await generateEwayBillForReturn(TENANT, USER, 'ret-1', ROAD);
+    expect(out).toMatchObject({ status: 'failed', ewayBillNumber: null, replaces: '321000000001' });
+    expect(prisma.ewayBillHistory.upsert).toHaveBeenCalledTimes(1);
+  });
+
+  it('is not a retry: the cancelled bill did not fail, and the details must be given again', async () => {
+    (prisma.drugReturn.findMany as any).mockResolvedValue([cancelled()]);
+    await expect(generateEwayBillForReturn(TENANT, USER, 'ret-1', {}, 'retry')).rejects.toMatchObject({ code: 'EWAY_NOTHING_TO_RETRY' });
+    await expect(generateEwayBillForReturn(TENANT, USER, 'ret-1', {})).rejects.toMatchObject({ statusCode: 400 });
+    expect(prisma.drugReturn.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('a rejected return still needs none', async () => {
+    (prisma.drugReturn.findMany as any).mockResolvedValue([cancelled({ status: 'rejected' })]);
+    await expect(generateEwayBillForReturn(TENANT, USER, 'ret-1', ROAD)).rejects.toMatchObject({ code: 'RETURN_REJECTED' });
+  });
+
+  it('cancelling writes the number to the history at once', async () => {
+    (prisma.drugReturn.findMany as any).mockResolvedValue([
+      line({ ewayBillNumber: '125644998983', ewayBillDate: new Date(Date.now() - HOUR), ewayBillStatus: 'generated' }),
+    ]);
+    await cancelEwayBillForReturn(TENANT, USER, 'ret-1', { reasonCode: '3', remark: 'Wrong vehicle' });
+    expect((prisma.ewayBillHistory.upsert as any).mock.calls[0][0].create).toMatchObject({
+      ewayBillNumber: '125644998983', cancelReasonCode: '3', cancelRemark: 'Wrong vehicle', status: 'cancelled',
+    });
   });
 });
 

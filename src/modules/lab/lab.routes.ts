@@ -46,6 +46,7 @@ import {
 import * as controller from './lab.controller';
 import * as attachmentService from './lab-attachments.service';
 import * as labService from './lab.service';
+import { labCatalogRoutes } from './lab-catalog.routes';
 import { uploadSingle } from '../../services/upload.service';
 import type { AuthenticatedRequest } from '../../shared/types';
 import type { Response, NextFunction } from 'express';
@@ -84,6 +85,9 @@ labRoutes.delete('/templates/:id', authenticate, requireRoles('super_admin'), va
 // uses on first setup.
 labRoutes.post('/templates/clone-all', authenticate, validate(cloneAllLabTemplatesSchema), controller.cloneAllLabTemplates);
 labRoutes.post('/templates/:templateId/clone', authenticate, validate(cloneOneLabTemplateSchema), controller.cloneOneLabTemplate);
+
+// --- Catalogue governance: range approval, price review, duplicates, import (gap 369) ---
+labRoutes.use('/catalog', labCatalogRoutes);
 
 // --- Test Catalog ---
 labRoutes.post('/tests', authenticate, requirePermission('lab_orders', 'create'), validate(createTestSchema), controller.createTest);

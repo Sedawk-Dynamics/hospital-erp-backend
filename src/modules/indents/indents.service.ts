@@ -2,6 +2,8 @@ import { prisma } from '../../config/database';
 import { taxResolverFor, billItemTaxFields } from '../gst/gst-resolver.service';
 import { supplyKindForInventoryCategory, itemTaxContext } from '../../shared/gst-determination';
 import { recordDrugStockMovement } from '../pharmacy/pharmacy.stock-movement';
+import { formatDrugQty, qtyUnitsOf, UNIT_SELECT } from '../pharmacy/pharmacy.units';
+import { assertResolvedRateLegal } from '../gst/gst-retired-rate';
 import { ACTIVE_ADMISSION_STATUS } from '../../shared/admission-status';
 import { findOpenChargeBill } from '../../shared/charge-bill';
 import { createBillInSeries } from '../../shared/bill-number';
@@ -420,9 +422,9 @@ export async function dispenseIndent(
       const drug = await tx.drugFormulary.findFirst({
         where: { id: it.drugFormularyId, tenantId },
         select: {
-          id: true, drugName: true, category: true, packSize: true, price: true,
+          id: true, drugName: true, category: true, price: true,
           taxPercent: true, hsnCode: true, gstTreatment: true,
-          looseUnitLabel: true, isNarcotic: true, isReimbursable: true,
+          ...UNIT_SELECT, isNarcotic: true, isReimbursable: true, isLifeSaving: true,
           // Read by the controlled-drug gate.
           schedule: true, controlledClass: true, vaultControlled: true,
         },
@@ -481,7 +483,6 @@ export async function dispenseIndent(
       // the pharmacy's own stock document. What goes on the BILL is resolved.
       const gross = round2(unitPrice * baseQty);
       const taxAmt = round2(gross - gross / (1 + taxPct / 100));
-      const unitLabel = it.saleUnit === 'loose' ? (drug.looseUnitLabel ?? 'unit') : 'pack';
       const expTag = batch.expiryDate ? `, exp ${new Date(batch.expiryDate).toLocaleDateString('en-GB')}` : '';
 
       // Create the DispensingRecord FIRST so the BillItem can reference it. The
@@ -497,6 +498,7 @@ export async function dispenseIndent(
           quantityDispensed: baseQty,
           dispensedBy: userId,
           saleUnit: it.saleUnit === 'loose' ? 'loose' : 'pack',
+          qtyUnits: { ...qtyUnitsOf(drug) },
           unitPrice,
           taxPercent: taxPct,
           lineTotal: gross,
@@ -522,11 +524,17 @@ export async function dispenseIndent(
         },
         { unitPrice, quantity: baseQty },
       );
+      // #262: a TTO (or any IP medicine this hospital taxes) is not charged at a
+      // retired rate. Thrown inside the transaction, so no stock moves. A
+      // life-saving drug is never withheld for a tax setting — the bill's
+      // finalise check stops that line instead.
+      if (!drug.isLifeSaving) assertResolvedRateLegal(resolver, drug.drugName, priced.determination);
 
       await tx.billItem.create({
         data: {
           billId: bill.id,
-          description: `${drug.drugName} (Batch ${batch.batchNumber}${expTag}) — ${indent.isTto ? 'TTO ' : 'ward '}indent ${indent.indentNumber}, ${qty} ${unitLabel}(s)`,
+          description: `${drug.drugName} (Batch ${batch.batchNumber}${expTag}) — ${indent.isTto ? 'TTO ' : 'ward '}indent ${indent.indentNumber}, ${formatDrugQty(baseQty, drug)}`,
+          qtyUnits: { ...qtyUnitsOf(drug) },
           category: 'pharmacy',
           quantity: baseQty,
           unitPrice,
@@ -659,8 +667,8 @@ export async function dispenseIpPrescription(
         where: { id: it.drugId as string, tenantId },
         select: {
           id: true, drugName: true, category: true, price: true, taxPercent: true,
-          hsnCode: true, gstTreatment: true, looseUnitLabel: true,
-          isNarcotic: true, isReimbursable: true,
+          hsnCode: true, gstTreatment: true, ...UNIT_SELECT,
+          isNarcotic: true, isReimbursable: true, isLifeSaving: true,
           // Read by the controlled-drug gate.
           schedule: true, controlledClass: true, vaultControlled: true,
         },
@@ -724,14 +732,14 @@ export async function dispenseIpPrescription(
       const taxPct = drug.taxPercent != null ? Number(drug.taxPercent) : 0;
       const gross = round2(unitPrice * handedOver);
       const taxAmt = round2(gross - gross / (1 + taxPct / 100));
-      const unitLabel = drug.looseUnitLabel ?? 'unit';
       const expTag = batch.expiryDate ? `, exp ${new Date(batch.expiryDate).toLocaleDateString('en-GB')}` : '';
-      const shortTag = shortfall > 0 ? ` — ${shortfall} of ${baseQty} still owed` : '';
+      const shortTag = shortfall > 0 ? ` — ${formatDrugQty(shortfall, drug)} of ${formatDrugQty(baseQty, drug)} still owed` : '';
 
       const rec = await tx.dispensingRecord.create({
         data: {
           tenantId, prescriptionId, prescriptionItemId: it.id, patientId: rx.patientId, drugBatchId: batch.id,
-          quantityDispensed: handedOver, dispensedBy: userId, saleUnit: 'loose', unitPrice, taxPercent: taxPct,
+          quantityDispensed: handedOver, qtyUnits: { ...qtyUnitsOf(drug) },
+          dispensedBy: userId, saleUnit: 'loose', unitPrice, taxPercent: taxPct,
           lineTotal: gross, isTto: false, billId: bill.id,
           notes: `IP Rx dispense${shortfall > 0 ? ` — ordered ${baseQty}, stock short by ${shortfall}` : ''}`,
         },
@@ -750,13 +758,16 @@ export async function dispenseIpPrescription(
         },
         { unitPrice, quantity: handedOver },
       );
+      // #262: see the indent issue above.
+      if (!drug.isLifeSaving) assertResolvedRateLegal(resolver, drug.drugName, priced.determination);
 
       await tx.billItem.create({
         data: {
           billId: bill.id,
           // The shortfall is on the bill, not only in a note nobody reads — the
           // ward has to know the rest is still owed.
-          description: `${drug.drugName} (Batch ${batch.batchNumber}${expTag}) — IP prescription, ${handedOver} ${unitLabel}(s)${shortTag}`,
+          description: `${drug.drugName} (Batch ${batch.batchNumber}${expTag}) — IP prescription, ${formatDrugQty(handedOver, drug)}${shortTag}`,
+          qtyUnits: { ...qtyUnitsOf(drug) },
           category: 'pharmacy', quantity: handedOver, unitPrice,
           ...billItemTaxFields(priced),
           referenceType: 'dispensing_record', referenceId: rec.id, isAutoPulled: true,
@@ -831,7 +842,7 @@ export async function returnIndentItems(
 
       const drug = await tx.drugFormulary.findFirst({
         where: { id: it.drugFormularyId, tenantId },
-        select: { id: true, drugName: true, packSize: true, taxPercent: true, hsnCode: true, looseUnitLabel: true },
+        select: { id: true, drugName: true, taxPercent: true, hsnCode: true, ...UNIT_SELECT },
       });
       if (!drug) throw AppError.badRequest('A drug on this indent is no longer in the formulary');
       const packSize = drug.packSize && drug.packSize > 0 ? drug.packSize : 1;
@@ -858,7 +869,6 @@ export async function returnIndentItems(
       // A partial return credits its share of the original line.
       const unitPrice = Number(it.unitPrice ?? 0);
       const gross = round2(unitPrice * baseQty);
-      const unitLabel = it.saleUnit === 'loose' ? (drug.looseUnitLabel ?? 'unit') : 'pack';
 
       const originalLine = it.dispensingRecordId
         ? await tx.billItem.findFirst({
@@ -875,7 +885,8 @@ export async function returnIndentItems(
       await tx.billItem.create({
         data: {
           billId: bill.id,
-          description: `Return credit — ${drug.drugName}, ${qty} ${unitLabel}(s) back to pharmacy (indent ${indent.indentNumber})`,
+          description: `Return credit — ${drug.drugName}, ${formatDrugQty(baseQty, drug)} back to pharmacy (indent ${indent.indentNumber})`,
+          qtyUnits: { ...qtyUnitsOf(drug) },
           category: 'pharmacy',
           quantity: -baseQty,
           unitPrice,

@@ -1,8 +1,11 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { authService } from '../../../../src/modules/auth/auth.service';
 import { prisma } from '../../../../src/config/database';
 import { redis } from '../../../../src/config/redis';
 import { AppError } from '../../../../src/shared/appError';
+import { createHash } from 'crypto';
+import { placeholderAccountEmail } from '../../../../src/shared/account-holder';
+import { sendPasswordResetEmail } from '../../../../src/services/email.service';
 
 // ─── Mock external libraries ───
 vi.mock('bcryptjs', () => ({
@@ -29,6 +32,11 @@ vi.mock('otplib', () => ({
 
 vi.mock('uuid', () => ({
   v4: vi.fn(),
+}));
+
+vi.mock('../../../../src/services/email.service', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  sendPasswordResetEmail: vi.fn(async () => true),
 }));
 
 // Import mocked modules so we can control their return values
@@ -155,7 +163,6 @@ describe('authService', () => {
             passwordHash: 'hashed-password',
             firstName: 'John',
             lastName: 'Doe',
-            phone: '+1234567890',
             tenantId: 'tenant-1',
             isActive: true,
             userRoles: {
@@ -164,6 +171,8 @@ describe('authService', () => {
           }),
         }),
       );
+      // An unproved phone is a patient's sign-in, so it is not stored.
+      expect(vi.mocked(prisma.user.create).mock.calls[0][0].data).not.toHaveProperty('phone');
       expect(result).toEqual(mockCreatedUser);
     });
 
@@ -671,41 +680,73 @@ describe('authService', () => {
   // forgotPassword
   // ═══════════════════════════════════════════
   describe('forgotPassword', () => {
-    it('should return generic message regardless of user existence (user not found)', async () => {
-      vi.mocked(prisma.user.findFirst).mockResolvedValue(null);
+    const platform = { slug: '__platform__', isActive: true };
+    afterEach(() => {
+      vi.mocked(prisma.user.findMany).mockResolvedValue([]);
+    });
+    const hash = (t: string) => createHash('sha256').update(t).digest('hex');
 
-      const result = await authService.forgotPassword({ email: 'nobody@example.com' });
-
-      expect(result.message).toBe('If the email exists, a reset link has been sent');
-      // Should NOT attempt to update any user
-      expect(prisma.user.update).not.toHaveBeenCalled();
+    it('answers the same for a known and an unknown email, and never returns a token', async () => {
+      vi.mocked(prisma.user.findMany).mockResolvedValue([]);
+      const unknown = await authService.forgotPassword({ email: 'nobody@example.com' });
+      vi.mocked(prisma.user.findMany).mockResolvedValue([{ ...mockUserRecord, tenant: platform }] as any);
+      vi.mocked(prisma.user.update).mockResolvedValue({} as any);
+      const known = await authService.forgotPassword({ email: 'john@example.com' });
+      expect(known).toEqual(unknown);
+      expect(Object.keys(known)).toEqual(['message']);
     });
 
-    it('should generate and store reset token for existing user', async () => {
-      vi.mocked(prisma.user.findFirst).mockResolvedValue(mockUserRecord as any);
-      vi.mocked(uuidv4).mockReturnValue('uuid-reset-token-1234');
+    it('a failure behind the scenes does not change the answer', async () => {
+      vi.mocked(prisma.user.findMany).mockRejectedValue(new Error('db down'));
+      await expect(authService.forgotPassword({ email: 'john@example.com' })).resolves.toEqual({
+        message: 'If the email exists, a reset link has been sent',
+      });
+    });
+
+    it('emails the link, stores only the hash, and targets the row sign-in checks', async () => {
+      vi.mocked(prisma.user.findMany).mockResolvedValue([
+        { ...mockUserRecord, id: 'copy-1', tenant: { slug: 'test-hospital', isActive: true } },
+        { ...mockUserRecord, id: 'plat-1', tenant: platform },
+      ] as any);
       vi.mocked(prisma.user.update).mockResolvedValue({} as any);
 
-      const result = await authService.forgotPassword({ email: 'john@example.com' });
+      expect(await authService.sendPasswordReset('john@example.com')).toBe(true);
 
-      expect(result.message).toBe('If the email exists, a reset link has been sent');
-      expect(result.resetToken).toBe('uuid-reset-token-1234');
-      expect(uuidv4).toHaveBeenCalled();
-      expect(prisma.user.update).toHaveBeenCalledWith({
-        where: { id: 'user-1' },
-        data: {
-          passwordResetToken: 'uuid-reset-token-1234',
-          passwordResetExpires: expect.any(Date),
-        },
+      const [to, , link] = vi.mocked(sendPasswordResetEmail).mock.calls[0]!;
+      expect(to).toBe(mockUserRecord.email);
+      const token = /\/reset-password#token=([0-9a-f]{64})$/.exec(link)![1]!;
+      const call = vi.mocked(prisma.user.update).mock.calls[0]![0] as any;
+      expect(call.where).toEqual({ id: 'plat-1' });
+      expect(call.data.passwordResetToken).toBe(hash(token));
+      expect(call.data.passwordResetToken).not.toContain(token);
+      const left = call.data.passwordResetExpires.getTime() - Date.now();
+      expect(left).toBeGreaterThan(59 * 60_000);
+      expect(left).toBeLessThanOrEqual(60 * 60_000);
+    });
+
+    it('discards the token when the email could not be sent', async () => {
+      vi.mocked(prisma.user.findMany).mockResolvedValue([{ ...mockUserRecord, tenant: platform }] as any);
+      vi.mocked(prisma.user.update).mockResolvedValue({} as any);
+      vi.mocked(sendPasswordResetEmail).mockResolvedValueOnce(false);
+      expect(await authService.sendPasswordReset('john@example.com')).toBe(false);
+      const stored = (vi.mocked(prisma.user.update).mock.calls[0]![0] as any).data.passwordResetToken;
+      expect(prisma.user.updateMany).toHaveBeenCalledWith({
+        where: { id: 'user-1', passwordResetToken: stored },
+        data: { passwordResetToken: null, passwordResetExpires: null },
       });
+    });
 
-      // Verify the expiry is roughly 1 hour from now
-      const updateCall = vi.mocked(prisma.user.update).mock.calls[0][0];
-      const expiry = (updateCall.data as any).passwordResetExpires as Date;
-      const oneHourFromNow = Date.now() + 60 * 60 * 1000;
-      // Allow 5 seconds tolerance
-      expect(expiry.getTime()).toBeGreaterThan(oneHourFromNow - 5000);
-      expect(expiry.getTime()).toBeLessThanOrEqual(oneHourFromNow + 5000);
+    it('sends nothing to a deactivated user, an inactive tenant or a placeholder address', async () => {
+      for (const over of [
+        { isActive: false, tenant: platform },
+        { tenant: { slug: '__platform__', isActive: false } },
+        { email: placeholderAccountEmail('+919812300001'), tenant: platform },
+      ]) {
+        vi.mocked(prisma.user.findMany).mockResolvedValue([{ ...mockUserRecord, ...over }] as any);
+        expect(await authService.sendPasswordReset('x@example.com')).toBe(false);
+      }
+      expect(prisma.user.update).not.toHaveBeenCalled();
+      expect(sendPasswordResetEmail).not.toHaveBeenCalled();
     });
   });
 
@@ -735,7 +776,7 @@ describe('authService', () => {
       // Check user lookup uses token and expiry check
       expect(prisma.user.findFirst).toHaveBeenCalledWith({
         where: {
-          passwordResetToken: 'valid-reset-token',
+          passwordResetToken: createHash('sha256').update('valid-reset-token').digest('hex'),
           passwordResetExpires: { gt: expect.any(Date) },
         },
       });

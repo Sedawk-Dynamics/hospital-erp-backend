@@ -5,6 +5,7 @@ import { logger } from '../../config/logger';
 import { AppError } from '../../shared/appError';
 import { checkControlledDispense } from '../pharmacy/controlled-dispense';
 import { recordDrugStockMovement } from '../pharmacy/pharmacy.stock-movement';
+import { formatQty, qtyUnitsOf, UNIT_SELECT, type QtyUnits } from '../pharmacy/pharmacy.units';
 
 // ============================================================
 // OT Kit — "Issue Bulk, Reconcile Net" surgical consumables (design doc III)
@@ -48,10 +49,10 @@ async function nextIssueNumber(tx: any, tenantId: string): Promise<string> {
 /** Resolve formulary names/pricing for a set of drug ids (for list hydration). */
 async function drugMap(tenantId: string, ids: string[]) {
   const uniq = [...new Set(ids.filter(Boolean))];
-  if (!uniq.length) return new Map<string, { drugName: string; genericName: string | null; looseUnitLabel: string | null; price: number | null; taxPercent: number | null; hsnCode: string | null; isReimbursable: boolean | null }>();
+  if (!uniq.length) return new Map<string, { drugName: string; genericName: string | null; looseUnitLabel: string | null; price: number | null; taxPercent: number | null; hsnCode: string | null; isReimbursable: boolean | null; units: QtyUnits }>();
   const rows = await prisma.drugFormulary.findMany({
     where: { tenantId, id: { in: uniq } },
-    select: { id: true, drugName: true, genericName: true, looseUnitLabel: true, price: true, taxPercent: true, hsnCode: true, isReimbursable: true },
+    select: { id: true, drugName: true, genericName: true, price: true, taxPercent: true, hsnCode: true, isReimbursable: true, ...UNIT_SELECT },
   });
   return new Map(rows.map((r) => [r.id, {
     drugName: r.drugName,
@@ -61,6 +62,8 @@ async function drugMap(tenantId: string, ids: string[]) {
     taxPercent: r.taxPercent != null ? Number(r.taxPercent) : null,
     hsnCode: r.hsnCode ?? null,
     isReimbursable: r.isReimbursable ?? null,
+    // 345: how a count of this item reads.
+    units: qtyUnitsOf(r),
   }]));
 }
 
@@ -446,7 +449,7 @@ export async function reconcileKit(
   const result = await prisma.$transaction(async (tx) => {
     let consumedTotal = 0;
     let consumedTax = 0;
-    const consumedLines: Array<{ drugName: string; drugBatchId: string | null; consumedQty: number; unitPrice: number; taxPct: number; hsnCode: string | null; gross: number; isReimbursable: boolean | null }> = [];
+    const consumedLines: Array<{ drugName: string; drugBatchId: string | null; consumedQty: number; unitPrice: number; taxPct: number; hsnCode: string | null; gross: number; isReimbursable: boolean | null; units: QtyUnits }> = [];
 
     for (const it of issue.items) {
       const ret = returnMap.get(it.id) ?? 0;
@@ -471,7 +474,7 @@ export async function reconcileKit(
       if (consumed > 0) {
         consumedTotal = round2(consumedTotal + gross);
         consumedTax = round2(consumedTax + taxAmt);
-        consumedLines.push({ drugName: drugNames.get(it.drugFormularyId)?.drugName ?? 'Item', drugBatchId: it.drugBatchId ?? null, consumedQty: consumed, unitPrice, taxPct, hsnCode: drugNames.get(it.drugFormularyId)?.hsnCode ?? null, gross, isReimbursable: drugNames.get(it.drugFormularyId)?.isReimbursable ?? null });
+        consumedLines.push({ drugName: drugNames.get(it.drugFormularyId)?.drugName ?? 'Item', drugBatchId: it.drugBatchId ?? null, consumedQty: consumed, unitPrice, taxPct, hsnCode: drugNames.get(it.drugFormularyId)?.hsnCode ?? null, gross, isReimbursable: drugNames.get(it.drugFormularyId)?.isReimbursable ?? null, units: drugNames.get(it.drugFormularyId)?.units ?? qtyUnitsOf(null) });
       }
     }
 
@@ -577,7 +580,8 @@ export async function reconcileKit(
         await tx.billItem.create({
           data: {
             billId: bill.id,
-            description: `${line.drugName} — OT kit consumed (${line.consumedQty} unit(s), Kit ${issue.issueNumber})`,
+            description: `${line.drugName} — OT kit consumed (${formatQty(line.consumedQty, line.units)}, Kit ${issue.issueNumber})`,
+            qtyUnits: { ...line.units },
             // OT kit items are surgical consumables (sutures, gloves, syringes) —
             // categorised so the TPA desk can separate them from reimbursable drugs.
             category: 'consumable',
@@ -613,6 +617,7 @@ export async function reconcileKit(
             patientId: issue.patientId,
             drugBatchId: line.drugBatchId,
             quantityDispensed: line.consumedQty,
+            qtyUnits: { ...line.units },
             dispensedBy: userId,
             dispensedAt: new Date(),
             billId: bill.id,

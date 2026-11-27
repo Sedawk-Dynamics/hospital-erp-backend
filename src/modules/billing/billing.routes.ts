@@ -1,10 +1,13 @@
 import { z } from 'zod';
 import { Router } from 'express';
 import { authenticate } from '../../middleware/authenticate';
-import { requirePermission } from '../../middleware/authorize';
+import { requirePermission, requireRoles } from '../../middleware/authorize';
 import { validate } from '../../middleware/validate';
 import { sendResponse } from '../../shared/apiResponse';
-import { setBillBuyer } from './billing.buyer.service';
+import { GST_REGISTRATION_ROLES } from '../hospital-settings/hospital-settings.routes';
+import { setBillBuyer, setBillSupplyType } from './billing.buyer.service';
+import { approveRadiologyDiagnostic } from './billing.service';
+import { applyServiceGstImport, previewServiceGstImport, serviceGstTemplate } from './service-gst-import.service';
 import {
   createServiceTariffSchema,
   updateServiceTariffSchema,
@@ -56,6 +59,7 @@ import {
   receivableLinesQuerySchema,
 } from './billing.validation';
 import * as controller from './billing.controller';
+import { guardTariffGstFields } from './tariff-gst-guard';
 
 export const billingRoutes = Router();
 
@@ -179,6 +183,7 @@ billingRoutes.post(
   '/tariffs',
   authenticate,
   gstSettingsOr('billing', 'create'),
+  guardTariffGstFields,
   validate(createServiceTariffSchema),
   controller.createServiceTariff,
 );
@@ -194,6 +199,7 @@ billingRoutes.put(
   '/tariffs/:id',
   authenticate,
   gstSettingsOr('billing', 'update'),
+  guardTariffGstFields,
   validate(updateServiceTariffSchema),
   controller.updateServiceTariff,
 );
@@ -201,14 +207,15 @@ billingRoutes.put(
 /**
  * The auditor's sign-off on a tariff's GST classification.
  *
- * Behind `billing:approve` rather than `billing:update`: the report is explicit
- * that the item-to-code mapping is the hospital's CA or auditor's call, not the
- * development team's and not a billing clerk's.
+ * The report is explicit that the item-to-code mapping is the hospital's CA or
+ * auditor's call, not the development team's and not a billing clerk's. #358:
+ * approved by the finance / GST admin, so the same roles as the hospital's GST
+ * registration — `billing:approve` also covers the front desk and insurance.
  */
 billingRoutes.patch(
   '/tariffs/:id/gst-approval',
   authenticate,
-  gstSettingsOr('billing', 'approve'),
+  requireRoles(...GST_REGISTRATION_ROLES),
   validate(
     z.object({
       params: z.object({ id: z.string().uuid('Invalid tariff ID') }),
@@ -216,6 +223,86 @@ billingRoutes.patch(
     }),
   ),
   controller.setServiceTariffGstApproval,
+);
+
+/** #358: approve the selected radiology studies as diagnostic, exempt at 0%. */
+billingRoutes.post(
+  '/tariffs/radiology/approve-diagnostic',
+  authenticate,
+  requireRoles(...GST_REGISTRATION_ROLES),
+  validate(z.object({ body: z.object({ ids: z.array(z.string().uuid()).min(1).max(500) }) })),
+  async (req: any, res: any, next: any) => {
+    try {
+      const data = await approveRadiologyDiagnostic(req.user.tenantId, req.user.userId, req.body.ids);
+      sendResponse({
+        res,
+        message: `${data.approved.length} approved as diagnostic 0%${data.skipped.length ? `, ${data.skipped.length} not approved` : ''}`,
+        data,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/**
+ * #264: the hospital's services list — SAC, treatment and GST % in bulk.
+ * Preview never writes; apply re-checks every row it is sent.
+ */
+const gstImportBody = z.object({
+  body: z.object({
+    rows: z
+      .array(
+        z.object({
+          rowNumber: z.number().int().positive(),
+          serviceCode: z.string().max(60).optional().nullable(),
+          serviceName: z.string().max(320).optional().nullable(),
+          sacCode: z.string().max(30).optional().nullable(),
+          treatment: z.string().max(40).optional().nullable(),
+          gstPercent: z.union([z.string().max(20), z.number()]).optional().nullable(),
+        }),
+      )
+      .min(1, 'The file has no rows')
+      .max(2000, 'A file can have at most 2,000 rows'),
+  }),
+});
+billingRoutes.get('/tariffs/gst-import/template', authenticate, requireRoles(...GST_REGISTRATION_ROLES), async (req: any, res: any, next: any) => {
+  try {
+    sendResponse({ res, message: 'Services list template', data: await serviceGstTemplate(req.user.tenantId) });
+  } catch (err) {
+    next(err);
+  }
+});
+billingRoutes.post(
+  '/tariffs/gst-import/preview',
+  authenticate,
+  requireRoles(...GST_REGISTRATION_ROLES),
+  validate(gstImportBody),
+  async (req: any, res: any, next: any) => {
+    try {
+      sendResponse({ res, message: 'Services list checked', data: await previewServiceGstImport(req.user.tenantId, req.body.rows) });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+billingRoutes.post(
+  '/tariffs/gst-import/apply',
+  authenticate,
+  requireRoles(...GST_REGISTRATION_ROLES),
+  validate(gstImportBody),
+  async (req: any, res: any, next: any) => {
+    try {
+      const data = await applyServiceGstImport(req.user.tenantId, req.user.userId, req.body.rows);
+      sendResponse({
+        res,
+        message: `${data.applied} service(s) updated${data.failed ? `, ${data.failed} not applied` : ''}. They still need approving.`,
+        data,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
 );
 
 billingRoutes.delete(
@@ -525,6 +612,32 @@ billingRoutes.patch(
     try {
       const data = await setBillBuyer(req.user.tenantId, req.user.userId, req.params.id, req.body ?? {});
       sendResponse({ res, message: data.recipientGstin ? 'Buyer GSTIN saved — B2B invoice' : 'Buyer cleared', data });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// #265: where a DRAFT bill is supplied. Billing / admin only, and audited: the
+// default (performed at the hospital) is right for everything a hospital does.
+billingRoutes.patch(
+  '/:id/supply-type',
+  authenticate,
+  requireRoles(...GST_REGISTRATION_ROLES),
+  validate(
+    z.object({
+      params: z.object({ id: z.string().uuid('Invalid bill ID') }),
+      body: z.object({
+        supplyType: z.enum(['performed_at_hospital', 'goods_shipped', 'off_site_service']),
+        destinationStateCode: z.string().trim().max(2).optional().nullable(),
+        reason: z.string().trim().max(255).optional().nullable(),
+      }),
+    }),
+  ),
+  async (req: any, res: any, next: any) => {
+    try {
+      const data = await setBillSupplyType(req.user.tenantId, req.user.userId, req.params.id, req.body);
+      sendResponse({ res, message: 'Place of supply saved', data });
     } catch (err) {
       next(err);
     }

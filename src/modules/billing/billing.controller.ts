@@ -603,7 +603,7 @@ export async function updateServiceTariff(
 ) {
   try {
     const tenantId = req.user!.tenantId;
-    const tariff = await billingService.updateServiceTariff(tenantId, req.params.id as string, req.body);
+    const tariff = await billingService.updateServiceTariff(tenantId, req.params.id as string, req.body, req.user!.userId);
     sendResponse({
       res,
       message: 'Service tariff updated successfully',

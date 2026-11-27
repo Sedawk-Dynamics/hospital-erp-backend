@@ -115,14 +115,33 @@ export async function getDailyCollection(tenantId: string, query: { from?: strin
     tenderedByBill.set(p.bill.id, r2((tenderedByBill.get(p.bill.id) ?? 0) + n(p.amount)));
   }
 
+  // The payment's share of the bill's tax. A refund carries its share back.
+  // Rounded one by one, three equal tenders of a bill with 10.00 of tax came to
+  // 9.99: the paisa rounding left over goes to the bill's last tender (and, for
+  // refunds, its last refund), so the modes always add up to the tax (#280).
+  const taxShares = new Map<string, number>();
+  const byBill = new Map<string, typeof payments>();
+  for (const p of payments) {
+    if (!p.bill) continue;
+    const key = `${p.bill.id}:${p.paymentType === 'refund' ? 'refund' : 'in'}`;
+    byBill.set(key, [...(byBill.get(key) ?? []), p]);
+  }
+  for (const list of byBill.values()) {
+    const bill = list[0]!.bill!;
+    const base = Math.max(n(bill.totalAmount), tenderedByBill.get(bill.id) ?? 0);
+    const shareOf = (amount: number) => (base > 0 ? Math.min(1, amount / base) : 0);
+    const whole = r2(n(bill.taxAmount) * shareOf(r2(list.reduce((t, p) => t + n(p.amount), 0))));
+    let given = 0;
+    list.forEach((p, i) => {
+      const tax = i === list.length - 1 ? r2(whole - given) : r2(n(bill.taxAmount) * shareOf(n(p.amount)));
+      given = r2(given + tax);
+      taxShares.set(p.id, tax);
+    });
+  }
+
   const rows = payments.map((p) => {
     const amount = n(p.amount);
-    const billTotal = n(p.bill?.totalAmount);
-    const billTax = n(p.bill?.taxAmount);
-    const base = Math.max(billTotal, p.bill ? tenderedByBill.get(p.bill.id) ?? 0 : 0);
-    // The payment's share of the bill's tax. A refund carries its share back.
-    const share = base > 0 ? Math.min(1, amount / base) : 0;
-    const taxShare = r2(billTax * share) * (p.paymentType === 'refund' ? -1 : 1);
+    const taxShare = r2((taxShares.get(p.id) ?? 0) * (p.paymentType === 'refund' ? -1 : 1));
     return {
       paymentId: p.id,
       date: p.paymentDate,

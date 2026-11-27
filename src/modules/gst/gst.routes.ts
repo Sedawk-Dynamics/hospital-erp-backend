@@ -10,6 +10,7 @@ import * as sales from './gst-reports.sales';
 import * as returns from './gst-reports.returns';
 import * as purchase from './gst-reports.purchase';
 import * as control from './gst-reports.control';
+import { getMissingSacReport } from './gst-reports.missing-sac';
 import * as archive from './gst-reports.archive';
 import * as annual from './gst-reports.annual';
 import * as reconcile from './gst-reports.reconcile';
@@ -478,6 +479,18 @@ gstRoutes.get(
   ...gstReportAccess,
   validate(salesQuerySchema),
   report('Unmapped items', (t, q) => control.getUnmappedItems(t, q as never)),
+);
+
+/** C-10 — Missing SAC codes (#264): warned at 0%, blocked when they carry GST. */
+gstRoutes.get(
+  '/reports/missing-sac',
+  ...gstReportAccess,
+  validate(
+    z.object({
+      query: periodQuerySchema.shape.query.extend({ status: z.enum(['warn', 'blocked']).optional() }),
+    }),
+  ),
+  report('Missing SAC codes', (t, q) => getMissingSacReport(t, q as never)),
 );
 
 /** C-4 — Document Series Continuity. Auditors ask for this on day one. */

@@ -176,6 +176,22 @@ router.get('/doctors/:id/slots', async (req: AuthenticatedRequest, res: Response
   } catch (err) { next(err); }
 });
 
+// GET /patient-portal/consultation-quote?tenantId=xxx&doctorId=xxx&date=YYYY-MM-DD
+// What this booking would cost, with the follow-up rule that decided it (gap #019).
+router.get('/consultation-quote', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = req.query.tenantId as string;
+    const doctorId = req.query.doctorId as string;
+    const date = req.query.date as string | undefined;
+    if (!tenantId || !doctorId) { sendResponse({ res, statusCode: 400, message: 'tenantId and doctorId are required' }); return; }
+    if (date !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(date)) { sendResponse({ res, statusCode: 400, message: 'date must be YYYY-MM-DD' }); return; }
+    const data = await patientPortalService.getConsultationQuote(
+      req.user!.userId, req.user!.email, tenantId, { doctorId, date },
+    );
+    sendResponse({ res, statusCode: 200, message: 'Consultation quote', data });
+  } catch (err) { next(err); }
+});
+
 // POST /patient-portal/book-appointment
 router.post('/book-appointment', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
