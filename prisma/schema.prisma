@@ -15,9 +15,6 @@ datasource db {
 // on the add-doctor form, calculator mapping, and specialty-specific
 // consultation fields. Values are stable codes; labels live on the frontend.
 enum DoctorSpecialty {
-  general_internal_medicine
-  emergency_casualty
-  intensive_care_unit
   pediatrics_neonatology
   obstetrics_gynecology
   general_surgery_laparoscopy
@@ -28,13 +25,20 @@ enum DoctorSpecialty {
   pulmonology_sleep
   gastroenterology_liver
   neurology_neurosurgery
-  urology_andrology
   diabetology_endocrinology
   oncology
+  psychiatry_mental_health
+  // Retained in the DB enum so `db push` stays non-destructive (existing
+  // doctor_profiles rows may still use these). The add-doctor UI is limited
+  // to the 13 active specialities via DOCTOR_SPECIALTIES / Zod validation,
+  // not this enum.
+  general_internal_medicine
+  emergency_casualty
+  intensive_care_unit
+  urology_andrology
   ophthalmology
   ent_otolaryngology
   dermatology_cosmetology
-  psychiatry_mental_health
   dental_surgery
   ultrasound_diagnostic_radiology
 }
@@ -9615,9 +9619,26 @@ model IcuSeverityScore {
 }
 
 
+model ConsultationSpecialtyData {
+  id          String          @id @default(uuid())
+  tenantId    String          @map("tenant_id")
+  visitId     String          @map("visit_id")
+  patientId   String          @map("patient_id")
+  doctorId    String?         @map("doctor_id")
 
+  speciality  DoctorSpecialty @map("speciality")
 
+  // Flat { fieldKey: value | { value, unit } } from the specialty form
+  data        Json            @map("data")
 
+  createdById String?         @map("created_by_id")
+  createdAt   DateTime        @default(now()) @map("created_at")
+  updatedAt   DateTime        @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([visitId, speciality])
+  @@index([tenantId, visitId])
+  @@map("consultation_speciality_data")
+}
 
 
 
